@@ -490,6 +490,35 @@ TEST_F(SystemdBusFakeTest, AUdisksThatDoesntAnswerInTimeIsRememberedForTheOtherD
     EXPECT_EQ(sdb.error, TIMED_OUT);
 }
 
+// #2126: a timeout on the ATA probe is udisks2 not answering, not "this isn't an ATA drive": it reads as
+// the timeout (and the session stops asking), not as "no SMART data".
+TEST_F(SystemdBusFakeSmartTest, AnAtaProbeTimeoutIsATimeoutNotNoSmart)
+{
+    m_Bus.failProperty(ATA_DRIVE, UDISKS_ATA, "SmartSupported", "org.freedesktop.DBus.Error.Timeout");
+    serveUdisks();
+    const LinuxDiskSmart::SmartReader read = SystemdBus::makeDriveSmartReader();
+    const LinuxDiskSmart::DriveSmartRead sda = read("sda");
+    EXPECT_FALSE(sda.smart.has_value());
+    EXPECT_EQ(sda.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+    const LinuxDiskSmart::DriveSmartRead nvme = read("nvme0n1"); // not asked: the session remembers
+    EXPECT_FALSE(nvme.smart.has_value());
+    EXPECT_EQ(nvme.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+}
+
+// The same for the NVMe probe that follows a "not ATA" answer; and another error is said as itself.
+TEST_F(SystemdBusFakeSmartTest, AnNvmeProbeFailureIsSaidRatherThanNoSmart)
+{
+    m_Bus.failProperty(NVME_DRIVE, UDISKS_NVME, "SmartUpdated", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.failProperty(FAILING_NVME_DRIVE, UDISKS_NVME, "SmartUpdated", "org.freedesktop.DBus.Error.AccessDenied");
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead denied = SystemdBus::makeDriveSmartReader()("nvme1n1");
+    EXPECT_FALSE(denied.smart.has_value());
+    EXPECT_TRUE(denied.error.starts_with("udisks2 couldn't be asked: ")) << denied.error;
+    const LinuxDiskSmart::DriveSmartRead timedOut = SystemdBus::makeDriveSmartReader()("nvme0n1");
+    EXPECT_FALSE(timedOut.smart.has_value());
+    EXPECT_EQ(timedOut.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+}
+
 TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
 {
     ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();

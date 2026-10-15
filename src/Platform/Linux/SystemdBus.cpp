@@ -276,6 +276,16 @@ getTrivial(sd_bus* bus, const std::string& path, const char* interface, const ch
     return "udisks2 couldn't be asked: " + error.text(result);
 }
 
+/// Whether @p error says the drive just hasn't the interface asked about (an ATA drive asked for NVMe
+/// data, or the other way round): GDBus answers InvalidArgs "No such interface", sd-bus services
+/// UnknownInterface or UnknownProperty. Anything else -- a timeout, AccessDenied -- is a real failure,
+/// not "this isn't that kind of drive" (#2126).
+[[nodiscard]] bool isNotThisInterface(const BusError& error) noexcept
+{
+    return error.is("org.freedesktop.DBus.Error.UnknownInterface") || error.is("org.freedesktop.DBus.Error.UnknownProperty") ||
+           error.is("org.freedesktop.DBus.Error.InvalidArgs");
+}
+
 /// The drive's Drive.Ata properties into @p smart; false (and @p error) when one can't be read.
 [[nodiscard]] bool readAta(sd_bus* bus, const std::string& drive, LinuxDiskSmart::DriveSmart& smart, std::string& error)
 {
@@ -360,13 +370,13 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
     smart.attributesRead = true;
 }
 
-/// The drive's NVMe.Controller data into @p smart; false when it isn't an NVMe controller.
-[[nodiscard]] bool readNvme(sd_bus* bus, const std::string& drive, LinuxDiskSmart::DriveSmart& smart)
+/// The drive's NVMe.Controller data into @p smart. The first property's result: negative (and @p error)
+/// when it couldn't be read -- the drive isn't an NVMe controller, or udisks2 didn't answer.
+[[nodiscard]] int readNvme(sd_bus* bus, const std::string& drive, LinuxDiskSmart::DriveSmart& smart, BusError& error)
 {
-    BusError error;
-    if (getTrivial(bus, drive, UDISKS_NVME, "SmartUpdated", 't', smart.updated, error) < 0)
+    if (const int result = getTrivial(bus, drive, UDISKS_NVME, "SmartUpdated", 't', smart.updated, error); result < 0)
     {
-        return false;
+        return result;
     }
     char** warnings = nullptr;
     BusError warningsError;
@@ -384,7 +394,7 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
     BusError temperatureError;
     (void) getTrivial(bus, drive, UDISKS_NVME, "SmartTemperature", 'q', smart.nvmeTemperatureKelvin, temperatureError);
     readNvmeAttributes(bus, drive, smart);
-    return true;
+    return 0;
 }
 
 [[nodiscard]] LinuxDiskSmart::DriveSmartRead readDriveSmartOnce(UDisksSession& session, const std::string& blockName)
@@ -428,7 +438,7 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
 
     int supported = 0;
     BusError ataError;
-    if (getTrivial(bus, drive, UDISKS_ATA, "SmartSupported", 'b', supported, ataError) >= 0)
+    if (const int ataResult = getTrivial(bus, drive, UDISKS_ATA, "SmartSupported", 'b', supported, ataError); ataResult >= 0)
     {
         smart.kind = LinuxDiskSmart::DriveSmart::Kind::Ata;
         smart.smartSupported = supported != 0;
@@ -437,9 +447,25 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
             return read;
         }
     }
-    else if (readNvme(bus, drive, smart))
+    else if (!isNotThisInterface(ataError))
     {
-        smart.kind = LinuxDiskSmart::DriveSmart::Kind::Nvme;
+        // Not an answer about the drive: a timeout reads as UDISKS_TIMED_OUT, so the session stops
+        // asking (#1689), rather than as "no SMART data" (#2126).
+        read.error = udisksError(ataError, ataResult);
+        return read;
+    }
+    else
+    {
+        BusError nvmeError;
+        if (const int nvmeResult = readNvme(bus, drive, smart, nvmeError); nvmeResult >= 0)
+        {
+            smart.kind = LinuxDiskSmart::DriveSmart::Kind::Nvme;
+        }
+        else if (!isNotThisInterface(nvmeError))
+        {
+            read.error = udisksError(nvmeError, nvmeResult);
+            return read;
+        }
     }
     read.smart = std::move(smart);
     return read;
