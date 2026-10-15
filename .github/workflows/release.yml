@@ -673,13 +673,12 @@ jobs:
           Write-Host "The .zip contains no import/static libraries, headers or CMake package files ($($entries.Count) entries)."
 
       - name: Verify packaged asset layout
-        # The smoke check below only proves the process stays alive; src/UI/AssetPath.cpp and
+        # The smoke check below proves startup and rendering, not assets: src/UI/AssetPath.cpp and
         # Theme.cpp both fall back gracefully on missing assets, so a broken packaged asset
-        # layout would still pass a plain liveness check (see the equivalent Linux assertions
-        # in validate-linux-package). Windows keeps the flat "." install destination
+        # layout would still pass it (see the equivalent Linux assertions in
+        # validate-linux-package). Windows keeps the flat "." install destination
         # (TaskSmack.exe and share/ as siblings), so assert directly on the exact
-        # exeDir/share/tasksmack/assets path AssetPath.cpp resolves at runtime, rather than
-        # trying to capture a GUI app's console output on Windows.
+        # exeDir/share/tasksmack/assets path AssetPath.cpp resolves at runtime.
         shell: pwsh
         run: |
           $iconFont = Join-Path $env:TASKSMACK_PKG_ROOT "share\tasksmack\assets\fonts\fa-solid-900.ttf"
@@ -695,17 +694,143 @@ jobs:
           }
           Write-Host "Packaged assets verified: icon font present, $themeCount theme(s) found under $themesDir"
 
-      - name: Smoke-check extracted executable
+      - name: Fetch Mesa llvmpipe (smoke check only)
+        # The runner has no GPU, so its only OpenGL is GDI Generic 1.1 and TaskSmack (OpenGL 3.3)
+        # stops at startup with its "OpenGL 3.3 required" box (#1398). That box keeps the process
+        # alive, so a liveness check alone passes without anything having rendered. Mesa's llvmpipe
+        # is a software OpenGL 4.6 driver: placed beside the exe in a temporary copy of the package
+        # (never in dist/ or the published zip), it lets the real startup path run to the first frame.
+        # Pinned: mesa-dist-win 26.2.4, release-msvc build, from the project's GitHub release, with
+        # the archive's SHA-256 checked before anything in it is used. To update, take the new
+        # release's mesa3d-<ver>-release-msvc.7z asset and its digest (gh release view -R
+        # pal1000/mesa-dist-win <ver> --json assets).
         shell: pwsh
+        env:
+          MESA_VERSION: "26.2.4"
+          MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z
+          MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
         run: |
-          $proc = Start-Process -FilePath $env:TASKSMACK_EXE -PassThru
-          Start-Sleep -Seconds 5
-          if ($proc.HasExited) {
-            Write-Error "TaskSmack.exe exited within 5 seconds of launch (exit code $($proc.ExitCode))"
+          $ErrorActionPreference = 'Stop'
+          $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
+          $archive = Join-Path $mesaRoot "mesa3d-$env:MESA_VERSION-release-msvc.7z"
+          $dllDir = Join-Path $mesaRoot 'x64'
+          New-Item -ItemType Directory -Force -Path $mesaRoot | Out-Null
+          Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:MESA_SHA256) {
+            Write-Error "Mesa archive SHA-256 mismatch: expected $env:MESA_SHA256, got $actual"
             exit 1
           }
-          Stop-Process -Id $proc.Id -Force
-          Write-Host "Smoke check passed: TaskSmack.exe ran for at least 5 seconds without exiting."
+          # Windows' own bsdtar reads .7z; an unqualified 'tar' can resolve to Git's GNU tar, which can't.
+          & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $mesaRoot x64/opengl32.dll x64/libgallium_wgl.dll
+          if ($LASTEXITCODE -ne 0) { Write-Error "Extracting Mesa's OpenGL DLLs failed (tar exit $LASTEXITCODE)"; exit 1 }
+          Get-ChildItem -LiteralPath $dllDir | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
+          "MESA_DLL_DIR=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Smoke-check extracted executable
+        # Runs a temporary copy of the extracted package with llvmpipe beside the exe, a fresh
+        # TASKSMACK_CONFIG_DIR and an info-level log captured from stdout (spdlog's Windows stdout
+        # sink writes unbuffered with WriteFile, so nothing is lost when the process is killed).
+        # Fails on an early exit, on any [critical] or [error] log line, or unless the log shows
+        # OpenGL 3.3+ from llvmpipe -- proof the real renderer came up, not an error box.
+        shell: pwsh
+        timeout-minutes: 5
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          TASKSMACK_LOG_LEVEL: info
+          STARTUP_TIMEOUT_SECONDS: "60"
+          ALIVE_SECONDS: "5"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'tasksmack-smoke'
+          $pkg = Join-Path $work 'pkg'
+          $configDir = Join-Path $work 'config'
+          $tempDir = Join-Path $work 'temp'
+          foreach ($dir in @($pkg, $configDir, $tempDir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+          Copy-Item -Path (Join-Path $env:TASKSMACK_PKG_ROOT '*') -Destination $pkg -Recurse
+          Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination $pkg
+          $exe = Join-Path $pkg 'TaskSmack.exe'
+          $stdoutLog = Join-Path $work 'stdout.log'
+          $stderrLog = Join-Path $work 'stderr.log'
+
+          # Fresh, empty settings and lock directory, and a private %TEMP% for tasksmack-debug.log.
+          $env:TASKSMACK_CONFIG_DIR = $configDir
+          $env:TMP = $tempDir
+          $env:TEMP = $tempDir
+
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $pkg -PassThru `
+            -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+          $failure = $null
+          try {
+            # Wait for the "  Version: ..." line Window.cpp logs once the GL context is up (it follows
+            # the Renderer line), then require the process to keep running for ALIVE_SECONDS more.
+            $deadline = (Get-Date).AddSeconds([int]$env:STARTUP_TIMEOUT_SECONDS)
+            while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
+              $log = Get-Content -LiteralPath $stdoutLog -Raw -ErrorAction SilentlyContinue
+              if ($log -match '\]\s+Version:') { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if ($proc.HasExited) {
+              $failure = "TaskSmack.exe exited during startup (exit code $($proc.ExitCode))"
+            } else {
+              Start-Sleep -Seconds ([int]$env:ALIVE_SECONDS)
+              if ($proc.HasExited) {
+                $failure = "TaskSmack.exe exited within $env:ALIVE_SECONDS s of creating its OpenGL context (exit code $($proc.ExitCode))"
+              }
+            }
+          } finally {
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              $proc.WaitForExit(10000) | Out-Null
+            }
+          }
+
+          $lines = @(Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue) +
+            @(Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue)
+          Write-Host "=== TaskSmack startup log ==="
+          $lines | ForEach-Object { Write-Host $_ }
+          Write-Host "=== end of log ==="
+
+          $errorLines = @($lines | Where-Object { $_ -match '\[(critical|error)\]' })
+          $rendererLine = $lines | Where-Object { $_ -match '\]\s+Renderer:\s*(.+)$' } | Select-Object -First 1
+          $renderer = if ($rendererLine -match '\]\s+Renderer:\s*(.+)$') { $Matches[1].Trim() } else { '' }
+          $versionLine = $lines | Where-Object { $_ -match '\]\s+Version:\s*(.+)$' } | Select-Object -First 1
+          $version = if ($versionLine -match '\]\s+Version:\s*(.+)$') { $Matches[1].Trim() } else { '' }
+
+          if (-not $failure -and $errorLines.Count -gt 0) {
+            $failure = "The startup log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
+          }
+          if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
+            $failure = "The log never reached 'Entering main loop' (Application::run): startup never finished"
+          }
+          if (-not $failure -and $renderer -notmatch 'llvmpipe') {
+            $failure = "Expected the llvmpipe renderer in the log, found '$renderer'"
+          }
+          if (-not $failure) {
+            if ($version -match '^(\d+)\.(\d+)') {
+              $glVersion = [version]::new([int]$Matches[1], [int]$Matches[2])
+              if ($glVersion -lt [version]'3.3') { $failure = "OpenGL $glVersion is below the required 3.3 ('$version')" }
+            } else {
+              $failure = "No parseable OpenGL version in the log (found '$version')"
+            }
+          }
+
+          $summary = @(
+            '### Windows package smoke check',
+            '',
+            "- Result: $(if ($failure) { 'FAILED' } else { 'passed' })",
+            "- OpenGL renderer: ``$renderer``",
+            "- OpenGL version: ``$version``",
+            "- Software driver: Mesa llvmpipe from mesa-dist-win (temporary copy only, not in the package)"
+          )
+          if ($failure) { $summary += "- Failure: $failure" }
+          $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if ($failure) {
+            Write-Error $failure
+            exit 1
+          }
+          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors and ran for $env:ALIVE_SECONDS s."
 
   create-release:
     name: Create GitHub Release
