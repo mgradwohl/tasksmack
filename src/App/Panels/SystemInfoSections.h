@@ -256,8 +256,21 @@ struct VisibleSection
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
 [[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);
 
-/// An adapter's addresses: "192.168.1.20/24, fe80::1c2a:3bff:fe4d:5e6f/64", IPv4 first.
-[[nodiscard]] std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter);
+/// Which of an adapter's addresses formatAdapterAddresses() lists.
+enum class AddressScope : std::uint8_t
+{
+    Local,  ///< Those isLocalAddress() accepts: a plain row
+    Public, ///< The rest, globally routable: an identifier row, since one can place the machine (#2119)
+};
+
+/// A loopback, unspecified, private (10/8, 172.16/12, 192.168/16), carrier-grade NAT (100.64/10),
+/// link-local (169.254/16, fe80::/10), site-local (fec0::/10) or unique local (fc00::/7) address, or an
+/// IPv4-mapped one of those: it can't be reached from, or place the machine on, the internet. False for
+/// anything else, an address that doesn't parse included, so an unreadable one is treated as an identifier.
+[[nodiscard]] bool isLocalAddress(const Platform::AdapterAddress& address);
+
+/// An adapter's addresses in @p scope: "192.168.1.20/24, fe80::1c2a:3bff:fe4d:5e6f/64", IPv4 first.
+[[nodiscard]] std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter, AddressScope scope);
 
 /// A Wi-Fi adapter's signal: "-55 dBm (82%)" (the quality is Windows'), or whichever of the two was read;
 /// empty for neither.

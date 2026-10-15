@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -1565,14 +1567,148 @@ Section buildCrashesSection(const Platform::CrashesInfo& crashes)
     return section;
 }
 
-std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
+namespace
+{
+
+/// "192.168.1.20" as its four bytes; nullopt for anything else.
+[[nodiscard]] std::optional<std::array<std::uint8_t, 4>> parseIpv4(std::string_view text)
+{
+    std::array<std::uint8_t, 4> bytes{};
+    for (std::size_t i = 0; i < bytes.size(); ++i)
+    {
+        const bool last = i + 1 == bytes.size();
+        const std::size_t dot = text.find('.');
+        if (last != (dot == std::string_view::npos))
+        {
+            return std::nullopt;
+        }
+        const std::string_view part = last ? text : text.substr(0, dot);
+        unsigned value = 0;
+        const auto [stop, error] = std::from_chars(part.data(), part.data() + part.size(), value);
+        if (part.empty() || part.size() > 3 || error != std::errc{} || stop != part.data() + part.size() || value > 255U)
+        {
+            return std::nullopt;
+        }
+        bytes.at(i) = static_cast<std::uint8_t>(value);
+        if (!last)
+        {
+            text.remove_prefix(dot + 1);
+        }
+    }
+    return bytes;
+}
+
+/// The colon-separated groups of one side of an IPv6 address's "::" onto @p groups; the last may be an
+/// embedded IPv4 address ("::ffff:192.168.1.20") when @p lastMayBeIpv4. False when they don't parse.
+[[nodiscard]] bool parseIpv6Groups(std::string_view text, bool lastMayBeIpv4, std::vector<std::uint16_t>& groups)
+{
+    while (!text.empty())
+    {
+        const std::size_t colon = text.find(':');
+        const std::string_view group = text.substr(0, colon);
+        if (group.contains('.'))
+        {
+            const std::optional<std::array<std::uint8_t, 4>> v4 = parseIpv4(group);
+            if (!lastMayBeIpv4 || colon != std::string_view::npos || !v4)
+            {
+                return false;
+            }
+            groups.push_back(static_cast<std::uint16_t>((v4->at(0) << 8U) | v4->at(1)));
+            groups.push_back(static_cast<std::uint16_t>((v4->at(2) << 8U) | v4->at(3)));
+            return true;
+        }
+        std::uint16_t value = 0;
+        const auto [stop, error] = std::from_chars(group.data(), group.data() + group.size(), value, 16);
+        if (group.empty() || group.size() > 4 || error != std::errc{} || stop != group.data() + group.size())
+        {
+            return false;
+        }
+        groups.push_back(value);
+        if (colon == std::string_view::npos)
+        {
+            return true;
+        }
+        text.remove_prefix(colon + 1);
+        if (text.empty())
+        {
+            return false; // a trailing single colon
+        }
+    }
+    return true;
+}
+
+/// "fe80::1c2a:3bff:fe4d:5e6f" (a "%zone" ignored) as its eight groups; nullopt for anything else.
+[[nodiscard]] std::optional<std::array<std::uint16_t, 8>> parseIpv6(std::string_view text)
+{
+    if (const std::size_t zone = text.find('%'); zone != std::string_view::npos)
+    {
+        text = text.substr(0, zone);
+    }
+    std::vector<std::uint16_t> head;
+    std::vector<std::uint16_t> tail;
+    const std::size_t gap = text.find("::");
+    if (gap == std::string_view::npos)
+    {
+        if (!parseIpv6Groups(text, true, head) || head.size() != 8)
+        {
+            return std::nullopt;
+        }
+    }
+    else if (text.find("::", gap + 1) != std::string_view::npos || !parseIpv6Groups(text.substr(0, gap), false, head) ||
+             !parseIpv6Groups(text.substr(gap + 2), true, tail) || head.size() + tail.size() > 7)
+    {
+        return std::nullopt;
+    }
+    std::array<std::uint16_t, 8> groups{};
+    std::ranges::copy(head, groups.begin());
+    std::ranges::copy(tail, groups.end() - static_cast<std::ptrdiff_t>(tail.size()));
+    return groups;
+}
+
+/// 0/8, 10/8, 127/8, 100.64/10 (carrier-grade NAT), 169.254/16 (link-local), 172.16/12 and 192.168/16.
+[[nodiscard]] bool isLocalIpv4(std::uint8_t first, std::uint8_t second)
+{
+    return first == 0 || first == 10 || first == 127 || (first == 100 && (second & 0xC0U) == 64U) || (first == 169 && second == 254) ||
+           (first == 172 && (second & 0xF0U) == 16U) || (first == 192 && second == 168);
+}
+
+} // namespace
+
+bool isLocalAddress(const Platform::AdapterAddress& address)
+{
+    if (!address.v6)
+    {
+        const std::optional<std::array<std::uint8_t, 4>> bytes = parseIpv4(address.address);
+        return bytes && isLocalIpv4(bytes->at(0), bytes->at(1));
+    }
+    const std::optional<std::array<std::uint16_t, 8>> parsed = parseIpv6(address.address);
+    if (!parsed)
+    {
+        return false; // unreadable: kept with the identifiers, the side that leaks nothing
+    }
+    const std::array<std::uint16_t, 8>& groups = *parsed;
+    const bool zeroPrefix = std::ranges::all_of(std::span(groups).first<5>(), [](std::uint16_t group) { return group == 0; });
+    if (zeroPrefix && groups[5] == 0 && groups[6] == 0 && groups[7] <= 1)
+    {
+        return true; // :: and ::1
+    }
+    if (zeroPrefix && groups[5] == 0xFFFFU)
+    {
+        // An IPv4-mapped address is its IPv4 address.
+        return isLocalIpv4(static_cast<std::uint8_t>(groups[6] >> 8U), static_cast<std::uint8_t>(groups[6] & 0xFFU));
+    }
+    // fe80::/10 link-local, fec0::/10 (the deprecated site-local) and fc00::/7 unique local.
+    return (groups[0] & 0xFF80U) == 0xFE80U || (groups[0] & 0xFE00U) == 0xFC00U;
+}
+
+std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter, AddressScope scope)
 {
     std::string text;
     for (const bool v6 : {false, true})
     {
         for (const Platform::AdapterAddress& address : adapter.addresses)
         {
-            if (address.v6 != v6)
+            if (address.v6 != v6 || isLocalAddress(address) != (scope == AddressScope::Local))
             {
                 continue;
             }
@@ -1771,7 +1907,18 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     for (const Platform::NetworkAdapter& adapter : network.adapters)
     {
         rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
-        rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
+        // A globally routable address can place the machine, like the public IP: on IPv6 without NAT it is the
+        // public address, and an EUI-64 one embeds the MAC. So those are an identifier row of their own (#2119).
+        std::string local = formatAdapterAddresses(adapter, AddressScope::Local);
+        std::string global = formatAdapterAddresses(adapter, AddressScope::Public);
+        if (!local.empty() || global.empty())
+        {
+            rows.push_back(row(adapter.name + " addresses", std::move(local), "No IP address assigned"));
+        }
+        if (!global.empty())
+        {
+            rows.push_back(row(adapter.name + " public addresses", std::move(global), NOT_REPORTED, true));
+        }
         if (adapter.dhcpLease)
         {
             rows.push_back(row(adapter.name + " DHCP lease", formatDhcpLease(*adapter.dhcpLease)));

@@ -122,7 +122,8 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     ImGui::PopStyleColor();
     ImGui::SameLine();
     UI::Widgets::outlinedCheckbox(SHOW_IDENTIFIERS_LABEL, &state.showIdentifiers);
-    ImGui::SetItemTooltip("Show the user, computer and domain names, and include them when copying");
+    ImGui::SetItemTooltip("Show what identifies this machine or its user (user, computer and domain names, serial numbers, "
+                          "UUIDs, MAC and public IP addresses, Wi-Fi network names), and include it when copying or saving");
     ImGui::SameLine();
     if (ImGui::Button(COPY_ALL_LABEL))
     {

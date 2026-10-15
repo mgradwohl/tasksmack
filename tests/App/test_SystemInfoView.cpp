@@ -840,6 +840,119 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     EXPECT_EQ(findRow(section, "eth0 Wi-Fi network"), nullptr);
 }
 
+TEST(SystemInfoSectionsTest, LocalAddressesAreThoseThatCantPlaceTheMachine)
+{
+    const auto local = [](std::string text, bool v6)
+    {
+        return SystemInfo::isLocalAddress({.address = std::move(text), .prefix = 0, .v6 = v6});
+    };
+    for (const char* v4 : {"10.1.2.3",
+                           "172.16.0.1",
+                           "172.31.255.255",
+                           "192.168.1.5",
+                           "169.254.10.20",
+                           "100.64.0.1",
+                           "100.127.255.254",
+                           "127.0.0.1",
+                           "0.0.0.0"})
+    {
+        EXPECT_TRUE(local(v4, false)) << v4;
+    }
+    for (const char* v4 : {"8.8.8.8",
+                           "172.15.0.1",
+                           "172.32.0.1",
+                           "100.63.0.1",
+                           "100.128.0.1",
+                           "192.169.0.1",
+                           "81.2.69.160",
+                           "",
+                           "1.2.3",
+                           "1.2.3.4.5",
+                           "256.1.1.1",
+                           "a.b.c.d"})
+    {
+        EXPECT_FALSE(local(v4, false)) << v4 << ": public, or unreadable and so kept hidden";
+    }
+    for (const char* v6 : {"fe80::1",
+                           "fe80::1c2a:3bff:fe4d:5e6f%12",
+                           "FE80::1",
+                           "febf::1",
+                           "fec0::1",
+                           "fd12:3456:789a::1",
+                           "fc00::1",
+                           "::1",
+                           "::",
+                           "::ffff:192.168.1.5"})
+    {
+        EXPECT_TRUE(local(v6, true)) << v6;
+    }
+    for (const char* v6 : {"2a02:6b8::5",
+                           "2a02:6b8:0:1:a65e:60ff:fe12:3456",
+                           "2001:db8::5",
+                           "2002:c000:204::1",
+                           "::ffff:8.8.8.8",
+                           "::2",
+                           "1:2:3:4:5:6:7:8",
+                           "",
+                           "fe80:::1",
+                           "fe80::1::2",
+                           "12345::1",
+                           "1:2:3:4:5:6:7",
+                           "1:2:3:4:5:6:7:8:9",
+                           "fe80:",
+                           "1.2.3.4::"})
+    {
+        EXPECT_FALSE(local(v6, true)) << v6 << ": public, or unreadable and so kept hidden";
+    }
+}
+
+// #2119: a globally routable adapter address is the machine's public address, so it is an identifier: left
+// out of the page, Copy and Save report unless identifiers are shown.
+TEST(SystemInfoSectionsTest, PublicAdapterAddressesAreIdentifiers)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter wifi;
+    wifi.name = "wlan0";
+    wifi.up = true;
+    wifi.addresses = {{.address = "2a02:6b8:0:1:a65e:60ff:fe12:3456", .prefix = 64, .v6 = true},
+                      {.address = "fe80::1", .prefix = 64, .v6 = true},
+                      {.address = "192.168.1.5", .prefix = 24, .v6 = false},
+                      {.address = "81.2.69.160", .prefix = 28, .v6 = false}};
+    Platform::NetworkAdapter vps;
+    vps.name = "eth0";
+    vps.up = true;
+    vps.addresses = {{.address = "81.2.69.161", .prefix = 24, .v6 = false}};
+    network.adapters = {wifi, vps};
+
+    const std::vector<Section> sections = {SystemInfo::buildNetworkAdaptersSection(network)};
+    EXPECT_EQ(findRow(sections[0], "wlan0 addresses")->value, "192.168.1.5/24, fe80::1/64");
+    EXPECT_FALSE(findRow(sections[0], "wlan0 addresses")->isIdentifier);
+    const Row* publicRow = findRow(sections[0], "wlan0 public addresses");
+    ASSERT_NE(publicRow, nullptr);
+    EXPECT_EQ(publicRow->value, "81.2.69.160/28, 2a02:6b8:0:1:a65e:60ff:fe12:3456/64");
+    EXPECT_TRUE(publicRow->isIdentifier);
+    // Only a public address: no plain row claiming none is assigned.
+    EXPECT_EQ(findRow(sections[0], "eth0 addresses"), nullptr);
+    EXPECT_TRUE(findRow(sections[0], "eth0 public addresses")->isIdentifier);
+
+    for (const std::string& hidden : {SystemInfo::allSectionsText(sections, false), SystemInfo::allSectionsJson(sections, false, "")})
+    {
+        EXPECT_TRUE(hidden.contains("192.168.1.5")) << hidden;
+        EXPECT_TRUE(hidden.contains("fe80::1/64")) << hidden;
+        EXPECT_FALSE(hidden.contains("2a02:6b8")) << hidden;
+        EXPECT_FALSE(hidden.contains("81.2.69.16")) << hidden;
+    }
+    for (const std::string& shown : {SystemInfo::allSectionsText(sections, true), SystemInfo::allSectionsJson(sections, true, "")})
+    {
+        EXPECT_TRUE(shown.contains("192.168.1.5")) << shown;
+        EXPECT_TRUE(shown.contains("2a02:6b8:0:1:a65e:60ff:fe12:3456/64")) << shown;
+        EXPECT_TRUE(shown.contains("81.2.69.160/28")) << shown;
+        EXPECT_TRUE(shown.contains("81.2.69.161/24")) << shown;
+    }
+}
+
 TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
 {
     Platform::NetworkAdaptersInfo network;
