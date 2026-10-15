@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/BackgroundTask.h"
 #include "App/Panels/SystemInfoView.h"
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
@@ -8,10 +9,10 @@
 #include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ThreadName.h"
 
 #include <chrono>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -88,8 +89,14 @@ class SystemInfoPanel : public Panel
     std::function<Core::GraphicsHostInfo()> m_QueryHost;                      ///< Set by the test seam only
     std::shared_ptr<Domain::CrashHistory> m_CrashHistory;
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
+    /// The Failed result of a read that threw or couldn't start: its message.
+    [[nodiscard]] static std::optional<std::string> failedRead(std::string detail)
+    {
+        return detail;
+    }
+
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
-    std::future<std::optional<std::string>> m_Pending;
+    BackgroundTask<std::optional<std::string>> m_Pending{Platform::SYSTEM_INFO_READ_THREAD_NAME, &failedRead, "unknown error"};
     bool m_PendingSensorsOnly = false; // the read in flight is a sensors-only one
     // "Show Wi-Fi details" (#1782) or "Show public IP" (#1518) was clicked and its read hasn't started yet
     // (another read was in flight).

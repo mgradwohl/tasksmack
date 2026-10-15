@@ -3,20 +3,16 @@
 #include "App/Panels/ProcessActionConfirm.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
-#include "Platform/ThreadName.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
 
-#include <chrono>
-#include <exception>
 #include <format>
-#include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 namespace App
@@ -84,49 +80,14 @@ StartupActionMessage resultMessage(const StartupActionRequest& request, const Pl
 
 namespace AutoDetail = StartupActionsDetail;
 
-namespace
-{
-
-/// Runs on the worker: the action, or a failed result for one that threw. The exception is caught and
-/// its message copied here, on the thread that threw it, so the UI thread gets a plain result through
-/// the future and never an exception object (#1685, #1706). Only building the failed result itself
-/// (bad_alloc) can still escape, to takeFinished().
-[[nodiscard]] Platform::StartupActionResult setEnabledOrFailed(Platform::IStartupActions& actions, const StartupActionRequest& request)
-{
-    try
-    {
-        return actions.setEnabled(request.entry, request.enable);
-    }
-    catch (const std::exception& e)
-    {
-        return Platform::StartupActionResult::failed(std::string(e.what()));
-    }
-    catch (...)
-    {
-        return Platform::StartupActionResult::failed("Unknown error");
-    }
-}
-
-} // namespace
-
 StartupActionsView::StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions)
     : m_Actions(actions ? std::move(actions) : std::make_shared<Platform::UnsupportedStartupActions>()),
       m_Capabilities(m_Actions->capabilities())
 {}
 
-StartupActionsView::~StartupActionsView()
-{
-    // A running action is waited for: its result must not outlive the view it reports to.
-    try
-    {
-        if (m_Worker.valid())
-        {
-            m_Worker.wait();
-        }
-    }
-    catch (...) // NOLINT(bugprone-empty-catch): a destructor; wait() on a valid future does not throw
-    {}
-}
+// A running action is waited for, by m_Worker's destructor: its result must not outlive the view it
+// reports to.
+StartupActionsView::~StartupActionsView() = default;
 
 void StartupActionsView::request(StartupActionRequest request)
 {
@@ -150,42 +111,24 @@ void StartupActionsView::run(StartupActionRequest request)
 {
     m_Result = {};
     m_Running = request;
-    try
+    // The worker owns copies of everything it uses; nothing here is shared with it but its result. An
+    // action that throws is a failed result, built on the worker (BackgroundTask, #1685, #1706).
+    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request)]
+                                     { return actions->setEnabled(request.entry, request.enable); }))
     {
-        // The worker owns copies of everything it uses; nothing here is shared with it but the future.
-        m_Worker = std::async(std::launch::async,
-                              [actions = m_Actions, request = std::move(request)]
-                              {
-                                  static_cast<void>(Platform::setCurrentThreadName(Platform::STARTUP_ACTION_THREAD_NAME));
-                                  return setEnabledOrFailed(*actions, request);
-                              });
-    }
-    catch (const std::system_error& e)
-    {
-        m_Result = AutoDetail::resultMessage(m_Running, Platform::StartupActionResult::failed(e.what()));
+        m_Result = AutoDetail::resultMessage(m_Running, *failed);
         m_ResultSecondsLeft = AutoDetail::RESULT_SECONDS;
     }
 }
 
 bool StartupActionsView::takeFinished()
 {
-    if (!m_Worker.valid() || m_Worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+    const std::optional<Platform::StartupActionResult> result = m_Worker.poll();
+    if (!result.has_value())
     {
         return false;
     }
-    Platform::StartupActionResult result;
-    try
-    {
-        result = m_Worker.get();
-    }
-    catch (...)
-    {
-        // The worker turns a throwing action into a failed result itself (setEnabledOrFailed()), so only
-        // building that result can land here (bad_alloc). The exception object was thrown on the worker
-        // and is not read here (#1685, #1706).
-        result = Platform::StartupActionResult::failed("Unknown error");
-    }
-    m_Result = AutoDetail::resultMessage(m_Running, result);
+    m_Result = AutoDetail::resultMessage(m_Running, *result);
     m_ResultSecondsLeft = AutoDetail::RESULT_SECONDS;
     return true;
 }

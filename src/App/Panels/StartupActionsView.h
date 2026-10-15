@@ -3,13 +3,14 @@
 // The Startup tab's actions (#801, phase 2), shaped like the Services tab's (ServiceActionsView):
 // Enable / Disable in each row's context menu and in an action bar for the selected row, a confirm for
 // Disable (the shared ProcessActionConfirm dialog, centred), and the result line. An action runs on a
-// worker thread of its own (std::async), never on the UI or the sampler thread. The pure helpers make
+// worker thread of its own (BackgroundTask), never on the UI or the sampler thread. The pure helpers make
 // no ImGui calls.
 
+#include "App/Panels/BackgroundTask.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ThreadName.h"
 
-#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,7 +67,7 @@ inline constexpr float RESULT_SECONDS = 8.0F;
 
 /// The actions' state between frames, owned by StartupPanel; drawn from StartupView. Used on the UI
 /// thread only: the worker gets its own copy of the request and a shared_ptr to the actions, and hands
-/// back only its result, through the future.
+/// back only its result, through m_Worker.
 class StartupActionsView
 {
   public:
@@ -95,7 +96,7 @@ class StartupActionsView
 
     [[nodiscard]] bool busy() const noexcept
     {
-        return m_Worker.valid();
+        return m_Worker.busy();
     }
 
     /// Counts the result line down by @p deltaSeconds.
@@ -132,7 +133,7 @@ class StartupActionsView
     bool m_ShowConfirm = false;
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
-    std::future<Platform::StartupActionResult> m_Worker;
+    BackgroundTask<Platform::StartupActionResult> m_Worker{Platform::STARTUP_ACTION_THREAD_NAME, &Platform::StartupActionResult::failed};
     StartupActionRequest m_Running;
     StartupActionMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;

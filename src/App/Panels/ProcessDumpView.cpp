@@ -7,7 +7,6 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Platform/IProcessActions.h"
-#include "Platform/ThreadName.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessActionsView.h"
 #include "UI/ChromeWidgets.h"
@@ -24,7 +23,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <exception>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -149,49 +147,6 @@ DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const 
             .method = std::move(method)};
 }
 
-namespace
-{
-
-/// Runs on the worker: the dump, or the failure for one that threw. The exception's message is copied
-/// here, on the thread that threw it, so the UI thread gets a plain result through the future (#1685).
-[[nodiscard]] Platform::ProcessDumpResult dumpOrFailed(Platform::IProcessActions& actions,
-                                                       const Platform::ProcessTarget& target,
-                                                       const std::filesystem::path& directory,
-                                                       const std::stop_token& stopToken)
-{
-    try
-    {
-        return actions.createDump(target, directory, stopToken);
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::string(e.what()));
-    }
-    catch (...)
-    {
-        return std::unexpected(std::string("Unknown error"));
-    }
-}
-
-/// Runs on the folder dialog's worker, as dumpOrFailed() does for the dump.
-[[nodiscard]] Platform::FolderChoice chooseOrFailed(Platform::IProcessActions& actions, const std::filesystem::path& initial, void* owner)
-{
-    try
-    {
-        return actions.chooseDumpFolder(initial, owner);
-    }
-    catch (const std::exception& e)
-    {
-        return std::unexpected(std::string(e.what()));
-    }
-    catch (...)
-    {
-        return std::unexpected(std::string("Unknown error"));
-    }
-}
-
-} // namespace
-
 std::string folderDialogFailure(std::string_view error)
 {
     // SDL names its dialog drivers ("zenity" and "portal") when it can use neither: say what would help.
@@ -277,9 +232,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_FolderFailure = std::move(other.m_FolderFailure);
         m_FolderPick = std::move(other.m_FolderPick);
         m_FolderDialog = std::move(other.m_FolderDialog);
-        m_FolderPickAsync = other.m_FolderPickAsync;
         m_Worker = std::move(other.m_Worker);
-        m_Stop = std::move(other.m_Stop);
         m_StartedAt = other.m_StartedAt;
         m_CancelRequested = other.m_CancelRequested;
         m_Result = std::move(other.m_Result);
@@ -335,10 +288,10 @@ void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* own
     if (actions == nullptr || !actions->actionCapabilities().canChooseDumpFolder)
     {
         // No folder dialog in the platform layer (Linux): the fallback answers asynchronously, from SDL's
-        // event pump or a thread of its own, into the same future the worker would have filled.
+        // event pump or a thread of its own, into the slot the worker would have filled. shutdown() drops
+        // that answer rather than waiting for it (BackgroundTask::adopt()).
         auto promise = std::make_shared<std::promise<Platform::FolderChoice>>();
-        m_FolderPick = promise->get_future();
-        m_FolderPickAsync = true;
+        m_FolderPick.adopt(promise->get_future());
         m_FolderDialog(m_Directory,
                        [promise](Platform::FolderChoice choice)
                        {
@@ -351,42 +304,25 @@ void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* own
                        });
         return;
     }
-    m_FolderPickAsync = false;
-    try
+    // The worker owns a copy of the folder to start in; it shares only its result with this view, and
+    // @p actions, which outlives it (see the header). A dialog that throws is a failure, built on the
+    // worker (BackgroundTask, #1685).
+    if (const auto failed =
+            m_FolderPick.start([actions, initial = m_Directory, ownerWindow] { return actions->chooseDumpFolder(initial, ownerWindow); }))
     {
-        // The worker owns a copy of the folder to start in; it shares only the future with this view,
-        // and @p actions, which outlives it (see the header).
-        m_FolderPick = std::async(std::launch::async,
-                                  [actions, initial = m_Directory, ownerWindow]
-                                  {
-                                      static_cast<void>(Platform::setCurrentThreadName(Platform::FOLDER_DIALOG_THREAD_NAME));
-                                      return DumpDetail::chooseOrFailed(*actions, initial, ownerWindow);
-                                  });
-    }
-    catch (const std::system_error& e)
-    {
-        m_FolderFailure = std::format("Couldn't show the folder dialog: {}", e.what());
+        m_FolderFailure = std::format("Couldn't show the folder dialog: {}", failed->error());
         refreshConfirm(actions);
     }
 }
 
 bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool wait)
 {
-    if (!m_FolderPick.valid() || (!wait && m_FolderPick.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+    std::optional<Platform::FolderChoice> taken = m_FolderPick.poll(wait);
+    if (!taken.has_value())
     {
         return false;
     }
-    Platform::FolderChoice choice;
-    try
-    {
-        choice = m_FolderPick.get();
-    }
-    catch (...)
-    {
-        // chooseOrFailed() turns a throwing dialog into a failure itself; only building that result
-        // can land here (bad_alloc).
-        choice = std::unexpected(std::string("Unknown error"));
-    }
+    Platform::FolderChoice choice = std::move(*taken);
     if (!choice.has_value())
     {
         m_FolderFailure = choice.error();
@@ -422,24 +358,15 @@ void ProcessDumpView::confirm(Platform::IProcessActions* actions)
             m_ProcessName, m_Target.pid, Platform::ProcessDumpResult(std::unexpected(std::string("Process actions unavailable"))));
         return;
     }
-    m_Stop = std::stop_source{}; // a cancel() of an earlier dump does not carry over
     m_CancelRequested = false;
     m_StartedAt = std::chrono::steady_clock::now();
-    try
+    // The worker owns copies of the target and folder; it shares only its result and a new stop token's
+    // state (a cancel() of an earlier dump does not carry over) with this view, and @p actions, which
+    // outlives it (see the header). A dump that throws is a failure, built on the worker (#1685).
+    if (const auto failed = m_Worker.start([actions, target = m_Target, directory = m_Directory](const std::stop_token& stopToken)
+                                           { return actions->createDump(target, directory, stopToken); }))
     {
-        // The worker owns copies of the target and folder; it shares only the future and the stop
-        // token's state with this view, and @p actions, which outlives it (see the header).
-        m_Worker = std::async(std::launch::async,
-                              [actions, target = m_Target, directory = m_Directory, stopToken = m_Stop.get_token()]
-                              {
-                                  static_cast<void>(Platform::setCurrentThreadName(Platform::DUMP_THREAD_NAME));
-                                  return DumpDetail::dumpOrFailed(*actions, target, directory, stopToken);
-                              });
-    }
-    catch (const std::system_error& e)
-    {
-        m_Result =
-            DumpDetail::resultMessage(m_ProcessName, m_Target.pid, Platform::ProcessDumpResult(std::unexpected(std::string(e.what()))));
+        m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, *failed);
     }
 }
 
@@ -454,28 +381,18 @@ void ProcessDumpView::cancel() noexcept
     if (busy())
     {
         m_CancelRequested = true;
-        static_cast<void>(m_Stop.request_stop());
+        m_Worker.requestStop();
     }
 }
 
 bool ProcessDumpView::takeFinished(bool wait)
 {
-    if (!m_Worker.valid() || (!wait && m_Worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+    std::optional<Platform::ProcessDumpResult> taken = m_Worker.poll(wait);
+    if (!taken.has_value())
     {
         return false;
     }
-    Platform::ProcessDumpResult result;
-    try
-    {
-        result = m_Worker.get();
-    }
-    catch (...)
-    {
-        // The worker turns a throwing dump into a failure itself (dumpOrFailed()), so only building that
-        // result can land here (bad_alloc). The exception object was thrown on the worker and is not read
-        // here (#1685).
-        result = std::unexpected(std::string("Unknown error"));
-    }
+    const Platform::ProcessDumpResult& result = *taken;
     // A dump the user cancelled closes the dialog without a result to acknowledge; one that finished
     // before the cancel reached it still says where its file is.
     if (m_CancelRequested && !result.has_value())
@@ -493,28 +410,12 @@ bool ProcessDumpView::takeFinished(bool wait)
 void ProcessDumpView::shutdown() noexcept
 {
     cancel();
-    try
-    {
-        if (m_Worker.valid())
-        {
-            m_Worker.wait();
-        }
-        // A folder dialog can't be cancelled from here; it is modal to the main window, so it is
-        // answered before the window can close, and this wait is short. The fallback's (SDL's) is answered
-        // from the event pump on this thread, so waiting would never end: its answer is dropped instead
-        // (the promise it fills is shared, so a late answer is harmless).
-        if (m_FolderPick.valid() && !m_FolderPickAsync)
-        {
-            m_FolderPick.wait();
-        }
-        else if (m_FolderPickAsync)
-        {
-            m_FolderPick = {};
-            m_FolderPickAsync = false;
-        }
-    }
-    catch (...) // NOLINT(bugprone-empty-catch): wait() on a valid future does not throw
-    {}
+    m_Worker.wait();
+    // A folder dialog can't be cancelled from here; it is modal to the main window, so it is answered
+    // before the window can close, and this wait is short. The fallback's (SDL's) is answered from the
+    // event pump on this thread, so waiting would never end: wait() drops that adopted answer instead
+    // (the promise it fills is shared, so a late answer is harmless).
+    m_FolderPick.wait();
 }
 
 void ProcessDumpView::onSelectionChanged() noexcept

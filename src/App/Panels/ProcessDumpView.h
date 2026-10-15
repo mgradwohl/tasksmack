@@ -17,19 +17,21 @@
 //
 // Everything but render() is free of ImGui (tests/App/test_ProcessDumpView.cpp).
 
+#include "App/Panels/BackgroundTask.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ThreadName.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <functional>
-#include <future>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace App
 {
@@ -127,6 +129,12 @@ struct DumpMessage
 
 /// The result dialog's content for a dump of @p processName (PID @p pid) that ended in @p result.
 [[nodiscard]] DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const Platform::ProcessDumpResult& result);
+
+/// The failure a dump or folder dialog that threw, or couldn't start, comes back as (BackgroundTask).
+template<typename Result> [[nodiscard]] Result failedWith(std::string detail)
+{
+    return std::unexpected(std::move(detail));
+}
 
 } // namespace DumpDetail
 
@@ -228,12 +236,12 @@ class ProcessDumpView
     /// Whether a dump is running.
     [[nodiscard]] bool busy() const noexcept
     {
-        return m_Worker.valid();
+        return m_Worker.busy();
     }
     /// Whether the folder dialog is up.
     [[nodiscard]] bool choosingFolder() const noexcept
     {
-        return m_FolderPick.valid();
+        return m_FolderPick.busy();
     }
     /// Whether any of its dialogs is up: the confirm, the folder dialog, the progress or the result.
     /// F9 waits until none is.
@@ -286,12 +294,14 @@ class ProcessDumpView
     std::string m_SpaceWarning;  // lowSpaceWarning() for m_Directory; empty when none
     std::string m_FolderFailure; // why the folder dialog couldn't be shown; empty when it could
 
-    std::future<Platform::FolderChoice> m_FolderPick;
-    FolderDialog m_FolderDialog;    // used where the platform has no folder dialog; empty: none
-    bool m_FolderPickAsync = false; // m_FolderPick is the fallback's: answered from SDL's event pump, not a worker
+    // The folder dialog's answer: its worker's, or adopted from the fallback (answered from SDL's event
+    // pump, not a worker).
+    BackgroundTask<Platform::FolderChoice> m_FolderPick{Platform::FOLDER_DIALOG_THREAD_NAME,
+                                                        &DumpDetail::failedWith<Platform::FolderChoice>};
+    FolderDialog m_FolderDialog; // used where the platform has no folder dialog; empty: none
 
-    std::future<Platform::ProcessDumpResult> m_Worker;
-    std::stop_source m_Stop; ///< The running dump's; a new one per dump.
+    /// The running dump; a new stop token per dump.
+    BackgroundTask<Platform::ProcessDumpResult> m_Worker{Platform::DUMP_THREAD_NAME, &DumpDetail::failedWith<Platform::ProcessDumpResult>};
     std::chrono::steady_clock::time_point m_StartedAt;
     bool m_CancelRequested = false;
     std::optional<DumpDetail::DumpMessage> m_Result;

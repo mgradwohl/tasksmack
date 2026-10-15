@@ -4,7 +4,6 @@
 #include "Domain/ProcessModules.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/ISystemInfoProbe.h"
-#include "Platform/ThreadName.h"
 #include "SystemInfoSections.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
@@ -12,15 +11,12 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <future>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 namespace App
@@ -141,10 +137,7 @@ CrashLine crashLineFor(const Domain::CrashHistorySnapshot& history, std::string_
 
 bool ProcessCrashHistoryView::update(float deltaSeconds)
 {
-    if (m_Pending.valid() && m_Pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-    {
-        takePending();
-    }
+    takePending(false);
     const bool drawn = std::exchange(m_Drawn, false);
     if (!m_History)
     {
@@ -157,7 +150,7 @@ bool ProcessCrashHistoryView::update(float deltaSeconds)
         m_SeenVersion = version;
         m_SecondsSinceFresh = 0.0F;
     }
-    if (!drawn || m_Pending.valid())
+    if (!drawn || m_Pending.busy())
     {
         return false;
     }
@@ -169,19 +162,15 @@ bool ProcessCrashHistoryView::update(float deltaSeconds)
     }
     m_Attempted = true;
     m_SecondsSinceFresh = 0.0F; // a read that fails to start is retried at the next interval
-    try
+    // The worker shares only the history with this view.
+    if (const auto failed = m_Pending.start(
+            [history = m_History]
+            {
+                history->read();
+                return Detail::CrashReadOutcome{};
+            }))
     {
-        m_Pending = std::async(std::launch::async,
-                               [history = m_History]
-                               {
-                                   // Best effort, as for the System Information read: a pooled thread may keep the name.
-                                   static_cast<void>(Platform::setCurrentThreadName(Platform::CRASH_HISTORY_READ_THREAD_NAME));
-                                   history->read();
-                               });
-    }
-    catch (const std::system_error& e)
-    {
-        spdlog::warn("Process Details: couldn't start a crash history read: {}", e.what());
+        spdlog::warn("Process Details: couldn't start a crash history read: {}", failed->detail);
         return false;
     }
     return true;
@@ -189,22 +178,15 @@ bool ProcessCrashHistoryView::update(float deltaSeconds)
 
 void ProcessCrashHistoryView::finishPendingRead()
 {
-    if (m_Pending.valid())
-    {
-        takePending();
-    }
+    takePending(true);
 }
 
-void ProcessCrashHistoryView::takePending()
+void ProcessCrashHistoryView::takePending(bool wait)
 {
-    try
+    // CrashHistory::read() publishes a failed read itself, so only publishing it (bad_alloc) comes back
+    // failed. Its message is not logged: it was the exception's, thrown on the worker (#1685).
+    if (const auto finished = m_Pending.poll(wait); finished.has_value() && !finished->ok)
     {
-        m_Pending.get();
-    }
-    catch (...)
-    {
-        // CrashHistory::read() publishes a failed read itself, so only publishing it (bad_alloc) lands
-        // here. The exception object is not read: it was thrown on the worker (#1685).
         spdlog::warn("Process Details: a crash history read failed");
     }
 }

@@ -129,6 +129,7 @@ struct ProcessCapabilities {
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
 - Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`, `ts-sampler-svc` (Services tab, only once it has been shown), `ts-conn-read`, `ts-dump` (a "Create dump file" dump, #807), `ts-folder-pick` (its "Save dump to..." folder dialog, #2001); 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
+- An App view that runs one slow platform call off the UI thread (a dump, a service or startup action, a lazy read) uses `App::BackgroundTask<Result>` (`src/App/Panels/BackgroundTask.h`, #2139), never a hand-rolled `std::async` slot: it names the thread, turns work that throws into the view's Failed result on the worker (no exception object crosses threads, #1685/#1706), reports a thread that couldn't start, gives each start a new stop token, and requests a stop and waits on destruction
 
 ### Panel Lifecycle
 ```cpp

@@ -12,10 +12,11 @@
 // frame. Everything but render() is free of ImGui and tested without a context; render() is run
 // headless in tests/App/test_ProcessCrashHistoryView.cpp.
 
+#include "App/Panels/BackgroundTask.h"
 #include "Domain/CrashHistory.h"
+#include "Platform/ThreadName.h"
 
 #include <cstdint>
-#include <future>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -47,13 +48,26 @@ struct CrashLine
 /// first read.
 [[nodiscard]] CrashLine crashLineFor(const Domain::CrashHistorySnapshot& history, std::string_view executable);
 
+/// How a crash history read on the worker ended: CrashHistory::read() publishes the crashes, and a
+/// failed read, itself; only a read that couldn't start or couldn't publish (bad_alloc) is not ok.
+struct CrashReadOutcome
+{
+    bool ok = true;
+    std::string detail; ///< Why it failed; empty when ok
+};
+
+[[nodiscard]] inline CrashReadOutcome failedCrashRead(std::string detail)
+{
+    return {.ok = false, .detail = std::move(detail)};
+}
+
 } // namespace Detail
 
 class ProcessCrashHistoryView
 {
   public:
     ProcessCrashHistoryView() = default;
-    /// Waits for a read in flight (a std::async future); it holds its own reference to the history.
+    /// Waits for a read in flight; it holds its own reference to the history.
     ~ProcessCrashHistoryView() = default;
 
     ProcessCrashHistoryView(const ProcessCrashHistoryView&) = delete;
@@ -88,13 +102,14 @@ class ProcessCrashHistoryView
     [[nodiscard]] const Detail::CrashLine& line(std::string_view executable);
 
   private:
-    /// Takes in the finished (or, from finishPendingRead(), waited-for) read.
-    void takePending();
+    /// Takes in the finished (or, with @p wait, waited-for) read.
+    void takePending(bool wait);
 
     std::shared_ptr<Domain::CrashHistory> m_History;
-    std::future<void> m_Pending; // the read in flight, if any
-    bool m_Drawn = false;        // drawn since the last update()
-    bool m_Attempted = false;    // a read was started (or failed to start) at least once
+    BackgroundTask<Detail::CrashReadOutcome> m_Pending{Platform::CRASH_HISTORY_READ_THREAD_NAME,
+                                                       &Detail::failedCrashRead}; // the read in flight, if any
+    bool m_Drawn = false;                                                         // drawn since the last update()
+    bool m_Attempted = false;                                                     // a read was started (or failed to start) at least once
     std::uint64_t m_SeenVersion = 0;
     float m_SecondsSinceFresh = 0.0F; // since the newest read was published or one was started
 

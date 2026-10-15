@@ -14,7 +14,6 @@
 #include "Domain/SystemInfoModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
-#include "Platform/ThreadName.h"
 #include "UI/Format.h"
 
 #include <spdlog/spdlog.h>
@@ -24,7 +23,6 @@
 #include <format>
 #include <fstream>
 #include <functional>
-#include <future>
 #include <ios>
 #include <memory>
 #include <mutex>
@@ -53,7 +51,7 @@ SystemInfoPanel::SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystem
     : Panel("System Information"), m_MakeProbe(std::move(makeProbe)), m_QueryHost(std::move(queryHost))
 {}
 
-// A read still in flight is waited for by m_Pending's destructor (a std::async future); it holds its
+// A read still in flight is waited for by m_Pending's destructor (a BackgroundTask); it holds its
 // own reference to the model.
 SystemInfoPanel::~SystemInfoPanel() = default;
 
@@ -88,49 +86,28 @@ void SystemInfoPanel::onEvent(Core::Event& event)
 
 void SystemInfoPanel::startRead(bool sensorsOnly)
 {
-    if (m_Pending.valid() || !m_Model || !m_Model->capabilities().hasOs)
+    if (m_Pending.busy() || !m_Model || !m_Model->capabilities().hasOs)
     {
         return;
     }
-    try
+    // A failed read comes back as its message, copied on the worker (SystemInfoModel::tryRead()).
+    if (const auto failed =
+            m_Pending.start([model = m_Model, sensorsOnly] { return sensorsOnly ? model->tryReadSensors() : model->tryRead(); }))
     {
-        m_Pending = std::async(std::launch::async,
-                               [model = m_Model, sensorsOnly]
-                               {
-                                   // Best effort, as for the Connections read: a pooled thread may keep the name.
-                                   static_cast<void>(Platform::setCurrentThreadName(Platform::SYSTEM_INFO_READ_THREAD_NAME));
-                                   // A failed read comes back as its message, copied here on the worker: no
-                                   // exception object crosses to the UI thread (#1685, #1706).
-                                   return sensorsOnly ? model->tryReadSensors() : model->tryRead();
-                               });
-        m_PendingSensorsOnly = sensorsOnly;
-        m_LastReadStart = std::chrono::steady_clock::now();
+        spdlog::warn("System Information: couldn't start a read: {}", failed->value_or(std::string()));
+        return;
     }
-    catch (const std::system_error& e)
-    {
-        spdlog::warn("System Information: couldn't start a read: {}", e.what());
-    }
+    m_PendingSensorsOnly = sensorsOnly;
+    m_LastReadStart = std::chrono::steady_clock::now();
 }
 
 void SystemInfoPanel::finishRead(bool wait)
 {
-    if (!m_Pending.valid() || (!wait && m_Pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+    // Only building a failed read's message (bad_alloc) can fail past tryRead(): BackgroundTask makes
+    // that "unknown error", never reading an exception thrown on the worker (#1685, #1706).
+    if (const auto finished = m_Pending.poll(wait); finished.has_value() && finished->has_value())
     {
-        return;
-    }
-    try
-    {
-        if (const std::optional<std::string> failure = m_Pending.get())
-        {
-            spdlog::warn("System Information: read failed: {}", *failure);
-        }
-    }
-    catch (...)
-    {
-        // The worker turns a throwing read into its message itself (SystemInfoModel::tryRead()), so only
-        // building that message can land here (bad_alloc). The exception object was thrown on the worker
-        // and is not read here (#1685, #1706).
-        spdlog::warn("System Information: read failed: unknown error");
+        spdlog::warn("System Information: read failed: {}", **finished);
     }
 }
 
@@ -232,13 +209,13 @@ void SystemInfoPanel::renderContent()
     }
     // While the tab is drawn, the sensors are read again every SENSOR_REFRESH so their ranges follow them
     // (#1522); not where there are none to read, and never over another read.
-    if (!m_Pending.valid() && m_Snapshot->version != 0 && !m_Snapshot->sensors.devices.empty() &&
+    if (!m_Pending.busy() && m_Snapshot->version != 0 && !m_Snapshot->sensors.devices.empty() &&
         std::chrono::steady_clock::now() - m_LastReadStart >= SENSOR_REFRESH)
     {
         startRead(/*sensorsOnly=*/true);
     }
     // A sensors-only read is quiet: the page doesn't show "reading" for it.
-    const bool reading = m_Pending.valid() && !m_PendingSensorsOnly;
+    const bool reading = m_Pending.busy() && !m_PendingSensorsOnly;
     finishSaveReport(); // before drawing, so its note shows this frame
     const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState);
     if (result.refreshRequested)
@@ -262,7 +239,7 @@ void SystemInfoPanel::renderContent()
         m_Model->includePublicIp();
         m_OptInReadDue = true;
     }
-    if (m_OptInReadDue && !m_Pending.valid())
+    if (m_OptInReadDue && !m_Pending.busy())
     {
         startRead(); // if it can't start, Refresh still reads them: the model keeps the choice
         m_OptInReadDue = false;

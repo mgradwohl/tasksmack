@@ -3,19 +3,19 @@
 // The Services tab's actions (#1577): Start / Stop / Restart / Startup type in each row's context
 // menu and in an action bar for the selected row, the confirm for destructive ones (the shared
 // ProcessActionConfirm dialog, centred), and the result line. An action runs on a worker thread of
-// its own (std::async), never on the UI or the sampler thread: the platform call can wait a long
+// its own (BackgroundTask), never on the UI or the sampler thread: the platform call can wait a long
 // time per state change (minutes, for a slow service still making progress; #2127), so it carries a
 // stop token: cancel() or the destructor abandons that wait within one poll (#1591). The pure
 // helpers (which actions apply, the critical list, the texts) make no ImGui calls.
 
+#include "App/Panels/BackgroundTask.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/ThreadName.h"
 
 #include <cstdint>
-#include <future>
 #include <memory>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -117,7 +117,7 @@ class ServiceActionsView
 
     [[nodiscard]] bool busy() const noexcept
     {
-        return m_Worker.valid();
+        return m_Worker.busy();
     }
 
     /// Asks a running action to stop waiting for the service (#1591): its result arrives at the
@@ -161,8 +161,8 @@ class ServiceActionsView
     bool m_ShowConfirm = false;
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
-    std::future<Platform::ServiceActionResult> m_Worker;
-    std::stop_source m_Stop; ///< The running action's; a new one per action.
+    /// The running action; a new stop token per action.
+    BackgroundTask<Platform::ServiceActionResult> m_Worker{Platform::SERVICE_ACTION_THREAD_NAME, &Platform::ServiceActionResult::failed};
     ServiceActionRequest m_Running;
     ServiceActionMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;
