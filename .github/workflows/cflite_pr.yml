@@ -50,11 +50,13 @@ jobs:
   fuzz:
     name: Fuzz changed parsers
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      # Step timeouts well above the normal times (about 2 min to build, 120 s of fuzzing plus the
-      # corpus download), so a stalled corpus download (#1406: the artifacts API rate limit) or a hung
-      # build fails in minutes rather than holding the job for its whole 15.
+      # Step timeouts well above the normal times (about 2 min to build; 120 s of fuzzing shared out
+      # among the targets a change reaches, plus a corpus download of about 15 s per target), so a
+      # stalled download (#1406: the artifacts API rate limit) or a hung build fails in minutes rather
+      # than holding the job for its whole 20. A change to a header every fuzzer includes (UserConfig.h)
+      # reaches all 15 targets: about 6 min of downloads and fuzzing, so Run fuzzers gets 10.
       - name: Build fuzzers
         timeout-minutes: 6
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
@@ -64,7 +66,7 @@ jobs:
           sanitizer: address
 
       - name: Run fuzzers
-        timeout-minutes: 5
+        timeout-minutes: 10
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
