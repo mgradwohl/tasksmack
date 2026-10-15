@@ -25,6 +25,7 @@
 #include <exception>
 #include <filesystem>
 #include <ratio>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 
@@ -126,8 +127,21 @@ void UILayer::onAttach()
 
         // Setup Platform/Renderer backends
         SDL_Window* window = Core::Application::get().getWindow().getHandle();
-        ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
-        ImGui_ImplOpenGL3_Init("#version 330 core");
+        // Both report failure by returning false, not by throwing. The renderer's fails when its own
+        // OpenGL loader can't load OpenGL 3 (#1398); carrying on would crash on its first null function.
+        if (!ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext()))
+        // LCOV_EXCL_START - fails only without a window or OpenGL 3, which Core::Window already refuses (#1398)
+        {
+            throw std::runtime_error("Failed to initialize the ImGui SDL3 platform backend");
+        }
+        // LCOV_EXCL_STOP
+        if (!ImGui_ImplOpenGL3_Init("#version 330 core"))
+        // LCOV_EXCL_START - fails only without a window or OpenGL 3, which Core::Window already refuses (#1398)
+        {
+            ImGui_ImplSDL3_Shutdown();
+            throw std::runtime_error("Failed to initialize the ImGui OpenGL 3 renderer backend");
+        }
+        // LCOV_EXCL_STOP
         backendsInitialized = true;
 
         // Seed the cached pixel size and set the initial OpenGL viewport.

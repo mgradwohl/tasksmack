@@ -51,6 +51,10 @@ if the problem persists, report it per [SECURITY.md](https://github.com/mgradwoh
 
 ## System Requirements
 
+### Graphics
+
+TaskSmack draws its window with OpenGL 3.3 or newer, which every current GPU driver on Windows and Mesa on Linux provide. A Windows PC or virtual machine with no GPU driver installed has only Microsoft's built-in OpenGL 1.1 ("GDI Generic"); there TaskSmack stops at startup with a message naming the OpenGL version it found. Installing the GPU's driver fixes it.
+
 ### CPU Compatibility
 
 The packages on the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) are built with the `release` / `win-release` preset, which uses default compiler optimizations and runs on any x86-64 CPU — no AVX2 or other extended instruction set is required.

@@ -1,6 +1,7 @@
 #include "Window.h"
 
 #include "Core/GraphicsHostInfo.h"
+#include "Core/OpenGLRequirement.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
@@ -318,8 +319,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     m_Spec.Height = clampWindowDimension(m_Spec.Height);
 
     // Set OpenGL attributes before creating window
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, REQUIRED_GL_MAJOR);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, REQUIRED_GL_MINOR);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 #ifndef NDEBUG
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
@@ -382,6 +383,20 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     spdlog::info("  Vendor: {}", m_GLInfo.glVendor);
     spdlog::info("  Renderer: {}", m_GLInfo.glRenderer);
     spdlog::info("  Version: {}", m_GLInfo.glVersion);
+
+    // SDL can hand back an older context than the one requested (GDI Generic's OpenGL 1.1 on a PC with
+    // no GPU driver), and GLAD loads it without complaint: stop here with a message, rather than crash
+    // on the first null OpenGL 2.0+ function (#1398).
+    if (!meetsRequiredGLVersion(GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version)))
+    // LCOV_EXCL_START - needs a driver without OpenGL 3.3; the decision itself is tested (test_OpenGLRequirement.cpp)
+    {
+        const std::string message = unsupportedGLVersionMessage(m_GLInfo.glVersion, m_GLInfo.glRenderer, m_GLInfo.glVendor);
+        spdlog::critical("{}", message);
+        SDL_GL_DestroyContext(m_GLContext);
+        SDL_DestroyWindow(m_Handle);
+        throw std::runtime_error(message);
+    }
+    // LCOV_EXCL_STOP
 
     if (m_Spec.VSync)
     {

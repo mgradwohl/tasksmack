@@ -159,6 +159,7 @@ set(COMMON_TEST_SOURCES
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
     Core/test_Layer.cpp
+    Core/test_OpenGLRequirement.cpp
     Core/test_PathService.cpp
     Core/test_SaveFileDialog.cpp
     Core/test_VideoBackend.cpp
