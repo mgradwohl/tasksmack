@@ -141,10 +141,4 @@ std::unique_ptr<IServiceActions> makeServiceActions()
     return std::make_unique<LinuxServiceActions>();
 }
 
-bool enableDebugPrivilege()
-{
-    // Root's capabilities already cover what SeDebugPrivilege grants on Windows (#2128).
-    return false;
-}
-
 } // namespace Platform
