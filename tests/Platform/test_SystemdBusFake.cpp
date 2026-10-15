@@ -409,6 +409,21 @@ TEST_F(SystemdBusFakeSmartTest, ABlockDeviceWithoutADriveHasNoSmart)
     EXPECT_EQ(read.smart.value_or(LinuxDiskSmart::DriveSmart{}).kind, LinuxDiskSmart::DriveSmart::Kind::None);
 }
 
+// #1891: a drive that is neither ATA nor NVMe (a USB stick) has no SMART to read: no SMART, not an error.
+TEST_F(SystemdBusFakeTest, ADriveWithNeitherAtaNorNvmeSmartHasNone)
+{
+    constexpr const char* USB_DRIVE = "/org/freedesktop/UDisks2/drives/UsbStick";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdc")][UDISKS_BLOCK]["Drive"] = ObjectPath{USB_DRIVE};
+    props[USB_DRIVE]["org.freedesktop.UDisks2.Drive"]["Removable"] = true;
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdc");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    EXPECT_EQ(read.smart.value_or(LinuxDiskSmart::DriveSmart{}).kind, LinuxDiskSmart::DriveSmart::Kind::None);
+    EXPECT_TRUE(read.error.empty()) << read.error;
+}
+
 TEST_F(SystemdBusFakeSmartTest, ADiskUdisksDoesntListIsSaidSo)
 {
     serveUdisks();
