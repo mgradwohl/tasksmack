@@ -502,6 +502,28 @@ TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
     EXPECT_TRUE(calls().empty()) << "nothing past the refused step";
 }
 
+// #1891: the unit files changed but systemd refused the Reload that tells it so: reported as a
+// failure, after both unit-file calls went through.
+TEST_F(SystemdActionsFakeTest, ARefusedReloadAfterTheChangeIsReported)
+{
+    serveUnitFileCall("UnmaskUnitFiles");
+    serveUnitFileCall("DisableUnitFiles");
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "Reload",
+                       [](sd_bus_message* call) -> int
+                       {
+                           return sd_bus_reply_method_errorf(
+                               call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const ServiceActionResult manual = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Manual);
+    EXPECT_FALSE(manual.ok);
+    EXPECT_EQ(manual.message, "Requires administrator");
+    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "DisableUnitFiles cron.service"}));
+}
+
 TEST_F(SystemdActionsFakeTest, LinuxServiceActionsActThroughSystemdWhereItRuns)
 {
     // With a root where systemd runs, each action goes to systemd; restart is stop, then start.
