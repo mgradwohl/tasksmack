@@ -343,10 +343,12 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
         return resultOf(OpenFilesReadStatus::Unsupported);
     }
     // PROCESS_DUP_HANDLE: protected processes, and elevated ones from an unelevated TaskSmack, refuse it.
-    auto opened =
-        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
-                            target,
-                            PROCESS_DUP_HANDLE);
+    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
+                                       .getProcessTimes = m_Api.getProcessTimes,
+                                       .closeHandle = m_Api.closeHandle,
+                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
+                                      target,
+                                      PROCESS_DUP_HANDLE);
     if (!opened)
     {
         auto refused = toReadFailure<OpenFilesReadStatus>(opened.error());

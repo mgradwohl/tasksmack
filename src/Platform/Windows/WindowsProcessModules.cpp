@@ -56,10 +56,12 @@ ModulesReadResult WindowsProcessModulesReader::readModules(const ProcessTarget& 
 {
     // PROCESS_VM_READ: the module list lives in the process's own memory (its PEB loader data).
     // Protected processes, and elevated ones from an unelevated TaskSmack, refuse it.
-    auto opened =
-        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
-                            target,
-                            PROCESS_VM_READ);
+    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
+                                       .getProcessTimes = m_Api.getProcessTimes,
+                                       .closeHandle = m_Api.closeHandle,
+                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
+                                      target,
+                                      PROCESS_VM_READ);
     if (!opened)
     {
         auto refused = toReadFailure<ModulesReadStatus>(opened.error());
@@ -75,6 +77,7 @@ ModulesReadResult WindowsProcessModulesReader::readModules(const ProcessTarget& 
         if (m_Api.enumProcessModulesEx(process.get(), handles.data(), bytes, &needed, LIST_MODULES_ALL) == 0)
         {
             const DWORD error = GetLastError();
+            // Exited since openProcessVerified() checked: reported as it would have been there.
             DWORD exitCode = 0;
             if (m_Api.getExitCodeProcess(process.get(), &exitCode) != 0 && exitCode != STILL_ACTIVE)
             {

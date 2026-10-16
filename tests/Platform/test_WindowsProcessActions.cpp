@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <limits>
@@ -532,9 +533,9 @@ TEST(WindowsProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
     EXPECT_TRUE(child.exitsSoon());
 }
 
-// #1566: the failure after a verified open. The child has exited, but the test's handle keeps its
-// process object (and so its PID and start time) alive: the identity check passes and
-// TerminateProcess is refused, which must come back as an error rather than a success.
+// #1566, #2206: the child has exited, but the test's handle keeps its process object (and so its
+// PID and start time) alive: the identity check passes, so the exit must be noticed by the open
+// itself and reported as an exit, with nothing sent, rather than as a refused TerminateProcess.
 TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
 {
     const SuspendedChild child;
@@ -547,7 +548,7 @@ TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
 
     const auto again = actions.kill(target);
     EXPECT_FALSE(again.success);
-    EXPECT_NE(again.errorMessage.find("Failed to terminate process"), std::string::npos) << again.errorMessage;
+    EXPECT_EQ(again.errorMessage, std::format("Process {} has exited; action not sent", target.pid));
 }
 
 TEST(WindowsProcessActionsTest, SetPriorityChangesTheClassOfAMatchingProcess)

@@ -80,6 +80,8 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
     case Windows::IdentityFailureKind::ProcessGone:
     case Windows::IdentityFailureKind::OpenFailed:
         return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(failure.win32Error))};
+    case Windows::IdentityFailureKind::Exited:
+        return {.handle = {}, .result = ProcessActionResult::error(std::format("Process {} has exited; action not sent", target.pid))};
     case Windows::IdentityFailureKind::TimesFailed:
         break;
     }

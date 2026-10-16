@@ -37,6 +37,7 @@ struct ProcessSecurityFunctions
 {
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
+    using GetExitCodeProcessFn = BOOL(WINAPI*)(HANDLE, LPDWORD);
     using OpenProcessTokenFn = BOOL(WINAPI*)(HANDLE, DWORD, PHANDLE);
     using GetTokenInformationFn = BOOL(WINAPI*)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD);
     using LookupAccountSidFn = BOOL(WINAPI*)(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PSID_NAME_USE);
@@ -44,6 +45,7 @@ struct ProcessSecurityFunctions
 
     OpenProcessFn openProcess = &::OpenProcess;
     GetProcessTimesFn getProcessTimes = &::GetProcessTimes;
+    GetExitCodeProcessFn getExitCodeProcess = &::GetExitCodeProcess;
     OpenProcessTokenFn openProcessToken = &::OpenProcessToken;
     GetTokenInformationFn getTokenInformation = &::GetTokenInformation;
     LookupAccountSidFn lookupAccountSid = &::LookupAccountSidW;

@@ -1,10 +1,11 @@
 /// @file test_WindowsProcessIdentity.cpp
 /// @brief Platform::Windows::openProcessVerified() (#2149), the open-and-check-identity step every
 /// Windows action and Process Details reader shares, against fake OpenProcess / GetProcessTimes /
-/// CloseHandle: an invalid PID, an unknown start time, a denied open, a vanished process, another
-/// open error, a failed GetProcessTimes, a reused PID and a match, each with the access asked for,
-/// the Win32 error kept and the handle closed exactly once. Then how a reader reports each refusal
-/// (toReadFailure), and one check of this test process through the real calls.
+/// GetExitCodeProcess / CloseHandle: an invalid PID, an unknown start time, a denied open, a
+/// vanished process, another open error, a failed GetProcessTimes, a reused PID, an exited process
+/// still held open (#2206) and a match, each with the access asked for, the Win32 error kept and the
+/// handle closed exactly once. Then how a reader reports each refusal (toReadFailure), and checks of
+/// this test process, and of an exited child it holds open, through the real calls.
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
@@ -23,6 +24,7 @@
 #include <windows.h>
 // clang-format on
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <ostream>
@@ -44,10 +46,13 @@ struct FakeKernel
     DWORD openError = 0;  // non-zero: OpenProcess fails with it
     DWORD timesError = 0; // non-zero: GetProcessTimes fails with it
     std::uint64_t creationTicks = START_TICKS;
+    DWORD exitCode = STILL_ACTIVE; // what GetExitCodeProcess reports
+    DWORD exitCodeError = 0;       // non-zero: GetExitCodeProcess fails with it
     DWORD accessAsked = 0;
     DWORD pidAsked = 0;
     int opens = 0;
     int timesCalls = 0;
+    int exitCodeCalls = 0;
     int closes = 0;
 };
 
@@ -90,6 +95,19 @@ BOOL WINAPI fakeGetProcessTimes(HANDLE process, LPFILETIME creation, LPFILETIME 
     return TRUE;
 }
 
+BOOL WINAPI fakeGetExitCodeProcess(HANDLE process, LPDWORD code)
+{
+    EXPECT_EQ(process, fakeProcessHandle());
+    ++fake().exitCodeCalls;
+    if (fake().exitCodeError != 0)
+    {
+        SetLastError(fake().exitCodeError);
+        return FALSE;
+    }
+    *code = fake().exitCode;
+    return TRUE;
+}
+
 BOOL WINAPI fakeCloseHandle(HANDLE handle)
 {
     EXPECT_EQ(handle, fakeProcessHandle());
@@ -101,6 +119,7 @@ constexpr ProcessIdentityFunctions FAKES{
     .openProcess = &fakeOpenProcess,
     .getProcessTimes = &fakeGetProcessTimes,
     .closeHandle = &fakeCloseHandle,
+    .getExitCodeProcess = &fakeGetExitCodeProcess,
 };
 
 /// One refusal openProcessVerified() must make, and what must have happened on the way.
@@ -111,6 +130,7 @@ struct RefusalCase
     DWORD openError = 0;
     DWORD timesError = 0;
     std::uint64_t creationTicks = START_TICKS;
+    DWORD exitCode = STILL_ACTIVE;
     IdentityFailureKind kind = IdentityFailureKind::OpenFailed;
     DWORD win32Error = 0;
     bool opened = false; // OpenProcess was called and returned a handle, which must be closed once
@@ -137,6 +157,7 @@ TEST_P(OpenProcessVerifiedRefusal, RefusesWithTheKindAndErrorAndClosesWhatItOpen
     fake().openError = c.openError;
     fake().timesError = c.timesError;
     fake().creationTicks = c.creationTicks;
+    fake().exitCode = c.exitCode;
 
     {
         const auto result = openProcessVerified(FAKES, c.target, PROCESS_VM_READ);
@@ -196,6 +217,19 @@ INSTANTIATE_TEST_SUITE_P(
                     .creationTicks = START_TICKS ^ (1ULL << 40U),
                     .kind = IdentityFailureKind::Mismatch,
                     .opened = true,
+                    .attemptedOpen = true},
+        // The target itself, exited but still held open by someone: its PID and start time still match (#2206).
+        RefusalCase{.name = "ExitedButHeldOpen",
+                    .target = {.pid = PID, .startTimeTicks = START_TICKS},
+                    .exitCode = 1,
+                    .kind = IdentityFailureKind::Exited,
+                    .opened = true,
+                    .attemptedOpen = true},
+        RefusalCase{.name = "ExitedWithCodeZero",
+                    .target = {.pid = PID, .startTimeTicks = START_TICKS},
+                    .exitCode = 0,
+                    .kind = IdentityFailureKind::Exited,
+                    .opened = true,
                     .attemptedOpen = true}),
     [](const ::testing::TestParamInfo<RefusalCase>& info) { return std::string(info.param.name); });
 
@@ -210,12 +244,38 @@ TEST(WindowsProcessIdentity, MatchReturnsTheOpenHandleWithTheAccessAskedForAndQu
         EXPECT_EQ(fake().pidAsked, static_cast<DWORD>(PID));
         // GetProcessTimes needs PROCESS_QUERY_LIMITED_INFORMATION, so it is always added.
         EXPECT_EQ(fake().accessAsked, static_cast<DWORD>(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION));
-        EXPECT_EQ(fake().closes, 0); // the caller owns it now
+        EXPECT_EQ(fake().exitCodeCalls, 1); // STILL_ACTIVE: running
+        EXPECT_EQ(fake().closes, 0);        // the caller owns it now
 
         const InjectableHandle owned = std::move(*result);
         EXPECT_EQ(fake().closes, 0);
     }
     EXPECT_EQ(fake().closes, 1); // closed once, through the injected CloseHandle
+}
+
+/// A failed GetExitCodeProcess, or none given, cannot say the process exited: it reads as running.
+TEST(WindowsProcessIdentity, UnknownExitCodeReadsAsRunning)
+{
+    fake() = FakeKernel{};
+    fake().exitCode = 1;
+    fake().exitCodeError = ERROR_INVALID_HANDLE;
+    {
+        const auto failed = openProcessVerified(FAKES, {.pid = PID, .startTimeTicks = START_TICKS}, 0);
+        ASSERT_TRUE(failed.has_value());
+        EXPECT_EQ(fake().exitCodeCalls, 1);
+    }
+    EXPECT_EQ(fake().closes, 1);
+
+    fake() = FakeKernel{};
+    fake().exitCode = 1;
+    ProcessIdentityFunctions noExitCheck = FAKES;
+    noExitCheck.getExitCodeProcess = nullptr;
+    {
+        const auto skipped = openProcessVerified(noExitCheck, {.pid = PID, .startTimeTicks = START_TICKS}, 0);
+        ASSERT_TRUE(skipped.has_value());
+        EXPECT_EQ(fake().exitCodeCalls, 0);
+    }
+    EXPECT_EQ(fake().closes, 1);
 }
 
 /// How a reader reports each refusal, with ModulesReadStatus standing for the readers' status enums.
@@ -229,11 +289,13 @@ TEST(WindowsProcessIdentity, ReaderStatusForEachRefusal)
     EXPECT_EQ(statusOf(IdentityFailureKind::InvalidPid).status, ModulesReadStatus::ProcessExited);
     EXPECT_EQ(statusOf(IdentityFailureKind::ProcessGone, ERROR_INVALID_PARAMETER).status, ModulesReadStatus::ProcessExited);
     EXPECT_EQ(statusOf(IdentityFailureKind::Mismatch).status, ModulesReadStatus::ProcessExited);
+    EXPECT_EQ(statusOf(IdentityFailureKind::Exited).status, ModulesReadStatus::ProcessExited);
     EXPECT_EQ(statusOf(IdentityFailureKind::IdentityUnknown).status, ModulesReadStatus::IdentityUnknown);
     EXPECT_EQ(statusOf(IdentityFailureKind::AccessDenied, ERROR_ACCESS_DENIED).status, ModulesReadStatus::PermissionDenied);
     for (const auto kind : {IdentityFailureKind::InvalidPid,
                             IdentityFailureKind::ProcessGone,
                             IdentityFailureKind::Mismatch,
+                            IdentityFailureKind::Exited,
                             IdentityFailureKind::IdentityUnknown,
                             IdentityFailureKind::AccessDenied})
     {
@@ -249,14 +311,14 @@ TEST(WindowsProcessIdentity, ReaderStatusForEachRefusal)
     }
 }
 
-/// Start time of this test process, as the probe reports it (GetProcessTimes' creation FILETIME).
-std::optional<std::uint64_t> ownStartTicks()
+/// Start time of `process`, as the probe reports it (GetProcessTimes' creation FILETIME).
+std::optional<std::uint64_t> startTicksOf(HANDLE process)
 {
     FILETIME creation{};
     FILETIME exitTime{};
     FILETIME kernelTime{};
     FILETIME userTime{};
-    if (GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime) == 0)
+    if (GetProcessTimes(process, &creation, &exitTime, &kernelTime, &userTime) == 0)
     {
         return std::nullopt;
     }
@@ -265,7 +327,7 @@ std::optional<std::uint64_t> ownStartTicks()
 
 TEST(WindowsProcessIdentity, RealCallsConfirmThisProcessAndRefuseAnotherStartTime)
 {
-    const std::optional<std::uint64_t> start = ownStartTicks();
+    const std::optional<std::uint64_t> start = startTicksOf(GetCurrentProcess());
     ASSERT_TRUE(start.has_value());
     const auto pid = static_cast<std::int32_t>(GetCurrentProcessId());
 
@@ -276,6 +338,34 @@ TEST(WindowsProcessIdentity, RealCallsConfirmThisProcessAndRefuseAnotherStartTim
     const auto other = openProcessVerified({}, {.pid = pid, .startTimeTicks = *start + 1}, 0);
     ASSERT_FALSE(other.has_value());
     EXPECT_EQ(other.error().kind, IdentityFailureKind::Mismatch);
+}
+
+/// A child this test started, waited for and still holds open: exited, but its PID and start time
+/// still match (#2206).
+TEST(WindowsProcessIdentity, RealCallsRefuseAnExitedChildStillHeldOpen)
+{
+    std::array<wchar_t, MAX_PATH> system{};
+    const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+    ASSERT_GT(length, 0U);
+    const std::wstring application = std::wstring(system.data(), length) + L"\\cmd.exe";
+    std::wstring commandLine = L"cmd.exe /c exit 3";
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION info{};
+    ASSERT_NE(CreateProcessW(
+                  application.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info),
+              0)
+        << "error " << GetLastError();
+    const UniqueHandle child(info.hProcess); // held open for the whole test, so the PID stays pinned
+    const UniqueHandle thread(info.hThread);
+    ASSERT_EQ(WaitForSingleObject(child.get(), 30'000), WAIT_OBJECT_0);
+
+    const std::optional<std::uint64_t> start = startTicksOf(child.get());
+    ASSERT_TRUE(start.has_value());
+    const auto exited = openProcessVerified({}, {.pid = static_cast<std::int32_t>(info.dwProcessId), .startTimeTicks = *start}, 0);
+    ASSERT_FALSE(exited.has_value());
+    EXPECT_EQ(exited.error().kind, IdentityFailureKind::Exited);
 }
 
 } // namespace

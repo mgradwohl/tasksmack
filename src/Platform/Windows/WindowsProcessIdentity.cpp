@@ -66,6 +66,13 @@ openProcessVerified(const ProcessIdentityFunctions& fns, const ProcessTarget& ta
         return std::unexpected(
             IdentityFailure{.kind = IdentityFailureKind::Mismatch, .win32Error = 0}); // the PID now names another process
     }
+
+    // The target, but exited and only held open by someone: every caller reports it as exited.
+    DWORD exitCode = STILL_ACTIVE;
+    if (fns.getExitCodeProcess != nullptr && fns.getExitCodeProcess(process.get(), &exitCode) != 0 && exitCode != STILL_ACTIVE)
+    {
+        return std::unexpected(IdentityFailure{.kind = IdentityFailureKind::Exited, .win32Error = 0});
+    }
     return process;
 }
 // NOLINTEND(misc-include-cleaner)

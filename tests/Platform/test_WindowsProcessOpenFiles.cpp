@@ -54,6 +54,7 @@ struct FakeSystem
 {
     DWORD openError = 0;
     std::uint64_t creationTicks = START_TICKS;
+    DWORD exitCode = STILL_ACTIVE; // GetExitCodeProcess's answer
     std::vector<FakeHandle> handles;
     int snapshotCalls = 0;
     int createFileCalls = 0;
@@ -177,6 +178,12 @@ BOOL WINAPI fakeCloseHandle(HANDLE /*handle*/)
     return TRUE;
 }
 
+BOOL WINAPI fakeGetExitCodeProcess(HANDLE /*process*/, LPDWORD code)
+{
+    *code = fake().exitCode;
+    return TRUE;
+}
+
 BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
 {
     if (fake().timesFail)
@@ -276,6 +283,7 @@ ProcessOpenFilesFunctions fakeApi()
             .openProcess = &fakeOpenProcess,
             .closeHandle = &fakeCloseHandle,
             .getProcessTimes = &fakeGetProcessTimes,
+            .getExitCodeProcess = &fakeGetExitCodeProcess,
             .duplicateHandle = &fakeDuplicateHandle,
             .getFileType = &fakeGetFileType,
             .getFinalPathNameByHandle = &fakeGetFinalPathNameByHandle,
@@ -292,6 +300,7 @@ class WindowsProcessOpenFilesTest : public ::testing::Test
         hangEntered() = false;
         fake().openError = 0;
         fake().creationTicks = START_TICKS;
+        fake().exitCode = STILL_ACTIVE;
         fake().snapshotCalls = 0;
         fake().createFileCalls = 0;
         fake().duplicates = 0;
@@ -414,6 +423,9 @@ TEST_F(WindowsProcessOpenFilesTest, DeniedReusedAndUnknownTargetsAreNotRead)
     fake().creationTicks = START_TICKS + 1;
     EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::ProcessExited);
     EXPECT_EQ(reader.readOpenFiles({.pid = TARGET.pid, .startTimeTicks = 0}).status, OpenFilesReadStatus::IdentityUnknown);
+    fake().creationTicks = START_TICKS;
+    fake().exitCode = 0; // exited, its object still held open somewhere (#2206)
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::ProcessExited);
     EXPECT_EQ(fake().snapshotCalls, 0);
     EXPECT_EQ(fake().duplicates.load(), 0);
 }

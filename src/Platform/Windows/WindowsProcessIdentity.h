@@ -38,6 +38,7 @@ enum class IdentityFailureKind : std::uint8_t
     OpenFailed,      ///< OpenProcess failed with any other error.
     TimesFailed,     ///< The process opened, but GetProcessTimes failed, so its identity could not be confirmed.
     Mismatch,        ///< The process holding the PID started at another time: the target exited and the PID was reused.
+    Exited,          ///< The target is the process named, but it has exited; its object is only held open (#2206).
 };
 
 /// What openProcessVerified() refused, and the Win32 error behind it (0 for the kinds no call failed for).
@@ -49,15 +50,18 @@ struct IdentityFailure
 
 /// The calls openProcessVerified() makes: kernel32's, or a test's fakes (each reader passes its own
 /// seam's). The handle returned is closed through closeHandle, so a fake handle never reaches the
-/// real CloseHandle.
+/// real CloseHandle; a seam whose fakes hand out anything but real process handles passes its own
+/// getExitCodeProcess for the same reason.
 struct ProcessIdentityFunctions
 {
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
+    using GetExitCodeProcessFn = BOOL(WINAPI*)(HANDLE, LPDWORD);
 
     OpenProcessFn openProcess = &::OpenProcess;
     GetProcessTimesFn getProcessTimes = &::GetProcessTimes;
     InjectedHandleCloser::CloseHandleFn closeHandle = &::CloseHandle;
+    GetExitCodeProcessFn getExitCodeProcess = &::GetExitCodeProcess; ///< null: the exit check is skipped
 };
 
 /// Open `target` with `access` and confirm it is the process the target names.
@@ -71,6 +75,11 @@ struct ProcessIdentityFunctions
 ///
 /// An unknown start time is refused, never skipped, as checkProcessIdentity() refuses it. A Win32
 /// error is captured straight after the call that failed.
+///
+/// A process that has exited but whose object someone still holds open (a parent that has not
+/// reaped it, a debugger) keeps its PID and creation time, so it passes the identity check: it is
+/// refused as Exited when GetExitCodeProcess reports an exit code other than STILL_ACTIVE (#2206).
+/// A failed GetExitCodeProcess, or a real exit code of 259 (STILL_ACTIVE), reads as running.
 [[nodiscard]] std::expected<InjectableHandle, IdentityFailure>
 openProcessVerified(const ProcessIdentityFunctions& fns, const ProcessTarget& target, DWORD access);
 
@@ -82,10 +91,10 @@ template<typename Status> struct IdentityReadFailure
     std::string detail; ///< The system's message for the Win32 error, for Failed; else empty.
 };
 
-/// How a Process Details reader reports `failure`: an invalid PID, a vanished process and a reused
-/// PID read as ProcessExited; an unknown start time as IdentityUnknown; a refused open as
-/// PermissionDenied; any other open error, or a failed GetProcessTimes, as Failed with the system's
-/// message.
+/// How a Process Details reader reports `failure`: an invalid PID, a vanished process, a reused PID
+/// and an exited process still held open read as ProcessExited; an unknown start time as
+/// IdentityUnknown; a refused open as PermissionDenied; any other open error, or a failed
+/// GetProcessTimes, as Failed with the system's message.
 template<typename Status> [[nodiscard]] IdentityReadFailure<Status> toReadFailure(const IdentityFailure& failure)
 {
     switch (failure.kind)
@@ -100,6 +109,7 @@ template<typename Status> [[nodiscard]] IdentityReadFailure<Status> toReadFailur
     case IdentityFailureKind::InvalidPid:
     case IdentityFailureKind::ProcessGone:
     case IdentityFailureKind::Mismatch:
+    case IdentityFailureKind::Exited:
         break;
     }
     return {.status = Status::ProcessExited, .detail = {}};
