@@ -5,6 +5,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "Platform/AsciiTrim.h"
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -53,23 +54,6 @@ namespace Sampling = Domain::Sampling;
 
 /// The spacing of preloaded samples: the fastest refresh interval.
 constexpr std::chrono::milliseconds PRELOAD_INTERVAL{Sampling::REFRESH_INTERVAL_MIN_MS};
-
-[[nodiscard]] std::string_view trim(std::string_view text) noexcept
-{
-    const auto isSpace = [](char c)
-    {
-        return std::isspace(static_cast<unsigned char>(c)) != 0;
-    };
-    while (!text.empty() && isSpace(text.front()))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && isSpace(text.back()))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
 
 [[nodiscard]] std::string lower(std::string_view text)
 {
@@ -238,7 +222,7 @@ ParseResult parseScenario(const char* value)
     {
         return result;
     }
-    const std::string_view text = trim(value);
+    const std::string_view text = Platform::trimAscii(value);
     if (text.empty() || !Core::isEnvFlagEnabled(std::string(text).c_str()))
     {
         return result;
@@ -250,7 +234,7 @@ ParseResult parseScenario(const char* value)
     while (!rest.empty())
     {
         const std::size_t comma = rest.find(',');
-        const std::string_view token = trim(rest.substr(0, comma));
+        const std::string_view token = Platform::trimAscii(rest.substr(0, comma));
         rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 1);
         if (token.empty())
         {
@@ -266,8 +250,8 @@ ParseResult parseScenario(const char* value)
             }
             continue;
         }
-        const std::string key = lower(trim(token.substr(0, equals)));
-        const std::string_view setting = trim(token.substr(equals + 1));
+        const std::string key = lower(Platform::trimAscii(token.substr(0, equals)));
+        const std::string_view setting = Platform::trimAscii(token.substr(equals + 1));
         applySetting(key, setting, config, result.warnings);
     }
     result.config = config;

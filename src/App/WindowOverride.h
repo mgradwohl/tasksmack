@@ -21,6 +21,7 @@
 #include "Core/EnvUtils.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <cctype>
@@ -55,23 +56,6 @@ struct ParseResult
 
 namespace Detail
 {
-
-[[nodiscard]] inline std::string_view trim(std::string_view text) noexcept
-{
-    const auto isSpace = [](const char c)
-    {
-        return std::isspace(static_cast<unsigned char>(c)) != 0;
-    };
-    while (!text.empty() && isSpace(text.front()))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && isSpace(text.back()))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
 
 /// A whole number of digits only (no sign, no spaces), or nullopt. Values past int saturate at
 /// WINDOW_MAX_DIMENSION + 1 so the caller clamps them like any other size that is too large.
@@ -113,7 +97,7 @@ namespace Detail
     {
         return result;
     }
-    const std::string_view text = Detail::trim(value);
+    const std::string_view text = Platform::trimAscii(value);
     if (text.empty() || !Core::isEnvFlagEnabled(std::string(text).c_str()))
     {
         return result;
@@ -127,11 +111,11 @@ namespace Detail
 
     // The size, then at most one flag after a comma.
     const std::size_t comma = text.find(',');
-    const std::string_view size = Detail::trim(text.substr(0, comma));
+    const std::string_view size = Platform::trimAscii(text.substr(0, comma));
     bool maximized = false;
     if (comma != std::string_view::npos)
     {
-        const std::string_view flag = Detail::trim(text.substr(comma + 1));
+        const std::string_view flag = Platform::trimAscii(text.substr(comma + 1));
         if (!Detail::equalsIgnoreCase(flag, "maximized") && !Detail::equalsIgnoreCase(flag, "maximised"))
         {
             return invalid();
@@ -144,8 +128,8 @@ namespace Detail
     {
         return invalid();
     }
-    const auto width = Detail::parseDimension(Detail::trim(size.substr(0, separator)));
-    const auto height = Detail::parseDimension(Detail::trim(size.substr(separator + 1)));
+    const auto width = Detail::parseDimension(Platform::trimAscii(size.substr(0, separator)));
+    const auto height = Detail::parseDimension(Platform::trimAscii(size.substr(separator + 1)));
     if (!width || !height)
     {
         return invalid();

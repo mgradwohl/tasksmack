@@ -422,3 +422,12 @@ TEST(SyntheticScenarioTest, PreloadIsTrimmedToAShorterWindow)
     EXPECT_LE(timestamps.back() - timestamps.front(), 60.0 + 0.2);
     EXPECT_LE(timestamps.size(), Sampling::historyCapacityForSeconds(60));
 }
+
+// #2170: the same ASCII whitespace as every other TASKSMACK_* hook (Platform::trimAscii()).
+TEST(SyntheticScenarioParseTest, AnyAsciiWhitespaceAroundTheSettingsIsTrimmed)
+{
+    const ScenarioConfig plain = parsed("processes=123,refresh=500");
+    const ScenarioConfig padded = parsed("\tprocesses = 123 ,\vrefresh=500\r\n");
+    EXPECT_EQ(padded.workload.processes, plain.workload.processes);
+    EXPECT_EQ(padded.refreshIntervalMs, plain.refreshIntervalMs);
+}

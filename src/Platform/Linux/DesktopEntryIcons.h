@@ -15,6 +15,8 @@
 // directory tree on every platform (tests/Platform/test_DesktopEntryIcons.cpp). Reading the process's
 // executable and decoding the PNG are LinuxProcessIconSource's.
 
+#include "Platform/AsciiTrim.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -86,20 +88,6 @@ struct DesktopEntry
     return folded;
 }
 
-/// @p text without leading and trailing spaces and tabs.
-[[nodiscard]] constexpr std::string_view trim(std::string_view text) noexcept
-{
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t' || text.front() == '\r'))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r'))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
 /// The part of @p path after its last '/', or all of it.
 [[nodiscard]] constexpr std::string_view fileName(std::string_view path) noexcept
 {
@@ -120,7 +108,7 @@ struct DesktopEntry
     while (!text.empty())
     {
         const std::size_t newline = text.find('\n');
-        const std::string_view line = trim(text.substr(0, newline));
+        const std::string_view line = Platform::trimAscii(text.substr(0, newline));
         text.remove_prefix(newline == std::string_view::npos ? text.size() : newline + 1);
 
         if (line.empty() || line.front() == '#')
@@ -142,8 +130,8 @@ struct DesktopEntry
         {
             continue;
         }
-        const std::string_view key = trim(line.substr(0, equals));
-        const std::string_view value = trim(line.substr(equals + 1));
+        const std::string_view key = Platform::trimAscii(line.substr(0, equals));
+        const std::string_view value = Platform::trimAscii(line.substr(equals + 1));
         if (key == "Icon")
         {
             entry.icon = value;

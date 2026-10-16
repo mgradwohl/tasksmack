@@ -4,6 +4,7 @@
 // unit-tested directly, without going through dlopen()/the NVML mock library. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
+#include "Platform/AsciiTrim.h"
 #include "Platform/Linux/PciRuntimePm.h"
 #include "Platform/NVMLEngineUtilization.h"
 #include "Platform/NVMLRunningProcesses.h"
@@ -135,16 +136,6 @@ struct NvidiaProcGpuInfo
 /// yet (printed with '?' placeholders, "GPU-????????-...") is treated as absent.
 [[nodiscard]] inline NvidiaProcGpuInfo parseNvidiaProcGpuInformation(std::string_view text)
 {
-    const auto trim = [](std::string_view value)
-    {
-        constexpr std::string_view WHITESPACE = " \t\r\n";
-        const auto first = value.find_first_not_of(WHITESPACE);
-        if (first == std::string_view::npos)
-        {
-            return std::string_view{};
-        }
-        return value.substr(first, value.find_last_not_of(WHITESPACE) - first + 1);
-    };
     NvidiaProcGpuInfo info;
     while (!text.empty())
     {
@@ -156,8 +147,8 @@ struct NvidiaProcGpuInfo
         {
             continue;
         }
-        const auto key = trim(line.substr(0, colon));
-        const auto value = trim(line.substr(colon + 1));
+        const auto key = Platform::trimAscii(line.substr(0, colon));
+        const auto value = Platform::trimAscii(line.substr(colon + 1));
         if (key == "Model")
         {
             info.model = std::string(value);

@@ -340,4 +340,13 @@ TEST_F(WindowOverrideConfigFileTest, WithoutAnOverrideTheWindowSectionIsSaved)
     EXPECT_NE(windowSection(after).find("maximized = true"), std::string::npos) << after;
 }
 
+// #2170: every TASKSMACK_* hook trims the same ASCII whitespace (Platform::trimAscii()), so a value
+// copied from a Windows .env file, with its trailing CR, parses as it does without one.
+TEST(WindowOverrideParseTest, AnyAsciiWhitespaceAroundTheValueIsTrimmed)
+{
+    const auto result = parse("\t1280x720\r\n");
+    EXPECT_EQ(result.geometry, std::optional<Geometry>(Geometry{.width = 1280, .height = 720, .maximized = false}));
+    EXPECT_TRUE(result.warning.empty()) << result.warning;
+}
+
 } // namespace

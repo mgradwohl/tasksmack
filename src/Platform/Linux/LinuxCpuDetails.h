@@ -13,6 +13,7 @@
 // Only standard-library file access, no POSIX headers: the parsing and the fixture tests build and
 // run on every platform.
 
+#include "Platform/AsciiTrim.h"
 #include "Platform/CpuDetails.h"
 
 #include <algorithm>
@@ -39,24 +40,9 @@ namespace Platform::LinuxCpuDetails
 namespace Detail
 {
 
-[[nodiscard]] inline std::string_view trim(std::string_view text) noexcept
-{
-    constexpr std::string_view SPACE = " \t\r\n";
-    const auto first = text.find_first_not_of(SPACE);
-    if (first == std::string_view::npos)
-    {
-        return {};
-    }
-    // remove_prefix/remove_suffix, not substr(), which can throw: this is noexcept
-    const auto last = text.find_last_not_of(SPACE);
-    text.remove_suffix(text.size() - last - 1);
-    text.remove_prefix(first);
-    return text;
-}
-
 [[nodiscard]] inline std::optional<std::uint64_t> parseUnsigned(std::string_view text) noexcept
 {
-    text = trim(text);
+    text = Platform::trimAscii(text);
     std::uint64_t value = 0;
     const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
     if (ec != std::errc{} || ptr != text.data() + text.size())
@@ -106,7 +92,7 @@ struct CpuInfoProcessor
         {
             continue; // The blank line between blocks
         }
-        const std::string_view key = Detail::trim(line.substr(0, colon));
+        const std::string_view key = Platform::trimAscii(line.substr(0, colon));
         const std::string_view value = line.substr(colon + 1);
         if (key == "processor")
         {
@@ -235,7 +221,7 @@ inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
 /// A sysfs cache size ("32K", "1024K", "8M", "16384 KB") in bytes; nullopt if unreadable or zero.
 [[nodiscard]] inline std::optional<std::uint64_t> parseCacheSize(std::string_view text) noexcept
 {
-    text = Detail::trim(text);
+    text = Platform::trimAscii(text);
     std::uint64_t value = 0;
     const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
     if (ec != std::errc{} || ptr == text.data() || value == 0)
@@ -244,7 +230,7 @@ inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
     }
     std::string_view suffix = text;
     suffix.remove_prefix(static_cast<std::size_t>(ptr - text.data()));
-    suffix = Detail::trim(suffix);
+    suffix = Platform::trimAscii(suffix);
     if (suffix.ends_with('B') || suffix.ends_with('b'))
     {
         suffix.remove_suffix(1);
@@ -368,9 +354,9 @@ struct SysfsCacheEntry
             const auto shared = Detail::readFile(indexIt->path() / "shared_cpu_list");
             entries.push_back({.cpu = *cpu,
                                .level = static_cast<unsigned>(*levelValue),
-                               .type = type.has_value() ? std::string(Detail::trim(*type)) : std::string{},
+                               .type = type.has_value() ? std::string(Platform::trimAscii(*type)) : std::string{},
                                .bytes = *bytes,
-                               .sharedCpuList = shared.has_value() ? std::string(Detail::trim(*shared)) : std::string{}});
+                               .sharedCpuList = shared.has_value() ? std::string(Platform::trimAscii(*shared)) : std::string{}});
         }
     }
     // Directory order is unspecified; sort so the result does not depend on it.

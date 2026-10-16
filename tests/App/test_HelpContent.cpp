@@ -67,4 +67,12 @@ TEST(HelpContentTest, OnlyTheNetworkColumnsCarryAPlatformNote)
 }
 
 } // namespace
+
+// #2170: the filter trimmed only spaces and tabs; it now trims what every other parser does.
+TEST(HelpContentTest, TheFilterIgnoresAnyAsciiWhitespaceAroundIt)
+{
+    EXPECT_EQ(matchingShortcuts("quit\r\n"), matchingShortcuts("QUIT"));
+    EXPECT_EQ(countMatches(matchingShortcuts("\r\n\v")), SHORTCUT_HELP.size());
+}
+
 } // namespace App::HelpContent

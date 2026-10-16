@@ -20,6 +20,7 @@
 // active(), the only part that reads the environment and logs.
 
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
@@ -77,23 +78,6 @@ struct ParseResult
 namespace Detail
 {
 
-[[nodiscard]] inline std::string_view trim(std::string_view text) noexcept
-{
-    const auto isSpace = [](const char c)
-    {
-        return std::isspace(static_cast<unsigned char>(c)) != 0;
-    };
-    while (!text.empty() && isSpace(text.front()))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && isSpace(text.back()))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
 [[nodiscard]] inline bool equalsIgnoreCase(const std::string_view a, const std::string_view b) noexcept
 {
     return a.size() == b.size() &&
@@ -148,9 +132,9 @@ namespace Detail
 [[nodiscard]] inline ParseResult parse(const char* pidValue, const char* nameValue, const char* tabValue)
 {
     ParseResult result;
-    const std::string_view pidText = Detail::trim(pidValue != nullptr ? pidValue : "");
-    const std::string_view nameText = Detail::trim(nameValue != nullptr ? nameValue : "");
-    const std::string_view tabText = Detail::trim(tabValue != nullptr ? tabValue : "");
+    const std::string_view pidText = Platform::trimAscii(pidValue != nullptr ? pidValue : "");
+    const std::string_view nameText = Platform::trimAscii(nameValue != nullptr ? nameValue : "");
+    const std::string_view tabText = Platform::trimAscii(tabValue != nullptr ? tabValue : "");
 
     Target target;
     if (!pidText.empty())
@@ -293,7 +277,7 @@ inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TA
 /// none does or @p name is blank.
 [[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs)
 {
-    const std::string_view wanted = Detail::trim(name);
+    const std::string_view wanted = Platform::trimAscii(name);
     if (wanted.empty())
     {
         return std::nullopt;
@@ -333,7 +317,7 @@ struct MainTabChoice
 [[nodiscard]] inline MainTabChoice resolveMainTab(const char* value, const std::span<const TabInfo> tabs)
 {
     MainTabChoice choice;
-    const std::string_view name = Detail::trim(value != nullptr ? value : "");
+    const std::string_view name = Platform::trimAscii(value != nullptr ? value : "");
     if (name.empty())
     {
         return choice;
@@ -438,7 +422,7 @@ struct StartupDialogChoice
 [[nodiscard]] inline StartupDialogChoice parseStartupDialog(const char* value)
 {
     StartupDialogChoice choice;
-    const std::string_view text = Detail::trim(value != nullptr ? value : "");
+    const std::string_view text = Platform::trimAscii(value != nullptr ? value : "");
     if (text.empty())
     {
         return choice;
@@ -466,7 +450,7 @@ struct StartupDialogChoice
 anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open) noexcept
 {
     return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open},
-                               [](const char* value) { return value != nullptr && !Detail::trim(value).empty(); });
+                               [](const char* value) { return value != nullptr && !Platform::trimAscii(value).empty(); });
 }
 
 /// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR set (#1596).

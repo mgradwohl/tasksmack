@@ -465,4 +465,12 @@ TEST(SelectOverrideTest, PendingMainTabIsDroppedOnceAfterTheFrameLimit)
     EXPECT_FALSE(none.onFrameEnd().has_value());
 }
 
+// #2170: the same ASCII whitespace as every other TASKSMACK_* hook (Platform::trimAscii()).
+TEST(SelectOverrideTest, AnyAsciiWhitespaceAroundThePidIsTrimmed)
+{
+    const auto result = parse("\v1234\r\n", nullptr, nullptr);
+    EXPECT_EQ(result.target, byPid(1234));
+    EXPECT_TRUE(result.warnings.empty());
+}
+
 } // namespace

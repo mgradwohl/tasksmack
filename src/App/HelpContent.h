@@ -6,6 +6,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/ProcessColumnConfig.h"
+#include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
@@ -59,19 +60,6 @@ namespace Detail
     return needle.empty() || !std::ranges::search(text, needle, [](char a, char b) { return lowerAscii(a) == lowerAscii(b); }).empty();
 }
 
-[[nodiscard]] constexpr std::string_view trim(std::string_view text) noexcept
-{
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
 } // namespace Detail
 
 /// The shortcuts @p filter keeps: those whose keys, description or area name contain it, ignoring
@@ -79,7 +67,7 @@ namespace Detail
 /// recompute it on each edit of the box.
 [[nodiscard]] constexpr ShortcutMask matchingShortcuts(std::string_view filter) noexcept
 {
-    const std::string_view needle = Detail::trim(filter);
+    const std::string_view needle = Platform::trimAscii(filter);
     ShortcutMask mask{};
     std::ranges::transform(KeyboardShortcuts::SHORTCUT_HELP,
                            mask.begin(),
