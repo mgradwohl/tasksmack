@@ -45,18 +45,37 @@ endif()
 # Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
-# Every FetchContent_Declare() below passes BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build".
+# Every FetchContent_Declare() below passes BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build"
+# and SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/<dep>-subbuild".
 #
 # FETCHCONTENT_BASE_DIR above points at a cache shared by every preset, and by default
 # FetchContent puts <dep>-src, <dep>-subbuild AND <dep>-build under it. Sharing -src (the
-# download) and -subbuild (its download stamps) is the point of the cache, but sharing -build
-# meant every preset compiled SDL3, FreeType, googletest, ... into the same object directory,
+# download) is the point of the cache, but sharing -build meant every preset compiled SDL3,
+# FreeType, googletest, ... into the same object directory,
 # so Ninja in one preset could treat objects compiled with another preset's flags (sanitizers,
 # coverage, LTO, -O level) as up to date (#1308). Pinning BINARY_DIR to this build tree keeps
 # the download shared while every preset builds its own objects. The calls stay literal
 # FetchContent_Declare() (no wrapper) because osv-scanner.yml's Syft cmake cataloger and
 # Renovate's regex managers read them from the source text.
 set(TASKSMACK_DEPS_BINARY_DIR "${CMAKE_BINARY_DIR}/_deps")
+
+# The -subbuild is the small CMake project FetchContent configures and builds to clone a
+# dependency into its -src. Its CMakeCache.txt records the absolute path and generator it was
+# configured with, and its download stamps record this host's cmake and paths, so one sub-build
+# shared by WSL (/mnt/c/...) and Windows (C:/...) failed the second host's configure (#2253).
+# Each host gets its own sub-builds under the cache, keyed by host OS, the cache path as this
+# host spells it, and the generator. They stay in the cache (not in this build tree) so every
+# preset on a host, and a CI cache restore, still finds its stamps and doesn't re-clone. A host
+# whose stamps aren't there yet clones once (ExternalProject replaces -src); configure it with
+# -DFETCHCONTENT_FULLY_DISCONNECTED=ON to use the -src another host already fetched instead.
+# With the cache off, FetchContent's default (<build>/_deps/<dep>-subbuild) is already per-preset.
+if(TASKSMACK_ENABLE_FETCHCONTENT_CACHE)
+    string(SHA256 _tasksmack_subbuild_key "${CMAKE_HOST_SYSTEM_NAME}|${FETCHCONTENT_BASE_DIR}|${CMAKE_GENERATOR}")
+    string(SUBSTRING "${_tasksmack_subbuild_key}" 0 8 _tasksmack_subbuild_key)
+    set(TASKSMACK_DEPS_SUBBUILD_DIR "${FETCHCONTENT_BASE_DIR}/subbuild/${CMAKE_HOST_SYSTEM_NAME}-${_tasksmack_subbuild_key}")
+else()
+    set(TASKSMACK_DEPS_SUBBUILD_DIR "${TASKSMACK_DEPS_BINARY_DIR}")
+endif()
 
 # Configure-time guard for #1308: every directory added to the build (including every
 # FetchContent dependency, however it was declared) must have its binary dir inside this
@@ -77,6 +96,27 @@ function(_tasksmack_check_dependency_binary_dirs dir)
 endfunction()
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _tasksmack_check_dependency_binary_dirs "${CMAKE_SOURCE_DIR}")
 
+# Configure-time guard for #2253: a FetchContent_Declare() without SUBBUILD_DIR configures its
+# sub-build at the shared default, <cache>/<dep>-subbuild. Any such CMakeCache.txt written after
+# this marker was written by this configure.
+if(TASKSMACK_ENABLE_FETCHCONTENT_CACHE)
+    set(_tasksmack_subbuild_marker "${CMAKE_BINARY_DIR}/CMakeFiles/tasksmack-deps-configure.marker")
+    file(TOUCH "${_tasksmack_subbuild_marker}")
+    function(_tasksmack_check_dependency_subbuild_dirs marker)
+        file(GLOB _caches "${FETCHCONTENT_BASE_DIR}/*-subbuild/CMakeCache.txt")
+        foreach(_cache IN LISTS _caches)
+            if(NOT "${marker}" IS_NEWER_THAN "${_cache}")
+                cmake_path(GET _cache PARENT_PATH _subbuild)
+                message(FATAL_ERROR
+                    "FetchContent configured the sub-build '${_subbuild}' in the cache shared by every "
+                    "host. Sub-builds must be per-host (#2253): pass SUBBUILD_DIR "
+                    "\"\${TASKSMACK_DEPS_SUBBUILD_DIR}/<dep>-subbuild\" to its FetchContent_Declare().")
+            endif()
+        endforeach()
+    endfunction()
+    cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _tasksmack_check_dependency_subbuild_dirs "${_tasksmack_subbuild_marker}")
+endif()
+
 # CMP0072: FindOpenGL prefers the legacy GL library unless told otherwise, which
 # emits a policy warning on Linux. Prefer GLVND explicitly (the modern dispatch
 # library) before find_package(OpenGL).
@@ -92,6 +132,7 @@ FetchContent_Declare(
     GIT_TAG 79524ddd08a4ec981b7fea76afd08ee05f83755d  # v1.17.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from spdlog
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/spdlog-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/spdlog-subbuild"  # per-host sub-build (#2253)
 )
 
 FetchContent_MakeAvailable(spdlog)
@@ -139,6 +180,7 @@ FetchContent_Declare(
                   -P "${CMAKE_CURRENT_LIST_DIR}/patches/ApplyPatch.cmake"
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/tomlplusplus-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/tomlplusplus-subbuild"  # per-host sub-build (#2253)
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
@@ -151,6 +193,7 @@ FetchContent_Declare(
     GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20  # Pinned to specific commit for supply-chain security
     SYSTEM  # Treat as system headers to suppress third-party warning noise, matching every other dependency here
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/stb-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/stb-subbuild"  # per-host sub-build (#2253)
 )
 FetchContent_MakeAvailable(stb)
 
@@ -161,6 +204,7 @@ FetchContent_Declare(
     GIT_TAG fa2c02bb6e21974a89ea9824bc53c9932abe5f9c  # release-3.4.16 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/sdl3-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/sdl3-subbuild"  # per-host sub-build (#2253)
 )
 
 # Configure SDL3 build options (disable unnecessary components)
@@ -234,6 +278,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/Dav1dde/glad.git
     GIT_TAG 73db193f853e2ee079bf3ca8a64aa2eaf6459043  # v2.0.8 - pinned to SHA for supply chain security
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/glad-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/glad-subbuild"  # per-host sub-build (#2253)
 )
 FetchContent_MakeAvailable(glad)
 add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
@@ -256,6 +301,7 @@ FetchContent_Declare(
     GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7  # VER-2-14-3 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/freetype-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/freetype-subbuild"  # per-host sub-build (#2253)
 )
 
 # Configure FreeType build options (disable optional dependencies)
@@ -290,6 +336,7 @@ FetchContent_Declare(
     GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23  # v1.92.9b-docking - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImGui
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/imgui-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/imgui-subbuild"  # per-host sub-build (#2253)
 )
 FetchContent_MakeAvailable(imgui)
 
@@ -325,6 +372,7 @@ FetchContent_Declare(
     GIT_TAG 524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39  # v1.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImPlot
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/implot-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/implot-subbuild"  # per-host sub-build (#2253)
 )
 FetchContent_MakeAvailable(implot)
 

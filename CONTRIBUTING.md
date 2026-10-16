@@ -2358,7 +2358,7 @@ Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the 
 
 ## Adding Dependencies
 
-Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, always use `SYSTEM` to suppress third-party warnings, and always pass a per-preset `BINARY_DIR` (see "Shared FetchContent cache" below):
+Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, always use `SYSTEM` to suppress third-party warnings, and always pass a per-preset `BINARY_DIR` and a per-host `SUBBUILD_DIR` (see "Shared FetchContent cache" below):
 
 ```cmake
 FetchContent_Declare(
@@ -2367,6 +2367,7 @@ FetchContent_Declare(
     GIT_TAG v1.0.0
     SYSTEM
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/mylib-build"
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/mylib-subbuild"
 )
 FetchContent_MakeAvailable(mylib)
 
@@ -2377,11 +2378,20 @@ target_link_libraries(TaskSmack PRIVATE mylib)
 
 The shared FetchContent cache is **enabled by default** to reuse downloads across presets, reducing build times and bandwidth usage. The cache is stored at `.cache/fetchcontent/` in the project root.
 
-Only the downloads are shared: `.cache/fetchcontent/` holds each dependency's `<dep>-src` and
-`<dep>-subbuild`, while its `<dep>-build` tree lives in the preset's own `build/<preset>/_deps/`, so
-a sanitizer, coverage or LTO preset never reuses objects another preset compiled with different
-flags (#1308). Configuring fails if any added directory builds outside the preset's build tree --
-that is the check that a new `FetchContent_Declare()` without `BINARY_DIR` trips.
+Only the downloads are shared: `.cache/fetchcontent/` holds each dependency's `<dep>-src`, while its
+`<dep>-build` tree lives in the preset's own `build/<preset>/_deps/`, so a sanitizer, coverage or LTO
+preset never reuses objects another preset compiled with different flags (#1308). Configuring fails if
+any added directory builds outside the preset's build tree -- that is the check that a new
+`FetchContent_Declare()` without `BINARY_DIR` trips.
+
+The `<dep>-subbuild` (the small project that clones `<dep>-src`, plus its download stamps) is per host:
+`.cache/fetchcontent/subbuild/<OS>-<hash>/`, keyed by host OS, the cache path as that host spells it and
+the generator, so one checkout configures from both WSL (`/mnt/c/...`) and Windows (#2253). Every
+`FetchContent_Declare()` passes `SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/<dep>-subbuild"`, and
+configuring fails if a sub-build lands directly in `.cache/fetchcontent/`. The download stamps record the
+host's own paths, so the first configure on a second host clones the sources again. To reuse the ones
+the other host already fetched, configure that host's presets with `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`
+(it stays set in that build tree; set it back to `OFF` when a dependency pin changes).
 
 To disable the cache:
 

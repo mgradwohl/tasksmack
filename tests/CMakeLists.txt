@@ -12,6 +12,7 @@ FetchContent_Declare(
     GIT_TAG 063de7e9578f82b369302001269680b4b1553359  # v1.18.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from gtest
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/googletest-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/googletest-subbuild"  # per-host sub-build (#2253)
 )
 
 # For Windows: Prevent overriding the parent project's compiler/linker settings
@@ -33,6 +34,7 @@ FetchContent_Declare(
     GIT_SUBMODULES ""
     SYSTEM  # Treat as system headers to suppress warnings from rapidcheck
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/rapidcheck-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/rapidcheck-subbuild"  # per-host sub-build (#2253)
 )
 set(RC_ENABLE_GTEST ON CACHE BOOL "" FORCE)
 set(RC_ENABLE_TESTS OFF CACHE BOOL "" FORCE)

@@ -10,6 +10,7 @@ FetchContent_Declare(
     GIT_TAG 192ef10025eb2c4cdd392bc502f0c852196baa48  # v1.9.5 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/benchmark-build"  # per-preset build tree (#1308)
+    SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/benchmark-subbuild"  # per-host sub-build (#2253)
 )
 
 # Disable Google Benchmark tests to speed up build
