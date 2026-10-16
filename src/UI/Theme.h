@@ -455,9 +455,6 @@ class Theme
     /// (#1200). Falls back to the regular font when Inter-Bold could not be loaded.
     [[nodiscard]] auto boldFont() const -> ImFont*;
 
-    /// Get the current monospace font (based on font size setting); falls back to regular if unset
-    [[nodiscard]] auto monospaceFont() const -> ImFont*;
-
     /// Get the font for chart axis labels, legends and hints (see chartFontSize())
     [[nodiscard]] auto chartFont() const -> ImFont*;
 
@@ -465,7 +462,7 @@ class Theme
     [[nodiscard]] auto titleFont() const -> ImFont*;
 
     /// Register pre-baked fonts (called by UILayer during initialization)
-    void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
+    void registerFonts(FontSize size, ImFont* regular, ImFont* large);
 
     /// Register the bold body-size font for one preset (called by UILayer during initialization).
     /// Optional: a preset with none falls back to its regular font.
@@ -541,7 +538,6 @@ class Theme
     {
         ImFont* regular = nullptr;
         ImFont* large = nullptr;
-        ImFont* monospace = nullptr;
         ImFont* bold = nullptr; // Body size, for section headers (#1200); optional
     };
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};

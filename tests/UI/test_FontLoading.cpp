@@ -90,12 +90,15 @@ TEST_F(FontLoadingTest, LoadsEveryPresetFromTheBundledFonts)
         EXPECT_TRUE(namedLike(theme.regularFont(), "Inter-Regular")) << preset;
         EXPECT_TRUE(namedLike(theme.largeFont(), "Inter-Regular")) << preset;
         EXPECT_TRUE(namedLike(theme.boldFont(), "Inter-Bold")) << preset;
-        EXPECT_NE(theme.monospaceFont(), nullptr) << preset; // a system face, or ImGui's own
         EXPECT_FLOAT_EQ(theme.regularFont()->LegacySize, computePointsToPixels(theme.fontConfig(size).regularPt, 1.0F)) << preset;
         EXPECT_FLOAT_EQ(theme.largeFont()->LegacySize, computePointsToPixels(theme.fontConfig(size).largePt, 1.0F)) << preset;
     }
     EXPECT_TRUE(namedLike(theme.titleFont(), "Sixtyfour"));
     EXPECT_NE(theme.chromeIconFont(), nullptr);
+    // Three faces per preset (regular, large and bold, the icons merged into them), then the title
+    // font and the chrome icons: no face nothing draws. Six monospace faces were baked into every
+    // atlas, and every display-scale rebuild, without ever being used (#2160).
+    EXPECT_EQ(ImGui::GetIO().Fonts->Fonts.Size, static_cast<int>((3 * ALL_FONT_SIZES.size()) + 2));
     EXPECT_FLOAT_EQ(theme.titleBarHeightPx(), computeTitleBarHeightPx(1.0F));
     EXPECT_FLOAT_EQ(theme.chromeIconFontSizePx(), computeChromeIconPx(theme.titleBarHeightPx()));
     // Each file read once, however many fonts are made from it (#1170).

@@ -271,7 +271,7 @@ Prefer these when the modern form preserves behavior and improves clarity; don't
   CONTRIBUTING.md "Testing App/UI code that needs a live ImGui context" for detail:
   1. Extract the pure decision logic (all inputs as explicit params) into a small header, tested
      directly — `App/TitleBarGeometry.h`, `App/Panels/ProcessDetailsPanel_ActionHelpers.h`,
-     `UI/DpiScale.h`/`UI/MonospaceFontPath.h`.
+     `UI/DpiScale.h`.
   2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), link it as-is
      — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
   3. Render it headless: `ImGui::CreateContext()` (+ `ImPlot::CreateContext()`), set

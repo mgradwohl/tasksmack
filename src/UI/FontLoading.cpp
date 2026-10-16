@@ -4,7 +4,6 @@
 #include "UI/DpiScale.h"
 #include "UI/FontFileCache.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/MonospaceFontPath.h"
 #include "UI/TabularDigits.h"
 #include "UI/Theme.h"
 
@@ -110,7 +109,6 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     const auto fontPath = assetsDir / "fonts" / "Inter-Regular.ttf";
     const auto boldFontPath = assetsDir / "fonts" / "Inter-Bold.ttf";
     const auto iconFontPath = assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS;
-    const auto monospaceFontPath = findMonospaceFontPath();
 
     // Check if icon font exists. The error_code overloads here and below: this also runs when the
     // display scale changes (#943), after the old fonts are gone, and a filesystem error must
@@ -200,7 +198,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
         // Bold at the body size, for section headers (#1200): the same size as the text beneath them,
         // so a header row is exactly as tall as before and the layout around it is unchanged, but a
         // weight apart from it. One per preset, with the icons merged in for the header's glyph;
-        // nothing else needs a bold face, so no large or monospace bold is loaded. Optional: without
+        // nothing else needs a bold face, so no large bold is loaded. Optional: without
         // the file Theme::boldFont() hands out the regular font.
         ImFontConfig boldConfig;
         boldConfig.Flags = ImFontFlags_NoLoadError;
@@ -215,31 +213,9 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
             addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
         }
 
-        ImFont* fontMonospace = nullptr;
-        if (!monospaceFontPath.empty())
-        {
-            ImFontConfig monoConfig;
-            monoConfig.Flags |= ImFontFlags_NoLoadError;
-            monoConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
-            monoConfig.SizePixels = fontSizeRegular;
-            fontMonospace = addFontFromFile(fontFiles, monospaceFontPath, fontSizeRegular, &monoConfig);
-            if (fontMonospace == nullptr)
-            {
-                spdlog::warn("Could not load monospace font from {}, falling back to default", Core::pathToUtf8(monospaceFontPath));
-            }
-        }
-
-        if (fontMonospace == nullptr)
-        {
-            ImFontConfig monoFallbackConfig;
-            monoFallbackConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
-            monoFallbackConfig.SizePixels = fontSizeRegular;
-            fontMonospace = imguiIO.Fonts->AddFontDefault(&monoFallbackConfig);
-        }
-
         // Register with theme for instant switching. The bold font after the rest: registerFonts()
         // resets it.
-        theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
+        theme.registerFonts(size, fontRegular, fontLarge);
         theme.registerBoldFont(size, fontBold);
     }
 
@@ -360,7 +336,7 @@ void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& as
         largeConfig.SizePixels = computePointsToPixels(fontCfg.largePt, displayScale);
         ImFont* large = imguiIO.Fonts->AddFontDefault(&largeConfig);
         mergeIcons(largeConfig.SizePixels);
-        theme.registerFonts(size, regular, large, regular);
+        theme.registerFonts(size, regular, large);
     }
 
     if (hasIconFont)

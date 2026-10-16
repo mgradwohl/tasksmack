@@ -120,7 +120,6 @@ set(TASKSMACK_SOURCES
     src/UI/AssetPath.cpp
     src/UI/CellText.cpp
     src/UI/ChartLegend.cpp
-    src/UI/MonospaceFontPath.cpp
     src/UI/TabularDigits.cpp
     src/UI/FontLoading.cpp
     src/UI/UILayer.cpp

@@ -535,20 +535,14 @@ auto Theme::boldFont() const -> ImFont*
     return fonts.bold != nullptr ? fonts.bold : fonts.regular;
 }
 
-auto Theme::monospaceFont() const -> ImFont*
-{
-    const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
-    return fonts.monospace != nullptr ? fonts.monospace : fonts.regular;
-}
-
 auto Theme::chartFont() const -> ImFont*
 {
     return m_Fonts[fontSizeIndex(chartFontSize(m_CurrentFontSize))].regular;
 }
 
-void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)
+void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
 {
-    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace, .bold = nullptr};
+    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .bold = nullptr};
 }
 
 void Theme::registerBoldFont(FontSize size, ImFont* bold)

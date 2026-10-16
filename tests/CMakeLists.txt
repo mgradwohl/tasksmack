@@ -241,7 +241,6 @@ set(COMMON_TEST_SOURCES
     UI/test_IconTextureCache.cpp
     App/test_ProcessIconView.cpp
     App/test_StartupServicesIcons.cpp
-    UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
     UI/test_FontFileCache.cpp
     UI/test_TabularDigits.cpp
@@ -699,7 +698,6 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
     ${CMAKE_SOURCE_DIR}/src/Platform/IconImageFile.cpp
-    ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
     # test_ChartGeometryBudget.cpp under a live ImGui context
     ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
@@ -875,7 +873,6 @@ add_executable(TaskSmackThemeTests
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     # The app's fonts registered with the real Theme (test_FontLoading.cpp)
     ${CMAKE_SOURCE_DIR}/src/UI/FontLoading.cpp
-    ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
 )
 target_include_directories(TaskSmackThemeTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)  # FallbackTheme.h

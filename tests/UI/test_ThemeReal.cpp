@@ -200,17 +200,15 @@ TEST_F(ThemeRealTest, ClearingTheFontRegistrationsForgetsThemAndBumpsTheGenerati
     for (const FontSize size :
          {FontSize::Small, FontSize::Medium, FontSize::Large, FontSize::ExtraLarge, FontSize::Huge, FontSize::EvenHuger})
     {
-        theme.registerFonts(size, font, font, font);
+        theme.registerFonts(size, font, font);
     }
     theme.registerTitleFont(font);
     EXPECT_EQ(theme.chartFont(), font);
-    EXPECT_EQ(theme.monospaceFont(), font);
     const auto generation = theme.fontGeneration();
 
     // UILayer's onDetach(): the atlas the fonts lived in is about to go, so nothing may keep them.
     theme.clearFontRegistrations();
     EXPECT_EQ(theme.chartFont(), nullptr);
-    EXPECT_EQ(theme.monospaceFont(), nullptr);
     EXPECT_GT(theme.fontGeneration(), generation); // font-dependent caches rebuild
 }
 

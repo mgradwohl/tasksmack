@@ -1,9 +1,8 @@
 #pragma once
 
 // The app's fonts baked into the current ImGui context's atlas and registered with Theme (#1547):
-// Inter (regular, large and bold) with Font Awesome merged in, the monospace face, the Sixtyfour
-// wordmark and the title bar's chrome icons, at every Font Size preset. Needs only an ImGui context,
-// not a window or renderer: UILayer calls it at startup and on a display-scale change (#943), the
+// Inter (regular, large and bold) with Font Awesome merged in, the Sixtyfour wordmark and the title bar's chrome icons, at every Font Size
+// preset. Needs only an ImGui context, not a window or renderer: UILayer calls it at startup and on a display-scale change (#943), the
 // headless PGO UI training driver (#880) loads the app's own fonts through it, and the real-Theme
 // tests check it without a GL context.
 

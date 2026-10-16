@@ -599,7 +599,7 @@ Three established ways to get real coverage of such a file's logic:
    SDL window state, etc.); the header holds the actual decision and gets tested directly. See
    `App/TitleBarGeometry.h` (`computeWindowHitTest`, `computeDetectResizeEdge`,
    `computeIsPointInBounds`, ...), `App/Panels/ProcessDetailsPanel_ActionHelpers.h`
-   (`dispatchProcessAction`), and `UI/DpiScale.h`/`UI/MonospaceFontPath.h` for the pattern. When
+   (`dispatchProcessAction`), and `UI/DpiScale.h` for the pattern. When
    the extracted logic needs to probe the filesystem or environment, take an injectable predicate
    (`std::function<bool(const std::filesystem::path&)>` etc.) the same way `UI::selectAssetsDir()`
    (`AssetPath.h`) already does, rather than hard-coding a real filesystem/env call into the
