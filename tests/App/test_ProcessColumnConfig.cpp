@@ -1,5 +1,6 @@
 #include "App/DialogGeometry.h"
 #include "App/ProcessColumnConfig.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
@@ -7,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -144,6 +146,21 @@ TEST(ProcessColumnConfigTest, HeadersUseThePlainLanguageNames)
     EXPECT_EQ(getColumnInfo(ProcessColumn::NpuPercent).name, "NPU %");
     EXPECT_EQ(getColumnInfo(ProcessColumn::NpuMemory).name, "NPU Mem");
     EXPECT_EQ(getColumnInfo(ProcessColumn::NpuEngine).name, "NPU Engine");
+}
+
+// #2240: the CPU Time description (header tooltip and F1 Help) shows the format the cells use,
+// UI::Format::formatDuration()'s two largest units, not the old "H:MM:SS".
+TEST(ProcessColumnConfigTest, CpuTimeDescriptionMatchesTheCellFormat)
+{
+    const std::string_view description = getColumnInfo(ProcessColumn::CpuTime).description;
+    EXPECT_EQ(description.find("H:MM:SS"), std::string_view::npos);
+    EXPECT_EQ(description.find("M:SS"), std::string_view::npos);
+    const auto examples = std::to_array<double>({45.0, 125.0, 3725.0, (3.0 * 86400.0) + (4.0 * 3600.0)});
+    for (const double seconds : examples)
+    {
+        const std::string example = UI::Format::formatDuration(seconds);
+        EXPECT_NE(description.find(example), std::string_view::npos) << example;
+    }
 }
 
 // #1799: the NPU columns sit after the GPU ones, before Command, and are off by default (as Task

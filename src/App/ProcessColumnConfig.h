@@ -213,7 +213,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === Time ===
         // TIME+
-        {.name="CPU Time", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS, or M:SS under an hour)"},
+        {.name="CPU Time", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time, in its two largest units (45s, 2m 05s, 1h 02m, 3d 04h)"},
         // Start Time
         {.name="Started", .menuName="Start Time", .configKey="start_time", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Process start time"},
 
