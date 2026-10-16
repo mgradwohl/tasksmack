@@ -1034,6 +1034,27 @@ TEST(LinuxProcessActionsDumpTest, GcoreWritesTheCoreUnderItsFinalName)
     EXPECT_EQ(args, (std::vector<std::string>{"-o", dump->file.string() + ".partial", std::to_string(self.pid)}));
 }
 
+// #2148: gcore (and the gdb it runs) inherits only stdin, stdout and stderr: a descriptor TaskSmack holds
+// open without close-on-exec doesn't pass into it.
+TEST(LinuxProcessActionsDumpTest, GcoreInheritsNoneOfTaskSmacksDescriptors)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_fds_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_fds_out");
+    // Lists its own descriptors into the core it "writes".
+    LinuxProcessActions actions(fakeDumpTools(work.path, "ls /proc/$$/fd > \"$2.$3\"\n"), syscallsWithPtrace(&ptraceAllowed));
+    const int leaky = ::open("/proc/self/stat", O_RDONLY); // NOLINT(cppcoreguidelines-pro-type-vararg) - no O_CLOEXEC, on purpose
+    ASSERT_GE(leaky, 3);
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ::close(leaky);
+    ASSERT_TRUE(dump.has_value()) << dump.error();
+    std::ifstream listing(dump->file);
+    for (std::string fd; listing >> fd;)
+    {
+        EXPECT_NE(fd, std::to_string(leaky));
+    }
+}
+
 TEST(LinuxProcessActionsDumpTest, AGcoreThatFailsSaysWhyAndLeavesNothing)
 {
     const TestSupport::ScopedTempDir work("tasksmack_dump_fail_tools");

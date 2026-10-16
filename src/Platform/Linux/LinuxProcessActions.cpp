@@ -42,6 +42,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <features.h>
 #include <sched.h>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
@@ -1101,6 +1102,11 @@ bool readAvailable(int fd, std::string& text)
     ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
     ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
     ::posix_spawn_file_actions_adddup2(&actions, writeEnd.get(), STDERR_FILENO);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+    // Nothing else of TaskSmack's: a descriptor a driver or library opened without close-on-exec would
+    // otherwise pass into gcore and the gdb it runs, which ptraces another process (#2148).
+    ::posix_spawn_file_actions_addclosefrom_np(&actions, STDERR_FILENO + 1);
+#endif
     // Its own process group, so a cancel reaches the gdb gcore runs; an empty signal mask and default
     // dispositions, whatever this thread blocks or ignores.
     sigset_t signals{}; // NOLINT(misc-include-cleaner) - sigset_t is provided by <signal.h>
@@ -1154,6 +1160,11 @@ bool readAvailable(int fd, std::string& text)
         }
         if (waited < 0 && errno != EINTR)
         {
+            // Not left running: gdb may be attached to the target, which would stay stopped (#2148).
+            ::kill(-child, SIGKILL);
+            while (::waitpid(child, &status, 0) < 0 && errno == EINTR)
+            {
+            }
             return run;
         }
         if (stopToken.stop_requested())
@@ -1197,8 +1208,8 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::warn("Not dumping PID {}: {}", target.pid, identity.errorMessage);
         return std::unexpected(identity.errorMessage);
     }
-    if (const std::optional<std::string> refusal =
-            SyscallTrace::ptraceRefusal(target.pid, m_Syscalls.ptraceContext(target.pid, gcore), SyscallTrace::GCORE_TOOL))
+    if (const std::optional<std::string> refusal = SyscallTrace::ptraceRefusal(
+            target.pid, m_Syscalls.ptraceContext(target.pid, LinuxCoreDump::gcoreDebuggerPath(gcore)), SyscallTrace::GCORE_TOOL))
     {
         spdlog::info("Not dumping PID {}: {}", target.pid, *refusal);
         return std::unexpected(*refusal);
