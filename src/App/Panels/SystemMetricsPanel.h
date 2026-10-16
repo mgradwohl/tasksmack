@@ -14,6 +14,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
@@ -154,11 +155,12 @@ class SystemMetricsPanel : public Panel
     // keep their reduced points until then (HistoryChartConfig::dataGeneration, #1139).
     std::uint64_t m_ChartDataGeneration = 0;
     std::uint64_t m_ProcessHistoryVersion = 0;
-    std::vector<double> m_ProcessHistoryTimestamps;
-    std::vector<double> m_ProcessPowerHistory;
-    std::vector<double> m_ProcessPageFaultsHistory;
-    std::vector<double> m_ProcessThreadCountHistory;
-    std::vector<double> m_ProcessHandleCountHistory;
+    // Shared views of the model's histories, not copies (#2156).
+    Domain::HistoryView<double> m_ProcessHistoryTimestamps;
+    Domain::HistoryView<double> m_ProcessPowerHistory;
+    Domain::HistoryView<double> m_ProcessPageFaultsHistory;
+    Domain::HistoryView<double> m_ProcessThreadCountHistory;
+    Domain::HistoryView<double> m_ProcessHandleCountHistory;
     // The process probe's capabilities, copied with the process histories (#1254).
     Platform::ProcessCapabilities m_ProcessCapabilities;
 

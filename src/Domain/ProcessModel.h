@@ -8,6 +8,7 @@
 #include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
 #include "SingleLineText.h"
 #include "SocketTrafficAccumulator.h"
 
@@ -32,14 +33,17 @@ class GPUModel;
 class ServiceModel;
 struct ProcessGPUPublication;
 
+/// One generation of the aggregated system histories, aligned by timestamps. Each series is a view of
+/// the model's shared, append-only storage (#1412, #2156): taking a generation copies five shared_ptrs,
+/// not the samples, and a view stays valid and unchanged for as long as the reader holds it.
 struct ProcessSystemHistories
 {
     std::uint64_t version = 0;
-    std::vector<double> timestamps;
-    std::vector<double> power;
-    std::vector<double> pageFaults;
-    std::vector<double> threadCount;
-    std::vector<double> handleCount;
+    HistoryView<double> timestamps;
+    HistoryView<double> power;
+    HistoryView<double> pageFaults;
+    HistoryView<double> threadCount;
+    HistoryView<double> handleCount;
     // The probe's capabilities as of the latest published generation (#1254): a probe can withdraw
     // one after the first sample (Windows' EStats check, #1161), so they aren't fixed at startup.
     Platform::ProcessCapabilities capabilities;
@@ -182,11 +186,15 @@ class ProcessModel : public ISamplable
     /// Copies the aggregated system histories into @p outHistories when their generation differs from
     /// @p lastSeenVersion (a previous ProcessSystemHistories::version) and returns whether it did. Their
     /// generation advances with every snapshot generation and when setMaxHistorySeconds() trims them,
-    /// so it is not a snapshotVersion().
+    /// so it is not a snapshotVersion(). The series are shared views, not copies (#2156): this is
+    /// O(series) under the shared lock, whatever the history length, and consecutive generations'
+    /// views share their storage.
     [[nodiscard]] bool tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const;
 
     /// Sets the history window, clamped to SamplingConfig's range, and trims the system histories to
     /// it at once, advancing their generation (tryCopySystemHistoriesIfNewer()) when it has one (#1145).
+    /// Changing the histories' capacity never allocates (#2156), so the five series always keep the
+    /// same capacity and length.
     void setMaxHistorySeconds(double seconds);
 
     /// Fills in the next sample of a series, returning false when there are no more.
@@ -292,13 +300,16 @@ class ProcessModel : public ISamplable
     Clock::time_point m_PrevSampleTime;    // For rate calculations (network, I/O, power)
     bool m_HasPrevSampleTime = false;
 
-    // Aggregated system histories (aligned by timestamps). Capacity is set from the
-    // configured window; time-based trimming via discardFront keeps them in the window.
-    HistoryBuffer<double> m_SystemPageFaultsHistory;
-    HistoryBuffer<double> m_SystemThreadCountHistory;
-    HistoryBuffer<double> m_SystemHandleCountHistory;
-    HistoryBuffer<double> m_SystemPowerHistory;
-    HistoryBuffer<double> m_Timestamps;
+    // Aggregated system histories (aligned by timestamps), guarded by m_Mutex. Capacity is set from
+    // the configured window; time-based trimming via discardFront keeps them in the window. Shared,
+    // append-only storage (#2156), so tryCopySystemHistoriesIfNewer() hands out views rather than
+    // copying every sample. An append reserves room in all five before pushing to any
+    // (appendSystemHistoryLocked()), so a std::bad_alloc leaves them aligned.
+    SharedHistoryBuffer<double> m_SystemPageFaultsHistory;
+    SharedHistoryBuffer<double> m_SystemThreadCountHistory;
+    SharedHistoryBuffer<double> m_SystemHandleCountHistory;
+    SharedHistoryBuffer<double> m_SystemPowerHistory;
+    SharedHistoryBuffer<double> m_Timestamps;
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // Align with Storage/System defaults
 
     // Latest computed snapshots. Immutable once published (replaced wholesale by the writer,
@@ -313,8 +324,9 @@ class ProcessModel : public ISamplable
     std::uint64_t m_SystemHistoryVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSystemHistoryVersion{0};
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
-    bool m_GpuMergeFailing = false; // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
-    bool m_GpuDataStale = false;    // guarded by m_SamplingMutex; logs stale per-process GPU data once per streak (#1417)
+    bool m_GpuMergeFailing = false;            // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
+    bool m_GpuDataStale = false;               // guarded by m_SamplingMutex; logs stale per-process GPU data once per streak (#1417)
+    bool m_SystemHistoryAppendFailing = false; // guarded by m_SamplingMutex; logs a failing history append once per streak (#2156)
 
     // The watched process (watchProcess()) and its latest samples, oldest first. A fixed ring --
     // m_WatchedSampleStart is the oldest slot -- so recording a sample never allocates while the
@@ -380,7 +392,10 @@ class ProcessModel : public ISamplable
                                                          unsigned pageFaultCountBits);
 
     void trimHistory();
-    void applyHistoryCapacity();
+    void applyHistoryCapacity() noexcept;
+    /// Appends @p sample to all five system histories, or on std::bad_alloc to none of them: room is
+    /// reserved in every series before any is pushed to. Requires m_Mutex held exclusively.
+    void appendSystemHistoryLocked(const ProcessSystemHistorySample& sample);
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

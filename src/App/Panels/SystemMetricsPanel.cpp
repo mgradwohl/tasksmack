@@ -585,7 +585,7 @@ void SystemMetricsPanel::renderOverview()
         // the app carries on, so a rebuild that throws part-way must leave the cache stale.
         CpuDetailsCache fresh;
         const Platform::SystemCapabilities caps = (m_Model != nullptr) ? m_Model->capabilities() : Platform::SystemCapabilities{};
-        const auto lastOf = [](const std::vector<double>& history)
+        const auto lastOf = [](std::span<const double> history)
         {
             return history.empty() ? std::optional<double>{} : std::optional<double>{history.back()};
         };

@@ -2351,6 +2351,61 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
     EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(histories.version, histories));
 }
 
+// #2156: each generation of the aggregated system histories shares the previous one's storage
+// instead of deep-copying the whole window, and a generation a reader holds never changes after it.
+TEST(ProcessModelTest, ConsecutiveSystemHistoryGenerationsShareStorageInsteadOfCopying)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
+    auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
+    counter.threadCount = 3;
+
+    std::uint64_t totalCpu = 100000;
+    const auto sampleOnce = [&]
+    {
+        currentTime += std::chrono::seconds(1);
+        totalCpu += 100000;
+        ++counter.threadCount;
+        model.updateFromCounters({counter}, totalCpu);
+    };
+    sampleOnce(); // seeds the deltas: no history sample yet
+    sampleOnce();
+
+    Domain::ProcessSystemHistories previous;
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, previous));
+    ASSERT_EQ(previous.timestamps.size(), 1U);
+
+    // Fewer samples than a shared block's smallest size, so no compaction moves them in between.
+    constexpr int GENERATIONS = 20;
+    for (int generation = 0; generation < GENERATIONS; ++generation)
+    {
+        SCOPED_TRACE("generation " + std::to_string(generation));
+        const std::vector<double> previousThreads(previous.threadCount.begin(), previous.threadCount.end());
+        const std::vector<double> previousTimestamps(previous.timestamps.begin(), previous.timestamps.end());
+
+        sampleOnce();
+        Domain::ProcessSystemHistories next;
+        ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(previous.version, next));
+        ASSERT_EQ(next.timestamps.size(), previous.timestamps.size() + 1);
+
+        // The same storage, not a copy of it, for every series.
+        EXPECT_TRUE(next.timestamps.sharesStorageWith(previous.timestamps));
+        EXPECT_TRUE(next.power.sharesStorageWith(previous.power));
+        EXPECT_TRUE(next.pageFaults.sharesStorageWith(previous.pageFaults));
+        EXPECT_TRUE(next.threadCount.sharesStorageWith(previous.threadCount));
+        EXPECT_TRUE(next.handleCount.sharesStorageWith(previous.handleCount));
+        // The new generation starts at the same samples, so nothing was rebuilt for it ...
+        EXPECT_EQ(next.timestamps.data(), previous.timestamps.data());
+        EXPECT_EQ(next.threadCount.data(), previous.threadCount.data());
+        // ... and the generation held from before is unchanged by the append.
+        EXPECT_EQ(std::vector<double>(previous.threadCount.begin(), previous.threadCount.end()), previousThreads);
+        EXPECT_EQ(std::vector<double>(previous.timestamps.begin(), previous.timestamps.end()), previousTimestamps);
+        EXPECT_DOUBLE_EQ(next.threadCount.back(), static_cast<double>(counter.threadCount));
+
+        previous = std::move(next);
+    }
+}
+
 // =============================================================================
 // Memory Breakdown (Private and Swap columns, #1879, #1885)
 // =============================================================================
@@ -4003,6 +4058,59 @@ TEST(ProcessModelTest, ConcurrentRefreshAndReadDoesNotCrash)
 
     writer.join();
     reader.join();
+}
+
+// #2156: a reader holds the system histories' views and reads every sample with no lock while the
+// sampler keeps appending, compacting into new blocks and evicting the oldest samples. A view's
+// samples never change after it was taken (a race here is what TSan builds would report), and the
+// five series of a generation are always aligned.
+TEST(ProcessModelTest, SystemHistoryViewsStayUnchangedWhileTheSamplerAppends)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "proc1", 'R', 100, 100, 1000, 1024, 0)});
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    // The smallest window, so the histories reach their capacity and evict while the test runs.
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    std::atomic<bool> keepRunning{true};
+    std::thread writer(
+        [&]
+        {
+            while (keepRunning)
+            {
+                model.refresh();
+            }
+        });
+
+    Domain::ProcessSystemHistories held; // kept across generations, re-read after each new one
+    std::vector<double> heldTimestamps;
+    std::uint64_t version = 0;
+    int generations = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        Domain::ProcessSystemHistories latest;
+        if (!model.tryCopySystemHistoriesIfNewer(version, latest))
+        {
+            continue;
+        }
+        version = latest.version;
+        ++generations;
+        EXPECT_EQ(latest.power.size(), latest.timestamps.size());
+        EXPECT_EQ(latest.pageFaults.size(), latest.timestamps.size());
+        EXPECT_EQ(latest.threadCount.size(), latest.timestamps.size());
+        EXPECT_EQ(latest.handleCount.size(), latest.timestamps.size());
+        EXPECT_TRUE(std::ranges::is_sorted(latest.timestamps));
+
+        // The generation held from before still reads exactly as it did when it was taken.
+        EXPECT_TRUE(std::ranges::equal(held.timestamps, heldTimestamps));
+        held = std::move(latest);
+        heldTimestamps.assign(held.timestamps.begin(), held.timestamps.end());
+    }
+    keepRunning = false;
+    writer.join();
+    EXPECT_GT(generations, 0);
 }
 
 // =============================================================================
