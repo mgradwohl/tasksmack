@@ -370,11 +370,15 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
         // This sampler is the only one that runs the probe (#1417): the process sampler merges the
         // per-process publication made here, never waiting on the probe or its lock.
         std::vector<Platform::GPUCounters> currentCounters;
+        // The GPU info this read's snapshots are named from, copied while the probe lock is held: a
+        // racing refresh's rescanGPUs() may replace m_GPUInfo as soon as the lock is released (#2153).
+        std::vector<Platform::GPUInfo> currentGPUInfo;
         std::exception_ptr systemReadFailure;
         {
             const std::scoped_lock probeLock(m_ProbeMutex);
             // Before the read, so a rebuilt device list and the GPU info describing it arrive together.
             rescanGPUs(now);
+            currentGPUInfo = m_GPUInfo;
             try
             {
                 currentCounters = m_Probe->readGPUCounters();
@@ -414,7 +418,7 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
             }
 
             // Compute snapshot
-            auto snapshot = computeSnapshot(current, previous, timeDeltaSeconds);
+            auto snapshot = computeSnapshot(current, previous, currentGPUInfo, timeDeltaSeconds);
             newSnapshots[current.gpuId] = snapshot;
         }
 
@@ -480,7 +484,8 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
         spdlog::warn("GPUModel: GPU rescan failed: {}", e.what());
     }
     // A startup enumeration or capabilities query that failed is retried, at the full-rescan rate.
-    // m_GPUInfoKnown and m_CapabilitiesKnown are only written on this thread, so need no lock to read.
+    // After construction m_GPUInfoKnown and m_CapabilitiesKnown are only written under m_ProbeMutex,
+    // which is held here, so need no other lock to read.
     if (full && (!m_GPUInfoKnown || !m_CapabilitiesKnown))
     {
         reenumerate = true;
@@ -842,8 +847,10 @@ void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
     }
 }
 
-GPUSnapshot
-GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const
+GPUSnapshot GPUModel::computeSnapshot(const Platform::GPUCounters& current,
+                                      const Platform::GPUCounters* previous,
+                                      const std::vector<Platform::GPUInfo>& gpuInfo,
+                                      double timeDeltaSeconds)
 {
     GPUSnapshot snapshot;
 
@@ -852,8 +859,8 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.kind = current.kind;
 
     // Find GPU info for this ID
-    auto infoIt = std::ranges::find_if(m_GPUInfo, [&](const auto& info) { return info.id == current.gpuId; });
-    if (infoIt != m_GPUInfo.end())
+    auto infoIt = std::ranges::find_if(gpuInfo, [&](const auto& info) { return info.id == current.gpuId; });
+    if (infoIt != gpuInfo.end())
     {
         snapshot.name = infoIt->name;
         snapshot.vendor = infoIt->vendor;

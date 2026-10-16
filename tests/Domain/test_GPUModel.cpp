@@ -1242,6 +1242,79 @@ TEST(GPUModelTest, ConcurrentReadsDuringRefresh)
     EXPECT_GT(readCount.load(), REFRESHES);
 }
 
+namespace
+{
+
+/// A probe whose every rescan reports a change and whose enumeration alternates between one GPU and
+/// three, so each refresh's rescanGPUs() replaces (and reallocates) the model's GPU info (#2153).
+/// Every GPU reports counters throughout. Its probe calls run under GPUModel's probe lock, so its
+/// own state needs no lock.
+class ChurningGPUProbe final : public MockGPUProbe
+{
+  public:
+    ChurningGPUProbe()
+    {
+        withGPU("GPU0", "GPU Zero").withGPU("GPU1", "GPU One").withGPU("GPU2", "GPU Two");
+    }
+
+    [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
+    {
+        std::vector<Platform::GPUInfo> gpus{makeGPUInfo("GPU0", "GPU Zero")};
+        if ((m_Enumerations++ % 2) == 0)
+        {
+            gpus.push_back(makeGPUInfo("GPU1", "GPU One"));
+            gpus.push_back(makeGPUInfo("GPU2", "GPU Two"));
+        }
+        return gpus;
+    }
+
+    [[nodiscard]] bool rescanGPUs(Platform::GPURescan /*depth*/) override
+    {
+        return true;
+    }
+
+  private:
+    std::uint64_t m_Enumerations = 0;
+};
+
+} // namespace
+
+// Two refreshes may race (the header promises their generations are committed in read order). One's
+// snapshots must not be named from the GPU info while the other's rescan replaces it: refreshAt()
+// copies the info under the probe lock (#2153). The race itself is for ASan/TSan to catch; the names
+// check that each snapshot was named from a whole list.
+TEST(GPUModelTest, RacingRefreshesWithChangingGpuListsNameEverySnapshot)
+{
+    Domain::GPUModel model(std::make_unique<ChurningGPUProbe>());
+
+    constexpr int ITERATIONS = 300;
+    std::latch start{2};
+    const auto refresher = [&model, &start]
+    {
+        start.arrive_and_wait();
+        for (int i = 0; i < ITERATIONS; ++i)
+        {
+            model.refresh();
+        }
+    };
+    auto first = std::async(std::launch::async, refresher);
+    auto second = std::async(std::launch::async, refresher);
+    first.get();
+    second.get();
+
+    const std::map<std::string, std::string> expectedNames{{"GPU0", "GPU Zero"}, {"GPU1", "GPU One"}, {"GPU2", "GPU Two"}};
+    const auto snapshots = model.snapshots();
+    ASSERT_FALSE(snapshots.empty());
+    for (const auto& snapshot : snapshots)
+    {
+        // GPU1 and GPU2 are enumerated only every other rescan: a snapshot is named from its own
+        // refresh's list, or not at all.
+        ASSERT_TRUE(expectedNames.contains(snapshot.gpuId)) << snapshot.gpuId;
+        EXPECT_TRUE(snapshot.name.empty() || snapshot.name == expectedNames.at(snapshot.gpuId)) << snapshot.name;
+    }
+    EXPECT_EQ(snapshots.front().name, "GPU Zero"); // Enumerated on every rescan, and listed first
+}
+
 // =============================================================================
 // Edge Cases
 // =============================================================================
