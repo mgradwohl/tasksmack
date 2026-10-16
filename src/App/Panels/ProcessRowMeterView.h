@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 
 namespace App::ProcessRowMeter
 {
@@ -94,7 +96,10 @@ inline bool renderCellMeter(
         std::size_t i = 0;
         while (i < count)
         {
-            max = std::max(max, static_cast<double>(ring.at(i)));
+            if (const auto value = static_cast<double>(ring.at(i)); std::isfinite(value))
+            {
+                max = std::max(max, value);
+            }
             ++i;
         }
     }
@@ -102,7 +107,15 @@ inline bool renderCellMeter(
     while (i < count)
     {
         const auto value = static_cast<double>(ring.at(i));
-        out[i] = (scale == Scale::Percent) ? percentFraction(value) : absoluteFraction(value, max);
+        // A value not read stays NaN: the line breaks there (#2158).
+        if (!std::isfinite(value))
+        {
+            out[i] = std::numeric_limits<float>::quiet_NaN();
+        }
+        else
+        {
+            out[i] = (scale == Scale::Percent) ? percentFraction(value) : absoluteFraction(value, max);
+        }
         ++i;
     }
     return count;
@@ -145,17 +158,40 @@ inline bool renderCellSparkline(const Settings& settings,
     const float height = std::max(0.0F, (box.max.y - box.min.y) - SPARKLINE_THICKNESS_PX);
     const float step = width / static_cast<float>(Domain::ProcessRowHistory::RING_CAPACITY - 1U);
 
+    // The colour is the newest value read; with none read, there is nothing to draw.
+    std::size_t newest = count;
+    while (newest > 0 && std::isnan(fractions[newest - 1U]))
+    {
+        --newest;
+    }
+    if (newest == 0)
+    {
+        return false;
+    }
+    const ImU32 color = heatColor(colors, fractions[newest - 1U]);
+
+    // One polyline per run of values read: a value not read (NaN) leaves a gap (#2158).
     std::array<ImVec2, Domain::ProcessRowHistory::RING_CAPACITY> points{};
+    bool drew = false;
     std::size_t i = 0;
     while (i < count)
     {
-        const auto stepsBack = static_cast<float>(count - 1U - i);
-        points[i] = ImVec2(box.max.x - (stepsBack * step), bottom - (fractions[i] * height));
-        ++i;
+        std::size_t run = 0;
+        while (i < count && !std::isnan(fractions[i]))
+        {
+            const auto stepsBack = static_cast<float>(count - 1U - i);
+            points[run] = ImVec2(box.max.x - (stepsBack * step), bottom - (fractions[i] * height));
+            ++run;
+            ++i;
+        }
+        if (run >= 2)
+        {
+            ImGui::GetWindowDrawList()->AddPolyline(points.data(), static_cast<int>(run), color, ImDrawFlags_None, SPARKLINE_THICKNESS_PX);
+            drew = true;
+        }
+        ++i; // past the gap
     }
-    ImGui::GetWindowDrawList()->AddPolyline(
-        points.data(), static_cast<int>(count), heatColor(colors, fractions[count - 1U]), ImDrawFlags_None, SPARKLINE_THICKNESS_PX);
-    return true;
+    return drew;
 }
 
 } // namespace App::ProcessRowMeter

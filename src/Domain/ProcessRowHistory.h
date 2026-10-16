@@ -12,9 +12,10 @@
 
 #include <array>
 #include <cmath>
-#include <compare>
+#include <compare> // NOLINT(misc-include-cleaner) - KeyRow's defaulted operator<=> needs std::strong_ordering
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -86,14 +87,44 @@ using MetricSet = std::uint16_t;
     return 0.0;
 }
 
+/// The value @p metric's history keeps for @p proc (#2158): valueOf(), but NaN for a value the probe
+/// could not read, so a sparkline leaves a gap there rather than drawing a measured zero (#1110).
+[[nodiscard]] inline double sampleOf(const ProcessSnapshot& proc, Metric metric) noexcept
+{
+    bool readable = true;
+    switch (metric)
+    {
+    case Metric::IoRead:
+    case Metric::IoWrite:
+        readable = proc.ioAvailable;
+        break;
+    case Metric::NetSent:
+    case Metric::NetReceived:
+        readable = proc.networkAvailable;
+        break;
+    case Metric::GpuPercent:
+    case Metric::GpuMemory:
+    case Metric::NpuPercent:
+    case Metric::NpuMemory:
+        readable = proc.gpuFieldsRead;
+        break;
+    case Metric::CpuPercent:
+    case Metric::MemPercent:
+    case Metric::Resident:
+        break;
+    }
+    return readable ? valueOf(proc, metric) : std::numeric_limits<double>::quiet_NaN();
+}
+
 /// The latest RING_CAPACITY values of one metric of one process, oldest first. Never allocates.
 class Ring
 {
   public:
-    /// Appends @p value, dropping the oldest once full. A value that is not finite is kept as 0.
+    /// Appends @p value, dropping the oldest once full. NaN (not read) is kept, for a gap; an infinity
+    /// is kept as 0.
     void push(float value) noexcept
     {
-        const float kept = std::isfinite(value) ? value : 0.0F;
+        const float kept = std::isinf(value) ? 0.0F : value;
         if (m_Count < RING_CAPACITY)
         {
             m_Values[(m_Start + m_Count) % RING_CAPACITY] = kept;
@@ -194,9 +225,12 @@ class Tracker
 
   private:
     /// A uniqueKey and its row in a generation.
+    /// A row by its process's exact identity, (pid, start time) (#2158): uniqueKey is a hash of the
+    /// two and can collide, which handed one process another's history.
     struct KeyRow
     {
-        std::uint64_t key = 0;
+        std::int32_t pid = 0;
+        std::uint64_t startTimeTicks = 0;
         std::size_t row = 0;
 
         friend auto operator<=>(const KeyRow&, const KeyRow&) = default;

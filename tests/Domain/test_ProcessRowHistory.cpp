@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -77,12 +78,15 @@ TEST(ProcessRowHistoryRingTest, DropsTheOldestOnceFull)
     EXPECT_FLOAT_EQ(ring.latest(), static_cast<float>(RING_CAPACITY + 4));
 }
 
-TEST(ProcessRowHistoryRingTest, AValueThatIsNotFiniteIsKeptAsZero)
+// #2158: a value not read (NaN) is kept, so the sparkline leaves a gap; an infinity is kept as 0.
+TEST(ProcessRowHistoryRingTest, NaNIsKeptAndAnInfinityIsKeptAsZero)
 {
     Ring ring;
     ring.push(std::numeric_limits<float>::quiet_NaN());
     ring.push(std::numeric_limits<float>::infinity());
-    expectValues(ring, {0.0F, 0.0F});
+    ASSERT_EQ(ring.size(), 2U);
+    EXPECT_TRUE(std::isnan(ring.at(0)));
+    EXPECT_FLOAT_EQ(ring.at(1), 0.0F);
 }
 
 TEST(ProcessRowHistoryRingTest, IsAbout120Bytes)
@@ -156,7 +160,7 @@ TEST(ProcessRowHistoryTrackerTest, NoMetricsDropsEverything)
 
 TEST(ProcessRowHistoryTrackerTest, AKeyListedTwiceCarriesOnItsFirstRowsHistory)
 {
-    // A uniqueKey hash collision: both rows carry on the history of the key's first row, and the
+    // One (pid, start time) listed twice: both rows carry on the history of its first row, and the
     // next generation finds the first of them again.
     Tracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
@@ -168,18 +172,40 @@ TEST(ProcessRowHistoryTrackerTest, AKeyListedTwiceCarriesOnItsFirstRowsHistory)
     expectValues(*gen->ring(0, Metric::CpuPercent), {1.0F, 2.0F, 3.0F});
 }
 
-TEST(ProcessRowHistoryTrackerTest, AnUnreadValueIsKeptAsZero)
+// #2158: two different processes whose uniqueKey hashes collide each keep their own history: a new
+// process never inherits another's.
+TEST(ProcessRowHistoryTrackerTest, ProcessesWhoseKeysCollideKeepTheirOwnHistory)
+{
+    Tracker tracker;
+    const MetricSet cpu = bitOf(Metric::CpuPercent);
+    Domain::ProcessSnapshot old = makeProc(1000, 1.0);
+    old.startTimeTicks = 50000;
+    old.uniqueKey = 0xC0FFEE;
+    (void) tracker.advance({old}, cpu);
+    Domain::ProcessSnapshot other = makeProc(1001, 7.0);
+    other.startTimeTicks = 49935;
+    other.uniqueKey = 0xC0FFEE; // the same hash, a different process
+    const auto gen = tracker.advance({other}, cpu);
+    expectValues(*gen->ring(0, Metric::CpuPercent), {7.0F});
+}
+
+// #2158: a value the probe could not read is kept as NaN, so the sparkline leaves a gap rather than a
+// measured zero.
+TEST(ProcessRowHistoryTrackerTest, AnUnreadValueIsKeptAsAGap)
 {
     Domain::ProcessSnapshot proc = makeProc(10, 0.0);
     proc.ioReadBytesPerSec = 500.0;
     proc.ioAvailable = false;
     Tracker tracker;
     const auto gen = tracker.advance({proc}, bitOf(Metric::IoRead));
-    expectValues(*gen->ring(0, Metric::IoRead), {0.0F});
+    const Ring* ring = gen->ring(0, Metric::IoRead);
+    ASSERT_NE(ring, nullptr);
+    ASSERT_EQ(ring->size(), 1U);
+    EXPECT_TRUE(std::isnan(ring->at(0)));
 }
 
 // #1799: the NPU % and NPU Memory sparklines follow the process's NPU figures, never its GPU ones,
-// alongside the GPU's; read with the GPU fields, so unread they are kept as zero too.
+// alongside the GPU's; read with the GPU fields, so unread they are gaps too (#2158).
 TEST(ProcessRowHistoryTrackerTest, TheNpuMetricsFollowTheNpuFigures)
 {
     Domain::ProcessSnapshot proc = makeProc(10, 0.0);
@@ -196,8 +222,13 @@ TEST(ProcessRowHistoryTrackerTest, TheNpuMetricsFollowTheNpuFigures)
 
     proc.gpuFieldsRead = false;
     gen = tracker.advance({proc}, all);
-    expectValues(*gen->ring(0, Metric::NpuPercent), {70.0F, 0.0F});
-    expectValues(*gen->ring(0, Metric::NpuMemory), {8192.0F, 0.0F});
+    for (const Metric metric : {Metric::NpuPercent, Metric::NpuMemory})
+    {
+        const Ring* ring = gen->ring(0, metric);
+        ASSERT_NE(ring, nullptr);
+        ASSERT_EQ(ring->size(), 2U);
+        EXPECT_TRUE(std::isnan(ring->at(1)));
+    }
 }
 
 // ========== ProcessModel ==========
