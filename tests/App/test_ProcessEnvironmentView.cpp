@@ -247,6 +247,20 @@ TEST(ProcessEnvironmentViewTest, AReadForThePreviousSelectionIsDropped)
     EXPECT_TRUE(view.rows().empty());
 }
 
+// #2141: a proxy URL with a password is masked like a secret-named variable, though HTTPS_PROXY is not one.
+TEST(ProcessEnvironmentViewTest, AUrlWithAPasswordIsMasked)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult(
+        okResult({{.name = "HTTPS_PROXY", .value = "http://alice:S3cret@proxy.corp:8080"}, {.name = "NO_PROXY", .value = "localhost"}}));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_EQ(view.rows().size(), 2U);
+    EXPECT_TRUE(view.isMasked(view.rows()[0])) << view.rows()[0].name;
+    EXPECT_FALSE(view.isMasked(view.rows()[1])) << view.rows()[1].name;
+}
+
 // ========== Reveal ==========
 
 TEST(ProcessEnvironmentViewTest, RevealLastsAcrossReReadsAndEndsOnSelectionChange)

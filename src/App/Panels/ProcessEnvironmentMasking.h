@@ -158,4 +158,37 @@ namespace EnvironmentMaskingDetail
     return false;
 }
 
+/// Whether @p value holds a URL whose userinfo carries a password -- "scheme://user:pass@host", as in
+/// HTTPS_PROXY, REDIS_URL or AMQP_URL (#2141): whatever the variable is called, that is a credential.
+/// Every URL in the value is checked (a list of them, as NO_PROXY-style values have), each up to the end
+/// of its authority ('/', '?', '#' or whitespace). A user with no password ("http://alice@host") is not.
+[[nodiscard]] inline bool hasUrlCredentials(std::string_view value)
+{
+    constexpr std::string_view SCHEME_END = "://";
+    for (std::size_t at = value.find(SCHEME_END); at != std::string_view::npos; at = value.find(SCHEME_END, at + 1))
+    {
+        std::string_view authority = value.substr(at + SCHEME_END.size());
+        authority = authority.substr(0, std::min(authority.find_first_of("/?# \t,;"), authority.size()));
+        const std::size_t atSign = authority.rfind('@');
+        if (atSign == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view userInfo = authority.substr(0, atSign);
+        const std::size_t colon = userInfo.find(':');
+        if (colon != std::string_view::npos && colon + 1 < userInfo.size())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Whether the variable @p name = @p value is drawn masked: its name looks secret
+/// (isSecretEnvironmentName()), or its value carries URL credentials (hasUrlCredentials()).
+[[nodiscard]] inline bool isSecretEnvironmentVariable(std::string_view name, std::string_view value)
+{
+    return isSecretEnvironmentName(name) || hasUrlCredentials(value);
+}
+
 } // namespace App::Detail

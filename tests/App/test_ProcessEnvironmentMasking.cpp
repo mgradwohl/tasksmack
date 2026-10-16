@@ -140,5 +140,25 @@ TEST(ProcessEnvironmentMaskingTest, ListedNamesAreUpperCaseAndDistinct)
     }
 }
 
+// #2141: a URL carrying a password is a credential whatever the variable is called -- proxies, brokers,
+// caches, package indexes -- and every URL in a list is checked. A user name alone is not.
+TEST(ProcessEnvironmentMaskingTest, UrlCredentialsInAValueAreSecret)
+{
+    EXPECT_TRUE(hasUrlCredentials("http://alice:S3cret@proxy.corp:8080"));
+    EXPECT_TRUE(hasUrlCredentials("redis://:hunter2@cache:6379/0"));
+    EXPECT_TRUE(hasUrlCredentials("amqp://guest:guest@rabbit//"));
+    EXPECT_TRUE(hasUrlCredentials("https://pypi.org/simple,https://u:tok@pkgs.corp/simple"));
+    EXPECT_FALSE(hasUrlCredentials("http://alice@proxy.corp:8080")); // no password
+    EXPECT_FALSE(hasUrlCredentials("http://proxy.corp:8080"));
+    EXPECT_FALSE(hasUrlCredentials("https://example.com/path/a:b@c")); // '@' after the authority
+    EXPECT_FALSE(hasUrlCredentials("http://alice:@proxy"));            // empty password
+    EXPECT_FALSE(hasUrlCredentials("/usr/bin:/bin"));
+    EXPECT_FALSE(hasUrlCredentials(""));
+
+    EXPECT_TRUE(isSecretEnvironmentVariable("HTTPS_PROXY", "http://alice:S3cret@proxy.corp:8080"));
+    EXPECT_FALSE(isSecretEnvironmentVariable("HTTPS_PROXY", "http://proxy.corp:8080"));
+    EXPECT_TRUE(isSecretEnvironmentVariable("API_TOKEN", "plain")); // the name rule still applies
+}
+
 } // namespace
 } // namespace App::Detail

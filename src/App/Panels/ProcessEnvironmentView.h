@@ -107,7 +107,7 @@ class ProcessEnvironmentView
     {
         std::string name;
         std::string value;
-        bool secret = false; ///< Detail::isSecretEnvironmentName(name): drawn masked until revealed
+        bool secret = false; ///< Detail::isSecretEnvironmentVariable(): drawn masked until revealed
         /// How many earlier entries of the read had the same name. execve() allows duplicate names and
         /// /proc/[pid]/environ keeps every entry, so (name, occurrence) -- not the name alone -- is the
         /// row's identity for its reveal state, and stays the same across re-reads of the same environment.
@@ -181,7 +181,7 @@ class ProcessEnvironmentView
         m_Rows.reserve(result.variables.size());
         for (Platform::EnvironmentVariable& variable : result.variables)
         {
-            const bool secret = Detail::isSecretEnvironmentName(variable.name);
+            const bool secret = Detail::isSecretEnvironmentVariable(variable.name, variable.value);
             m_Rows.push_back({.name = std::move(variable.name), .value = std::move(variable.value), .secret = secret, .occurrence = 0});
         }
         // Stable: duplicates of a name keep their read order, which the occurrence numbers follow.
