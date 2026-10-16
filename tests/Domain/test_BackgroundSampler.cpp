@@ -1090,60 +1090,10 @@ TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
     EXPECT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(secondRunSamples));
 }
 
-// =============================================================================
-// Non-blocking stop (#801)
-// =============================================================================
-
-TEST(BackgroundSamplerTest, RequestStopReturnsWithoutWaitingForASampleInFlight)
-{
-    const auto samplable = std::make_shared<GatedSamplable>();
-    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms});
-    EXPECT_TRUE(sampler.hasThreadExited()); // not started
-    sampler.addSamplable(samplable);
-    sampler.start();
-    const bool inSample = samplable->waitUntilInSample();
-    if (!inSample)
-    {
-        // Release before the fatal assert: otherwise the destructor's join waits on a sample that
-        // may still enter the gate after the timeout, and the test hangs instead of failing.
-        samplable->release();
-    }
-    ASSERT_TRUE(inSample);
-    EXPECT_FALSE(sampler.hasThreadExited());
-
-    // Returns while the sample is still blocked: a join here would deadlock the test.
-    sampler.requestStop();
-    EXPECT_FALSE(sampler.hasThreadExited());
-
-    samplable->release();
-    EXPECT_TRUE(waitFor([&sampler] { return sampler.hasThreadExited(); }));
-    EXPECT_EQ(samplable->samples(), 1); // no sample starts after the stop request
-
-    // Still running until stop(), which no longer waits.
-    EXPECT_TRUE(sampler.isRunning());
-    sampler.stop();
-    EXPECT_FALSE(sampler.isRunning());
-}
-
-TEST(BackgroundSamplerTest, RequestStopBeforeStartDoesNothing)
-{
-    const auto samplable = std::make_shared<MockSamplable>();
-    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms});
-    sampler.addSamplable(samplable);
-    sampler.requestStop();
-    EXPECT_TRUE(sampler.hasThreadExited());
-
-    sampler.start();
-    samplable->waitForSamples(1);
-    EXPECT_FALSE(sampler.hasThreadExited());
-    sampler.stop();
-    EXPECT_TRUE(sampler.hasThreadExited());
-}
-
 // start() as a transaction: a failure to create the thread (here a std::bad_alloc from each of its
 // allocations in turn: the thread name's copy, the jthread's stop state and thread state) leaves the
-// sampler stopped and startable, rather than "running" with no thread, which hasThreadExited() and
-// stop() could never recover from.
+// sampler stopped and startable, rather than "running" with no thread, which stop() could never
+// recover from.
 TEST(BackgroundSamplerTest, AFailedStartLeavesTheSamplerStoppedAndStartable)
 {
 #if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
@@ -1178,12 +1128,11 @@ TEST(BackgroundSamplerTest, AFailedStartLeavesTheSamplerStoppedAndStartable)
         {
             ++failedStarts;
             EXPECT_FALSE(sampler.isRunning());
-            EXPECT_TRUE(sampler.hasThreadExited());
             sampler.start(); // startable again
         }
         samplable->waitForSamples(1);
         sampler.stop();
-        EXPECT_TRUE(sampler.hasThreadExited());
+        EXPECT_FALSE(sampler.isRunning());
         if (pending)
         {
             break; // start() made fewer allocations than failAt: every one of them has been failed
