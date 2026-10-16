@@ -1371,7 +1371,7 @@ TEST_F(UserConfigSaveLoadFixture, NumbersRoundTripInTheClassicFormatUnderADecima
     };
     const ScopedGlobalLocale globalGerman(german);
     const UI::Format::ScopedDisplayPunctuation display(Core::LocaleSetup::numberPunctuation(german, DE_DE));
-    ASSERT_EQ(UI::Format::formatDoubleLocalized(0.25, 2), "0,25") << "the display punctuation is de-DE's";
+    ASSERT_EQ(UI::Format::formatFixedLocalized(0.25, 2, {}), "0,25") << "the display punctuation is de-DE's";
 
     auto& config = UserConfig::get();
     config.settings().chartSmoothFactor = 0.25;

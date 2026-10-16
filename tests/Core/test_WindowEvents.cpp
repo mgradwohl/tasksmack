@@ -13,7 +13,6 @@ TEST(WindowEventsTest, WindowCloseEventHasExpectedTypeAndName)
     EXPECT_EQ(event.getEventType(), EventType::WindowClose);
     EXPECT_EQ(event.getEventType(), WindowCloseEvent::getStaticType());
     EXPECT_STREQ(event.getName(), "WindowClose");
-    EXPECT_EQ(event.toString(), "WindowClose");
     EXPECT_FALSE(event.isHandled());
 }
 
@@ -51,14 +50,6 @@ TEST(WindowEventsTest, WindowResizedEventStoresDimensions)
     WindowResizedEvent event(1920, 1080);
     EXPECT_EQ(event.getWidth(), 1920);
     EXPECT_EQ(event.getHeight(), 1080);
-}
-
-TEST(WindowEventsTest, WindowResizedEventToStringContainsDimensions)
-{
-    WindowResizedEvent event(800, 600);
-    const std::string str = event.toString();
-    EXPECT_NE(str.find("800"), std::string::npos);
-    EXPECT_NE(str.find("600"), std::string::npos);
 }
 
 TEST(WindowEventsTest, WindowResizedEventDispatches)

@@ -48,18 +48,20 @@ TEST(ApplicationEventsTest, ShowProcessDetailsHasItsOwnEventType)
     EXPECT_TRUE(handled);
 }
 
-// #1395: each event names itself and what it carries when logged.
-TEST(ApplicationEventsTest, EachEventDescribesItselfForTheLog)
+// Each event names itself for diagnostics (getName(); the unused toString() went in #2164).
+TEST(ApplicationEventsTest, EachEventNamesItself)
 {
-    EXPECT_EQ(ProcessSelectedEvent(4242, 777).toString(), "ProcessSelectedEvent: pid=4242, startTimeTicks=777");
-    EXPECT_EQ(ShowProcessDetailsEvent().toString(), "ShowProcessDetailsEvent");
-    EXPECT_EQ(RefreshRateChangedEvent(500).toString(), "RefreshRateChangedEvent: 500ms");
-    EXPECT_EQ(HistoryDurationChangedEvent(600).toString(), "HistoryDurationChangedEvent: 600s");
-    EXPECT_EQ(ActiveTabChangedEvent("Processes").toString(), "ActiveTabChangedEvent: Processes");
-    EXPECT_EQ(OpenSettingsEvent().toString(), "OpenSettingsEvent");
-    EXPECT_EQ(OpenAboutEvent().toString(), "OpenAboutEvent");
-    EXPECT_EQ(OpenHelpEvent().toString(), "OpenHelpEvent");
-    EXPECT_EQ(OpenElevationNoticeEvent().toString(), "OpenElevationNoticeEvent");
+    EXPECT_STREQ(ProcessSelectedEvent(4242, 777).getName(), "ProcessSelected");
+    EXPECT_STREQ(ShowProcessDetailsEvent().getName(), "ShowProcessDetails");
+    EXPECT_STREQ(ShowServiceEvent("Spooler").getName(), "ShowService");
+    EXPECT_STREQ(RefreshRateChangedEvent(500).getName(), "RefreshRateChanged");
+    EXPECT_STREQ(HistoryDurationChangedEvent(600).getName(), "HistoryDurationChanged");
+    EXPECT_STREQ(UdpEventTraceChangedEvent(true).getName(), "UdpEventTraceChanged");
+    EXPECT_STREQ(ActiveTabChangedEvent("Processes").getName(), "ActiveTabChanged");
+    EXPECT_STREQ(OpenSettingsEvent().getName(), "OpenSettings");
+    EXPECT_STREQ(OpenAboutEvent().getName(), "OpenAbout");
+    EXPECT_STREQ(OpenHelpEvent().getName(), "OpenHelp");
+    EXPECT_STREQ(OpenElevationNoticeEvent().getName(), "OpenElevationNotice");
 }
 
 } // namespace

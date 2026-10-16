@@ -85,14 +85,6 @@ class ScopedDisplayPunctuation
     return numericPunctuation().decimalPoint;
 }
 
-/// The display thousands separator, one or more UTF-8 bytes, or empty when the locale does not
-/// group digits (the classic locale).
-[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> std::string_view
-{
-    const NumericPunctuation& punct = numericPunctuation();
-    return punct.grouping.empty() ? std::string_view{} : std::string_view{punct.thousandsSep};
-}
-
 // ============================================================================
 // Allocation-free localized formatting (#1334)
 // ============================================================================
@@ -357,16 +349,6 @@ template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) ->
     return std::format("{}", value);
 }
 
-[[nodiscard]] inline auto formatUIntLocalized(std::uint64_t value) -> std::string
-{
-    return formatIntLocalized(value);
-}
-
-[[nodiscard]] inline auto formatDoubleLocalized(double value, int decimals) -> std::string
-{
-    return formatFixedLocalized(value, decimals, {});
-}
-
 template<std::integral T> [[nodiscard]] inline auto formatCountWithLabel(T value, std::string_view label) -> std::string
 {
     return std::format("{} {}", formatIntLocalized(value), label);
@@ -435,16 +417,6 @@ enum class DurationStyle : std::uint8_t
         return twoParts(total / HOUR, 'h', (total % HOUR) / MINUTE, 'm');
     }
     return twoParts(total / DAY, 'd', (total % DAY) / HOUR, 'h');
-}
-
-/// "Up: 3d 04h", the system uptime in formatDuration()'s grammar; empty for 0 (not known).
-[[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
-{
-    if (seconds == 0)
-    {
-        return {};
-    }
-    return "Up: " + formatDuration(static_cast<double>(seconds));
 }
 
 /// Format Unix epoch timestamp to human-readable local date/time.
@@ -872,14 +844,6 @@ struct AlignedBytesParts
     return parts;
 }
 
-/// Split a bytes-per-second value into parts for decimal-aligned rendering
-[[nodiscard]] inline auto splitBytesPerSecForAlignment(double bytesPerSec, ByteUnit unit) -> AlignedNumericParts
-{
-    auto parts = splitBytesForAlignment(bytesPerSec, unit);
-    parts.unitPart = std::format(" {}/s", unit.suffix);
-    return parts;
-}
-
 /// Split a percentage value (0-100) into parts for decimal-aligned rendering
 /// Zero-allocation fast path for percentages in the 0-100 range (typical CPU%, MEM%)
 [[nodiscard]] inline auto splitPercentForAlignment(double percent) -> AlignedPercentParts
@@ -1075,12 +1039,6 @@ struct AlignedBytesParts
         }
     }
     return result.empty() ? std::string("-") : result;
-}
-
-/// formatCpuAffinity() of a 64-bit mask, bit N = processor N.
-[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
-{
-    return formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
 }
 
 // ============================================================================

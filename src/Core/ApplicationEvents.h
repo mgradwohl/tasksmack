@@ -3,7 +3,6 @@
 #include "Event.h"
 
 #include <cstdint>
-#include <format>
 #include <string>
 #include <utility>
 
@@ -31,11 +30,6 @@ class ProcessSelectedEvent : public Event
         return m_StartTimeTicks;
     }
 
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("ProcessSelectedEvent: pid={}, startTimeTicks={}", m_Pid, m_StartTimeTicks);
-    }
-
     EVENT_CLASS_TYPE(ProcessSelected)
 
   private:
@@ -50,11 +44,6 @@ class ShowProcessDetailsEvent : public Event
 {
   public:
     ShowProcessDetailsEvent() = default;
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "ShowProcessDetailsEvent";
-    }
 
     EVENT_CLASS_TYPE(ShowProcessDetails)
 };
@@ -71,11 +60,6 @@ class ShowServiceEvent : public Event
     [[nodiscard]] const std::string& name() const noexcept
     {
         return m_Name;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "ShowServiceEvent: " + m_Name;
     }
 
     EVENT_CLASS_TYPE(ShowService)
@@ -102,11 +86,6 @@ class RefreshRateChangedEvent : public Event
     [[nodiscard]] auto isInitial() const -> bool
     {
         return m_Initial;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("RefreshRateChangedEvent: {}ms", m_IntervalMs);
     }
 
     EVENT_CLASS_TYPE(RefreshRateChanged)
@@ -136,11 +115,6 @@ class HistoryDurationChangedEvent : public Event
         return m_Seconds;
     }
 
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("HistoryDurationChangedEvent: {}s", m_Seconds);
-    }
-
     EVENT_CLASS_TYPE(HistoryDurationChanged)
 
   private:
@@ -159,11 +133,6 @@ class UdpEventTraceChangedEvent : public Event
     [[nodiscard]] auto isEnabled() const -> bool
     {
         return m_Enabled;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("UdpEventTraceChangedEvent: {}", m_Enabled ? "on" : "off");
     }
 
     EVENT_CLASS_TYPE(UdpEventTraceChanged)
@@ -190,11 +159,6 @@ class ActiveTabChangedEvent : public Event
         return m_TabName;
     }
 
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("ActiveTabChangedEvent: {}", m_TabName);
-    }
-
     EVENT_CLASS_TYPE(ActiveTabChanged)
 
   private:
@@ -207,11 +171,6 @@ class OpenSettingsEvent : public Event
   public:
     OpenSettingsEvent() = default;
 
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "OpenSettingsEvent";
-    }
-
     EVENT_CLASS_TYPE(OpenSettings)
 };
 
@@ -220,11 +179,6 @@ class OpenAboutEvent : public Event
 {
   public:
     OpenAboutEvent() = default;
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "OpenAboutEvent";
-    }
 
     EVENT_CLASS_TYPE(OpenAbout)
 };
@@ -235,11 +189,6 @@ class OpenHelpEvent : public Event
   public:
     OpenHelpEvent() = default;
 
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "OpenHelpEvent";
-    }
-
     EVENT_CLASS_TYPE(OpenHelp)
 };
 
@@ -248,11 +197,6 @@ class OpenElevationNoticeEvent : public Event
 {
   public:
     OpenElevationNoticeEvent() = default;
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return "OpenElevationNoticeEvent";
-    }
 
     EVENT_CLASS_TYPE(OpenElevationNotice)
 };

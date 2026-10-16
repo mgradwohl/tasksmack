@@ -347,12 +347,6 @@ class Theme
         return m_DiscoveredThemes;
     }
 
-    /// Get current theme index
-    [[nodiscard]] auto currentThemeIndex() const -> std::size_t
-    {
-        return m_CurrentThemeIndex;
-    }
-
     /// Get current theme ID (filename without extension)
     [[nodiscard]] auto currentThemeId() const -> const std::string&;
 

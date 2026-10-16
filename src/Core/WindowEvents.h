@@ -2,8 +2,6 @@
 
 #include "Event.h"
 
-#include <format>
-
 namespace Core
 {
 
@@ -52,11 +50,6 @@ class WindowResizedEvent : public Event
     [[nodiscard]] auto getHeight() const noexcept -> int
     {
         return m_Height;
-    }
-
-    [[nodiscard]] auto toString() const -> std::string override
-    {
-        return std::format("WindowResized: {}x{}", m_Width, m_Height);
     }
 
     EVENT_CLASS_TYPE(WindowResized)
