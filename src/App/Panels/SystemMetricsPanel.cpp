@@ -840,7 +840,7 @@ void SystemMetricsPanel::renderOverview()
 
     if (cpuCardVisible)
     {
-        renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, overviewNowBarColumns());
+        renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, {.minBarColumns = overviewNowBarColumns()});
     }
     UI::Widgets::endChartCard("##CpuUsageCard", plotHeight);
     fill.addPlot(); // After the card, in the panel's coordinates: the fill layout counts its padding as non-chart height
@@ -1052,7 +1052,7 @@ void SystemMetricsPanel::renderOverview()
             const bool headingHovered = powerCardVisible && UI::Widgets::sectionHeader(ICON_FA_BOLT, headingTitle);
             if (powerCardVisible)
             {
-                renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
+                renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, {.minBarColumns = overviewNowBarColumns()});
             }
             // Tooltip with detailed info
             if (headingHovered)
@@ -1260,8 +1260,11 @@ void SystemMetricsPanel::renderOverview()
         if (UI::Widgets::beginChartCard("##ResourcesCard", plotHeight))
         {
             (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, resourcesTitle, {}, alignedCount);
-            renderHistoryWithNowBars(
-                "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, overviewNowBarColumns());
+            renderHistoryWithNowBars("ResourcesHistoryLayout",
+                                     plotHeight,
+                                     plot,
+                                     {threadsBar, faultsBar, handlesBar},
+                                     {.minBarColumns = overviewNowBarColumns()});
         }
         UI::Widgets::endChartCard("##ResourcesCard", plotHeight);
         fill.addPlot();

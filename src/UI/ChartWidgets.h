@@ -3560,26 +3560,38 @@ nowBarsReservedWidth(std::size_t barCount, std::size_t minBarColumns, bool compa
     return nowBarColumnWidth(std::max(barCount, minBarColumns), availableWidth) + cellPadding;
 }
 
+/// How renderHistoryWithNowBars() lays out its "Now" column and value strip. Name the fields that differ
+/// from the defaults: `{.minBarColumns = N, .values = NowBarValues::None}` (#2161).
+struct NowBarsLayout
+{
+    /// Columns to reserve for the bars, at least: charts stacked in one pane pass the same number, so
+    /// their "Now" columns line up whatever each one's own bar count.
+    std::size_t minBarColumns = 0;
+    /// No cell padding around the column boundary, for tight regions (a CPU core's cell).
+    bool compactSpacing = false;
+    /// Whether each bar's current value is printed in a strip above the chart (#1193).
+    NowBarValues values = NowBarValues::Strip;
+    /// Series the chart draws without a bar (a peak line), so the strip lists every series its
+    /// tooltip does.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the call sites' designated initializers leave it out
+    std::span<const ValueStripEntry> stripExtras = {};
+    /// The chart's Y axes, so each strip entry aligns to its series' axis (#1882).
+    SeriesLabelAlignment::ChartAxes axes = {};
+};
+
 /// @p plotFn draws the chart; it is called before this returns, and never stored. A template parameter
 /// rather than a std::function: the charts' capturing lambdas are larger than any standard library's
 /// std::function small buffer, so wrapping one allocated once per chart per frame (#1171).
 template<typename PlotFn>
-inline void renderHistoryWithNowBars(const char* tableId,
-                                     float plotHeight,
-                                     const PlotFn& plotFn,
-                                     std::span<const NowBar> bars,
-                                     bool barsOnly = false,
-                                     size_t minBarColumns = 0,
-                                     bool compactSpacing = false,
-                                     NowBarValues values = NowBarValues::Strip,
-                                     std::span<const ValueStripEntry> stripExtras = {},
-                                     SeriesLabelAlignment::ChartAxes axes = {})
+inline void renderHistoryWithNowBars(
+    const char* tableId, float plotHeight, const PlotFn& plotFn, std::span<const NowBar> bars, const NowBarsLayout& layout = {})
 {
-    // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
-    // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
-    // reserves a fixed-width column sized to the larger of the provided bar count or minBarColumns,
+    // Renders a history plot side-by-side with a compact "now" bar column. The table layout reserves a
+    // fixed-width column sized to the larger of the provided bar count or layout.minBarColumns,
     // applying optional compact spacing for tight UI regions. Each bar can show a value label or a
     // custom label; spacing mirrors ImGui style spacing to stay consistent with surrounding widgets.
+    const std::size_t minBarColumns = layout.minBarColumns;
+    const bool compactSpacing = layout.compactSpacing;
     if (bars.empty())
     {
         // Scoped by tableId like the table path below (BeginTable pushes its ID), so a chart drawn
@@ -3597,54 +3609,15 @@ inline void renderHistoryWithNowBars(const char* tableId,
     const float rowWidth = ImGui::GetContentRegionAvail().x;
     const std::size_t barColumns = std::max(bars.size(), minBarColumns);
 
-    if (values == NowBarValues::Strip)
+    if (layout.values == NowBarValues::Strip)
     {
-        // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
-        // series its tooltip does. On the heading's line, each entry aligned to its series' axis (#1882).
+        // On the heading's line, each entry aligned to its series' axis (#1882).
         renderNowBarValueStrip(bars,
-                               stripExtras,
+                               layout.stripExtras,
                                ValueStripLayout::Wrap,
                                tableId,
                                nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing, rowWidth),
-                               axes);
-    }
-
-    if (barsOnly)
-    {
-        // No chart is drawn on this path, so an axis eased for it can't be visible: drop its pending
-        // full-rate request rather than leave it for the next chart (Detail::g_PendingEaseRequestFrame).
-        // The other paths all construct the chart through plotFn -- the table path inside the table,
-        // the clipped-table and bar-less paths directly -- and HistoryChart consumes it there.
-        Detail::g_PendingEaseRequestFrame = -1;
-        const float widthPerBar = nowBarWidth(ImGui::GetFontSize());
-        const ImGuiStyle& style = ImGui::GetStyle();
-
-        const RenderMetricsScope barsScope(tableId, "/bars");
-        ImGui::BeginGroup();
-        for (size_t i = 0; i < bars.size(); ++i)
-        {
-            ImGui::PushID(&bars[i]);
-            if (i > 0)
-            {
-                ImGui::SameLine(0.0F, style.ItemSpacing.x);
-            }
-
-            Detail::drawNowBar(bars[i], plotHeight, widthPerBar);
-            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), Detail::nowBarMotionValue(bars[i]), plotHeight);
-            if (ImGui::IsItemHovered())
-            {
-                const std::string tooltip = selectNowBarTooltip(bars[i]);
-                if (!tooltip.empty())
-                {
-                    ImGui::BeginTooltip();
-                    ImGui::TextUnformatted(tooltip.c_str());
-                    ImGui::EndTooltip();
-                }
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndGroup();
-        return;
+                               layout.axes);
     }
 
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -3723,27 +3696,10 @@ inline void renderHistoryWithNowBars(const char* tableId,
 /// renderHistoryWithNowBars() for bars listed in place, e.g. `{readBar, writeBar}`: the list's backing
 /// array lives on the stack, where a braced std::vector argument allocated every frame (#1018).
 template<typename PlotFn>
-inline void renderHistoryWithNowBars(const char* tableId,
-                                     float plotHeight,
-                                     const PlotFn& plotFn,
-                                     std::initializer_list<NowBar> bars,
-                                     bool barsOnly = false,
-                                     size_t minBarColumns = 0,
-                                     bool compactSpacing = false,
-                                     NowBarValues values = NowBarValues::Strip,
-                                     std::span<const ValueStripEntry> stripExtras = {},
-                                     SeriesLabelAlignment::ChartAxes axes = {})
+inline void renderHistoryWithNowBars(
+    const char* tableId, float plotHeight, const PlotFn& plotFn, std::initializer_list<NowBar> bars, const NowBarsLayout& layout = {})
 {
-    renderHistoryWithNowBars(tableId,
-                             plotHeight,
-                             plotFn,
-                             std::span<const NowBar>(bars.begin(), bars.size()),
-                             barsOnly,
-                             minBarColumns,
-                             compactSpacing,
-                             values,
-                             stripExtras,
-                             axes);
+    renderHistoryWithNowBars(tableId, plotHeight, plotFn, std::span<const NowBar>(bars.begin(), bars.size()), layout);
 }
 
 } // namespace UI::Widgets

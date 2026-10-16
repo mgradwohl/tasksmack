@@ -270,7 +270,7 @@ void renderDiskCell(const std::string& deviceName,
     // keeps per-disk RenderMetrics entries from collapsing into one (#823 review), without
     // reintroducing the per-frame heap allocation a formatted id had.
     renderHistoryWithNowBars(
-        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, false, STORAGE_NOW_BAR_COLUMNS, false, NowBarValues::None);
+        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, {.minBarColumns = STORAGE_NOW_BAR_COLUMNS, .values = NowBarValues::None});
 }
 
 } // namespace
@@ -575,7 +575,8 @@ void renderStorageSection(RenderContext& ctx)
         // or not it is visible; ImGui skips them when it isn't.
         (void) UI::Widgets::beginChartCard("##DiskIoHistoryCard", plotHeight);
         (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "Disk I/O History", {}, alignedDisk);
-        renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars(
+            "SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, {.minBarColumns = STORAGE_NOW_BAR_COLUMNS});
         UI::Widgets::endChartCard("##DiskIoHistoryCard", plotHeight);
         if (ctx.fill != nullptr)
         {

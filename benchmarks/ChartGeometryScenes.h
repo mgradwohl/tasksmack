@@ -372,10 +372,7 @@ inline void drawPerCoreSparklines(const SceneData& data, const SceneState& state
                                  CORE_CHART_HEIGHT,
                                  plotFn,
                                  {bar(coreLabel, static_cast<double>(samples.back()), scheme.chartCpu)},
-                                 false,
-                                 0,
-                                 false,
-                                 NowBarValues::None);
+                                 {.values = NowBarValues::None});
     }
     ImGui::EndTable();
 }

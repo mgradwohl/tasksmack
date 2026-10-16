@@ -315,11 +315,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                              ctx.plotHeight,
                              memoryPlot,
                              memoryBars,
-                             false,
-                             static_cast<size_t>(nowBarColumns),
-                             false,
-                             UI::Widgets::NowBarValues::Strip,
-                             stripExtras);
+                             {.minBarColumns = static_cast<size_t>(nowBarColumns), .stripExtras = stripExtras});
 }
 
 } // namespace App::MemorySection

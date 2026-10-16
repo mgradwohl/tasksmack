@@ -398,7 +398,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                 // from collapsing all cores into one (#823 review).
                 // Not compactSpacing: the bar keeps the same gap from its chart as on every
                 // other tab, rather than touching the plot's edge.
-                renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, false, NowBarValues::None);
+                renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, {.values = NowBarValues::None});
             },
             // Each cell's ImGui id is its core's name, not its position: a core id first
             // reported mid-session can land between charted ones and shift the later cells,

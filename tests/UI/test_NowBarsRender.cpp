@@ -1,6 +1,6 @@
 /// @file test_NowBarsRender.cpp
-/// @brief UI::Widgets::renderHistoryWithNowBars()'s other paths (#1395), headless: bars only (history
-/// unavailable: no chart, one bar per value, each with its tooltip on hover), no bars (just the chart),
+/// @brief UI::Widgets::renderHistoryWithNowBars()'s other paths (#1395), headless: each bar's tooltip
+/// on hover, no bars (just the chart), the strip's marker queue drained by the time it returns (#2161),
 /// RenderMetrics capture (the Ctrl+Shift+M overlay's per-chart samples), a value strip in a row too
 /// narrow for it, which falls back to compact labels, the table layout with compact spacing (its bars'
 /// tooltips), a history chart drawn with anti-aliasing off, and where the value strip puts each label:
@@ -90,8 +90,7 @@ class NowBarsRenderTest : public ::testing::Test
     };
 
     /// One frame: a window @p width wide holding renderHistoryWithNowBars(), with the text it drew.
-    static Drawn
-    frame(std::span<const NowBar> bars, bool barsOnly, NowBarValues values, float width = DISPLAY_WIDTH, bool compactSpacing = false)
+    static Drawn frame(std::span<const NowBar> bars, NowBarValues values, float width = DISPLAY_WIDTH, bool compactSpacing = false)
     {
         Drawn drawn;
         ImGui::NewFrame();
@@ -100,22 +99,18 @@ class NowBarsRenderTest : public ::testing::Test
         ImGui::SetNextWindowSize(ImVec2(width, DISPLAY_HEIGHT));
         ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
-        renderHistoryWithNowBars(
-            "TestChart",
-            PLOT_HEIGHT,
-            [&drawn]
-            {
-                drawn.plotCalled = true;
-                if (ImPlot::BeginPlot("##TestPlot", ImVec2(-1.0F, PLOT_HEIGHT)))
-                {
-                    ImPlot::EndPlot();
-                }
-            },
-            bars,
-            barsOnly,
-            0,
-            compactSpacing,
-            values);
+        renderHistoryWithNowBars("TestChart",
+                                 PLOT_HEIGHT,
+                                 [&drawn]
+                                 {
+                                     drawn.plotCalled = true;
+                                     if (ImPlot::BeginPlot("##TestPlot", ImVec2(-1.0F, PLOT_HEIGHT)))
+                                     {
+                                         ImPlot::EndPlot();
+                                     }
+                                 },
+                                 bars,
+                                 {.compactSpacing = compactSpacing, .values = values});
         drawn.text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         ImGui::End();
@@ -145,24 +140,18 @@ class NowBarsRenderTest : public ::testing::Test
         geometry.headingRight = ImGui::GetItemRectMax().x;
         geometry.headingTop = ImGui::GetItemRectMin().y;
         geometry.headingBottom = ImGui::GetItemRectMax().y;
-        renderHistoryWithNowBars(
-            tableId,
-            PLOT_HEIGHT,
-            [&geometry]
-            {
-                geometry.plotTop = ImGui::GetCursorScreenPos().y;
-                if (ImPlot::BeginPlot("##StripPlot", ImVec2(-1.0F, PLOT_HEIGHT)))
-                {
-                    ImPlot::EndPlot();
-                }
-            },
-            bars,
-            false,
-            0,
-            false,
-            NowBarValues::Strip,
-            {},
-            axes);
+        renderHistoryWithNowBars(tableId,
+                                 PLOT_HEIGHT,
+                                 [&geometry]
+                                 {
+                                     geometry.plotTop = ImGui::GetCursorScreenPos().y;
+                                     if (ImPlot::BeginPlot("##StripPlot", ImVec2(-1.0F, PLOT_HEIGHT)))
+                                     {
+                                         ImPlot::EndPlot();
+                                     }
+                                 },
+                                 bars,
+                                 {.axes = axes});
         ImGui::End();
         ImGui::Render();
         return geometry;
@@ -202,21 +191,24 @@ class NowBarsRenderTest : public ::testing::Test
 
 TEST_F(NowBarsRenderTest, WithoutBarsItIsJustTheChart)
 {
-    const Drawn drawn = frame({}, false, NowBarValues::Strip);
+    const Drawn drawn = frame({}, NowBarValues::Strip);
     EXPECT_TRUE(drawn.plotCalled);
 }
 
-TEST_F(NowBarsRenderTest, BarsOnlyDrawsTheBarsAndNoChart)
+// #2161: the strip queues a swatch for each bar without its own marker, for the chart's markers to be
+// cut into. The bars-only path returned without draining the queue, so its entries (a screen position
+// and a view of a label) were left for the next chart drawn anywhere. Every path now drains it.
+TEST_F(NowBarsRenderTest, TheStripsMarkerQueueIsEmptyWhenItReturns)
 {
-    const std::array<NowBar, 2> bars = twoBars();
-    const Drawn drawn = frame(bars, true, NowBarValues::None);
-    EXPECT_FALSE(drawn.plotCalled); // history unavailable: no chart at all
-    EXPECT_GT(drawn.vertices, 0);   // but the bars are drawn
+    const std::array<NowBar, 2> bars = twoBars(); // no markers of their own: both are queued
+    const Drawn drawn = frame(bars, NowBarValues::Strip);
+    EXPECT_TRUE(drawn.plotCalled);
+    EXPECT_TRUE(Detail::pendingStripMarkers().empty());
 }
 
 // #1918: a bar with no reading (N/A) is not drawn as a zero bar. A measured 0 still gets its
 // MIN_BAR_FILL_HEIGHT baseline in the series' colour; an unavailable bar has none of its colour at all
-// (its track is hatched in the muted text colour instead), with or without a chart beside it.
+// (its track is hatched in the muted text colour instead).
 TEST_F(NowBarsRenderTest, AnUnavailableBarIsNotDrawnAsAZeroBar)
 {
     const ImVec4 color(0.9F, 0.4F, 0.1F, 1.0F);
@@ -234,37 +226,38 @@ TEST_F(NowBarsRenderTest, AnUnavailableBarIsNotDrawnAsAZeroBar)
         return count;
     };
 
-    for (const bool barsOnly : {true, false})
-    {
-        const std::array<NowBar, 1> zero{
-            NowBar{.valueText = "0.0 B/s", .label = "Sent", .tooltipText = {}, .value01 = 0.0, .color = color}};
-        static_cast<void>(frame(zero, barsOnly, NowBarValues::None));
-        EXPECT_GT(verticesInBarColour(), 0) << "barsOnly=" << barsOnly; // the measured 0's baseline
+    const std::array<NowBar, 1> zero{NowBar{.valueText = "0.0 B/s", .label = "Sent", .tooltipText = {}, .value01 = 0.0, .color = color}};
+    static_cast<void>(frame(zero, NowBarValues::None));
+    EXPECT_GT(verticesInBarColour(), 0); // the measured 0's baseline
 
-        const std::array<NowBar, 1> unavailable{NowBar{.valueText = "N/A",
-                                                       .label = "Sent",
-                                                       .tooltipText = {},
-                                                       .value01 = 0.0,
-                                                       .color = color,
-                                                       .marker = ImPlotMarker_None,
-                                                       .available = false}};
-        const Drawn drawn = frame(unavailable, barsOnly, NowBarValues::None);
-        EXPECT_EQ(verticesInBarColour(), 0) << "barsOnly=" << barsOnly;
-        EXPECT_GT(drawn.vertices, 0); // the hatched track is still there
-    }
+    const std::array<NowBar, 1> unavailable{NowBar{.valueText = "N/A",
+                                                   .label = "Sent",
+                                                   .tooltipText = {},
+                                                   .value01 = 0.0,
+                                                   .color = color,
+                                                   .marker = ImPlotMarker_None,
+                                                   .available = false}};
+    const Drawn drawn = frame(unavailable, NowBarValues::None);
+    EXPECT_EQ(verticesInBarColour(), 0);
+    EXPECT_GT(drawn.vertices, 0); // the hatched track is still there
 }
 
-TEST_F(NowBarsRenderTest, ABarSaysWhatItIsOnHover)
+TEST_F(NowBarsRenderTest, ABarBesideTheChartSaysWhatItIsOnHover)
 {
     const std::array<NowBar, 2> bars = twoBars();
-    static_cast<void>(frame(bars, true, NowBarValues::None));
-    // Down the first bar's column until its tooltip shows: "label: value" (no richer text was given).
+    static_cast<void>(frame(bars, NowBarValues::None));
+    // The bars sit in the table's right-hand column: sweep its lower half until a bar's tooltip shows,
+    // "label: value" (no richer text was given).
     bool shown = false;
-    for (int step = 1; step <= 40 && !shown; ++step) // every 4 px down past the bar's foot
+    for (int column = 0; column < 40 && !shown; ++column)
     {
-        ImGui::GetIO().AddMousePosEvent(14.0F, 4.0F * static_cast<float>(step));
-        static_cast<void>(frame(bars, true, NowBarValues::None));
-        shown = frame(bars, true, NowBarValues::None).text.contains("CPU Total: 42%");
+        for (int row = 1; row <= 6 && !shown; ++row)
+        {
+            ImGui::GetIO().AddMousePosEvent(DISPLAY_WIDTH - 4.0F - (4.0F * static_cast<float>(column)), 20.0F * static_cast<float>(row));
+            static_cast<void>(frame(bars, NowBarValues::None));
+            const std::string text = frame(bars, NowBarValues::None).text;
+            shown = text.contains("CPU Total: 42%") || text.contains("CPU User: 30%");
+        }
     }
     EXPECT_TRUE(shown);
 }
@@ -273,8 +266,8 @@ TEST_F(NowBarsRenderTest, RenderMetricsRecordsTheChartAndItsBarsWhenOn)
 {
     RenderMetrics::get().setEnabled(true);
     const std::array<NowBar, 2> bars = twoBars();
-    static_cast<void>(frame(bars, true, NowBarValues::None));
-    static_cast<void>(frame(bars, true, NowBarValues::None)); // the first frame's samples are published by the next
+    static_cast<void>(frame(bars, NowBarValues::None));
+    static_cast<void>(frame(bars, NowBarValues::None)); // the first frame's samples are published by the next
     bool barsRecorded = false;
     for (const ChartRenderSample& sample : RenderMetrics::get().lastFrame())
     {
@@ -287,13 +280,13 @@ TEST_F(NowBarsRenderTest, ANarrowRowShortensTheStripEntriesInsteadOfDroppingThem
 {
     const std::array<NowBar, 2> bars = twoBars();
     // Wide enough: every entry whole.
-    static_cast<void>(frame(bars, false, NowBarValues::Strip));
-    const Drawn wide = frame(bars, false, NowBarValues::Strip);
+    static_cast<void>(frame(bars, NowBarValues::Strip));
+    const Drawn wide = frame(bars, NowBarValues::Strip);
     EXPECT_TRUE(wide.text.contains("CPU Total : 42%")) << wide.text;
     EXPECT_TRUE(wide.text.contains("CPU User : 30%")) << wide.text;
     // Too narrow for "CPU Total : 42%": the entry keeps its name and fits the rest with an ellipsis.
-    static_cast<void>(frame(bars, false, NowBarValues::Strip, 140.0F));
-    const Drawn narrow = frame(bars, false, NowBarValues::Strip, 140.0F);
+    static_cast<void>(frame(bars, NowBarValues::Strip, 140.0F));
+    const Drawn narrow = frame(bars, NowBarValues::Strip, 140.0F);
     EXPECT_TRUE(narrow.plotCalled);
     EXPECT_TRUE(narrow.text.contains("CPU Total")) << narrow.text;
     EXPECT_TRUE(narrow.text.contains("\xE2\x80\xA6")) << narrow.text; // U+2026
@@ -302,7 +295,7 @@ TEST_F(NowBarsRenderTest, ANarrowRowShortensTheStripEntriesInsteadOfDroppingThem
 TEST_F(NowBarsRenderTest, ABarBesideTheChartSaysWhatItIsOnHoverInACompactTable)
 {
     const std::array<NowBar, 2> bars = twoBars();
-    static_cast<void>(frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, /*compactSpacing=*/true));
+    static_cast<void>(frame(bars, NowBarValues::None, DISPLAY_WIDTH, /*compactSpacing=*/true));
     // The bars sit in the table's right-hand column: sweep its lower half until a bar's tooltip shows.
     bool shown = false;
     for (int column = 0; column < 40 && !shown; ++column)
@@ -310,8 +303,8 @@ TEST_F(NowBarsRenderTest, ABarBesideTheChartSaysWhatItIsOnHoverInACompactTable)
         for (int row = 1; row <= 6 && !shown; ++row)
         {
             ImGui::GetIO().AddMousePosEvent(DISPLAY_WIDTH - 4.0F - (4.0F * static_cast<float>(column)), 20.0F * static_cast<float>(row));
-            static_cast<void>(frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, true));
-            const std::string text = frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, true).text;
+            static_cast<void>(frame(bars, NowBarValues::None, DISPLAY_WIDTH, true));
+            const std::string text = frame(bars, NowBarValues::None, DISPLAY_WIDTH, true).text;
             shown = text.contains("CPU Total: 42%") || text.contains("CPU User: 30%");
         }
     }

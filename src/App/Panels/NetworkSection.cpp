@@ -578,8 +578,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         // The row renderHistoryWithNowBars() below lays out in, so the strip
         // reserves the same capped bar column the chart does (#1300 review)
         UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false, ImGui::GetContentRegionAvail().x));
-    renderHistoryWithNowBars(
-        "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
+    renderHistoryWithNowBars("SystemNetHistoryLayout",
+                             plotHeight,
+                             plot,
+                             netBars,
+                             {.minBarColumns = NETWORK_NOW_BAR_COLUMNS, .values = UI::Widgets::NowBarValues::None});
     UI::Widgets::endChartCard("##NetThroughputCard", plotHeight);
     if (ctx.fill != nullptr)
     {

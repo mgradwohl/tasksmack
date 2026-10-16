@@ -733,7 +733,7 @@ void renderUtilizationChartCard(const UtilizationChartIds& ids,
     if (UI::Widgets::beginChartCard(ids.cardId, fill.plotHeight()))
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, ids.heading, {}, axis.alignedCount);
-        renderHistoryWithNowBars(ids.layoutId, fill.plotHeight(), plot, {bar}, false, ids.nowBarColumns);
+        renderHistoryWithNowBars(ids.layoutId, fill.plotHeight(), plot, {bar}, {.minBarColumns = ids.nowBarColumns});
     }
     UI::Widgets::endChartCard(ids.cardId, fill.plotHeight());
     fill.addPlot();
@@ -841,8 +841,7 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
                                  fill.plotHeight(),
                                  cpuPlot,
                                  {cpuTotalNow, cpuUserNow, cpuSystemNow},
-                                 false,
-                                 Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+                                 {.minBarColumns = Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS});
     }
     UI::Widgets::endChartCard("##ProcCpuCard", fill.plotHeight());
     fill.addPlot();
@@ -1061,11 +1060,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
                              fill.plotHeight(),
                              memoryPlot,
                              memoryBars,
-                             false,
-                             Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS,
-                             false,
-                             UI::Widgets::NowBarValues::Strip,
-                             stripExtras);
+                             {.minBarColumns = Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS, .stripExtras = stripExtras});
     UI::Widgets::endChartCard("##ProcMemoryCard", fill.plotHeight());
     fill.addPlot();
 }
@@ -1155,11 +1150,7 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
                                  fill.plotHeight(),
                                  plot,
                                  bars,
-                                 false,
-                                 Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS,
-                                 false,
-                                 UI::Widgets::NowBarValues::Strip,
-                                 resourceExtras);
+                                 {.minBarColumns = Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS, .stripExtras = resourceExtras});
     }
     UI::Widgets::endChartCard("##ProcResourcesCard", fill.plotHeight());
     fill.addPlot();
@@ -1229,7 +1220,7 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_BOLT, "Power Usage", {}, axis.alignedCount);
         renderHistoryWithNowBars(
-            "ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+            "ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, {.minBarColumns = Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS});
     }
     UI::Widgets::endChartCard("##ProcPowerCard", fill.plotHeight());
     fill.addPlot();
@@ -1316,8 +1307,11 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
     if (UI::Widgets::beginChartCard("##ProcIoCard", fill.plotHeight()))
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Statistics", {}, axis.alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessIoHistory",
+                                 fill.plotHeight(),
+                                 plot,
+                                 {readBar, writeBar},
+                                 {.minBarColumns = Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS});
     }
     UI::Widgets::endChartCard("##ProcIoCard", fill.plotHeight());
     fill.addPlot();
@@ -1390,8 +1384,11 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
     const bool headingHovered = cardVisible && UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network");
     if (cardVisible)
     {
-        renderHistoryWithNowBars(
-            "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessNetworkHistory",
+                                 fill.plotHeight(),
+                                 plot,
+                                 {sentBar, recvBar},
+                                 {.minBarColumns = Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS});
     }
     if (headingHovered && ImGui::BeginTooltip())
     {
@@ -1689,7 +1686,7 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Memory History", {}, axis.alignedCount);
         renderHistoryWithNowBars(
-            "ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
+            "ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, {.minBarColumns = Detail::PROCESS_GPU_NOW_BAR_COLUMNS});
     }
     UI::Widgets::endChartCard("##ProcGpuMemCard", fill.plotHeight());
     fill.addPlot();
@@ -1807,8 +1804,11 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
     if (UI::Widgets::beginChartCard("##ProcNpuMemCard", fill.plotHeight()))
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "NPU Memory History", {}, axis.alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessNPUMemHistory", fill.plotHeight(), plotMem, {dedicatedBar, sharedBar}, false, Detail::PROCESS_NPU_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ProcessNPUMemHistory",
+                                 fill.plotHeight(),
+                                 plotMem,
+                                 {dedicatedBar, sharedBar},
+                                 {.minBarColumns = Detail::PROCESS_NPU_NOW_BAR_COLUMNS});
     }
     UI::Widgets::endChartCard("##ProcNpuMemCard", fill.plotHeight());
     fill.addPlot();

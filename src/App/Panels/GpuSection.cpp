@@ -799,7 +799,7 @@ void renderGpuSection(RenderContext& ctx)
                 (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
             }
             renderHistoryWithNowBars(
-                cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+                cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, {.minBarColumns = gpuNowBarColumns});
 
             // Show notes for unavailable core metrics. An NPU has no clock or video engines to miss (#1799).
             UnavailableMetrics unavailableCoreNotes;
@@ -946,8 +946,11 @@ void renderGpuSection(RenderContext& ctx)
             if (UI::Widgets::beginChartCard("##GpuThermalCard", plotHeight))
             {
                 (void) UI::Widgets::sectionHeader(ICON_FA_TEMPERATURE_HALF, "Thermal & Power", {}, alignedCount);
-                renderHistoryWithNowBars(
-                    cache.thermalLayoutIds[entryIndex].c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
+                renderHistoryWithNowBars(cache.thermalLayoutIds[entryIndex].c_str(),
+                                         plotHeight,
+                                         gpuThermalPlot,
+                                         gpuThermalBars,
+                                         {.minBarColumns = gpuNowBarColumns});
 
                 // Show notes for unavailable metrics
                 UnavailableMetrics unavailableNotes;
