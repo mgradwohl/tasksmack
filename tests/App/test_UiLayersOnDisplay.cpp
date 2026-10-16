@@ -83,6 +83,16 @@ bool hasDisplay()
     return TestSupport::enforceDisplayRequirement(available);
 }
 
+/// For a driver that presses keys through ImGuiIO: a focus loss no longer drops its presses (#2268).
+/// Under Xvfb there's no window manager, so SDL gives each window it shows the X input focus, and a test
+/// app that ctest -j opens alongside this one takes it from ours. ImGui clears every key after the frame
+/// that takes a focus loss in, so an F1 pressed on that frame was never seen and Help never opened. The
+/// presses here come from the driver, not the keyboard, so they're the same whichever window has focus.
+void keepKeyPressesThroughFocusLoss()
+{
+    ImGui::GetIO().ConfigDebugIgnoreFocusLoss = true;
+}
+
 /// What the driver saw happen.
 struct Observed
 {
@@ -1081,6 +1091,11 @@ class ShellKeysDriverLayer : public Core::Layer
         : Layer("ShellKeysDriver"), m_Observed(observed), m_Shell(shell)
     {}
 
+    void onAttach() override
+    {
+        keepKeyPressesThroughFocusLoss();
+    }
+
     void onRender() override
     {
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
@@ -1105,9 +1120,10 @@ class ShellKeysDriverLayer : public Core::Layer
         // runner the effect can take longer to show (#1917). A press that is lost still fails, at
         // WAIT_LIMIT; one taken twice fails the checks that the state came back.
         // A press whose effect hasn't shown after RETRY_AFTER frames is pressed again, up to MAX_RETRIES
-        // times (#1950): CI's xvfb drops an injected key now and then (only a Ctrl+= was logged, never
-        // the Ctrl+- after it), as #1845's button presses were. A press taken twice still fails the
-        // checks that the state came back.
+        // times (#1950): CI's xvfb dropped an injected key now and then (only a Ctrl+= was logged, never
+        // the Ctrl+- after it), as #1845's button presses were. A focus loss on the press's frame drops
+        // it like that, which onAttach() now prevents (#2268); the retries stay for any other cause. A
+        // press taken twice still fails the checks that the state came back.
         const auto awaitThen = [&](bool done, Phase then, Phase pressAgain)
         {
             if (!done && frame >= m_RetryFrame && m_Retries < MAX_RETRIES)
@@ -1377,6 +1393,11 @@ class ShellDriverLayer : public Core::Layer
   public:
     explicit ShellDriverLayer(ShellObserved& observed) : Layer("ShellDriver"), m_Observed(observed)
     {}
+
+    void onAttach() override
+    {
+        keepKeyPressesThroughFocusLoss();
+    }
 
     void onRender() override
     {
