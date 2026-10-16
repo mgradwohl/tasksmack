@@ -413,6 +413,15 @@ main() {
         echo -e "${GREEN}ninja${NC}: ${ninja_ver} (${ninja_path})"
     fi
 
+    # xvfb-run (optional): runs the display tests on a virtual screen, as Linux CI does, so a stray click
+    # or a desktop that steals focus can't change their result (#2221)
+    if command -v xvfb-run >/dev/null 2>&1 && command -v xauth >/dev/null 2>&1; then
+        echo -e "${GREEN}xvfb-run${NC}: found ($(command -v xvfb-run))"
+    else
+        echo -e "${YELLOW}xvfb-run${NC}: not found (optional; runs the display tests headless as CI does: xvfb-run -a ctest --preset debug)"
+        echo -e "  ${CYAN}Hint${NC}: sudo apt install xvfb (tools/setup-dev.sh installs it)"
+    fi
+
     # iwyu (optional)
     local iwyu_ver
     iwyu_ver="$(get_iwyu_version)"
