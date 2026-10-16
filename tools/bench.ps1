@@ -621,9 +621,8 @@ Write-Host ""
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
 # configuration and the binary's hash describe what was launched, even if the checkout, the build
 # or the binary changes during the run. Only the exit code is added afterwards. The manifest is
-# finalized before the result is redacted, so the result file stays the newest one in the output
-# directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json). A manifest failure is
-# held until the result has been redacted, then fails the script. Kept in step with bench.sh.
+# finalized before the result is redacted. A manifest failure is held until the result has been
+# redacted, then fails the script. Kept in step with bench.sh.
 $manifestError = $null
 $manifest = $null
 try {
@@ -681,3 +680,5 @@ Write-Host "Results written to: $outFile"
 Write-Host "Provenance manifest: $manifestFile"
 Write-Host "Compare two runs with Google Benchmark's compare.py:"
 Write-Host "  python -m google_benchmark.compare perf-data/win-baseline.json $outFile"
+# Machine-readable result path, printed only on success; kept in step with bench.sh (#2249).
+Write-Host "RESULT=$outFile"

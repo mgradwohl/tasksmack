@@ -11,7 +11,7 @@
 # mean/median/stddev/cv aggregates, and a provenance sidecar at
 # perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
 # args, anonymized machine class; written by tools/bench-manifest.py, see CONTRIBUTING.md
-# "Benchmark Output").
+# "Benchmark Output"). On success the last line is RESULT=<result file path>, for scripts to read.
 #
 # Environment overrides (used by the script tests):
 #   TASKSMACK_BENCH_BIN      benchmark binary (default build/<preset>/bin/TaskSmackBenchmarks); a
@@ -132,10 +132,9 @@ echo
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
 # configuration and the binary's hash describe what was launched, even if the checkout, the build
 # or the binary changes during the run. Only the exit code is added afterwards. The manifest is
-# finalized before the result is redacted, so the result file stays the newest one in the output
-# directory (heavy-checks.yml picks the latest perf-data/benchmark-*.json). python3 is already a
-# build prerequisite (GLAD loader generation). A manifest failure is held until the result has
-# been redacted, then fails the script.
+# finalized before the result is redacted. python3 is already a build prerequisite (GLAD loader
+# generation). A manifest failure is held until the result has been redacted, then fails the
+# script.
 MANIFEST_EXIT=0
 python3 "${SCRIPT_DIR}/bench-manifest.py" \
     --manifest "${MANIFEST_FILE}" \
@@ -201,3 +200,6 @@ echo "Results written to: ${OUT_FILE}"
 echo "Provenance manifest: ${MANIFEST_FILE}"
 echo "Compare two runs with Google Benchmark's compare.py:"
 echo "  python -m google_benchmark.compare perf-data/linux-baseline.json ${OUT_FILE}"
+# Machine-readable result path, printed only on success (as the profile-* scripts print TRACE=):
+# heavy-checks.yml reads it instead of guessing from a glob that also matches the manifest (#2249).
+echo "RESULT=${OUT_FILE}"

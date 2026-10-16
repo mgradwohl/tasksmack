@@ -580,11 +580,14 @@ jobs:
       - name: Run benchmarks
         run: |
           mkdir -p perf-data
-          ./tools/bench.sh benchmark
-          # bench.sh writes perf-data/benchmark-<timestamp>.json; link the latest for comparison
-          latest_json=$(ls -t perf-data/benchmark-*.json 2>/dev/null | head -1)
-          if [[ -z "$latest_json" ]]; then
-            echo "ERROR: benchmark output JSON not found" >&2
+          # bench.sh prints RESULT=<path> as its last line on success. Read that instead of the
+          # newest perf-data/benchmark-*.json, a glob that also matches the .manifest.json sidecar
+          # (#2249). pipefail keeps a failed run failing through the tee.
+          set -o pipefail
+          ./tools/bench.sh benchmark | tee "$RUNNER_TEMP/bench-output.txt"
+          latest_json=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/bench-output.txt" | tail -n 1)
+          if [[ -z "$latest_json" || ! -f "$latest_json" ]]; then
+            echo "ERROR: benchmark output JSON not found (bench.sh printed RESULT=${latest_json})" >&2
             exit 1
           fi
           cp "$latest_json" perf-data/benchmark-current.json

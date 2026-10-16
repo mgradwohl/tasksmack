@@ -550,6 +550,7 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(code, 3, output)
         self.assertIn("exited with code 3", output)
         self.assertNotIn("Results written to", output)
+        self.assertNotIn("RESULT=", output)
         self.assertEqual(len(results), 1, output)
         self.assertEqual(json.loads(results[0].read_text(encoding="utf-8"))["context"]["host_name"], "redacted")
         self.assertEqual(len(manifests), 1, output)
@@ -568,6 +569,10 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(len(results), 1, output)
         self.assertEqual(len(manifests), 1, output)
         self.assertEqual(manifests[0].name, results[0].stem + ".manifest.json")
+        # #2249: bench.sh prints RESULT=<path> for heavy-checks.yml, naming the result, never the
+        # manifest.
+        printed = [line.removeprefix("RESULT=") for line in output.splitlines() if line.startswith("RESULT=")]
+        self.assertEqual([Path(p).name for p in printed], [results[0].name], output)
 
         data = json.loads(results[0].read_text(encoding="utf-8"))
         self.assertEqual(data["context"]["host_name"], "redacted")

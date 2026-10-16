@@ -368,6 +368,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($failed.ExitCode -ne 0) "bench.ps1 reported success for a benchmark that exited 3:`n$($failed.Log)"
     Assert-True ($failed.Log -like '*exited with code 3*') "The failure must name the benchmark's exit code:`n$($failed.Log)"
     Assert-True ($failed.Log -notlike '*Results written to*') "A failed run must not be reported as written:`n$($failed.Log)"
+    Assert-True ($failed.Log -notlike '*RESULT=*') "A failed run must not print RESULT=:`n$($failed.Log)"
     # The partial result is still redacted, and the manifest records the exit code.
     Assert-True ($failed.Result.Count -eq 1) 'A parseable partial result must be kept (redacted)'
     $failedJson = Get-Content -LiteralPath $failed.Result[0].FullName -Raw | ConvertFrom-Json
@@ -390,6 +391,10 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($ok.ExitCode -eq 0) "A successful run must succeed:`n$($ok.Log)"
     Assert-True ($ok.Result.Count -eq 1 -and $ok.Manifest.Count -eq 1) "Expected one result and one manifest:`n$($ok.Log)"
     Assert-True ($ok.Manifest[0].Name -eq ($ok.Result[0].BaseName + '.manifest.json')) "Manifest $($ok.Manifest[0].Name) is not the result's sidecar"
+    # #2249: the result path is printed last as RESULT=<path>, naming the result file, never the
+    # manifest. Whitespace is dropped first: Out-String may wrap a long path across lines.
+    $flatLog = $ok.Log -replace '\s', ''
+    Assert-True ($flatLog -like "*RESULT=*$($ok.Result[0].Name -replace '\s', '')") "Expected a final RESULT= line naming the result:`n$($ok.Log)"
     # Raw repetitions survive: the iteration rows are still in the result next to the median.
     $okJson = Get-Content -LiteralPath $ok.Result[0].FullName -Raw | ConvertFrom-Json
     Assert-True (@($okJson.benchmarks | Where-Object { $_.run_type -eq 'iteration' }).Count -eq 2) 'Per-repetition rows must be kept'
