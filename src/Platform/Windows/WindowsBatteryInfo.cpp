@@ -94,6 +94,7 @@ std::vector<std::wstring> enumerateBatteryDevicePaths()
 BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
 {
     BatteryInfo info;
+    std::vector<BatteryCapacityReading> readings;
     for (const std::wstring& path : api.enumerateBatteries())
     {
         HANDLE opened = api.createFile(path.c_str(),
@@ -128,18 +129,27 @@ BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
             continue;
         }
 
-        info.found = true;
-        info.relativeCapacity = (battery.Capabilities & BATTERY_CAPACITY_RELATIVE_BIT) != 0;
-        info.designWh = capacityWh(battery.DesignedCapacity, battery.Capabilities);
-        info.fullChargeWh = capacityWh(battery.FullChargedCapacity, battery.Capabilities);
-        info.healthPercent = healthPercentFromCapacity(battery.DesignedCapacity, battery.FullChargedCapacity, battery.Capabilities);
-        info.cycleCount = battery.CycleCount;
-        info.technology = chemistryText(
-            std::string_view(reinterpret_cast<const char*>(static_cast<const UCHAR*>(battery.Chemistry)), sizeof(battery.Chemistry)));
-        info.manufacturer = queryName(api, device.get(), tag, BatteryManufactureName);
-        info.model = queryName(api, device.get(), tag, BatteryDeviceName);
-        break;
+        readings.push_back(BatteryCapacityReading{.designed = battery.DesignedCapacity,
+                                                  .fullCharged = battery.FullChargedCapacity,
+                                                  .capabilities = battery.Capabilities,
+                                                  .cycleCount = battery.CycleCount});
+        if (!info.found) // The text describes the first battery that answers
+        {
+            info.found = true;
+            info.technology = chemistryText(
+                std::string_view(reinterpret_cast<const char*>(static_cast<const UCHAR*>(battery.Chemistry)), sizeof(battery.Chemistry)));
+            info.manufacturer = queryName(api, device.get(), tag, BatteryManufactureName);
+            info.model = queryName(api, device.get(), tag, BatteryDeviceName);
+        }
     }
+
+    // Every battery's capacities, as the charge percent from GetSystemPowerStatus covers them all (#2151)
+    const BatteryCapacityTotals totals = combineBatteryCapacities(readings);
+    info.relativeCapacity = totals.relativeCapacity;
+    info.designWh = totals.designWh;
+    info.fullChargeWh = totals.fullChargeWh;
+    info.healthPercent = totals.healthPercent;
+    info.cycleCount = totals.cycleCount;
     return info;
 }
 

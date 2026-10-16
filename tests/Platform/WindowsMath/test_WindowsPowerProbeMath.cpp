@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -175,6 +176,55 @@ TEST(BatteryCapacityTest, HealthIsFullOverDesignRoundedAndCapped)
     EXPECT_EQ(healthPercentFromCapacity(0U, 45'000U, 0U), -1);       // No design: unknown, no division
     EXPECT_EQ(healthPercentFromCapacity(50'000U, 0U, 0U), -1);
     EXPECT_EQ(healthPercentFromCapacity(100U, 90U, BATTERY_CAPACITY_RELATIVE_BIT), -1); // Relative units
+}
+
+TEST(BatteryCapacityTest, TwoBatteriesAreSummedAndHealthComesFromTheSums)
+{
+    // #2151: a 24 Wh internal pack at 95% and a 72 Wh external pack at 60%
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = 24'000U, .fullCharged = 22'800U, .capabilities = 0U, .cycleCount = 40U},
+        {.designed = 72'000U, .fullCharged = 43'200U, .capabilities = 0U, .cycleCount = 310U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_FALSE(totals.relativeCapacity);
+    EXPECT_DOUBLE_EQ(totals.designWh, 96.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 66.0);
+    EXPECT_EQ(totals.healthPercent, 69); // 66 / 96 = 68.75%, not the first pack's 95%
+    EXPECT_EQ(totals.cycleCount, 310U);  // The most-cycled pack
+}
+
+TEST(BatteryCapacityTest, RelativeAndUnknownCapacitiesAreLeftOutOfTheTotals)
+{
+    const std::array<BatteryCapacityReading, 3> packs{{
+        {.designed = 50'000U, .fullCharged = 45'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 100U, .fullCharged = 80U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 12U},
+        {.designed = 30'000U, .fullCharged = BATTERY_CAPACITY_UNKNOWN_VALUE, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_FALSE(totals.relativeCapacity);
+    EXPECT_DOUBLE_EQ(totals.designWh, 80.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 45.0);
+    EXPECT_EQ(totals.healthPercent, 90); // Only the pack that reports both capacities
+    EXPECT_EQ(totals.cycleCount, 12U);
+}
+
+TEST(BatteryCapacityTest, NoBatteriesOrOnlyRelativeOnesReportNoCapacity)
+{
+    const BatteryCapacityTotals none = combineBatteryCapacities({});
+    EXPECT_FALSE(none.relativeCapacity);
+    EXPECT_DOUBLE_EQ(none.designWh, 0.0);
+    EXPECT_EQ(none.healthPercent, -1);
+
+    const std::array<BatteryCapacityReading, 2> relative{{
+        {.designed = 100U, .fullCharged = 92U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 5U},
+        {.designed = 100U, .fullCharged = 70U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 9U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(relative);
+    EXPECT_TRUE(totals.relativeCapacity);
+    EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 0.0);
+    EXPECT_EQ(totals.healthPercent, -1);
+    EXPECT_EQ(totals.cycleCount, 9U);
 }
 
 } // namespace

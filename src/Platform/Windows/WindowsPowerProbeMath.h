@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -167,6 +168,61 @@ inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
         return -1;
     }
     return static_cast<int>(std::lround(std::min(full / design, 1.0) * 100.0));
+}
+
+/// One battery's BATTERY_INFORMATION capacity fields, as combineBatteryCapacities() takes them.
+struct BatteryCapacityReading
+{
+    std::uint32_t designed = 0;     ///< DesignedCapacity
+    std::uint32_t fullCharged = 0;  ///< FullChargedCapacity
+    std::uint32_t capabilities = 0; ///< Capabilities (BATTERY_CAPACITY_RELATIVE_BIT)
+    std::uint64_t cycleCount = 0;   ///< CycleCount; 0 is "no cycle counter"
+};
+
+/// Every battery's capacity facts together.
+struct BatteryCapacityTotals
+{
+    bool relativeCapacity = false; ///< Every battery reports relative units: no Wh figure is known
+    double designWh = 0.0;
+    double fullChargeWh = 0.0;
+    int healthPercent = -1;
+    std::uint64_t cycleCount = 0;
+};
+
+/// The batteries' capacities combined (#2151), so they describe the same packs as
+/// GetSystemPowerStatus's charge percent, which covers every battery. Design and full-charge Wh are
+/// the sums of the known mWh figures; relative-unit packs are skipped. Health is the summed
+/// full-charge over the summed design of the packs that report both (rounded, capped at 100; -1
+/// when none does). The cycle count is the most-cycled pack's.
+[[nodiscard]] inline BatteryCapacityTotals combineBatteryCapacities(std::span<const BatteryCapacityReading> batteries) noexcept
+{
+    BatteryCapacityTotals totals;
+    totals.relativeCapacity = !batteries.empty();
+    double pairedDesignWh = 0.0;
+    double pairedFullWh = 0.0;
+    for (const BatteryCapacityReading& battery : batteries)
+    {
+        totals.cycleCount = std::max(totals.cycleCount, battery.cycleCount);
+        if ((battery.capabilities & BATTERY_CAPACITY_RELATIVE_BIT) != 0)
+        {
+            continue;
+        }
+        totals.relativeCapacity = false;
+        const double design = capacityWh(battery.designed, battery.capabilities);
+        const double full = capacityWh(battery.fullCharged, battery.capabilities);
+        totals.designWh += design;
+        totals.fullChargeWh += full;
+        if (design > 0.0 && full > 0.0)
+        {
+            pairedDesignWh += design;
+            pairedFullWh += full;
+        }
+    }
+    if (pairedDesignWh > 0.0)
+    {
+        totals.healthPercent = static_cast<int>(std::lround(std::min(pairedFullWh / pairedDesignWh, 1.0) * 100.0));
+    }
+    return totals;
 }
 
 } // namespace Platform
