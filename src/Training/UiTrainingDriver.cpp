@@ -3,12 +3,10 @@
 #include "App/Panel.h"
 #include "App/Panels/ProcessDetailsPanel.h"
 #include "App/Panels/ProcessesPanel.h"
-#include "App/Panels/ServicesPanel.h"
-#include "App/Panels/StartupPanel.h"
-#include "App/Panels/SystemInfoPanel.h"
 #include "App/Panels/SystemMetricsPanel.h"
 #include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
+#include "App/ShellPanels.h"
 #include "App/SyntheticScenario.h"
 #include "App/TabLabel.h"
 #include "App/UserConfig.h"
@@ -162,9 +160,9 @@ void processTextureRequests()
     }
 }
 
-/// ShellLayer without the window: the same six panels, attached, updated and drawn in a tab bar the
-/// same way, and the same events forwarded to them. Keep it in step with ShellLayer's onAttach(),
-/// onUpdate() and onRender() (the parts that do not touch the window, the status bar or input).
+/// ShellLayer without the window: the same six panels and wiring (App::ShellPanels, #2136), attached,
+/// updated and drawn in a tab bar the same way, and the same events forwarded to them. Only the tab bar
+/// and the training plan's selection are its own.
 class TrainingShell : public Core::Layer
 {
   public:
@@ -174,22 +172,14 @@ class TrainingShell : public Core::Layer
     void onAttach() override
     {
         const auto& config = App::UserConfig::get();
+        m_Panels.prepareAttach();
         for (App::Panel* panel : panels())
         {
             panel->onAttach();
         }
         App::ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
-        if (const auto processModel = m_Processes.processModel(); processModel != nullptr)
-        {
-            m_SystemMetrics.setProcessModel(processModel);
-            if (const auto gpuModel = m_SystemMetrics.gpuModel(); gpuModel != nullptr)
-            {
-                processModel->setGPUModel(gpuModel);
-                m_Processes.setGpuModel(gpuModel);
-            }
-        }
+        m_Panels.connectModels();
         m_SystemTabLabel = App::TabLabel::make(ICON_FA_COMPUTER, m_SystemMetrics.hostname(), App::TabLabel::SYSTEM_TAB_ID);
-        m_ProcessDetails.setProcessCapabilities(m_Processes.processCapabilities());
 
         // Real probes: this process, which is always there and is ours. Synthetic: chosen once the
         // synthetic machine shows CPU usage (selectSyntheticProcess()), its PIDs being its own.
@@ -246,14 +236,7 @@ class TrainingShell : public Core::Layer
         {
             // As ShellLayer's first update: the configured interval and history, or the scenario's.
             m_PendingStartupSettings = false;
-            const auto& settings = App::UserConfig::get().settings();
-            const App::Synthetic::Scenario* scenario = App::Synthetic::activeScenario();
-            Core::RefreshRateChangedEvent refreshEvent(App::Synthetic::startupRefreshIntervalMs(scenario, settings.refreshIntervalMs),
-                                                       /*initial=*/true);
-            Core::Application::get().raiseEvent(refreshEvent);
-            Core::HistoryDurationChangedEvent historyEvent(App::Synthetic::startupHistorySeconds(scenario, settings.maxHistorySeconds),
-                                                           /*initial=*/true);
-            Core::Application::get().raiseEvent(historyEvent);
+            App::ShellPanels::raiseStartupSettings([](Core::Event& event) { Core::Application::get().raiseEvent(event); });
         }
 
         for (App::Panel* panel : panels())
@@ -261,27 +244,8 @@ class TrainingShell : public Core::Layer
             panel->onUpdate(deltaTime);
         }
         selectSyntheticProcess(/*force=*/false);
-        if (const std::optional<App::SelectOverride::DetailsTab> startupTab = m_Processes.takeStartupDetailsTab(); startupTab.has_value())
-        {
-            m_ProcessDetails.requestTab(*startupTab);
-        }
-        m_ProcessDetails.setProcessCapabilities(m_Processes.processCapabilities());
-        m_ProcessDetails.setHasAccelerator(m_Processes.hasAccelerator());
-
-        // The selected process's new samples, as ShellLayer hands them over.
-        const std::int32_t selectedPid = m_ProcessDetails.selectedPid();
-        if (selectedPid != m_WatchedPid)
-        {
-            m_Processes.watchProcess(selectedPid);
-            m_WatchedPid = selectedPid;
-        }
-        m_PendingSamples.clear();
-        if (selectedPid != -1)
-        {
-            static_cast<void>(m_Processes.watchedSamplesSince(m_ProcessDetails.lastSampleVersion(), m_PendingSamples));
-        }
-        m_ProcessDetails.updateWithSamples(m_PendingSamples, deltaTime);
-        m_PendingSamples.clear();
+        // The same hand-offs as ShellLayer's (#2136).
+        m_Panels.update(deltaTime);
     }
 
     void onRender() override
@@ -327,7 +291,7 @@ class TrainingShell : public Core::Layer
   private:
     [[nodiscard]] std::array<App::Panel*, 6> panels() noexcept
     {
-        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_SystemInfo};
+        return m_Panels.inTabOrder();
     }
 
     /// The main tab bar, with the wanted tab brought forward; returns the panel of the tab on show.
@@ -414,18 +378,15 @@ class TrainingShell : public Core::Layer
     }
 
     Probes m_Probes;
-    App::SystemMetricsPanel m_SystemMetrics;
-    App::ProcessesPanel m_Processes;
-    App::ProcessDetailsPanel m_ProcessDetails;
-    App::ServicesPanel m_Services;
-    App::StartupPanel m_Startup;
-    App::SystemInfoPanel m_SystemInfo;
+    // The shell's panels and their wiring, the same object ShellLayer uses (#2136).
+    App::ShellPanels m_Panels;
+    App::SystemMetricsPanel& m_SystemMetrics = m_Panels.systemMetrics();
+    App::ProcessesPanel& m_Processes = m_Panels.processes();
+    App::ProcessDetailsPanel& m_ProcessDetails = m_Panels.processDetails();
 
     bool m_PendingStartupSettings = true;
     bool m_ShowRenderMetrics = false; // ShellLayer's Ctrl+Shift+M overlay, off as it starts
     bool m_SelectionRequested = false;
-    std::int32_t m_WatchedPid = -1;
-    std::vector<Domain::ProcessSample> m_PendingSamples;
     std::string_view m_WantedTab = tabId(Tab::SystemOverview);
     std::string_view m_ActiveTab;
     std::string m_SystemTabLabel;

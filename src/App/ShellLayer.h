@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Core/Layer.h"
-#include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
@@ -14,6 +13,7 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
+#include "ShellPanels.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 
@@ -21,7 +21,6 @@
 #include <imgui.h>
 
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -85,24 +84,18 @@ class ShellLayer : public Core::Layer
     // The application and window it runs in (#1547). Never null.
     std::unique_ptr<IShellHost> m_Host;
 
-    ProcessesPanel m_ProcessesPanel;
-    ProcessDetailsPanel m_ProcessDetailsPanel;
-    SystemMetricsPanel m_SystemMetricsPanel;
-    ServicesPanel m_ServicesPanel;
-    StartupPanel m_StartupPanel;
-    SystemInfoPanel m_SystemInfoPanel;
+    // The six panels and the window-independent wiring between them, shared with the PGO training
+    // driver (#2136); named here as before.
+    ShellPanels m_Panels;
+    ProcessesPanel& m_ProcessesPanel = m_Panels.processes();
+    ProcessDetailsPanel& m_ProcessDetailsPanel = m_Panels.processDetails();
+    SystemMetricsPanel& m_SystemMetricsPanel = m_Panels.systemMetrics();
+    ServicesPanel& m_ServicesPanel = m_Panels.services();
+    StartupPanel& m_StartupPanel = m_Panels.startup();
+    SystemInfoPanel& m_SystemInfoPanel = m_Panels.systemInfo();
 
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;
-
-    // GPU debug logging throttling
-    std::int32_t m_LastGpuLogPid = -1;
-    bool m_LastGpuLogHasData = false;
-
-    // The PID the process model is watching for Process Details (ProcessModel::watchProcess()), and
-    // the scratch buffer its new samples are collected into each frame, reused to avoid allocating.
-    std::int32_t m_WatchedPid = -1;
-    std::vector<Domain::ProcessSample> m_PendingSamples;
 
     // Deferred startup settings: the first onUpdate() raises RefreshRateChangedEvent and
     // HistoryDurationChangedEvent with the loaded config, so panels get their starting values the
