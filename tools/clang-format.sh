@@ -26,7 +26,7 @@ Examples:
   $(basename "$0")                # Format all files
   $(basename "$0") --changed-only # Only format changed files
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 # Parse arguments
@@ -35,33 +35,27 @@ while [[ $# -gt 0 ]]; do
         -v|--verbose) VERBOSE=true; shift ;;
         -c|--changed-only) CHANGED_ONLY=true; shift ;;
         -h|--help) usage ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
 echo "Applying clang-format to source files..."
 
-# Find clang-format
-CLANG_FORMAT=""
-if command -v clang-format &> /dev/null; then
-    CLANG_FORMAT="clang-format"
-else
-    for ver in 22 21 20 19 18 17; do
-        if [[ -x "/usr/lib/llvm-$ver/bin/clang-format" ]]; then
-            CLANG_FORMAT="/usr/lib/llvm-$ver/bin/clang-format"
-            break
-        fi
-    done
-fi
-
-if [[ -z "$CLANG_FORMAT" ]]; then
-    echo "Error: clang-format not found" >&2
-    exit 1
-fi
-
 # shellcheck source=tools/common.sh
 source "$SCRIPT_DIR/common.sh"
-warn_clang_format_version_skew "$CLANG_FORMAT"
+
+# Find clang-format: the CI-pinned LLVM's (/usr/lib/llvm-22/bin) before an older unversioned one on PATH
+CLANG_FORMAT="$(find_llvm_tool clang-format || true)"
+if [[ -z "$CLANG_FORMAT" ]]; then
+    echo "Error: clang-format not found. Install via: apt install clang-format-$(pinned_llvm_major)" >&2
+    exit 1
+fi
+warn_llvm_version_skew "$CLANG_FORMAT" clang-format
+
+SEARCH_DIRS=()
+for dir in "${FORMAT_DIRS[@]}"; do
+    SEARCH_DIRS+=("$PROJECT_ROOT/$dir")
+done
 
 if [[ "$CHANGED_ONLY" == "true" ]]; then
     # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
@@ -80,11 +74,11 @@ if [[ "$CHANGED_ONLY" == "true" ]]; then
         if $VERBOSE; then
             echo "[$CHECKED_COUNT/$FILE_COUNT] Formatting: $(basename "$full_path")"
         fi
-        $CLANG_FORMAT -i "$full_path"
+        "$CLANG_FORMAT" -i "$full_path"
     done
 else
     # Count files for progress
-    FILE_COUNT=$(find "$PROJECT_ROOT/src" "$PROJECT_ROOT/tests" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" 2>/dev/null | wc -l)
+    FILE_COUNT=$(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" 2>/dev/null | wc -l)
     CHECKED_COUNT=0
 
     while IFS= read -r -d '' file; do
@@ -92,8 +86,8 @@ else
         if $VERBOSE; then
             echo "[$CHECKED_COUNT/$FILE_COUNT] Formatting: $(basename "$file")"
         fi
-        $CLANG_FORMAT -i "$file"
-    done < <(find "$PROJECT_ROOT/src" "$PROJECT_ROOT/tests" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
+        "$CLANG_FORMAT" -i "$file"
+    done < <(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
 fi
 
 echo "Formatted $FILE_COUNT files."

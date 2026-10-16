@@ -14,6 +14,8 @@ JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 FILES=()
 FIX=false
 REPORT_ONLY=false
+# IWYU must be built against this Clang major (the project LLVM CI pins); see the version check below
+MIN_IWYU_CLANG_MAJOR=22
 
 usage() {
     cat <<EOF
@@ -23,7 +25,9 @@ Run include-what-you-use (IWYU) analysis on source files.
 IWYU analyzes #include directives and suggests additions/removals.
 
 Prerequisites:
-  - IWYU must be installed (apt install iwyu or brew install include-what-you-use)
+  - IWYU built against Clang 22, the project's LLVM. CI builds it from source (the clang_22 branch
+    of https://github.com/include-what-you-use/include-what-you-use); distro packages
+    (apt install iwyu) are usually built against an older Clang and are reported below.
   - Python 3.6+ available as 'python3' on PATH (for embedded helper scripts)
   - Project must be configured and built at least once:
     cmake --preset debug && cmake --build build/debug
@@ -51,7 +55,7 @@ Examples:
 Note: IWYU suggestions are advisory. Review before applying fixes.
       Some suggestions may not be appropriate for this codebase.
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 # Parse arguments
@@ -75,12 +79,15 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
-COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+LIVE_COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+# The sanitized copy IWYU reads (see the sed pass below)
+IWYU_COMPDB_DIR="${BUILD_DIR}/iwyu-compdb"
+COMPILE_COMMANDS="${IWYU_COMPDB_DIR}/compile_commands.json"
 
 # Find iwyu_tool.py (the wrapper script that processes compile_commands.json)
 IWYU_TOOL=""
@@ -116,9 +123,10 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     echo "Error: include-what-you-use not found in PATH" >&2
     echo "" >&2
     echo "Install IWYU:" >&2
-    echo "  Ubuntu/Debian: sudo apt install iwyu" >&2
+    echo "  From source (matches CI): the clang_${MIN_IWYU_CLANG_MAJOR} branch of" >&2
+    echo "                 https://github.com/include-what-you-use/include-what-you-use" >&2
+    echo "  Ubuntu/Debian: sudo apt install iwyu (usually built against an older Clang)" >&2
     echo "  macOS:         brew install include-what-you-use" >&2
-    echo "  From source:   https://github.com/include-what-you-use/include-what-you-use" >&2
     exit 1
 fi
 
@@ -141,7 +149,6 @@ fi
 # Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 22+)
 # cause assertion failures in iwyu_include_picker.
 # Check the Clang base version from the 'based on ... clang version X' line.
-MIN_IWYU_CLANG_MAJOR=22
 # Use the already-selected binary so the version check matches what the script will actually run.
 IWYU_VERSION_BIN=""
 if [[ -n "${IWYU}" ]]; then
@@ -246,7 +253,7 @@ if $VERBOSE; then
 fi
 
 # Check for build prerequisites
-if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$COMPILE_COMMANDS" ]]; then
+if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$LIVE_COMPILE_COMMANDS" ]]; then
     echo "Error: Build directory or compile_commands.json not found" >&2
     echo "" >&2
     echo "IWYU requires the project to be configured and built at least once." >&2
@@ -269,12 +276,15 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     exit 1
 fi
 
-# Strip C++20 module and PCH flags from compile_commands.json (IWYU supports neither;
-# a single "-include-pch" flag makes IWYU abort every translation unit).
+# Strip C++20 module and PCH flags from a private copy of compile_commands.json (IWYU supports
+# neither; a single "-include-pch" flag makes IWYU abort every translation unit). The live database
+# clangd watches is left alone, as clang-tidy.sh leaves it alone.
 # These are the same patterns cmake/StaticAnalysis.cmake strips for the clang-tidy compile database.
 if $VERBOSE; then
-    echo "Stripping module and PCH flags from compile_commands.json..."
+    echo "Stripping module and PCH flags into ${IWYU_COMPDB_DIR#"${PROJECT_ROOT}"/}/compile_commands.json..."
 fi
+mkdir -p "$IWYU_COMPDB_DIR"
+cp "$LIVE_COMPILE_COMMANDS" "$COMPILE_COMMANDS"
 SED_EXPRS=(
     -e 's/@[^ ]*\.modmap//g'
     -e 's/-fmodule-output=[^ ]*//g'
@@ -357,7 +367,7 @@ if [[ -n "$IWYU_TOOL" ]]; then
     # Use iwyu_tool.py for better integration with compile_commands.json
     # IWYU-specific args go after -- separator
     IWYU_TOOL_ARGS=(
-        -p "$BUILD_DIR"
+        -p "$IWYU_COMPDB_DIR"
         -j "$JOBS"
     )
     IWYU_ARGS=(

@@ -101,25 +101,41 @@ find_python() {
     return 1
 }
 
-# Warn when a clang-format's major version differs from the one CI pins in .pre-commit-config.yaml
-# (mirrors-clang-format `rev:`). Different majors can format the same code differently, so a
-# failure from check-format.sh, or a rewrite by clang-format.sh, may be the toolchain rather than
-# the tree (#916). Never fails; prints to stderr only.
-# Usage: warn_clang_format_version_skew "/usr/bin/clang-format"
-warn_clang_format_version_skew() {
-    local tool_path="$1"
-    local common_dir config pinned local_version
+# Print the LLVM major version CI pins: the mirrors-clang-format `rev:` in .pre-commit-config.yaml,
+# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read.
+pinned_llvm_major() {
+    local common_dir config
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     config="${common_dir}/../.pre-commit-config.yaml"
     [[ -f "$config" ]] || return 0
-    pinned="$(grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+    grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true
+}
+
+# Warn when an LLVM tool's major version differs from the one CI pins (pinned_llvm_major).
+# Different majors can format the same code differently or report different clang-tidy findings,
+# so a failure from check-format.sh or clang-tidy.sh, or a rewrite by clang-format.sh, may be the
+# toolchain rather than the tree (#916). Never fails; prints to stderr only.
+# Usage: warn_llvm_version_skew "/usr/bin/clang-format" "clang-format"
+warn_llvm_version_skew() {
+    local tool_path="$1" name="$2"
+    local pinned local_version
+    pinned="$(pinned_llvm_major)"
     local_version="$(get_llvm_tool_major_version "$tool_path" || true)"
     if [[ -n "$pinned" && -n "$local_version" && "$pinned" != "$local_version" ]]; then
-        echo "Warning: $tool_path is clang-format $local_version, but CI pins clang-format $pinned (.pre-commit-config.yaml)." >&2
-        echo "         Results can differ from CI; 'pre-commit run clang-format --all-files' uses the pinned version." >&2
+        echo "Warning: $tool_path is $name $local_version, but CI pins LLVM $pinned (.pre-commit-config.yaml)." >&2
+        if [[ "$name" == "clang-format" ]]; then
+            echo "         Results can differ from CI; 'pre-commit run clang-format --all-files' uses the pinned version." >&2
+        else
+            echo "         Results can differ from CI; install $name-$pinned for CI-identical results." >&2
+        fi
     fi
     return 0
 }
+
+# The directories holding C++ sources that the format scripts check and format. pre-commit's
+# clang-format hook formats every C++ file in the repo, and these are the directories that have any.
+# shellcheck disable=SC2034  # used by the scripts that source this file
+FORMAT_DIRS=(src tests benchmarks)
 
 # List the files this branch changes, for the --changed-only modes of clang-format.sh and
 # clang-tidy.sh: everything that differs from the merge-base with origin/main (or local main) --

@@ -13,7 +13,8 @@
 .PARAMETER Files
     Specific files to analyze (default: all source files)
 .PARAMETER ChangedOnly
-    Only analyze files that have been modified according to git
+    Only analyze C++ files changed on this branch (vs. its merge-base with main, plus untracked).
+    Ignored when -Files is given.
 .PARAMETER CacheDir
     Skip files that passed before with identical inputs, and record clean results in this
     directory (tools/tidy-cache.py; needs python and clang-scan-deps)
@@ -78,6 +79,8 @@ if (-not $ClangTidy) {
     exit 1
 }
 
+Write-LlvmVersionSkewWarning -ToolPath $ClangTidy -Name 'clang-tidy'
+
 if ($ShowDetails) {
     Write-Host "Using clang-tidy: $ClangTidy"
 }
@@ -139,30 +142,25 @@ if (-not $Python) {
     }
 }
 
-# Determine files to analyze
-if ($ChangedOnly) {
-    # Get changed files from git
+# Determine files to analyze. Explicit -Files win over -ChangedOnly, as in clang-tidy.sh.
+if ($ChangedOnly -and $Files.Count -eq 0) {
+    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
-    # core.quotePath=false: non-ASCII paths come out as UTF-8 rather than quoted octal escapes.
-    $gitOutput = & git -c core.quotePath=false diff --name-only HEAD 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to get changed files from git. Falling back to all files."
-        $ChangedOnly = $false
-    } else {
-        $SourceFiles = $gitOutput |
-            Where-Object { $_ -match '\.(cpp|h)$' } |
-            Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
-            ForEach-Object { Join-Path $ProjectRoot $_ }
-        if ($SourceFiles.Count -eq 0) {
-            Write-Host "No changed C++ files found."
-            exit 0
-        }
+    $SourceFiles = @(Get-ChangedFileList -Root $ProjectRoot |
+        Where-Object { $_ -match '\.(cpp|h)$' } |
+        Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
+        ForEach-Object { Join-Path $ProjectRoot $_ })
+    if ($SourceFiles.Count -eq 0) {
+        Write-Host "No changed C++ files found."
+        exit 0
     }
-}
-
-if (-not $ChangedOnly) {
+    if ($ShowDetails) {
+        Write-Host "Analyzing $($SourceFiles.Count) changed files..."
+    }
+} else {
+    $ChangedOnly = $false
     if ($Files.Count -eq 0) {
         # Get all source files from project, excluding other-platform files
         $SourceFiles = @()
