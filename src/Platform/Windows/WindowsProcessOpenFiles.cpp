@@ -271,6 +271,11 @@ std::size_t WindowsProcessOpenFilesReader::stuckNamerCount()
     return m_StuckNamers.size();
 }
 
+std::size_t WindowsProcessOpenFilesReader::hungHandleCount() const noexcept
+{
+    return m_HungHandles.size();
+}
+
 std::optional<std::string> WindowsProcessOpenFilesReader::querySnapshot()
 {
     m_Snapshot.resize(std::max(INITIAL_SNAPSHOT_BYTES, m_SnapshotBytesHint));
@@ -361,6 +366,15 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
 
     OpenFilesReadResult result = resultOf(OpenFilesReadStatus::Ok);
     const auto pid = static_cast<ULONG_PTR>(target.pid);
+    // A different process under this PID (its start time differs) inherits none of the old one's hung handles.
+    std::erase_if(m_HungHandles, [&](const HungHandle& hung) { return hung.pid == pid && hung.startTimeTicks != target.startTimeTicks; });
+    const auto isHung = [&](ULONG_PTR handleValue)
+    {
+        return std::ranges::any_of(
+            m_HungHandles,
+            [&](const HungHandle& hung)
+            { return hung.pid == pid && hung.startTimeTicks == target.startTimeTicks && hung.handleValue == handleValue; });
+    };
     std::vector<SystemHandleEntry> fileHandles;
     std::vector<OpenFile> skipped; // known to hang: listed, never touched
     for (const SystemHandleEntry& entry : handlesOfProcess(m_Snapshot, pid))
@@ -374,7 +388,7 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
             result.truncated = true;
             break;
         }
-        if (m_HungHandles.contains({pid, entry.handleValue}))
+        if (isHung(entry.handleValue))
         {
             skipped.push_back(unqueried(entry));
             result.namesIncomplete = true;
@@ -423,7 +437,12 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
                 result.namesIncomplete = true;
                 if (!advanced && seen < state->handles.size())
                 {
-                    m_HungHandles.emplace(pid, state->handles[seen].handleValue);
+                    if (m_HungHandles.size() >= MAX_HUNG_HANDLES)
+                    {
+                        m_HungHandles.erase(m_HungHandles.begin()); // the oldest: tried again if read again
+                    }
+                    m_HungHandles.push_back(
+                        {.pid = pid, .startTimeTicks = target.startTimeTicks, .handleValue = state->handles[seen].handleValue});
                 }
                 m_StuckNamers.push_back(state);
                 break;

@@ -14,7 +14,8 @@
 //   4. Steps 3 run on a separate namer thread that the read waits on with a per-handle timeout. A
 //      handle that does not answer abandons the namer (it finishes, closing its duplicate, if the
 //      handle ever answers), the rest are listed unnamed, and the result says so. That handle is
-//      skipped on later reads, and at most MAX_STUCK_NAMERS namers are ever left waiting.
+//      skipped on later reads of the same process (its PID and start time: a reused PID starts over),
+//      at most MAX_HUNG_HANDLES are remembered, and at most MAX_STUCK_NAMERS namers are ever left waiting.
 //
 // The calls it makes are a table of function pointers, the system's by default, so tests feed it
 // fixed handle tables, denials and a handle that hangs (test_WindowsProcessOpenFiles.cpp).
@@ -39,10 +40,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -107,6 +106,9 @@ inline constexpr std::chrono::milliseconds DEFAULT_HANDLE_NAME_TIMEOUT{500};
 /// The most namers ever left waiting on handles that did not answer; past it, reads list handles unnamed.
 inline constexpr std::size_t MAX_STUCK_NAMERS = 4;
 
+/// The most handles remembered as not answering; past it, the oldest is forgotten (and tried again).
+inline constexpr std::size_t MAX_HUNG_HANDLES = 64;
+
 /// Not thread-safe: one read at a time (the Open files view runs them one at a time on a worker).
 class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
 {
@@ -130,6 +132,9 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
     /// Namers still waiting on a handle that did not answer (tests).
     [[nodiscard]] std::size_t stuckNamerCount();
 
+    /// Handles remembered as not answering, skipped on later reads of their process (tests).
+    [[nodiscard]] std::size_t hungHandleCount() const noexcept;
+
     struct NamingState;
 
   private:
@@ -146,8 +151,15 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
     std::size_t m_SnapshotBytesHint = 0; // the size the table last needed, to start the next read there
     std::optional<USHORT> m_FileTypeIndex;
     std::vector<std::shared_ptr<NamingState>> m_StuckNamers;
-    std::set<std::pair<ULONG_PTR, ULONG_PTR>> m_HungHandles; // (pid, handle) that did not answer: skipped
-    std::atomic<std::size_t> m_HandlesScanned{0};            // the read in flight's progress, read by the UI
+    /// A handle that did not answer, and the process (PID and start time) it belongs to.
+    struct HungHandle
+    {
+        ULONG_PTR pid = 0;
+        std::uint64_t startTimeTicks = 0;
+        ULONG_PTR handleValue = 0;
+    };
+    std::vector<HungHandle> m_HungHandles;        // skipped on later reads; oldest first, at most MAX_HUNG_HANDLES
+    std::atomic<std::size_t> m_HandlesScanned{0}; // the read in flight's progress, read by the UI
 };
 
 } // namespace Platform::Windows

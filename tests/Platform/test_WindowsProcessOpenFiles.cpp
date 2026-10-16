@@ -2,8 +2,9 @@
 /// @brief Platform::Windows::WindowsProcessOpenFilesReader (#183) against a fake handle table and fake
 /// kernel32 calls: only the target's File handles listed, typed and named (disks only), the File type
 /// learned once, hang-prone access masks never touched, a handle that never answers abandoned under the
-/// timeout and skipped after, the count cap, a denied open, a reused PID, every handle duplicated with
-/// DUPLICATE_SAME_ACCESS and closed; long, NT-only and unnamable paths, failed calls and too many stuck namers.
+/// timeout and skipped after (by the same process only, not one reusing its PID), the count cap, a denied
+/// open, a reused PID, every handle duplicated with DUPLICATE_SAME_ACCESS and closed; long, NT-only and
+/// unnamable paths, failed calls and too many stuck namers.
 /// Plus one read of this test process through the real calls.
 
 #include "Platform/IProcessActions.h"
@@ -442,6 +443,40 @@ TEST_F(WindowsProcessOpenFilesTest, AHandleThatNeverAnswersIsAbandonedAndSkipped
     EXPECT_EQ(second.files[1].path, "C:\\Data\\My File.txt");
     EXPECT_EQ(second.files[2].kind, OpenFileKind::Other);
     releaseAndDrain(reader);
+}
+
+// A hung handle is remembered for its process, PID and start time (#2150): the same process keeps
+// skipping it, and a new process that reuses the PID has the same handle value typed again.
+TEST_F(WindowsProcessOpenFilesTest, AReusedPidDoesNotInheritTheOldProcesssHungHandles)
+{
+    constexpr std::chrono::milliseconds HANDLE_TIMEOUT{2000}; // see AHandleThatNeverAnswersIsAbandonedAndSkippedAfter
+    fake().handles[3].hangs = true;                           // the pipe at 0x48
+    WindowsProcessOpenFilesReader reader(fakeApi(), HANDLE_TIMEOUT);
+    const OpenFilesReadResult first = reader.readOpenFiles(TARGET);
+    ASSERT_EQ(first.status, OpenFilesReadStatus::Ok);
+    ASSERT_TRUE(hangEntered());
+    EXPECT_EQ(reader.hungHandleCount(), 1U);
+    releaseAndDrain(reader);
+    fake().handles[3].hangs = false; // 0x48 answers from now on
+
+    // The same process: still skipped, though it would answer now.
+    const OpenFilesReadResult same = reader.readOpenFiles(TARGET);
+    EXPECT_TRUE(same.namesIncomplete);
+    ASSERT_EQ(same.files.size(), 4U);
+    EXPECT_EQ(same.files[2].descriptor, 0x48U);
+    EXPECT_EQ(same.files[2].kind, OpenFileKind::Other);
+
+    // PID 4242 reused by a process started later: 0x48 is its own handle, typed as a pipe.
+    fake().creationTicks = START_TICKS + 1;
+    const ProcessTarget reused{.pid = TARGET.pid, .startTimeTicks = START_TICKS + 1};
+    const OpenFilesReadResult other = reader.readOpenFiles(reused);
+    ASSERT_EQ(other.status, OpenFilesReadStatus::Ok);
+    EXPECT_FALSE(other.namesIncomplete);
+    ASSERT_EQ(other.files.size(), 4U);
+    EXPECT_EQ(other.files[1].path, "C:\\Data\\My File.txt");
+    EXPECT_EQ(other.files[2].descriptor, 0x48U);
+    EXPECT_EQ(other.files[2].kind, OpenFileKind::Pipe);
+    EXPECT_EQ(reader.hungHandleCount(), 0U); // the old process's entry is dropped, not kept forever
 }
 
 TEST_F(WindowsProcessOpenFilesTest, CapsTheCount)
