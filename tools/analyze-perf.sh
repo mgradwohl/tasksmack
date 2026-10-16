@@ -31,6 +31,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 # ── argument parsing ──────────────────────────────────────────────────────────
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
 DATA_FILE="${1:-}"
 shift || true
 
@@ -53,6 +57,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+if ! [[ "${TOP}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: --top must be a positive integer, got '${TOP}'" >&2
+    exit 1
+fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -124,14 +133,19 @@ print_step "Generating perf report (top ${TOP})"
 # --no-children: show self-CPU (exclusive), not inclusive/call-chain weight
 # --stdio:       machine-readable text output
 # -g:            include call graphs
+# Write the whole report first, then trim it: piping perf straight into head would kill perf with
+# SIGPIPE once head has its lines, and pipefail + set -e would then stop this script before the
+# flamegraph and summary steps.
+FULL_REPORT="$(mktemp)"
+trap 'rm -f "${FULL_REPORT}"' EXIT
 perf report \
     -i "${DATA_FILE}" \
     --stdio \
     --no-children \
     -g \
     --sort comm,dso,symbol \
-    | head -n $(( TOP * 10 + 50 )) \
-    > "${REPORT_FILE}"
+    > "${FULL_REPORT}"
+head -n $(( TOP * 10 + 50 )) "${FULL_REPORT}" > "${REPORT_FILE}"
 
 info "Report: ${REPORT_FILE}"
 

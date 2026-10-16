@@ -131,7 +131,7 @@ phase_generate() {
     # The KEY=value prefix scopes the assignment to the subprocess only, so any
     # pre-existing LLVM_PROFILE_FILE in the current shell is automatically preserved.
     LLVM_PROFILE_FILE="${PROFRAW_PATTERN}" \
-        "${BENCH_BIN}" --benchmark_min_time=0.5 2>&1
+        "${BENCH_BIN}" --benchmark_min_time=0.5s 2>&1
 
     print_step "Phase 1 – UI training: the real panels, headless (TaskSmackUiTraining, #880)"
 

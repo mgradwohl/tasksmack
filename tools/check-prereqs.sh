@@ -129,11 +129,17 @@ get_ninja_version() {
 }
 
 # Get lld version
+# The ld.lld this script reports: unversioned on PATH, else the pinned LLVM's (/usr/lib/llvm-22/bin,
+# /usr/bin/ld.lld-22). A bare `lld` is the generic driver, which prints no version.
+get_lld_path() {
+    command -v ld.lld 2>/dev/null || find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
+}
+
 get_lld_version() {
-    if command -v ld.lld &>/dev/null; then
-        ld.lld --version 2>/dev/null | grep -oE 'LLD [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
-    elif command -v lld &>/dev/null; then
-        lld --version 2>/dev/null | grep -oE 'LLD [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
+    local lld
+    lld="$(get_lld_path)"
+    if [[ -n "$lld" ]]; then
+        "$lld" --version 2>/dev/null | grep -oE 'LLD [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
     else
         echo ""
     fi
@@ -302,6 +308,22 @@ main() {
         fi
     fi
 
+    # The Linux presets name their compilers clang-22/clang++-22 and build against libc++, so the
+    # unversioned clang above passing is not enough for `cmake --preset debug` to work.
+    local preset_cc="clang-${MIN_CLANG_VERSION}" preset_cxx="clang++-${MIN_CLANG_VERSION}"
+    if command -v "${preset_cc}" &>/dev/null && command -v "${preset_cxx}" &>/dev/null; then
+        echo -e "${GREEN}${preset_cxx}${NC}: found ($(command -v "${preset_cxx}"); used by the CMake presets)"
+        if echo '#include <version>' | "${preset_cxx}" -stdlib=libc++ -x c++ -E - &>/dev/null; then
+            echo -e "${GREEN}libc++${NC}: found"
+        else
+            echo -e "${RED}libc++${NC}: not found (sudo apt install libc++-${MIN_CLANG_VERSION}-dev libc++abi-${MIN_CLANG_VERSION}-dev)"
+            all_ok=1
+        fi
+    else
+        echo -e "${RED}${preset_cxx}${NC}: not found (the CMake presets call ${preset_cc}/${preset_cxx}; sudo apt install clang-${MIN_CLANG_VERSION})"
+        all_ok=1
+    fi
+
     # clangd (required for VS Code workspace defaults)
     local clangd_ver
     clangd_ver="$(get_clangd_version)"
@@ -328,7 +350,7 @@ main() {
         all_ok=1
     else
         local lld_path
-        lld_path="$(command -v ld.lld 2>/dev/null || command -v lld 2>/dev/null || true)"
+        lld_path="$(get_lld_path)"
         echo -e "${GREEN}lld${NC}: ${lld_ver} (${lld_path})"
     fi
 
@@ -427,11 +449,18 @@ main() {
     iwyu_ver="$(get_iwyu_version)"
     if [[ -z "${iwyu_ver}" ]]; then
         echo -e "${YELLOW}iwyu${NC}: not found (optional; required only for ./tools/iwyu.sh)"
-        echo -e "  ${CYAN}Hint${NC}: sudo apt install iwyu"
+        echo -e "  ${CYAN}Hint${NC}: build it from source against Clang ${MIN_CLANG_VERSION} (the clang_${MIN_CLANG_VERSION} branch of"
+        echo -e "        https://github.com/include-what-you-use/include-what-you-use), as CI does"
     else
-        local iwyu_path
+        local iwyu_path iwyu_clang
         iwyu_path="$(command -v iwyu 2>/dev/null || true)"
-        echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
+        # IWYU built against another Clang major asserts on this project (tools/iwyu.sh)
+        iwyu_clang="$(iwyu --version 2>&1 | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+        if [[ -n "${iwyu_clang}" && "${iwyu_clang}" != "${MIN_CLANG_VERSION}" ]]; then
+            echo -e "${YELLOW}iwyu${NC}: ${iwyu_ver} (${iwyu_path}) - built against Clang ${iwyu_clang}; CI builds it against Clang ${MIN_CLANG_VERSION}"
+        else
+            echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
+        fi
     fi
 
     # llvm-profdata (informational)
@@ -520,19 +549,20 @@ main() {
     fi
 
     # Python 3 (required for GLAD OpenGL loader generation)
-    local py_ver
-    py_ver="$(get_python3_version)"
+    # find_python() gives the interpreter the build uses (.venv, python3.14, ... >= 3.14); report
+    # that one's version. Only when there is none, fall back to whatever python3/python is on PATH.
+    local py_ver py_path
+    py_path="$(find_python 2>/dev/null || true)"
+    if [[ -n "${py_path}" ]]; then
+        py_ver="$("${py_path}" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || true)"
+    else
+        py_ver="$(get_python3_version)"
+        py_path="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+    fi
     if [[ -z "${py_ver}" ]]; then
         echo -e "${RED}python3${NC}: not found"
         all_ok=1
     else
-        # Use find_python() for the canonical path (>= 3.14); fall back to any python3/python
-        # for display when the found version is too old.
-        local py_path
-        py_path="$(find_python 2>/dev/null || true)"
-        if [[ -z "${py_path}" ]]; then
-            py_path="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
-        fi
         local py_cmd
         py_cmd="$(basename "${py_path:-python3}")"
         if version_at_least "${MIN_PYTHON_VERSION}" "${py_ver}"; then
@@ -552,7 +582,7 @@ main() {
         if ! find_python &>/dev/null; then
             echo -e "${YELLOW}jinja2${NC}: skipped (requires Python >= ${MIN_PYTHON_VERSION})"
         else
-            echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
+            echo -e "${RED}jinja2${NC}: Python module not found (.venv/bin/python -m pip install --require-hashes -r requirements-glad.txt, or run tools/setup-dev.sh)"
             all_ok=1
         fi
     else

@@ -10,6 +10,24 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
+case "${1:-}" in
+    -h|--help)
+        echo "Usage: $(basename "$0") [preset]"
+        echo ""
+        echo "Configure and build a CMake preset (default: debug), logging both to"
+        echo "build-logs/build-<preset>-<timestamp>.log. Presets: cmake --list-presets"
+        exit 0
+        ;;
+    -*)
+        echo "Error: Unknown option: $1 (expected a preset name; see --help)" >&2
+        exit 1
+        ;;
+esac
+if [[ $# -gt 1 ]]; then
+    echo "Error: expected at most one preset name; see --help" >&2
+    exit 1
+fi
+
 PRESET="${1:-debug}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 LOGDIR="$PROJECT_ROOT/build-logs"

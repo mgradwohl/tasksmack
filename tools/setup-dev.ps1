@@ -130,12 +130,17 @@ Invoke-WinGet install --id LLVM.LLVM --version $LlvmVersion --source winget --si
 Write-Host ""
 Write-Host "==> Setting LLVM_ROOT environment variable..."
 $llvmPath = "C:\Program Files\LLVM"
+# A machine-wide variable needs an elevated shell; without one, set it for the current user instead
+# of failing here, after LLVM is installed but before ccache and the Python packages.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+$envScope = if ($isAdmin) { 'Machine' } else { 'User' }
 if ($DryRun) {
-    Write-Host "[dry-run] [System.Environment]::SetEnvironmentVariable('LLVM_ROOT', '$llvmPath', 'Machine')"
+    Write-Host "[dry-run] [System.Environment]::SetEnvironmentVariable('LLVM_ROOT', '$llvmPath', '$envScope')"
 } else {
-    [System.Environment]::SetEnvironmentVariable('LLVM_ROOT', $llvmPath, 'Machine')
+    [System.Environment]::SetEnvironmentVariable('LLVM_ROOT', $llvmPath, $envScope)
     $env:LLVM_ROOT = $llvmPath
-    Write-Host "  LLVM_ROOT set to: $llvmPath"
+    Write-Host "  LLVM_ROOT set to: $llvmPath ($envScope scope)"
 }
 
 # ── Step 3: ccache ───────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@
 #   bench — run TaskSmackBenchmarks under heaptrack. Default preset: benchmark.
 #
 # Outputs under perf-data/:
-#   heaptrack-<mode>-<timestamp>.gz    — heaptrack data (open with heaptrack_gui or heaptrack_print)
+#   heaptrack-<mode>-<timestamp>.gz|.zst — heaptrack data (open with heaptrack_gui or heaptrack_print)
 #   heaptrack-<mode>-<timestamp>.log   — session log
 #   heaptrack-<mode>-<timestamp>-summary.txt  — top allocators (if heaptrack_print available)
 #
@@ -151,11 +151,11 @@ else
     set -e
 fi
 
-# heaptrack writes <base>.heaptrack.gz or <base>.<pid>.gz — find it
-HEAPTRACK_DATA="$(find "${PERF_DIR}" -maxdepth 1 -name "${PREFIX}-${TIMESTAMP}*.gz" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+# heaptrack writes <base>.<pid>.gz, or <base>.<pid>.zst when zstd is installed -- find either
+HEAPTRACK_DATA="$(find "${PERF_DIR}" -maxdepth 1 \( -name "${PREFIX}-${TIMESTAMP}*.gz" -o -name "${PREFIX}-${TIMESTAMP}*.zst" \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
 
 if [[ -z "${HEAPTRACK_DATA}" ]]; then
-    die "heaptrack did not produce a .gz output file under ${PERF_DIR}. Check ${LOG_FILE}."
+    die "heaptrack did not produce a .gz or .zst output file under ${PERF_DIR}. Check ${LOG_FILE}."
 fi
 
 echo "HEAPTRACK_DATA=${HEAPTRACK_DATA}" >> "${LOG_FILE}"
