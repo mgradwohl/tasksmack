@@ -22,8 +22,9 @@ namespace Platform::LinuxCoreDump
 /// How many names dumpFileName() tries in turn when the one before exists already.
 inline constexpr int MAX_NAME_ATTEMPTS = 100;
 
-/// Why a Linux dump is always of the running process: there is no snapshot of a process to write from.
-inline constexpr const char* LIVE_REASON = "Linux has no process snapshots";
+/// How a Linux dump is written, for ProcessDump::liveReason: always from the running process, as there is
+/// no snapshot of a process to write from (ProcessActionCapabilities::dumpsFromSnapshot is false, #2241).
+inline constexpr const char* LIVE_REASON = "gdb's gcore stops it to copy its memory out";
 
 /// The message for a dump stopped because it was asked to; the partial file has been deleted by then.
 inline constexpr const char* CANCELLED_MESSAGE = "Cancelled; the partial dump file was deleted";

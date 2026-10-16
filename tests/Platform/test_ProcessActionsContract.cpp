@@ -61,6 +61,19 @@ TEST(ProcessActionsContractTest, FactoryConstructs)
     ASSERT_NE(actions, nullptr);
 }
 
+TEST(ProcessActionsContractTest, DumpsFromSnapshotOnlyWhereThePlatformTakesOne)
+{
+    // How long a dump pauses the process, which the confirm and result say (#2241): Windows takes a
+    // snapshot first (PssCaptureSnapshot, #2001); Linux's gcore stops it for the whole write.
+    const auto actions = makeProcessActions();
+    ASSERT_NE(actions, nullptr);
+#ifdef _WIN32
+    EXPECT_TRUE(actions->actionCapabilities().dumpsFromSnapshot);
+#else
+    EXPECT_FALSE(actions->actionCapabilities().dumpsFromSnapshot);
+#endif
+}
+
 TEST(ProcessActionsContractTest, NonExistentPidFailsGracefully)
 {
     const auto actions = makeProcessActions();

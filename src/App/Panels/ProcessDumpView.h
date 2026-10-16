@@ -110,9 +110,14 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// "Create a dump file of notepad.exe (PID 1234)?"
 [[nodiscard]] std::string confirmTitle(std::string_view processName, std::int32_t pid);
 /// What the dump does and where it goes, for the confirm dialog; then @p warning (lowSpaceWarning(),
-/// or why the folder dialog failed) when there is one.
-[[nodiscard]] std::string
-confirmQuestion(std::string_view processName, std::int32_t pid, const std::filesystem::path& directory, std::string_view warning = {});
+/// or why the folder dialog failed) when there is one. @p dumpsFromSnapshot
+/// (ProcessActionCapabilities::dumpsFromSnapshot) says how long the process pauses: while a snapshot
+/// is taken (Windows), or for the whole write (Linux's gcore, #2241).
+[[nodiscard]] std::string confirmQuestion(std::string_view processName,
+                                          std::int32_t pid,
+                                          const std::filesystem::path& directory,
+                                          bool dumpsFromSnapshot,
+                                          std::string_view warning = {});
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
 
@@ -128,7 +133,10 @@ struct DumpMessage
 };
 
 /// The result dialog's content for a dump of @p processName (PID @p pid) that ended in @p result.
-[[nodiscard]] DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const Platform::ProcessDumpResult& result);
+/// Where the platform never takes a snapshot (@p dumpsFromSnapshot false: Linux), a dump of the running
+/// process is the normal case and isn't worded as a fallback (#2241).
+[[nodiscard]] DumpMessage
+resultMessage(std::string_view processName, std::int32_t pid, const Platform::ProcessDumpResult& result, bool dumpsFromSnapshot);
 
 /// The failure a dump or folder dialog that threw, or couldn't start, comes back as (BackgroundTask).
 template<typename Result> [[nodiscard]] Result failedWith(std::string detail)
@@ -180,8 +188,9 @@ class ProcessDumpView
 
     /// "Create dump file..." was chosen for @p target, named @p processName: asks to confirm writing it
     /// into @p directory, warning when its drive may be too full -- read through @p actions'
-    /// dumpSpace(), once, here (null: no check). Ignored while a confirm, a dump or its result is up
-    /// (active()).
+    /// dumpSpace(), once, here (null: no check), and saying how long the process pauses
+    /// (ProcessActionCapabilities::dumpsFromSnapshot; null: for the whole write). Ignored while a
+    /// confirm, a dump or its result is up (active()).
     void request(const Platform::ProcessTarget& target,
                  std::string processName,
                  std::filesystem::path directory,
@@ -289,6 +298,7 @@ class ProcessDumpView
     Platform::ProcessTarget m_Target{.pid = -1, .startTimeTicks = 0};
     std::string m_ProcessName;
     std::filesystem::path m_Directory;
+    bool m_DumpsFromSnapshot = false; // ProcessActionCapabilities::dumpsFromSnapshot of the actions given
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
     std::string m_SpaceWarning;  // lowSpaceWarning() for m_Directory; empty when none

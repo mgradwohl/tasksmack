@@ -153,7 +153,8 @@ struct ProcessDump
     /// Written from a snapshot of the process (Windows: PssCaptureSnapshot's clone, #2001), so the
     /// process paused only while the snapshot was taken, not for the whole write.
     bool fromSnapshot = false;
-    /// Why it was written from the running process instead; empty when fromSnapshot.
+    /// Why it was written from the running process instead, or, where the platform never takes a
+    /// snapshot (ProcessActionCapabilities::dumpsFromSnapshot false), how; empty when fromSnapshot.
     std::string liveReason;
 };
 
@@ -201,6 +202,11 @@ struct ProcessActionCapabilities
     bool canCreateDump = false;
     /// chooseDumpFolder(): a folder dialog for where dumps go (#2001; Windows: IFileOpenDialog).
     bool canChooseDumpFolder = false;
+    /// createDump() first tries a snapshot of the process, so it pauses only while that is taken, and
+    /// writes from the running process only when none can be (Windows: PssCaptureSnapshot, #2001).
+    /// False: every dump is written from the running process, stopped for the whole write (Linux:
+    /// gdb's gcore), and that is the normal case, not a fallback (#2241).
+    bool dumpsFromSnapshot = false;
 };
 
 /// Interface for platform-specific process actions.

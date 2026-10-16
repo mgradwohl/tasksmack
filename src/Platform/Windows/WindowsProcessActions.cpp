@@ -270,6 +270,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .syscallTrace = SyscallTraceAvailability::Unsupported,
         .canCreateDump = true,       // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
         .canChooseDumpFolder = true, // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = true,   // PssCaptureSnapshot, else from the running process (#2001)
     };
 }
 

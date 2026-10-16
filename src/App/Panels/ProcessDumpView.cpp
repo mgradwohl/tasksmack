@@ -100,15 +100,23 @@ std::string confirmTitle(std::string_view processName, std::int32_t pid)
     return std::format("Create a dump file of {} (PID {})?", processName, pid);
 }
 
-std::string
-confirmQuestion(std::string_view processName, std::int32_t pid, const std::filesystem::path& directory, std::string_view warning)
+std::string confirmQuestion(std::string_view processName,
+                            std::int32_t pid,
+                            const std::filesystem::path& directory,
+                            bool dumpsFromSnapshot,
+                            std::string_view warning)
 {
+    // Windows takes a snapshot first (#2001); Linux's gcore stops the process for the whole write (#2241).
+    const std::string_view pause = dumpsFromSnapshot ? "The process pauses while a snapshot of it is taken; where none can be, it may "
+                                                       "stop responding while the dump is written."
+                                                     : "The process is stopped while the dump is written, and doesn't respond until it "
+                                                       "is done.";
     std::string question = std::format("A full memory dump of {} (PID {}) will be written to a new file in {}.\n\nIt can be as large as "
-                                       "all the memory the process uses. The process pauses while a snapshot of it is taken; where none "
-                                       "can be, it may stop responding while the dump is written.",
+                                       "all the memory the process uses. {}",
                                        processName,
                                        pid,
-                                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory));
+                                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory),
+                                       pause);
     if (!warning.empty())
     {
         question += "\n\n";
@@ -122,7 +130,7 @@ std::string progressText(std::string_view processName, std::int32_t pid, std::ch
     return std::format("Writing a dump file of {} (PID {})... {} s", processName, pid, elapsed.count());
 }
 
-DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const Platform::ProcessDumpResult& result)
+DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const Platform::ProcessDumpResult& result, bool dumpsFromSnapshot)
 {
     if (!result.has_value())
     {
@@ -133,11 +141,24 @@ DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const 
                 .note = {},
                 .method = {}};
     }
-    std::string method = result->fromSnapshot
-                           ? std::string("Written from a snapshot: the process paused only while the snapshot was taken.")
-                           : std::format("Written from the running process, which may have stopped responding while it was written: "
-                                         "no snapshot could be taken ({}).",
-                                         result->liveReason.empty() ? std::string("unknown reason") : result->liveReason);
+    std::string method;
+    if (result->fromSnapshot)
+    {
+        method = "Written from a snapshot: the process paused only while the snapshot was taken.";
+    }
+    else if (!dumpsFromSnapshot)
+    {
+        // The platform's only way (Linux's gcore, #2241): not a fallback, so no "no snapshot could be taken".
+        method = result->liveReason.empty()
+                   ? std::string("Written from the running process, which was stopped while it was written.")
+                   : std::format("Written from the running process, which was stopped while it was written ({}).", result->liveReason);
+    }
+    else
+    {
+        method = std::format("Written from the running process, which may have stopped responding while it was written: "
+                             "no snapshot could be taken ({}).",
+                             result->liveReason.empty() ? std::string("unknown reason") : result->liveReason);
+    }
     return {.ok = true,
             .title = "Dump file created",
             .text = std::format(
@@ -226,6 +247,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_Target = other.m_Target;
         m_ProcessName = std::move(other.m_ProcessName);
         m_Directory = std::move(other.m_Directory);
+        m_DumpsFromSnapshot = other.m_DumpsFromSnapshot;
         m_ConfirmTitle = std::move(other.m_ConfirmTitle);
         m_ConfirmQuestion = std::move(other.m_ConfirmQuestion);
         m_SpaceWarning = std::move(other.m_SpaceWarning);
@@ -253,6 +275,7 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
     m_ProcessName = std::move(processName);
     m_Directory = std::move(directory);
     m_FolderFailure.clear();
+    m_DumpsFromSnapshot = false;
     // Built once here, not every frame the dialog is up.
     m_ConfirmTitle = DumpDetail::confirmTitle(m_ProcessName, target.pid);
     refreshConfirm(actions);
@@ -263,7 +286,12 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
 
 void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
 {
-    // Read once per folder, never per frame: the free space and the process's private bytes.
+    // Read once per folder, never per frame: the free space and the process's private bytes, and
+    // whether the platform dumps from a snapshot (the pause the confirm promises, #2241).
+    if (actions != nullptr)
+    {
+        m_DumpsFromSnapshot = actions->actionCapabilities().dumpsFromSnapshot;
+    }
     m_SpaceWarning = (actions != nullptr)
                        ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory), m_Directory, canChooseFolder(actions))
                        : std::string{};
@@ -276,7 +304,7 @@ void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
         }
         warning += m_FolderFailure;
     }
-    m_ConfirmQuestion = DumpDetail::confirmQuestion(m_ProcessName, m_Target.pid, m_Directory, warning);
+    m_ConfirmQuestion = DumpDetail::confirmQuestion(m_ProcessName, m_Target.pid, m_Directory, m_DumpsFromSnapshot, warning);
 }
 
 void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* ownerWindow)
@@ -354,10 +382,14 @@ void ProcessDumpView::confirm(Platform::IProcessActions* actions)
     m_ShowConfirm = false;
     if (actions == nullptr)
     {
-        m_Result = DumpDetail::resultMessage(
-            m_ProcessName, m_Target.pid, Platform::ProcessDumpResult(std::unexpected(std::string("Process actions unavailable"))));
+        m_Result = DumpDetail::resultMessage(m_ProcessName,
+                                             m_Target.pid,
+                                             Platform::ProcessDumpResult(std::unexpected(std::string("Process actions unavailable"))),
+                                             m_DumpsFromSnapshot);
         return;
     }
+    // The result says how the dump was written by the actions that write it.
+    m_DumpsFromSnapshot = actions->actionCapabilities().dumpsFromSnapshot;
     m_CancelRequested = false;
     m_StartedAt = std::chrono::steady_clock::now();
     // The worker owns copies of the target and folder; it shares only its result and a new stop token's
@@ -366,7 +398,7 @@ void ProcessDumpView::confirm(Platform::IProcessActions* actions)
     if (const auto failed = m_Worker.start([actions, target = m_Target, directory = m_Directory](const std::stop_token& stopToken)
                                            { return actions->createDump(target, directory, stopToken); }))
     {
-        m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, *failed);
+        m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, *failed, m_DumpsFromSnapshot);
     }
 }
 
@@ -401,7 +433,7 @@ bool ProcessDumpView::takeFinished(bool wait)
     }
     else
     {
-        m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, result);
+        m_Result = DumpDetail::resultMessage(m_ProcessName, m_Target.pid, result, m_DumpsFromSnapshot);
     }
     m_CancelRequested = false;
     return true;

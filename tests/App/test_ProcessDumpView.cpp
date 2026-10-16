@@ -9,6 +9,10 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
+#ifdef __linux__
+#include "Platform/Linux/LinuxCoreDump.h"
+#endif
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -94,7 +98,7 @@ TEST(ProcessDumpViewTest, ARequestAsksToConfirmAndNamesTheProcessAndFolder)
     EXPECT_EQ(view.directory(), someFolder());
 
     EXPECT_EQ(DumpDetail::confirmTitle("notepad.exe", 1001), "Create a dump file of notepad.exe (PID 1001)?");
-    const std::string question = DumpDetail::confirmQuestion("notepad.exe", 1001, someFolder());
+    const std::string question = DumpDetail::confirmQuestion("notepad.exe", 1001, someFolder(), true);
     EXPECT_TRUE(question.contains("notepad.exe (PID 1001)")) << question;
     EXPECT_TRUE(question.contains("full memory dump")) << question;
     EXPECT_TRUE(question.contains(someFolder().string())) << question;
@@ -184,7 +188,8 @@ TEST(ProcessDumpViewTest, ThePlatformsNoteIsKept)
     const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
         "app32.exe",
         77,
-        Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = "This is a 32-bit process", .fromSnapshot = true, .liveReason = {}});
+        Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = "This is a 32-bit process", .fromSnapshot = true, .liveReason = {}},
+        true);
     EXPECT_TRUE(message.ok);
     EXPECT_EQ(message.note, "This is a 32-bit process");
 }
@@ -254,7 +259,10 @@ TEST(ProcessDumpViewTest, ProgressCountsTheSeconds)
 TEST(ProcessDumpViewTest, ASnapshotDumpSaysSo)
 {
     const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
-        "notepad.exe", 1001, Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+        "notepad.exe",
+        1001,
+        Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}},
+        true);
     EXPECT_TRUE(message.ok);
     EXPECT_TRUE(message.method.contains("from a snapshot")) << message.method;
     EXPECT_TRUE(message.method.contains("paused only while the snapshot was taken")) << message.method;
@@ -269,7 +277,8 @@ TEST(ProcessDumpViewTest, ALiveDumpSaysWhyThereWasNoSnapshot)
                                                         .sizeBytes = 1,
                                                         .note = {},
                                                         .fromSnapshot = false,
-                                                        .liveReason = "Windows refused the access a snapshot of it needs"});
+                                                        .liveReason = "Windows refused the access a snapshot of it needs"},
+                                  true);
     EXPECT_TRUE(message.ok);
     EXPECT_TRUE(message.method.contains("from the running process")) << message.method;
     EXPECT_TRUE(message.method.contains("no snapshot could be taken (Windows refused the access a snapshot of it needs)"))
@@ -277,9 +286,83 @@ TEST(ProcessDumpViewTest, ALiveDumpSaysWhyThereWasNoSnapshot)
 
     // A failure has no method line.
     const DumpDetail::DumpMessage failed =
-        DumpDetail::resultMessage("notepad.exe", 1001, Platform::ProcessDumpResult(std::unexpected(std::string("Access denied"))));
+        DumpDetail::resultMessage("notepad.exe", 1001, Platform::ProcessDumpResult(std::unexpected(std::string("Access denied"))), true);
     EXPECT_TRUE(failed.method.empty());
 }
+
+// --- A platform without snapshots (Linux's gcore, #2241) ------------------------------------------
+
+constexpr const char* SNAPSHOT_PAUSE = "The process pauses while a snapshot of it is taken; where none can be, it may stop responding "
+                                       "while the dump is written.";
+constexpr const char* WHOLE_WRITE_STOP = "The process is stopped while the dump is written, and doesn't respond until it is done.";
+
+TEST(ProcessDumpViewTest, WithSnapshotsTheConfirmPromisesOnlyASnapshotPause)
+{
+    // Windows' wording (#2001), kept as it was.
+    const std::string question = DumpDetail::confirmQuestion("notepad.exe", 1001, someFolder(), true);
+    EXPECT_TRUE(question.ends_with(SNAPSHOT_PAUSE)) << question;
+    EXPECT_FALSE(question.contains(WHOLE_WRITE_STOP)) << question;
+}
+
+TEST(ProcessDumpViewTest, WithoutSnapshotsTheConfirmSaysTheProcessIsStoppedForTheWholeWrite)
+{
+    const std::string question = DumpDetail::confirmQuestion("bash", 1001, someFolder(), false, "low space");
+    EXPECT_TRUE(question.contains(WHOLE_WRITE_STOP)) << question;
+    EXPECT_FALSE(question.contains("snapshot")) << question;
+    EXPECT_TRUE(question.contains("bash (PID 1001)")) << question;
+    EXPECT_TRUE(question.ends_with("\n\nlow space")) << question;
+}
+
+TEST(ProcessDumpViewTest, WithoutSnapshotsALiveDumpIsNotAFallback)
+{
+    const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
+        "bash",
+        1001,
+        Platform::ProcessDump{.file = "x.core", .sizeBytes = 1, .note = {}, .fromSnapshot = false, .liveReason = "gcore stops it"},
+        false);
+    EXPECT_TRUE(message.ok);
+    EXPECT_EQ(message.method, "Written from the running process, which was stopped while it was written (gcore stops it).");
+
+    const DumpDetail::DumpMessage noReason = DumpDetail::resultMessage(
+        "bash", 1001, Platform::ProcessDump{.file = "x.core", .sizeBytes = 1, .note = {}, .fromSnapshot = false, .liveReason = {}}, false);
+    EXPECT_EQ(noReason.method, "Written from the running process, which was stopped while it was written.");
+}
+
+TEST(ProcessDumpViewTest, TheViewWordsTheConfirmAndResultByThePlatformsCapability)
+{
+    for (const bool snapshots : {true, false})
+    {
+        TestMocks::MockProcessActions mock;
+        Platform::ProcessActionCapabilities caps = dumpCapable(true);
+        caps.dumpsFromSnapshot = snapshots;
+        mock.setCapabilities(caps);
+        mock.setDumpResult(
+            Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = false, .liveReason = "the reason"});
+        ProcessDumpView view([](const std::filesystem::path&) {});
+        view.request(TARGET, "app", someFolder(), &mock);
+        EXPECT_TRUE(view.confirmQuestion().contains(snapshots ? SNAPSHOT_PAUSE : WHOLE_WRITE_STOP)) << view.confirmQuestion();
+        view.confirm(&mock);
+        ASSERT_TRUE(view.takeFinished(true));
+        const DumpDetail::DumpMessage message = view.result().value_or(DumpDetail::DumpMessage{});
+        EXPECT_EQ(message.method.contains("no snapshot could be taken (the reason)"), snapshots) << message.method;
+        EXPECT_EQ(message.method.contains("was stopped while it was written (the reason)"), !snapshots) << message.method;
+    }
+}
+
+#ifdef __linux__
+TEST(ProcessDumpViewTest, LinuxsGcoreDumpIsWordedAsTheNormalCase)
+{
+    // What LinuxProcessActions::createDump() returns, as the result dialog shows it.
+    const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
+        "bash",
+        1001,
+        Platform::ProcessDump{
+            .file = "x.core", .sizeBytes = 1, .note = {}, .fromSnapshot = false, .liveReason = Platform::LinuxCoreDump::LIVE_REASON},
+        false);
+    EXPECT_FALSE(message.method.contains("snapshot")) << message.method;
+    EXPECT_TRUE(message.method.contains("gcore")) << message.method;
+}
+#endif
 
 // --- The free-space estimate and warning (#2001) --------------------------------------------------
 
@@ -324,9 +407,9 @@ TEST(ProcessDumpViewTest, TheWarningNamesTheFolderTheSizesAndWhatToDo)
     EXPECT_TRUE(DumpDetail::lowSpaceWarning({.freeBytes = 100 * GIB, .processBytes = 4 * GIB}, someFolder()).empty());
     EXPECT_TRUE(DumpDetail::lowSpaceWarning({}, someFolder()).empty());
 
-    const std::string question = DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), warning);
+    const std::string question = DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), true, warning);
     EXPECT_TRUE(question.ends_with("\n\n" + warning)) << question;
-    EXPECT_FALSE(DumpDetail::confirmQuestion("big.exe", 1001, someFolder()).contains("may not fit"));
+    EXPECT_FALSE(DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), true).contains("may not fit"));
 }
 
 TEST(ProcessDumpViewTest, TheConfirmWarnsEarlyWhenTheDriveIsTooFull)
@@ -356,7 +439,7 @@ TEST(ProcessDumpViewTest, TheConfirmSaysNothingOfSpaceWhenTheDumpFits)
     ProcessDumpView view([](const std::filesystem::path&) {});
     view.request(TARGET, "big.exe", someFolder(), &mock);
     EXPECT_FALSE(view.confirmQuestion().contains("may not fit")) << view.confirmQuestion();
-    EXPECT_EQ(view.confirmQuestion(), DumpDetail::confirmQuestion("big.exe", 1001, someFolder()));
+    EXPECT_EQ(view.confirmQuestion(), DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), false));
 }
 
 // --- Save dump to... (#2001) ----------------------------------------------------------------------
