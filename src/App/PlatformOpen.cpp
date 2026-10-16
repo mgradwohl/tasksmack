@@ -10,17 +10,16 @@
 #include <string>
 #include <string_view>
 
-// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
 #ifdef __linux__
-#include <cerrno>
-#include <cstdlib>
-#include <system_error>
+#include "Platform/Linux/DetachedSpawn.h"
+#include "Platform/Linux/SyscallTrace.h"
 
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <array>
+#include <cstdlib>
+#include <optional>
+
 #include <unistd.h>
 #endif
-// NOLINTEND(misc-include-cleaner)
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -71,66 +70,27 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
     return true;
     // LCOV_EXCL_STOP
 #elif defined(__linux__)
-    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
+    // Linux: xdg-open, found on PATH as execvp would and started through Platform's DetachedSpawn (#2138):
+    // double fork and setsid, every inherited descriptor close-on-exec (TaskSmack's sampler threads keep
+    // /proc and /sys files open, and drivers their device nodes), stdio on /dev/null, signals reset, and
+    // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
     const std::string targetStr = nativeTargetFromUtf8(target);
-    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
-    const pid_t pid = ::fork();
-    if (pid == -1)
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on the UI thread; nothing sets it
+    const std::optional<std::string> xdgOpen =
+        Platform::SyscallTrace::findExecutable("xdg-open",
+                                               pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
+                                               [](const std::string& path) { return ::access(path.c_str(), X_OK) == 0; });
+    if (!xdgOpen.has_value())
     {
-        spdlog::warn("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
+        spdlog::warn("Can't open {}: xdg-open isn't installed", targetStr);
         return false;
     }
-
-    if (pid == 0)
+    const std::array<std::string, 2> argv{*xdgOpen, targetStr};
+    if (const auto spawned = Platform::DetachedSpawn::spawnDetached(argv); !spawned.has_value())
     {
-        // First child: fork again to create grandchild
-        const pid_t grandchild = ::fork();
-        if (grandchild == -1)
-        {
-            _exit(EXIT_FAILURE);
-        }
-
-        if (grandchild == 0)
-        {
-            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): execlp varargs require a typed null char* terminator
-            ::execlp("xdg-open", "xdg-open", targetStr.c_str(), static_cast<char*>(nullptr));
-            _exit(127); // execlp only returns on error
-        }
-        // First child exits immediately (grandchild will be adopted by init)
-        _exit(0);
-    }
-
-    // Parent: wait for first child to prevent zombie; retry on EINTR
-    int status = 0;
-    pid_t waited = ::waitpid(pid, &status, 0);
-    while (waited == -1 && errno == EINTR)
-    {
-        waited = ::waitpid(pid, &status, 0);
-    }
-
-    if (waited == -1)
-    {
-        spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
+        spdlog::warn("{}", Platform::DetachedSpawn::spawnFailureMessage(spawned.error(), *xdgOpen));
         return false;
     }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFEXITED/WEXITSTATUS from sys/wait.h, include-cleaner false positive
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WEXITSTATUS from sys/wait.h
-        spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
-        return false;
-    }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFSIGNALED from sys/wait.h, include-cleaner false positive
-    if (WIFSIGNALED(status))
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WTERMSIG from sys/wait.h
-        spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
-        return false;
-    }
-    // Launcher reaped successfully. Note: grandchild exec failure (e.g., xdg-open
-    // not installed) is not detectable here by design — the grandchild is adopted
-    // by init before the parent can observe its exit status.
     return true;
 #else
     spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});

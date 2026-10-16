@@ -13,10 +13,12 @@
 #include <ios>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
 
+#include <fcntl.h>
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which cstdlib does not declare
 #include <unistd.h>
 
@@ -101,12 +103,37 @@ TEST_F(PlatformOpenTest, APathIsHandedOverByteForByte)
     EXPECT_EQ(opened(), path.string());
 }
 
-TEST_F(PlatformOpenTest, NoXdgOpenStillReapsTheLauncher)
+TEST_F(PlatformOpenTest, NoXdgOpenIsAFailure)
 {
-    // Success means only that the launcher was forked and reaped: a missing xdg-open fails silently in
-    // the detached grandchild (see PlatformOpen.h), and leaves no zombie behind.
+    // #2138: xdg-open is looked up before anything starts, so a missing one is reported, not lost in a
+    // detached grandchild.
     ASSERT_EQ(::setenv("PATH", "/nonexistent-tasksmack-path", 1), 0); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    EXPECT_FALSE(openWithSystemHandler(std::string_view{"https://example.invalid/"}));
+}
+
+// #2138: xdg-open (and the program it starts) inherits only stdin, stdout and stderr: a descriptor
+// TaskSmack holds open without close-on-exec does not leak into it.
+TEST_F(PlatformOpenTest, XdgOpenInheritsNoneOfTaskSmacksDescriptors)
+{
+    const std::filesystem::path script = m_Dir / "xdg-open";
+    {
+        std::ofstream out(script, std::ios::trunc);
+        out << "#!/bin/sh\nls /proc/$$/fd > '" << (m_Dir / "opened.tmp").string() << "'\nmv '" << (m_Dir / "opened.tmp").string() << "' '"
+            << (m_Dir / "opened.txt").string() << "'\n";
+    }
+    std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+    const int leaky = ::open("/proc/self/stat", O_RDONLY); // NOLINT(cppcoreguidelines-pro-type-vararg) - no O_CLOEXEC, on purpose
+    ASSERT_GE(leaky, 3);
     EXPECT_TRUE(openWithSystemHandler(std::string_view{"https://example.invalid/"}));
+    const std::string fds = opened().value_or(std::string{});
+    ::close(leaky);
+    ASSERT_FALSE(fds.empty()) << "the fake xdg-open didn't run";
+    // The shell's own: 0, 1, 2, plus the one ls reads its listing through. Never our descriptor's number.
+    std::istringstream listing(fds);
+    for (std::string fd; listing >> fd;)
+    {
+        EXPECT_NE(fd, std::to_string(leaky)) << fds;
+    }
 }
 
 TEST(PlatformOpenTargetTest, LinuxTargetsAreTheSameBytes)

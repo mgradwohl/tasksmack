@@ -24,10 +24,9 @@ using NativeTarget = std::string;
 [[nodiscard]] NativeTarget nativeTargetFromPath(const std::filesystem::path& path);
 
 /// Open a URL or UTF-8 encoded string with the system's default handler.
-/// On Linux, uses xdg-open via a double-fork to avoid zombie processes.
-/// Note: on Linux, success only means the launcher process was forked and
-/// reaped cleanly — it cannot detect whether xdg-open itself was found or
-/// succeeded (exec failure in the grandchild is silent by design).
+/// On Linux, runs xdg-open (found on PATH) through Platform::DetachedSpawn (#2138): detached, with
+/// none of TaskSmack's descriptors and stdio on /dev/null. Success means xdg-open was exec'd; a missing
+/// xdg-open, or one that can't be exec'd, is a failure. Whether xdg-open then finds a handler isn't known.
 /// On Windows, uses ShellExecuteW with UTF-8 to UTF-16 conversion.
 /// Returns true on success, false on failure (with a logged warning).
 [[nodiscard]] bool openWithSystemHandler(std::string_view target);
