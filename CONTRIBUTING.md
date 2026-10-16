@@ -230,6 +230,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **fix-byte-order-marker**: Remove UTF-8 byte-order marks
 - **check-utf8**: Fail on text files that aren't valid UTF-8 (`tools/check-utf8.py`) -- see
   [Text encoding and locale](#text-encoding-and-locale)
+- **check-guidance-sync**: Fail when the AI-agent guidance drifts (`tools/check-guidance-sync.py`): the
+  `.claude/skills/tasksmack-review/SKILL.md` body must match `.github/skills/code-review/SKILL.md`
+  (frontmatter ignored), and `CLAUDE.md` must import [AGENTS.md](AGENTS.md) with an `@AGENTS.md` line
 - **shellcheck**: Lint shell scripts
 - **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
   shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)

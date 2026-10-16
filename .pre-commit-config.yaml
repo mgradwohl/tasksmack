@@ -47,6 +47,14 @@ repos:
         language: python
         types: [text]
         exclude: '^tests/fuzz/corpus/'
+      # AI-agent guidance drift (#2246): the two review SKILL.md copies must have identical bodies, and
+      # CLAUDE.md must keep importing AGENTS.md.
+      - id: check-guidance-sync
+        name: Check AI-agent guidance copies are in sync
+        entry: python -I -X utf8 tools/check-guidance-sync.py
+        language: python
+        files: '^(AGENTS\.md|CLAUDE\.md|\.github/skills/code-review/SKILL\.md|\.claude/skills/tasksmack-review/SKILL\.md|tools/check-guidance-sync\.py)$'
+        pass_filenames: false
 
   # C++ formatting with clang-format
   - repo: https://github.com/pre-commit/mirrors-clang-format

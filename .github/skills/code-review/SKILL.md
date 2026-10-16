@@ -5,7 +5,7 @@ description: Reviews TaskSmack pull requests for C++23 compliance, memory/except
 
 # TaskSmack Code Review
 
-Apply these checks when reviewing pull requests in this repository. Report only genuine issues; skip style nits already enforced by clang-format.
+Apply these checks when reviewing pull requests or diffs in this repository. Report only genuine issues; skip style nits already enforced by clang-format.
 
 ## 1. Architecture boundaries (highest priority)
 

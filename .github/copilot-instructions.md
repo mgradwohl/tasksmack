@@ -19,8 +19,9 @@ TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
     - Layer contracts, sampling, capability behavior, platform strategy, and roadmap.
 - **Implemented features list (canonical):** [completed-features.md](../docs/dev/completed-features.md)
     - User-visible and engineering features already implemented.
-- **Agent guidance:** [copilot-instructions.md](copilot-instructions.md) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
-    - Primarily for agents, but still useful to contributors.
+- **Agent guidance:** [AGENTS.md](../AGENTS.md) (canonical shared rules for every agent: workflow, merge authority, PR/issue rules), [copilot-instructions.md](copilot-instructions.md) (this file: Copilot's project detail) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
+    - Primarily for agents, but still useful to contributors. Where this file and AGENTS.md disagree, AGENTS.md wins.
+- **Review checklist (canonical):** [skills/code-review/SKILL.md](skills/code-review/SKILL.md)
 - **Security policy:** [SECURITY.md](../SECURITY.md)
     - Responsible disclosure and reporting instructions.
 - **Changelog:** [CHANGELOG.md](../CHANGELOG.md)
@@ -171,11 +172,12 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ```
 
 ### Modern C++23 Features (Prefer)
-- `std::string::contains()`, `std::string::starts_with()` over `find()`
-- `std::ranges` and `std::views` over raw loops
+Prefer these when the modern form preserves behavior and improves clarity; don't rewrite code that needs the older form (see the C++23 section of [skills/code-review/SKILL.md](skills/code-review/SKILL.md)).
+- `std::string::contains()`, `std::string::starts_with()` over `find()` used purely as a containment/prefix check (not when the position is needed)
+- `std::ranges` and `std::views` over raw loops with no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns)
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
-- prefer modern C++ 23 alternatives for legacy patterns (e.g., prefer `std::string::contains()` over `find()`, prefer `std::views` over raw loops)
+- prefer modern C++ 23 alternatives for legacy patterns when the replacement preserves behavior and improves clarity (e.g., `std::string::contains()` over a containment-only `find()`, `std::views` over a raw loop with no early exit)
 - prefer modern C++ 23 standard library features  that improves code clarity, safety, or performance (e.g., `std::format` for type-safe formatting, `std::jthread` for threads with automatic joining)
 - prefer modern C++ 23 standard library features when a third-party library function provides similar functionality to a C++23 standard library feature (e.g., prefer `std::format` over `fmt::format`)
 - prefer modern C++ 23 types to improve code clarity, safety, or performance (e.g., `std::span` for array views, `std::optional` for optional values) over legacy types
@@ -365,9 +367,11 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 ## Code Review Instructions
 
+The canonical review checklist is [skills/code-review/SKILL.md](skills/code-review/SKILL.md); this list is a short version of it, and the SKILL wins where they differ. Report only genuine issues; skip style nits already enforced by clang-format.
+
 When performing a code review on this project:
 
-1. **C++23 Compliance**: Flag any use of deprecated patterns when modern C++23 alternatives exist (e.g., prefer `std::ranges`, `std::views`, `std::string::contains()`)
+1. **C++23 Compliance**: Suggest a modern C++23 replacement for a legacy pattern only when it preserves behavior and improves clarity (e.g., `contains()` for a containment-only `find()`, `std::ranges`/`std::views` for a loop with no early exit or iterator dependence)
 
 2. **Memory Safety**: Check for potential memory issues - prefer smart pointers, RAII, avoid raw `new`/`delete`
 

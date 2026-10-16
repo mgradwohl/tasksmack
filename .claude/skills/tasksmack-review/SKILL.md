@@ -1,6 +1,6 @@
 ---
 name: tasksmack-review
-description: TaskSmack-specific review checklist for C++23 compliance, memory/exception safety, thread safety, layered architecture boundaries, naming/include conventions, and clang-tidy pitfalls. Use alongside /code-review when reviewing any diff or pull request in this repository. Ported from .github/skills/code-review/SKILL.md (written for GitHub Copilot) so the same checks apply here.
+description: TaskSmack-specific review checklist for C++23 compliance, memory/exception safety, thread safety, layered architecture boundaries, naming/include conventions, and clang-tidy pitfalls. Use alongside /code-review when reviewing any diff or pull request in this repository. Mirrors .github/skills/code-review/SKILL.md, the canonical checklist; tools/check-guidance-sync.py keeps the bodies identical.
 ---
 
 # TaskSmack Code Review
