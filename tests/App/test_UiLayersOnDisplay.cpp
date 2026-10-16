@@ -753,6 +753,7 @@ struct WindowDragObserved
     bool maximizedBeforeDrag = false;
     bool restoredByDrag = false;
     int frames = 0;
+    int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
     bool timedOut = false;
 };
 
@@ -762,11 +763,20 @@ struct WindowDragObserved
 /// window, a drag from the right edge widens it, and a drag on a maximized window's title bar past
 /// the threshold restores it. Each step waits for its effect (the window manager applies a move,
 /// resize or restore some frames later on X11) up to WAIT_LIMIT frames, then lets go.
+///
+/// A press with no effect after RETRY_EVERY frames is made again (#2221). TitleBarLayer ends a drag or
+/// resize on SDL_EVENT_WINDOW_FOCUS_LOST, as it should. Under `xvfb-run ctest -j`, every display test
+/// shares one X server, and with no window manager focus follows the pointer. So another test's window
+/// mapping over this one can take the focus between the press and the first step, and the step never
+/// starts. The double-click that maximizes isn't repeated: it toggles, and it doesn't need the focus
+/// after the event.
 class WindowDragDriverLayer : public Core::Layer
 {
   public:
-    WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar)
-        : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar)
+    /// @p loseFocusAfterFirstPress: send the window a focus loss right after the first drag's press,
+    /// as another window taking the focus would (#2221).
+    WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar, bool loseFocusAfterFirstPress = false)
+        : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar), m_LoseFocusAfterFirstPress(loseFocusAfterFirstPress)
     {}
 
     void onRender() override
@@ -797,6 +807,17 @@ class WindowDragDriverLayer : public Core::Layer
         {
             return frame < m_Deadline;
         };
+        // Press again from where the window is now (see the class comment).
+        const auto retryDue = [this, frame]
+        {
+            if (frame - m_PressedAt < RETRY_EVERY)
+            {
+                return false;
+            }
+            m_PressedAt = frame;
+            ++m_Observed.pressRetries;
+            return true;
+        };
         switch (m_Phase)
         {
         case Phase::BeginDrag:
@@ -806,6 +827,11 @@ class WindowDragDriverLayer : public Core::Layer
             m_Position = {x, y};
             hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
             pushButton(titleX, TITLE_Y, true, 1);
+            if (m_LoseFocusAfterFirstPress)
+            {
+                pushFocusLost();
+            }
+            m_PressedAt = frame;
             m_Deadline = frame + WAIT_LIMIT;
             next(Phase::AwaitMoved, 1);
             break;
@@ -814,6 +840,11 @@ class WindowDragDriverLayer : public Core::Layer
             m_Observed.movedByDrag = std::pair{x, y} != m_Position;
             if (!m_Observed.movedByDrag && m_Observed.positionsApply && waiting())
             {
+                if (retryDue())
+                {
+                    hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                    pushButton(titleX, TITLE_Y, true, 1);
+                }
                 next(Phase::AwaitMoved, 1);
                 break;
             }
@@ -827,6 +858,7 @@ class WindowDragDriverLayer : public Core::Layer
             const float edgeY = static_cast<float>(height) * 0.5F;
             hold(x + static_cast<int>(edgeX) + WIDEN_BY, y + static_cast<int>(edgeY));
             pushButton(edgeX, edgeY, true, 1);
+            m_PressedAt = frame;
             m_Deadline = frame + WAIT_LIMIT;
             next(Phase::AwaitWidened, 1);
             break;
@@ -835,6 +867,13 @@ class WindowDragDriverLayer : public Core::Layer
             m_Observed.widenedByResize = width > m_Size.first;
             if (!m_Observed.widenedByResize && waiting())
             {
+                if (retryDue())
+                {
+                    const float edgeX = static_cast<float>(width) - 2.0F;
+                    const float edgeY = static_cast<float>(height) * 0.5F;
+                    hold(x + static_cast<int>(edgeX) + WIDEN_BY, y + static_cast<int>(edgeY));
+                    pushButton(edgeX, edgeY, true, 1);
+                }
                 next(Phase::AwaitWidened, 1);
                 break;
             }
@@ -856,6 +895,7 @@ class WindowDragDriverLayer : public Core::Layer
             }
             hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
             pushButton(titleX, TITLE_Y, true, 1);
+            m_PressedAt = frame;
             m_Deadline = frame + WAIT_LIMIT;
             next(Phase::AwaitRestored, 1);
             break;
@@ -863,6 +903,11 @@ class WindowDragDriverLayer : public Core::Layer
             m_Observed.restoredByDrag = !window.isMaximized();
             if (!m_Observed.restoredByDrag && waiting())
             {
+                if (retryDue())
+                {
+                    hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                    pushButton(titleX, TITLE_Y, true, 1);
+                }
                 next(Phase::AwaitRestored, 1);
                 break;
             }
@@ -903,6 +948,14 @@ class WindowDragDriverLayer : public Core::Layer
         static_cast<void>(SDL_PushEvent(&event));
     }
 
+    static void pushFocusLost()
+    {
+        SDL_Event event{};
+        event.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+        event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
     /// The steps, in order; each waits m_NextFrame before running.
     enum class Phase : std::uint8_t
     {
@@ -919,6 +972,7 @@ class WindowDragDriverLayer : public Core::Layer
     static constexpr int SETTLE = 10;
     static constexpr int STEP = 10;
     static constexpr int WAIT_LIMIT = 300; // frames to wait for an effect before going on
+    static constexpr int RETRY_EVERY = 30; // frames before a press with no effect is made again
     static constexpr int MAX_FRAMES = 1500;
     static constexpr int DRAG_X = 40; // past DragTracker::DRAG_THRESHOLD_PX
     static constexpr int DRAG_Y = 30;
@@ -926,9 +980,11 @@ class WindowDragDriverLayer : public Core::Layer
 
     WindowDragObserved& m_Observed;
     App::TitleBarLayer& m_TitleBar;
+    bool m_LoseFocusAfterFirstPress = false;
     Phase m_Phase = Phase::BeginDrag;
     int m_NextFrame = SETTLE;
     int m_Deadline = 0;
+    int m_PressedAt = 0;
     std::pair<int, int> m_Position;
     std::pair<int, int> m_Size;
 };
@@ -957,6 +1013,7 @@ TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
         FAIL() << "Application failed after the display probe passed: " << e.what();
     }
 
+    RecordProperty("pressRetries", observed.pressRetries);
     EXPECT_FALSE(observed.timedOut);
     if (observed.positionsApply)
     {
@@ -965,6 +1022,41 @@ TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
     EXPECT_TRUE(observed.widenedByResize);     // a right-edge drag widens it
     EXPECT_TRUE(observed.maximizedBeforeDrag); // (the double-click maximized it)
     EXPECT_TRUE(observed.restoredByDrag);      // and a drag past the threshold restores it
+}
+
+// #2221: TitleBarLayer ends a drag on a focus loss, so a focus loss right after the press (another
+// test's window mapping over this one, on the X server they share under `xvfb-run ctest -j`) left the
+// drag step waiting out its deadline with the window unmoved. The driver presses again.
+TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayDragFocusTest";
+    spec.VSync = false;
+    WindowDragObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<WindowDragDriverLayer>(observed, titleBar, /*loseFocusAfterFirstPress=*/true);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    if (observed.positionsApply)
+    {
+        EXPECT_TRUE(observed.movedByDrag);
+        EXPECT_GE(observed.pressRetries, 1) << "the lost drag was pressed again";
+    }
 }
 
 /// What the UI-layer driver saw.
