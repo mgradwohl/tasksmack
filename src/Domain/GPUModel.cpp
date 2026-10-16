@@ -697,12 +697,6 @@ std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
     return adaptersOfKind(m_GPUInfo, /*gpus=*/true);
 }
 
-std::vector<Platform::GPUInfo> GPUModel::acceleratorInfo() const
-{
-    const std::shared_lock lock(m_Mutex);
-    return adaptersOfKind(m_GPUInfo, /*gpus=*/false);
-}
-
 Platform::GPUCapabilities GPUModel::capabilities() const
 {
     const std::shared_lock lock(m_Mutex);

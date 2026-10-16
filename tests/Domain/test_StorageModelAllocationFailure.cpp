@@ -135,7 +135,7 @@ TEST(StorageModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADiskK
         // sda's rate is measured against whichever sample was last applied: one interval's I/O (16
         // sectors a second) whether or not the failed sample's state was kept -- never a sample
         // counted twice or a rate over a failed sample's interval with its counters missing.
-        const auto snapshot = model.latestSnapshot();
+        const auto snapshot = model.publication()->snapshot;
         ASSERT_EQ(snapshot.disks.size(), 2U);
         EXPECT_DOUBLE_EQ(snapshot.disks[0].readBytesPerSec, 16.0 * 512.0);
         if (HasFailure())

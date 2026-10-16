@@ -78,9 +78,6 @@ class StorageModel : public ISamplable
     /// stays in time order. Call it from the sampling thread, or before sampling starts.
     void sampleSeries(const CounterSeriesSource& next);
 
-    /// Get the latest snapshot (thread-safe, called from UI thread).
-    [[nodiscard]] StorageSnapshot latestSnapshot() const;
-
     /// The latest generation: the snapshot and the history for charting. Each per-disk series is
     /// strictly aligned to its timestamps: every one has the same length. Samples where a disk was
     /// absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
@@ -91,7 +88,7 @@ class StorageModel : public ISamplable
     /// window and republishes it at once, once anything has been published (#1145).
     void setMaxHistorySeconds(double seconds);
 
-    /// Get capabilities from the underlying probe.
+    /// Test seam (#2155): nothing in the app reads it. The underlying probe's capabilities.
     [[nodiscard]] Platform::DiskCapabilities capabilities() const;
 
   private:
@@ -155,8 +152,8 @@ class StorageModel : public ISamplable
     // through the publication commit, so generations are numbered and committed in order. Readers
     // never take it. Taken before m_Mutex, never while holding it.
     std::mutex m_WriterMutex;
-    // Guards the state below for latestSnapshot(): writers mutate it exclusively, and publish() reads
-    // it under a shared lock, so neither publication() nor latestSnapshot() waits on a publication's copy.
+    // Guards the state below: writers mutate it exclusively, and publish() reads it under a shared
+    // lock, so publication() never waits on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
     // The published series: shared append-only buffers that publish() hands out views of instead of

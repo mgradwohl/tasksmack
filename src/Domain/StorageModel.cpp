@@ -393,9 +393,9 @@ void StorageModel::publish()
     // (std::bad_alloc from the snapshot copy or the per-disk list) leaves the published generation,
     // its version and m_PublicationVersion consistent. The histories are shared, not copied (#1412):
     // each series is one view of its append-only buffer, so this is O(series) whatever the history
-    // length. It runs under a shared lock: latestSnapshot() still reads alongside, and
-    // publication() doesn't take m_Mutex at all, so no reader waits for it (#868). Nothing else can
-    // write this state meanwhile; the caller holds m_WriterMutex.
+    // length. It runs under a shared lock, and publication() doesn't take m_Mutex at all, so no
+    // reader waits for it (#868). Nothing else can write this state meanwhile; the caller holds
+    // m_WriterMutex.
     auto publication = std::make_shared<StoragePublication>();
     {
         const std::shared_lock stateLock(m_Mutex);
@@ -518,12 +518,6 @@ void StorageModel::trimHistory(double nowSeconds) noexcept
     {
         history.discardFront(removeCount);
     }
-}
-
-StorageSnapshot StorageModel::latestSnapshot() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_LatestSnapshot;
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)

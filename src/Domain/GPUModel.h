@@ -172,17 +172,18 @@ class GPUModel : public ISamplable
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const;
 
-    // Get current snapshots (thread-safe): the GPUs' only, as GPUPublication::snapshots (#1799)
+    // Test seam (#2155): the app reads publication(). The GPUs' current snapshots only, as
+    // GPUPublication::snapshots (#1799). Thread-safe.
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
-    // GPU info: enumerated at construction, and again whenever the probe's rescanGPUs() reports a
-    // change (a GPU added, removed or lost, or a sleeping adapter's sensors now discoverable) (#1116,
-    // #1289). Each refresh's publication carries the current list. The GPUs only, as
-    // GPUPublication::gpuInfo; the NPUs and compute accelerators are in acceleratorInfo() (#1799).
+    // Test seam (#2155): the app reads GPUPublication::gpuInfo. GPU info: enumerated at construction,
+    // and again whenever the probe's rescanGPUs() reports a change (a GPU added, removed or lost, or a
+    // sleeping adapter's sensors now discoverable) (#1116, #1289). It is what the tests read before
+    // the first refresh publishes anything. The GPUs only; the NPUs and compute accelerators are in
+    // GPUPublication::acceleratorInfo (#1799).
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
-    [[nodiscard]] std::vector<Platform::GPUInfo> acceleratorInfo() const;
 
-    // Capabilities (re-read along with the GPU info)
+    // Test seam (#2155): the app reads GPUPublication::capabilities. Re-read along with the GPU info.
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
 
     /// True once the probe's capabilities are known and say it has no per-process GPU metrics (DRM-
@@ -223,10 +224,6 @@ class GPUModel : public ISamplable
     [[nodiscard]] std::shared_ptr<const ProcessGPUPublication> processGPUPublication() const noexcept
     {
         return m_ProcessPublication.load();
-    }
-    [[nodiscard]] std::uint64_t processGPUPublicationVersion() const noexcept
-    {
-        return m_ProcessPublication.version();
     }
 
   private:

@@ -44,7 +44,7 @@ TEST(StorageModelTest, InitialSnapshotIsEmpty)
     auto probe = std::make_unique<Mocks::MockDiskProbe>();
     StorageModel model(std::move(probe));
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
     EXPECT_EQ(snap.totalReadBytesPerSec, 0.0);
     EXPECT_EQ(snap.totalWriteBytesPerSec, 0.0);
@@ -87,7 +87,7 @@ TEST(StorageModelTest, SampleUpdatesSnapshot)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
     EXPECT_EQ(snap.disks[0].deviceName, "sda");
 }
@@ -138,7 +138,7 @@ TEST(StorageModelTest, SecondSampleComputesRates)
     model.sample();
 
     // First sample should have no rates yet (need two samples to compute delta)
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
 }
 
@@ -176,7 +176,7 @@ TEST(StorageModelTest, RateUsesInjectedSampleTimeNotWallClockElapsedDuringTest)
     const auto sample2Time = sample1Time + std::chrono::seconds(2);
     model.sampleAt(sample2Time);
 
-    const auto snap = model.latestSnapshot();
+    const auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // 2000 sectors * 512 bytes / 2 seconds = 512,000 bytes/sec, exactly -- not approximately.
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 512000.0);
@@ -312,7 +312,7 @@ TEST(StorageModelTest, HandlesEmptyDiskList)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
 }
 
@@ -337,7 +337,7 @@ TEST(StorageModelTest, HandlesMultipleDisks)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 3ULL);
     EXPECT_EQ(snap.disks[0].deviceName, "sda");
     EXPECT_EQ(snap.disks[1].deviceName, "sdb");
@@ -436,7 +436,7 @@ TEST(StorageModelTest, SecondSampleWithSameCountersComputesZeroRates)
     std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Need time between samples
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
     // Since counters don't change, rates should be 0
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
@@ -464,7 +464,7 @@ TEST(StorageModelTest, TotalsAreAggregatedFromAllDisks)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 2ULL);
     // On first sample, rates are 0, but totals should be aggregated
     EXPECT_DOUBLE_EQ(snap.totalReadBytesPerSec, 0.0);
@@ -489,7 +489,7 @@ TEST(StorageModelTest, DiskSnapshotContainsTotalBytes)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks[0].totalReadBytes, 1000ULL * 512ULL);
     EXPECT_EQ(snap.disks[0].totalWriteBytes, 500ULL * 512ULL);
     EXPECT_EQ(snap.disks[0].totalReadOps, 100ULL);
@@ -513,7 +513,7 @@ TEST(StorageModelTest, DiskSnapshotContainsPhysicalDeviceFlag)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks[0].isPhysicalDevice);
 }
 
@@ -532,7 +532,7 @@ TEST(StorageModelTest, SnapshotReflectsProbeCapabilities)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.hasDiskStats);
     EXPECT_FALSE(snap.hasReadWriteBytes);
     EXPECT_TRUE(snap.hasIoTime);
@@ -935,7 +935,7 @@ TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(1));
 
-    const auto glitched = model.latestSnapshot();
+    const auto glitched = model.publication()->snapshot;
     ASSERT_EQ(glitched.disks.size(), 1U);
     EXPECT_FALSE(glitched.disks[0].hasRates);
     EXPECT_DOUBLE_EQ(glitched.disks[0].writeBytesPerSec, 0.0);
@@ -1052,7 +1052,7 @@ TEST(StorageModelTest, AJumpThatWouldWrapInBytesIsStillOverTheCeiling)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(1));
 
-    const auto glitched = model.latestSnapshot();
+    const auto glitched = model.publication()->snapshot;
     ASSERT_EQ(glitched.disks.size(), 1U);
     EXPECT_FALSE(glitched.disks[0].hasRates);
     EXPECT_DOUBLE_EQ(glitched.disks[0].readBytesPerSec, 0.0);
@@ -1073,7 +1073,7 @@ TEST(StorageModelTest, SampleWithNullProbe_DoesNotCrash)
     EXPECT_NO_THROW({ model.sample(); });
 
     // Snapshot should remain empty
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
 }
 
@@ -1124,7 +1124,7 @@ TEST(StorageModelTest, CounterWrapProducesZeroRate)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // Wrapped counters should be clamped to zero — no negative rates
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
@@ -1175,7 +1175,7 @@ TEST(StorageModelTest, AverageIoTimesCalculatedFromDeltas)
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
 
     // avgReadTimeMs = deltaReadTime / deltaReadOps = 200 / 100 = 2.0 ms
@@ -1216,7 +1216,7 @@ TEST(StorageModelTest, AverageIoTimesZeroWhenNoOps)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // No new ops → avgReadTimeMs and avgWriteTimeMs stay at their default 0.0
     EXPECT_DOUBLE_EQ(snap.disks[0].avgReadTimeMs, 0.0);
@@ -1268,7 +1268,7 @@ TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 2ULL);
 
     // Total rates should be the sum of individual disk rates
@@ -1621,7 +1621,7 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
     counters.disks = {disk(2000, 800), disk(90000, 70000)};
     rawProbe->setNextCounters(counters);
     model.sampleAt(sampleTime(1));
-    const StorageSnapshot repeated = model.latestSnapshot();
+    const StorageSnapshot repeated = model.publication()->snapshot;
     counters.disks = {disk(3000, 1000)};
     rawProbe->setNextCounters(counters);
     model.sampleAt(sampleTime(2));
@@ -1687,7 +1687,7 @@ TEST(StorageModelTest, ARepeatedDeviceNamesGlitchDoesNotRejectTheTotals)
     rawProbe->setNextCounters(counters);
     model.sampleAt(sampleTime(1));
 
-    const StorageSnapshot latest = model.latestSnapshot();
+    const StorageSnapshot latest = model.publication()->snapshot;
     ASSERT_EQ(latest.disks.size(), 1U);
     EXPECT_FALSE(latest.disks.front().ratesRejected);
     EXPECT_TRUE(latest.totalsMeasured);

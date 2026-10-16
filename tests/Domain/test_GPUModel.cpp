@@ -107,7 +107,7 @@ TEST(GPUModelTest, NullProbeReportsPerProcessGpuDataKnownUnsupported)
     EXPECT_TRUE(model.perProcessNpuMetricsKnownUnsupported());
     EXPECT_TRUE(model.perProcessNpuUtilizationKnownUnsupported());
     model.refresh();
-    EXPECT_EQ(model.processGPUPublicationVersion(), 0U) << "nothing to read, so nothing published";
+    EXPECT_EQ(model.processGPUPublication()->version, 0U) << "nothing to read, so nothing published";
     EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
     EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
 }
@@ -250,7 +250,7 @@ TEST(GPUModelTest, NothingIsPublishedPerProcessBeforeTheFirstRefresh)
     const auto publication = model.processGPUPublication();
     ASSERT_NE(publication, nullptr);
     EXPECT_EQ(publication->version, 0U);
-    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_EQ(model.processGPUPublication()->version, 0U);
     EXPECT_TRUE(publication->counters.empty());
 }
 
@@ -264,7 +264,7 @@ TEST(GPUModelTest, RefreshPublishesPerProcessCountersWithTheirCaptureTime)
     model.refreshAt(start);
     auto publication = model.processGPUPublication();
     EXPECT_EQ(publication->version, 1U);
-    EXPECT_EQ(model.processGPUPublicationVersion(), 1U);
+    EXPECT_EQ(model.processGPUPublication()->version, 1U);
     EXPECT_EQ(publication->captureTime, start);
     EXPECT_TRUE(publication->perProcessSupported);
     EXPECT_TRUE(publication->utilizationSupported);
@@ -390,7 +390,7 @@ TEST(GPUModelTest, NoProbePublishesNothingPerProcess)
 {
     Domain::GPUModel model(nullptr);
     model.refresh();
-    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_EQ(model.processGPUPublication()->version, 0U);
     EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
 }
 
@@ -483,7 +483,7 @@ TEST(GPUModelTest, PublicationListsTheGPUsApartFromTheAccelerators)
     // The accessors agree with the publication
     EXPECT_EQ(model.gpuInfo().size(), 1U);
     EXPECT_EQ(model.snapshots().size(), 1U);
-    EXPECT_EQ(model.acceleratorInfo().size(), 2U);
+    EXPECT_EQ(publication->acceleratorInfo.size(), 2U);
 }
 
 TEST(GPUModelTest, PerProcessReadStillRunsWhenCapabilityDiscoveryFailed)

@@ -66,9 +66,9 @@ static void BM_StorageModel_Sample(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_Sample);
 
-// Benchmark latestSnapshot() – read-only copy returned to the UI thread.
-// Acquires a shared_mutex read lock and returns StorageSnapshot by value,
-// which includes a deep copy of the per-disk vector.
+// Benchmark reading the latest snapshot as the UI thread does: from the latest publication, a
+// shared_ptr copy under the slot's swap lock, with no copy of the per-disk vector. It used to time
+// latestSnapshot(), a by-value copy that only tests called, removed in #2155.
 static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
@@ -77,9 +77,9 @@ static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto snap = model.latestSnapshot();
-        benchmark::DoNotOptimize(snap.totalReadBytesPerSec);
-        benchmark::DoNotOptimize(snap.totalWriteBytesPerSec);
+        const auto publication = model.publication();
+        benchmark::DoNotOptimize(publication->snapshot.totalReadBytesPerSec);
+        benchmark::DoNotOptimize(publication->snapshot.totalWriteBytesPerSec);
     }
 }
 BENCHMARK(BM_StorageModel_LatestSnapshot);

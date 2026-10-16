@@ -102,8 +102,8 @@ class ProcessModel : public ISamplable
     /// Thread-safe.
     void refresh();
 
-    /// Update with externally-provided counters (for background sampler).
-    /// Thread-safe.
+    /// Test and benchmark seam (#2155): the app samples through refresh(). Applies externally
+    /// provided counters as one sample. Thread-safe.
     void updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     /// Get latest computed snapshots (copy for thread safety).
@@ -112,24 +112,6 @@ class ProcessModel : public ISamplable
     /// Find a single snapshot by PID without copying the full snapshot vector.
     /// Always reflects the latest published data, unlike a version-gated render cache.
     [[nodiscard]] std::optional<ProcessSnapshot> findSnapshot(std::int32_t pid) const;
-
-    /// Result of findSnapshotWithVersion(): a snapshot paired with the exact publication
-    /// version it was read from.
-    struct SnapshotLookupResult
-    {
-        ProcessSnapshot snapshot;
-        std::uint64_t version = 0;
-    };
-
-    /// Same lookup as findSnapshot(), but also returns the publication version the snapshot
-    /// was read under, both under the same lock. A caller that instead calls findSnapshot()
-    /// and snapshotVersion() as two separate calls can have a publish land in between them,
-    /// pairing a snapshot from one generation with the version number of another -- e.g. a
-    /// consumer using that version to gate "is this new data worth recording" (as
-    /// ProcessDetailsPanel's history once did; it now uses watchedSamplesSince()) could see a
-    /// version that never actually matched the snapshot content it was given, silently
-    /// skipping or duplicating a history point.
-    [[nodiscard]] std::optional<SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
 
     /// Copy the snapshot generation only when a newer version exists. "Copy" is a shared_ptr
     /// assignment (an O(1) refcount bump), not a deep copy of the underlying vector: the
@@ -155,6 +137,7 @@ class ProcessModel : public ISamplable
     /// none: the next generation drops every ring and publishes none. Thread-safe and lock-free.
     void setRowHistoryMetrics(ProcessRowHistory::MetricSet metrics) noexcept;
 
+    /// Test seam (#2155): what setRowHistoryMetrics() last set, for tests of the panels that set it.
     [[nodiscard]] ProcessRowHistory::MetricSet rowHistoryMetrics() const noexcept;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
