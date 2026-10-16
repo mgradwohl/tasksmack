@@ -16,11 +16,12 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <latch>
 #include <optional>
 #include <string>
 #include <thread>
@@ -839,55 +840,54 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 
 TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
 {
-    std::atomic<int> successCount{0};
-    std::atomic<bool> running{true};
-    constexpr int TARGET_SUCCESSES = 4; // Ensure each thread completes at least one iteration
+    // Several probes enumerating at the same time must not throw, crash or come back empty, and every
+    // thread must finish its work. Each thread does a fixed number of enumerations and the counts are
+    // checked after joining, so a slow or oversubscribed runner only makes the test take longer; it has
+    // no wall-clock deadline to miss (#2259). A real hang is caught by the suite's ctest TIMEOUT.
+    constexpr std::size_t THREAD_COUNT = 4;
+    constexpr int ITERATIONS_PER_THREAD = 2;
 
-    auto enumerateTask = [&]()
+    std::array<int, THREAD_COUNT> successes{};
+    std::array<int, THREAD_COUNT> exceptions{};
+
+    // Every thread builds its probe first, then they all start enumerating together, so the
+    // enumerations overlap rather than running one after another as the threads happen to start.
+    std::latch startTogether{static_cast<std::ptrdiff_t>(THREAD_COUNT)};
+
     {
-        WindowsProcessProbe probe;
-        while (running)
+        std::vector<std::jthread> threads;
+        threads.reserve(THREAD_COUNT);
+        for (std::size_t i = 0; i < THREAD_COUNT; ++i)
         {
-            try
-            {
-                const auto processes = probe.enumerate();
-                if (!processes.empty())
+            // Each thread writes only its own slot; join() publishes the writes to this thread.
+            threads.emplace_back(
+                [&startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
                 {
-                    ++successCount;
-                }
-            }
-            catch (...)
-            {
-                // Enumeration should not throw
-                FAIL() << "Enumeration threw an exception";
-            }
+                    WindowsProcessProbe probe;
+                    startTogether.arrive_and_wait();
+                    for (int iteration = 0; iteration < ITERATIONS_PER_THREAD; ++iteration)
+                    {
+                        try
+                        {
+                            if (!probe.enumerate().empty())
+                            {
+                                ++success;
+                            }
+                        }
+                        catch (...)
+                        {
+                            ++thrown;
+                        }
+                    }
+                });
         }
-    };
+    } // jthreads join here
 
-    // Start multiple threads enumerating concurrently
-    std::vector<std::thread> threads;
-    threads.reserve(4);
-    for (int i = 0; i < 4; ++i)
+    for (std::size_t i = 0; i < THREAD_COUNT; ++i)
     {
-        threads.emplace_back(enumerateTask);
+        EXPECT_EQ(exceptions.at(i), 0) << "thread " << i << ": enumerate() threw";
+        EXPECT_EQ(successes.at(i), ITERATIONS_PER_THREAD) << "thread " << i << ": not every enumeration returned processes";
     }
-
-    // Wait until we reach the target success count or timeout (500ms to handle heavily-loaded CI agents)
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-    while (std::chrono::steady_clock::now() < deadline && successCount.load() < TARGET_SUCCESSES)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    running = false;
-
-    for (auto& t : threads)
-    {
-        t.join();
-    }
-
-    // Each thread should have completed at least one successful enumeration
-    EXPECT_GE(successCount.load(), TARGET_SUCCESSES)
-        << "Expected at least " << TARGET_SUCCESSES << " successful enumerations, got " << successCount.load();
 }
 
 // =============================================================================
