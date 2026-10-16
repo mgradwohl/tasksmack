@@ -370,8 +370,25 @@ jobs:
           LLVM_ROOT: C:\Program Files\LLVM
         run: cmake --build --preset win-release
 
+      # The runner has no GPU (only GDI Generic OpenGL 1.1, below the 3.3 core the window, title
+      # bar, HWND and GL icon suites need), so without this the display suites skip on the build
+      # that ships (#2256). Mesa's llvmpipe goes only beside the test executables in
+      # build/win-release/tests: the Package step installs TaskSmack.exe and explicit files from
+      # cmake/InstallRules.cmake, never the tests directory, so the DLLs stay out of the zip.
+      # Same action and pin as reusable-build-test.yml (#2134); validate-windows-package's smoke
+      # check fetches the same pinned archive inline because that job has no checkout.
+      - name: Software OpenGL for the display tests
+        uses: ./.github/actions/setup-mesa-llvmpipe
+        with:
+          copy-to: build/win-release/tests
+
       - name: Test
         shell: pwsh
+        env:
+          # llvmpipe gives the display suites a GL 3.3+ context, so they must fail rather than
+          # skip if it goes missing, as in reusable-build-test.yml (#2134).
+          TASKSMACK_REQUIRE_DISPLAY: '1'
+          GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-release -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
 
       - name: Package
