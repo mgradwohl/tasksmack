@@ -98,10 +98,18 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 
 # Run the test executables directly to capture coverage. TaskSmackThemeTests links the real
 # UI/Theme.cpp, which TaskSmackTests replaces with a stub (#1547); TaskSmackAppTests is built from the
-# app's own objects, for the layers that need the whole app on a display (#1395).
-./tests/TaskSmackTests
-./tests/TaskSmackThemeTests
-./tests/TaskSmackAppTests
+# app's own objects, for the layers that need the whole app on a display (#1395). A failing suite still
+# gets its coverage reported, so the failure can be diagnosed from the report, but the script exits
+# non-zero at the end (#2251). Keep in sync with tools/coverage.ps1.
+FAILED_SUITES=()
+for suite in TaskSmackTests TaskSmackThemeTests TaskSmackAppTests; do
+    suite_status=0
+    "./tests/${suite}" || suite_status=$?
+    if [[ $suite_status -ne 0 ]]; then
+        echo "Warning: ${suite} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
+        FAILED_SUITES+=("$suite")
+    fi
+done
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
@@ -182,4 +190,9 @@ if $OPEN_REPORT; then
     elif command -v open &> /dev/null; then
         open "${COVERAGE_DIR}/index.html"
     fi
+fi
+
+if [[ ${#FAILED_SUITES[@]} -gt 0 ]]; then
+    echo "Error: test failures in: ${FAILED_SUITES[*]}. The coverage report was still generated." >&2
+    exit 1
 fi

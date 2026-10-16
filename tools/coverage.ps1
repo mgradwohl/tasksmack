@@ -166,6 +166,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Step 2: Run tests to generate profraw data
 Write-Host "==> Running tests..."
+$failedSuites = [System.Collections.Generic.List[string]]::new()
 Push-Location $BuildDir
 try {
     Remove-Item -Path "*.profraw", "default.profdata" -ErrorAction SilentlyContinue
@@ -174,19 +175,16 @@ try {
     $env:LLVM_PROFILE_FILE = "$BuildDir\coverage-%p.profraw"
 
     # Run the test executables directly. TaskSmackThemeTests links the real UI/Theme.cpp, which
-    # TaskSmackTests replaces with a stub (#1547). Keep in sync with tools/coverage.sh.
-    & "$BuildDir\tests\TaskSmackTests.exe"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Some tests failed, but continuing with coverage report..."
-    }
-    & "$BuildDir\tests\TaskSmackThemeTests.exe"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Some Theme tests failed, but continuing with coverage report..."
-    }
-    # Built from the app's own objects, for the layers that need the whole app on a display (#1395).
-    & "$BuildDir\tests\TaskSmackAppTests.exe"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Some App tests failed, but continuing with coverage report..."
+    # TaskSmackTests replaces with a stub (#1547); TaskSmackAppTests is built from the app's own
+    # objects, for the layers that need the whole app on a display (#1395). Keep in sync with
+    # tools/coverage.sh. A failing suite still gets its coverage reported, so the failure can be
+    # diagnosed from the report, but the script exits non-zero at the end (#2251).
+    foreach ($suite in "TaskSmackTests", "TaskSmackThemeTests", "TaskSmackAppTests") {
+        & "$BuildDir\tests\$suite.exe"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "$suite failed (exit code $LASTEXITCODE); generating the coverage report, then failing."
+            $failedSuites.Add($suite)
+        }
     }
 
     # Step 3: Merge profraw files
@@ -258,4 +256,9 @@ try {
 }
 finally {
     Pop-Location
+}
+
+if ($failedSuites.Count -gt 0) {
+    Write-Host "Test failures in: $($failedSuites -join ', '). The coverage report was still generated." -ForegroundColor Red
+    exit 1
 }
