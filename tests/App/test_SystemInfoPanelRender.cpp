@@ -633,6 +633,71 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportWritesTheChosenFormat)
     std::filesystem::remove_all(dir, ignored);
 }
 
+// #2144: a name typed without an extension gets one after the dialog has closed, so the dialog never
+// asked about replacing that file: an existing one is left alone and a numbered name is used instead.
+// A name the dialog answered with its extension already on is the user's confirmed choice.
+TEST_F(SystemInfoPanelRenderTest, SaveReportNeverReplacesAFileTheDialogDidNotAskAbout)
+{
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("tasksmack_save_report_" + std::to_string(std::random_device{}()));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+    const auto slurp = [](const std::filesystem::path& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    const auto write = [](const std::filesystem::path& path, std::string_view text)
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << text;
+    };
+    write(dir / "report.txt", "yesterday's report");
+    write(dir / "report (2).txt", "an older one");
+
+    std::vector<Core::SaveFileCallback> answers;
+    makePanel(true);
+    m_Panel->setSaveFileDialog(
+        [&answers](const std::vector<Core::FileFilter>& /*filters*/, const std::string& /*defaultLocation*/, Core::SaveFileCallback answer)
+        { answers.push_back(std::move(answer)); });
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    const ImGuiID save = ImHashStr(ICON_FA_FLOPPY_DISK "  Save report...", 0, window->ID);
+    const auto click = [&]
+    {
+        ImGui::ActivateItemByID(save);
+        static_cast<void>(frame());
+        static_cast<void>(frame());
+    };
+
+    // "report", the Text filter: report.txt exists, so the report goes to the first free numbered name.
+    click();
+    ASSERT_EQ(answers.size(), 1U);
+    answers[0]({.path = (dir / "report").string(), .filter = 0, .error = {}});
+    std::string text = frame();
+    EXPECT_EQ(slurp(dir / "report.txt"), "yesterday's report") << "not replaced without being asked";
+    EXPECT_EQ(slurp(dir / "report (2).txt"), "an older one");
+    const std::filesystem::path numbered = dir / "report (3).txt";
+    ASSERT_TRUE(std::filesystem::exists(numbered));
+    EXPECT_TRUE(slurp(numbered).starts_with("Operating system\n")) << slurp(numbered);
+    EXPECT_TRUE(text.contains("Saved to " + numbered.string())) << text;
+    EXPECT_TRUE(text.contains("already exists")) << text;
+
+    // "report.txt" typed in full: the dialog asked, so it is replaced; the typed extension decides the
+    // format over the JSON filter.
+    click();
+    ASSERT_EQ(answers.size(), 2U);
+    answers[1]({.path = (dir / "report.txt").string(), .filter = 1, .error = {}});
+    text = frame();
+    EXPECT_TRUE(slurp(dir / "report.txt").starts_with("Operating system\n")) << slurp(dir / "report.txt");
+    EXPECT_TRUE(text.contains("Saved to " + (dir / "report.txt").string())) << text;
+    EXPECT_FALSE(text.contains("already exists")) << text;
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
 // #1891: a read that throws is reported as failed on the UI thread; no facts are drawn from it.
 TEST_F(SystemInfoPanelRenderTest, AFailedReadDrawsNoFacts)
 {

@@ -202,8 +202,13 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
     // #1891: trailing dots and dashes are trimmed too, so the name never ends the stem in one.
     EXPECT_EQ(SystemInfo::reportFileName("box-.", true, "", ReportFormat::Text), "tasksmack-system-info-box.txt");
 
-    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Json) << "the dialog's filter wins";
-    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json", 0), ReportFormat::Text);
+    // #2144: a typed ".txt" or ".json" wins over the dialog's filter; the filter decides otherwise.
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Text) << "the typed extension wins";
+    EXPECT_EQ(SystemInfo::reportFormatFor("x.json", 0), ReportFormat::Json) << "the typed extension wins";
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.TXT", 1), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a", 1), ReportFormat::Json);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a", 0), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.log", 1), ReportFormat::Json) << "another extension: the filter";
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.JSON", -1), ReportFormat::Json);
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json.txt", -1), ReportFormat::Text);
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/dir.json/report", -1), ReportFormat::Text);
@@ -213,6 +218,11 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/report.txt", ReportFormat::Json), "/tmp/report.txt") << "a chosen extension stays";
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/dir.d/report", ReportFormat::Text), "/tmp/dir.d/report.txt");
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/.report", ReportFormat::Text), "/tmp/.report.txt");
+
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/report.txt", 2), "/tmp/report (2).txt");
+    EXPECT_EQ(SystemInfo::numberedReportPath("C:\\d.d\\report.json", 3), "C:\\d.d\\report (3).json");
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/dir.d/report", 2), "/tmp/dir.d/report (2)");
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/.report", 2), "/tmp/.report (2)");
 }
 
 TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)

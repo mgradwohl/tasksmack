@@ -2506,14 +2506,7 @@ std::string reportFileName(std::string_view computerName, bool showIdentifiers, 
 
 ReportFormat reportFormatFor(std::string_view path, int filter)
 {
-    if (filter == 0)
-    {
-        return ReportFormat::Text;
-    }
-    if (filter == 1)
-    {
-        return ReportFormat::Json;
-    }
+    // A typed ".txt" or ".json" says what the file is, whichever filter is selected (#2144).
     const std::size_t slash = path.find_last_of("/\\");
     const std::string_view name = slash == std::string_view::npos ? path : path.substr(slash + 1);
     const std::size_t dot = name.rfind('.');
@@ -2525,8 +2518,12 @@ ReportFormat reportFormatFor(std::string_view path, int filter)
         {
             return ReportFormat::Json;
         }
+        if (extension == "txt")
+        {
+            return ReportFormat::Text;
+        }
     }
-    return ReportFormat::Text;
+    return filter == 1 ? ReportFormat::Json : ReportFormat::Text;
 }
 
 std::string withReportExtension(std::string path, ReportFormat format)
@@ -2539,6 +2536,18 @@ std::string withReportExtension(std::string path, ReportFormat format)
         path += format == ReportFormat::Json ? ".json" : ".txt";
     }
     return path;
+}
+
+std::string numberedReportPath(std::string_view path, int number)
+{
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::size_t nameStart = slash == std::string_view::npos ? 0 : slash + 1;
+    std::size_t dot = path.rfind('.');
+    if (dot == std::string_view::npos || dot <= nameStart)
+    {
+        dot = path.size();
+    }
+    return std::format("{} ({}){}", path.substr(0, dot), number, path.substr(dot));
 }
 
 } // namespace App::SystemInfo

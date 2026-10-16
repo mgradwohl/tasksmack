@@ -21,6 +21,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -42,6 +43,34 @@ constexpr const char* TAB_EVENT_NAME = "SystemInfo";
 // How often the sensors are read again while the tab is drawn, so their ranges and histories (#1522)
 // follow them.
 constexpr std::chrono::milliseconds SENSOR_REFRESH{Domain::Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS};
+// How many numbered names ("report (2).txt", ...) are tried before giving up on a free one (#2144).
+constexpr int MAX_NUMBERED_REPORT_NAMES = 999;
+
+[[nodiscard]] bool pathExists(const std::string& utf8)
+{
+    std::error_code error;
+    return std::filesystem::exists(Core::utf8ToPath(utf8), error) || error;
+}
+
+/// Where to write the report the dialog answered @p chosen for, as @p path (with its extension added):
+/// @p path itself, unless adding the extension named a file that already exists. The dialog asked
+/// about replacing @p chosen, not that one, so a free numbered name is used instead; empty when there is none.
+[[nodiscard]] std::string freeReportPath(const std::string& chosen, const std::string& path)
+{
+    if (path == chosen || !pathExists(path))
+    {
+        return path;
+    }
+    for (int number = 2; number <= MAX_NUMBERED_REPORT_NAMES; ++number)
+    {
+        std::string numbered = SystemInfo::numberedReportPath(path, number);
+        if (!pathExists(numbered))
+        {
+            return numbered;
+        }
+    }
+    return {};
+}
 } // namespace
 
 SystemInfoPanel::SystemInfoPanel() : Panel("System Information")
@@ -171,7 +200,13 @@ void SystemInfoPanel::finishSaveReport()
         return; // cancelled
     }
     const SystemInfo::ReportFormat format = SystemInfo::reportFormatFor(answer->path, answer->filter);
-    const std::string path = SystemInfo::withReportExtension(answer->path, format);
+    const std::string withExtension = SystemInfo::withReportExtension(answer->path, format);
+    const std::string path = freeReportPath(answer->path, withExtension);
+    if (path.empty())
+    {
+        m_ViewState.saveNote = std::format("Couldn't save: {} already exists", withExtension);
+        return;
+    }
     // The page as it shows now: the newest read's sections, identifiers as they were at the click.
     const std::string contents = format == SystemInfo::ReportFormat::Json
                                    ? SystemInfo::allSectionsJson(m_ViewState.sections, m_SaveShowIdentifiers, m_ViewState.readAtText)
@@ -190,7 +225,7 @@ void SystemInfoPanel::finishSaveReport()
         spdlog::warn("System Information: {}", m_ViewState.saveNote);
         return;
     }
-    m_ViewState.saveNote = "Saved to " + path;
+    m_ViewState.saveNote = path == withExtension ? "Saved to " + path : std::format("Saved to {} ({} already exists)", path, withExtension);
 }
 
 void SystemInfoPanel::renderContent()

@@ -403,11 +403,14 @@ enum class ReportFormat : std::uint8_t
 /// otherwise or when none is left.
 [[nodiscard]] std::string reportFileName(std::string_view computerName, bool showIdentifiers, std::string_view date, ReportFormat format);
 
-/// The format to save @p path in: the dialog's @p filter (0 text, 1 JSON) when it says, else the
-/// path's extension (".json" is JSON), else text.
+/// The format to save @p path in: its typed extension when that is ".txt" or ".json" (#2144), else the
+/// dialog's @p filter (1 is JSON), else text.
 [[nodiscard]] ReportFormat reportFormatFor(std::string_view path, int filter);
 
 /// @p path with the format's extension added when it has none (a name typed without one).
 [[nodiscard]] std::string withReportExtension(std::string path, ReportFormat format);
+
+/// @p path with " (@p number)" before its extension: "dir/report.txt", 2 is "dir/report (2).txt" (#2144).
+[[nodiscard]] std::string numberedReportPath(std::string_view path, int number);
 
 } // namespace App::SystemInfo
