@@ -1,6 +1,7 @@
 #include "SystemMetricsPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/BatteryDetailsText.h"
 #include "App/Panels/CpuCoreGridIds.h"
@@ -187,11 +188,7 @@ void SystemMetricsPanel::onAttach()
     // An injected probe factory (tests, #1546) replaces both, with no scenario.
     const Synthetic::Scenario* scenario = m_MakeProbes ? nullptr : Synthetic::activeScenario();
     m_MaxHistorySeconds = static_cast<double>(Synthetic::startupHistorySeconds(scenario, static_cast<int>(m_MaxHistorySeconds)));
-    SystemMetricsProbes probes = m_MakeProbes ? m_MakeProbes()
-                                              : SystemMetricsProbes{.system = Synthetic::makeSystemProbe(scenario),
-                                                                    .power = Synthetic::makePowerProbe(scenario),
-                                                                    .disk = Synthetic::makeDiskProbe(scenario),
-                                                                    .gpu = Synthetic::makeGPUProbe(scenario)};
+    SystemMetricsProbes probes = m_MakeProbes ? m_MakeProbes() : makeSystemMetricsProbes(scenario);
 
     m_Model = std::make_shared<Domain::SystemModel>(std::move(probes.system), std::move(probes.power));
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);

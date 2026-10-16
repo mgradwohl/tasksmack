@@ -1,16 +1,17 @@
 #include "StartupPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
+#include "App/SyntheticScenario.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/StartupModel.h"
-#include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
 
 #include <imgui.h>
@@ -40,9 +41,7 @@ void StartupPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
     // An injected factory (tests, #1721) replaces the platform's.
-    StartupPanelPlatform platform =
-        m_MakePlatform ? m_MakePlatform()
-                       : StartupPanelPlatform{.probe = Platform::makeStartupProbe(), .actions = Platform::makeStartupActions()};
+    StartupPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeStartupPanelPlatform(Synthetic::activeScenario());
     m_Model = std::make_shared<Domain::StartupModel>(std::move(platform.probe));
     m_Gate = std::make_shared<SamplingGate>(m_Model);
     m_Actions = std::make_unique<StartupActionsView>(std::move(platform.actions));

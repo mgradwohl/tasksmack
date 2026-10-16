@@ -1,8 +1,10 @@
 #include "SystemInfoPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
+#include "App/SyntheticScenario.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -12,7 +14,6 @@
 #include "Core/Window.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
-#include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
 
@@ -59,7 +60,8 @@ void SystemInfoPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; the first read waits for the tab.
     // An injected factory (tests, #1395) replaces the platform's.
-    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : Platform::makeSystemInfoProbe(), m_CrashHistory);
+    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoPanelProbe(Synthetic::activeScenario()),
+                                                        m_CrashHistory);
 }
 
 void SystemInfoPanel::onDetach()

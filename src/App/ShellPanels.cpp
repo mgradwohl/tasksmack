@@ -1,10 +1,10 @@
 #include "ShellPanels.h"
 
+#include "App/PanelPlatforms.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
@@ -30,12 +30,11 @@ ShellPanels::ShellPanels()
 
 void ShellPanels::prepareAttach()
 {
-    if (Synthetic::activeScenario() != nullptr)
+    std::shared_ptr<Platform::ISystemInfoProbe> probe = makeCrashHistoryProbe(Synthetic::activeScenario());
+    if (probe == nullptr)
     {
-        return;
+        return; // a synthetic run (#2137: PanelPlatforms decides)
     }
-    // Its own probe: the System tab's model keeps its probe to itself, under its read lock.
-    std::shared_ptr<Platform::ISystemInfoProbe> probe = Platform::makeSystemInfoProbe();
     // MSVC STL false positive, as in ProcessModel::computeSnapshotsLocked(): the analyzer loses track
     // of the probe's shared_ptr control block (_Rep) once it is moved into the lambda.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)

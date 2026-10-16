@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/SelectOverride.h"
@@ -69,13 +70,16 @@ namespace App
 {
 
 // Constructor (inside App namespace)
-ProcessDetailsPanel::ProcessDetailsPanel()
-    : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()),
-                          Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessConnectionsReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessModulesReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessSecurityReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessOpenFilesReader(Synthetic::activeScenario()))
+ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
+    : ProcessDetailsPanel(std::move(readers.actions),
+                          std::move(readers.environment),
+                          std::move(readers.connections),
+                          std::move(readers.modules),
+                          std::move(readers.security),
+                          std::move(readers.openFiles))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)

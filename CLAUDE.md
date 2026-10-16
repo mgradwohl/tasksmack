@@ -26,7 +26,8 @@ read those instead of duplicating them here.
 Architecture: `Platform` (raw OS counters only) → `Domain` (deltas/rates/history/immutable snapshots) →
 `Core` (SDL3 window/loop, `PathService`) → `UI` (ImGui/ImPlot, never touches Platform) → `App` (panels; the
 only composition root allowed to call `Platform::make*Probe()`/`Platform::makeProcessActions()`, only at
-construction/`onAttach`, never in render loops). OpenGL calls confined to `Core`/`UI`.
+construction/`onAttach`, never in render loops; the panels' real-or-synthetic platform objects all come from
+`App/PanelPlatforms.cpp`, wired by `App/ShellPanels`). OpenGL calls confined to `Core`/`UI`.
 
 Feature parity: a metric with a system-wide tab should usually also get a Process Details tab for the
 selected process and a Processes-table column (off by default unless common). And anything the Processes

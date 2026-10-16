@@ -1,0 +1,52 @@
+#pragma once
+
+// What a run is made of (#2137): the one place that decides, for each panel, whether it reads the
+// platform or the synthetic scenario (TASKSMACK_SYNTHETIC, #1413). The panels used to decide this one
+// by one, each in its own onAttach(), and not the same way; now each calls its function here when no
+// factory is injected (tests inject their own), and ShellPanels takes the crash history's probe from
+// here too. App stays the only layer that calls Platform::make*() and Synthetic::make*(), at attach.
+//
+// In a synthetic run the Processes, System and Process Details panels read the scenario. The Services,
+// Startup and System Information panels still read the real platform there, as they always have; the
+// crash history does not (a real crash list would match the scenario's made-up PIDs by accident).
+
+#include "Panels/ProcessDetailsPanel.h"
+#include "Panels/ProcessesPanel.h"
+#include "Panels/ServicesPanel.h"
+#include "Panels/StartupPanel.h"
+#include "Panels/SystemMetricsPanel.h"
+#include "Platform/ISystemInfoProbe.h"
+
+#include <memory>
+
+namespace App
+{
+
+namespace Synthetic
+{
+class Scenario;
+}
+
+/// The Processes panel's probe, actions, UDP collector and icon source: @p scenario's, or the platform's.
+[[nodiscard]] ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario);
+
+/// The System panel's probes: @p scenario's, or the platform's.
+[[nodiscard]] SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario);
+
+/// Process Details' actions and readers: @p scenario's (its readers say "unsupported", so made-up PIDs
+/// never reach real /proc entries), or the platform's.
+[[nodiscard]] ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario);
+
+/// The Services tab's probe and actions: the platform's, in every run.
+[[nodiscard]] ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* scenario);
+
+/// The Startup tab's probe and actions: the platform's, in every run.
+[[nodiscard]] StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* scenario);
+
+/// The System Information tab's probe: the platform's, in every run.
+[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* scenario);
+
+/// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
+[[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);
+
+} // namespace App

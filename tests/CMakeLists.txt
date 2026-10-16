@@ -649,6 +649,7 @@ add_executable(TaskSmackTests
     # headless with a fake host (test_ShellLayerRender.cpp), and what it pulls in
     ${CMAKE_SOURCE_DIR}/src/App/ShellLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ShellPanels.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/PanelPlatforms.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/WindowOverride.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)

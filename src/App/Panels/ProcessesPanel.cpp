@@ -2,6 +2,7 @@
 
 #include "App/KeyboardInput.h"
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
@@ -950,11 +951,7 @@ void ProcessesPanel::onAttach()
     // The synthetic scenario's probe when TASKSMACK_SYNTHETIC selects one (#1413), else the platform's.
     // An injected factory (tests, #1546) replaces both, with no scenario.
     const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
-    ProcessesPanelPlatform platform = m_MakePlatform ? m_MakePlatform()
-                                                     : ProcessesPanelPlatform{.probe = Synthetic::makeProcessProbe(scenario),
-                                                                              .actions = Synthetic::makeProcessActions(scenario),
-                                                                              .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
-                                                                              .icons = Synthetic::makeProcessIconSource(scenario)};
+    ProcessesPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeProcessesPanelPlatform(scenario);
     auto processProbe = std::move(platform.probe);
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;

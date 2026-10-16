@@ -43,6 +43,17 @@
 namespace App
 {
 
+/// Process Details' actions and per-process readers (made by PanelPlatforms.h's makeProcessDetailsReaders(), #2137).
+struct ProcessDetailsReaders
+{
+    std::unique_ptr<Platform::IProcessActions> actions;
+    std::unique_ptr<Platform::IProcessEnvironmentReader> environment;
+    std::unique_ptr<Platform::IProcessConnectionsReader> connections;
+    std::unique_ptr<Platform::IProcessModulesReader> modules;
+    std::unique_ptr<Platform::IProcessSecurityReader> security;
+    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles;
+};
+
 /// Panel displaying detailed information for a selected process.
 /// Includes resource usage, I/O stats, and process actions.
 class ProcessDetailsPanel : public Panel
@@ -86,6 +97,9 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
 
     ~ProcessDetailsPanel() override = default;
+
+    /// With @p readers (PanelPlatforms.h): the default constructor's, made for the active scenario (#2137).
+    explicit ProcessDetailsPanel(ProcessDetailsReaders readers);
 
     ProcessDetailsPanel(const ProcessDetailsPanel&) = delete;
     ProcessDetailsPanel& operator=(const ProcessDetailsPanel&) = delete;

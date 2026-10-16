@@ -1,16 +1,17 @@
 #include "ServicesPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
+#include "App/SyntheticScenario.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
-#include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
 
 #include <imgui.h>
@@ -41,9 +42,7 @@ void ServicesPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
     // An injected factory (tests, #1721) replaces the platform's.
-    ServicesPanelPlatform platform =
-        m_MakePlatform ? m_MakePlatform()
-                       : ServicesPanelPlatform{.probe = Platform::makeServiceProbe(), .actions = Platform::makeServiceActions()};
+    ServicesPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeServicesPanelPlatform(Synthetic::activeScenario());
     m_Model = std::make_shared<Domain::ServiceModel>(std::move(platform.probe));
     m_Gate = std::make_shared<SamplingGate>(m_Model);
     m_Actions = std::make_unique<ServiceActionsView>(std::move(platform.actions));

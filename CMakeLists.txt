@@ -145,6 +145,7 @@ set(TASKSMACK_SOURCES
     src/App/ShellHost.cpp
     src/App/ShellLayer.cpp
     src/App/ShellPanels.cpp
+    src/App/PanelPlatforms.cpp
     src/App/StatusBarView.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
@@ -323,6 +324,7 @@ set(TASKSMACK_HEADERS
     src/App/ShellHost.h
     src/App/ShellLayer.h
     src/App/ShellPanels.h
+    src/App/PanelPlatforms.h
     src/App/SyntheticScenario.h
     src/App/WindowOverride.h
     src/App/Panels/ProcessesPanel.h
