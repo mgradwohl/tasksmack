@@ -562,28 +562,31 @@ class BenchShTest(unittest.TestCase):
         self.assertIn("exited with code 5", output)
         self.assertEqual(results, [], output)
 
-    def test_the_project_venv_python_is_used_not_a_bare_python3(self):
-        # #2254: bench.sh finds its interpreter with find_python (tools/common.sh): the checkout's
-        # .venv first, and only a Python 3.14+. A python3 first on PATH that is not a usable
-        # interpreter (Git Bash's Microsoft Store stub) is never what runs.
-        checkout = self.root / "venv-checkout"
+    def run_bench_with_venv(self, name: str, venv_pythons: tuple[str, ...]):
+        """Run a copy of bench.sh in a checkout whose .venv has the given interpreters (paths
+        relative to .venv) and whose PATH starts with Microsoft Store stubs. Returns the bench
+        result, which venv interpreters ran, and whether a stub ran."""
+        checkout = self.root / f"{name}-checkout"
         (checkout / "tools").mkdir(parents=True)
-        for name in ("bench.sh", "bench-manifest.py", "common.sh"):
-            shutil.copy2(REPO_ROOT / "tools" / name, checkout / "tools" / name)
-        used = self.root / "venv-python-used"
-        venv_python = checkout / ".venv" / "bin" / "python"
-        venv_python.parent.mkdir(parents=True)
-        venv_python.write_text(
-            f'#!/bin/sh\necho used >> "{posix(used)}"\nexec "{posix(Path(sys.executable))}" "$@"\n',
-            encoding="utf-8",
-            newline="\n",
-        )
-        venv_python.chmod(venv_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        store_stub_dir = self.root / "store-stub"
+        for file in ("bench.sh", "bench-manifest.py", "common.sh"):
+            shutil.copy2(REPO_ROOT / "tools" / file, checkout / "tools" / file)
+        markers = {}
+        for index, rel in enumerate(venv_pythons):
+            used = self.root / f"{name}-venv-python-used-{index}"
+            markers[rel] = used
+            venv_python = checkout / ".venv" / rel
+            venv_python.parent.mkdir(parents=True, exist_ok=True)
+            venv_python.write_text(
+                f'#!/bin/sh\necho used >> "{posix(used)}"\nexec "{posix(Path(sys.executable))}" "$@"\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+            venv_python.chmod(venv_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        store_stub_dir = self.root / f"{name}-store-stub"
         store_stub_dir.mkdir()
-        store_ran = self.root / "store-stub-ran"
-        for name in ("python3", "python3.14", "python"):
-            stub = store_stub_dir / name
+        store_ran = self.root / f"{name}-store-stub-ran"
+        for stub_name in ("python3", "python3.14", "python"):
+            stub = store_stub_dir / stub_name
             stub.write_text(
                 f'#!/bin/sh\n: > "{posix(store_ran)}"\necho "Python was not found; run without arguments to install from the Microsoft Store" >&2\nexit 49\n',
                 encoding="utf-8",
@@ -591,13 +594,42 @@ class BenchShTest(unittest.TestCase):
             )
             stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         code, output, results, manifests = self.run_bench(
-            "venv", 0, script=checkout / "tools" / "bench.sh", path_first=store_stub_dir
+            name, 0, script=checkout / "tools" / "bench.sh", path_first=store_stub_dir
+        )
+        ran = {rel for rel, marker in markers.items() if marker.is_file()}
+        return code, output, results, manifests, ran, store_ran.exists()
+
+    def test_the_project_venv_python_is_used_not_a_bare_python3(self):
+        # #2254: bench.sh finds its interpreter with find_python (tools/common.sh): the checkout's
+        # .venv first, and only a Python 3.14+. A python3 first on PATH that is not a usable
+        # interpreter (Git Bash's Microsoft Store stub) is never what runs.
+        code, output, results, manifests, ran, store_ran = self.run_bench_with_venv("venv", ("bin/python",))
+        self.assertEqual(code, 0, output)
+        self.assertEqual((len(results), len(manifests)), (1, 1), output)
+        self.assertEqual(ran, {"bin/python"}, "the .venv interpreter was not used")
+        self.assertFalse(store_ran, "a python on PATH ran although the .venv has one")
+        self.assertEqual(json.loads(results[0].read_text(encoding="utf-8"))["context"]["host_name"], "redacted")
+
+    def test_a_windows_venv_python_is_used_not_a_bare_python3(self):
+        # #2276: setup-dev.ps1 creates .venv/Scripts/python.exe; from Git Bash, find_python uses it
+        # before anything on PATH.
+        code, output, results, manifests, ran, store_ran = self.run_bench_with_venv(
+            "winvenv", ("Scripts/python.exe",)
         )
         self.assertEqual(code, 0, output)
         self.assertEqual((len(results), len(manifests)), (1, 1), output)
-        self.assertTrue(used.is_file(), "the .venv interpreter was not used")
-        self.assertFalse(store_ran.exists(), "a python on PATH ran although the .venv has one")
-        self.assertEqual(json.loads(results[0].read_text(encoding="utf-8"))["context"]["host_name"], "redacted")
+        self.assertEqual(ran, {"Scripts/python.exe"}, "the Windows .venv interpreter was not used")
+        self.assertFalse(store_ran, "a python on PATH ran although the .venv has one")
+
+    def test_the_posix_venv_python_wins_over_the_windows_one(self):
+        # #2276: with both layouts present, .venv/bin/python comes first.
+        code, output, results, manifests, ran, store_ran = self.run_bench_with_venv(
+            "bothvenv", ("bin/python", "Scripts/python.exe")
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual((len(results), len(manifests)), (1, 1), output)
+        self.assertEqual(ran, {"bin/python"}, output)
+        self.assertFalse(store_ran)
 
     def test_help_prints_the_header_and_runs_nothing(self):
         # #2254: -h / --help as the first argument, as Get-Help is for bench.ps1.

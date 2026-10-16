@@ -86,13 +86,17 @@ _python_meets_min() {
 }
 
 # Find the first Python >= 3.14 interpreter in the project venv or PATH.
+# Order: the POSIX venv (.venv/bin/python), the Windows venv that setup-dev.ps1 creates
+# (.venv/Scripts/python.exe, used from Git Bash; #2276), then python3.14, python3, python on PATH.
+# The version check also rules out the Microsoft Store python3/python stub, which is not 3.14+.
 # Prints the resolved filesystem path on success; returns 1 if no qualifying interpreter found.
 find_python() {
     local exe
     local common_dir repo_root
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "${common_dir}/.." && pwd)"
-    for exe in "${repo_root}/.venv/bin/python" python3.14 python3 python; do
+    for exe in "${repo_root}/.venv/bin/python" "${repo_root}/.venv/Scripts/python.exe" \
+        python3.14 python3 python; do
         if _python_meets_min "$exe"; then
             command -v "$exe"
             return 0

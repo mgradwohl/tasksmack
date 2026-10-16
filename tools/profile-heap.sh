@@ -6,6 +6,7 @@
 #   ./tools/profile-heap.sh bench [--preset <preset>] [--skip-build]
 #                                 [--bench-filter <regex>] [--bench-reps <n>]
 #                                 [--bench-min-time <t>]
+#   ./tools/profile-heap.sh -h | --help   # print this help
 #
 # Modes:
 #   app   — launch TaskSmack under heaptrack, wait for exit. Default preset: profile.
@@ -50,12 +51,19 @@ source "${SCRIPT_DIR}/common.sh"
 PERF_DIR="${REPO_ROOT}/perf-data"
 
 # ── argument parsing ──────────────────────────────────────────────────────────
+# -h / --help prints the header above without starting anything (#2276), as bench.sh does.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    exit 0
+fi
+
 MODE="${1:-}"
 shift || true
 
 if [[ -z "${MODE}" || ( "${MODE}" != "app" && "${MODE}" != "bench" ) ]]; then
     echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--user-config]" >&2
     echo "       $0 bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
+    echo "       $0 -h | --help" >&2
     exit 1
 fi
 
@@ -74,6 +82,7 @@ while [[ $# -gt 0 ]]; do
         --bench-reps)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";       shift 2 ;;
         --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2";   shift 2 ;;
         --user-config)    USE_USER_CONFIG=1;      shift   ;;
+        -h|--help)        sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
