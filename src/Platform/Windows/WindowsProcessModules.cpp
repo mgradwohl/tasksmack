@@ -3,15 +3,15 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "WinString.h"
+#include "WindowsHandles.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -45,19 +45,6 @@ constexpr DWORD FIXED_FILE_INFO_SIGNATURE = 0xFEEF04BD;
     return std::system_category().message(static_cast<int>(error));
 }
 
-/// Closes the process handle through the injected CloseHandle (a test's fake handle never reaches the real one).
-struct InjectedHandleCloser
-{
-    ProcessModuleFunctions::CloseHandleFn close = nullptr;
-
-    void operator()(HANDLE handle) const noexcept
-    {
-        close(handle);
-    }
-};
-
-using ProcessHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, InjectedHandleCloser>;
-
 } // namespace
 
 bool WindowsProcessModulesReader::hasModules() const
@@ -67,48 +54,18 @@ bool WindowsProcessModulesReader::hasModules() const
 
 ModulesReadResult WindowsProcessModulesReader::readModules(const ProcessTarget& target)
 {
-    if (target.pid <= 0)
-    {
-        return failure(ModulesReadStatus::ProcessExited);
-    }
-    if (target.startTimeTicks == 0)
-    {
-        // Unconfirmed identity (Idle, System): refused rather than read by PID alone.
-        return failure(ModulesReadStatus::IdentityUnknown);
-    }
-
     // PROCESS_VM_READ: the module list lives in the process's own memory (its PEB loader data).
     // Protected processes, and elevated ones from an unelevated TaskSmack, refuse it.
-    const ProcessHandle process(
-        m_Api.openProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, static_cast<DWORD>(target.pid)),
-        InjectedHandleCloser{.close = m_Api.closeHandle});
-    if (!process)
+    auto opened =
+        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
+                            target,
+                            PROCESS_VM_READ);
+    if (!opened)
     {
-        const DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED)
-        {
-            return failure(ModulesReadStatus::PermissionDenied);
-        }
-        // ERROR_INVALID_PARAMETER: no process has this PID any more.
-        return error == ERROR_INVALID_PARAMETER ? failure(ModulesReadStatus::ProcessExited)
-                                                : failure(ModulesReadStatus::Failed, errorText(error));
+        auto refused = toReadFailure<ModulesReadStatus>(opened.error());
+        return failure(refused.status, std::move(refused.detail));
     }
-
-    // The identity, from the open handle (which pins the process): the process checked is the one read.
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (m_Api.getProcessTimes(process.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
-    {
-        return failure(ModulesReadStatus::Failed, errorText(GetLastError()));
-    }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-    if (actualTicks != target.startTimeTicks)
-    {
-        return failure(ModulesReadStatus::ProcessExited); // the PID now names another process
-    }
+    const InjectableHandle process = std::move(*opened);
 
     std::vector<HMODULE> handles(256);
     for (int attempt = 1;; ++attempt)

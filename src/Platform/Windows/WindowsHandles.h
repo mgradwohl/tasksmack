@@ -127,6 +127,25 @@ template<typename Traits> class UniqueResource
 /// An owned kernel object handle. Null and INVALID_HANDLE_VALUE are both "no handle".
 using UniqueHandle = UniqueResource<KernelHandleTraits>;
 
+/// Closes a kernel handle through an injected CloseHandle: kernel32's, or a test's fake for the
+/// handles its fake OpenProcess hands out, so a fake handle never reaches the real one.
+struct InjectedHandleCloser
+{
+    using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
+
+    CloseHandleFn close = &::CloseHandle;
+
+    void operator()(HANDLE handle) const noexcept
+    {
+        close(handle);
+    }
+};
+
+/// An owned kernel handle closed through InjectedHandleCloser. Null is "no handle"; for handles from
+/// calls that fail with null (OpenProcess, DuplicateHandle's out-parameter), not CreateFile's
+/// INVALID_HANDLE_VALUE.
+using InjectableHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, InjectedHandleCloser>;
+
 /// Opens \\.\PhysicalDrive@p index query-only (#763): desired access 0, so no administrator rights are
 /// needed and the handle can't read or write the disk, only answer IOCTLs that need no access
 /// (IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,

@@ -2,6 +2,8 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
+#include "WindowsHandles.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <array>
@@ -9,12 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -37,19 +37,6 @@ constexpr std::size_t INITIAL_TABLE_BYTES = std::size_t{16} * 1024;
 {
     return std::system_category().message(static_cast<int>(error));
 }
-
-/// Closes the process handle through the injected CloseHandle (a test's fake handle never reaches the real one).
-struct InjectedHandleCloser
-{
-    ProcessConnectionsFunctions::CloseHandleFn close = nullptr;
-
-    void operator()(HANDLE handle) const noexcept
-    {
-        close(handle);
-    }
-};
-
-using ProcessHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, InjectedHandleCloser>;
 
 /// Copies one socket table into @p buffer through @p call (a GetExtended*Table call bound to its
 /// family and table class), growing the buffer while the table outgrows it, at most
@@ -202,46 +189,19 @@ bool WindowsProcessConnectionsReader::hasConnections() const
 
 ConnectionsReadResult WindowsProcessConnectionsReader::readConnections(const ProcessTarget& target)
 {
-    if (target.pid <= 0)
+    // A refused open is PermissionDenied: the tables would list its sockets, but which process holds
+    // the PID cannot be confirmed.
+    auto opened =
+        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
+                            target,
+                            PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!opened)
     {
-        return failure(ConnectionsReadStatus::ProcessExited);
+        auto refused = toReadFailure<ConnectionsReadStatus>(opened.error());
+        return failure(refused.status, std::move(refused.detail));
     }
-    if (target.startTimeTicks == 0)
-    {
-        // Unconfirmed identity (Idle, System): refused rather than read by PID alone.
-        return failure(ConnectionsReadStatus::IdentityUnknown);
-    }
-
+    const InjectableHandle process = std::move(*opened);
     const auto pid = static_cast<DWORD>(target.pid);
-    const ProcessHandle process(m_Api.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid),
-                                InjectedHandleCloser{.close = m_Api.closeHandle});
-    if (!process)
-    {
-        const DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED)
-        {
-            // The tables would list its sockets, but which process holds the PID cannot be confirmed.
-            return failure(ConnectionsReadStatus::PermissionDenied);
-        }
-        // ERROR_INVALID_PARAMETER: no process has this PID any more.
-        return error == ERROR_INVALID_PARAMETER ? failure(ConnectionsReadStatus::ProcessExited)
-                                                : failure(ConnectionsReadStatus::Failed, errorText(error));
-    }
-
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (m_Api.getProcessTimes(process.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
-    {
-        return failure(ConnectionsReadStatus::Failed, errorText(GetLastError()));
-    }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-    if (actualTicks != target.startTimeTicks)
-    {
-        return failure(ConnectionsReadStatus::ProcessExited); // the PID now names another process
-    }
     // An exited process whose object is still held open: its sockets are gone, and its PID is pinned.
     DWORD exitCode = 0;
     if (m_Api.getExitCodeProcess(process.get(), &exitCode) != 0 && exitCode != STILL_ACTIVE)

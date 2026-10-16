@@ -242,6 +242,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
     src/Platform/Windows/WindowsProcessDump.cpp
+    src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessIconSource.cpp
@@ -418,6 +419,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsProcessDump.h
+        src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsProcessDumpMath.h
         src/Platform/Windows/WindowsFolderPicker.h
         src/Platform/Windows/WindowsProcessConnections.h

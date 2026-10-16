@@ -9,6 +9,7 @@
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessDump.h"
 #include "WindowsProcessDumpMath.h"
+#include "WindowsProcessIdentity.h"
 
 #include <spdlog/spdlog.h>
 
@@ -45,59 +46,48 @@ namespace
 /// A process handle that has passed the identity check, or the reason there is none.
 struct VerifiedProcess
 {
-    Windows::UniqueHandle handle;
+    Windows::InjectableHandle handle;
     ProcessActionResult result;
 };
 
-/// Open `target` with `access` and confirm it is the process the target names.
-///
-/// The creation time is read from the opened handle, not looked up by PID, and the handle pins the
-/// process object until it is closed: so the process checked is the process acted on, with no
-/// window for the PID to be reused in between. GetProcessTimes reports the same creation time the
-/// probe reads from SYSTEM_PROCESS_INFORMATION::CreateTime, in the same 100ns FILETIME units.
+/// Open `target` with `access` and confirm it is the process the target names, through
+/// Windows::openProcessVerified() (the check every reader shares, #2149), and say why not.
 ///
 /// @param describeOpenFailure  Turns an OpenProcess error code into the message to show.
 template<typename DescribeOpenFailure>
 [[nodiscard]] VerifiedProcess
 openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
 {
-    if (target.pid <= 0)
+    // Closed with the real CloseHandle: this seam's fakes hand out real handles.
+    auto opened = Windows::openProcessVerified(
+        {.openProcess = fns.openProcess, .getProcessTimes = fns.getProcessTimes, .closeHandle = &::CloseHandle}, target, access);
+    if (opened)
     {
+        return {.handle = std::move(*opened), .result = ProcessActionResult::ok()};
+    }
+
+    const Windows::IdentityFailure failure = opened.error();
+    switch (failure.kind)
+    {
+    case Windows::IdentityFailureKind::InvalidPid:
         return {.handle = {}, .result = ProcessActionResult::error("Invalid PID")};
-    }
-    if (target.startTimeTicks == 0)
-    {
+    case Windows::IdentityFailureKind::IdentityUnknown:
+    case Windows::IdentityFailureKind::Mismatch:
+        // The start time this PID's process has is not the target's (or the target's is unknown):
+        // checkProcessIdentity() words both, given any time other than the target's.
         return {.handle = {}, .result = checkProcessIdentity(target, 0)};
+    case Windows::IdentityFailureKind::AccessDenied:
+    case Windows::IdentityFailureKind::ProcessGone:
+    case Windows::IdentityFailureKind::OpenFailed:
+        return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(failure.win32Error))};
+    case Windows::IdentityFailureKind::TimesFailed:
+        break;
     }
-
-    // Note: Windows APIs require DWORD for PIDs; explicit cast from a positive int32_t is safe.
-    Windows::UniqueHandle handle(fns.openProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
-    if (!handle)
-    {
-        return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(GetLastError()))};
-    }
-
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (fns.getProcessTimes(handle.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
-    {
-        return {
-            .handle = {},
-            .result = ProcessActionResult::error(
-                std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, GetLastError())),
-        };
-    }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-
-    ProcessActionResult identity = checkProcessIdentity(target, actualTicks);
-    if (!identity.success)
-    {
-        return {.handle = {}, .result = std::move(identity)};
-    }
-    return {.handle = std::move(handle), .result = ProcessActionResult::ok()};
+    return {
+        .handle = {},
+        .result = ProcessActionResult::error(
+            std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, failure.win32Error)),
+    };
 }
 
 /// EnumWindows state for Terminate: the process whose windows to close, and how many were asked.

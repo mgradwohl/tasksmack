@@ -4,6 +4,8 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
 #include "WinString.h"
+#include "WindowsHandles.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <atomic>
@@ -22,7 +24,6 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -54,23 +55,7 @@ constexpr std::chrono::seconds READ_BUDGET{10};
     return result;
 }
 
-[[nodiscard]] std::string errorText(DWORD error)
-{
-    return std::system_category().message(static_cast<int>(error));
-}
-
-/// Closes a handle through the injected CloseHandle (a test's fake handle never reaches the real one).
-struct InjectedHandleCloser
-{
-    ProcessOpenFilesFunctions::CloseHandleFn close = nullptr;
-
-    void operator()(HANDLE handle) const noexcept
-    {
-        close(handle);
-    }
-};
-
-using OwnedHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, InjectedHandleCloser>;
+using OwnedHandle = InjectableHandle;
 
 /// A handle listed but not queried: its type and name are unknown.
 [[nodiscard]] OpenFile unqueried(const SystemHandleEntry& entry)
@@ -352,42 +337,17 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
     {
         return resultOf(OpenFilesReadStatus::Unsupported);
     }
-    if (target.pid <= 0)
-    {
-        return resultOf(OpenFilesReadStatus::ProcessExited);
-    }
-    if (target.startTimeTicks == 0)
-    {
-        return resultOf(OpenFilesReadStatus::IdentityUnknown); // Idle, System: refused rather than read by PID alone
-    }
-
     // PROCESS_DUP_HANDLE: protected processes, and elevated ones from an unelevated TaskSmack, refuse it.
-    OwnedHandle process(m_Api.openProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)),
-                        InjectedHandleCloser{.close = m_Api.closeHandle});
-    if (!process)
+    auto opened =
+        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
+                            target,
+                            PROCESS_DUP_HANDLE);
+    if (!opened)
     {
-        const DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED)
-        {
-            return resultOf(OpenFilesReadStatus::PermissionDenied);
-        }
-        return error == ERROR_INVALID_PARAMETER ? resultOf(OpenFilesReadStatus::ProcessExited)
-                                                : resultOf(OpenFilesReadStatus::Failed, errorText(error));
+        auto refused = toReadFailure<OpenFilesReadStatus>(opened.error());
+        return resultOf(refused.status, std::move(refused.detail));
     }
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (m_Api.getProcessTimes(process.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
-    {
-        return resultOf(OpenFilesReadStatus::Failed, errorText(GetLastError()));
-    }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-    if (actualTicks != target.startTimeTicks)
-    {
-        return resultOf(OpenFilesReadStatus::ProcessExited); // the PID now names another process
-    }
+    OwnedHandle process = std::move(*opened);
 
     const std::optional<USHORT> fileType = fileTypeIndex();
     if (!fileType.has_value())

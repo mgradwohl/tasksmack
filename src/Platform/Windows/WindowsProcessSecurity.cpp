@@ -4,6 +4,7 @@
 #include "Platform/IProcessSecurity.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -304,44 +305,17 @@ SecurityAccount WindowsProcessSecurityReader::account(PSID sid)
 SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarget& target)
 {
     const std::scoped_lock lock(m_Mutex); // one read at a time: the name cache is shared
-    if (target.pid <= 0)
+    // Closed with the real CloseHandle: this seam's fakes hand out real handles.
+    auto opened =
+        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = &::CloseHandle},
+                            target,
+                            PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!opened)
     {
-        return failure(SecurityReadStatus::ProcessExited);
+        auto refused = toReadFailure<SecurityReadStatus>(opened.error());
+        return failure(refused.status, std::move(refused.detail));
     }
-    if (target.startTimeTicks == 0)
-    {
-        // Unconfirmed identity (Idle, System): refused rather than read by PID alone.
-        return failure(SecurityReadStatus::IdentityUnknown);
-    }
-
-    const UniqueHandle process(m_Api.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
-    if (!process)
-    {
-        const DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED)
-        {
-            return failure(SecurityReadStatus::PermissionDenied);
-        }
-        // ERROR_INVALID_PARAMETER: no process has this PID any more.
-        return error == ERROR_INVALID_PARAMETER ? failure(SecurityReadStatus::ProcessExited)
-                                                : failure(SecurityReadStatus::Failed, errorText(error));
-    }
-
-    // The identity, from the open handle (which pins the process): the process checked is the one read.
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (m_Api.getProcessTimes(process.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
-    {
-        return failure(SecurityReadStatus::Failed, errorText(GetLastError()));
-    }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-    if (actualTicks != target.startTimeTicks)
-    {
-        return failure(SecurityReadStatus::ProcessExited); // the PID now names another process
-    }
+    const InjectableHandle process = std::move(*opened);
 
     // A protected process (PPL, and System's) opens for PROCESS_QUERY_LIMITED_INFORMATION but refuses
     // its token: PermissionDenied, as on Linux.
