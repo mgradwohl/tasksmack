@@ -324,7 +324,9 @@ enum class AddressScope : std::uint8_t
 /// identifier) where it has any, MAC address (an identifier), and for Wi-Fi its signal, network name
 /// (an identifier) and link. With @p wifiDetailsGated (Windows, SystemInfoCapabilities), a wireless adapter
 /// whose location-gated details weren't read has a "Wi-Fi details" row with the "Show Wi-Fi details"
-/// button in place of its network name (#1782).
+/// button in place of its network name (#1782). A gateway or DHCP server that isLocalAddress() rejects is an
+/// identifier, since a public one places the machine about as well as its own address (#2191); a public
+/// adapter gateway or DHCP server is a row of its own, so the local ones stay visible. DNS servers stay plain.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network, bool wifiDetailsGated = false);
 
 /// The Network adapters section's public IP rows (#1518): none where the probe can't look them up

@@ -1702,6 +1702,17 @@ bool isLocalAddress(const Platform::AdapterAddress& address)
     return (groups[0] & 0xFF80U) == 0xFE80U || (groups[0] & 0xFE00U) == 0xFC00U;
 }
 
+namespace
+{
+
+/// isLocalAddress() for an address alone, as the gateway and DHCP server fields hold it: one with a colon is IPv6.
+[[nodiscard]] bool isLocalAddressText(const std::string& address)
+{
+    return isLocalAddress({.address = address, .prefix = 0, .v6 = address.contains(':')});
+}
+
+} // namespace
+
 std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter, AddressScope scope)
 {
     std::string text;
@@ -1871,11 +1882,21 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     {
         return address.empty() ? std::string{} : std::format("{} ({})", address, adapter);
     };
-    rows.push_back(row("Default gateway", gateway(network.gatewayV4, network.gatewayV4Adapter), "No IPv4 default route"));
+    // A public gateway is in the machine's own public subnet (a VPS's x.y.z.1, or a global IPv6 prefix), so it
+    // places the machine about as well as its own address: an identifier, like the public addresses (#2191).
+    const auto isPublic = [](const std::string& address)
+    {
+        return !address.empty() && !isLocalAddressText(address);
+    };
+    rows.push_back(
+        row("Default gateway", gateway(network.gatewayV4, network.gatewayV4Adapter), "No IPv4 default route", isPublic(network.gatewayV4)));
     if (!network.gatewayV6.empty())
     {
-        rows.push_back(row("IPv6 gateway", gateway(network.gatewayV6, network.gatewayV6Adapter)));
+        rows.push_back(
+            row("IPv6 gateway", gateway(network.gatewayV6, network.gatewayV6Adapter), NOT_REPORTED, isPublic(network.gatewayV6)));
     }
+    // The DNS servers stay visible: usually a public resolver (1.1.1.1, 8.8.8.8) or the local router, which say
+    // nothing about where the machine is (#2191).
     std::string dns;
     for (const std::string& server : network.dnsServers)
     {
@@ -1920,7 +1941,19 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         {
             rows.push_back(row(adapter.name + " public addresses", std::move(global), NOT_REPORTED, true));
         }
-        if (adapter.dhcpLease)
+        if (adapter.dhcpLease && isPublic(adapter.dhcpLease->server))
+        {
+            // A public DHCP server is the provider's, in or near the machine's subnet: the lease's length and
+            // expiry stay a plain row, and the server is an identifier row of its own (#2191).
+            Platform::DhcpLease lease = *adapter.dhcpLease;
+            lease.server.clear();
+            if (std::string rest = formatDhcpLease(lease); !rest.empty())
+            {
+                rows.push_back(row(adapter.name + " DHCP lease", std::move(rest)));
+            }
+            rows.push_back(row(adapter.name + " DHCP server", adapter.dhcpLease->server, NOT_REPORTED, true));
+        }
+        else if (adapter.dhcpLease)
         {
             rows.push_back(row(adapter.name + " DHCP lease", formatDhcpLease(*adapter.dhcpLease)));
         }
@@ -1932,32 +1965,46 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
                                "DHCP is on, but no lease is held (not connected)"));
         }
         // Its own DNS settings, only where it has any: otherwise the system-wide servers above apply.
-        const auto joined = [](const std::vector<std::string>& items)
+        const auto joined = [](const std::vector<std::string>& items, const auto& keep)
         {
             std::string text;
             for (const std::string& item : items)
             {
-                text += (text.empty() ? "" : ", ") + item;
+                if (keep(item))
+                {
+                    text += (text.empty() ? "" : ", ") + item;
+                }
             }
             return text;
         };
+        const auto all = [](const std::string& /*item*/)
+        {
+            return true;
+        };
         if (!adapter.linkDnsServers.empty())
         {
-            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.linkDnsServers)));
+            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.linkDnsServers, all)));
         }
         if (!adapter.linkSearchDomains.empty())
         {
             // Like the system-wide search domains, these can name the organisation: an identifier.
-            rows.push_back(row(adapter.name + " search domains", joined(adapter.linkSearchDomains), NOT_REPORTED, true));
+            rows.push_back(row(adapter.name + " search domains", joined(adapter.linkSearchDomains, all), NOT_REPORTED, true));
         }
         if (!adapter.mac.empty())
         {
             rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
         }
         // Windows only so far: Linux leaves these empty, so their rows are left out there.
-        if (!adapter.gateways.empty())
+        // Split like the addresses: local gateways a plain row, public ones an identifier row (#2191).
+        std::string localGateways = joined(adapter.gateways, isLocalAddressText);
+        std::string publicGateways = joined(adapter.gateways, isPublic);
+        if (!localGateways.empty())
         {
-            rows.push_back(row(adapter.name + " gateways", joined(adapter.gateways)));
+            rows.push_back(row(adapter.name + " gateways", std::move(localGateways)));
+        }
+        if (!publicGateways.empty())
+        {
+            rows.push_back(row(adapter.name + " public gateways", std::move(publicGateways), NOT_REPORTED, true));
         }
         if (adapter.wireless)
         {

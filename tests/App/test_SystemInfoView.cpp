@@ -953,6 +953,78 @@ TEST(SystemInfoSectionsTest, PublicAdapterAddressesAreIdentifiers)
     }
 }
 
+// #2191: a public gateway or DHCP server sits in the machine's own public subnet, so it places the machine
+// about as well as its address: an identifier. Local gateways and servers stay visible either way.
+TEST(SystemInfoSectionsTest, PublicGatewaysAndDhcpServersAreIdentifiers)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    network.gatewayV4 = "81.2.69.1";
+    network.gatewayV4Adapter = "eth0";
+    network.gatewayV6 = "2a02:6b8::1";
+    network.gatewayV6Adapter = "eth0";
+    network.dnsRead = true;
+    network.dnsServers = {"1.1.1.1"};
+    Platform::NetworkAdapter vps;
+    vps.name = "eth0";
+    vps.up = true;
+    vps.gateways = {"192.168.0.1", "2a02:6b8::1", "fe80::1"};
+    vps.dhcpLease = Platform::DhcpLease{.server = "81.2.69.2", .leaseSeconds = 86'400, .expiresUnix = 0};
+    Platform::NetworkAdapter lan;
+    lan.name = "eth1";
+    lan.up = true;
+    lan.dhcpLease = Platform::DhcpLease{.server = "192.168.0.254", .leaseSeconds = 3'600, .expiresUnix = 0};
+    Platform::NetworkAdapter serverOnly;
+    serverOnly.name = "eth2";
+    serverOnly.dhcpLease = Platform::DhcpLease{.server = "2a02:6b8::2", .leaseSeconds = 0, .expiresUnix = 0};
+    network.adapters = {vps, lan, serverOnly};
+
+    const std::vector<Section> sections = {SystemInfo::buildNetworkAdaptersSection(network)};
+    EXPECT_TRUE(findRow(sections[0], "Default gateway")->isIdentifier);
+    EXPECT_TRUE(findRow(sections[0], "IPv6 gateway")->isIdentifier);
+    EXPECT_FALSE(findRow(sections[0], "DNS servers")->isIdentifier); // public resolvers say nothing of the machine
+    EXPECT_EQ(findRow(sections[0], "eth0 gateways")->value, "192.168.0.1, fe80::1");
+    EXPECT_FALSE(findRow(sections[0], "eth0 gateways")->isIdentifier);
+    EXPECT_EQ(findRow(sections[0], "eth0 public gateways")->value, "2a02:6b8::1");
+    EXPECT_TRUE(findRow(sections[0], "eth0 public gateways")->isIdentifier);
+    EXPECT_EQ(findRow(sections[0], "eth0 DHCP lease")->value, "1 day lease"); // the rest of the lease stays
+    EXPECT_FALSE(findRow(sections[0], "eth0 DHCP lease")->isIdentifier);
+    EXPECT_EQ(findRow(sections[0], "eth0 DHCP server")->value, "81.2.69.2");
+    EXPECT_TRUE(findRow(sections[0], "eth0 DHCP server")->isIdentifier);
+    EXPECT_EQ(findRow(sections[0], "eth1 DHCP lease")->value, "From 192.168.0.254, 1 h lease");
+    EXPECT_EQ(findRow(sections[0], "eth1 DHCP server"), nullptr);
+    EXPECT_EQ(findRow(sections[0], "eth2 DHCP lease"), nullptr); // nothing left but the server
+    EXPECT_TRUE(findRow(sections[0], "eth2 DHCP server")->isIdentifier);
+
+    for (const std::string& hidden : {SystemInfo::allSectionsText(sections, false), SystemInfo::allSectionsJson(sections, false, "")})
+    {
+        EXPECT_FALSE(hidden.contains("81.2.69.")) << hidden;
+        EXPECT_FALSE(hidden.contains("2a02:6b8")) << hidden;
+        EXPECT_TRUE(hidden.contains("192.168.0.1")) << hidden;
+        EXPECT_TRUE(hidden.contains("fe80::1")) << hidden;
+        EXPECT_TRUE(hidden.contains("192.168.0.254")) << hidden;
+        EXPECT_TRUE(hidden.contains("1 day lease")) << hidden;
+        EXPECT_TRUE(hidden.contains("1.1.1.1")) << hidden;
+    }
+    for (const std::string& shown : {SystemInfo::allSectionsText(sections, true), SystemInfo::allSectionsJson(sections, true, "")})
+    {
+        EXPECT_TRUE(shown.contains("81.2.69.1 (eth0)")) << shown;
+        EXPECT_TRUE(shown.contains("2a02:6b8::1 (eth0)")) << shown;
+        EXPECT_TRUE(shown.contains("81.2.69.2")) << shown;
+        EXPECT_TRUE(shown.contains("2a02:6b8::2")) << shown;
+        EXPECT_TRUE(shown.contains("192.168.0.1")) << shown;
+        EXPECT_TRUE(shown.contains("192.168.0.254")) << shown;
+    }
+
+    // A local default gateway stays a plain row.
+    network.gatewayV4 = "192.168.0.1";
+    network.gatewayV6 = "fe80::1%eth0";
+    const Section local = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_FALSE(findRow(local, "Default gateway")->isIdentifier);
+    EXPECT_FALSE(findRow(local, "IPv6 gateway")->isIdentifier);
+}
+
 // #2120: with identifiers hidden, the user's login name must not reach the page, Copy or Save report
 // through a path: a removable drive's mount point under /media/<user> or a crash under /home/<user>.
 TEST(SystemInfoSectionsTest, LoginNameInPathsIsRedactedWhileIdentifiersAreHidden)
