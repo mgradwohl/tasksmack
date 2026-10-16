@@ -675,12 +675,6 @@ bool NetlinkSocketStats::queryDump(int protocol, int family, std::vector<SocketS
     return outcome != InetDumpOutcome::Failed;
 }
 
-void NetlinkSocketStats::parseSocketMessage(const void* msg, std::size_t len, std::vector<SocketStats>& results)
-{
-    // Delegate to the implementation in the anonymous namespace
-    parseSocketMessageImpl(msg, len, results);
-}
-
 std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::filesystem::path& procRoot)
 {
     std::unordered_map<std::uint64_t, SocketOwner> inodeToPid;

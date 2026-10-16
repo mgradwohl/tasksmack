@@ -223,13 +223,6 @@ class ProcessesPanel : public Panel
         return m_ColumnSettings;
     }
 
-    /// Set column settings (from loaded config)
-    void setColumnSettings(const ProcessColumnSettings& settings)
-    {
-        m_ColumnSettings = settings;
-        m_ColumnSettings.keepUnhideableColumnsVisible(); // PID and Name cannot be hidden (#1209)
-    }
-
     /// Set the refresh interval (applied by onUpdate cadence checks).
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
@@ -279,10 +272,6 @@ class ProcessesPanel : public Panel
     /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
     /// by ShellLayer, which shares it with the process model; kept weakly.
     void setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel);
-
-    /// Whether per-process GPU usage can be observed on this system: a GPU model is set and its probe
-    /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
-    [[nodiscard]] bool hasPerProcessGpuMetrics() const;
 
     /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210),
     /// and whether an NPU or compute accelerator is listed (#1799), or known to be (#1870).

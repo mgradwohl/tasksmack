@@ -14,6 +14,7 @@
 #include "Core/SaveFileDialog.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/FakeClipboard.h"
+#include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -216,7 +217,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
   private:
     ProbeLog* m_Log; // the test's, which outlives the panel and its reads
     bool m_HasOs;
-    Platform::UnsupportedSystemInfoProbe m_Default;
+    Mocks::UnsupportedSystemInfoProbe m_Default;
 };
 
 class SystemInfoPanelRenderTest : public ::testing::Test

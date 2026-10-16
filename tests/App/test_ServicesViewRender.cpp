@@ -5,6 +5,7 @@
 #include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
 #include "Domain/ServiceModel.h"
+#include "Mocks/MockServiceProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/Theme.h"
@@ -166,8 +167,8 @@ class ServicesViewRenderTest : public ::testing::Test
 
 TEST_F(ServicesViewRenderTest, UnsupportedPlatformShowsTheMessage)
 {
-    // The Linux factory's UnsupportedServiceProbe reports these capabilities.
-    const Platform::ServiceCapabilities unsupported = Platform::UnsupportedServiceProbe{}.capabilities();
+    // A platform without a service implementation (Mocks::UnsupportedServiceProbe) reports these capabilities.
+    const Platform::ServiceCapabilities unsupported = Mocks::UnsupportedServiceProbe{}.capabilities();
     ServicesViewState state;
     EXPECT_EQ(runFrame([&] { return renderServicesView(nullptr, unsupported, state); }), ServicesViewContent::Unsupported);
     EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);

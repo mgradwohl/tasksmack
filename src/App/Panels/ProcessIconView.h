@@ -77,9 +77,6 @@ class ProcessIconView
     /// name follows it. Draws nothing while disabled.
     void drawInline(const Domain::ProcessSnapshot& proc);
 
-    /// Draws @p proc's icon (or the generic one) into @p drawList, @p size square at @p min.
-    void drawAt(ImDrawList& drawList, ImVec2 min, float size, const Domain::ProcessSnapshot& proc);
-
     /// @p proc's icon texture at the current size; ImTextureID_Invalid when it has none, is still
     /// loading, or icons are off.
     [[nodiscard]] ImTextureID textureFor(const Domain::ProcessSnapshot& proc);

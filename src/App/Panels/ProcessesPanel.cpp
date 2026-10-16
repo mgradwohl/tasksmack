@@ -1903,11 +1903,6 @@ bool ProcessesPanel::hasAccelerator() const
     return gpuSupport().acceleratorListed;
 }
 
-bool ProcessesPanel::hasPerProcessGpuMetrics() const
-{
-    return gpuSupport().perProcess;
-}
-
 Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
 {
     if (!m_ProcessModel)

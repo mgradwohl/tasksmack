@@ -6,6 +6,7 @@
 #include "Platform/IServiceProbe.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -79,6 +80,27 @@ class MockServiceProbe : public Platform::IServiceProbe
     std::string m_FailureReason;
     int m_EnumerateCount = 0;
     int m_ForgetCount = 0;
+};
+
+/// A platform without a service implementation: no services, and canEnumerate false so the UI can say
+/// so. No platform needs it any more (Linux reads systemd, #2006), so it lives with the tests (#2169).
+class UnsupportedServiceProbe final : public Platform::IServiceProbe
+{
+  public:
+    [[nodiscard]] Platform::ServiceCapabilities capabilities() const override
+    {
+        Platform::ServiceCapabilities capabilities;
+        capabilities.unavailableReason = UNSUPPORTED_REASON;
+        return capabilities;
+    }
+
+    [[nodiscard]] Platform::ServiceEnumeration enumerate() override
+    {
+        return Platform::ServiceEnumeration::failed(std::string(UNSUPPORTED_REASON));
+    }
+
+  private:
+    static constexpr std::string_view UNSUPPORTED_REASON = "Services aren't available on this platform yet";
 };
 
 } // namespace Mocks

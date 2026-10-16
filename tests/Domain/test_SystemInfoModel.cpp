@@ -6,6 +6,7 @@
 #include "Domain/CrashHistory.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
+#include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -391,7 +392,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->adapters.available);
     EXPECT_FALSE(model.snapshot()->boot.available);
 
-    const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
+    const SystemInfoModel stub(std::make_unique<Mocks::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);
 }
 

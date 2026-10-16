@@ -14,6 +14,7 @@
 #include "App/Panels/StartupPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Mocks/MockProbes.h"
+#include "Mocks/MockServiceProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -286,7 +287,7 @@ TEST_F(ServicesStartupPanelsRenderTest, ServicesSamplingStartsOnFirstShowAndRefr
 
 TEST_F(ServicesStartupPanelsRenderTest, ServicesUnsupportedProbeShowsItsReasonAndNeverSamples)
 {
-    Platform::ServiceCapabilities unsupported = Platform::UnsupportedServiceProbe{}.capabilities();
+    Platform::ServiceCapabilities unsupported = Mocks::UnsupportedServiceProbe{}.capabilities();
     ServiceFakes fakes;
     const auto panel = attachedServices(
         fakes, Platform::ServiceEnumeration::failed("unsupported"), std::move(unsupported), Platform::ServiceActionCapabilities{});
@@ -337,7 +338,7 @@ TEST_F(ServicesStartupPanelsRenderTest, ServicesBackgroundDemandSamplesWithTheTa
 
 TEST_F(ServicesStartupPanelsRenderTest, ServicesBackgroundDemandNeverSamplesAProbeThatCannotList)
 {
-    Platform::ServiceCapabilities unsupported = Platform::UnsupportedServiceProbe{}.capabilities();
+    Platform::ServiceCapabilities unsupported = Mocks::UnsupportedServiceProbe{}.capabilities();
     ServiceFakes fakes;
     const auto panel = attachedServices(
         fakes, Platform::ServiceEnumeration::failed("unsupported"), std::move(unsupported), Platform::ServiceActionCapabilities{});

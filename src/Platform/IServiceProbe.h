@@ -114,25 +114,4 @@ class IServiceProbe
     {}
 };
 
-/// The probe for a platform without a service implementation yet (Linux until systemd support
-/// lands, synthetic runs): no services, and canEnumerate false so the UI can say so.
-class UnsupportedServiceProbe final : public IServiceProbe
-{
-  public:
-    [[nodiscard]] ServiceCapabilities capabilities() const override
-    {
-        ServiceCapabilities capabilities;
-        capabilities.unavailableReason = UNSUPPORTED_REASON;
-        return capabilities;
-    }
-
-    [[nodiscard]] ServiceEnumeration enumerate() override
-    {
-        return ServiceEnumeration::failed(std::string(UNSUPPORTED_REASON));
-    }
-
-  private:
-    static constexpr std::string_view UNSUPPORTED_REASON = "Services aren't available on this platform yet";
-};
-
 } // namespace Platform

@@ -275,7 +275,7 @@ TEST(ProcessServicesModelTest, AListWithPidsMakesTheCapabilityTrue)
     EXPECT_TRUE(model.capabilities().hasServices);
 
     // A platform with no service list (Linux until systemd's is read) adds nothing.
-    model.setServiceModel(std::make_shared<ServiceModel>(std::make_unique<Platform::UnsupportedServiceProbe>()));
+    model.setServiceModel(std::make_shared<ServiceModel>(std::make_unique<Mocks::UnsupportedServiceProbe>()));
     model.refresh();
     EXPECT_FALSE(model.capabilities().hasServices);
 }

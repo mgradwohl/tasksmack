@@ -110,16 +110,6 @@ void ProcessIconView::drawGeneric(ImDrawList& drawList, ImVec2 min, float size, 
     drawList.AddText(font, glyphSize, pos, ImGui::GetColorU32(UI::Theme::get().scheme().textMuted), glyph);
 }
 
-void ProcessIconView::drawAt(ImDrawList& drawList, ImVec2 min, float size, const Domain::ProcessSnapshot& proc)
-{
-    if (const ImTextureID texture = textureFor(proc); texture != ImTextureID_Invalid)
-    {
-        drawList.AddImage(ImTextureRef(texture), min, ImVec2(min.x + size, min.y + size));
-        return;
-    }
-    drawGeneric(drawList, min, size);
-}
-
 void ProcessIconView::drawInline(const Domain::ProcessSnapshot& proc)
 {
     if (!m_Enabled)

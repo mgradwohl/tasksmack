@@ -83,12 +83,12 @@ namespace Platform
 /// Creates the platform-appropriate IGPUProbe implementation.
 [[nodiscard]] std::unique_ptr<IGPUProbe> makeGPUProbe();
 
-/// Creates the platform-appropriate IServiceProbe implementation (#800). Linux returns an
-/// UnsupportedServiceProbe (capabilities().canEnumerate false) until systemd support lands.
+/// Creates the platform-appropriate IServiceProbe implementation (#800): the Service Control Manager on
+/// Windows; systemd over D-Bus on Linux (LinuxServiceProbe, #2006).
 [[nodiscard]] std::unique_ptr<IServiceProbe> makeServiceProbe();
 
-/// Creates the platform-appropriate IServiceActions implementation (#1577). Linux returns an
-/// UnsupportedServiceActions (every capability false) until systemd control lands.
+/// Creates the platform-appropriate IServiceActions implementation (#1577): the Service Control Manager
+/// on Windows; systemd over D-Bus on Linux.
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
 #ifdef _WIN32

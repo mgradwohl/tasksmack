@@ -169,9 +169,6 @@ class NetlinkSocketStats
 
     /// One INET_DIAG dump for `protocol` and address `family`; see queryTcpSockets().
     [[nodiscard]] bool queryDump(int protocol, int family, std::vector<SocketStats>& results);
-
-    /// Parse a single inet_diag_msg response
-    static void parseSocketMessage(const void* msg, std::size_t len, std::vector<SocketStats>& results);
 };
 
 /// The process holding a socket when the inode-to-PID map was built.

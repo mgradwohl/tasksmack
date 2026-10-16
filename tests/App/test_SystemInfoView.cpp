@@ -11,6 +11,7 @@
 #include "App/Panels/SystemInfoView.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
+#include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
@@ -2809,7 +2810,7 @@ class SystemInfoViewRenderTest : public ::testing::Test
 TEST_F(SystemInfoViewRenderTest, UnsupportedAndLoading)
 {
     SystemInfoViewState state;
-    const auto unsupported = Platform::UnsupportedSystemInfoProbe{}.capabilities();
+    const auto unsupported = Mocks::UnsupportedSystemInfoProbe{}.capabilities();
     EXPECT_EQ(runFrame([&] { return renderSystemInfoView(nullptr, unsupported, false, state); }).content,
               SystemInfoViewContent::Unsupported);
     const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
