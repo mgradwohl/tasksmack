@@ -1,8 +1,8 @@
 #pragma once
 
-// The pure parts of Windows' "Create dump file" (#807): the dump file's name, and what each failure
-// says. Win32 error codes come in as plain integers and are compared against this header's own
-// constants, so it reaches no Windows header and its tests build and run on every platform (#1133).
+// The pure parts of Windows' "Create dump file" (#807): the dump file's name, whether TaskSmack's
+// architecture can dump the process's (#2152), and what each failure says. Win32 error codes come in as plain integers and are compared
+// against this header's own constants, so it reaches no Windows header and its tests build and run on every platform (#1133).
 
 #include <algorithm>
 #include <cstdint>
@@ -210,32 +210,120 @@ struct DumpTime
     return std::format("the snapshot failed with error {}", error);
 }
 
-/// How TaskSmack's bitness and the process's compare, for a dump.
-enum class DumpBitness : std::uint8_t
-{
-    Same,                ///< Both 64-bit, or both 32-bit: an ordinary dump.
-    Wow64Target,         ///< A 32-bit process (WOW64) dumped from 64-bit TaskSmack: a 64-bit dump of it.
-    NativeTargetOfWow64, ///< A 32-bit TaskSmack and a 64-bit process: it can't read the process's memory.
-};
+/// The IMAGE_FILE_MACHINE_* values (winnt.h) a dump's architecture check tells apart, as plain values.
+inline constexpr std::uint16_t MACHINE_UNKNOWN = 0x0000;
+inline constexpr std::uint16_t MACHINE_I386 = 0x014C;
+inline constexpr std::uint16_t MACHINE_ARMNT = 0x01C4; ///< 32-bit ARM (Thumb-2)
+inline constexpr std::uint16_t MACHINE_AMD64 = 0x8664;
+inline constexpr std::uint16_t MACHINE_ARM64 = 0xAA64;
+inline constexpr std::uint16_t MACHINE_ARM64EC = 0xA641;
+inline constexpr std::uint16_t MACHINE_ARM64X = 0xA64E;
 
-[[nodiscard]] constexpr DumpBitness dumpBitness(bool selfIsWow64, bool targetIsWow64) noexcept
+/// The machine a process's code runs as, from what Windows says about it (#2152):
+/// @p machineTypeInfo  GetProcessInformation(ProcessMachineTypeInfo)'s ProcessMachine (Windows 11 and
+///                     later; MACHINE_UNKNOWN where it can't be read). The only one of the three that
+///                     tells an x64 process emulated on ARM64 (AMD64) from a native ARM64 one.
+/// @p wow64Machine     IsWow64Process2()'s process machine: the 32-bit guest (I386, ARMNT) of a WOW64
+///                     process, else MACHINE_UNKNOWN -- an emulated x64 process is not a WOW64 one.
+/// @p nativeMachine    IsWow64Process2()'s native machine: the machine Windows itself runs as.
+/// MACHINE_UNKNOWN when none of them was read.
+[[nodiscard]] constexpr std::uint16_t
+processMachine(std::uint16_t machineTypeInfo, std::uint16_t wow64Machine, std::uint16_t nativeMachine) noexcept
 {
-    if (selfIsWow64 == targetIsWow64)
+    if (machineTypeInfo != MACHINE_UNKNOWN)
     {
-        return DumpBitness::Same;
+        return machineTypeInfo;
     }
-    return targetIsWow64 ? DumpBitness::Wow64Target : DumpBitness::NativeTargetOfWow64;
+    return (wow64Machine != MACHINE_UNKNOWN) ? wow64Machine : nativeMachine;
 }
 
-/// What a dump of a 32-bit process from 64-bit TaskSmack needs to be read, as Task Manager's are.
-inline constexpr std::string_view WOW64_DUMP_NOTE =
-    "This is a 32-bit process, so the dump is a 64-bit one: in WinDbg, run .effmach x86 (or !wow64exts.sw) to see its 32-bit "
-    "threads and stacks.";
-
-/// Why a 32-bit TaskSmack refuses a 64-bit process.
-[[nodiscard]] inline std::string nativeTargetOfWow64Message(std::int32_t pid)
+/// A machine's name in the messages: "x86", "x64", "ARM64", "ARM64EC" or "ARM32"; empty when unknown.
+[[nodiscard]] constexpr std::string_view machineName(std::uint16_t machine) noexcept
 {
-    return std::format("Process {} is a 64-bit process, and this TaskSmack is 32-bit: run the 64-bit TaskSmack to dump it", pid);
+    switch (machine)
+    {
+    case MACHINE_I386:
+        return "x86";
+    case MACHINE_AMD64:
+        return "x64";
+    case MACHINE_ARM64:
+    case MACHINE_ARM64X:
+        return "ARM64";
+    case MACHINE_ARM64EC:
+        return "ARM64EC";
+    case MACHINE_ARMNT:
+        return "ARM32";
+    default:
+        return {};
+    }
+}
+
+/// How TaskSmack's architecture and the process's compare, for a dump.
+enum class DumpArchitecture : std::uint8_t
+{
+    Same,        ///< The same architecture, or the process's couldn't be read: an ordinary dump.
+    Wow64Target, ///< A 32-bit (WOW64) process on TaskSmack's own architecture: a 64-bit dump of it, with a note.
+    Unsupported, ///< Another architecture (an ARM64 process from x64 TaskSmack): no usable dump can be written.
+};
+
+/// Whether TaskSmack, built for @p selfMachine, can dump a process running as @p targetMachine
+/// (processMachine()). TaskSmack is built 64-bit only: x64, and maybe one day ARM64 (ARM64EC and
+/// ARM64X count as ARM64). A process of its own architecture is dumped as usual; one of its 32-bit
+/// WOW64 guests (x86 on x64; x86 and ARM32 on ARM64) as a 64-bit dump, with a note; anything else is
+/// refused -- notably a native ARM64 process from the x64 TaskSmack emulated on Windows on ARM, which
+/// IsWow64Process() alone took for "the same". A target whose machine couldn't be read is tried as
+/// usual, as before; a TaskSmack built for anything but x64 or ARM64 refuses every process.
+[[nodiscard]] constexpr DumpArchitecture dumpArchitecture(std::uint16_t selfMachine, std::uint16_t targetMachine) noexcept
+{
+    const auto isArm64 = [](std::uint16_t machine)
+    {
+        return machine == MACHINE_ARM64 || machine == MACHINE_ARM64EC || machine == MACHINE_ARM64X;
+    };
+    if (selfMachine == MACHINE_AMD64)
+    {
+        if (targetMachine == MACHINE_AMD64 || targetMachine == MACHINE_UNKNOWN)
+        {
+            return DumpArchitecture::Same;
+        }
+        return (targetMachine == MACHINE_I386) ? DumpArchitecture::Wow64Target : DumpArchitecture::Unsupported;
+    }
+    if (isArm64(selfMachine))
+    {
+        if (isArm64(targetMachine) || targetMachine == MACHINE_UNKNOWN)
+        {
+            return DumpArchitecture::Same;
+        }
+        return (targetMachine == MACHINE_I386 || targetMachine == MACHINE_ARMNT) ? DumpArchitecture::Wow64Target
+                                                                                 : DumpArchitecture::Unsupported;
+    }
+    return DumpArchitecture::Unsupported;
+}
+
+/// What a 64-bit dump of a 32-bit (WOW64) process running as @p targetMachine needs to be read, as
+/// Task Manager's are: WinDbg's effective machine set to the process's own.
+[[nodiscard]] inline std::string wow64DumpNote(std::uint16_t targetMachine)
+{
+    const std::string_view effectiveMachine = (targetMachine == MACHINE_ARMNT) ? "arm" : "x86";
+    return std::format("This is a 32-bit process, so the dump is a 64-bit one: in WinDbg, run .effmach {} (or !wow64exts.sw) to see "
+                       "its 32-bit threads and stacks.",
+                       effectiveMachine);
+}
+
+/// Why TaskSmack, built for @p selfMachine, refuses process @p pid, running as @p targetMachine
+/// (DumpArchitecture::Unsupported).
+[[nodiscard]] inline std::string unsupportedArchitectureMessage(std::int32_t pid, std::uint16_t selfMachine, std::uint16_t targetMachine)
+{
+    const std::string_view selfName = machineName(selfMachine);
+    const std::string_view targetName = machineName(targetMachine);
+    const std::string self =
+        selfName.empty() ? std::format("built for machine type 0x{:04X}", selfMachine) : std::format("an {} build", selfName);
+    const std::string target =
+        targetName.empty() ? std::format("runs as machine type 0x{:04X}", targetMachine) : std::format("is an {} process", targetName);
+    return std::format("Process {} {}, and this TaskSmack is {}: it can't write a usable dump of a process of another architecture. "
+                       "Task Manager can dump it (Details, right-click, Create memory dump file).",
+                       pid,
+                       target,
+                       self);
 }
 
 } // namespace Platform::DumpMath

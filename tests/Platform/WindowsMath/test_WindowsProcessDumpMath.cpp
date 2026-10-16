@@ -1,12 +1,15 @@
 /// @file test_WindowsProcessDumpMath.cpp
 /// @brief Windows' "Create dump file" (#807), its pure parts: the dump file's name, and what each failure
-/// says -- access denied, a protected process, a full disk, a cancel, 32-bit against 64-bit. Pure, so
+/// says -- access denied, a protected process, a full disk, a cancel, a process of another architecture. Pure, so
 /// built everywhere.
 
 #include "Platform/Windows/WindowsProcessDumpMath.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstdint>
+#include <format>
 #include <string>
 
 namespace Platform::DumpMath
@@ -97,14 +100,86 @@ TEST(DumpSnapshotTest, ALiveDumpSaysWhyThereWasNoSnapshot)
     EXPECT_EQ(snapshotFailureReason(1234, false), "the snapshot failed with error 1234");
 }
 
-TEST(DumpBitnessTest, ThirtyTwoOnSixtyFourIsNotedAndTheReverseRefused)
+/// A row of dumpArchitecture()'s table: TaskSmack's machine, the process's, and the decision.
+struct ArchitectureCase
 {
-    EXPECT_EQ(dumpBitness(false, false), DumpBitness::Same);
-    EXPECT_EQ(dumpBitness(true, true), DumpBitness::Same);
-    EXPECT_EQ(dumpBitness(false, true), DumpBitness::Wow64Target);
-    EXPECT_EQ(dumpBitness(true, false), DumpBitness::NativeTargetOfWow64);
-    EXPECT_TRUE(WOW64_DUMP_NOTE.contains(".effmach x86"));
-    EXPECT_TRUE(nativeTargetOfWow64Message(9).contains("64-bit TaskSmack"));
+    std::uint16_t self;
+    std::uint16_t target;
+    DumpArchitecture expected;
+};
+
+TEST(DumpArchitectureTest, EveryMachinePairDecides)
+{
+    constexpr std::array CASES{
+        // The x64 build: x64 as usual, its x86 WOW64 guests with a note, anything ARM refused (#2152).
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_AMD64, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_I386, .expected = DumpArchitecture::Wow64Target},
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_ARM64, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_ARM64EC, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_ARM64X, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_ARMNT, .expected = DumpArchitecture::Unsupported},
+        // IA64, which no process on these machines runs as.
+        ArchitectureCase{.self = MACHINE_AMD64, .target = 0x0200, .expected = DumpArchitecture::Unsupported},
+        // Unreadable: tried as before.
+        ArchitectureCase{.self = MACHINE_AMD64, .target = MACHINE_UNKNOWN, .expected = DumpArchitecture::Same},
+        // An ARM64 build: ARM64 (EC and X too) as usual, x86 and ARM32 WOW64 guests with a note, x64 refused.
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_ARM64, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_ARM64EC, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_ARM64X, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_I386, .expected = DumpArchitecture::Wow64Target},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_ARMNT, .expected = DumpArchitecture::Wow64Target},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_AMD64, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_ARM64, .target = MACHINE_UNKNOWN, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_ARM64EC, .target = MACHINE_ARM64, .expected = DumpArchitecture::Same},
+        ArchitectureCase{.self = MACHINE_ARM64EC, .target = MACHINE_AMD64, .expected = DumpArchitecture::Unsupported},
+        // No 32-bit build (#2152): a 32-bit TaskSmack, were there one, refuses everything.
+        ArchitectureCase{.self = MACHINE_I386, .target = MACHINE_I386, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_I386, .target = MACHINE_AMD64, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_ARMNT, .target = MACHINE_ARMNT, .expected = DumpArchitecture::Unsupported},
+        ArchitectureCase{.self = MACHINE_UNKNOWN, .target = MACHINE_AMD64, .expected = DumpArchitecture::Unsupported},
+    };
+    for (const ArchitectureCase& row : CASES)
+    {
+        EXPECT_EQ(dumpArchitecture(row.self, row.target), row.expected)
+            << std::format("self 0x{:04X}, target 0x{:04X}", row.self, row.target);
+    }
+    static_assert(dumpArchitecture(MACHINE_AMD64, MACHINE_ARM64) == DumpArchitecture::Unsupported);
+}
+
+TEST(DumpArchitectureTest, TheProcessMachineTellsEmulatedX64FromNativeArm64)
+{
+    // Windows 11: ProcessMachineTypeInfo is read, and says what the process runs as.
+    EXPECT_EQ(processMachine(MACHINE_AMD64, MACHINE_UNKNOWN, MACHINE_ARM64), MACHINE_AMD64); // x64 emulated on ARM64
+    EXPECT_EQ(processMachine(MACHINE_ARM64, MACHINE_UNKNOWN, MACHINE_ARM64), MACHINE_ARM64); // native ARM64
+    EXPECT_EQ(processMachine(MACHINE_I386, MACHINE_I386, MACHINE_AMD64), MACHINE_I386);
+    // Windows 10 (IsWow64Process2 only): a WOW64 process's guest machine, else the native machine.
+    EXPECT_EQ(processMachine(MACHINE_UNKNOWN, MACHINE_I386, MACHINE_AMD64), MACHINE_I386);
+    EXPECT_EQ(processMachine(MACHINE_UNKNOWN, MACHINE_ARMNT, MACHINE_ARM64), MACHINE_ARMNT);
+    EXPECT_EQ(processMachine(MACHINE_UNKNOWN, MACHINE_UNKNOWN, MACHINE_AMD64), MACHINE_AMD64);
+    EXPECT_EQ(processMachine(MACHINE_UNKNOWN, MACHINE_UNKNOWN, MACHINE_ARM64), MACHINE_ARM64);
+    // Nothing read
+    EXPECT_EQ(processMachine(MACHINE_UNKNOWN, MACHINE_UNKNOWN, MACHINE_UNKNOWN), MACHINE_UNKNOWN);
+}
+
+TEST(DumpArchitectureTest, TheNoteAndTheRefusalNameTheMachines)
+{
+    EXPECT_TRUE(wow64DumpNote(MACHINE_I386).contains(".effmach x86")) << wow64DumpNote(MACHINE_I386);
+    EXPECT_TRUE(wow64DumpNote(MACHINE_ARMNT).contains(".effmach arm ")) << wow64DumpNote(MACHINE_ARMNT);
+    EXPECT_TRUE(wow64DumpNote(MACHINE_I386).starts_with("This is a 32-bit process"));
+
+    EXPECT_EQ(unsupportedArchitectureMessage(9, MACHINE_AMD64, MACHINE_ARM64),
+              "Process 9 is an ARM64 process, and this TaskSmack is an x64 build: it can't write a usable dump of a process of another "
+              "architecture. Task Manager can dump it (Details, right-click, Create memory dump file).");
+    const std::string ec = unsupportedArchitectureMessage(9, MACHINE_AMD64, MACHINE_ARM64EC);
+    EXPECT_TRUE(ec.contains("is an ARM64EC process")) << ec;
+    const std::string other = unsupportedArchitectureMessage(9, MACHINE_AMD64, 0x0200);
+    EXPECT_TRUE(other.contains("runs as machine type 0x0200")) << other;
+    const std::string oddSelf = unsupportedArchitectureMessage(9, MACHINE_UNKNOWN, MACHINE_AMD64);
+    EXPECT_TRUE(oddSelf.contains("built for machine type 0x0000")) << oddSelf;
+
+    EXPECT_EQ(machineName(MACHINE_ARM64X), "ARM64");
+    EXPECT_EQ(machineName(MACHINE_ARMNT), "ARM32");
+    EXPECT_TRUE(machineName(MACHINE_UNKNOWN).empty());
 }
 
 } // namespace

@@ -479,7 +479,7 @@ WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesy
     // A snapshot needs more access than a live dump (Windows::SNAPSHOT_PROCESS_ACCESS). A process that
     // refuses it may still allow a live dump's, so that is asked for next, and the dump says why it
     // is live.
-    Windows::DumpSource source{.captureSnapshot = m_Fns.pssCaptureSnapshot, .liveReason = {}};
+    Windows::DumpSource source{.captureSnapshot = m_Fns.pssCaptureSnapshot, .liveReason = {}, .processMachine = nullptr};
     VerifiedProcess process;
     bool snapshotOpenRefused = false;
     if (source.captureSnapshot != nullptr)

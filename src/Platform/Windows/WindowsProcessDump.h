@@ -49,6 +49,15 @@ using PssCaptureSnapshotFn = DWORD(WINAPI*)(HANDLE process, PSS_CAPTURE_FLAGS fl
 /// services), whose memory no program may read. False when that can't be read.
 [[nodiscard]] bool isProtectedProcess(DWORD pid);
 
+/// The machine (an IMAGE_FILE_MACHINE_* value) process @p process runs as, as DumpMath::processMachine()
+/// reads it: from GetProcessInformation(ProcessMachineTypeInfo), else IsWow64Process2(). 0
+/// (IMAGE_FILE_MACHINE_UNKNOWN) when neither can be read.
+/// @param process  An open handle with PROCESS_QUERY_LIMITED_INFORMATION.
+[[nodiscard]] std::uint16_t processMachine(HANDLE process);
+
+/// processMachine()'s signature: DumpSource holds it so a test can make a process another architecture.
+using ProcessMachineFn = std::uint16_t (*)(HANDLE process);
+
 /// How writeProcessDump() reads the process.
 struct DumpSource
 {
@@ -57,11 +66,16 @@ struct DumpSource
     PssCaptureSnapshotFn captureSnapshot = nullptr;
     /// Why there is no snapshot to take, when captureSnapshot is null (DumpMath::snapshotFailureReason()).
     std::string liveReason;
+    /// Reads the machine the process runs as, to refuse one of another architecture (#2152); null:
+    /// processMachine().
+    ProcessMachineFn processMachine = nullptr;
 };
 
 /// Writes a full-memory dump of @p process into a new file in @p directory: Task Manager's dump type
 /// (full memory, handles, unloaded modules, memory and thread info), named for the process, its PID
-/// and the time (DumpMath::dumpFileName()). From a snapshot when @p source can take one, else from the
+/// and the time (DumpMath::dumpFileName()). A process of another architecture than TaskSmack's (an
+/// ARM64 one, from the x64 build on Windows on ARM) is refused before any file is made
+/// (DumpMath::dumpArchitecture()). From a snapshot when @p source can take one, else from the
 /// running process, with the reason in ProcessDump::liveReason. The file is deleted again on any
 /// failure, and when @p stopToken is requested before it is done.
 /// @param process  An open handle, already confirmed to be the target: with SNAPSHOT_PROCESS_ACCESS

@@ -169,11 +169,16 @@ BOOL CALLBACK dumpCallback(PVOID param, PMINIDUMP_CALLBACK_INPUT input, PMINIDUM
     return WinString::wideToUtf8(std::wstring_view(buffer.data(), size));
 }
 
-[[nodiscard]] bool isWow64(HANDLE process)
-{
-    BOOL wow64 = FALSE;
-    return IsWow64Process(process, &wow64) != 0 && wow64 != FALSE;
-}
+/// The machine this TaskSmack is built for: x64 or ARM64 only (the build is 64-bit only, #2152).
+#if defined(_M_ARM64EC)
+constexpr std::uint16_t SELF_MACHINE = DumpMath::MACHINE_ARM64EC;
+#elif defined(_M_ARM64) || defined(__aarch64__)
+constexpr std::uint16_t SELF_MACHINE = DumpMath::MACHINE_ARM64;
+#elif defined(_M_X64) || defined(__x86_64__)
+constexpr std::uint16_t SELF_MACHINE = DumpMath::MACHINE_AMD64;
+#else
+#error "TaskSmack is built for x64 or ARM64 only"
+#endif
 
 [[nodiscard]] DumpMath::DumpTime localTimeNow()
 {
@@ -230,6 +235,26 @@ bool isProtectedProcess(DWORD pid)
     return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
 }
 
+std::uint16_t processMachine(HANDLE process)
+{
+    // ProcessMachineTypeInfo (Windows 11 and later) tells an emulated x64 process from a native ARM64
+    // one; IsWow64Process2() can't (it says neither is WOW64), so it is only the fallback, for Windows 10.
+    // Zero-filled for GetProcessInformation() to fill in; MACHINE_ATTRIBUTES has no zero enumerator, but
+    // "no attributes" is what Windows itself writes there.
+    PROCESS_MACHINE_INFORMATION info{}; // NOLINT(bugprone-invalid-enum-default-initialization)
+    const std::uint16_t machineTypeInfo = (GetProcessInformation(process, ProcessMachineTypeInfo, &info, sizeof(info)) != 0)
+                                            ? info.ProcessMachine
+                                            : DumpMath::MACHINE_UNKNOWN;
+    USHORT wow64Machine = IMAGE_FILE_MACHINE_UNKNOWN;
+    USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    if (machineTypeInfo == DumpMath::MACHINE_UNKNOWN && IsWow64Process2(process, &wow64Machine, &nativeMachine) == 0)
+    {
+        wow64Machine = IMAGE_FILE_MACHINE_UNKNOWN;
+        nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    }
+    return DumpMath::processMachine(machineTypeInfo, wow64Machine, nativeMachine);
+}
+
 ProcessDumpResult writeProcessDump(
     HANDLE process, std::int32_t pid, const std::filesystem::path& directory, const std::stop_token& stopToken, const DumpSource& source)
 {
@@ -237,12 +262,18 @@ ProcessDumpResult writeProcessDump(
     {
         return std::unexpected(std::string("No folder was given to write the dump file in"));
     }
-    const DumpMath::DumpBitness bitness = DumpMath::dumpBitness(isWow64(GetCurrentProcess()), isWow64(process));
-    if (bitness == DumpMath::DumpBitness::NativeTargetOfWow64)
+    // dbghelp writes a usable dump only of a process of its own architecture, or of one of its WOW64
+    // guests: an x64 TaskSmack emulated on Windows on ARM can't dump a native ARM64 process (#2152).
+    const std::uint16_t targetMachine = (source.processMachine != nullptr) ? source.processMachine(process) : processMachine(process);
+    const DumpMath::DumpArchitecture architecture = DumpMath::dumpArchitecture(SELF_MACHINE, targetMachine);
+    if (architecture == DumpMath::DumpArchitecture::Unsupported)
     {
-        return std::unexpected(DumpMath::nativeTargetOfWow64Message(pid));
+        std::string message = DumpMath::unsupportedArchitectureMessage(pid, SELF_MACHINE, targetMachine);
+        spdlog::warn("Dump of PID {}: {}", pid, message);
+        return std::unexpected(std::move(message));
     }
-    const std::string note = (bitness == DumpMath::DumpBitness::Wow64Target) ? std::string(DumpMath::WOW64_DUMP_NOTE) : std::string{};
+    const std::string note =
+        (architecture == DumpMath::DumpArchitecture::Wow64Target) ? DumpMath::wow64DumpNote(targetMachine) : std::string{};
 
     const MiniDumpWriteDumpFn writeDump = miniDumpWriteDump();
     if (writeDump == nullptr)

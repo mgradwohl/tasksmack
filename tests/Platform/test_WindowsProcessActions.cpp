@@ -14,6 +14,7 @@
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessDump.h"
+#include "Platform/Windows/WindowsProcessDumpMath.h"
 
 #include <gtest/gtest.h>
 
@@ -1071,6 +1072,58 @@ TEST(WindowsProcessDumpTest, AFailedSnapshotFallsBackToALiveDumpAndSaysWhy)
     ASSERT_TRUE(live.has_value()) << live.error();
     EXPECT_FALSE(live->fromSnapshot);
     EXPECT_FALSE(live->liveReason.empty());
+}
+
+namespace
+{
+/// processMachine() standing in for a native ARM64 process's, as the x64 build sees one on Windows on ARM.
+std::uint16_t arm64Machine(HANDLE /*process*/)
+{
+    return DumpMath::MACHINE_ARM64;
+}
+/// processMachine() standing in for a 32-bit x86 (WOW64) process's.
+std::uint16_t x86Machine(HANDLE /*process*/)
+{
+    return DumpMath::MACHINE_I386;
+}
+} // namespace
+
+TEST(WindowsProcessDumpTest, AProcessOfAnotherArchitectureIsRefusedBeforeAnyFileIsMade)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    const std::int32_t pid = child.target().pid;
+    const Windows::UniqueHandle process(OpenProcess(Windows::DUMP_PROCESS_ACCESS, FALSE, static_cast<DWORD>(pid)));
+    ASSERT_TRUE(process);
+
+    // The real reader: this test and its ping child are the same architecture as the build.
+#if defined(_M_ARM64) || defined(__aarch64__)
+    constexpr std::uint16_t BUILT_FOR = DumpMath::MACHINE_ARM64;
+#else
+    constexpr std::uint16_t BUILT_FOR = DumpMath::MACHINE_AMD64;
+#endif
+    EXPECT_EQ(Windows::processMachine(GetCurrentProcess()), BUILT_FOR);
+    EXPECT_EQ(Windows::processMachine(process.get()), BUILT_FOR);
+    const Windows::UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
+    ASSERT_TRUE(waitOnly);
+    EXPECT_EQ(Windows::processMachine(waitOnly.get()), DumpMath::MACHINE_UNKNOWN); // no query access: unread
+
+    // A process of another architecture: refused, saying why, and nothing is written.
+    const Windows::DumpSource arm64{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = &arm64Machine};
+    const Windows::DumpSource x86{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = &x86Machine};
+    if constexpr (BUILT_FOR == DumpMath::MACHINE_AMD64)
+    {
+        const ProcessDumpResult refused = Windows::writeProcessDump(process.get(), pid, folder.path(), std::stop_token{}, arm64);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_TRUE(refused.error().contains("is an ARM64 process, and this TaskSmack is an x64 build")) << refused.error();
+        EXPECT_TRUE(folder.empty());
+    }
+
+    // A 32-bit (WOW64) process: dumped, with the note on reading it in WinDbg.
+    const ProcessDumpResult noted = Windows::writeProcessDump(process.get(), pid, folder.path(), std::stop_token{}, x86);
+    ASSERT_TRUE(noted.has_value()) << noted.error();
+    EXPECT_TRUE(noted->note.contains(".effmach x86")) << noted->note;
 }
 
 TEST(WindowsProcessDumpTest, DumpSpaceReadsTheFolderAndTheChildsPrivateBytes)
