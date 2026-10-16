@@ -27,7 +27,7 @@ param(
     [string]$NinjaVersion = "1.13.2",
     [string]$CcacheVersion = "4.14",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
-    # (the winget --id, Resolve-Python's install-path probing, and Invoke-Python's log text)
+    # (the winget --id, Resolve-Python's install-path probing, and Initialize-Venv's log text)
     # derives from it instead of hardcoding "3.14"/"314" a second time, so a version bump can't
     # desync the winget package ID from the paths this script searches for afterward.
     [string]$PythonVersion = "3.14"
@@ -35,6 +35,30 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "common.ps1")
+
+# The project-local Python environment, as tools/setup-dev.sh creates on Linux. Windows venvs keep
+# the interpreter in Scripts\ (Linux: bin/); cmake/Dependencies.cmake picks it up from there.
+$VenvDir = Join-Path $RepoRoot ".venv"
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+
+# The presets and CI build with one LLVM major (the clang-format rev pinned in .pre-commit-config.yaml);
+# reject any other, as setup-dev.sh's --llvm guard does.
+$SupportedLlvmMajor = Get-PinnedLlvmMajor
+$requestedLlvmMajor = if ($LlvmVersion -match '^(\d+)') { [int]$Matches[1] } else { $null }
+if ($SupportedLlvmMajor -and $requestedLlvmMajor -ne $SupportedLlvmMajor) {
+    throw "TaskSmack presets currently require LLVM $SupportedLlvmMajor; received -LlvmVersion $LlvmVersion."
+}
+
+# winget exit codes (https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md)
+# that mean the package is already there, so a re-run of this script doesn't throw on them:
+#   0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE      -- installed, no applicable upgrade
+#   0x8A150061 APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED  -- package is already installed
+# PowerShell reads these hex literals as the same negative Int32 values $LASTEXITCODE carries.
+$WinGetAlreadyInstalledCodes = @(0x8A15002B, 0x8A150061)
+# 0x8A15010D APPINSTALLER_CLI_ERROR_INSTALL_ALREADY_INSTALLED -- another version is already installed.
+# Not fatal, but the installed version is not the pinned one; check-prereqs.ps1 reports which it is.
+$WinGetOtherVersionInstalledCode = 0x8A15010D
 
 function Invoke-WinGet {
     param(
@@ -43,12 +67,24 @@ function Invoke-WinGet {
     )
     if ($DryRun) {
         Write-Host "[dry-run] winget $($Arguments -join ' ')"
-    } else {
-        winget @Arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "winget failed with exit code ${LASTEXITCODE}: winget $($Arguments -join ' ')"
-        }
+        return
     }
+
+    winget @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return
+    }
+    $hexCode = '0x{0:X8}' -f $exitCode
+    if ($WinGetAlreadyInstalledCodes -contains $exitCode) {
+        Write-Host "  Already installed (winget $hexCode); continuing."
+        return
+    }
+    if ($exitCode -eq $WinGetOtherVersionInstalledCode) {
+        Write-Warning "winget $hexCode`: another version is already installed (winget $($Arguments -join ' ')). Continuing; run pwsh tools/check-prereqs.ps1 to see which version is in use."
+        return
+    }
+    throw "winget failed with exit code $hexCode ($exitCode): winget $($Arguments -join ' ')"
 }
 
 function Resolve-Python {
@@ -71,20 +107,48 @@ function Resolve-Python {
     throw "Python $PythonVersion was installed but its executable could not be located. Restart the terminal and rerun this script."
 }
 
-function Invoke-Python {
+# Run the project venv's Python.
+function Invoke-VenvPython {
     param(
         [Parameter(Position = 0, ValueFromRemainingArguments)]
         [string[]]$Arguments
     )
     if ($DryRun) {
-        Write-Host "[dry-run] python$PythonVersion $($Arguments -join ' ')"
+        Write-Host "[dry-run] $VenvPython $($Arguments -join ' ')"
         return
     }
 
-    & $script:PythonExecutable @Arguments
+    & $VenvPython @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Python failed with exit code ${LASTEXITCODE}: python$PythonVersion $($Arguments -join ' ')"
+        throw "Python failed with exit code ${LASTEXITCODE}: $VenvPython $($Arguments -join ' ')"
     }
+}
+
+# Create .venv with the installed Python $PythonVersion, unless a Windows venv is already there.
+function Initialize-Venv {
+    if (Test-Path -LiteralPath $VenvPython) {
+        Write-Host "  Using existing virtual environment: $VenvDir"
+        return
+    }
+    if (Test-Path -LiteralPath $VenvDir) {
+        # Most likely a Linux venv (.venv/bin/python) from WSL in the same checkout. Recreating it
+        # in place would break it for Linux, so leave the choice to the developer.
+        if ($DryRun) {
+            Write-Warning "$VenvDir exists but has no Scripts\python.exe (a Linux venv from WSL?); a real run would stop here."
+            return
+        }
+        throw "$VenvDir exists but has no Scripts\python.exe (a Linux venv from WSL?). Remove or rename it, then rerun this script."
+    }
+    if ($DryRun) {
+        Write-Host "[dry-run] python$PythonVersion -m venv $VenvDir"
+        return
+    }
+
+    & $script:PythonExecutable -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "Creating the virtual environment failed with exit code ${LASTEXITCODE}: $script:PythonExecutable -m venv $VenvDir"
+    }
+    Write-Host "  Created virtual environment: $VenvDir"
 }
 
 Write-Host "=== TaskSmack Dev Setup (Windows) ==="
@@ -148,16 +212,22 @@ Write-Host ""
 Write-Host "==> Installing ccache $CcacheVersion..."
 Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
-# ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
+# ── Step 4: Project venv + jinja2 for GLAD ──────────────────────────────────
+# Into .venv, not the global Python, as setup-dev.sh does on Linux.
+Write-Host ""
+Write-Host "==> Creating the project Python environment (.venv)..."
+Initialize-Venv
+Invoke-VenvPython @("-m", "pip", "install", "--upgrade", "pip")
+
 Write-Host ""
 Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
-Invoke-Python @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.txt"))
+Invoke-VenvPython @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.txt"))
 
 if (-not $Minimal) {
     # ── Step 5: Development Python dependencies ─────────────────────────────
     Write-Host ""
     Write-Host "==> Installing development Python dependencies..."
-    Invoke-Python @("-m", "pip", "install", "-r", (Join-Path $RepoRoot "requirements.txt"))
+    Invoke-VenvPython @("-m", "pip", "install", "-r", (Join-Path $RepoRoot "requirements.txt"))
 }
 
 Write-Host ""
@@ -166,9 +236,10 @@ Write-Host ""
 Write-Host "IMPORTANT: Restart your terminal (or log out/in) for PATH changes to take effect."
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Verify environment:  pwsh tools/check-prereqs.ps1"
-Write-Host "  2. Configure project:   cmake --preset win-debug"
-Write-Host "  3. Build:               cmake --build --preset win-debug"
-Write-Host "  4. Run tests:           ctest --preset win-debug"
+Write-Host "  1. Activate Python:     .venv\Scripts\Activate.ps1"
+Write-Host "  2. Verify environment:  pwsh tools/check-prereqs.ps1"
+Write-Host "  3. Configure project:   cmake --preset win-debug"
+Write-Host "  4. Build:               cmake --build --preset win-debug"
+Write-Host "  5. Run tests:           ctest --preset win-debug"
 Write-Host ""
 Write-Host "For full documentation see CONTRIBUTING.md"

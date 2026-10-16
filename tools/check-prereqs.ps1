@@ -2,12 +2,17 @@
 .SYNOPSIS
     Check Prerequisites Script for Windows.
 .DESCRIPTION
-    Displays all required tools, their paths, versions, and status.
+    Displays all required tools, their paths, versions, and status. The compiler rows report the
+    LLVM the win-* presets build with ($env:LLVM_ROOT\bin), and the Python rows the interpreter
+    CMake uses (the project .venv when it exists).
 .EXAMPLE
     .\check-prereqs.ps1
 #>
 [CmdletBinding()]
 param()
+
+. (Join-Path $PSScriptRoot "common.ps1")
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
@@ -16,7 +21,12 @@ $MIN_CCACHE_VERSION = [Version]"4.9.1"
 $MIN_PYTHON_VERSION = [Version]"3.14"
 $MIN_GIT_VERSION = [Version]"2.30"
 
-# Helper function to print status
+# The LLVM major CI builds and formats with (the clang-format rev in .pre-commit-config.yaml). A newer
+# major still builds, but can warn, format or report clang-tidy findings differently from CI, and
+# tools/pgo.ps1 requires it exactly; those rows get a warning instead of a pass.
+$PinnedLlvmMajor = Get-PinnedLlvmMajor
+
+# Helper function to print status. Status is "ok", "warn" (usable, but see the note) or "fail".
 function Write-Status {
     param(
         [string]$Name,
@@ -34,6 +44,11 @@ function Write-Status {
         Write-Host "✓ " -ForegroundColor Green -NoNewline
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Green -NoNewline
+    }
+    elseif ($Status -eq "warn") {
+        Write-Host "! " -ForegroundColor Yellow -NoNewline
+        Write-Host $nameFormatted -NoNewline
+        Write-Host $versionFormatted -ForegroundColor Yellow -NoNewline
     }
     else {
         Write-Host "✗ " -ForegroundColor Red -NoNewline
@@ -62,28 +77,69 @@ function Get-ToolPath {
     return $null
 }
 
-# Get clang version
-function Get-ClangVersion {
+# Run a tool and return the first capture group of Pattern in its output, or $null.
+function Get-ToolVersion {
+    param(
+        [string]$Path,
+        [string]$Pattern,
+        [string[]]$Arguments = @('--version')
+    )
+    if (-not $Path) { return $null }
     try {
-        $output = (& clang --version 2>&1) | Out-String
-        if ($output -match 'clang version (\d+)') {
-            return [int]$Matches[1]
+        $output = (& $Path @Arguments 2>&1) | Out-String
+        if ($output -match $Pattern) {
+            return $Matches[1]
         }
     }
     catch {}
     return $null
 }
 
-# Get clangd version
-function Get-ClangdVersion {
-    try {
-        $output = (& clangd --version 2>&1) | Out-String
-        if ($output -match 'clangd version (\d+)') {
-            return [int]$Matches[1]
-        }
+# The win-* presets set CMAKE_C(XX)_COMPILER to $env:LLVM_ROOT/bin/clang(++).exe (CMakePresets.json,
+# windows-base), and clang links with the lld-link beside it. With LLVM_ROOT set, report that tool
+# and nothing else: an LLVM elsewhere on PATH is not what the build uses. Without LLVM_ROOT the
+# presets can't configure (the Environment Variables section fails); report what Find-LlvmTool
+# finds, so the row shows which install LLVM_ROOT should point at.
+function Get-PresetLlvmToolPath {
+    param([string]$Name)
+    if ($env:LLVM_ROOT) {
+        $candidate = Join-Path $env:LLVM_ROOT "bin\$Name.exe"
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+        return $null
     }
-    catch {}
-    return $null
+    return Find-LlvmTool -Name $Name
+}
+
+# What a missing preset tool's row shows: where the presets look for it.
+function Get-PresetLlvmToolHint {
+    param([string]$Name)
+    if ($env:LLVM_ROOT) { return "(not found: $(Join-Path $env:LLVM_ROOT "bin\$Name.exe"))" }
+    return "(set LLVM_ROOT to your LLVM install)"
+}
+
+# Print an LLVM tool's row: ok at the pinned major, warn at another major >= the minimum, fail below
+# it or when missing. Returns $false only on fail.
+$script:LlvmSkewSeen = $false
+function Write-LlvmToolStatus {
+    param(
+        [string]$Name,
+        [string]$Path,
+        [string]$Major,
+        [string]$MissingHint
+    )
+    if ($Major -and [int]$Major -ge $MIN_CLANG_VERSION) {
+        if ($PinnedLlvmMajor -and [int]$Major -ne $PinnedLlvmMajor) {
+            Write-Status -Name $Name -Status "warn" -Version $Major -Path $Path -Required $MIN_CLANG_VERSION
+            $script:LlvmSkewSeen = $true
+        }
+        else {
+            Write-Status -Name $Name -Status "ok" -Version $Major -Path $Path -Required $MIN_CLANG_VERSION
+        }
+        return $true
+    }
+    $shownPath = if ($Path) { $Path } else { $MissingHint }
+    Write-Status -Name $Name -Status "fail" -Version $Major -Path $shownPath -Required $MIN_CLANG_VERSION
+    return $false
 }
 
 # Get cmake version
@@ -115,73 +171,6 @@ function Get-NinjaVersion {
     try {
         $output = (& ninja --version 2>&1) | Out-String
         return $output.Trim()
-    }
-    catch {}
-    return $null
-}
-
-# Get lld version
-function Get-LLDVersion {
-    try {
-        $output = (& lld-link --version 2>&1) | Out-String
-        if ($output -match 'LLD (\d+\.\d+)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    try {
-        $output = (& ld.lld --version 2>&1) | Out-String
-        if ($output -match 'LLD (\d+\.\d+)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    return $null
-}
-
-# Get clang-tidy version
-function Get-ClangTidyVersion {
-    try {
-        $output = (& clang-tidy --version 2>&1) | Out-String
-        if ($output -match 'LLVM version (\d+)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    return $null
-}
-
-# Get clang-format version
-function Get-ClangFormatVersion {
-    try {
-        $output = (& clang-format --version 2>&1) | Out-String
-        if ($output -match 'clang-format version (\d+)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    return $null
-}
-
-# Get llvm-profdata version
-function Get-LLVMProfdataVersion {
-    try {
-        $output = (& llvm-profdata show --version 2>&1) | Out-String
-        if ($output -match 'LLVM version (\d+)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    return $null
-}
-
-# Get llvm-cov version
-function Get-LLVMCovVersion {
-    try {
-        $output = (& llvm-cov --version 2>&1) | Out-String
-        if ($output -match 'LLVM version (\d+)') {
-            return $Matches[1]
-        }
     }
     catch {}
     return $null
@@ -246,72 +235,50 @@ function Get-GitVersion {
     return $null
 }
 
-# Get working Python 3 command (handles Windows Store alias issues)
-function Get-WorkingPythonCommand {
-    # Try python3 first - but verify it actually works (Windows Store alias might fail)
-    try {
-        $result = & python3 --version 2>&1
-        if ($LASTEXITCODE -eq 0 -and $result -match 'Python 3\.') {
-            return "python3"
-        }
+# The Python CMake configures with. cmake/Dependencies.cmake uses the project venv
+# (.venv\Scripts\python.exe) whenever it exists; otherwise find_package(Python3 3.14) picks an
+# installed Python >= 3.14. Tried in order: the venv, py -<min>, python, python3 -- each verified to
+# run (the Windows Store "python" alias exits non-zero). Returns the venv regardless of its version
+# (it is what CMake uses), else the first candidate >= the minimum, else the first working Python 3,
+# so its version can be reported. Returns @{ Exe; Args; Version; Path } or $null.
+function Get-PythonInfo {
+    $pyVersionArg = "-$($MIN_PYTHON_VERSION.Major).$($MIN_PYTHON_VERSION.Minor)"
+    $candidates = @()
+    $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPython) {
+        $candidates += , @{ Exe = $venvPython; Args = @() }
     }
-    catch {}
-    # Fall back to python (might be Python 3 on Windows)
-    try {
-        $result = & python --version 2>&1
-        if ($LASTEXITCODE -eq 0 -and $result -match 'Python 3\.') {
-            return "python"
-        }
+    if (Get-ToolPath "py") {
+        $candidates += , @{ Exe = "py"; Args = @($pyVersionArg) }
     }
-    catch {}
-    return $null
+    $candidates += , @{ Exe = "python"; Args = @() }
+    $candidates += , @{ Exe = "python3"; Args = @() }
+
+    $firstWorking = $null
+    foreach ($candidate in $candidates) {
+        try {
+            $output = (& $candidate.Exe @($candidate.Args + @('-c', 'import sys, platform; print(platform.python_version()); print(sys.executable)')) 2>&1) | Out-String
+        }
+        catch { continue }
+        # platform.python_version() can carry a suffix (3.15.0a1); [Version] takes only the numbers.
+        if ($LASTEXITCODE -ne 0 -or $output -notmatch '(?m)^(?<ver>3\.\d+(?:\.\d+)?)\S*\s*\r?\n(?<path>.+)$') { continue }
+        $info = @{ Exe = $candidate.Exe; Args = $candidate.Args; Version = $Matches['ver']; Path = $Matches['path'].Trim() }
+        if ($candidate.Exe -eq $venvPython -or [Version]$info.Version -ge $MIN_PYTHON_VERSION) {
+            return $info
+        }
+        if (-not $firstWorking) { $firstWorking = $info }
+    }
+    return $firstWorking
 }
 
-# Get Python 3 version
-function Get-Python3Version {
-    $pythonCmd = Get-WorkingPythonCommand
-    if (-not $pythonCmd) { return $null }
-    try {
-        $output = (& $pythonCmd --version 2>&1) | Out-String
-        if ($output -match 'Python (\d+\.\d+(\.\d+)?)') {
-            return $Matches[1]
-        }
-    }
-    catch {}
-    return $null
-}
-
-# Check if jinja2 Python module is installed
-function Test-Jinja2Installed {
-    $pythonCmd = Get-WorkingPythonCommand
-    if (-not $pythonCmd) { return $false }
-    try {
-        # Try importing jinja2 - this works for both system and user site-packages
-        $result = & $pythonCmd -c "import jinja2; print(jinja2.__version__)" 2>&1
-        if ($LASTEXITCODE -eq 0 -and $result -match '^\d+\.') {
-            return $true
-        }
-    }
-    catch {}
-    # Fallback: check pip show (handles user installs)
-    try {
-        $result = & $pythonCmd -m pip show jinja2 2>&1
-        if ($LASTEXITCODE -eq 0 -and $result -match 'Name: Jinja2') {
-            return $true
-        }
-    }
-    catch {}
-    return $false
-}
-
-# Get jinja2 version for display
+# jinja2's version for the given Python, or $null if it can't import it.
 function Get-Jinja2Version {
-    $pythonCmd = Get-WorkingPythonCommand
-    if (-not $pythonCmd) { return $null }
+    param($PythonInfo)
+    if (-not $PythonInfo) { return $null }
     try {
-        $result = & $pythonCmd -c "import jinja2; print(jinja2.__version__)" 2>&1
-        if ($LASTEXITCODE -eq 0 -and $result -match '^\d+\.') {
-            return $result.Trim()
+        $result = & $PythonInfo.Exe @($PythonInfo.Args + @('-c', 'import jinja2; print(jinja2.__version__)')) 2>&1
+        if ($LASTEXITCODE -eq 0 -and "$result" -match '^\d+\.') {
+            return "$result".Trim()
         }
     }
     catch {}
@@ -328,36 +295,21 @@ Write-Host "Tool           Version      Required     Path" -ForegroundColor Whit
 Write-Host "──────────────────────────────────────────────────────────────────────────"
 
 $AllOK = $true
+$clangVersionPattern = 'clang version (\d+)'
 
-# Check Clang
-$clangVer = Get-ClangVersion
-$clangPath = Get-ToolPath "clang"
-if ($clangVer -and $clangVer -ge $MIN_CLANG_VERSION) {
-    Write-Status -Name "clang" -Status "ok" -Version $clangVer -Path $clangPath -Required $MIN_CLANG_VERSION
+# Check clang and clang++ -- the compilers the win-* presets use
+$clangPath = Get-PresetLlvmToolPath "clang"
+if (-not (Write-LlvmToolStatus -Name "clang" -Path $clangPath -MissingHint (Get-PresetLlvmToolHint "clang") -Major (Get-ToolVersion -Path $clangPath -Pattern $clangVersionPattern))) {
+    $AllOK = $false
 }
-else {
-    Write-Status -Name "clang" -Status "fail" -Version $clangVer -Path $clangPath -Required $MIN_CLANG_VERSION
+$clangppPath = Get-PresetLlvmToolPath "clang++"
+if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (Get-PresetLlvmToolHint "clang++") -Major (Get-ToolVersion -Path $clangppPath -Pattern $clangVersionPattern))) {
     $AllOK = $false
 }
 
-# Check Clang++
-$clangppPath = Get-ToolPath "clang++"
-if ($clangVer -and $clangVer -ge $MIN_CLANG_VERSION) {
-    Write-Status -Name "clang++" -Status "ok" -Version $clangVer -Path $clangppPath -Required $MIN_CLANG_VERSION
-}
-else {
-    Write-Status -Name "clang++" -Status "fail" -Version $clangVer -Path $clangppPath -Required $MIN_CLANG_VERSION
-    $AllOK = $false
-}
-
-# Check clangd (required for VS Code workspace defaults)
-$clangdVer = Get-ClangdVersion
+# Check clangd (required for VS Code workspace defaults, which resolve it from PATH)
 $clangdPath = Get-ToolPath "clangd"
-if ($clangdVer -and $clangdVer -ge $MIN_CLANG_VERSION) {
-    Write-Status -Name "clangd" -Status "ok" -Version $clangdVer -Path $clangdPath -Required $MIN_CLANG_VERSION
-}
-else {
-    Write-Status -Name "clangd" -Status "fail" -Version $clangdVer -Path $clangdPath -Required $MIN_CLANG_VERSION
+if (-not (Write-LlvmToolStatus -Name "clangd" -Path $clangdPath -Major (Get-ToolVersion -Path $clangdPath -Pattern 'clangd version (\d+)'))) {
     $AllOK = $false
 }
 
@@ -383,72 +335,40 @@ else {
     $AllOK = $false
 }
 
-# Check lld
-$lldVer = Get-LLDVersion
-$lldPath = Get-ToolPath "lld-link"
-if (-not $lldPath) { $lldPath = Get-ToolPath "ld.lld" }
-if ($lldVer) {
-    Write-Status -Name "lld" -Status "ok" -Version $lldVer -Path $lldPath -Required ""
-}
-else {
-    Write-Status -Name "lld" -Status "fail" -Version $null -Path $lldPath -Required ""
+# Check lld -- the lld-link beside the presets' clang++
+$lldPath = Get-PresetLlvmToolPath "lld-link"
+if (-not (Write-LlvmToolStatus -Name "lld" -Path $lldPath -MissingHint (Get-PresetLlvmToolHint "lld-link") -Major (Get-ToolVersion -Path $lldPath -Pattern 'LLD (\d+)'))) {
     $AllOK = $false
 }
 
-# Check ccache
+# Check ccache (recommended, not required: CONTRIBUTING.md lists it as "optional but recommended",
+# and cmake/CompilerOptions.cmake only warns when neither ccache nor sccache is found)
 $ccacheVer = Get-CcacheVersion
 $ccachePath = Get-ToolPath "ccache"
 if ($ccacheVer -and $ccacheVer -ge $MIN_CCACHE_VERSION) {
     Write-Status -Name "ccache" -Status "ok" -Version $ccacheVer -Path $ccachePath -Required $MIN_CCACHE_VERSION
 }
 else {
-    Write-Status -Name "ccache" -Status "fail" -Version $ccacheVer -Path $ccachePath -Required $MIN_CCACHE_VERSION
+    Write-Status -Name "ccache" -Status "warn" -Version $ccacheVer -Path "(recommended for faster rebuilds)" -Required $MIN_CCACHE_VERSION
+}
+
+# Check clang-tidy -- found as tools/clang-tidy.ps1 finds it (LLVM_ROOT first)
+$tidyPath = Find-LlvmTool -Name "clang-tidy"
+if (-not (Write-LlvmToolStatus -Name "clang-tidy" -Path $tidyPath -Major (Get-ToolVersion -Path $tidyPath -Pattern 'LLVM version (\d+)'))) {
     $AllOK = $false
 }
 
-# Check clang-tidy
-$tidyVer = Get-ClangTidyVersion
-$tidyPath = Get-ToolPath "clang-tidy"
-if ($tidyVer -and [int]$tidyVer -ge $MIN_CLANG_VERSION) {
-    Write-Status -Name "clang-tidy" -Status "ok" -Version $tidyVer -Path $tidyPath -Required $MIN_CLANG_VERSION
-}
-else {
-    Write-Status -Name "clang-tidy" -Status "fail" -Version $tidyVer -Path $tidyPath -Required $MIN_CLANG_VERSION
-    $AllOK = $false
-}
-
-# Check clang-format
-$formatVer = Get-ClangFormatVersion
+# Check clang-format (VS Code's workspace settings resolve it from PATH)
 $formatPath = Get-ToolPath "clang-format"
-if ($formatVer -and [int]$formatVer -ge $MIN_CLANG_VERSION) {
-    Write-Status -Name "clang-format" -Status "ok" -Version $formatVer -Path $formatPath -Required $MIN_CLANG_VERSION
-}
-else {
-    Write-Status -Name "clang-format" -Status "fail" -Version $formatVer -Path $formatPath -Required $MIN_CLANG_VERSION
+if (-not (Write-LlvmToolStatus -Name "clang-format" -Path $formatPath -Major (Get-ToolVersion -Path $formatPath -Pattern 'clang-format version (\d+)'))) {
     $AllOK = $false
 }
 
-# Check llvm-profdata (optional)
-$profdataVer = Get-LLVMProfdataVersion
-$profdataPath = Get-ToolPath "llvm-profdata"
-if ($profdataVer) {
-    Write-Status -Name "llvm-profdata" -Status "ok" -Version $profdataVer -Path $profdataPath -Required ""
-}
-else {
-    Write-Status -Name "llvm-profdata" -Status "fail" -Version $null -Path $profdataPath -Required ""
-    # Don't fail for optional coverage tools
-}
-
-# Check llvm-cov (optional)
-$covVer = Get-LLVMCovVersion
-$covPath = Get-ToolPath "llvm-cov"
-if ($covVer) {
-    Write-Status -Name "llvm-cov" -Status "ok" -Version $covVer -Path $covPath -Required ""
-}
-else {
-    Write-Status -Name "llvm-cov" -Status "fail" -Version $null -Path $covPath -Required ""
-    # Don't fail for optional coverage tools
-}
+# Check llvm-profdata and llvm-cov (optional, coverage/PGO) -- found as tools/coverage.ps1 finds them
+$profdataPath = Find-LlvmTool -Name "llvm-profdata"
+$null = Write-LlvmToolStatus -Name "llvm-profdata" -Path $profdataPath -Major (Get-ToolVersion -Path $profdataPath -Pattern 'LLVM version (\d+)' -Arguments @('show', '--version'))
+$covPath = Find-LlvmTool -Name "llvm-cov"
+$null = Write-LlvmToolStatus -Name "llvm-cov" -Path $covPath -Major (Get-ToolVersion -Path $covPath -Pattern 'LLVM version (\d+)')
 
 # Optional Windows profiling tools
 $wprPath = Get-ToolPath "wpr"
@@ -483,10 +403,12 @@ else {
     Write-Status -Name "wpaexporter" -Status "fail" -Version $null -Path $wpaExporterPath -Required ""
 }
 
-# Check Python 3 (required for GLAD OpenGL loader generation)
-$python3Ver = Get-Python3Version
-$pythonCmd = Get-WorkingPythonCommand
-$python3Path = if ($pythonCmd) { Get-ToolPath $pythonCmd } else { $null }
+# Check Python 3 (required for GLAD OpenGL loader generation) -- the interpreter CMake will use
+$venvDir = Join-Path $RepoRoot ".venv"
+$hasVenv = Test-Path -LiteralPath (Join-Path $venvDir "Scripts\python.exe")
+$pythonInfo = Get-PythonInfo
+$python3Ver = if ($pythonInfo) { $pythonInfo.Version } else { $null }
+$python3Path = if ($pythonInfo) { $pythonInfo.Path } else { $null }
 if ($python3Ver -and [Version]$python3Ver -ge $MIN_PYTHON_VERSION) {
     Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required $MIN_PYTHON_VERSION
 }
@@ -495,15 +417,28 @@ else {
     $AllOK = $false
 }
 
-# Check jinja2 Python module (required for GLAD)
-$jinja2Installed = Test-Jinja2Installed
-$jinja2Ver = Get-Jinja2Version
-if ($jinja2Installed) {
-    $jinja2Display = if ($jinja2Ver) { $jinja2Ver } else { "installed" }
-    Write-Status -Name "jinja2" -Status "ok" -Version $jinja2Display -Path "(python module)" -Required ""
+# The project venv (.venv), which tools/setup-dev.ps1 creates and CMake prefers. Not required:
+# without it CMake falls back to an installed Python 3.14.
+if ($hasVenv) {
+    Write-Status -Name "venv" -Status "ok" -Version "present" -Path $venvDir -Required ""
 }
 else {
-    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(python -m pip install --require-hashes -r requirements-glad.txt)" -Required ""
+    Write-Status -Name "venv" -Status "warn" -Version "missing" -Path "(pwsh tools/setup-dev.ps1 creates .venv)" -Required ""
+}
+
+# Check jinja2 Python module (required for GLAD), in the Python CMake will use
+$jinja2Ver = Get-Jinja2Version -PythonInfo $pythonInfo
+if ($jinja2Ver) {
+    Write-Status -Name "jinja2" -Status "ok" -Version $jinja2Ver -Path "(python module)" -Required ""
+}
+else {
+    $jinja2Hint = if ($hasVenv) {
+        "(.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-glad.txt)"
+    }
+    else {
+        "(pwsh tools/setup-dev.ps1, or python -m pip install --require-hashes -r requirements-glad.txt)"
+    }
+    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path $jinja2Hint -Required ""
     $AllOK = $false
 }
 
@@ -530,6 +465,16 @@ else {
 }
 
 Write-Host "──────────────────────────────────────────────────────────────────────────"
+if ($script:LlvmSkewSeen) {
+    Write-Host "! " -ForegroundColor Yellow -NoNewline
+    Write-Host "LLVM $PinnedLlvmMajor is the version CI pins (.pre-commit-config.yaml); rows marked ! are another major." -ForegroundColor Yellow
+    if ($clangppPath) {
+        Write-LlvmVersionSkewWarning -ToolPath $clangppPath -Name 'clang++'
+    }
+    if ($formatPath) {
+        Write-LlvmVersionSkewWarning -ToolPath $formatPath -Name 'clang-format'
+    }
+}
 Write-Host ""
 
 # Environment variables
@@ -547,15 +492,17 @@ else {
     Write-Host "(not set)" -ForegroundColor Yellow
 }
 
+# Required: the win-* presets derive the compiler paths from it (CMakePresets.json, windows-base).
 if ($env:LLVM_ROOT) {
     Write-Host "✓ " -ForegroundColor Green -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
     Write-Host $env:LLVM_ROOT -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "✗ " -ForegroundColor Red -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
-    Write-Host "(not set)" -ForegroundColor Yellow
+    Write-Host "(not set; the win-* presets need it -- set it to your LLVM $(if ($PinnedLlvmMajor) { $PinnedLlvmMajor } else { $MIN_CLANG_VERSION }) install, e.g. C:\Program Files\LLVM)" -ForegroundColor Red
+    $AllOK = $false
 }
 
 if ($env:CC) {

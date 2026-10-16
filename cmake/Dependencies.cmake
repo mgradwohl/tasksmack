@@ -194,11 +194,25 @@ unset(_tasksmack_restore_cmp0219_default)
 unset(_tasksmack_saved_cmp0219_default)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
-# Prefer the project-local environment created by tools/setup-dev.sh without
-# overriding the machine's system Python.
-if(NOT Python3_EXECUTABLE AND EXISTS "${CMAKE_SOURCE_DIR}/.venv/bin/python")
-    set(Python3_EXECUTABLE "${CMAKE_SOURCE_DIR}/.venv/bin/python" CACHE FILEPATH "Python interpreter")
+# Prefer the project-local environment created by tools/setup-dev.sh / tools/setup-dev.ps1
+# without overriding the machine's system Python. Windows venvs keep the interpreter in
+# Scripts\python.exe, Linux ones in bin/python; a checkout shared with WSL can hold the other
+# OS's layout, so look only for the host's.
+if(CMAKE_HOST_WIN32)
+    set(_tasksmack_venv_python "${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe")
+else()
+    set(_tasksmack_venv_python "${CMAKE_SOURCE_DIR}/.venv/bin/python")
 endif()
+if(NOT Python3_EXECUTABLE AND EXISTS "${_tasksmack_venv_python}")
+    set(Python3_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter")
+    # GLAD's glad_add_library() runs find_package(Python) and generates with Python_EXECUTABLE,
+    # not Python3_EXECUTABLE; point it at the venv too, so generation uses the interpreter the
+    # jinja2 check below verified.
+    if(NOT Python_EXECUTABLE)
+        set(Python_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter (GLAD)")
+    endif()
+endif()
+unset(_tasksmack_venv_python)
 
 # Early check for GLAD requirements (Python3 + jinja2)
 # GLAD generation uses jinja2 templates and fails with cryptic errors if not installed

@@ -42,6 +42,8 @@ $BenchBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmackBenchmarks.exe'
 $AppBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmack.exe'
 $UiTrainingBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmackUiTraining.exe'
 
+. (Join-Path $ScriptDir 'common.ps1')
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 function Write-Step([string]$message) {
@@ -241,6 +243,12 @@ function Invoke-Baseline {
 # ── main ──────────────────────────────────────────────────────────────────────
 
 $cmd = if ($args.Count -gt 0) { $args[0] } else { 'all' }
+
+# The win-pgo-* presets derive the compiler paths from LLVM_ROOT; set it from the installed LLVM when
+# it isn't, as coverage.ps1 does, instead of failing at configure with an empty compiler path.
+if ($cmd -in @('generate', 'merge', 'use', 'baseline', 'all')) {
+    Initialize-LlvmRoot
+}
 
 switch ($cmd) {
     'generate' { Invoke-Generate }

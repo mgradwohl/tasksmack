@@ -54,10 +54,11 @@ The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling wi
 
 ```powershell
 pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
+.venv\Scripts\Activate.ps1    # Use the project-local Python environment
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
 
-The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, ccache, GLAD's hash-locked build dependencies, and, unless `-Minimal` is used, the development dependencies from `requirements.txt`.
+The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), LLVM 22 (`-LlvmVersion` must stay on the pinned major), CMake, Ninja, Python 3.14 and ccache, then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it and, unless `-Minimal` is used, the development dependencies from `requirements.txt`. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and treats ccache as recommended, not required.
 
 ### One-Command Dev Workflow
 
@@ -173,7 +174,8 @@ Install Python + jinja2:
 
 ```powershell
 winget install Python.Python.3.14
-py -3.14 -m pip install --require-hashes -r requirements-glad.txt
+py -3.14 -m venv .venv
+.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-glad.txt
 ```
 
 ## Pre-commit Hooks (Recommended)
