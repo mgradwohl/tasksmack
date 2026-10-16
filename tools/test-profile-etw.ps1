@@ -42,6 +42,35 @@ $hostExe = (Get-Process -Id $PID).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-etw-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
+    # #2254: a capture claims its names before writing anything, so it never overwrites an earlier
+    # run's artifacts. The directory name holds [ ], which a wildcard-reading path API would misread.
+    $claimDir = Join-Path $root 'claim[1]'
+    $null = New-Item -ItemType Directory -Path $claimDir
+    $first = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    $firstPaths = Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-app' -Timestamp $first
+    Assert-True ($first -eq '20261016-101010') "First claim: $first"
+    Assert-True ((Test-Path -LiteralPath $firstPaths.Manifest) -and (Get-Item -LiteralPath $firstPaths.Manifest).Length -eq 0) 'The claim must create an empty manifest'
+    # The same second again (a fresh timestamp): -2, then -3, never the earlier names.
+    $second = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    $third = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    Assert-True ($second -eq '20261016-101010-2' -and $third -eq '20261016-101010-3') "Same-second claims: $second, $third"
+    # A run that failed before its manifest left other artifacts (a trace, a launcher log, a
+    # control directory): that name is taken too.
+    Set-Content -LiteralPath (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1').Trace -Value 'old' -Encoding ascii
+    Set-Content -LiteralPath (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-2').LauncherLog -Value 'old' -Encoding ascii
+    $null = New-Item -ItemType Directory -Path (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-3').Control
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1') -eq 't1-4') 'Names with leftover artifacts must be skipped'
+    # Prefixes are independent: an app run does not take a bench run's name.
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app-elevated' -Timestamp '20261016-101010') -eq '20261016-101010') 'Another prefix must not collide'
+    # An explicit -Timestamp fails rather than renaming, and leaves the earlier files alone.
+    Set-Content -LiteralPath $firstPaths.Manifest -Value '{ "Preset": "win-release" }' -Encoding utf8
+    Assert-Throws { Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010' -Exact } 'already wrote'
+    Assert-True ((Get-Content -LiteralPath $firstPaths.Manifest -Raw) -like '*win-release*') 'A refused claim must not touch the earlier manifest'
+    Assert-Throws { Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-2' -Exact } 'already wrote'
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp 'fresh' -Exact) -eq 'fresh') 'An unused explicit -Timestamp is claimed as given'
+    # A directory that does not exist is an error, not an endless search for a free name.
+    Assert-Throws { Request-CaptureTimestamp -Directory (Join-Path $root 'missing') -Prefix 'etw-app' -Timestamp 'x' } 'Could not find'
+
     $fakeLister = Join-Path $root 'lister.cmd'
     Set-Content -LiteralPath $fakeLister -Value "@echo BM_One`r`n@echo BM_Two`r`n@exit /b 0" -Encoding ascii
     $listed = Get-BenchmarkFilterMatches -BinaryPath $fakeLister -Filter 'BM_.*'
@@ -354,8 +383,17 @@ try {
     $run = Invoke-DryRun -App $runForever -Name 'ok' -DurationSeconds 2
     Assert-True ($run.ExitCode -eq 0 -and $run.Output -match '(?m)^DRY_RUN=ok') "A running app must succeed: $($run.Output)"
     Assert-True ($run.Output -match 'Preset: win-release') "The default app preset must be win-release and logged: $($run.Output)"
-    $okManifest = Get-Content -LiteralPath (Join-Path $root 'dry\etw-app-ok.manifest.json') -Raw | ConvertFrom-Json
+    $okManifestPath = Join-Path $root 'dry\etw-app-ok.manifest.json'
+    $okManifestText = Get-Content -LiteralPath $okManifestPath -Raw
+    $okManifest = $okManifestText | ConvertFrom-Json
     Assert-True ($okManifest.Preset -eq 'win-release' -and $null -eq $okManifest.Target.Failure) "Manifest: $($okManifest | ConvertTo-Json -Compress -Depth 5)"
+
+    # #2254: the same explicit -Timestamp again fails before launching anything, and leaves the
+    # earlier run's manifest as it was.
+    $run = Invoke-DryRun -App $runForever -Name 'ok' -DurationSeconds 2
+    Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*-Timestamp ok already wrote*') "A reused -Timestamp must fail: $($run.Output)"
+    Assert-True ($run.Output -notmatch '(?m)^DRY_RUN=') "A reused -Timestamp must not report success: $($run.Output)"
+    Assert-True ((Get-Content -LiteralPath $okManifestPath -Raw) -ceq $okManifestText) 'A reused -Timestamp overwrote the earlier manifest'
 
     $unlabelled = & $hostExe -NoProfile -File $profileScript app -Role ElevatedRun -SkipBuild -OutputDirectory $root 2>&1 | Out-String
     Assert-True ($LASTEXITCODE -ne 0 -and $unlabelled -like '*requires -ElevatedTarget*') "Expected the -ElevatedTarget refusal: $unlabelled"

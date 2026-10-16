@@ -270,6 +270,12 @@ exit [int]$env:STUB_EXIT
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary 'TaskSmackBenchmarks.cmd' -OutputDirectory $(& $quote (Join-Path $root 'bare-name')) '--benchmark_filter=BM_X'" }
         # #1445 review: a preset named after the user or the machine reaches no file name and no
         # manifest string (scenarios added below when the name has 3+ characters).
+        # #2254: TASKSMACK_BENCH_BIN / TASKSMACK_BENCH_OUT_DIR, as bench.sh reads them, stand in for
+        # -BenchmarkBinary / -OutputDirectory; an explicit parameter still wins.
+        @{ Name = 'env-overrides'; StubExit = '0'; StubOutput = 'full'
+            Command = "`$env:TASKSMACK_BENCH_BIN = $(& $quote $stub); `$env:TASKSMACK_BENCH_OUT_DIR = $(& $quote (Join-Path $root 'env-overrides')); try { & $(& $quote $benchScript) fake-preset '--benchmark_filter=BM_X' } finally { Remove-Item Env:TASKSMACK_BENCH_BIN, Env:TASKSMACK_BENCH_OUT_DIR }" }
+        @{ Name = 'env-param-wins'; StubExit = '0'; StubOutput = 'full'
+            Command = "`$env:TASKSMACK_BENCH_BIN = $(& $quote (Join-Path $root 'no-such-binary.cmd')); `$env:TASKSMACK_BENCH_OUT_DIR = $(& $quote (Join-Path $root 'env-ignored')); try { & $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'env-param-wins')) '--benchmark_filter=BM_X' } finally { Remove-Item Env:TASKSMACK_BENCH_BIN, Env:TASKSMACK_BENCH_OUT_DIR }" }
         # Self-review: `& bench.ps1 -- --benchmark_filter=...` with no preset, as documented; the
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
@@ -307,11 +313,17 @@ $outcomes = foreach ($scenario in (Get-Content -LiteralPath $Scenarios -Raw | Co
     $path = $env:PATH
     if ($scenario.PSObject.Properties['Cwd']) { Set-Location -LiteralPath $scenario.Cwd }
     if ($scenario.PSObject.Properties['PathFirst']) { $env:PATH = $scenario.PathFirst + [IO.Path]::PathSeparator + $path }
-    $threw = $false
-    try { $log = & ([scriptblock]::Create($scenario.Command)) *>&1 | Out-String }
-    catch { $threw = $true; $log = "$($_ | Out-String)" }
+    # A failure is either a terminating error the script throws (exit code 1 under pwsh -File) or
+    # the script's own exit code (#2254: the benchmark's, or 2 for a refused argument).
+    $global:LASTEXITCODE = 0
+    $exitCode = 0
+    try {
+        $log = & ([scriptblock]::Create($scenario.Command)) *>&1 | Out-String
+        $exitCode = $LASTEXITCODE
+    }
+    catch { $exitCode = 1; $log = "$($_ | Out-String)" }
     finally { Set-Location $here; $env:PATH = $path }
-    [pscustomobject]@{ Name = $scenario.Name; Threw = $threw; Log = $log }
+    [pscustomobject]@{ Name = $scenario.Name; ExitCode = $exitCode; Log = $log }
 }
 $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encoding utf8
 '@
@@ -352,7 +364,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $outcomes = @{}
     foreach ($outcome in (Get-Content -LiteralPath $scenarioResults -Raw -Encoding utf8 | ConvertFrom-Json)) {
         $files = Get-RunFiles (Join-Path $root $outcome.Name)
-        $outcomes[$outcome.Name] = [pscustomobject]@{ ExitCode = [int]$outcome.Threw; Log = $outcome.Log; Result = $files.Result; Manifest = $files.Manifest }
+        $outcomes[$outcome.Name] = [pscustomobject]@{ ExitCode = [int]$outcome.ExitCode; Log = $outcome.Log; Result = $files.Result; Manifest = $files.Manifest }
     }
     Assert-True ($outcomes.Count -eq $scenarios.Count) "The shared host ran $($outcomes.Count) of $($scenarios.Count) scenarios"
 
@@ -365,7 +377,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Result   = $failedFiles.Result
         Manifest = $failedFiles.Manifest
     }
-    Assert-True ($failed.ExitCode -ne 0) "bench.ps1 reported success for a benchmark that exited 3:`n$($failed.Log)"
+    # #2254: the benchmark's own exit code, as bench.sh exits with, not the 1 a throw gives.
+    Assert-True ($failed.ExitCode -eq 3) "bench.ps1 must exit with the benchmark's exit code 3, not $($failed.ExitCode):`n$($failed.Log)"
     Assert-True ($failed.Log -like '*exited with code 3*') "The failure must name the benchmark's exit code:`n$($failed.Log)"
     Assert-True ($failed.Log -notlike '*Results written to*') "A failed run must not be reported as written:`n$($failed.Log)"
     Assert-True ($failed.Log -notlike '*RESULT=*') "A failed run must not print RESULT=:`n$($failed.Log)"
@@ -381,7 +394,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     # session with native-command error promotion on (#1445 review), where the failure must still
     # go through the same path rather than throw before the exit code is read.
     $crashed = $outcomes['crashed']
-    Assert-True ($crashed.ExitCode -ne 0) "bench.ps1 reported success for a crashed benchmark:`n$($crashed.Log)"
+    Assert-True ($crashed.ExitCode -eq 5) "bench.ps1 must exit with the crashed benchmark's exit code 5, not $($crashed.ExitCode):`n$($crashed.Log)"
     Assert-True ($crashed.Log -like '*exited with code 5*') "Native error promotion bypassed the exit-code handling:`n$($crashed.Log)"
     Assert-True ($crashed.Result.Count -eq 0) 'Unparseable partial output must be deleted'
     Assert-True ($crashed.Manifest.Count -eq 1 -and (Get-Content -LiteralPath $crashed.Manifest[0].FullName -Raw | ConvertFrom-Json).exit_code -eq 5) "The manifest must be written with native error promotion on:`n$($crashed.Log)"
@@ -458,11 +471,22 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $elsewhere = Join-Path $root 'elsewhere.json'
     foreach ($name in @('override-out', 'override-format')) {
         $refused = $outcomes[$name]
-        Assert-True ($refused.ExitCode -ne 0) "bench.ps1 accepted the override ($name):`n$($refused.Log)"
+        # Exit code 2, a usage error, as bench.sh (#2254).
+        Assert-True ($refused.ExitCode -eq 2) "bench.ps1 must refuse the override with exit code 2, not $($refused.ExitCode) ($name):`n$($refused.Log)"
         Assert-True ($refused.Log -like '*-OutputDirectory*') "The refusal must point to -OutputDirectory ($name):`n$($refused.Log)"
         Assert-True ($refused.Result.Count -eq 0 -and $refused.Manifest.Count -eq 0) "Nothing may be written ($name)"
     }
     Assert-True (-not (Test-Path -LiteralPath $elsewhere)) "The benchmark ran and wrote '$elsewhere'"
+
+    # ── #2254: bench.sh's environment overrides, and Get-Help ─────────────────────────────────
+    $envRun = $outcomes['env-overrides']
+    Assert-True ($envRun.ExitCode -eq 0 -and $envRun.Result.Count -eq 1 -and $envRun.Manifest.Count -eq 1) "TASKSMACK_BENCH_BIN / TASKSMACK_BENCH_OUT_DIR were not used:`n$($envRun.Log)"
+    $paramRun = $outcomes['env-param-wins']
+    Assert-True ($paramRun.ExitCode -eq 0 -and $paramRun.Result.Count -eq 1) "An explicit -BenchmarkBinary / -OutputDirectory must win over the environment:`n$($paramRun.Log)"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $root 'env-ignored'))) 'TASKSMACK_BENCH_OUT_DIR was used despite -OutputDirectory'
+    $help = Get-Help $benchScript -Full
+    Assert-True ($help.Synopsis -like 'Run TaskSmack benchmarks*') "Get-Help must show the synopsis, got: $($help.Synopsis)"
+    Assert-True ((@($help.parameters.parameter | Where-Object { $_.name -eq 'BenchmarkBinary' }).description | Out-String) -like '*TASKSMACK_BENCH_BIN*') 'Get-Help must document -BenchmarkBinary and its environment default'
 
     # ── #1445 review: a checkout under a Unicode path, outside git ─────────────────────────────
     # Its UTF-8 flags hash as UTF-8, a --benchmark_context value naming the checkout is recorded

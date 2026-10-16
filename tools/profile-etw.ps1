@@ -30,6 +30,11 @@
             TASKSMACK_CONFIG_DIR (see -UseUserConfig).
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
     resize - separated normal-user app / elevated collector diagnostic capture (#882).
+.PARAMETER Timestamp
+    app/bench modes: the timestamp in the artifact names (etw-<mode>-<Timestamp>.etl and so on).
+    Defaults to the current time, yyyyMMdd-HHmmss; when an earlier capture already used that name
+    (two runs in the same second), -2, -3, ... is appended. An explicit -Timestamp that an earlier
+    capture in the output directory already used fails instead of overwriting its artifacts.
 .PARAMETER Phase
     resize mode only: Prepare snapshots binaries, Collect records ETW in a separate elevated
     terminal, App launches normally with stdout/stderr, Save asks a -Buffering Ring collector to
@@ -215,18 +220,27 @@ if ($Mode -ne 'app' -and ($IncludeStartup -or $UseUserConfig -or $PSBoundParamet
     throw '-WarmupSeconds, -IncludeStartup and -UseUserConfig apply to app mode only.'
 }
 
-if (-not $Timestamp) {
+$timestampGiven = -not [string]::IsNullOrEmpty($Timestamp)
+if (-not $timestampGiven) {
     $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 }
 
 # An elevated-target capture is a different scenario, so its artifacts are named apart (#872).
 $prefix = if ($Mode -eq 'app') { 'etw-app' } else { 'etw-bench' }
 if ($ElevatedTarget) { $prefix = "$prefix-elevated" }
-$tracePath = Join-Path $perfDir "$prefix-$Timestamp.etl"
-$childLogPath = Join-Path $perfDir "$prefix-child-$Timestamp.log"
-$launcherLogPath = Join-Path $perfDir "$prefix-launch-$Timestamp.log"
-$benchJsonPath = Join-Path $perfDir "$prefix-$Timestamp.json"
-$manifestPath = Join-Path $perfDir "$prefix-$Timestamp.manifest.json"
+
+function Use-CaptureTimestamp {
+    # Points the artifact paths at the current $Timestamp; called again once the orchestrator has
+    # claimed its names (Request-CaptureTimestamp, #2254).
+    $paths = Get-CaptureArtifactPath -Directory $perfDir -Prefix $prefix -Timestamp $Timestamp
+    $script:tracePath = $paths.Trace
+    $script:childLogPath = $paths.ChildLog
+    $script:launcherLogPath = $paths.LauncherLog
+    $script:benchJsonPath = $paths.BenchJson
+    $script:manifestPath = $paths.Manifest
+    $script:controlDir = $paths.Control
+}
+Use-CaptureTimestamp
 
 $binaryName = if ($Mode -eq 'app') { 'TaskSmack.exe' } else { 'TaskSmackBenchmarks.exe' }
 $buildDir = Join-Path $repoRoot "build/$Preset"
@@ -525,6 +539,13 @@ if ($Mode -eq 'app' -and $UseUserConfig) {
     }
 }
 
+# Claim this capture's names before anything is written (#2254): a run with the same -Timestamp, or
+# a second run started in the same second, would otherwise overwrite an earlier run's trace, logs and
+# manifest. A generated timestamp gets -2, -3, ... appended when taken; an explicit -Timestamp fails.
+# The child roles are passed the claimed timestamp and write under it.
+$Timestamp = Request-CaptureTimestamp -Directory $perfDir -Prefix $prefix -Timestamp $Timestamp -Exact:$timestampGiven
+Use-CaptureTimestamp
+
 # ── Dry run (-SkipTrace): the app lifecycle and its failure checks, with nothing recorded ────
 if ($SkipTrace) {
     Write-Warning '-SkipTrace: dry run. No WPR session is started and nothing is recorded.'
@@ -571,10 +592,11 @@ if ($ElevatedTarget) {
     }
 }
 else {
-    $controlDir = Join-Path $perfDir "$prefix-control-$Timestamp"
-    # Never reuse one: a failed run leaves its directory behind, and its stale
-    # collector-started/stop-requested markers would let the target start before this run's WPR
-    # session does, or stop the collector at once. Same rule as the resize run directory.
+    # Never reuse a control directory ($controlDir, set with the other artifact paths): a failed run
+    # leaves its directory behind, and its stale collector-started/stop-requested markers would let
+    # the target start before this run's WPR session does, or stop the collector at once. Same rule
+    # as the resize run directory. Request-CaptureTimestamp already skipped a name whose directory
+    # exists; this is the last check before it is created.
     if (Test-Path -LiteralPath $controlDir) {
         throw "Capture control directory already exists: $controlDir. It is left by an earlier run with -Timestamp $Timestamp; pass a different -Timestamp, or delete the directory once that run is no longer needed."
     }
@@ -649,6 +671,9 @@ $missingArtifacts = @()
 foreach ($artifact in @($childLogPath, $tracePath, $manifestPath)) {
     if (-not (Test-Path -LiteralPath $artifact)) { $missingArtifacts += $artifact }
 }
+# The manifest exists from the start, empty, as this run's claim on its names (#2254): it counts only
+# once the capture has written it.
+if ((Test-Path -LiteralPath $manifestPath) -and (Get-Item -LiteralPath $manifestPath).Length -eq 0) { $missingArtifacts += $manifestPath }
 if (($Mode -eq 'bench') -and (-not (Test-Path -LiteralPath $benchJsonPath))) {
     $missingArtifacts += $benchJsonPath
 }

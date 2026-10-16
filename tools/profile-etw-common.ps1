@@ -146,6 +146,54 @@ function Resolve-CaptureOutputDirectory {
     return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 }
 
+function Get-CaptureArtifactPath {
+    # The files (and the collector's control directory) one app/bench capture writes under
+    # $Directory, named by its prefix (etw-app, etw-bench, etw-app-elevated, ...) and timestamp.
+    param([Parameter(Mandatory = $true)][string]$Directory, [Parameter(Mandatory = $true)][string]$Prefix, [Parameter(Mandatory = $true)][string]$Timestamp)
+    return [ordered]@{
+        Trace       = Join-Path $Directory "$Prefix-$Timestamp.etl"
+        ChildLog    = Join-Path $Directory "$Prefix-child-$Timestamp.log"
+        LauncherLog = Join-Path $Directory "$Prefix-launch-$Timestamp.log"
+        BenchJson   = Join-Path $Directory "$Prefix-$Timestamp.json"
+        Manifest    = Join-Path $Directory "$Prefix-$Timestamp.manifest.json"
+        Control     = Join-Path $Directory "$Prefix-control-$Timestamp"
+    }
+}
+
+function Request-CaptureTimestamp {
+    # Claims a capture's names before anything is written (#2254), so a run never overwrites an
+    # earlier run's trace, logs or manifest: the manifest is created with FileMode CreateNew, which
+    # fails if it exists -- atomic, so two captures started in the same second cannot both get it
+    # -- and a name any of whose other artifacts exist is skipped too (a run that failed before
+    # writing its manifest). Returns the timestamp claimed: $Timestamp, or with -2, -3, ...
+    # appended, as bench.ps1 names its results. -Exact (a -Timestamp the caller chose) fails
+    # instead of picking another name. The claimed manifest stays empty until the capture writes it.
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][string]$Prefix,
+        [Parameter(Mandatory = $true)][string]$Timestamp,
+        [switch]$Exact
+    )
+    for ($suffix = 1; ; $suffix++) {
+        $candidate = if ($suffix -eq 1) { $Timestamp } else { "$Timestamp-$suffix" }
+        $paths = Get-CaptureArtifactPath -Directory $Directory -Prefix $Prefix -Timestamp $candidate
+        $existing = @($paths.Values | Where-Object { Test-Path -LiteralPath $_ })
+        if ($existing.Count -eq 0) {
+            try {
+                [IO.File]::Open($paths.Manifest, [IO.FileMode]::CreateNew).Dispose()
+                return $candidate
+            }
+            catch [System.IO.IOException] {
+                if (-not (Test-Path -LiteralPath $paths.Manifest)) { throw }
+                $existing = @($paths.Manifest)
+            }
+        }
+        if ($Exact) {
+            throw "An earlier capture with -Timestamp $Timestamp already wrote $($existing -join ', '). Pass a different -Timestamp, or omit it to get a fresh one."
+        }
+    }
+}
+
 function Get-UnfinishedTargetReason {
     # Why an app was still running when the script stopped waiting for it. A fixed-duration run
     # waits 30 s after its forced stop; only an interactive run waits the 4 hours.

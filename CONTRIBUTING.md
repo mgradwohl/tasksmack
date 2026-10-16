@@ -1148,14 +1148,18 @@ manifest's `preset`, so no file name or manifest field carries it:
     configuration and binary hash describe what was launched. `bench.sh` writes it with
     `tools/bench-manifest.py`.
 
-For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
-`TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables point the scripts at a
-stub binary and a scratch directory (`tools/test-bench.ps1`, `tests/tools/test_bench_sh.py`).
+For the script tests, the `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables
+point either script at a stub binary and a scratch directory (`tools/test-bench.ps1`,
+`tests/tools/test_bench_sh.py`); `bench.ps1`'s `-BenchmarkBinary <path>` / `-OutputDirectory <dir>`
+do the same and win over the variables.
 A relative binary path, a bare name included, is relative to the current directory (the
 PowerShell location for `bench.ps1`) and is never looked up on `PATH`: the file that is checked
 and hashed is the one that runs. They are also the only way to move the output: an extra `--benchmark_out` or
-`--benchmark_out_format` argument is refused before the benchmark starts, because the redaction
-and the manifest only look at the file the script chose.
+`--benchmark_out_format` argument is refused (exit code 2) before the benchmark starts, because the redaction
+and the manifest only look at the file the script chose. A benchmark that fails or crashes makes
+either script exit with the benchmark's own exit code. `bench.sh` runs its Python helpers with the
+interpreter `find_python` in `tools/common.sh` picks (the project `.venv`, else Python 3.14+ on
+`PATH`). `./tools/bench.sh --help` and `Get-Help tools/bench.ps1 -Full` describe the options.
 
 By default, benchmarks output to console. You can also:
 
@@ -1164,11 +1168,11 @@ By default, benchmarks output to console. You can also:
 # Linux baseline:    perf-data/linux-baseline.json
 # Windows baseline:  perf-data/win-baseline.json
 
-# Compare Windows runs
-python -m google_benchmark.compare perf-data/win-baseline.json perf-data/win-benchmark-<timestamp>.json
+# Compare Windows runs (median per benchmark; exits 1 on a regression over --threshold, default 15%)
+python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
 
 # Compare Linux runs
-python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/benchmark-<timestamp>.json
+python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current perf-data/benchmark-<timestamp>.json
 ```
 
 ### CI Benchmark Regression Gate
@@ -1480,6 +1484,12 @@ Notes:
 - A crashed run fails (#1186): the app exiting during warm-up, exiting before a `-DurationSeconds`
   window ends, or being closed with a nonzero exit code stops the trace, writes the manifest (with
   the exit code and reason), exits nonzero and prints no `TRACE=` line.
+- A capture never overwrites an earlier one (#2254): two runs in the same second get `-2`, `-3`, ...
+  appended to the timestamp, and an explicit `-Timestamp` an earlier capture in the output directory
+  already used is refused.
+- Without `-SymbolPath`, `analyze-etw.ps1` decodes against `build\<preset>\bin` for the preset the
+  trace's `<trace>.manifest.json` records (`win-release` for a default app capture), so the symbol
+  identity check compares the build that was captured; with no manifest it uses `win-profile`.
 - Function decoding against `win-release`/`win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
 - `analyze-etw.ps1` judges every trace before you rely on it (#873) and prints, and writes to
   `<trace>-analysis.json`, a **Valid / Degraded / Invalid** verdict with reasons:
@@ -2234,8 +2244,8 @@ To compare two sets of training data (say, benchmarks only against benchmarks pl
 # PGO (after ./tools/pgo.sh)
 ./build/pgo-use/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/pgo.json
 
-# Compare (requires: pip install google-benchmark)
-python -m google_benchmark.compare /tmp/baseline.json /tmp/pgo.json
+# Compare (prints each benchmark's change; without repetitions each single run is compared)
+python3 tools/check-benchmark-regression.py --baseline /tmp/baseline.json --current /tmp/pgo.json
 ```
 
 For rendering, run the same UI scenario on both builds: the synthetic large-UI machine (`TASKSMACK_SYNTHETIC=processes=5000,history=full`) with a fixed `TASKSMACK_WINDOW` and `TASKSMACK_TAB`, compared through the frame-time tooling (`tools/profile-etw.ps1` on Windows).

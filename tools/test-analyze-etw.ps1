@@ -272,4 +272,56 @@ $tiny = @(Parse-XperfRows -Lines @(
 ) -TargetProcessName 'TaskSmack.exe')
 Assert-True ((Get-EtwOverhead -FunctionRows $tiny).Status -eq 'Bounded') 'Any unresolved kernel weight is Bounded'
 
+# ── Default symbol directory (#2254) ─────────────────────────────────────────────────────────
+# Without -SymbolPath, the preset the capture manifest next to the trace records, so a default
+# app capture (win-release) is checked against win-release's binary, not win-profile's. The
+# directory name holds [ and ], which a wildcard-reading path API would misread.
+$symbolRoot = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-analyze-tests-[$([guid]::NewGuid().ToString('N'))]"
+$null = New-Item -ItemType Directory -Path $symbolRoot
+try {
+    $repo = 'C:\repo'
+    $appTrace = Join-Path $symbolRoot 'etw-app-20261016-101010.etl'
+    Set-Content -LiteralPath (Join-Path $symbolRoot 'etw-app-20261016-101010.manifest.json') -Encoding utf8 -Value '{ "Mode": "app", "Preset": "win-release" }'
+    $fromManifest = Get-DefaultSymbolDirectory -TraceFile $appTrace -RepoRoot $repo
+    Assert-True ($fromManifest.Directory -eq 'C:\repo\build\win-release\bin' -and $fromManifest.Source -like '*preset win-release*') "Manifest preset: $($fromManifest | Out-String)"
+    # A suffixed run (two captures in the same second, #2254) reads its own manifest.
+    $suffixedTrace = Join-Path $symbolRoot 'etw-bench-20261016-101010-2.etl'
+    Set-Content -LiteralPath (Join-Path $symbolRoot 'etw-bench-20261016-101010-2.manifest.json') -Encoding utf8 -Value '{ "Mode": "bench", "Preset": "win-benchmark" }'
+    Assert-True ((Get-DefaultSymbolDirectory -TraceFile $suffixedTrace -RepoRoot $repo).Directory -eq 'C:\repo\build\win-benchmark\bin') 'A suffixed capture must read its own manifest'
+    # No manifest, an empty one (a capture that failed before writing it), malformed JSON, no
+    # Preset, or a preset that is not a plain name: win-profile.
+    $fallback = 'C:\repo\build\win-profile\bin'
+    Assert-True ((Get-DefaultSymbolDirectory -TraceFile (Join-Path $symbolRoot 'other.etl') -RepoRoot $repo).Directory -eq $fallback) 'No manifest must fall back to win-profile'
+    $cases = [ordered]@{ empty = ''; malformed = '{ "Preset": '; noPreset = '{ "Mode": "app" }'; traversal = '{ "Preset": "..\\..\\evil" }'; notString = '{ "Preset": 3 }'; list = '[1, 2]' }
+    foreach ($name in $cases.Keys) {
+        Set-Content -LiteralPath (Join-Path $symbolRoot "$name.manifest.json") -Encoding utf8 -NoNewline -Value $cases[$name]
+        $result = Get-DefaultSymbolDirectory -TraceFile (Join-Path $symbolRoot "$name.etl") -RepoRoot $repo
+        Assert-True ($result.Directory -eq $fallback -and $result.Source -like 'win-profile*') "Manifest '$name' must fall back to win-profile: $($result | Out-String)"
+    }
+
+    # End to end, against a stub xperf first on PATH (no trace is read): analyze-etw.ps1 resolves
+    # a trace path holding [ ] literally, and without -SymbolPath looks in the manifest preset's
+    # build tree. The preset's tree does not exist, so the run stops there, naming it.
+    $stubDir = Join-Path $symbolRoot 'stub'
+    $null = New-Item -ItemType Directory -Path $stubDir
+    Set-Content -LiteralPath (Join-Path $stubDir 'xperf.cmd') -Encoding ascii -Value "@echo off`r`nexit /b 0"
+    $missingPreset = "no-such-preset-$([guid]::NewGuid().ToString('N'))"
+    $e2eTrace = Join-Path $symbolRoot 'etw-app-e2e.etl'
+    Set-Content -LiteralPath $e2eTrace -Encoding ascii -Value 'stub'
+    Set-Content -LiteralPath (Join-Path $symbolRoot 'etw-app-e2e.manifest.json') -Encoding utf8 -Value "{ `"Preset`": `"$missingPreset`" }"
+    $hostExe = (Get-Process -Id $PID).Path
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = "$stubDir;$savedPath"
+        $out = & $hostExe -NoProfile -File (Join-Path $PSScriptRoot 'analyze-etw.ps1') -TracePath $e2eTrace *>&1 | Out-String
+        $exit = $LASTEXITCODE
+    }
+    finally { $env:PATH = $savedPath }
+    Assert-True ($exit -ne 0) "A missing symbol directory must fail: $out"
+    Assert-True ($out -like "*Symbol directory:*build\$missingPreset\bin*" -and $out -notlike '*Cannot find path*etw-app-e2e.etl*') "Expected the manifest preset's symbol directory: $out"
+}
+finally {
+    Remove-Item -LiteralPath $symbolRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host 'analyze-etw tests passed'

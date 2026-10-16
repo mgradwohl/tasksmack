@@ -1,37 +1,57 @@
 #!/usr/bin/env pwsh
-# bench.ps1 - Run TaskSmack benchmarks with consistent settings on Windows.
-#
-# Usage:
-#   pwsh tools/bench.ps1 [preset] [-BenchmarkBinary <path>] [-OutputDirectory <dir>] [<extra args>]
-#
-# Extra args go to the benchmark binary (e.g. --benchmark_filter=Foo). A "--" separator before
-# them works when the script is called from PowerShell (& tools/bench.ps1 win-benchmark -- ...),
-# but not through "pwsh -File", whose own parameter binding rejects a bare "--".
-#
-# Preset defaults to 'win-benchmark'.
-# Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
-# the same second already wrote that name; a user or host name in the preset becomes "user" /
-# "host" in the file names), holding every repetition plus the
-# mean/median/stddev/cv aggregates, and a provenance sidecar at
-# perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
-# args, anonymized machine class; see CONTRIBUTING.md "Benchmark Output").
-#
-# -BenchmarkBinary overrides build/<preset>/bin/TaskSmackBenchmarks.exe (the script tests point
-# it at a stub); a relative path or bare name is relative to the PowerShell location, resolved
-# once to an absolute path for the check, the hash, the manifest and the launch, and never looked
-# up on PATH. -OutputDirectory overrides perf-data/.
-#
-# Exits non-zero if the benchmark binary fails or crashes; any partial output is still redacted
-# (or deleted when it cannot be) and the manifest records the exit code.
+# The blank line below keeps this comment out of the help block, so Get-Help reads it (#2254).
+
+<#
+.SYNOPSIS
+    Run TaskSmack benchmarks with consistent settings on Windows.
+.DESCRIPTION
+    Runs build/<Preset>/bin/TaskSmackBenchmarks.exe with 10 repetitions and a 0.5 s minimum time
+    per repetition, and writes JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ...
+    appended when a run in the same second already wrote that name; a user or host name in the
+    preset becomes "user" / "host" in the file names), holding every repetition plus the
+    mean/median/stddev/cv aggregates, and a provenance sidecar at
+    perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config,
+    benchmark args, anonymized machine class; see CONTRIBUTING.md "Benchmark Output"). On success
+    the last line is RESULT=<result file path>, for scripts to read.
+
+    Exits with the benchmark binary's own exit code if it fails or crashes, as tools/bench.sh does;
+    any partial output is still redacted (or deleted when it cannot be) and the manifest records
+    the exit code. An extra --benchmark_out or --benchmark_out_format argument is refused with exit
+    code 2 before the benchmark starts.
+
+    Compare a run against a baseline with tools/check-benchmark-regression.py.
+.PARAMETER Preset
+    The CMake preset whose build holds the benchmark binary. Defaults to win-benchmark.
+.PARAMETER BenchmarkBinary
+    Overrides build/<Preset>/bin/TaskSmackBenchmarks.exe (the script tests point it at a stub).
+    Defaults to the TASKSMACK_BENCH_BIN environment variable when it is set, as in bench.sh. A
+    relative path or bare name is relative to the PowerShell location, resolved once to an
+    absolute path for the check, the hash, the manifest and the launch, and never looked up on
+    PATH.
+.PARAMETER OutputDirectory
+    Overrides perf-data/. Defaults to the TASKSMACK_BENCH_OUT_DIR environment variable when it is
+    set, as in bench.sh.
+.PARAMETER ExtraArgs
+    Arguments passed to the benchmark binary (e.g. --benchmark_filter=Foo). A "--" separator before
+    them works when the script is called from PowerShell (& tools/bench.ps1 win-benchmark -- ...),
+    but not through "pwsh -File", whose own parameter binding rejects a bare "--".
+.EXAMPLE
+    pwsh tools/bench.ps1
+.EXAMPLE
+    pwsh tools/bench.ps1 win-benchmark --benchmark_filter=ProcessModel
+.EXAMPLE
+    python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
+#>
 
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
     [string]$Preset = "win-benchmark",
 
-    [string]$BenchmarkBinary = "",
+    # The same environment overrides as bench.sh (#2254); an explicit parameter wins.
+    [string]$BenchmarkBinary = $env:TASKSMACK_BENCH_BIN,
 
-    [string]$OutputDirectory = "",
+    [string]$OutputDirectory = $env:TASKSMACK_BENCH_OUT_DIR,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
@@ -75,9 +95,11 @@ if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
 
 # The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
 # extra one would write somewhere the redaction and the manifest never look.
+# Exit code 2, a usage error, as in bench.sh (#2254).
 foreach ($arg in $ExtraArgs) {
     if ($arg -match '^--benchmark_out(_format)?(=|$)') {
-        throw "'$arg' is not allowed: bench.ps1 sets the benchmark output file and format itself. Use -OutputDirectory to choose where results are written."
+        Write-Error -Message "'$arg' is not allowed: bench.ps1 sets the benchmark output file and format itself. Use -OutputDirectory (or TASKSMACK_BENCH_OUT_DIR) to choose where results are written." -ErrorAction Continue
+        exit 2
     }
 }
 
@@ -655,7 +677,9 @@ if ($benchExit -ne 0) {
         }
     }
     $manifestNote = if ($manifestError) { " Writing the manifest failed too: $manifestError" } else { " Manifest: $manifestFile" }
-    throw "Benchmark binary exited with code $benchExit; results in '$outFile' are not usable.$manifestNote"
+    # The benchmark's own exit code, as bench.sh exits with (#2254), not the 1 a throw gives.
+    Write-Error -Message "Benchmark binary exited with code $benchExit; results in '$outFile' are not usable.$manifestNote" -ErrorAction Continue
+    exit $benchExit
 }
 
 # Fails closed via ErrorActionPreference=Stop: if redaction cannot run, the script aborts before
@@ -678,7 +702,7 @@ if ($manifestError) {
 Write-Host ""
 Write-Host "Results written to: $outFile"
 Write-Host "Provenance manifest: $manifestFile"
-Write-Host "Compare two runs with Google Benchmark's compare.py:"
-Write-Host "  python -m google_benchmark.compare perf-data/win-baseline.json $outFile"
+Write-Host "Compare against a baseline (median per benchmark, regressions over the threshold fail):"
+Write-Host "  python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current $outFile"
 # Machine-readable result path, printed only on success; kept in step with bench.sh (#2249).
 Write-Host "RESULT=$outFile"
