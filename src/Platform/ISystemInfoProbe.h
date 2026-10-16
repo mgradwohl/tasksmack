@@ -39,6 +39,7 @@ struct OsInfo
     std::string domainOrWorkgroup;       ///< Windows: the domain or workgroup joined
     bool joinedToDomain = false;         ///< domainOrWorkgroup is a domain, not a workgroup
     std::string userName;                ///< Windows DOMAIN\user, Linux the login name
+    std::string homeDirectory;           ///< The user's profile folder: Windows FOLDERID_Profile, Linux pw_dir
     std::string locale;                  ///< "en-US" / "en_US.UTF-8"
     std::string timeZone;                ///< "Pacific Standard Time" / "America/Los_Angeles"
     std::optional<int> utcOffsetMinutes; ///< The current offset east of UTC, daylight saving included

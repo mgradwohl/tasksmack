@@ -13,12 +13,13 @@
 namespace Platform
 {
 
-/// The user name for @p uid, via @p getpwuidR -- getpwuid_r(3), or a stand-in with its signature in
-/// tests -- or nullopt if there is none.
+/// The @p field of @p uid's passwd entry, via @p getpwuidR -- getpwuid_r(3), or a stand-in with its
+/// signature in tests -- or nullopt if there is no entry or the field is unset.
 ///
 /// An entry larger than the buffer (big LDAP/SSSD records) fails with ERANGE: the buffer grows and
 /// the lookup is retried, up to 1 MiB, rather than the caller caching the numeric UID for good (#1155).
-template<typename GetPwUidR> [[nodiscard]] std::optional<std::string> lookUpUserName(uid_t uid, GetPwUidR getpwuidR)
+template<typename GetPwUidR>
+[[nodiscard]] std::optional<std::string> lookUpPasswdField(uid_t uid, GetPwUidR getpwuidR, char* passwd::* field)
 {
     constexpr std::size_t INITIAL_BUFFER = 1024;
     constexpr std::size_t MAX_BUFFER = std::size_t{1024} * 1024;
@@ -31,11 +32,23 @@ template<typename GetPwUidR> [[nodiscard]] std::optional<std::string> lookUpUser
     {
         buffer.resize(buffer.size() * 2);
     }
-    if (lookupError == 0 && result != nullptr && result->pw_name != nullptr)
+    if (lookupError == 0 && result != nullptr && (*result).*field != nullptr)
     {
-        return std::string(result->pw_name);
+        return std::string((*result).*field);
     }
     return std::nullopt;
+}
+
+/// The user name for @p uid (its passwd entry's pw_name), or nullopt if there is none.
+template<typename GetPwUidR> [[nodiscard]] std::optional<std::string> lookUpUserName(uid_t uid, GetPwUidR getpwuidR)
+{
+    return lookUpPasswdField(uid, getpwuidR, &passwd::pw_name);
+}
+
+/// The home directory of @p uid (its passwd entry's pw_dir), or nullopt if there is none (#2197).
+template<typename GetPwUidR> [[nodiscard]] std::optional<std::string> lookUpHomeDirectory(uid_t uid, GetPwUidR getpwuidR)
+{
+    return lookUpPasswdField(uid, getpwuidR, &passwd::pw_dir);
 }
 
 /// The group name for @p gid, via @p getgrgidR -- getgrgid_r(3), or a stand-in with its signature in

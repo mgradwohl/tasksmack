@@ -20,6 +20,7 @@
 #include <devpropdef.h>
 #include <cfgmgr32.h>
 #include <objbase.h>
+#include <shlobj.h> // SHGetKnownFolderPath(FOLDERID_Profile) (#2197)
 #include <mmdeviceapi.h>
 #include <propsys.h>
 #include <winsvc.h>
@@ -41,6 +42,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -1072,6 +1074,27 @@ SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
         .isWow64Process2 = &::IsWow64Process2,
         .computerName = [](LPWSTR buffer, PULONG size) { return GetComputerNameExW(ComputerNameDnsHostname, buffer, size); },
         .userName = [](LPWSTR buffer, PULONG size) -> BOOL { return GetUserNameExW(NameSamCompatible, buffer, size); },
+        .profileDirectory = [](LPWSTR buffer, PULONG size) -> BOOL
+        {
+            PWSTR path = nullptr;
+            const HRESULT result = SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DONT_VERIFY, nullptr, &path);
+            const std::wstring profile = SUCCEEDED(result) && path != nullptr ? std::wstring(path) : std::wstring{};
+            CoTaskMemFree(path); // freed even on failure, as the call requires; null is fine
+            if (profile.empty())
+            {
+                SetLastError(ERROR_PATH_NOT_FOUND);
+                return FALSE;
+            }
+            if (profile.size() >= *size)
+            {
+                *size = static_cast<ULONG>(profile.size() + 1);
+                SetLastError(ERROR_MORE_DATA);
+                return FALSE;
+            }
+            std::wmemcpy(buffer, profile.c_str(), profile.size() + 1);
+            *size = static_cast<ULONG>(profile.size());
+            return TRUE;
+        },
         .netGetJoinInformation = [](LPCWSTR server, LPWSTR* name, DWORD* joinStatus) -> DWORD
         {
             NETSETUP_JOIN_STATUS status = NetSetupUnknownStatus;
@@ -1123,6 +1146,7 @@ OsInfo WindowsSystemInfoProbe::readOs()
     info.computerName = readSizedString([this](wchar_t* buffer, ULONG& size) { return m_Fns.computerName(buffer, &size); });
     readJoinInformation(m_Fns, info);
     info.userName = readSizedString([this](wchar_t* buffer, ULONG& size) { return m_Fns.userName(buffer, &size); });
+    info.homeDirectory = readSizedString([this](wchar_t* buffer, ULONG& size) { return m_Fns.profileDirectory(buffer, &size); });
 
     std::wstring locale(LOCALE_NAME_MAX_LENGTH, L'\0');
     if (const int length = m_Fns.getUserDefaultLocaleName(locale.data(), LOCALE_NAME_MAX_LENGTH); length > 1)

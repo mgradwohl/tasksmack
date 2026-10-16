@@ -149,6 +149,7 @@ OsInfo LinuxSystemInfoProbe::readOs()
         info.computerName = host.data();
     }
     info.userName = lookUpUserName(geteuid(), getpwuid_r).value_or(std::string{});
+    info.homeDirectory = lookUpHomeDirectory(geteuid(), getpwuid_r).value_or(std::string{});
     info.locale = LinuxOsInfo::chooseLocale(environment("LC_ALL"), environment("LANG"));
     info.desktop = environmentString("XDG_CURRENT_DESKTOP");
     info.sessionType = environmentString("XDG_SESSION_TYPE");
