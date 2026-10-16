@@ -90,7 +90,7 @@ Drop `.toml` theme files in the platform-specific user themes directory:
 
 Create the folder if it does not exist, then restart TaskSmack. Your theme will appear in the theme selector in the settings menu.
 
-See the built-in theme files (shipped alongside the application) for the expected key structure.
+See the built-in theme files (shipped alongside the application) for the expected key structure, and the [theme reference](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md) for every key.
 
 ---
 
@@ -143,4 +143,4 @@ The readout shows the real frame time, so a stalled machine that draws 6 frames 
 
 ## Developer setup and `clangd` problems
 
-Developer troubleshooting is maintained in the canonical [contributor guide](../../CONTRIBUTING.md), including prerequisite checks, LLVM setup, CMake presets, and `compile_commands.json`.
+Developer troubleshooting is maintained in the canonical [contributor guide](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md), including prerequisite checks, LLVM setup, CMake presets, and `compile_commands.json`.
