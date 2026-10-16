@@ -84,29 +84,11 @@ class BackgroundSampler
 
     /// Start background sampling thread. If the thread can't be created (std::system_error,
     /// std::bad_alloc), the exception propagates and the sampler is left stopped: isRunning() false,
-    /// hasThreadExited() true, and start() can be called again.
+    /// and start() can be called again.
     void start();
 
     /// Stop background sampling thread (waits for completion).
     void stop();
-
-    /// Ask the sampling thread to stop without waiting for it (#801), for an owner on the UI thread
-    /// that must not block on a slow sample in flight (e.g. a panel whose tab was just left).
-    ///
-    /// Contract:
-    /// - Never joins and never blocks: it only requests the stop and wakes the thread. A sample in
-    ///   flight runs to completion on the sampler thread; no new sample starts after it.
-    /// - The owner must keep this object alive until hasThreadExited() is true, or until it destroys
-    ///   it. Destruction (and stop()) still joins, so destroying it before the thread has exited
-    ///   waits for the sample in flight, exactly as stop() always has; afterwards neither waits.
-    /// - isRunning() stays true until stop() or destruction, so start() is ignored until then. To
-    ///   sample again straight away, create a new sampler.
-    /// - Before start() it does nothing.
-    void requestStop() noexcept;
-
-    /// Whether the sampling thread has returned, so stop() and the destructor will not wait. True
-    /// before start() too.
-    [[nodiscard]] bool hasThreadExited() const noexcept;
 
     /// Check if sampler is running.
     [[nodiscard]] bool isRunning() const;
@@ -120,7 +102,8 @@ class BackgroundSampler
     /// Set sampling interval (takes effect on next iteration).
     void setInterval(std::chrono::milliseconds interval);
 
-    /// Sample durations and overruns since start() (thread-safe copy; #1416).
+    /// Sample durations and overruns since start() (thread-safe copy; #1416). The same figures the
+    /// stop summary logs; read by the tests that check the pass timing and the overrun backoff.
     [[nodiscard]] SamplerMetrics metrics() const;
 
   private:
@@ -146,7 +129,6 @@ class BackgroundSampler
 
     std::jthread m_SamplerThread;
     std::atomic<bool> m_Running{false};
-    std::atomic<bool> m_ThreadExited{true};
 
     mutable std::mutex m_ConfigMutex;
     mutable std::mutex m_SamplablesMutex;

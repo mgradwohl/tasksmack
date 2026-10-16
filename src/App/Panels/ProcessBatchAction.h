@@ -10,17 +10,22 @@
 // Each process is acted on by its ProcessTarget (PID and start time), exactly as a single action is:
 // the platform refuses any whose PID now belongs to another process (#973), and that refusal is
 // reported as one of the batch's failures.
+//
+// A confirmed batch runs on a worker (ProcessBatchRun.h, #2142), not the frame: a run takes a stop
+// token, checked before each target, and counts the targets it has done for the toolbar's progress.
 
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <iterator>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -251,13 +256,23 @@ struct BatchResult
 /// Calls @p actOnTarget (a ProcessTarget in, a ProcessActionResult out) for every target, one
 /// ProcessTarget at a time, each checked by the platform exactly as a single action is, and tallies
 /// the results. TaskSmack's own process (@p ownPid) goes last, so an action that ends TaskSmack has
-/// reached every other target first.
+/// reached every other target first. Once @p stopToken is requested no further target is acted on (the
+/// result counts only those attempted); @p done, when given, counts each target as it is finished, for
+/// a progress line read on another thread (#2142).
 template<typename ActOnTarget>
-[[nodiscard]] BatchResult runBatch(std::span<const BatchTarget> targets, std::int32_t ownPid, const ActOnTarget& actOnTarget)
+[[nodiscard]] BatchResult runBatch(std::span<const BatchTarget> targets,
+                                   std::int32_t ownPid,
+                                   const ActOnTarget& actOnTarget,
+                                   const std::stop_token& stopToken = {},
+                                   std::atomic<std::size_t>* done = nullptr)
 {
     BatchResult result;
     const auto runOne = [&](const BatchTarget& t)
     {
+        if (stopToken.stop_requested())
+        {
+            return;
+        }
         ++result.attempted;
         const Platform::ProcessActionResult r = actOnTarget(t.target);
         if (r.success)
@@ -267,6 +282,10 @@ template<typename ActOnTarget>
         else if (result.firstFailures.size() < RESULT_FAILURE_LIMIT)
         {
             result.firstFailures.push_back({.pid = t.target.pid, .name = t.name, .error = r.errorMessage});
+        }
+        if (done != nullptr)
+        {
+            done->fetch_add(1, std::memory_order_relaxed); // a count for display only: orders nothing else
         }
     };
     const auto isSelf = [ownPid](const BatchTarget& t)
@@ -291,14 +310,20 @@ template<typename ActOnTarget>
 }
 
 /// Sends @p action to every target through @p actions (runBatch()): a Kill or Terminate that ends
-/// TaskSmack has reached every other target first.
-[[nodiscard]] inline BatchResult
-runBatchAction(Platform::IProcessActions& actions, Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+/// TaskSmack has reached every other target first. @p stopToken and @p done as runBatch()'s.
+[[nodiscard]] inline BatchResult runBatchAction(Platform::IProcessActions& actions,
+                                                Detail::ProcessAction action,
+                                                std::span<const BatchTarget> targets,
+                                                std::int32_t ownPid,
+                                                const std::stop_token& stopToken = {},
+                                                std::atomic<std::size_t>* done = nullptr)
 {
-    return runBatch(targets,
-                    ownPid,
-                    [&actions, action](const Platform::ProcessTarget& target)
-                    { return Detail::dispatchProcessAction(actions, action, target); });
+    return runBatch(
+        targets,
+        ownPid,
+        [&actions, action](const Platform::ProcessTarget& target) { return Detail::dispatchProcessAction(actions, action, target); },
+        stopToken,
+        done);
 }
 
 /// Appends @p result's quoted failures to @p text -- ": PID 1 (systemd): Operation not permitted;
@@ -367,13 +392,21 @@ inline void appendFailures(std::string& text, const BatchResult& result)
 }
 
 /// Sets @p nice, held to the nice range, on every target through @p actions (runBatch()), TaskSmack's
-/// own process last.
-[[nodiscard]] inline BatchResult
-runBatchPriority(Platform::IProcessActions& actions, std::span<const BatchTarget> targets, std::int32_t nice, std::int32_t ownPid)
+/// own process last. @p stopToken and @p done as runBatch()'s.
+[[nodiscard]] inline BatchResult runBatchPriority(Platform::IProcessActions& actions,
+                                                  std::span<const BatchTarget> targets,
+                                                  std::int32_t nice,
+                                                  std::int32_t ownPid,
+                                                  const std::stop_token& stopToken = {},
+                                                  std::atomic<std::size_t>* done = nullptr)
 {
     const std::int32_t clamped = Domain::Priority::clampNice(nice);
     return runBatch(
-        targets, ownPid, [&actions, clamped](const Platform::ProcessTarget& target) { return actions.setPriority(target, clamped); });
+        targets,
+        ownPid,
+        [&actions, clamped](const Platform::ProcessTarget& target) { return actions.setPriority(target, clamped); },
+        stopToken,
+        done);
 }
 
 /// The toolbar's one-line result for a batch priority change, naming what was applied: "Priority set to

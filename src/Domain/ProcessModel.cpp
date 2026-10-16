@@ -15,6 +15,7 @@
 #include "ProcessState.h"
 #include "SamplingConfig.h"
 #include "ServiceModel.h"
+#include "SharedHistory.h"
 #include "SingleLineText.h"
 
 #include <spdlog/spdlog.h>
@@ -27,6 +28,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -671,16 +673,27 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // The same for the watched sample this publish displaces from the ring.
     std::shared_ptr<const std::vector<ProcessSnapshot>> previousGeneration;
     ProcessSample displacedSample;
+    bool historyAppendFailed = false;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
 
         if (hasElapsedForHistory)
         {
-            m_Timestamps.push(sampleTimeSeconds);
-            m_SystemPageFaultsHistory.push(aggPageFaults);
-            m_SystemThreadCountHistory.push(aggThreads);
-            m_SystemHandleCountHistory.push(aggHandles);
-            m_SystemPowerHistory.push(aggPower);
+            // Allocates only when a series' shared block is full (amortised O(1) per sample, #2156).
+            // A failure there drops this one history sample, all five series together, rather than
+            // the whole generation: the process list is still published.
+            try
+            {
+                appendSystemHistoryLocked(ProcessSystemHistorySample{.timeSeconds = sampleTimeSeconds,
+                                                                     .pageFaultsPerSec = aggPageFaults,
+                                                                     .threadCount = aggThreads,
+                                                                     .handleCount = aggHandles,
+                                                                     .powerWatts = aggPower});
+            }
+            catch (const std::bad_alloc&)
+            {
+                historyAppendFailed = true; // logged after the lock
+            }
             trimHistory();
         }
 
@@ -717,6 +730,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
     }
+
+    // Once per streak, like the GPU merge's failures (#1142).
+    if (historyAppendFailed && !m_SystemHistoryAppendFailing)
+    {
+        spdlog::warn("ProcessModel: out of memory appending to the system histories; skipping samples until it succeeds");
+    }
+    m_SystemHistoryAppendFailing = historyAppendFailed;
 }
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
@@ -862,19 +882,24 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
         return false;
     }
 
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    std::shared_lock lock(m_Mutex);
     if (m_SystemHistoryVersion == lastSeenVersion)
     {
         return false;
     }
 
-    outHistories.version = m_SystemHistoryVersion;
-    outHistories.timestamps = HistoryUtils::toVector(m_Timestamps);
-    outHistories.power = HistoryUtils::toVector(m_SystemPowerHistory);
-    outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
-    outHistories.threadCount = HistoryUtils::toVector(m_SystemThreadCountHistory);
-    outHistories.handleCount = HistoryUtils::toVector(m_SystemHandleCountHistory);
-    outHistories.capabilities = m_PublishedCapabilities;
+    // Shared views, not copies (#2156): five refcount bumps, whatever the history length. Taken into a
+    // local and handed over after the lock, so if @p outHistories held the last views of an old block,
+    // freeing it doesn't hold up the writer's unique_lock.
+    ProcessSystemHistories histories{.version = m_SystemHistoryVersion,
+                                     .timestamps = m_Timestamps.view(),
+                                     .power = m_SystemPowerHistory.view(),
+                                     .pageFaults = m_SystemPageFaultsHistory.view(),
+                                     .threadCount = m_SystemThreadCountHistory.view(),
+                                     .handleCount = m_SystemHandleCountHistory.view(),
+                                     .capabilities = m_PublishedCapabilities};
+    lock.unlock();
+    outHistories = std::move(histories);
     return true;
 }
 
@@ -957,11 +982,7 @@ void ProcessModel::appendSystemHistory(const SystemHistorySource& next)
         {
             continue;
         }
-        m_Timestamps.push(sample.timeSeconds);
-        m_SystemPageFaultsHistory.push(sample.pageFaultsPerSec);
-        m_SystemThreadCountHistory.push(sample.threadCount);
-        m_SystemHandleCountHistory.push(sample.handleCount);
-        m_SystemPowerHistory.push(sample.powerWatts);
+        appendSystemHistoryLocked(sample);
         appended = true;
     }
     if (appended)
@@ -1326,10 +1347,30 @@ void ProcessModel::trimHistory()
         m_Timestamps, cutoff, m_SystemPageFaultsHistory, m_SystemThreadCountHistory, m_SystemHandleCountHistory, m_SystemPowerHistory));
 }
 
-void ProcessModel::applyHistoryCapacity()
+void ProcessModel::appendSystemHistoryLocked(const ProcessSystemHistorySample& sample)
 {
-    // Size every ring so the configured time window fits even at the fastest
-    // supported refresh cadence; time-based trimming governs actual retention.
+    // Reserve every series first: only reserve() allocates, so once all five have room the pushes
+    // below cannot throw, and a std::bad_alloc here leaves all five as they were (#2156). A series
+    // that did get a bigger block keeps it; that changes no sample.
+    m_Timestamps.reserve(1);
+    m_SystemPageFaultsHistory.reserve(1);
+    m_SystemThreadCountHistory.reserve(1);
+    m_SystemHandleCountHistory.reserve(1);
+    m_SystemPowerHistory.reserve(1);
+
+    m_Timestamps.push(sample.timeSeconds);
+    m_SystemPageFaultsHistory.push(sample.pageFaultsPerSec);
+    m_SystemThreadCountHistory.push(sample.threadCount);
+    m_SystemHandleCountHistory.push(sample.handleCount);
+    m_SystemPowerHistory.push(sample.powerWatts);
+}
+
+void ProcessModel::applyHistoryCapacity() noexcept
+{
+    // Size every ring so the configured time window fits even at the fastest supported refresh
+    // cadence; time-based trimming governs actual retention. SharedHistoryBuffer::setCapacity()
+    // never allocates (the block is resized at its next compaction), so the five series can't be
+    // left with different capacities by a failure part way through (#2156).
     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
     m_Timestamps.setCapacity(capacity);
     m_SystemPageFaultsHistory.setCapacity(capacity);

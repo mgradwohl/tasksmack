@@ -169,10 +169,18 @@ check_perf_version() {
 # which only surfaces later as a confusing "has no samples" error from `perf report`.
 # Probe for it up front instead and fall back to the `cpu-clock` software event, which
 # works everywhere `perf record` itself works.
+# `perf stat` exits 0 even for an event it can't count (WSL2 prints "The cycles:u event is not
+# supported" and still succeeds), so check its CSV output for an actual count instead.
+perf_event_counts() {
+    local out
+    out="$(perf stat -x, -e "$1" -- true 2>&1 || true)"
+    grep -qE '^[0-9]+([.][0-9]+)?,' <<<"$out"
+}
+
 detect_perf_event() {
-    if perf stat -e cycles -- true &>/dev/null; then
+    if perf_event_counts cycles; then
         echo "cycles"
-    elif perf stat -e cpu-clock -- true &>/dev/null; then
+    elif perf_event_counts cpu-clock; then
         echo "cpu-clock"
     else
         die "Neither the 'cycles' nor 'cpu-clock' perf event works in this environment. This usually means /proc/sys/kernel/perf_event_paranoid is too restrictive, or perf lacks the necessary permissions/capabilities. Check 'cat /proc/sys/kernel/perf_event_paranoid' (0-1 is typically needed) or run with appropriate privileges."

@@ -306,10 +306,12 @@ SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarge
 {
     const std::scoped_lock lock(m_Mutex); // one read at a time: the name cache is shared
     // Closed with the real CloseHandle: this seam's fakes hand out real handles.
-    auto opened =
-        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = &::CloseHandle},
-                            target,
-                            PROCESS_QUERY_LIMITED_INFORMATION);
+    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
+                                       .getProcessTimes = m_Api.getProcessTimes,
+                                       .closeHandle = &::CloseHandle,
+                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
+                                      target,
+                                      PROCESS_QUERY_LIMITED_INFORMATION);
     if (!opened)
     {
         auto refused = toReadFailure<SecurityReadStatus>(opened.error());

@@ -306,8 +306,14 @@ Detail::ActionResultMessage affinityResultMessage(const std::string& name,
     {
         return {.ok = false, .text = result.errorMessage};
     }
-    return {.ok = true,
-            .text = std::format("CPU affinity of {} (PID {}) set to {}", name, pid, UI::Format::formatCpuAffinity(cpus.words()))};
+    std::string text = std::format("CPU affinity of {} (PID {}) set to {}", name, pid, UI::Format::formatCpuAffinity(cpus.words()));
+    if (!result.successNote.empty())
+    {
+        // How the platform applied it, when that is weaker than a hard affinity (#2173)
+        text += ' ';
+        text += result.successNote;
+    }
+    return {.ok = true, .text = std::move(text)};
 }
 
 } // namespace App

@@ -28,6 +28,9 @@ struct SystemInfoFunctions
     BOOL(WINAPI* isWow64Process2)(HANDLE, USHORT*, USHORT*) = nullptr;
     BOOL (*computerName)(LPWSTR, PULONG) = nullptr; ///< GetComputerNameExW(ComputerNameDnsHostname, ...)
     BOOL (*userName)(LPWSTR, PULONG) = nullptr;     ///< GetUserNameExW(NameSamCompatible, ...)
+    /// SHGetKnownFolderPath(FOLDERID_Profile) (#2197), answering as userName does: TRUE with the length in
+    /// the size, or FALSE with ERROR_MORE_DATA and the size needed (terminator included).
+    BOOL (*profileDirectory)(LPWSTR, PULONG) = nullptr;
     /// NetGetJoinInformation, with NET_API_STATUS as DWORD and the NETSETUP_JOIN_STATUS out-param as a DWORD,
     /// so this header needs no <lm.h> (the .cpp static_asserts the types match).
     DWORD (*netGetJoinInformation)(LPCWSTR server, LPWSTR* name, DWORD* joinStatus) = nullptr;

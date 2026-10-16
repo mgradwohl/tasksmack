@@ -266,9 +266,11 @@ class GPUModel : public ISamplable
     PublicationSlot<ProcessGPUPublication> m_ProcessPublication;
     std::uint64_t m_ProcessPublicationVersion = 0; // guarded by m_ProbeMutex
     bool m_ProcessReadFailing = false;             // guarded by m_ProbeMutex; logs a failing read once per streak
-    // The GPU info, its known flag and the capabilities are written only on the sampler thread
-    // (the constructor, then rescanGPUs() inside refreshAt()), always under a unique m_Mutex, so the
-    // sampler thread may read them without a lock; any other thread takes m_Mutex shared.
+    // The GPU info, its known flag and the capabilities are written only by the constructor, then by
+    // rescanGPUs() inside refreshAt(), which holds m_ProbeMutex and takes a unique m_Mutex to write.
+    // So code holding m_ProbeMutex may read them without m_Mutex; anything else takes m_Mutex shared.
+    // refreshAt() copies the GPU info it computes snapshots from while it holds m_ProbeMutex, so two
+    // racing refreshes never read the list while the other replaces it (#2153).
     std::vector<Platform::GPUInfo> m_GPUInfo;
     // False while no enumerateGPUs() has succeeded, leaving m_GPUInfo empty for a reason other
     // than there being no GPUs. Published as GPUPublication::gpuInfoKnown.
@@ -392,9 +394,12 @@ class GPUModel : public ISamplable
     PublicationSlot<GPUPublication> m_Publication;
     std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
 
-    // Helper: compute snapshot from current/previous counters
-    [[nodiscard]] GPUSnapshot
-    computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
+    // Helper: compute snapshot from current/previous counters, naming the GPU from @p gpuInfo: the
+    // GPU info copied under m_ProbeMutex with the counters, never m_GPUInfo itself (#2153)
+    [[nodiscard]] static GPUSnapshot computeSnapshot(const Platform::GPUCounters& current,
+                                                     const Platform::GPUCounters* previous,
+                                                     const std::vector<Platform::GPUInfo>& gpuInfo,
+                                                     double timeDeltaSeconds);
 
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.

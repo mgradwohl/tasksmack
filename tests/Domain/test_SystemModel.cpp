@@ -1453,7 +1453,19 @@ struct PublishedValues
         }
     }
 
-    bool operator==(const PublishedValues&) const = default;
+    // NaN ("no reading", e.g. battery charge without a battery, #2159) counts as equal to itself: the
+    // question is whether the published samples changed, not whether they are numbers.
+    bool operator==(const PublishedValues& other) const
+    {
+        const auto sameSample = [](float a, float b)
+        {
+            return a == b || (std::isnan(a) && std::isnan(b));
+        };
+        return timestamps == other.timestamps && std::ranges::equal(series,
+                                                                    other.series,
+                                                                    [&](const std::vector<float>& a, const std::vector<float>& b)
+                                                                    { return std::ranges::equal(a, b, sameSample); });
+    }
 };
 
 } // namespace
@@ -2690,6 +2702,54 @@ TEST(SystemModelTest, BatteryChargeHistoryTracked)
     // Battery charge history should exist
     auto chargeHist = model.publication()->batteryChargeHistory;
     EXPECT_FALSE(chargeHist.empty());
+}
+
+TEST(SystemModelTest, BatteryChargeHistoryIsNaNWithoutABattery)
+{
+    // #2159: no battery is "no reading", NaN like every other unread history value -- not a -1 that
+    // each reader had to know to convert.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    powerProbe->setCapabilities({}); // No battery
+    powerProbe->setCounters(Platform::PowerCounters{});
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    model.refresh();
+
+    ASSERT_FALSE(model.snapshot().power.hasBattery);
+    const auto chargeHist = model.publication()->batteryChargeHistory;
+    ASSERT_FALSE(chargeHist.empty());
+    for (const float value : chargeHist)
+    {
+        EXPECT_TRUE(std::isnan(value)) << "got " << value;
+    }
+}
+
+TEST(SystemModelTest, BatteryChargeHistoryHoldsTheChargeAndNaNForAnUnreadCharge)
+{
+    // #2159: a battery's charge is stored as is; one it could not read (the probe's -1) is NaN, a gap.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({.hasBattery = true});
+    Platform::PowerCounters counters;
+    counters.chargePercent = 75;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh(); // The baseline: history starts with the second sample
+    model.refresh();
+    counters.chargePercent = -1;
+    rawPowerProbe->setCounters(counters);
+    model.refresh();
+
+    const auto chargeHist = model.publication()->batteryChargeHistory;
+    ASSERT_EQ(chargeHist.size(), 2U);
+    EXPECT_DOUBLE_EQ(chargeHist[0], 75.0F);
+    EXPECT_TRUE(std::isnan(chargeHist[1]));
 }
 
 // =============================================================================

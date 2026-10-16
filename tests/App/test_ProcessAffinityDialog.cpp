@@ -56,6 +56,28 @@ TEST(ProcessAffinityDialogTest, TicksTheCurrentAffinityAndAppliesTheBoxes)
     EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b111U));
 }
 
+TEST(ProcessAffinityDialogTest, TheResultLineSaysHowThePlatformAppliedTheChoice)
+{
+    const Platform::CpuAffinity cpus = Platform::CpuAffinity::fromMask(0b1111U);
+    const auto plain = affinityResultMessage("server", 42, cpus, Platform::ProcessActionResult::ok());
+    EXPECT_TRUE(plain.ok);
+    EXPECT_EQ(plain.text, "CPU affinity of server (PID 42) set to 0-3");
+
+    // Windows across processor groups sets CPU sets, a preference, and says so (#2173).
+    const auto soft = affinityResultMessage(
+        "server",
+        42,
+        cpus,
+        Platform::ProcessActionResult::ok("as preferred CPUs (CPU sets); threads with their own affinity are not moved"));
+    EXPECT_TRUE(soft.ok);
+    EXPECT_EQ(soft.text,
+              "CPU affinity of server (PID 42) set to 0-3 as preferred CPUs (CPU sets); threads with their own affinity are not moved");
+
+    const auto failed = affinityResultMessage("server", 42, cpus, Platform::ProcessActionResult::error("Access denied"));
+    EXPECT_FALSE(failed.ok);
+    EXPECT_EQ(failed.text, "Access denied");
+}
+
 // --- Sections by processor group and kind of core (#1881) ---
 
 [[nodiscard]] Platform::CpuAffinityLayout hybridLayout()

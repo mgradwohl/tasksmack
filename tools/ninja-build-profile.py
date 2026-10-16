@@ -17,41 +17,45 @@ wall time they cost. A missing or empty log prints nothing and exits 0: this is 
 reason to fail a build.
 """
 
+import argparse
+import posixpath
 import sys
 from pathlib import Path
 
 
 def kind(output: str) -> str:
-    lower = output.lower()
+    # Ninja logs outputs relative to the build directory ("bin/TaskSmack", "tests/TaskSmackTests"),
+    # so anchor the path before looking for a bin/ component.
+    lower = "/" + output.lower().replace("\\", "/")
+    name = posixpath.basename(lower)
     if lower.endswith(".ddi"):
         return "module scan"
     if lower.endswith((".obj", ".o", ".res")):
         return "compile"
-    if lower.endswith((".exe", ".dll", ".so")) or "/bin/" in lower.replace("\\", "/"):
+    if lower.endswith((".exe", ".dll", ".so")) or ".so." in name or "/bin/" in lower:
         return "link"
     if lower.endswith((".lib", ".a")):
         return "static library"
+    # Linux executables have no suffix (tests/TaskSmackTests); CMake's own extensionless outputs
+    # live under CMakeFiles/.
+    if "." not in name and "/cmakefiles/" not in lower:
+        return "link"
     return "other"
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    top = 8
-    if "--top" in args:
-        i = args.index("--top")
-        top = int(args[i + 1])
-        del args[i : i + 2]
-    if len(args) != 1:
-        print(__doc__, file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("build_dir", help="the Ninja build directory holding .ninja_log")
+    parser.add_argument("--top", type=int, default=8, help="how many of the slowest links to list (default: 8)")
+    args = parser.parse_args()
 
-    log = Path(args[0]) / ".ninja_log"
+    log = Path(args.build_dir) / ".ninja_log"
     if not log.is_file():
         return 0
 
-    # One line per output; an edge with several outputs (an exe and its .pdb, an object and its
-    # .ddi) repeats its start/end times and command hash, so key edges on those.
-    edges: dict[tuple[str, str, str], list[str]] = {}
+    # .ninja_log is append-only, so a reused build directory lists an output once per build that
+    # rebuilt it; keep each output's latest line.
+    latest: dict[str, tuple[str, str, str]] = {}
     for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.startswith("#"):
             continue
@@ -59,7 +63,14 @@ def main() -> int:
         if len(parts) < 5:
             continue
         start, end, _mtime, output, cmd_hash = parts[:5]
-        edges.setdefault((start, end, cmd_hash), []).append(output)
+        latest.pop(output, None)  # re-insert, so dict order follows the log
+        latest[output] = (start, end, cmd_hash)
+
+    # An edge with several outputs (an exe and its .pdb, an object and its .ddi) repeats its
+    # start/end times and command hash, so key edges on those.
+    edges: dict[tuple[str, str, str], list[str]] = {}
+    for output, key in latest.items():
+        edges.setdefault(key, []).append(output)
     if not edges:
         return 0
 
@@ -88,11 +99,11 @@ def main() -> int:
             print(f"| {k} | {len(times)} | {sum(times):.1f} | {max(times):.1f} |")
     if links:
         print()
-        print(f"Slowest links (top {top}):")
+        print(f"Slowest links (top {args.top}):")
         print()
         print("| Link | Time (s) |")
         print("|---|---:|")
-        for seconds, name in sorted(links, reverse=True)[:top]:
+        for seconds, name in sorted(links, reverse=True)[:args.top]:
             print(f"| `{name}` | {seconds:.1f} |")
     return 0
 

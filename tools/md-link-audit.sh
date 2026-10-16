@@ -26,9 +26,11 @@ anchor_cache: dict[str, set[str]] = {}
 
 
 def slug(text: str) -> str:
+    # GitHub's rule (github-slugger): lowercase, drop punctuation other than "-" and "_", then
+    # turn each space into "-" without collapsing runs, so "Foo - Bar" is "foo---bar".
     t = text.strip().lower().replace("`", "")
-    t = re.sub(r"[^a-z0-9\s-]", "", t)
-    t = re.sub(r"[\s-]+", "-", t).strip("-")
+    t = re.sub(r"[^a-z0-9_\s-]", "", t)
+    t = re.sub(r"\s", "-", t)
     return t
 
 

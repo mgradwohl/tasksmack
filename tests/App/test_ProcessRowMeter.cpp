@@ -209,6 +209,20 @@ TEST(ProcessRowMeterTest, SparklineFractionsScaleLikeTheBars)
     EXPECT_FLOAT_EQ(out[2], 1.0F);
 }
 
+// #2158: a value not read stays NaN (the line breaks there) and doesn't count toward the largest value.
+TEST(ProcessRowMeterTest, SparklineFractionsKeepAGapForAValueNotRead)
+{
+    Domain::ProcessRowHistory::Ring ring;
+    ring.push(50.0F);
+    ring.push(std::numeric_limits<float>::quiet_NaN());
+    ring.push(100.0F);
+    std::array<float, Domain::ProcessRowHistory::RING_CAPACITY> out{};
+    ASSERT_EQ(ProcessRowMeter::sparklineFractions(ProcessColumn::IoRead, ring, out), 3U);
+    EXPECT_FLOAT_EQ(out[0], 0.5F);
+    EXPECT_TRUE(std::isnan(out[1]));
+    EXPECT_FLOAT_EQ(out[2], 1.0F);
+}
+
 TEST(ProcessRowMeterTest, MaximaAreTheLargestValueOfEachAbsoluteColumn)
 {
     std::vector<Domain::ProcessSnapshot> snapshots(3);

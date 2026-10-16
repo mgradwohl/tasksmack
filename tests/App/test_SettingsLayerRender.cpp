@@ -314,10 +314,14 @@ TEST_F(SettingsLayerRenderTest, PickingTheStoredValueAgainRaisesNothing)
 
 TEST_F(SettingsLayerRenderTest, EditConfigOpensTheConfigFile)
 {
+    // #2145: a first run has no config file yet; it is written before it is opened, or the editor
+    // would be handed a path that doesn't exist and nothing would open.
+    ASSERT_FALSE(std::filesystem::exists(m_ConfigPath));
     ASSERT_TRUE(openDialog());
     pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
     ASSERT_EQ(m_Seen.opened.size(), 1U);
     EXPECT_EQ(m_Seen.opened.front(), m_ConfigPath);
+    EXPECT_TRUE(std::filesystem::exists(m_ConfigPath)) << "the file is there to open";
 }
 
 TEST_F(SettingsLayerRenderTest, OpenThemesFolderMakesAndOpensTheUserThemesDirectory)

@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PREFIX="${PREFIX:-${ROOT_DIR}/packaging/dist}"
 HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
 INDEX_FILE="${HICOLOR_DIR}/index.theme"
 
-BUILD_BIN="${ROOT_DIR}/build/optimized/TaskSmack"
-ALT_BUILD_BIN="${ROOT_DIR}/build/optimized/bin/TaskSmack"
+# The optimized preset puts the binary in bin/; the second path is the pre-bin/ layout
+BUILD_BIN="${ROOT_DIR}/build/optimized/bin/TaskSmack"
+ALT_BUILD_BIN="${ROOT_DIR}/build/optimized/TaskSmack"
+
+# Refresh the desktop/icon caches when their tools are installed (desktop-file-utils and
+# gtk-update-icon-cache are optional; a missing one shouldn't abort the install under set -e)
+refresh_desktop_caches() {
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "${HOME}/.local/share/applications" || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache "${HICOLOR_DIR}" || true
+    fi
+}
 
 if [[ -x "${BUILD_BIN}" ]]; then
     :
@@ -33,13 +46,10 @@ install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
 sed -i "s|^Exec=.*|Exec=${BINARY_PATH}|" "${DESKTOP_DST}"
 install -Dm644 "${ICON_SRC_PNG}" "${ICON_DST}"
 
-update-desktop-database "${HOME}/.local/share/applications"
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache "${HOME}/.local/share/icons/hicolor" || true
-fi
-
-# Ensure a complete hicolor index so gtk-update-icon-cache keeps all sizes
+# Ensure a hicolor index so gtk-update-icon-cache keeps all sizes. Only when there is none: an
+# existing ~/.local/share/icons/hicolor/index.theme belongs to the user or another app.
 mkdir -p "${HICOLOR_DIR}"
+if [[ ! -f "${INDEX_FILE}" ]]; then
 cat >"${INDEX_FILE}" <<'EOF'
 [Icon Theme]
 Name=Hicolor
@@ -82,10 +92,8 @@ MinSize=8
 MaxSize=512
 Context=Applications
 EOF
-
-update-desktop-database "${HOME}/.local/share/applications"
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache "${HICOLOR_DIR}" || true
 fi
+
+refresh_desktop_caches
 
 echo "Installed to ${PREFIX} and registered launcher entry app.tasksmack.TaskSmack"

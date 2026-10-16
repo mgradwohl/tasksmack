@@ -1,7 +1,7 @@
 /// @file test_WindowsBatteryInfo.cpp
 /// @brief Platform::Windows::readBatteryInfo() (#1523) and WindowsPowerProbe's battery details,
-/// against fake battery device calls: a normal battery, relative-capacity units, no battery, a
-/// failed IOCTL, and the device handle closed exactly once.
+/// against fake battery device calls: a normal battery, two batteries summed (#2151),
+/// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once.
 
 #include "Platform/PowerTypes.h"
 #include "Platform/Windows/WindowsBatteryInfo.h"
@@ -10,8 +10,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform::Windows
@@ -33,6 +35,12 @@ struct FakeBattery
     const char* chemistry = "LION";
     std::wstring manufacturer = L"Contoso";
     std::wstring model = L"5B10W51";
+    // A second battery (#2151), answering when the second path is the one opened
+    ULONG secondDesigned = 72'000;
+    ULONG secondFullCharged = 43'200;
+    ULONG secondCycles = 310;
+    std::wstring secondModel = L"External";
+    std::size_t openedIndex = 0; ///< Which path the open device is
     int opens = 0;
     int closes = 0;
     int informationQueries = 0;
@@ -61,13 +69,8 @@ std::vector<std::wstring> fakeEnumerate()
     return fake().paths;
 }
 
-HANDLE WINAPI fakeCreateFile(LPCWSTR /*path*/,
-                             DWORD /*access*/,
-                             DWORD /*share*/,
-                             LPSECURITY_ATTRIBUTES /*sa*/,
-                             DWORD /*disposition*/,
-                             DWORD /*flags*/,
-                             HANDLE /*tmpl*/)
+HANDLE WINAPI fakeCreateFile(
+    LPCWSTR path, DWORD /*access*/, DWORD /*share*/, LPSECURITY_ATTRIBUTES /*sa*/, DWORD /*disposition*/, DWORD /*flags*/, HANDLE /*tmpl*/)
 {
     if (fake().failOpen)
     {
@@ -75,6 +78,9 @@ HANDLE WINAPI fakeCreateFile(LPCWSTR /*path*/,
         return INVALID_HANDLE_VALUE;
     }
     ++fake().opens;
+    const auto opened = std::ranges::find(fake().paths, std::wstring_view(path));
+    EXPECT_NE(opened, fake().paths.end());
+    fake().openedIndex = static_cast<std::size_t>(opened - fake().paths.begin());
     return fakeDevice();
 }
 
@@ -98,13 +104,14 @@ BOOL WINAPI fakeDeviceIoControl(
         SetLastError(ERROR_GEN_FAILURE);
         return FALSE;
     }
+    const bool second = fake().openedIndex == 1;
     if (query.InformationLevel == BatteryInformation)
     {
         BATTERY_INFORMATION info{};
         info.Capabilities = fake().capabilities;
-        info.DesignedCapacity = fake().designed;
-        info.FullChargedCapacity = fake().fullCharged;
-        info.CycleCount = fake().cycles;
+        info.DesignedCapacity = second ? fake().secondDesigned : fake().designed;
+        info.FullChargedCapacity = second ? fake().secondFullCharged : fake().fullCharged;
+        info.CycleCount = second ? fake().secondCycles : fake().cycles;
         std::memcpy(static_cast<UCHAR*>(info.Chemistry), fake().chemistry, std::min<std::size_t>(std::strlen(fake().chemistry), 4));
         std::memcpy(out, &info, sizeof(info));
         *returned = sizeof(info);
@@ -112,7 +119,8 @@ BOOL WINAPI fakeDeviceIoControl(
     }
     // Only the two names are asked for: never the serial number
     EXPECT_TRUE(query.InformationLevel == BatteryManufactureName || query.InformationLevel == BatteryDeviceName);
-    const std::wstring& name = (query.InformationLevel == BatteryManufactureName) ? fake().manufacturer : fake().model;
+    const std::wstring& model = second ? fake().secondModel : fake().model;
+    const std::wstring& name = (query.InformationLevel == BatteryManufactureName) ? fake().manufacturer : model;
     const auto bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
     EXPECT_LE(bytes, outBytes);
     std::memcpy(out, name.c_str(), bytes);
@@ -189,6 +197,25 @@ TEST_F(WindowsBatteryInfoTest, RelativeCapacityUnitsAreNotReportedAsWattHours)
     EXPECT_EQ(info.healthPercent, -1);
     EXPECT_EQ(info.cycleCount, 123U); // The rest is still reported
     EXPECT_EQ(info.technology, "Li-ion");
+}
+
+TEST_F(WindowsBatteryInfoTest, TwoBatteriesAreSummedLikeTheChargePercent)
+{
+    // #2151: a 24 Wh internal pack at 95% and a 72 Wh external pack at 60%. The charge percent
+    // covers both, so the capacities and health must too, not just the first pack's.
+    fake().paths.emplace_back(LR"(\\?\acpi#pnp0c0a#2#{72631e54-78a4-11d0-bcf7-00aa00b7b32a})");
+    fake().designed = 24'000;
+    fake().fullCharged = 22'800;
+    fake().cycles = 40;
+    const BatteryInfo info = readBatteryInfo(fakes());
+    EXPECT_TRUE(info.found);
+    EXPECT_DOUBLE_EQ(info.designWh, 96.0);
+    EXPECT_DOUBLE_EQ(info.fullChargeWh, 66.0);
+    EXPECT_EQ(info.healthPercent, 69); // 66 / 96, not the first pack's 95
+    EXPECT_EQ(info.cycleCount, 310U);  // The most-cycled pack
+    EXPECT_EQ(info.model, "5B10W51");  // The names stay the first battery's
+    EXPECT_EQ(fake().opens, 2);
+    EXPECT_EQ(fake().closes, 2);
 }
 
 TEST_F(WindowsBatteryInfoTest, NoBatteryOrAFailedCallFindsNothingAndClosesWhatItOpened)

@@ -6,10 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Get-GitHubSlug([string]$text) {
+    # GitHub's rule (github-slugger), as in md-link-audit.sh: lowercase, drop punctuation other than
+    # "-" and "_", then turn each space into "-" without collapsing runs ("Foo - Bar" is "foo---bar").
     $t = $text.Trim().ToLowerInvariant().Replace('`', '')
-    $t = [regex]::Replace($t, '[^a-z0-9\s-]', '')
-    $t = [regex]::Replace($t, '[\s-]+', '-')
-    $t = $t.Trim('-')
+    $t = [regex]::Replace($t, '[^a-z0-9_\s-]', '')
+    $t = [regex]::Replace($t, '\s', '-')
     return $t
 }
 
@@ -293,7 +294,7 @@ foreach ($g in $grouped) {
     foreach ($item in ($g.Group | Sort-Object File, Line | Select-Object -First 200)) {
         $relFile = $item.File
         if ($relFile.ToLowerInvariant().StartsWith($repoRootNorm.ToLowerInvariant())) {
-            $relFile = $relFile.Substring($repoRootNorm.Length).Replace('\\', '/')
+            $relFile = $relFile.Substring($repoRootNorm.Length).Replace('\', '/')
         }
         "{0}:{1}: {2} -> {3}" -f $relFile, $item.Line, $item.Raw, $item.Detail
     }

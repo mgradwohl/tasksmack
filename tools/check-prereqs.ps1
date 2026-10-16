@@ -503,7 +503,7 @@ if ($jinja2Installed) {
     Write-Status -Name "jinja2" -Status "ok" -Version $jinja2Display -Path "(python module)" -Required ""
 }
 else {
-    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(pip install jinja2)" -Required ""
+    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(python -m pip install --require-hashes -r requirements-glad.txt)" -Required ""
     $AllOK = $false
 }
 
@@ -591,7 +591,7 @@ if ($AllOK) {
 else {
     Write-Host "Some prerequisites are missing or do not meet version requirements." -ForegroundColor Red
     Write-Host "Run " -NoNewline
-    Write-Host ".\setup.ps1 -Help" -ForegroundColor Cyan -NoNewline
-    Write-Host " for installation instructions."
+    Write-Host "pwsh tools/setup-dev.ps1 -DryRun" -ForegroundColor Cyan -NoNewline
+    Write-Host " to see what tools/setup-dev.ps1 would install."
     exit 1
 }

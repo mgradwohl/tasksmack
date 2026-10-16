@@ -191,10 +191,13 @@ ConnectionsReadResult WindowsProcessConnectionsReader::readConnections(const Pro
 {
     // A refused open is PermissionDenied: the tables would list its sockets, but which process holds
     // the PID cannot be confirmed.
-    auto opened =
-        openProcessVerified({.openProcess = m_Api.openProcess, .getProcessTimes = m_Api.getProcessTimes, .closeHandle = m_Api.closeHandle},
-                            target,
-                            PROCESS_QUERY_LIMITED_INFORMATION);
+    // An exited process whose object is still held open is refused too (its sockets are gone).
+    auto opened = openProcessVerified({.openProcess = m_Api.openProcess,
+                                       .getProcessTimes = m_Api.getProcessTimes,
+                                       .closeHandle = m_Api.closeHandle,
+                                       .getExitCodeProcess = m_Api.getExitCodeProcess},
+                                      target,
+                                      PROCESS_QUERY_LIMITED_INFORMATION);
     if (!opened)
     {
         auto refused = toReadFailure<ConnectionsReadStatus>(opened.error());
@@ -202,12 +205,6 @@ ConnectionsReadResult WindowsProcessConnectionsReader::readConnections(const Pro
     }
     const InjectableHandle process = std::move(*opened);
     const auto pid = static_cast<DWORD>(target.pid);
-    // An exited process whose object is still held open: its sockets are gone, and its PID is pinned.
-    DWORD exitCode = 0;
-    if (m_Api.getExitCodeProcess(process.get(), &exitCode) != 0 && exitCode != STILL_ACTIVE)
-    {
-        return failure(ConnectionsReadStatus::ProcessExited);
-    }
 
     // The handle stays open from here on, so the PID cannot be reused while the tables are read.
     ConnectionsReadResult result{.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};

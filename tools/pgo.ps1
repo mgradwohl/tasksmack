@@ -103,7 +103,7 @@ function Invoke-Generate {
     $prevLlvmProfileFile = $env:LLVM_PROFILE_FILE
     $env:LLVM_PROFILE_FILE = $ProfrawPattern
     try {
-        Invoke-Native $BenchBin --benchmark_min_time=0.5
+        Invoke-Native $BenchBin --benchmark_min_time=0.5s
 
         Write-Step 'Phase 1 – UI training: the real panels, headless (TaskSmackUiTraining, #880)'
 

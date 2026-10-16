@@ -355,8 +355,17 @@ inline constexpr std::string_view REDACTED_USER = "<user>";
 /// when the plain name is taken) is redacted whole. An empty login name redacts nothing.
 [[nodiscard]] std::string redactLoginName(std::string_view text, std::string_view userName, Platform::OsFamily family);
 
+/// @p text with the user's profile folder @p homeDirectory (OsInfo::homeDirectory) named REDACTED_USER
+/// wherever a path is it or under it (#2197), whatever the folder is called: with "C:\Users\bob" (the
+/// profile folder of a login since renamed "alice"), "C:\Users\bob\x.exe" -> "C:\Users\<user>\x.exe".
+/// The path matches only where a component ends (as in redactLoginName()), so "C:\Users\bobby" is left
+/// alone. On Windows ASCII case is ignored and '/' and '\' match each other. A folder with no name to
+/// redact (empty, or a root such as "/") redacts nothing.
+[[nodiscard]] std::string redactHomeDirectory(std::string_view text, std::string_view homeDirectory, Platform::OsFamily family);
+
 /// Gives each row of @p sections that isn't an identifier, and whose label, value or tooltips name the
-/// user (redactLoginName() with @p os's userName and family), its redacted text (#2120).
+/// user (redactHomeDirectory() and redactLoginName() with @p os's homeDirectory, userName and family),
+/// its redacted text (#2120, #2197).
 void redactUserPaths(std::span<Section> sections, const Platform::OsInfo& os);
 
 /// The page's sections, in display order, with redactUserPaths() applied to them all. Empty before the
@@ -403,11 +412,14 @@ enum class ReportFormat : std::uint8_t
 /// otherwise or when none is left.
 [[nodiscard]] std::string reportFileName(std::string_view computerName, bool showIdentifiers, std::string_view date, ReportFormat format);
 
-/// The format to save @p path in: the dialog's @p filter (0 text, 1 JSON) when it says, else the
-/// path's extension (".json" is JSON), else text.
+/// The format to save @p path in: its typed extension when that is ".txt" or ".json" (#2144), else the
+/// dialog's @p filter (1 is JSON), else text.
 [[nodiscard]] ReportFormat reportFormatFor(std::string_view path, int filter);
 
 /// @p path with the format's extension added when it has none (a name typed without one).
 [[nodiscard]] std::string withReportExtension(std::string path, ReportFormat format);
+
+/// @p path with " (@p number)" before its extension: "dir/report.txt", 2 is "dir/report (2).txt" (#2144).
+[[nodiscard]] std::string numberedReportPath(std::string_view path, int number);
 
 } // namespace App::SystemInfo

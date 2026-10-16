@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -28,6 +29,7 @@
 #include <vector>
 
 #include <pwd.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -284,6 +286,41 @@ TEST(UserNameLookupTest, UnknownUidIsNullopt)
         return 0;
     };
     EXPECT_FALSE(lookUpUserName(4242, noSuchUser).has_value());
+}
+
+// #2197: the home directory comes from the same entry, which need not be named after the login.
+TEST(UserNameLookupTest, HomeDirectoryIsTheEntrysPwDir)
+{
+    const auto fakeGetpwuidR = [](uid_t uid, passwd* entry, char* buffer, std::size_t size, passwd** result) -> int
+    {
+        constexpr std::string_view NAME = "alice";
+        constexpr std::string_view HOME = "/home/bob";
+        *result = nullptr;
+        if (size < NAME.size() + HOME.size() + 2)
+        {
+            return ERANGE;
+        }
+        const std::span<char> room(buffer, size);
+        std::ranges::copy(NAME, room.begin());
+        room[NAME.size()] = '\0';
+        std::ranges::copy(HOME, room.begin() + static_cast<std::ptrdiff_t>(NAME.size() + 1));
+        room[NAME.size() + 1 + HOME.size()] = '\0';
+        entry->pw_name = buffer;
+        entry->pw_dir = &room[NAME.size() + 1];
+        entry->pw_uid = uid;
+        *result = entry;
+        return 0;
+    };
+    EXPECT_EQ(lookUpUserName(1000, fakeGetpwuidR), "alice");
+    EXPECT_EQ(lookUpHomeDirectory(1000, fakeGetpwuidR), "/home/bob");
+
+    const auto noHome = [](uid_t, passwd* entry, char*, std::size_t, passwd** result) -> int
+    {
+        entry->pw_dir = nullptr;
+        *result = entry;
+        return 0;
+    };
+    EXPECT_FALSE(lookUpHomeDirectory(1000, noHome).has_value());
 }
 
 // reniceThreads (#1104/#1228 review): the pass bookkeeping, with /proc and setpriority faked.

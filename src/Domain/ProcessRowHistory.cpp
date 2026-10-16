@@ -50,15 +50,15 @@ std::shared_ptr<const Generation> Tracker::advance(const std::vector<ProcessSnap
 
     auto next = std::make_shared<Generation>(metrics, snapshots.size());
 
-    // This generation's index: its rows sorted by uniqueKey (then row, so a key listed twice -- a
-    // hash collision -- finds its first row). A sorted vector reused across generations rather than
-    // a hash map rebuilt for each, so carrying the rings over allocates nothing but the generation.
+    // This generation's index: its rows sorted by (pid, start time), then row, so an identity listed
+    // twice finds its first row. A sorted vector reused across generations rather than a hash map
+    // rebuilt for each, so carrying the rings over allocates nothing but the generation.
     m_NextKeys.clear();
     m_NextKeys.reserve(snapshots.size());
     std::size_t row = 0;
     while (row < snapshots.size())
     {
-        m_NextKeys.push_back({.key = snapshots[row].uniqueKey, .row = row});
+        m_NextKeys.push_back({.pid = snapshots[row].pid, .startTimeTicks = snapshots[row].startTimeTicks, .row = row});
         ++row;
     }
     std::ranges::sort(m_NextKeys);
@@ -67,13 +67,14 @@ std::shared_ptr<const Generation> Tracker::advance(const std::vector<ProcessSnap
     while (row < snapshots.size())
     {
         const ProcessSnapshot& proc = snapshots[row];
-        // The process's row in the last generation, if it listed it (a key listed twice: its first row).
+        // The process's row in the last generation, if it listed it (an identity listed twice: its first row).
         const Generation* previous = nullptr;
         std::size_t previousRow = 0;
         if (m_Last)
         {
-            const auto it = std::ranges::lower_bound(m_LastKeys, proc.uniqueKey, {}, &KeyRow::key);
-            if (it != m_LastKeys.end() && it->key == proc.uniqueKey)
+            const KeyRow wanted{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks, .row = 0};
+            const auto it = std::ranges::lower_bound(m_LastKeys, wanted);
+            if (it != m_LastKeys.end() && it->pid == proc.pid && it->startTimeTicks == proc.startTimeTicks)
             {
                 previous = m_Last.get();
                 previousRow = it->row;
@@ -93,7 +94,7 @@ std::shared_ptr<const Generation> Tracker::advance(const std::vector<ProcessSnap
                         ring = *kept;
                     }
                 }
-                ring.push(static_cast<float>(valueOf(proc, static_cast<Metric>(metric))));
+                ring.push(static_cast<float>(sampleOf(proc, static_cast<Metric>(metric))));
             }
             ++metric;
         }

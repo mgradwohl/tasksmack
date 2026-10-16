@@ -50,6 +50,7 @@ coverage-output.txt
 /perf-data/*-summary.txt
 /perf-data/*-flamegraph.svg
 /perf-data/idle-*.json
+/perf-data/heaptrack-*
 heaptrack.*.gz
 *.pdb
 

@@ -42,21 +42,23 @@ struct BatteryDeviceFunctions
     CloseHandleFn closeHandle = &::CloseHandle;
 };
 
-/// One battery's static facts. A field the battery did not report is 0 or empty.
+/// The batteries' static facts. A field no battery reported is 0 or empty. The capacities, health and
+/// cycle count cover every battery (combineBatteryCapacities(), #2151), as the charge percent does;
+/// the chemistry and names are the first answering battery's.
 struct BatteryInfo
 {
     bool found = false;            ///< A battery answered IOCTL_BATTERY_QUERY_INFORMATION
-    bool relativeCapacity = false; ///< BATTERY_CAPACITY_RELATIVE: capacities are not mWh, so not reported
-    double designWh = 0.0;
-    double fullChargeWh = 0.0;
-    int healthPercent = -1;
-    std::uint64_t cycleCount = 0; ///< 0: not reported (the driver's "no cycle counter")
-    std::string technology;       ///< Chemistry as text ("Li-ion")
+    bool relativeCapacity = false; ///< BATTERY_CAPACITY_RELATIVE on every battery: no mWh, so not reported
+    double designWh = 0.0;         ///< Summed over the batteries
+    double fullChargeWh = 0.0;     ///< Summed over the batteries
+    int healthPercent = -1;        ///< From the sums
+    std::uint64_t cycleCount = 0;  ///< The most-cycled battery's; 0: not reported (the driver's "no cycle counter")
+    std::string technology;        ///< Chemistry as text ("Li-ion")
     std::string manufacturer;
     std::string model;
 };
 
-/// Reads the first battery that answers. The serial number is an identifier and is not read.
+/// Reads every battery that answers. The serial number is an identifier and is not read.
 [[nodiscard]] BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api);
 
 } // namespace Platform::Windows

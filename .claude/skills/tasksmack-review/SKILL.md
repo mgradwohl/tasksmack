@@ -14,7 +14,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Platform probes (`src/Platform/`) must return **raw counters** only (CPU ticks, bytes). Flag any computation of rates, deltas, or percentages in a probe.
 - Domain (`src/Domain/`) must not depend on UI, Core, ImGui/ImPlot, or graphics libraries.
 - UI code must never call Platform directly, include `Platform/Factory.h`, or call `Platform::make*()`. Path access goes through `Core::Application::get().paths()`.
-- App panels may call `Platform::make*Probe()` / `Platform::makeProcessActions()` only at construction/`onAttach` time — never in render loops.
+- App is the composition root: `Platform::make*Probe()` / `Platform::makeProcessActions()` are called only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which panels call at construction/`onAttach` time — never in render loops. Flag `Platform/Factory.h` included anywhere else in `App/` or `UI/`.
 - OpenGL calls belong in `Core/` and `UI/` only.
 
 ## 2. C++23 compliance
@@ -38,7 +38,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 ## 5. Conventions
 
-- Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
+- Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants, `PascalCase` enumerators.
 - Include order: matching header → project headers → third-party → stdlib, blank line between groups; `#pragma once` in headers.
 - GLAD before SDL: `#include <glad/gl.h>` then `#include <SDL3/SDL.h>`.
 - Reuse constants from `src/Domain/SamplingConfig.h`; flag re-declared sampling literals.

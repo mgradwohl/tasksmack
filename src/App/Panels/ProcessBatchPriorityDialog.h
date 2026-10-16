@@ -26,6 +26,17 @@ namespace App
 class ProcessBatchPriorityDialog
 {
   public:
+    ProcessBatchPriorityDialog() = default;
+    ~ProcessBatchPriorityDialog() = default;
+
+    // Not copyable: m_Listed points into m_Targets, so a copy's list would point into the source's
+    // vector and dangle once the source is reopened or destroyed (#2143). Moving keeps the vector's
+    // buffer, so the moved-to dialog's list still points into its own m_Targets.
+    ProcessBatchPriorityDialog(const ProcessBatchPriorityDialog&) = delete;
+    ProcessBatchPriorityDialog& operator=(const ProcessBatchPriorityDialog&) = delete;
+    ProcessBatchPriorityDialog(ProcessBatchPriorityDialog&&) noexcept = default;
+    ProcessBatchPriorityDialog& operator=(ProcessBatchPriorityDialog&&) noexcept = default;
+
     /// Asks for the dialog for @p targets (the selection, as ProcessBatch::resolveTargets() found it),
     /// showing the default priority; it opens on the next render(). @p ownPid is TaskSmack's own PID (0
     /// when unknown), which the list always names.

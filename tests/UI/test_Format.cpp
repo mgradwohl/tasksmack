@@ -17,6 +17,7 @@
 #include <limits>
 #include <locale>
 #include <random>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,51 +26,60 @@
 // CPU Affinity Mask Formatting Tests
 // =============================================================================
 
+namespace
+{
+/// formatCpuAffinity() of a 64-bit mask, bit N = processor N (test shorthand, #2164).
+[[nodiscard]] auto formatMask(std::uint64_t mask) -> std::string
+{
+    return UI::Format::formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
+}
+} // namespace
+
 TEST(FormatTest, AffinityMaskZeroShowsDash)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x0), "-");
+    EXPECT_EQ(formatMask(0x0), "-");
 }
 
 TEST(FormatTest, AffinityMaskSingleCore)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x1), "0");                    // Core 0
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x2), "1");                    // Core 1
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x4), "2");                    // Core 2
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x8), "3");                    // Core 3
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x10), "4");                   // Core 4
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x8000000000000000ULL), "63"); // Core 63
+    EXPECT_EQ(formatMask(0x1), "0");                    // Core 0
+    EXPECT_EQ(formatMask(0x2), "1");                    // Core 1
+    EXPECT_EQ(formatMask(0x4), "2");                    // Core 2
+    EXPECT_EQ(formatMask(0x8), "3");                    // Core 3
+    EXPECT_EQ(formatMask(0x10), "4");                   // Core 4
+    EXPECT_EQ(formatMask(0x8000000000000000ULL), "63"); // Core 63
 }
 
 TEST(FormatTest, AffinityMaskConsecutiveCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3), "0,1");  // Cores 0,1
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), "0-3");  // Cores 0-3
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xFF), "0-7"); // Cores 0-7
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF0), "4-7"); // Cores 4-7
+    EXPECT_EQ(formatMask(0x3), "0,1");  // Cores 0,1
+    EXPECT_EQ(formatMask(0xF), "0-3");  // Cores 0-3
+    EXPECT_EQ(formatMask(0xFF), "0-7"); // Cores 0-7
+    EXPECT_EQ(formatMask(0xF0), "4-7"); // Cores 4-7
 }
 
 TEST(FormatTest, AffinityMaskNonConsecutiveCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x5), "0,2");      // Cores 0,2
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x15), "0,2,4");   // Cores 0,2,4
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x55), "0,2,4,6"); // Cores 0,2,4,6
+    EXPECT_EQ(formatMask(0x5), "0,2");      // Cores 0,2
+    EXPECT_EQ(formatMask(0x15), "0,2,4");   // Cores 0,2,4
+    EXPECT_EQ(formatMask(0x55), "0,2,4,6"); // Cores 0,2,4,6
 }
 
 TEST(FormatTest, AffinityMaskMixedRanges)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF3), "0,1,4-7");  // Cores 0,1,4-7
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x1F5), "0,2,4-8"); // Cores 0,2,4-8
+    EXPECT_EQ(formatMask(0xF3), "0,1,4-7");  // Cores 0,1,4-7
+    EXPECT_EQ(formatMask(0x1F5), "0,2,4-8"); // Cores 0,2,4-8
 }
 
 TEST(FormatTest, AffinityMaskAllCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xFFFFFFFFFFFFFFFFULL), "0-63");
+    EXPECT_EQ(formatMask(0xFFFFFFFFFFFFFFFFULL), "0-63");
 }
 
 TEST(FormatTest, AffinityMaskHighCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF000000000000000ULL), "60-63");
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3000000000000000ULL), "60,61");
+    EXPECT_EQ(formatMask(0xF000000000000000ULL), "60-63");
+    EXPECT_EQ(formatMask(0x3000000000000000ULL), "60,61");
 }
 
 // #1247: affinities wider than 64 processors list exactly the processors allowed.
@@ -81,15 +91,14 @@ TEST(FormatTest, AffinityBeyond64Cpus)
         return UI::Format::formatCpuAffinity(words);
     };
     EXPECT_EQ(format(Words{}), "-");
-    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                         // taskset -c 70
-    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");                    // across the word boundary
-    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");                   // the issue's example
-    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");                     // a pair spanning two words
-    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");                 // a run spanning two words
-    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255");         // all of a 256-CPU machine
-    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");              // whole zero words skipped
-    EXPECT_EQ(format(Words{0, 0, 0}), "-");                                // no processor set
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), format(Words{0xF})); // the 64-bit form agrees
+    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                 // taskset -c 70
+    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");            // across the word boundary
+    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");           // the issue's example
+    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");             // a pair spanning two words
+    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");         // a run spanning two words
+    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255"); // all of a 256-CPU machine
+    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");      // whole zero words skipped
+    EXPECT_EQ(format(Words{0, 0, 0}), "-");                        // no processor set
 }
 // =============================================================================
 // Epoch Time Formatting Tests
@@ -464,21 +473,15 @@ TEST(FormatTest, FormatIntLocalizedFormatsCorrectly)
     EXPECT_FALSE(result.empty());
 }
 
-TEST(FormatTest, FormatUIntLocalizedFormatsCorrectly)
+TEST(FormatTest, FormatFixedLocalizedFormatsCorrectly)
 {
-    const auto result = UI::Format::formatUIntLocalized(12345U);
+    const auto result = UI::Format::formatFixedLocalized(123.456, 2, {});
     EXPECT_FALSE(result.empty());
 }
 
-TEST(FormatTest, FormatDoubleLocalizedFormatsCorrectly)
+TEST(FormatTest, FormatFixedLocalizedHandlesZeroDecimals)
 {
-    const auto result = UI::Format::formatDoubleLocalized(123.456, 2);
-    EXPECT_FALSE(result.empty());
-}
-
-TEST(FormatTest, FormatDoubleLocalizedHandlesZeroDecimals)
-{
-    const auto result = UI::Format::formatDoubleLocalized(123.456, 0);
+    const auto result = UI::Format::formatFixedLocalized(123.456, 0, {});
     EXPECT_FALSE(result.empty());
 }
 
@@ -522,31 +525,6 @@ TEST(FormatTest, FormatOrDashReturnsDashForZeroOrNegative)
 
     const auto resultNeg = UI::Format::formatOrDash(-5, [](int v) { return std::format("{}", v); });
     EXPECT_EQ(resultNeg, "-");
-}
-
-// =============================================================================
-// Uptime Formatting Tests
-// =============================================================================
-
-TEST(FormatTest, FormatUptimeShortFormatsCorrectly)
-{
-    // 2 days, 5 hours, 30 minutes in seconds
-    const std::uint64_t seconds = (2ULL * 24ULL * 60ULL * 60ULL) + (5ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
-    const auto result = UI::Format::formatUptimeShort(seconds);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesSmallValues)
-{
-    const auto result = UI::Format::formatUptimeShort(300); // 5 minutes
-    EXPECT_FALSE(result.empty());
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesZero)
-{
-    const auto result = UI::Format::formatUptimeShort(0);
-    EXPECT_TRUE(result.empty());
 }
 
 // =============================================================================
@@ -1009,9 +987,9 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
 TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
 {
     const auto unit = UI::Format::chooseByteUnit(1024.0);
-    const auto parts = UI::Format::splitBytesPerSecForAlignment(1024.0, unit);
+    const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(1024.0, unit);
 
-    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.wholePart().empty());
     EXPECT_FALSE(parts.unitPart.empty());
     EXPECT_TRUE(parts.unitPart.contains("/s"));
 }
@@ -1206,32 +1184,6 @@ TEST(FormatTest, FormatPowerOrZeroHandlesMicrowatts)
 }
 
 // =============================================================================
-// formatUptimeShort — hours-only path (hours > 0, days == 0)
-// =============================================================================
-
-TEST(FormatTest, FormatUptimeShortHandlesHoursOnly)
-{
-    // 2 hours, 30 minutes, no days
-    const std::uint64_t seconds = (2ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
-    const auto result = UI::Format::formatUptimeShort(seconds);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-    EXPECT_TRUE(result.contains("h"));
-    EXPECT_TRUE(result.contains("m"));
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesMinutesOnly)
-{
-    // Less than one hour: just minutes path
-    const auto result = UI::Format::formatUptimeShort(45 * 60); // 45 minutes
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-    EXPECT_TRUE(result.contains("m"));
-    EXPECT_FALSE(result.contains("h"));
-    EXPECT_FALSE(result.contains("d"));
-}
-
-// =============================================================================
 // splitBytesPerSecForAlignmentFast — unit suffix correctness
 // =============================================================================
 
@@ -1263,12 +1215,12 @@ TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastMatchesSlowPath)
     for (const auto& unit : units)
     {
         const double bytes = 512.0 * unit.scale; // 512 in each unit
-        const auto slow = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
+        const auto slow = UI::Format::splitBytesForAlignment(bytes, unit);
         const auto fast = UI::Format::splitBytesPerSecForAlignmentFast(bytes, unit);
 
         EXPECT_EQ(slow.wholePart, fast.wholePart()) << "wholePart mismatch for " << unit.suffix;
         EXPECT_EQ(std::string(1, fast.decimalDigit), slow.decimalPart) << "decimalPart mismatch for " << unit.suffix;
-        EXPECT_EQ(slow.unitPart, fast.unitPart) << "unitPart mismatch for " << unit.suffix;
+        EXPECT_EQ(slow.unitPart + "/s", fast.unitPart) << "unitPart mismatch for " << unit.suffix;
     }
 }
 
@@ -1416,10 +1368,10 @@ TEST(FormatTest, FormatDurationShowsTheSizeOfANegativeDurationAndNAForNaN)
     EXPECT_FALSE(UI::Format::formatDuration(std::numeric_limits<double>::infinity()).empty());
 }
 
-TEST(FormatTest, FormatUptimeShortUsesTheDurationGrammar)
+TEST(FormatTest, FormatDurationShowsUptimeInTheDurationGrammar)
 {
-    EXPECT_EQ(UI::Format::formatUptimeShort((2ULL * 86400ULL) + (5ULL * 3600ULL) + (30ULL * 60ULL)), "Up: 2d 05h");
-    EXPECT_EQ(UI::Format::formatUptimeShort(45ULL * 60ULL), "Up: 45m 00s");
+    EXPECT_EQ(UI::Format::formatDuration((2.0 * 86400.0) + (5.0 * 3600.0) + (30.0 * 60.0)), "2d 05h");
+    EXPECT_EQ(UI::Format::formatDuration(45.0 * 60.0), "45m 00s");
 }
 
 // =============================================================================
@@ -1536,7 +1488,7 @@ TEST(FormatTest, SplitBytesForAlignmentNoDecimalZero)
 }
 
 // =============================================================================
-// formatCpuAffinityMask — trailing range with prior bits (hasAny=true)
+// formatCpuAffinity of a 64-bit mask — trailing range with prior bits (hasAny=true)
 // =============================================================================
 
 TEST(FormatTest, FormatCpuAffinityMaskTrailingAdjacentPairWithPrefix)
@@ -1545,7 +1497,7 @@ TEST(FormatTest, FormatCpuAffinityMaskTrailingAdjacentPairWithPrefix)
     // adjacent pair (rangeStart+1 == rangeEnd) with hasAny=true → comma prefix
     // 0x3 = bits 0,1 | 0xC000000000000000 = bits 62,63
     const uint64_t mask = 0x3ULL | 0xC000000000000000ULL;
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,62,63");
+    EXPECT_EQ(formatMask(mask), "0,1,62,63");
 }
 
 TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
@@ -1554,7 +1506,7 @@ TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
     // range (rangeEnd - rangeStart > 1) with hasAny=true → comma + "61-63"
     // 0x3 = bits 0,1 | 0xE000000000000000 = bits 61,62,63
     const uint64_t mask = 0x3ULL | 0xE000000000000000ULL;
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,61-63");
+    EXPECT_EQ(formatMask(mask), "0,1,61-63");
 }
 
 // =============================================================================
@@ -1609,8 +1561,9 @@ TEST(FormatTest, FormatBytesMatchesTheByteColumns)
         const auto unit = UI::Format::chooseByteUnit(bytes);
         const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
         EXPECT_EQ(UI::Format::formatBytes(bytes), parts.wholePart + parts.decimalPart + parts.unitPart) << bytes;
-        const auto rate = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
-        EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), rate.wholePart + rate.decimalPart + rate.unitPart) << bytes;
+        const auto rate = UI::Format::splitBytesPerSecForAlignmentFast(bytes, unit);
+        EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), std::string(rate.wholePart()) + rate.decimalDigit + std::string(rate.unitPart))
+            << bytes;
     }
 }
 
@@ -2026,7 +1979,7 @@ TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
     EXPECT_EQ(UI::Format::formatCountPerSecond(1500.0), "1,5K/s");
     EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 3700.0), " (16 logical processors @ 3,70 GHz)");
     EXPECT_EQ(UI::Format::withLocaleDecimalPoint(std::format("{:g} Gbps", 2.5)), "2,5 Gbps");
-    EXPECT_EQ(UI::Format::formatDoubleLocalized(1234567.891, 2), "1.234.567,89");
+    EXPECT_EQ(UI::Format::formatFixedLocalized(1234567.891, 2, {}), "1.234.567,89");
     EXPECT_EQ(UI::Format::formatPercent(87), "87%");
     EXPECT_EQ(UI::Format::percentCompact(1234), "1.234%");
     // A value too long for the stack buffer still gets the punctuation.

@@ -93,8 +93,22 @@ void SettingsLayer::onRender()
         applySettings();
         break;
     case SettingsDialog::Action::EditConfig:
-        openPath(UserConfig::get().configPath());
+    {
+        // On a first run nothing has saved the file yet, and opening a path that doesn't exist does
+        // nothing the user can see (#2145): write it first, every key with its documentation.
+        auto& config = UserConfig::get();
+        std::error_code ec;
+        if (!std::filesystem::exists(config.configPath(), ec))
+        {
+            config.save();
+            if (!std::filesystem::exists(config.configPath(), ec))
+            {
+                spdlog::warn("Couldn't create {} to open it", Core::pathToUtf8(config.configPath()));
+            }
+        }
+        openPath(config.configPath());
         break;
+    }
     case SettingsDialog::Action::OpenThemesFolder:
         openPath(userThemesDir());
         break;

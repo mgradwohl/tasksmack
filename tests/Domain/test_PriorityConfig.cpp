@@ -284,6 +284,66 @@ TEST(PriorityClassTest, ForNiceMatchesTheLabelBucket)
     }
 }
 
+// ========== classNice / classFromNice (#1204, #2168) ==========
+
+TEST(PriorityClassTest, ClassNiceIsLabelledAsItsClassAndRoundTrips)
+{
+    for (const PriorityClass priorityClass : {
+             PriorityClass::Idle,
+             PriorityClass::BelowNormal,
+             PriorityClass::Normal,
+             PriorityClass::AboveNormal,
+             PriorityClass::High,
+             PriorityClass::Realtime,
+         })
+    {
+        const int32_t nice = classNice(priorityClass);
+        EXPECT_EQ(classFromNice(nice), priorityClass) << getPriorityClassLabel(priorityClass);
+        if (priorityClass != PriorityClass::Realtime)
+        {
+            // Realtime shares High's bucket; every other class's value is labelled as itself.
+            EXPECT_EQ(getPriorityLabel(nice), getPriorityClassLabel(priorityClass));
+        }
+    }
+}
+
+TEST(PriorityClassTest, ClassNiceNeverSitsOnALabelThreshold)
+{
+    // -5 and -10, the values the probe used to report, are where the next class down starts.
+    for (const PriorityClass priorityClass : {
+             PriorityClass::Idle,
+             PriorityClass::BelowNormal,
+             PriorityClass::Normal,
+             PriorityClass::AboveNormal,
+             PriorityClass::High,
+         })
+    {
+        const int32_t nice = classNice(priorityClass);
+        EXPECT_NE(nice, HIGH_THRESHOLD);
+        EXPECT_NE(nice, ABOVE_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, BELOW_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, IDLE_THRESHOLD);
+    }
+}
+
+TEST(PriorityClassTest, RealtimeIsMinNiceAndAnUnreadClassIsNormal)
+{
+    EXPECT_EQ(classNice(PriorityClass::Realtime), MIN_NICE);
+    EXPECT_NE(classNice(PriorityClass::Realtime), classNice(PriorityClass::High));
+    EXPECT_EQ(classNice(PriorityClass::None), NORMAL_NICE);
+}
+
+TEST(PriorityClassTest, ClassFromNiceIsTheLabelBucketAboveMinNice)
+{
+    EXPECT_EQ(classFromNice(MIN_NICE), PriorityClass::Realtime);
+    EXPECT_EQ(classFromNice(-100), PriorityClass::Realtime);
+    for (int32_t nice = MIN_NICE + 1; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_EQ(classFromNice(nice), priorityClassForNice(nice)) << nice;
+    }
+    EXPECT_EQ(classFromNice(100), PriorityClass::Idle);
+}
+
 TEST(PriorityClassTest, SortKeyPutsAnUnreadClassWithTheClassItsLabelNames)
 {
     // The Windows probe's fallback for a class it could not read: no class, nice 0, shown "Normal".

@@ -322,53 +322,19 @@ inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_C
 };
 
 /// The nice value that stands for @p priorityClass: what the probe reports for it and what the
-/// control passes to setPriority() to select it. Mirrors Platform::priorityClassToNice(), which this
-/// layer cannot include (it pulls in <windows.h>); the tests hold both to getPriorityLabel().
+/// control passes to setPriority() to select it. Domain::Priority::classNice(), the table
+/// Platform::priorityClassToNice() reports from too (#2168).
 [[nodiscard]] constexpr auto windowsPriorityClassNice(WindowsPriorityClass priorityClass) noexcept -> int32_t
 {
-    switch (priorityClass)
-    {
-    case WindowsPriorityClass::Idle:
-        return Domain::Priority::MAX_NICE;
-    case WindowsPriorityClass::BelowNormal:
-        return 10;
-    case WindowsPriorityClass::AboveNormal:
-        return -7;
-    case WindowsPriorityClass::High:
-        return -15;
-    case WindowsPriorityClass::Realtime:
-        return Domain::Priority::MIN_NICE;
-    case WindowsPriorityClass::Normal:
-    default:
-        return Domain::Priority::NORMAL_NICE;
-    }
+    return Domain::Priority::classNice(priorityClass);
 }
 
-/// The class a reported nice value stands for. Realtime is MIN_NICE, which nothing else reports on
-/// Windows; every other value falls in a getPriorityLabel() bucket.
+/// The class a reported nice value stands for (Domain::Priority::classFromNice()). Realtime is
+/// MIN_NICE, which nothing else reports on Windows; every other value falls in a getPriorityLabel()
+/// bucket.
 [[nodiscard]] constexpr auto windowsPriorityClassFromNice(int32_t nice) noexcept -> WindowsPriorityClass
 {
-    if (nice <= Domain::Priority::MIN_NICE)
-    {
-        return WindowsPriorityClass::Realtime;
-    }
-    if (nice < Domain::Priority::HIGH_THRESHOLD)
-    {
-        return WindowsPriorityClass::High;
-    }
-    if (nice < Domain::Priority::ABOVE_NORMAL_THRESHOLD)
-    {
-        return WindowsPriorityClass::AboveNormal;
-    }
-    if (nice < Domain::Priority::BELOW_NORMAL_THRESHOLD)
-    {
-        return WindowsPriorityClass::Normal;
-    }
-    if (nice < Domain::Priority::IDLE_THRESHOLD)
-    {
-        return WindowsPriorityClass::BelowNormal;
-    }
-    return WindowsPriorityClass::Idle;
+    return Domain::Priority::classFromNice(nice);
 }
 
 /// The class's name, as the Processes table's Priority column spells it

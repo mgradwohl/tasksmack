@@ -366,6 +366,7 @@ set(COMMON_TEST_SOURCES
     # The PGO UI training plan (#880): workload weights, frame allocation, the driver's command line
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
+    App/test_ProcessBatchRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_ProcessAffinityDialog.cpp
     App/test_AboutDialogRender.cpp

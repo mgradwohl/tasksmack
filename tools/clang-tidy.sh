@@ -49,20 +49,30 @@ Examples:
   $(basename "$0") --changed-only           # Only analyze changed files
   $(basename "$0") src/Domain/ProcessModel.cpp  # Analyze specific file
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
-        -j|--jobs) JOBS="$2"; shift 2 ;;
+        -j|--jobs)
+            if [[ $# -lt 2 || ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: $1 requires a positive integer" >&2
+                exit 1
+            fi
+            JOBS="$2"; shift 2 ;;
         -c|--changed-only) CHANGED_ONLY=true; shift ;;
-        --cache-dir) CACHE_DIR="$2"; shift 2 ;;
+        --cache-dir)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --cache-dir requires a directory" >&2
+                exit 1
+            fi
+            CACHE_DIR="$2"; shift 2 ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h) FILES+=("$1"); shift ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
@@ -72,12 +82,17 @@ TIDY_COMPDB_DIR="${BUILD_DIR}/clang-tidy-compdb"
 COMPILE_COMMANDS_TIDY="${TIDY_COMPDB_DIR}/compile_commands.json"
 CONFIG_FILE="${PROJECT_ROOT}/.clang-tidy"
 
-# Find clang-tidy
-CLANG_TIDY=$(command -v clang-tidy 2>/dev/null || echo "")
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+
+# Find clang-tidy: the CI-pinned LLVM's (/usr/lib/llvm-22/bin) before an unversioned one on PATH, so
+# a machine with only clang-tidy-22 installed (no unversioned symlink) still finds it.
+CLANG_TIDY="$(find_llvm_tool clang-tidy || true)"
 if [[ -z "$CLANG_TIDY" ]]; then
-    echo "Error: clang-tidy not found in PATH" >&2
+    echo "Error: clang-tidy not found. Install via: apt install clang-tidy-$(pinned_llvm_major)" >&2
     exit 1
 fi
+warn_llvm_version_skew "$CLANG_TIDY" clang-tidy
 
 if $VERBOSE; then
     echo "Using clang-tidy: $CLANG_TIDY"
@@ -153,8 +168,6 @@ COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 if [[ ${#FILES[@]} -eq 0 ]]; then
     if [[ "$CHANGED_ONLY" == "true" ]]; then
         # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
-        # shellcheck source=tools/common.sh
-        source "$SCRIPT_DIR/common.sh"
         mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' || true)
         if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
             echo "No changed C++ files found."
@@ -228,7 +241,7 @@ if $VERBOSE; then
 fi
 
 # Function to run clang-tidy on a single "<cache key><TAB><file>" task
-# shellcheck disable=SC2317  # Function is called via GNU parallel/find -exec
+# shellcheck disable=SC2317,SC2329  # Function is called via GNU parallel/xargs
 run_clang_tidy() {
     local key="${1%%$'\t'*}"
     local file="${1#*$'\t'}"

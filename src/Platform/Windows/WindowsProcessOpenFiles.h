@@ -83,6 +83,7 @@ struct ProcessOpenFilesFunctions
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
     using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
+    using GetExitCodeProcessFn = BOOL(WINAPI*)(HANDLE, LPDWORD);
     using DuplicateHandleFn = BOOL(WINAPI*)(HANDLE, HANDLE, HANDLE, LPHANDLE, DWORD, BOOL, DWORD);
     using GetFileTypeFn = DWORD(WINAPI*)(HANDLE);
     using GetFinalPathNameByHandleFn = DWORD(WINAPI*)(HANDLE, LPWSTR, DWORD, DWORD);
@@ -93,6 +94,7 @@ struct ProcessOpenFilesFunctions
     OpenProcessFn openProcess = &::OpenProcess;
     CloseHandleFn closeHandle = &::CloseHandle;
     GetProcessTimesFn getProcessTimes = &::GetProcessTimes;
+    GetExitCodeProcessFn getExitCodeProcess = &::GetExitCodeProcess;
     DuplicateHandleFn duplicateHandle = &::DuplicateHandle;
     GetFileTypeFn getFileType = &::GetFileType;
     GetFinalPathNameByHandleFn getFinalPathNameByHandle = &::GetFinalPathNameByHandleW;

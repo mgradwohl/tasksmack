@@ -306,8 +306,11 @@ void SystemModel::commitHistoryAppend(PendingHistory& pending,
     m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
     m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
     m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-    // Battery charge % if available (0-100 range, -1 as "no data")
-    m_BatteryChargeHistory.push(snap.power.hasBattery ? static_cast<float>(snap.power.chargePercent) : -1.0F);
+    // Battery charge % (0-100), or NaN -- a gap, like every other unread value -- when there is no
+    // battery or it gave no reading (the probe's -1). It used to be -1 here, which every reader had to
+    // know to convert (#2159).
+    const bool hasCharge = snap.power.hasBattery && snap.power.chargePercent >= 0;
+    m_BatteryChargeHistory.push(hasCharge ? static_cast<float>(snap.power.chargePercent) : NO_READING);
     m_NetRxHistory.push(pending.netRx);
     m_NetTxHistory.push(pending.netTx);
 

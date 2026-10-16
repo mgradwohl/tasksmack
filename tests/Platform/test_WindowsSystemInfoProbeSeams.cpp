@@ -61,7 +61,9 @@ struct FakeOs
     std::wstring computerName = L"BUILD-BOX";
     bool computerNameFails = false;
     std::wstring userName = L"BUILD-BOX\\Tester";
-    LONG userNameMoreData = 0; ///< Calls left that ask for more room than the buffer has (each then fails)
+    std::wstring profileDirectory = L"C:\\Users\\tester.old"; ///< Not named after the login (#2197)
+    LONG userNameMoreData = 0;                                ///< Calls left that ask for more room than the buffer has (each then fails)
+    bool profileDirectoryFails = false;
     NET_API_STATUS joinResult = NERR_Success;
     NETSETUP_JOIN_STATUS joinStatus = NetSetupWorkgroupName;
     std::wstring joinName = L"WORKGROUP";
@@ -163,6 +165,16 @@ BOOL fakeUserName(LPWSTR buffer, PULONG size)
         return FALSE;
     }
     return fillName(fake().userName, buffer, size);
+}
+
+BOOL fakeProfileDirectory(LPWSTR buffer, PULONG size)
+{
+    if (fake().profileDirectoryFails)
+    {
+        SetLastError(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+    return fillName(fake().profileDirectory, buffer, size);
 }
 
 /// @p text and a terminator into @p destination, which must have room for both.
@@ -277,6 +289,7 @@ POWER_PLATFORM_ROLE WINAPI fakeRole(ULONG /*version*/)
         .isWow64Process2 = &fakeWow64,
         .computerName = &fakeComputerName,
         .userName = &fakeUserName,
+        .profileDirectory = &fakeProfileDirectory,
         .netGetJoinInformation = &fakeJoin,
         .netApiBufferFree = &fakeBufferFree,
         .getUserDefaultLocaleName = &fakeLocale,
@@ -318,6 +331,7 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, ReadsEveryOsField)
     EXPECT_FALSE(info.joinedToDomain);
     EXPECT_EQ(fake().joinBuffersFreed, 1);
     EXPECT_EQ(info.userName, "BUILD-BOX\\Tester");
+    EXPECT_EQ(info.homeDirectory, "C:\\Users\\tester.old");
     EXPECT_EQ(info.locale, "en-US");
     EXPECT_EQ(info.timeZone, "Pacific Standard Time");
     EXPECT_EQ(info.utcOffsetMinutes, std::optional(-420)); // daylight time: UTC-7
@@ -332,6 +346,7 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, EachFailedReadLeavesOnlyItsFieldEmpty)
     fake().computerNameFails = true;
     fake().joinResult = ERROR_ACCESS_DENIED;
     fake().userNameMoreData = 2; // still too small after the one retry
+    fake().profileDirectoryFails = true;
     fake().localeLength = 0;
     fake().zoneId = TIME_ZONE_ID_INVALID;
     fake().directoryFails = true;
@@ -348,6 +363,7 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, EachFailedReadLeavesOnlyItsFieldEmpty)
     EXPECT_TRUE(info.domainOrWorkgroup.empty());
     EXPECT_EQ(fake().joinBuffersFreed, 0) << "no buffer to free when the call fails";
     EXPECT_TRUE(info.userName.empty());
+    EXPECT_TRUE(info.homeDirectory.empty());
     EXPECT_TRUE(info.locale.empty());
     EXPECT_TRUE(info.timeZone.empty());
     EXPECT_FALSE(info.utcOffsetMinutes.has_value());
@@ -378,10 +394,12 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, SizedReadsGrowTheirBuffersOnce)
 {
     fake().computerName = std::wstring(MAX_PATH + 40, L'n'); // too long for the first buffer
     fake().userNameMoreData = 1;                             // asks for more once, then fits
+    fake().profileDirectory = L"C:\\Users\\" + std::wstring(MAX_PATH, L'p');
     fake().directoryNeeds = MAX_PATH + 20;
     const OsInfo info = readOs();
     EXPECT_EQ(info.computerName, std::string(MAX_PATH + 40, 'n'));
     EXPECT_EQ(info.userName, "BUILD-BOX\\Tester");
+    EXPECT_EQ(info.homeDirectory, "C:\\Users\\" + std::string(MAX_PATH, 'p'));
     EXPECT_EQ(info.systemDirectory.size(), MAX_PATH + 19U);
     EXPECT_EQ(info.windowsDirectory.size(), MAX_PATH + 19U);
 
@@ -463,6 +481,7 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.isWow64Process2, nullptr);
     EXPECT_NE(fns.computerName, nullptr);
     EXPECT_NE(fns.userName, nullptr);
+    EXPECT_NE(fns.profileDirectory, nullptr);
     EXPECT_NE(fns.netGetJoinInformation, nullptr);
     EXPECT_NE(fns.netApiBufferFree, nullptr);
     EXPECT_NE(fns.getUserDefaultLocaleName, nullptr);
@@ -472,6 +491,15 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.getFirmwareType, nullptr);
     EXPECT_NE(fns.getSystemFirmwareTable, nullptr);
     EXPECT_NE(fns.powerDeterminePlatformRoleEx, nullptr);
+}
+
+// The real profile-folder read (#2197): every account that runs the tests has one.
+TEST(WindowsSystemInfoProbeLiveTest, ReadsTheProfileFolder)
+{
+    WindowsSystemInfoProbe probe;
+    const OsInfo info = probe.readOs();
+    EXPECT_FALSE(info.homeDirectory.empty());
+    EXPECT_NE(info.homeDirectory.back(), '\\');
 }
 
 // The real readers the Graphics, Devices and Drivers sections compose, given inputs they can't read:

@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessBatchPriorityDialog.h"
+#include "App/Panels/ProcessBatchRun.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
@@ -443,6 +444,9 @@ class ProcessesPanel : public Panel
     // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
     // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
     ProcessDumpView m_DumpView;
+    // A confirmed batch action or batch priority change, run on its worker (#2142). Declared after
+    // m_ProcessActions, which the worker uses, so it is destroyed (stopping and waiting for it) first.
+    ProcessBatch::BatchRun m_BatchRun;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the
@@ -679,6 +683,8 @@ class ProcessesPanel : public Panel
     /// The batch priority dialog (#1484), which lists the processes and is its own confirmation
     /// (#1539); on Apply, sets the picked value on each of them by identity.
     void renderBatchPriorityDialog();
+    /// Shows a batch's one-line result in the toolbar, refreshing at once when any process was acted on (#2142).
+    void showBatchOutcome(ProcessBatch::BatchRunOutcome outcome);
 
     /// The row menu's Set affinity... dialog (#1887), its own confirmation; on Apply, sets the chosen
     /// CPUs on the process it was opened for, by identity, and shows the result in the toolbar.

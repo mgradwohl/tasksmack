@@ -1242,6 +1242,79 @@ TEST(GPUModelTest, ConcurrentReadsDuringRefresh)
     EXPECT_GT(readCount.load(), REFRESHES);
 }
 
+namespace
+{
+
+/// A probe whose every rescan reports a change and whose enumeration alternates between one GPU and
+/// three, so each refresh's rescanGPUs() replaces (and reallocates) the model's GPU info (#2153).
+/// Every GPU reports counters throughout. Its probe calls run under GPUModel's probe lock, so its
+/// own state needs no lock.
+class ChurningGPUProbe final : public MockGPUProbe
+{
+  public:
+    ChurningGPUProbe()
+    {
+        withGPU("GPU0", "GPU Zero").withGPU("GPU1", "GPU One").withGPU("GPU2", "GPU Two");
+    }
+
+    [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
+    {
+        std::vector<Platform::GPUInfo> gpus{makeGPUInfo("GPU0", "GPU Zero")};
+        if ((m_Enumerations++ % 2) == 0)
+        {
+            gpus.push_back(makeGPUInfo("GPU1", "GPU One"));
+            gpus.push_back(makeGPUInfo("GPU2", "GPU Two"));
+        }
+        return gpus;
+    }
+
+    [[nodiscard]] bool rescanGPUs(Platform::GPURescan /*depth*/) override
+    {
+        return true;
+    }
+
+  private:
+    std::uint64_t m_Enumerations = 0;
+};
+
+} // namespace
+
+// Two refreshes may race (the header promises their generations are committed in read order). One's
+// snapshots must not be named from the GPU info while the other's rescan replaces it: refreshAt()
+// copies the info under the probe lock (#2153). The race itself is for ASan/TSan to catch; the names
+// check that each snapshot was named from a whole list.
+TEST(GPUModelTest, RacingRefreshesWithChangingGpuListsNameEverySnapshot)
+{
+    Domain::GPUModel model(std::make_unique<ChurningGPUProbe>());
+
+    constexpr int ITERATIONS = 300;
+    std::latch start{2};
+    const auto refresher = [&model, &start]
+    {
+        start.arrive_and_wait();
+        for (int i = 0; i < ITERATIONS; ++i)
+        {
+            model.refresh();
+        }
+    };
+    auto first = std::async(std::launch::async, refresher);
+    auto second = std::async(std::launch::async, refresher);
+    first.get();
+    second.get();
+
+    const std::map<std::string, std::string> expectedNames{{"GPU0", "GPU Zero"}, {"GPU1", "GPU One"}, {"GPU2", "GPU Two"}};
+    const auto snapshots = model.snapshots();
+    ASSERT_FALSE(snapshots.empty());
+    for (const auto& snapshot : snapshots)
+    {
+        // GPU1 and GPU2 are enumerated only every other rescan: a snapshot is named from its own
+        // refresh's list, or not at all.
+        ASSERT_TRUE(expectedNames.contains(snapshot.gpuId)) << snapshot.gpuId;
+        EXPECT_TRUE(snapshot.name.empty() || snapshot.name == expectedNames.at(snapshot.gpuId)) << snapshot.name;
+    }
+    EXPECT_EQ(snapshots.front().name, "GPU Zero"); // Enumerated on every rescan, and listed first
+}
+
 // =============================================================================
 // Edge Cases
 // =============================================================================
@@ -1972,47 +2045,61 @@ TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
-    std::atomic<bool> stop{false};
+    // No sleeps (#2207), as in ConcurrentReadsDuringRefresh (#1797): the refreshes start once the
+    // reader has read, and each one waits for a read that finished after it began. With sleeps, a
+    // reader a loaded machine didn't schedule until the refreshes were over read nothing, and the
+    // test failed on a read count of 0 though nothing was wrong with the model.
+    constexpr std::size_t REFRESHES = 10;
     std::atomic<std::size_t> readCount{0};
-    std::atomic<bool> hadError{false};
+    std::atomic<bool> hadTornRead{false};
+    std::latch firstRead{1};
 
-    // Reader thread that reads the published history while the model refreshes. We verify it
-    // doesn't crash and every generation it sees is whole: each series as long as its timestamps.
+    // Every generation the reader sees must be whole: at least the first refresh's sample, and each
+    // series as long as its timestamps. The first torn one is reported, with its sizes.
     auto reader = std::jthread(
-        [&](std::stop_token st)
+        [&](const std::stop_token& st)
         {
-            while (!stop.load() && !st.stop_requested())
+            while (!st.stop_requested())
             {
                 const auto history = publishedHistory(model, "GPU0");
                 const std::size_t samples = history.timestamps.size();
-
-                // Verify we got non-empty, aligned results (at least one refresh happened)
-                if (samples == 0 || history.utilization.size() != samples || history.memoryPercent.size() != samples ||
-                    history.gpuClock.size() != samples || history.encoder.size() != samples || history.decoder.size() != samples ||
-                    history.temperature.size() != samples || history.power.size() != samples || history.fanSpeed.size() != samples)
+                const bool whole = samples > 0 && history.memoryUsedBytes.size() == samples && history.memoryTotalBytes.size() == samples &&
+                                   history.utilization.size() == samples && history.memoryPercent.size() == samples &&
+                                   history.gpuClock.size() == samples && history.encoder.size() == samples &&
+                                   history.decoder.size() == samples && history.temperature.size() == samples &&
+                                   history.power.size() == samples && history.fanSpeed.size() == samples;
+                if (!whole && !hadTornRead.exchange(true))
                 {
-                    hadError.store(true);
+                    ADD_FAILURE() << "torn generation: " << samples << " timestamps, " << history.memoryUsedBytes.size()
+                                  << " memoryUsedBytes, " << history.memoryTotalBytes.size() << " memoryTotalBytes, "
+                                  << history.utilization.size() << " utilization, " << history.memoryPercent.size() << " memoryPercent, "
+                                  << history.gpuClock.size() << " gpuClock, " << history.encoder.size() << " encoder, "
+                                  << history.decoder.size() << " decoder, " << history.temperature.size() << " temperature, "
+                                  << history.power.size() << " power, " << history.fanSpeed.size() << " fanSpeed";
                 }
-
-                ++readCount;
-                std::this_thread::sleep_for(std::chrono::microseconds(10));
+                if (readCount.fetch_add(1) == 0)
+                {
+                    firstRead.count_down();
+                }
+                readCount.notify_all();
             }
         });
 
-    // Perform several refreshes
-    for (int i = 0; i < 10; ++i)
+    firstRead.wait();
+    for (std::size_t i = 0; i < REFRESHES; ++i)
     {
         rawProbe->withUtilization("GPU0", 50.0 + static_cast<double>(i));
+        const std::size_t before = readCount.load();
         model.refresh();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        readCount.wait(before); // returns at once if a read already finished during the refresh
     }
 
-    stop.store(true);
+    reader.request_stop();
     reader.join();
 
-    // Verify readers executed without errors
-    EXPECT_GT(readCount.load(), 0);
-    EXPECT_FALSE(hadError.load());
+    // The first read, then at least one more per refresh.
+    EXPECT_GT(readCount.load(), REFRESHES) << "fewer reads than the first one and one per refresh";
+    EXPECT_FALSE(hadTornRead.load()) << "the reader saw a torn generation (reported above)";
 }
 
 // =============================================================================

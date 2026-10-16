@@ -9,6 +9,7 @@
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
+#include "App/Panels/ProcessBatchRun.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
@@ -75,6 +76,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1057,6 +1059,8 @@ void ProcessesPanel::onDetach()
     this->m_InteractionHoldSeconds = 0.0F;
     // A dump still being written is cancelled and waited for, while its actions are still here (#807).
     m_DumpView.shutdown();
+    // So is a batch still running (#2142): stopped before its next process.
+    m_BatchRun.shutdown();
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492).
     applyUdpEventTrace(false);
@@ -1133,6 +1137,12 @@ void ProcessesPanel::onUpdate(float deltaTime)
     if (m_RowActionResultSeconds > 0.0F)
     {
         m_RowActionResultSeconds = std::max(0.0F, m_RowActionResultSeconds - std::max(0.0F, deltaTime));
+    }
+    // A batch confirmed on an earlier frame has finished on its worker (#2142): its one line replaces
+    // the progress line.
+    if (std::optional<ProcessBatch::BatchRunOutcome> outcome = m_BatchRun.poll(); outcome.has_value())
+    {
+        showBatchOutcome(std::move(*outcome));
     }
 
     if (!m_ProcessModel || !m_Sampler)
@@ -1437,11 +1447,23 @@ void ProcessesPanel::renderContent()
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
-    const bool showActionResult = (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
-    const std::string& statusText = showActionResult ? m_RowActionResult.text : m_CachedSummaryStr;
+    // While a batch runs (#2142), its progress stands there instead, uncoloured.
+    const bool batchRunning = m_BatchRun.busy();
+    const bool showActionResult = !batchRunning && (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
+    const std::string* statusSource = &m_CachedSummaryStr;
+    if (batchRunning)
+    {
+        statusSource = &m_BatchRun.statusText();
+    }
+    else if (showActionResult)
+    {
+        statusSource = &m_RowActionResult.text;
+    }
+    const std::string& statusText = *statusSource;
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float summaryW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str(), m_CachedSummaryStr.c_str() + m_CachedSummaryStr.size()).x;
-    const float textW = showActionResult ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
+    const float textW =
+        (batchRunning || showActionResult) ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
     const float statusMinX = ImGui::GetCursorPosX();
     const ProcessTableLayout::ToolbarStatusLayout statusLayout =
         ProcessTableLayout::layoutToolbarStatus(statusMinX, rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
@@ -2620,9 +2642,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
     // the one highlighted row, when it is visible.
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
-    // So is a dump's confirm, progress or result (#807).
+    // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_DumpView.active();
+                                  m_AffinityDialog.isPending() || m_DumpView.active() || m_BatchRun.busy();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -2758,15 +2780,17 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         ImGui::SetClipboardText(proc.command.c_str());
     }
 
+    // No other process action while a batch runs on its worker (#2142): its result is still to come.
+    const bool actionsIdle = !m_BatchRun.busy();
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
-    const auto actionItem = [batchCount](Detail::ProcessAction action, const char* icon, const char* shortcut)
+    const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
     {
         const std::string label =
             (batchCount > 0)
                 ? std::format("{} {} {} processes...###{}", icon, Detail::actionLabel(action), batchCount, Detail::actionLabel(action))
                 : std::format("{} {}...###{}", icon, Detail::actionLabel(action), Detail::actionLabel(action));
-        return ImGui::MenuItem(label.c_str(), shortcut);
+        return ImGui::MenuItem(label.c_str(), shortcut, false, actionsIdle);
     };
     const auto request = [this, &proc, batchCount](Detail::ProcessAction action)
     {
@@ -2800,7 +2824,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     {
         ImGui::Separator();
         const std::string label = std::format("{} Set priority for {} processes...###SetPriority", ICON_FA_GAUGE_HIGH, batchCount);
-        if (ImGui::MenuItem(label.c_str()))
+        if (ImGui::MenuItem(label.c_str(), nullptr, false, actionsIdle))
         {
             requestSelectionPriority();
         }
@@ -2809,7 +2833,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     if (can.canSetAffinity && batchCount == 0)
     {
         ImGui::Separator();
-        if (ImGui::MenuItem(ICON_FA_MICROCHIP " Set affinity...###SetAffinity"))
+        if (ImGui::MenuItem(ICON_FA_MICROCHIP " Set affinity...###SetAffinity", nullptr, false, actionsIdle))
         {
             m_AffinityDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
                                   proc.name,
@@ -2826,7 +2850,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         {
             ImGui::Separator();
         }
-        if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL))
+        if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL, nullptr, false, actionsIdle))
         {
             m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
                                proc.name,
@@ -2912,23 +2936,29 @@ void ProcessesPanel::renderBatchPriorityDialog()
         return;
     }
     // Apply: the dialog listed these processes, so it was the confirmation (#1539). Every one in turn,
-    // by identity, TaskSmack itself last; one summary line naming the priority applied (#1484).
-    bool anySucceeded = false;
-    if (m_ProcessActions)
+    // by identity, TaskSmack itself last, on the batch's worker (#2142); one summary line naming the
+    // priority applied (#1484) when it finishes.
+    if (!m_ProcessActions)
     {
-        const ProcessBatch::BatchResult result =
-            ProcessBatch::runBatchPriority(*m_ProcessActions, m_BatchPriorityDialog.targets(), *nice, m_OwnPid);
-        m_RowActionResult = ProcessBatch::formatBatchPriorityResultMessage(*nice, result);
-        anySucceeded = result.succeeded > 0;
+        showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
+        return;
     }
-    else
+    const std::span<const ProcessBatch::BatchTarget> targets = m_BatchPriorityDialog.targets();
+    if (std::optional<ProcessBatch::BatchRunOutcome> failed = m_BatchRun.startPriority(
+            *m_ProcessActions, std::vector<ProcessBatch::BatchTarget>(targets.begin(), targets.end()), *nice, m_OwnPid);
+        failed.has_value())
     {
-        m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
+        showBatchOutcome(std::move(*failed));
     }
+}
+
+void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
+{
+    m_RowActionResult = std::move(outcome.message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
-    if (anySucceeded)
+    if (outcome.anySucceeded)
     {
-        requestRefresh(); // Show the new priorities without waiting for the next sample
+        requestRefresh(); // Show the processes acted on without waiting for the next sample
     }
 }
 
@@ -2963,6 +2993,20 @@ void ProcessesPanel::renderRowActionConfirm()
     {
         return;
     }
+    if (m_RowAction.targets.size() > 1 && m_ProcessActions)
+    {
+        // Every selected process in turn, each checked by the platform as a single action is, then one
+        // summary line rather than a message per process (#804). On the batch's worker (#2142): the
+        // line comes on a later frame, and the toolbar shows the progress until then.
+        std::optional<ProcessBatch::BatchRunOutcome> failed =
+            m_BatchRun.startAction(*m_ProcessActions, m_RowAction.action, std::move(m_RowAction.targets), m_OwnPid);
+        m_RowAction = {}; // Handed to the worker; nothing is pending any more
+        if (failed.has_value())
+        {
+            showBatchOutcome(std::move(*failed));
+        }
+        return;
+    }
     bool anySucceeded = false;
     if (m_RowAction.targets.size() == 1)
     {
@@ -2972,15 +3016,6 @@ void ProcessesPanel::renderRowActionConfirm()
                                                        : Platform::ProcessActionResult::error("Process actions unavailable");
         m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, target.pid, result);
         anySucceeded = result.success;
-    }
-    else if (m_ProcessActions)
-    {
-        // Every selected process in turn, each checked by the platform as a single action is, then one
-        // summary line rather than a message per process (#804).
-        const ProcessBatch::BatchResult result =
-            ProcessBatch::runBatchAction(*m_ProcessActions, m_RowAction.action, m_RowAction.targets, m_OwnPid);
-        m_RowActionResult = ProcessBatch::formatBatchResultMessage(m_RowAction.action, result);
-        anySucceeded = result.succeeded > 0;
     }
     else
     {

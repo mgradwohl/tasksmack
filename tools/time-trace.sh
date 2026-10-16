@@ -5,7 +5,7 @@
 #
 # Usage:
 #   ./tools/time-trace.sh [preset]     # Default preset: debug
-#   ./tools/time-trace.sh --list       # List discovered trace files without opening
+#   ./tools/time-trace.sh --list [preset]  # List discovered trace files without opening
 #
 # Output: trace JSON files are at build/<preset>/**/*.json (emitted by Clang alongside .o files).
 # A merged trace is written to build/<preset>/time-trace-merged.json for easy viewing.
@@ -15,13 +15,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PRESET="${1:-debug}"
+PRESET="debug"
+PRESET_SET=false
 LIST_ONLY=false
 
-if [[ "${PRESET}" == "--list" ]]; then
-    LIST_ONLY=true
-    PRESET="debug"
-fi
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--list] [preset]
+
+Merge the Clang -ftime-trace JSON files of build/<preset> (default: debug) into
+build/<preset>/time-trace-merged.json and open it. --list only lists the trace files.
+The build must be configured with -DTASKSMACK_ENABLE_TIME_TRACE=ON.
+EOF
+    exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --list) LIST_ONLY=true; shift ;;
+        -h|--help) usage ;;
+        -*) echo "Error: Unknown option: $1" >&2; usage 1 ;;
+        *)
+            if $PRESET_SET; then
+                echo "Error: more than one preset given: $PRESET, $1" >&2
+                exit 1
+            fi
+            PRESET="$1"; PRESET_SET=true; shift ;;
+    esac
+done
 
 BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
 
@@ -32,10 +53,11 @@ if [[ ! -d "$BUILD_DIR" ]]; then
 fi
 
 # Collect all trace JSON files.
-# Keep traces under CMakeFiles/ because Clang emits them alongside object files there.
-# Exclude compile database artifacts, CMake cache/metadata, and any previously merged output.
-mapfile -t TRACE_FILES < <(find "$BUILD_DIR" -path "*/CMakeFiles/*" -name "*.json" -not -name "compile_commands*" \
-    -not -name "CMakeCache*" -not -name "time-trace-merged.json" 2>/dev/null | sort)
+# Clang emits each trace beside its object file under CMakeFiles/, named after the object without
+# its .o/.obj suffix (Foo.cpp.o -> Foo.cpp.json). Matching on the source suffix keeps out CMake's
+# own JSON there (CXXDependInfo.json, InstallScripts.json, ...), which holds no trace events.
+mapfile -t TRACE_FILES < <(find "$BUILD_DIR" -path "*/CMakeFiles/*" \
+    \( -name "*.cpp.json" -o -name "*.cc.json" -o -name "*.cxx.json" -o -name "*.c.json" \) 2>/dev/null | sort)
 
 if [[ ${#TRACE_FILES[@]} -eq 0 ]]; then
     echo "No -ftime-trace JSON files found in $BUILD_DIR." >&2

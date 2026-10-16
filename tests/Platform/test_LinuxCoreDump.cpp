@@ -127,5 +127,12 @@ TEST(LinuxCoreDumpTest, StatesAndTracersComeFromProc)
     EXPECT_EQ(tracerPidFromStatus("Name:\tapp\n"), std::nullopt);
 }
 
+// #2148: the ptrace privilege that counts is gdb's, the gdb beside the gcore script.
+TEST(LinuxCoreDumpTest, GcoreRunsTheGdbBesideIt)
+{
+    EXPECT_EQ(LinuxCoreDump::gcoreDebuggerPath("/usr/bin/gcore"), "/usr/bin/gdb");
+    EXPECT_EQ(LinuxCoreDump::gcoreDebuggerPath("/opt/gdb-15/bin/gcore"), "/opt/gdb-15/bin/gdb");
+}
+
 } // namespace
 } // namespace Platform

@@ -23,7 +23,7 @@ Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which 
 queries -- the policy that gates platform-specific behavior. It does **not** exercise `Window`
 maximize/restore or `TitleBarLayer` drag/resize behavior directly; those depend on live SDL
 window/compositor state and are covered by the manual matrix below instead (drag on native
-Wayland specifically is tracked as still broken, issue #744).
+Wayland is handed to the compositor since #750, which fixed #744).
 
 #### VideoBackend Detection Tests (tests/Core/test_VideoBackend.cpp)
 

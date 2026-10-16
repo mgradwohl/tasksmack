@@ -25,7 +25,10 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -238,6 +241,42 @@ TEST_F(ProcessBatchPriorityDialogRenderTest, ListsTheProcessesWithTheirPriorityT
     EXPECT_EQ(listed.listed[0]->name, "TaskSmack"); // Always named, first
     EXPECT_EQ(listed.listed[2]->priority, "Below Normal");
     EXPECT_EQ(flow.dialog.applyLabel(), "Apply to 3 processes");
+}
+
+// The list points into the dialog's own targets, so a copy would point into the source's (#2143).
+static_assert(!std::is_copy_constructible_v<ProcessBatchPriorityDialog>);
+static_assert(!std::is_copy_assignable_v<ProcessBatchPriorityDialog>);
+static_assert(std::is_nothrow_move_constructible_v<ProcessBatchPriorityDialog>);
+static_assert(std::is_nothrow_move_assignable_v<ProcessBatchPriorityDialog>);
+
+TEST(ProcessBatchPriorityDialogMoveTest, AMovedDialogListsFromItsOwnTargets)
+{
+    const auto pointsIntoTargets = [](const ProcessBatchPriorityDialog& d)
+    {
+        const std::span<const ProcessBatch::BatchTarget> targets = d.targets();
+        const auto isOwn = [&](const ProcessBatch::BatchTarget* t)
+        {
+            return std::ranges::any_of(targets, [t](const ProcessBatch::BatchTarget& own) { return &own == t; });
+        };
+        return std::ranges::all_of(d.listed().listed, isOwn) && isOwn(d.listed().notable.self);
+    };
+
+    ProcessBatchPriorityDialog source;
+    source.open({{.target = {.pid = 10, .startTimeTicks = 100}, .name = "a", .priority = "Normal"},
+                 {.target = {.pid = OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "Normal"}},
+                OWN_PID);
+    ASSERT_NE(source.listed().notable.self, nullptr);
+
+    ProcessBatchPriorityDialog moved(std::move(source));
+    ASSERT_EQ(moved.listed().listed.size(), 2U);
+    EXPECT_TRUE(pointsIntoTargets(moved));
+    EXPECT_EQ(moved.listed().listed[0]->name, "TaskSmack");
+
+    ProcessBatchPriorityDialog assigned;
+    assigned = std::move(moved);
+    ASSERT_EQ(assigned.listed().listed.size(), 2U);
+    EXPECT_TRUE(pointsIntoTargets(assigned));
+    EXPECT_EQ(assigned.listed().listed[1]->name, "a");
 }
 
 TEST_F(ProcessBatchPriorityDialogRenderTest, TheListCapsAtItsLimitWithMore)

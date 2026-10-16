@@ -42,19 +42,32 @@ if (-not $inkscapePaths) {
     exit 1
 }
 $inkscape = $inkscapePaths[0]
+# inkscape.exe is a GUI-subsystem program: PowerShell doesn't wait for it, so the ICO step could read
+# PNGs that weren't written yet, and $LASTEXITCODE says nothing. The console launcher beside it,
+# inkscape.com, runs in the foreground and returns Inkscape's exit code.
+$inkscapeConsole = [System.IO.Path]::ChangeExtension($inkscape, '.com')
+if (Test-Path -LiteralPath $inkscapeConsole) {
+    $inkscape = $inkscapeConsole
+}
 Write-Host "Using Inkscape: $inkscape"
 
-# Check for Python and Pillow
-$python = Get-Command "python" -ErrorAction SilentlyContinue
+# Check for Python and Pillow; the project venv (.venv) first, as in generate-icons.sh
+$venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+if (Test-Path -LiteralPath $venvPython) {
+    $python = $venvPython
+} else {
+    $python = Get-Command "python" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+}
 if (-not $python) {
-    Write-Error "Python not found. Install from https://python.org/ or via: winget install Python.Python.3"
+    Write-Error "Python not found. Install from https://python.org/ or via: winget install Python.Python.3.14"
     exit 1
 }
+Write-Host "Using Python: $python"
 
-$pillowCheck = & python -c "import PIL" 2>&1
+$null = & $python -c "import PIL" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing Pillow (hash-pinned)..."
-    & python -m pip install --require-hashes -r (Join-Path $RepoRoot "requirements-icons.txt") --quiet
+    & $python -m pip install --require-hashes -r (Join-Path $RepoRoot "requirements-icons.txt") --quiet
     if ($LASTEXITCODE -ne 0) {
         Write-Error "pip install failed with exit code ${LASTEXITCODE}; Pillow was not installed."
         exit 1
@@ -73,6 +86,10 @@ foreach ($size in $sizes) {
     $sourceSvg = if ($SmallSizes -contains $size) { $SmallSvgPath } else { $SvgPath }
     Write-Host "  ${size}x${size} from $(Split-Path -Leaf $sourceSvg)..."
     & $inkscape --export-type=png --export-filename="$pngFile" -w $size -h $size "$sourceSvg" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Inkscape failed with exit code $LASTEXITCODE rendering $pngFile"
+        exit 1
+    }
 }
 
 # Generate ICO file using Python/Pillow
@@ -92,10 +109,11 @@ imgs[0].save(ico_path, format='ICO', append_images=imgs[1:])
 print(f'Created {ico_path} ({os.path.getsize(ico_path)} bytes)')
 "@
 
-& python -c $pythonScript
-
-# Copy 256px as main PNG
-Copy-Item (Join-Path $OutputDir "tasksmack-256.png") (Join-Path $OutputDir "tasksmack.png")
+& $python -c $pythonScript
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "ICO generation failed with exit code $LASTEXITCODE"
+    exit 1
+}
 
 Write-Host ""
 Write-Host "Done! Generated files:"

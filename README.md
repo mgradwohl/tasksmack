@@ -16,10 +16,11 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 
 ## Highlights
 
-- Sortable, filterable process table with tree view, configurable columns, and process details
-- CPU, memory, swap, storage, network, GPU, and battery histories
-- Per-process CPU, memory, disk I/O, network, and GPU metrics when the platform exposes them
-- Process termination, forced termination, priority changes, and Linux stop/resume and I/O priority (ionice) actions
+- Sortable, filterable process table with tree view, multi-select, configurable columns, and process details (environment, connections, modules, open files, security context)
+- CPU, memory, swap, storage, network, GPU, NPU, and battery histories
+- Per-process CPU, memory, disk I/O, network, GPU, and NPU metrics when the platform exposes them
+- Process termination, forced termination, priority and CPU affinity changes, dump files, batch actions on several processes, and Linux stop/resume, I/O priority (ionice), and strace actions
+- Services and Startup tabs that list and control services and startup apps, and a System tab of hardware, firmware, network, driver, and crash facts
 - TOML configuration, 20 bundled themes, user themes, configurable sampling, and bounded history
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
@@ -45,7 +46,7 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 |----------|---------|---------|
 | Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
-| Windows | `.zip` | Extract and run `TaskSmack.exe` |
+| Windows | `.zip` | Extract and run `TaskSmack.exe` (from v0.9.0, no Visual C++ Redistributable needed) |
 
 Published packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 

@@ -97,6 +97,7 @@ struct FakeToken
     DWORD openError = 0;  // non-zero: OpenProcess fails with it
     DWORD tokenError = 0; // non-zero: OpenProcessToken fails with it
     std::uint64_t creationTicks = START_TICKS;
+    DWORD exitCode = STILL_ACTIVE;                             // GetExitCodeProcess's answer
     std::map<TOKEN_INFORMATION_CLASS, DWORD> classErrors;      // a class's query fails with this error
     int growGroupsOnFirstCopy = 0;                             // groups added after the first sized TokenGroups query
     bool growGroupsOnEveryCopy = false;                        // ... and after every later one too
@@ -139,6 +140,12 @@ HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
         return nullptr;
     }
     return realHandle();
+}
+
+BOOL WINAPI fakeGetExitCodeProcess(HANDLE /*process*/, LPDWORD code)
+{
+    *code = fake().exitCode;
+    return TRUE;
 }
 
 BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
@@ -364,6 +371,7 @@ ProcessSecurityFunctions fakeApi()
 {
     return {.openProcess = &fakeOpenProcess,
             .getProcessTimes = &fakeGetProcessTimes,
+            .getExitCodeProcess = &fakeGetExitCodeProcess,
             .openProcessToken = &fakeOpenProcessToken,
             .getTokenInformation = &fakeGetTokenInformation,
             .lookupAccountSid = &fakeLookupAccountSid,
@@ -524,6 +532,10 @@ TEST_F(WindowsProcessSecurityTest, RefusesTargetsItCannotConfirm)
     EXPECT_TRUE(fake().handedOut.empty()); // neither was opened
 
     fake().creationTicks = START_TICKS + 1; // the PID now names another process
+    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
+
+    fake().creationTicks = START_TICKS;
+    fake().exitCode = 0; // exited, its object still held open somewhere (#2206)
     EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
 }
 

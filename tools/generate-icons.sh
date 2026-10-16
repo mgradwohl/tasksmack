@@ -10,12 +10,15 @@
 #
 # Requirements:
 #   - Inkscape: sudo apt install inkscape
-#   - Python 3 with Pillow, hash-pinned in requirements-icons.txt (run from the repo root):
-#       python3 -m pip install --require-hashes -r requirements-icons.txt
+#   - Python >= 3.14 with Pillow, hash-pinned in requirements-icons.txt. The project venv (.venv,
+#     made by tools/setup-dev.sh) is used when present; the script installs Pillow into it:
+#       .venv/bin/python -m pip install --require-hashes -r requirements-icons.txt
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/common.sh
+source "${SCRIPT_DIR}/common.sh"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SVG_PATH="${SCRIPT_DIR}/../assets/icons/tasksmack.svg"
 SMALL_SVG_PATH="${SCRIPT_DIR}/../assets/icons/tasksmack-small.svg"
@@ -31,20 +34,21 @@ if ! command -v inkscape &> /dev/null; then
     exit 1
 fi
 
-# Check for Python and Pillow
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 not found. Install with:"
-    echo "  sudo apt install python3 python3-pip"
+# Check for Python and Pillow. find_python prefers the project venv, where pip may install
+# (Ubuntu's system python3 refuses `pip install` under PEP 668).
+if ! PYTHON="$(find_python)"; then
+    echo "Error: Python >= 3.14 not found. Run tools/setup-dev.sh to create the project venv (.venv)."
     exit 1
 fi
 
-if ! python3 -c "import PIL" 2>/dev/null; then
-    echo "Installing Pillow (hash-pinned) into the active environment..."
-    python3 -m pip install --require-hashes -r "${REPO_ROOT}/requirements-icons.txt"
+if ! "$PYTHON" -c "import PIL" 2>/dev/null; then
+    echo "Installing Pillow (hash-pinned) into $PYTHON's environment..."
+    "$PYTHON" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-icons.txt"
 fi
 
-# Sizes for icon files; SMALL_SIZES render from SMALL_SVG_PATH instead of SVG_PATH
-SIZES=(16 24 32 48 64 128 256 512)
+# Sizes for icon files (the tracked assets/icons/tasksmack-<size>.png set, as in generate-icons.ps1);
+# SMALL_SIZES render from SMALL_SVG_PATH instead of SVG_PATH
+SIZES=(16 24 32 48 64 128 256)
 SMALL_SIZES=(16 24 32)
 
 # Generate PNGs at each size
@@ -65,7 +69,7 @@ done
 # Generate ICO file using Python/Pillow (for Windows/Wine cross-compilation)
 echo ""
 echo "Generating ICO file..."
-python3 -c "
+"$PYTHON" -c "
 from PIL import Image
 import os
 
@@ -78,10 +82,6 @@ ico_path = os.path.join(icon_dir, 'tasksmack.ico')
 imgs[0].save(ico_path, format='ICO', append_images=imgs[1:])
 print(f'Created {ico_path} ({os.path.getsize(ico_path)} bytes)')
 "
-
-# Copy 256px as main PNG
-cp "${OUTPUT_DIR}/tasksmack-256.png" "${OUTPUT_DIR}/tasksmack.png"
-echo "Copied 256x256 PNG as tasksmack.png"
 
 echo ""
 echo "Done! Generated files:"

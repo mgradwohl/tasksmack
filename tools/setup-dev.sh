@@ -46,7 +46,7 @@ Options:
   --llvm VER   LLVM major version to install (currently must be $LLVM_SUPPORTED_VERSION)
   -h, --help   Show this help
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help) usage ;;
-        *) echo "Unknown argument: $1" >&2; usage ;;
+        *) echo "Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
@@ -193,7 +193,7 @@ fi
 
 # ── Step 2: Base build tools ──────────────────────────────────────────────────
 echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
-run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libfreetype6-dev libsystemd-dev pkg-config
+run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libsystemd-dev pkg-config
 
 PYTHON_ENV="${REPO_ROOT}/.venv"
 run_cmd "python${PYTHON_VERSION}" -m venv "$PYTHON_ENV"
@@ -210,19 +210,24 @@ run_apt \
     "lld-$LLVM_VERSION" \
     "llvm-$LLVM_VERSION" \
     "libc++-$LLVM_VERSION-dev" \
-    "libc++abi-$LLVM_VERSION-dev"
+    "libc++abi-$LLVM_VERSION-dev" \
+    "libclang-rt-$LLVM_VERSION-dev"
+# libclang-rt is only a Recommends of clang-N, so --no-install-recommends setups miss it; the
+# coverage, PGO and sanitizer presets link its runtimes.
 
-# Register update-alternatives so unversioned names (clang++, clang-tidy, etc.) point to the
-# installed LLVM version.  Idempotent: re-running updates to a higher priority.
-if ! $DRY_RUN; then
-    sudo update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-$LLVM_VERSION" 100
-    sudo update-alternatives --install /usr/bin/clang   clang   "/usr/bin/clang-$LLVM_VERSION"   100
-    sudo update-alternatives --install /usr/bin/lld     lld     "/usr/bin/lld-$LLVM_VERSION"     100
-else
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$LLVM_VERSION 100"
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-$LLVM_VERSION   100"
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-$LLVM_VERSION     100"
-fi
+# Point an unversioned tool name at the installed LLVM version's binary.
+# Idempotent: re-running updates to a higher priority.
+register_alternative() {
+    local name="$1"
+    run_cmd sudo update-alternatives --install "/usr/bin/$name" "$name" "/usr/bin/$name-$LLVM_VERSION" 100
+}
+
+# Unversioned names for everything check-prereqs.sh and the tools/ scripts look up on PATH.
+# ld.lld is the name check-prereqs.sh reads the version from; `lld` alone is the generic driver,
+# which prints no version.
+for tool in clang++ clang lld ld.lld clang-tidy clang-format; do
+    register_alternative "$tool"
+done
 
 # ── Step 4: Build-time GUI prerequisites ─────────────────────────────────────
 echo ""
@@ -243,13 +248,10 @@ if ! $MINIMAL; then
     echo ""
     echo "==> Installing coverage and profiling tools..."
     run_apt "clangd-$LLVM_VERSION"
-    if ! $DRY_RUN; then
-        sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata "/usr/bin/llvm-profdata-$LLVM_VERSION" 100
-        sudo update-alternatives --install /usr/bin/llvm-cov      llvm-cov      "/usr/bin/llvm-cov-$LLVM_VERSION"      100
-    else
-        echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-profdata ..."
-        echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-cov ..."
-    fi
+    # check-prereqs.sh requires an unversioned clangd on PATH (VS Code's clangd settings use it)
+    for tool in clangd llvm-profdata llvm-cov; do
+        register_alternative "$tool"
+    done
 
     # heaptrack (tools/profile-heap.sh) and the FlameGraph scripts (analyze-perf.sh) are
     # zero-risk to install here: heaptrack is a plain apt package, FlameGraph is just a

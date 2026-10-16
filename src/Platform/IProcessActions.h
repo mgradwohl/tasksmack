@@ -20,14 +20,18 @@ struct ProcessActionResult
 {
     bool success = false;
     std::string errorMessage;
+    /// On success, how the action was carried out when that differs from what its name promises, as a
+    /// phrase the result line appends: Windows affinity across processor groups is only a preference
+    /// (#2173). Empty for a plain success and on failure.
+    std::string successNote;
 
-    static ProcessActionResult ok()
+    static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}};
+        return {.success = true, .errorMessage = {}, .successNote = std::move(note)};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg)};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}};
     }
 };
 
@@ -260,7 +264,9 @@ class IProcessActions
 
     /// Lets the target run only on @p cpus (#1887), numbered as CpuAffinity and the per-core figures
     /// number them; refused when @p cpus is empty. Refused, as every action is, unless the process at
-    /// the target's PID is the target. The default refuses it as unsupported, matching
+    /// the target's PID is the target. Where the choice is applied as a preference rather than a hard
+    /// affinity (Windows CPU sets, #2173), the success carries a ProcessActionResult::successNote that
+    /// says so. The default refuses it as unsupported, matching
     /// ProcessActionCapabilities::canSetAffinity's default (false), which an implementation that does
     /// not override this must leave as it is.
     [[nodiscard]] virtual ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)

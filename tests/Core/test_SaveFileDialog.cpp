@@ -1,7 +1,7 @@
 /// @file test_SaveFileDialog.cpp
 /// @brief Core::showSaveFileDialog() and Core::defaultSaveFolder() (#1866, #1891): with no dialog
 /// driver SDL can use, the callback gets SDL's reason once, at once; the default folder is Documents,
-/// else home, as SDL finds them.
+/// else home, as SDL finds them. A callback that throws never unwinds into SDL's C frames (#2162).
 
 #include "Core/SaveFileDialog.h"
 
@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -44,6 +45,40 @@ TEST(SaveFileDialogTest, AnEmptyCallbackAndNoFiltersAreFine)
 {
     ASSERT_TRUE(SDL_SetHint(SDL_HINT_FILE_DIALOG_DRIVER, "none-for-tests"));
     Core::showSaveFileDialog(nullptr, {}, "", {}); // nothing to call back; the request is still freed
+    static_cast<void>(SDL_ResetHint(SDL_HINT_FILE_DIALOG_DRIVER));
+}
+
+TEST(SaveFileDialogTest, ACallbackThatThrowsDoesNotEscapeIntoSdl)
+{
+    // With no driver, SDL runs onDialogClosed() at once, on this thread, from inside its own C code: an
+    // exception from the callback would unwind through SDL's frames (UB, or std::terminate()) and out of
+    // showSaveFileDialog(). It must be caught in the callback trampoline instead (#2162).
+    ASSERT_TRUE(SDL_SetHint(SDL_HINT_FILE_DIALOG_DRIVER, "none-for-tests"));
+    int calls = 0;
+    EXPECT_NO_THROW(Core::showSaveFileDialog(nullptr,
+                                             {{.name = "Text", .pattern = "txt"}},
+                                             "",
+                                             [&](const Core::SaveFileResult& /*result*/)
+                                             {
+                                                 ++calls;
+                                                 throw std::runtime_error("callback failed");
+                                             }));
+    EXPECT_EQ(calls, 1);
+    static_cast<void>(SDL_ResetHint(SDL_HINT_FILE_DIALOG_DRIVER));
+}
+
+TEST(SaveFileDialogTest, AFolderCallbackThatThrowsDoesNotEscapeIntoSdl)
+{
+    ASSERT_TRUE(SDL_SetHint(SDL_HINT_FILE_DIALOG_DRIVER, "none-for-tests"));
+    int calls = 0;
+    EXPECT_NO_THROW(Core::showFolderDialog(nullptr,
+                                           "",
+                                           [&](const Core::SaveFileResult& /*result*/)
+                                           {
+                                               ++calls;
+                                               throw 42; // NOLINT(hicpp-exception-baseclass): any throw, not only std::exception
+                                           }));
+    EXPECT_EQ(calls, 1);
     static_cast<void>(SDL_ResetHint(SDL_HINT_FILE_DIALOG_DRIVER));
 }
 

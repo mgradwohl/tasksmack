@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
 
 namespace Core
 {
@@ -34,6 +35,40 @@ TEST(OpenGLRequirementTest, RejectsOlderVersions)
     EXPECT_FALSE(meetsRequiredGLVersion(3, 0));
     EXPECT_FALSE(meetsRequiredGLVersion(3, 2));
     EXPECT_FALSE(meetsRequiredGLVersion(0, 0)); // GLAD found no version at all
+}
+
+TEST(OpenGLRequirementTest, VersionStringAcceptsTheRequiredVersionAndNewer)
+{
+    EXPECT_TRUE(glVersionStringMeetsRequirement("3.3 (Core Profile) Mesa 26.2.4")); // CI's llvmpipe
+    EXPECT_TRUE(glVersionStringMeetsRequirement("4.6.0 NVIDIA 560.94"));
+    EXPECT_TRUE(glVersionStringMeetsRequirement("4.5"));
+    EXPECT_TRUE(glVersionStringMeetsRequirement("3.10"));
+    EXPECT_TRUE(glVersionStringMeetsRequirement(std::string_view{"10.0"}));
+}
+
+TEST(OpenGLRequirementTest, VersionStringRejectsOlderVersions)
+{
+    EXPECT_FALSE(glVersionStringMeetsRequirement("1.1.0")); // GDI Generic (#2257)
+    EXPECT_FALSE(glVersionStringMeetsRequirement("2.1 Mesa 26.2.4"));
+    EXPECT_FALSE(glVersionStringMeetsRequirement("3.2.0"));
+}
+
+TEST(OpenGLRequirementTest, VersionStringRejectsMissingOrUnparseableStrings)
+{
+    EXPECT_FALSE(glVersionStringMeetsRequirement(static_cast<const char*>(nullptr)));
+    EXPECT_FALSE(glVersionStringMeetsRequirement(""));
+    EXPECT_FALSE(glVersionStringMeetsRequirement(std::string_view{}));
+    EXPECT_FALSE(glVersionStringMeetsRequirement("4"));
+    EXPECT_FALSE(glVersionStringMeetsRequirement("4."));
+    EXPECT_FALSE(glVersionStringMeetsRequirement(".3"));
+    EXPECT_FALSE(glVersionStringMeetsRequirement("OpenGL 4.6"));
+    EXPECT_FALSE(glVersionStringMeetsRequirement("99999999999999999999.0")); // no overflow into a "valid" major
+}
+
+TEST(OpenGLRequirementTest, VersionStringCheckIsConstexpr)
+{
+    static_assert(glVersionStringMeetsRequirement(std::string_view{"3.3"}));
+    static_assert(!glVersionStringMeetsRequirement(std::string_view{"1.1.0"}));
 }
 
 TEST(OpenGLRequirementTest, MessageNamesTheRequiredAndActualVersionsAndTheDriver)

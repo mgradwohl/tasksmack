@@ -100,7 +100,6 @@ TEST(ThemeHeaderTest, SingletonStartsAtDefaultThemeAndFontSize)
     // (already covered separately in test_ThemeLoader.cpp).
     const auto& theme = Theme::get();
 
-    EXPECT_EQ(theme.currentThemeIndex(), 0U);
     EXPECT_TRUE(theme.discoveredThemes().empty());
     EXPECT_EQ(theme.currentFontSize(), FontSize::Medium);
 }

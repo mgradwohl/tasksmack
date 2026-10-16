@@ -43,6 +43,10 @@ if (-not $LlvmProfdata) {
     Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."
     exit 1
 }
+if (-not $LlvmCov) {
+    Write-Error "llvm-cov not found. Set LLVM_ROOT or add LLVM bin to PATH."
+    exit 1
+}
 
 # Structural exclusions (#2039): lines no test can run on Windows, such as a modal shell dialog, the real
 # ShellExecuteW launch or the WinMain entry point. The source marks them LCOV_EXCL_START ... LCOV_EXCL_STOP

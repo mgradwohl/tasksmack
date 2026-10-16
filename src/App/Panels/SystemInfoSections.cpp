@@ -2221,7 +2221,59 @@ namespace
     return out;
 }
 
+/// Whether @p a and @p b name the same path: on Windows ignoring ASCII case, with '/' and '\' alike.
+[[nodiscard]] bool pathsEqual(std::string_view a, std::string_view b, bool windows) noexcept
+{
+    if (!windows)
+    {
+        return a == b;
+    }
+    constexpr auto fold = [](char c) noexcept
+    {
+        return isPathSeparator(c) ? '/' : lowerAscii(c);
+    };
+    return std::ranges::equal(a, b, {}, fold, fold);
+}
+
 } // namespace
+
+std::string redactHomeDirectory(std::string_view text, std::string_view homeDirectory, Platform::OsFamily family)
+{
+    std::string_view home = homeDirectory;
+    while (!home.empty() && isPathSeparator(home.back()))
+    {
+        home.remove_suffix(1); // "/home/bob/" names the same folder
+    }
+    std::size_t leaf = home.size();
+    while (leaf > 0 && !isPathSeparator(home[leaf - 1]))
+    {
+        --leaf;
+    }
+    if (leaf == 0 || leaf == home.size())
+    {
+        return std::string(text); // no folder name to redact: none at all, a root, or no separator
+    }
+    const bool windows = family == Platform::OsFamily::Windows;
+    std::string out;
+    out.reserve(text.size());
+    std::size_t at = 0;
+    while (at < text.size())
+    {
+        if (text.size() - at >= home.size() && pathsEqual(std::string_view(text.data() + at, home.size()), home, windows) &&
+            endsComponent(text, at + home.size()))
+        {
+            out.append(text.data() + at, leaf); // the parent, as the text writes it
+            out += REDACTED_USER;
+            at += home.size();
+        }
+        else
+        {
+            out += text[at];
+            ++at;
+        }
+    }
+    return out;
+}
 
 std::string redactLoginName(std::string_view text, std::string_view userName, Platform::OsFamily family)
 {
@@ -2251,11 +2303,16 @@ void redactUserPaths(std::span<Section> sections, const Platform::OsInfo& os)
             {
                 continue; // hidden whole
             }
+            // The profile folder as well as the login name (#2197): the folder's name need not be the login's.
+            const auto redact = [&os](std::string_view text)
+            {
+                return redactLoginName(redactHomeDirectory(text, os.homeDirectory, os.family), os.userName, os.family);
+            };
             RedactedText redacted{
-                .label = redactLoginName(item.label, os.userName, os.family),
-                .value = redactLoginName(item.value, os.userName, os.family),
-                .unavailableReason = redactLoginName(item.unavailableReason, os.userName, os.family),
-                .valueTooltip = redactLoginName(item.valueTooltip, os.userName, os.family),
+                .label = redact(item.label),
+                .value = redact(item.value),
+                .unavailableReason = redact(item.unavailableReason),
+                .valueTooltip = redact(item.valueTooltip),
             };
             if (redacted.label != item.label || redacted.value != item.value || redacted.unavailableReason != item.unavailableReason ||
                 redacted.valueTooltip != item.valueTooltip)
@@ -2506,14 +2563,7 @@ std::string reportFileName(std::string_view computerName, bool showIdentifiers, 
 
 ReportFormat reportFormatFor(std::string_view path, int filter)
 {
-    if (filter == 0)
-    {
-        return ReportFormat::Text;
-    }
-    if (filter == 1)
-    {
-        return ReportFormat::Json;
-    }
+    // A typed ".txt" or ".json" says what the file is, whichever filter is selected (#2144).
     const std::size_t slash = path.find_last_of("/\\");
     const std::string_view name = slash == std::string_view::npos ? path : path.substr(slash + 1);
     const std::size_t dot = name.rfind('.');
@@ -2525,8 +2575,12 @@ ReportFormat reportFormatFor(std::string_view path, int filter)
         {
             return ReportFormat::Json;
         }
+        if (extension == "txt")
+        {
+            return ReportFormat::Text;
+        }
     }
-    return ReportFormat::Text;
+    return filter == 1 ? ReportFormat::Json : ReportFormat::Text;
 }
 
 std::string withReportExtension(std::string path, ReportFormat format)
@@ -2539,6 +2593,18 @@ std::string withReportExtension(std::string path, ReportFormat format)
         path += format == ReportFormat::Json ? ".json" : ".txt";
     }
     return path;
+}
+
+std::string numberedReportPath(std::string_view path, int number)
+{
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::size_t nameStart = slash == std::string_view::npos ? 0 : slash + 1;
+    std::size_t dot = path.rfind('.');
+    if (dot == std::string_view::npos || dot <= nameStart)
+    {
+        dot = path.size();
+    }
+    return std::format("{} ({}){}", path.substr(0, dot), number, path.substr(dot));
 }
 
 } // namespace App::SystemInfo

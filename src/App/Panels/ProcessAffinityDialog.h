@@ -111,7 +111,9 @@ class ProcessAffinityDialog
 };
 
 /// The result line for setting @p cpus on @p name (PID @p pid): "CPU affinity of server (PID 4242) set
-/// to 0-3", or the platform's error. Shared by the row menu and Process Details' Actions card.
+/// to 0-3", followed by the platform's ProcessActionResult::successNote when it has one ("... as
+/// preferred CPUs (CPU sets); ...", #2173), or the platform's error. Shared by the row menu and
+/// Process Details' Actions card.
 [[nodiscard]] Detail::ActionResultMessage affinityResultMessage(const std::string& name,
                                                                 std::int32_t pid,
                                                                 const Platform::CpuAffinity& cpus,

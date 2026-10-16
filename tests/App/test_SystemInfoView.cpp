@@ -202,8 +202,13 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
     // #1891: trailing dots and dashes are trimmed too, so the name never ends the stem in one.
     EXPECT_EQ(SystemInfo::reportFileName("box-.", true, "", ReportFormat::Text), "tasksmack-system-info-box.txt");
 
-    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Json) << "the dialog's filter wins";
-    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json", 0), ReportFormat::Text);
+    // #2144: a typed ".txt" or ".json" wins over the dialog's filter; the filter decides otherwise.
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Text) << "the typed extension wins";
+    EXPECT_EQ(SystemInfo::reportFormatFor("x.json", 0), ReportFormat::Json) << "the typed extension wins";
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.TXT", 1), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a", 1), ReportFormat::Json);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a", 0), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.log", 1), ReportFormat::Json) << "another extension: the filter";
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.JSON", -1), ReportFormat::Json);
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json.txt", -1), ReportFormat::Text);
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/dir.json/report", -1), ReportFormat::Text);
@@ -213,6 +218,11 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/report.txt", ReportFormat::Json), "/tmp/report.txt") << "a chosen extension stays";
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/dir.d/report", ReportFormat::Text), "/tmp/dir.d/report.txt");
     EXPECT_EQ(SystemInfo::withReportExtension("/tmp/.report", ReportFormat::Text), "/tmp/.report.txt");
+
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/report.txt", 2), "/tmp/report (2).txt");
+    EXPECT_EQ(SystemInfo::numberedReportPath("C:\\d.d\\report.json", 3), "C:\\d.d\\report (3).json");
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/dir.d/report", 2), "/tmp/dir.d/report (2)");
+    EXPECT_EQ(SystemInfo::numberedReportPath("/tmp/.report", 2), "/tmp/.report (2)");
 }
 
 TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)
@@ -1132,6 +1142,53 @@ TEST(SystemInfoSectionsTest, RedactsTheLoginNameOnlyAsAWholePathComponent)
     EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\a\\a.exe", "PC\\a", WINDOWS), "C:\\Users\\<user>\\a.exe");
     EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\Public\\x, C:\\Windows\\a", "PC\\a", WINDOWS),
               "C:\\Users\\Public\\x, C:\\Windows\\<user>");
+}
+
+TEST(SystemInfoSectionsTest, RedactsTheProfileFolderWhateverItIsNamed)
+{
+    constexpr auto LINUX = Platform::OsFamily::Linux;
+    constexpr auto WINDOWS = Platform::OsFamily::Windows;
+    // #2197: a profile folder not named after the login, such as one kept through an account rename.
+    EXPECT_EQ(SystemInfo::redactHomeDirectory(R"(C:\Users\bob\AppData\x.exe)", R"(C:\Users\bob)", WINDOWS),
+              R"(C:\Users\<user>\AppData\x.exe)");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory(R"(x crashed, c:/users/BOB, pid 1)", R"(C:\Users\bob\)", WINDOWS),
+              "x crashed, c:/users/<user>, pid 1");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory(R"(C:\Users\bobby\x, D:\Users\bob)", R"(C:\Users\bob)", WINDOWS),
+              R"(C:\Users\bobby\x, D:\Users\bob)");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob/x and /home/bob", "/home/bob", LINUX), "/home/<user>/x and /home/<user>");
+    // Linux paths are case-sensitive.
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/Bob/x /home/bobby", "/home/bob", LINUX), "/home/Bob/x /home/bobby");
+    // Nothing to redact by.
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob", "", LINUX), "/home/bob");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob", "/", LINUX), "/home/bob");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("C:\\x", "C:\\", WINDOWS), "C:\\x");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("", "/home/bob", LINUX), "");
+}
+
+// #2197: with identifiers hidden, a profile folder not named after the login doesn't reach the page or
+// Copy; the login-name rule still covers other paths that name the user.
+TEST(SystemInfoSectionsTest, RedactUserPathsCoversAProfileFolderNotNamedAfterTheLogin)
+{
+    Platform::OsInfo os;
+    os.family = Platform::OsFamily::Windows;
+    os.userName = "PC\\alice";
+    os.homeDirectory = R"(C:\Users\bob)";
+    std::vector<Section> sections(1);
+    sections[0].rows.resize(3);
+    sections[0].rows[0].label = "Crash";
+    sections[0].rows[0].value = R"(x.exe crashed, C:\Users\Bob\Downloads\x.exe)";
+    sections[0].rows[1].label = R"(D:\Share\alice)";
+    sections[0].rows[1].value = "NTFS";
+    sections[0].rows[2].label = "Program";
+    sections[0].rows[2].value = R"(C:\Users\bobby\x.exe)";
+    SystemInfo::redactUserPaths(sections, os);
+    const std::vector<Row>& rows = sections[0].rows;
+    EXPECT_EQ(rows[0].shownValue(false), R"(x.exe crashed, C:\Users\<user>\Downloads\x.exe)");
+    EXPECT_EQ(rows[0].shownValue(true), R"(x.exe crashed, C:\Users\Bob\Downloads\x.exe)");
+    EXPECT_EQ(rows[1].shownLabel(false), R"(D:\Share\<user>)");
+    EXPECT_FALSE(rows[2].redacted.has_value());
+    const std::string hidden = SystemInfo::allSectionsText(sections, false);
+    EXPECT_FALSE(hidden.contains(R"(Users\Bob)")) << hidden;
 }
 
 // #2120 on Windows: a row's label, value, unavailable reason and tooltip are each redacted, whatever the

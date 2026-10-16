@@ -156,6 +156,14 @@ inline constexpr int DETACH_WAIT_MS = 2000;
     return {gcorePath, "-o", prefix, std::to_string(pid)};
 }
 
+/// The program that actually attaches when @p gcorePath runs (#2148): gdb's gcore is a shell script that
+/// runs the gdb beside it ("$binary_path/gdb"). A file capability on the script itself is never applied,
+/// so CAP_SYS_PTRACE has to be looked for on that gdb.
+[[nodiscard]] inline std::string gcoreDebuggerPath(const std::string& gcorePath)
+{
+    return (std::filesystem::path(gcorePath).parent_path() / "gdb").string();
+}
+
 /// The file `gcore -o <prefix> <pid>` writes.
 [[nodiscard]] inline std::filesystem::path gcoreOutputFile(const std::filesystem::path& prefix, std::int32_t pid)
 {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/OpenGLRequirement.h"
+
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
@@ -49,12 +51,39 @@ namespace TestSupport
     return displayAvailable;
 }
 
+// Whether the context SDL created is really OpenGL 3.3 or newer, by the same rule Core::Window applies.
+// A non-null context is not enough: on Windows, when the driver is Microsoft's GDI Generic (no GPU
+// driver, no Mesa llvmpipe beside the executable), SDL hands back a legacy OpenGL 1.1 context instead of
+// failing, and Core::Window then refuses it, so the suites would fail instead of skipping (#2257).
+// glGetString is read through SDL_GL_GetProcAddress, since this header must not include GLAD.
+[[maybe_unused]] inline bool contextMeetsRequiredGLVersion(SDL_Window* window, SDL_GLContext context)
+{
+    if (!SDL_GL_MakeCurrent(window, context))
+    {
+        return false;
+    }
+#if defined(_WIN32) && !defined(_WIN64)
+    using GetStringFn = const unsigned char*(__stdcall*) (unsigned int);
+#else
+    using GetStringFn = const unsigned char* (*) (unsigned int);
+#endif
+    constexpr unsigned int GL_VERSION_ENUM = 0x1F02; // GL_VERSION
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SDL returns GL entry points as a generic function pointer
+    const auto getString = reinterpret_cast<GetStringFn>(SDL_GL_GetProcAddress("glGetString"));
+    const unsigned char* version = getString != nullptr ? getString(GL_VERSION_ENUM) : nullptr;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GLubyte* version string is plain ASCII
+    const bool capable = Core::glVersionStringMeetsRequirement(reinterpret_cast<const char*>(version));
+    SDL_GL_MakeCurrent(window, nullptr);
+    return capable;
+}
+
 // Returns true if SDL can initialize video AND create an OpenGL 3.3 core context. On every platform:
 // a Windows machine without GL 3.3 (a VM, a basic display adapter) must skip the display-dependent
 // suites rather than fail them, since their construction failures are fatal once a display is
 // detected (#1132).
 // Uses the same SDL_GL attributes as Core::Window so a display that only supports
-// a default/legacy context is correctly rejected.
+// a default/legacy context is correctly rejected, and then checks the version of the context it
+// actually got (contextMeetsRequiredGLVersion), since SDL may return an older one.
 // Calls SDL_Init / SDL_Quit internally; do not call while SDL is already initialized.
 [[maybe_unused]] inline bool probeGLCapability()
 {
@@ -82,8 +111,8 @@ namespace TestSupport
         SDL_GLContext ctx = SDL_GL_CreateContext(testWin);
         if (ctx != nullptr)
         {
+            glCapable = contextMeetsRequiredGLVersion(testWin, ctx);
             SDL_GL_DestroyContext(ctx);
-            glCapable = true;
         }
         SDL_DestroyWindow(testWin);
     }

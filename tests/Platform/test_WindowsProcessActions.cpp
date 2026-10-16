@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <limits>
@@ -130,6 +131,26 @@ TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
 }
 
 static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) < Domain::Priority::HIGH_THRESHOLD);
+
+// The probe's nice values and Process Details' are one table, Domain::Priority::classNice() (#2168):
+// retuning it for one side retunes it for the other.
+static_assert(priorityClassToNice(IDLE_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Idle));
+static_assert(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::BelowNormal));
+static_assert(priorityClassToNice(NORMAL_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Normal));
+static_assert(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::AboveNormal));
+static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::High));
+static_assert(priorityClassToNice(REALTIME_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime));
+// And each value reads back as its own class, Realtime included.
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(IDLE_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Idle);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::BelowNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(NORMAL_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Normal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::AboveNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(HIGH_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::High);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(REALTIME_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Realtime);
 
 // =============================================================================
 // toPriorityClass: the class the probe reports beside nice (#1280)
@@ -532,9 +553,9 @@ TEST(WindowsProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
     EXPECT_TRUE(child.exitsSoon());
 }
 
-// #1566: the failure after a verified open. The child has exited, but the test's handle keeps its
-// process object (and so its PID and start time) alive: the identity check passes and
-// TerminateProcess is refused, which must come back as an error rather than a success.
+// #1566, #2206: the child has exited, but the test's handle keeps its process object (and so its
+// PID and start time) alive: the identity check passes, so the exit must be noticed by the open
+// itself and reported as an exit, with nothing sent, rather than as a refused TerminateProcess.
 TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
 {
     const SuspendedChild child;
@@ -547,7 +568,7 @@ TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
 
     const auto again = actions.kill(target);
     EXPECT_FALSE(again.success);
-    EXPECT_NE(again.errorMessage.find("Failed to terminate process"), std::string::npos) << again.errorMessage;
+    EXPECT_EQ(again.errorMessage, std::format("Process {} has exited; action not sent", target.pid));
 }
 
 TEST(WindowsProcessActionsTest, SetPriorityChangesTheClassOfAMatchingProcess)
@@ -717,6 +738,7 @@ TEST_F(WindowsSetAffinityTest, OneGroupSetsTheMaskThroughAVerifiedHandle)
     EXPECT_EQ(FakeWin::lastMask, DWORD_PTR{0b1010U});
     EXPECT_EQ(FakeWin::cpuSetCalls, 0);
     EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_TRUE(result.successNote.empty()) << "a hard affinity mask is what Set affinity promises: " << result.successNote;
 }
 
 TEST_F(WindowsSetAffinityTest, AReusedPidIsRefusedAndNothingIsSet)
@@ -804,6 +826,34 @@ TEST_F(WindowsSetAffinityTest, SeveralGroupsSetCpuSetsAndEveryCpuClearsThem)
     const auto missing = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1000U));
     EXPECT_FALSE(missing.success);
     EXPECT_NE(missing.errorMessage.find("0 of the 1"), std::string::npos) << missing.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, SeveralGroupsSaySoftCpuSetsWereSetNotAHardMask)
+{
+    // The regression (#2173): CPU sets are a preference that threads with an affinity or CPU sets of
+    // their own, and a hard affinity mask, override; success read as though a hard mask was set.
+    FakeWin::groupSizes = {2, 2};
+    FakeWin::cores = {{.group = 0, .mask = 0b11U, .efficiencyClass = 0}, {.group = 1, .mask = 0b11U, .efficiencyClass = 0}};
+    FakeWin::cpuSets = {{.id = 256, .group = 0, .logicalProcessorIndex = 0},
+                        {.id = 257, .group = 0, .logicalProcessorIndex = 1},
+                        {.id = 258, .group = 1, .logicalProcessorIndex = 0},
+                        {.id = 259, .group = 1, .logicalProcessorIndex = 1}};
+    WindowsProcessActions actions(FakeWin::functions());
+
+    const auto some = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    ASSERT_TRUE(some.success) << some.errorMessage;
+    EXPECT_NE(some.successNote.find("preferred CPUs (CPU sets)"), std::string::npos) << some.successNote;
+    EXPECT_NE(some.successNote.find("threads with their own affinity are not moved"), std::string::npos) << some.successNote;
+
+    const auto every = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1111U));
+    ASSERT_TRUE(every.success) << every.errorMessage;
+    EXPECT_NE(every.successNote.find("clearing its preferred CPUs"), std::string::npos) << every.successNote;
+    EXPECT_NE(every.successNote.find("affinity mask"), std::string::npos) << "an earlier hard mask is not undone: " << every.successNote;
+
+    FakeWin::setError = ERROR_ACCESS_DENIED;
+    const auto refused = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.successNote.empty()) << "a failure carries no success note";
 }
 
 TEST_F(WindowsSetAffinityTest, NoGroupSizesMeansNoAffinityAction)
