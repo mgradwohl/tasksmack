@@ -1213,7 +1213,10 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         return std::unexpected(std::format("The folder {} doesn't exist", directory.string()));
     }
 
-    // A name not taken yet: the process name, PID and local time, then " (2)" and on.
+    // A name not taken yet: the process name, PID and local time, then " (2)" and on. Reserved by
+    // creating it (O_EXCL), an empty placeholder until the dump is renamed over it (#2147): two dumps
+    // started in the same second -- the Processes menu and Process Details each have one -- get
+    // different names, and so different ".partial" files, and nothing made there meanwhile is replaced.
     const std::string comm = processComm(target.pid);
     const std::time_t now = std::time(nullptr);
     std::tm local{};
@@ -1222,15 +1225,29 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     for (int attempt = 1; attempt <= LinuxCoreDump::MAX_NAME_ATTEMPTS && file.empty(); ++attempt)
     {
         std::filesystem::path candidate = directory / LinuxCoreDump::dumpFileName(comm, target.pid, local, attempt);
-        if (!std::filesystem::exists(candidate, ec))
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int reserved = ::open(candidate.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (reserved >= 0)
         {
+            ::close(reserved);
             file = std::move(candidate);
+        }
+        else if (errno != EEXIST)
+        {
+            return std::unexpected(
+                std::format("Couldn't create the dump file in {}: {}", directory.string(), std::system_category().message(errno)));
         }
     }
     if (file.empty())
     {
         return std::unexpected(std::format("Couldn't find a free name for the dump file in {}", directory.string()));
     }
+    // Every way out but success gives the reserved name back.
+    const auto releaseName = [&file]
+    {
+        std::error_code removeError;
+        std::filesystem::remove(file, removeError);
+    };
 
     // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
     const std::filesystem::path prefix = file.string() + ".partial";
@@ -1241,11 +1258,13 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     const ToolRun run = runCancellable(LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
     if (run.spawnError)
     {
+        releaseName();
         return std::unexpected(std::format("Couldn't start {}: {}", gcore, run.spawnError.message()));
     }
     if (run.cancelled)
     {
         std::filesystem::remove(written, ec);
+        releaseName();
         // gdb was killed while attached: the kernel detaches it, but a process its attach stopped may
         // stay stopped. Killing gcore's group doesn't wait for gdb (gcore's child) to exit, and until it
         // has, the process shows 't' and its stop is still to come (#2122): wait for gdb to let go first.
@@ -1261,14 +1280,17 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     if (run.exitStatus != 0 || !std::filesystem::exists(written, ec))
     {
         std::filesystem::remove(written, ec);
+        releaseName();
         std::string message = LinuxCoreDump::gcoreFailureMessage(target.pid, run.exitStatus, run.stderrText);
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
     }
+    // Over the placeholder reserved above, which only this dump made.
     std::filesystem::rename(written, file, ec);
     if (ec)
     {
         std::filesystem::remove(written, ec);
+        releaseName();
         return std::unexpected(std::format("Couldn't name the dump file {}: {}", file.string(), ec.message()));
     }
     const std::uintmax_t size = std::filesystem::file_size(file, ec);

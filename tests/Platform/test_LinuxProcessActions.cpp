@@ -1034,6 +1034,24 @@ TEST(LinuxProcessActionsDumpTest, GcoreWritesTheCoreUnderItsFinalName)
     EXPECT_EQ(args, (std::vector<std::string>{"-o", dump->file.string() + ".partial", std::to_string(self.pid)}));
 }
 
+// #2147: the final name is reserved (created, empty) before gcore runs, so two dumps of one process
+// started in the same second get different names and never share a ".partial" file.
+TEST(LinuxProcessActionsDumpTest, TheFinalNameIsReservedWhileGcoreRuns)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_reserve_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_reserve_out");
+    // Fails unless the name it will be renamed to is already there ($2 is "<final>.partial").
+    LinuxProcessActions actions(fakeDumpTools(work.path, "test -e \"${2%.partial}\" || exit 3\nprintf 'CORE' > \"$2.$3\"\n"),
+                                syscallsWithPtrace(&ptraceAllowed));
+    const std::stop_source stop;
+    const ProcessDumpResult first = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_TRUE(first.has_value()) << first.error();
+    const ProcessDumpResult second = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_TRUE(second.has_value()) << second.error();
+    EXPECT_NE(first->file, second->file);
+    EXPECT_EQ(filesIn(dumps.path).size(), 2U);
+}
+
 TEST(LinuxProcessActionsDumpTest, AGcoreThatFailsSaysWhyAndLeavesNothing)
 {
     const TestSupport::ScopedTempDir work("tasksmack_dump_fail_tools");
