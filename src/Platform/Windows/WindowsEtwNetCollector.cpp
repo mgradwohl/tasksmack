@@ -2,6 +2,7 @@
 
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -84,19 +85,7 @@ constexpr ULONG CLIENT_CONTEXT_QPC = 1;
 
 [[nodiscard]] bool systemIsElevated()
 {
-    HANDLE rawToken = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken) == FALSE)
-    {
-        return false;
-    }
-    const Windows::UniqueHandle token(rawToken);
-    TOKEN_ELEVATION elevation{};
-    DWORD size = sizeof(elevation);
-    if (GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size) == FALSE)
-    {
-        return false;
-    }
-    return elevation.TokenIsElevated != 0;
+    return Windows::isProcessElevated();
 }
 
 [[nodiscard]] EtwNet::SessionOwner systemSelf()

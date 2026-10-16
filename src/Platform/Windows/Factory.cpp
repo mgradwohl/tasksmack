@@ -21,6 +21,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
+#include "WindowsElevation.h"
 #include "WindowsEtwNetCollector.h"
 #include "WindowsGPUProbe.h"
 #include "WindowsPathProvider.h"
@@ -99,7 +100,7 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 
 std::unique_ptr<IStartupActions> makeStartupActions()
 {
-    return std::make_unique<WindowsStartupActions>(WindowsServiceActions::isCurrentProcessElevated());
+    return std::make_unique<WindowsStartupActions>(Windows::isProcessElevated());
 }
 
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
@@ -139,7 +140,7 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 
 std::unique_ptr<IServiceActions> makeServiceActions()
 {
-    return std::make_unique<WindowsServiceActions>(WindowsServiceActions::isCurrentProcessElevated());
+    return std::make_unique<WindowsServiceActions>(Windows::isProcessElevated());
 }
 
 bool enableDebugPrivilege()

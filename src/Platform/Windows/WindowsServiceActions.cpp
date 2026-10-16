@@ -3,8 +3,6 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 
-#include <spdlog/spdlog.h>
-
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -254,23 +252,6 @@ ServiceActionResult WindowsServiceActions::setStartType(std::string_view name, S
         }
     }
     return ServiceActionResult::succeeded();
-}
-
-bool WindowsServiceActions::isCurrentProcessElevated()
-{
-    Windows::UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
-    {
-        spdlog::debug("WindowsServiceActions: OpenProcessToken failed (error {})", GetLastError());
-        return false;
-    }
-    TOKEN_ELEVATION elevation{};
-    DWORD size = sizeof(elevation);
-    if (GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size) == FALSE)
-    {
-        return false;
-    }
-    return elevation.TokenIsElevated != 0;
 }
 
 } // namespace Platform

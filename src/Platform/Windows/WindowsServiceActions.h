@@ -17,6 +17,7 @@
 // clang-format on
 
 #include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
 
 #include <stop_token>
 #include <string_view>
@@ -73,9 +74,6 @@ class WindowsServiceActions final : public IServiceActions
     [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
-
-    /// Whether the current process token is elevated (TokenElevation); false if it can't be read.
-    [[nodiscard]] static bool isCurrentProcessElevated();
 
   private:
     bool m_Elevated;

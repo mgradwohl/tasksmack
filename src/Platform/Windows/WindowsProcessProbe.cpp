@@ -32,6 +32,7 @@
 #undef min
 
 #include "WinString.h"
+#include "WindowsElevation.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
@@ -599,27 +600,11 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return (hQuery != nullptr) ? "Background Process" : "";
 }
 
-/// Whether the current process token is elevated, via GetTokenInformation(TokenElevation).
-/// The elevation state is constant for the lifetime of the process, so callers query it once.
-/// Conservative: any failure reports "not elevated".
+/// Whether the current process token is elevated (Windows::isProcessElevated), through this probe's
+/// token seam. The elevation state is constant for the lifetime of the process, so callers query it once.
 [[nodiscard]] bool isCurrentProcessElevated(const TokenFunctions& fns)
 {
-    // UniqueHandle ensures CloseHandle is called on all paths.
-    Windows::UniqueHandle token;
-    if (fns.openProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
-    {
-        spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
-        return false;
-    }
-
-    TOKEN_ELEVATION elevation{};
-    DWORD dwSize = sizeof(elevation);
-    if (fns.getTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
-    {
-        spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
-        return false;
-    }
-    return elevation.TokenIsElevated != 0;
+    return Windows::isProcessElevated({.openProcessToken = fns.openProcessToken, .getTokenInformation = fns.getTokenInformation});
 }
 
 /// Every processor group with its maximum size (GetMaximumProcessorCount), as WindowsSystemProbe

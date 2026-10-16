@@ -243,6 +243,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsEtwNetCollector.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
+    src/Platform/Windows/WindowsElevation.cpp
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsFolderPicker.cpp
@@ -422,6 +423,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
+        src/Platform/Windows/WindowsElevation.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsProcessDumpMath.h

@@ -1,8 +1,11 @@
 #include "WindowsDebugPrivilege.h"
 
+#include "WindowsElevation.h"
 #include "WindowsHandles.h"
 
 #include <spdlog/spdlog.h>
+
+#include <optional>
 
 namespace Platform::Windows
 {
@@ -16,14 +19,14 @@ DebugPrivilegeResult enableDebugPrivilegeIfElevated(const DebugPrivilegeFunction
         return DebugPrivilegeResult::TokenUnavailable;
     }
 
-    TOKEN_ELEVATION elevation{};
-    DWORD size = sizeof(elevation);
-    if (fns.getTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size) == FALSE)
+    // The token opened above, not isProcessElevated()'s: AdjustTokenPrivileges below needs this one.
+    const std::optional<bool> elevated = readTokenElevation(token.get(), fns.getTokenInformation);
+    if (!elevated.has_value())
     {
         spdlog::warn("SeDebugPrivilege: reading TokenElevation failed (error {}); not enabled", GetLastError());
         return DebugPrivilegeResult::TokenUnavailable;
     }
-    if (elevation.TokenIsElevated == 0)
+    if (!*elevated)
     {
         spdlog::debug("SeDebugPrivilege: not elevated; left disabled");
         return DebugPrivilegeResult::NotElevated;

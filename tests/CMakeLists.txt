@@ -423,6 +423,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessActionsSeams.cpp
     Platform/test_WindowsDebugPrivilege.cpp
+    Platform/test_WindowsElevation.cpp
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessIconSource.cpp
