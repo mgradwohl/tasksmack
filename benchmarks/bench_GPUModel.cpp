@@ -243,8 +243,9 @@ static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 }
 BENCHMARK(BM_GPUModel_UtilizationHistory);
 
-// Benchmark readProcessGPUCounters() – the per-process GPU read that each refresh() now makes on
-// the GPU sampler and publishes for ProcessModel to merge (#1417).
+// Benchmark the probe's readProcessGPUCounters() – the per-process GPU read that each
+// GPUModel::refresh() makes on the GPU sampler and publishes for ProcessModel to merge (#1417).
+// GPUModel has no direct per-process read any more (#2155), so this calls the probe it would.
 static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -253,19 +254,18 @@ static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
     }
 
     auto probe = Platform::makeGPUProbe();
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
+    static_cast<void>(probe->readProcessGPUCounters()); // warm up, as GPUModel's first refresh would
 
     BenchmarkUtils::MemoryDeltaTracker memTracker;
 
     for (auto _ : state)
     {
-        auto counters = model.readProcessGPUCounters();
+        auto counters = probe->readProcessGPUCounters();
         benchmark::DoNotOptimize(counters.data());
         benchmark::DoNotOptimize(counters.size());
     }
 
-    auto counters = model.readProcessGPUCounters();
+    auto counters = probe->readProcessGPUCounters();
     state.counters["gpu_process_entries"] = benchmark::Counter(static_cast<double>(counters.size()));
 
     BenchmarkUtils::reportMemoryCounters(state);

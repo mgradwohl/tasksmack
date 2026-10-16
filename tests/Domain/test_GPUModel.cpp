@@ -106,11 +106,8 @@ TEST(GPUModelTest, NullProbeReportsPerProcessGpuDataKnownUnsupported)
     EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
     EXPECT_TRUE(model.perProcessNpuMetricsKnownUnsupported());
     EXPECT_TRUE(model.perProcessNpuUtilizationKnownUnsupported());
-    const auto reading = model.readProcessGPUData();
-    EXPECT_FALSE(reading.perProcessSupported);
-    EXPECT_FALSE(reading.utilizationSupported);
-    EXPECT_TRUE(reading.counters.empty());
     model.refresh();
+    EXPECT_EQ(model.processGPUPublicationVersion(), 0U) << "nothing to read, so nothing published";
     EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
     EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
 }
@@ -186,26 +183,30 @@ TEST(GPUModelTest, ProcessGpuDataComesWithTheSupportItWasReadUnder)
     auto* rawProbe = probe.get();
     Domain::GPUModel model(std::move(probe));
 
-    const auto reading = model.readProcessGPUData();
-    EXPECT_TRUE(reading.perProcessSupported);
-    EXPECT_FALSE(reading.utilizationSupported);
-    EXPECT_EQ(reading.counters.size(), 1U);
+    model.refresh();
+    const auto reading = model.processGPUPublication();
+    EXPECT_TRUE(reading->perProcessSupported);
+    EXPECT_FALSE(reading->utilizationSupported);
+    EXPECT_EQ(reading->counters.size(), 1U);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
 
-    // Lost on re-enumeration: no read, and the reading says so.
+    // Lost on re-enumeration: the same refresh's read is skipped, and its generation says so.
     Platform::GPUCapabilities none;
     rawProbe->withCapabilities(none).withRescanReportingChange();
     model.refresh();
-    const auto after = model.readProcessGPUData();
-    EXPECT_FALSE(after.perProcessSupported);
-    EXPECT_FALSE(after.utilizationSupported);
-    EXPECT_TRUE(after.counters.empty());
+    const auto after = model.processGPUPublication();
+    EXPECT_FALSE(after->perProcessSupported);
+    EXPECT_FALSE(after->utilizationSupported);
+    EXPECT_FALSE(after->readFailed);
+    EXPECT_TRUE(after->counters.empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U) << "no read once the support is gone";
 }
 
 TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
 {
     // #1210: a throwing read returned no flags, so the caller fell back to flags it had loaded
-    // outside the probe lock, which a rescan could have changed in between. The failure now comes
-    // back with the flags taken under the lock.
+    // outside the probe lock, which a rescan could have changed in between. The failed read's
+    // generation carries the flags taken under the lock.
     auto probe = std::make_unique<MockGPUProbe>();
     Platform::GPUCapabilities caps;
     caps.hasPerProcessMetrics = true;
@@ -214,15 +215,12 @@ TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
     probe->withProcessGPU(100, "GPU0", 1024ULL * 1024).withProcessCountersThrowing();
     Domain::GPUModel model(std::move(probe));
 
-    Domain::GPUModel::ProcessGPUReading reading;
-    ASSERT_NO_THROW(reading = model.readProcessGPUData());
-    EXPECT_TRUE(reading.perProcessSupported);
-    EXPECT_TRUE(reading.utilizationSupported);
-    EXPECT_TRUE(reading.counters.empty());
-    EXPECT_TRUE(reading.failure != nullptr);
-
-    // The counters-only call still throws, as before.
-    EXPECT_ANY_THROW(static_cast<void>(model.readProcessGPUCounters()));
+    ASSERT_NO_THROW(model.refresh());
+    const auto reading = model.processGPUPublication();
+    EXPECT_TRUE(reading->perProcessSupported);
+    EXPECT_TRUE(reading->utilizationSupported);
+    EXPECT_TRUE(reading->counters.empty());
+    EXPECT_TRUE(reading->readFailed);
 }
 
 // =============================================================================
@@ -396,48 +394,6 @@ TEST(GPUModelTest, NoProbePublishesNothingPerProcess)
     EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
 }
 
-TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
-{
-    // Regression test for #843 Phase 3b: backends that can never return per-process data
-    // (e.g. Linux Intel DRM) should never even acquire the probe lock for this call, since
-    // that lock is shared with concurrent system-GPU sampling. Verified here by checking the
-    // probe's call count directly, not just the (already-empty) return value.
-    auto probe = std::make_unique<MockGPUProbe>();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = false;
-    probe->withCapabilities(caps);
-    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
-    auto* rawProbe = probe.get();
-
-    Domain::GPUModel model(std::move(probe));
-
-    const auto counters = model.readProcessGPUCounters();
-
-    EXPECT_TRUE(counters.empty());
-    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
-}
-
-TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = true;
-    probe->withCapabilities(caps);
-    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
-    auto* rawProbe = probe.get();
-
-    Domain::GPUModel model(std::move(probe));
-
-    const auto counters = model.readProcessGPUCounters();
-
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].pid, 100);
-    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
-}
-
-// An empty device list is ambiguous on its own: it can mean "looked and found none" or "could not
-// look". The publication says which, so the UI does not report a failed enumeration as the absence
-// of a GPU (#927 review).
 TEST(GPUModelTest, PublicationRecordsSuccessfulEnumerationEvenWhenEmpty)
 {
     auto probe = std::make_unique<MockGPUProbe>();
@@ -530,7 +486,7 @@ TEST(GPUModelTest, PublicationListsTheGPUsApartFromTheAccelerators)
     EXPECT_EQ(model.acceleratorInfo().size(), 2U);
 }
 
-TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscoveryFailed)
+TEST(GPUModelTest, PerProcessReadStillRunsWhenCapabilityDiscoveryFailed)
 {
     // Regression test for a review finding on #862: the constructor's capabilities() query
     // is wrapped in try/catch, and if it throws, m_Capabilities is left at its default
@@ -538,8 +494,8 @@ TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscove
     // silently suppress a probe that might genuinely support per-process data, just because
     // of a one-time query failure at construction -- a real regression versus this method's
     // behavior before the capability check existed (it always attempted the probe call).
-    // readProcessGPUCounters() must fall through to the lock-and-call path when discovery
-    // failed (unknown), not treat "unknown" the same as "confirmed false".
+    // The per-process read must still run when discovery failed (unknown), not treat
+    // "unknown" the same as "confirmed false".
     auto probe = std::make_unique<MockGPUProbe>();
     probe->withCapabilitiesQueryThrowingOnce(); // fails only the constructor's one query
     probe->withGPU("GPU0", "Test GPU", "TestVendor");
@@ -547,69 +503,12 @@ TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscove
     auto* rawProbe = probe.get();
 
     Domain::GPUModel model(std::move(probe)); // constructor's capabilities() query throws here
+    model.refresh();
 
-    const auto counters = model.readProcessGPUCounters();
-
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].pid, 100);
+    const auto publication = model.processGPUPublication();
+    ASSERT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(publication->counters[0].pid, 100);
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
-}
-
-TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupported)
-{
-    // ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported above only proves the probe
-    // method is skipped -- it would still pass if readProcessGPUCounters() acquired
-    // m_ProbeMutex and checked the capability afterward, since the probe call it's counting
-    // happens inside a different method (readGPUCounters(), called by refresh()). The actual
-    // regression being fixed is lock CONTENTION: readProcessGPUCounters() must return without
-    // ever waiting on m_ProbeMutex when unsupported, even while another thread holds that
-    // mutex doing a (slow) refresh(). Prove that directly: hold the probe lock open via a
-    // background refresh() blocked inside the mock, then confirm the unsupported call
-    // completes promptly instead of waiting for it to be released.
-    auto probe = std::make_unique<MockGPUProbe>();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = false;
-    probe->withCapabilities(caps);
-    probe->withGPU("GPU0", "Test GPU", "TestVendor");
-    auto* rawProbe = probe.get();
-    rawProbe->armBlockingReadGPUCounters();
-
-    Domain::GPUModel model(std::move(probe));
-
-    std::thread blockedRefresh([&model] { model.refresh(); });
-
-    // Wait until the background refresh() is actually inside the blocked probe call (and
-    // therefore holding m_ProbeMutex), not just scheduled -- otherwise the timing check
-    // below could race ahead of the lock actually being held. Bounded (not a bare spin loop):
-    // if a regression stopped refresh() from ever reaching the mock's blocking point, this
-    // would otherwise hang the test process forever instead of failing it. Non-fatal so the
-    // release()/join() cleanup below still runs regardless.
-    EXPECT_TRUE(waitForBlockedEntry(*rawProbe)) << "background refresh() never entered its blocking probe call within the deadline "
-                                                   "-- GPUModel::refresh() or the mock may be broken";
-
-    // Run the call under test on its own thread with a bounded wait, rather than calling it
-    // inline: if the fix regressed and this call actually blocked on m_ProbeMutex, an inline
-    // call would hang the test binary forever (the lock is only released below, after this
-    // check). A bounded wait_for lets that scenario fail with a clear assertion instead.
-    auto future = std::async(std::launch::async, [&model] { return model.readProcessGPUCounters(); });
-    const auto status = future.wait_for(std::chrono::milliseconds(500));
-
-    EXPECT_EQ(status, std::future_status::ready)
-        << "readProcessGPUCounters() did not return promptly -- it appears to be waiting on the probe lock";
-
-    rawProbe->releaseBlockedReadGPUCounters();
-    blockedRefresh.join();
-
-    if (status == std::future_status::ready)
-    {
-        EXPECT_TRUE(future.get().empty());
-    }
-    else
-    {
-        // Let the async task finish before the test function returns and its captures
-        // (model, rawProbe) go out of scope, even though the assertion above already failed.
-        future.wait();
-    }
 }
 
 TEST(MockGPUProbeTest, ArmBlockingReadGPUCountersResetsStateFromPriorReleaseCycle)
@@ -2106,7 +2005,7 @@ TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
 // Per-Process GPU Counter Tests
 // =============================================================================
 
-TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
+TEST(GPUModelTest, PerProcessPublicationCarriesTheProbesCounters)
 {
     auto probe = std::make_unique<MockGPUProbe>();
     Platform::GPUCapabilities caps;
@@ -2117,8 +2016,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
         .withProcessGPU(5678, "GPU0", 256ULL * 1024 * 1024);
 
     Domain::GPUModel model(std::move(probe));
+    model.refresh();
 
-    auto counters = model.readProcessGPUCounters();
+    const auto& counters = model.processGPUPublication()->counters;
     ASSERT_EQ(counters.size(), 2);
 
     // Verify first process
@@ -2134,7 +2034,7 @@ TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
     EXPECT_EQ(it2->gpuMemoryBytes, 256ULL * 1024 * 1024);
 }
 
-TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
+TEST(GPUModelTest, PerProcessPublicationCarriesEveryGpusCounters)
 {
     auto probe = std::make_unique<MockGPUProbe>();
     Platform::GPUCapabilities caps;
@@ -2147,8 +2047,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
         .withProcessGPU(2000, "GPU1", 300ULL * 1024 * 1024);
 
     Domain::GPUModel model(std::move(probe));
+    model.refresh();
 
-    auto counters = model.readProcessGPUCounters();
+    const auto& counters = model.processGPUPublication()->counters;
     ASSERT_EQ(counters.size(), 3);
 
     // Find entries for PID 1000
@@ -2166,37 +2067,6 @@ TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
     auto it = std::find_if(counters.begin(), counters.end(), [](const auto& c) { return c.pid == 2000; });
     ASSERT_NE(it, counters.end());
     EXPECT_EQ(it->gpuId, "GPU1");
-}
-
-TEST(GPUModelTest, ReadProcessGPUCountersWithNullProbe)
-{
-    Domain::GPUModel model(nullptr);
-
-    auto counters = model.readProcessGPUCounters();
-    EXPECT_TRUE(counters.empty());
-}
-
-TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = true;
-    probe->withCapabilities(caps);
-    // rawProbe remains valid after std::move(probe) because GPUModel stores the unique_ptr
-    auto* rawProbe = probe.get();
-    probe->withGPU("GPU0", "Test GPU", "Vendor").withProcessGPU(100, "GPU0", 50ULL * 1024 * 1024);
-
-    Domain::GPUModel model(std::move(probe));
-
-    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0);
-
-    auto counters1 = model.readProcessGPUCounters();
-    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1);
-    EXPECT_EQ(counters1.size(), 1);
-
-    auto counters2 = model.readProcessGPUCounters();
-    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 2);
-    EXPECT_EQ(counters2.size(), 1);
 }
 
 // =============================================================================
@@ -2579,12 +2449,12 @@ TEST(GPUModelTest, ReEnumerationRefreshesTheCapabilities)
 
     EXPECT_TRUE(model.capabilities().hasPerProcessMetrics);
     EXPECT_TRUE(model.publication()->capabilities.hasPerProcessMetrics);
-    EXPECT_EQ(model.readProcessGPUCounters().size(), 1U);
+    EXPECT_EQ(model.processGPUPublication()->counters.size(), 1U);
 }
 
 // The reverse: a probe that loses per-process support on a re-init stops being asked
-// for per-process counters, because readProcessGPUCounters()'s lock-free early exit
-// follows the re-read capabilities (#1322).
+// for per-process counters, because the per-process read follows the re-read
+// capabilities (#1322).
 TEST(GPUModelTest, ReEnumerationThatLosesPerProcessSupportSkipsTheProbe)
 {
     auto probe = std::make_unique<MockGPUProbe>();
@@ -2594,15 +2464,17 @@ TEST(GPUModelTest, ReEnumerationThatLosesPerProcessSupportSkipsTheProbe)
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withCapabilities(caps).withProcessGPU(42, "GPU0", 1024);
 
     Domain::GPUModel model(std::move(probe));
-    EXPECT_EQ(model.readProcessGPUCounters().size(), 1U);
+    model.refresh();
+    EXPECT_EQ(model.processGPUPublication()->counters.size(), 1U);
+    const auto callsBefore = rawProbe->readProcessCountersCallCount();
 
     caps.hasPerProcessMetrics = false;
     rawProbe->withCapabilities(caps).withRescanReportingChange();
     model.refresh();
-    const auto callsBefore = rawProbe->readProcessCountersCallCount();
+    model.refresh();
 
     EXPECT_FALSE(model.capabilities().hasPerProcessMetrics);
-    EXPECT_TRUE(model.readProcessGPUCounters().empty());
+    EXPECT_TRUE(model.processGPUPublication()->counters.empty());
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), callsBefore);
 }
 

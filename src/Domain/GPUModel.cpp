@@ -318,7 +318,6 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         m_PerProcessUtilizationKnownUnsupported.store(true, std::memory_order_release);
         m_PerProcessNpuKnownUnsupported.store(true, std::memory_order_release);
         m_PerProcessNpuUtilizationKnownUnsupported.store(true, std::memory_order_release);
-        m_NoPerProcessSourceKnown.store(true, std::memory_order_release);
         return;
     }
 
@@ -710,46 +709,6 @@ Platform::GPUCapabilities GPUModel::capabilities() const
     return m_Capabilities;
 }
 
-std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
-{
-    // m_Capabilities and m_CapabilitiesKnown can be re-read by the sampler thread (rescanGPUs()),
-    // so this reads m_NoPerProcessSourceKnown, the atomic flag written alongside them -- not
-    // the fields under a shared m_Mutex, which cost this hot early exit ~60% (#1322), nor the
-    // probe lock, which a slow probe read holds.
-    // The flag folds in m_CapabilitiesKnown deliberately: if the capabilities() query
-    // threw, m_Capabilities is left at its default (all-false) values, and treating that as
-    // "confirmed unsupported" would permanently and silently suppress a probe that might
-    // genuinely support per-process data, just because of a one-time query failure. Only
-    // skip the probe lock when discovery actually succeeded and reported no support --
-    // e.g. Linux Intel DRM, which always returns empty here. When discovery failed, fall
-    // through to the lock-and-call path unconditionally, matching this method's behavior
-    // before this capability check existed.
-    ProcessGPUReading reading = readProcessGPUData();
-    if (reading.failure)
-    {
-        std::rethrow_exception(reading.failure);
-    }
-    return std::move(reading.counters);
-}
-
-GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
-{
-    if (!m_Probe)
-    {
-        return {};
-    }
-    // The hot early exit described above: neither GPU nor NPU per-process data, and nothing read. One
-    // flag for both, stored in one go: two loads could see a rescan that moves support from the GPU
-    // to the NPU half-way, as neither (#1827). The flags the read then runs under are taken under the
-    // probe lock, which a rescan holds.
-    if (m_NoPerProcessSourceKnown.load(std::memory_order_acquire))
-    {
-        return {};
-    }
-    const std::scoped_lock probeLock(m_ProbeMutex);
-    return readProcessGPUDataLocked();
-}
-
 void GPUModel::storePerProcessSupport() noexcept
 {
     m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
@@ -757,8 +716,6 @@ void GPUModel::storePerProcessSupport() noexcept
     m_PerProcessNpuKnownUnsupported.store(!Platform::perProcessNpuMetricsSupported(m_Capabilities), std::memory_order_release);
     m_PerProcessNpuUtilizationKnownUnsupported.store(!Platform::perProcessNpuUtilizationSupported(m_Capabilities),
                                                      std::memory_order_release);
-    m_NoPerProcessSourceKnown.store(!m_Capabilities.hasPerProcessMetrics && !Platform::perProcessNpuMetricsSupported(m_Capabilities),
-                                    std::memory_order_release);
 }
 
 GPUModel::ProcessGPUReading GPUModel::readProcessGPUDataLocked() const

@@ -229,11 +229,7 @@ class GPUModel : public ISamplable
         return m_ProcessPublication.version();
     }
 
-    /// Read the per-process GPU counters from the probe now, under the probe lock: a direct read for
-    /// tests and benchmarks. The process sampler merges processGPUPublication() instead, which
-    /// refresh() fills, so it never runs the probe on its own thread (#1417).
-    [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
-
+  private:
     /// Per-process GPU counters together with the per-process support they were read under (#1210).
     struct ProcessGPUReading
     {
@@ -248,13 +244,6 @@ class GPUModel : public ISamplable
         std::exception_ptr failure;
     };
 
-    /// readProcessGPUCounters() and the support it was read under, from one operation: the flags are
-    /// read under the probe lock, which a re-enumeration that changes them holds, so the counters
-    /// and the flags always agree. Reading the flags separately could stamp a generation supported
-    /// while the read short-circuited empty, or the reverse (#1210).
-    [[nodiscard]] ProcessGPUReading readProcessGPUData() const;
-
-  private:
     /// The four "known unsupported" flags from m_Capabilities, once they are known (under m_Mutex, unique).
     void storePerProcessSupport() noexcept;
 
@@ -277,14 +266,13 @@ class GPUModel : public ISamplable
     bool m_GPUInfoKnown = false;
     Platform::GPUCapabilities m_Capabilities;
     // False while no capabilities() query has succeeded, leaving m_Capabilities at its
-    // default (all-false) values. readProcessGPUCounters() must not treat that as proof
-    // per-process metrics are unsupported -- see its use of this flag for why.
+    // default (all-false) values. The per-process read must not treat that as proof per-process
+    // metrics are unsupported: a one-time query failure would silence a probe that has them (#862).
     bool m_CapabilitiesKnown = false;
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics, kept in step with both
-    // (written with them, under the unique m_Mutex). The per-process read (every refresh, and
-    // readProcessGPUCounters()) returns straight away on a backend that has no per-process data:
-    // reading this flag instead of taking m_Mutex shared for the two fields keeps that early exit to
-    // a single atomic load (#1322). ProcessModel reads it too, before the first publication (#1417).
+    // (written with them, under the unique m_Mutex). Each refresh's per-process read returns straight
+    // away on a backend that has no per-process data, and ProcessModel reads it before the first
+    // publication (#1417): a single atomic load, never m_Mutex (#1322).
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
@@ -292,9 +280,6 @@ class GPUModel : public ISamplable
     // perProcessNpuUtilizationSupported(), #1827).
     std::atomic<bool> m_PerProcessNpuKnownUnsupported{false};
     std::atomic<bool> m_PerProcessNpuUtilizationKnownUnsupported{false};
-    // Neither GPU nor NPU per-process data, once the capabilities are known: the per-process read's
-    // early exit (#1322), one flag so a rescan between the two above never reads as "neither" (#1827).
-    std::atomic<bool> m_NoPerProcessSourceKnown{false};
 
     /// One sample of a GPU's history, as its series record it: a field that was not read, or a
     /// placeholder for a refresh the GPU was missing from, is NaN (#1111, #1146).
@@ -405,8 +390,8 @@ class GPUModel : public ISamplable
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
 
-    /// readProcessGPUData()'s read, for a caller that already holds m_ProbeMutex. Never throws the
-    /// probe's exception: it is carried in the result.
+    /// The per-process counters and the support they were read under, for publishProcessGPUData(),
+    /// which holds m_ProbeMutex. Never throws the probe's exception: it is carried in the result.
     [[nodiscard]] ProcessGPUReading readProcessGPUDataLocked() const;
 
     /// Read the per-process counters and commit them as the next ProcessGPUPublication, stamped
