@@ -81,7 +81,8 @@ OS APIs (Linux: /proc/*, Windows: NtQuery*)
 **Layer rules:**
 - **Platform** (`src/Platform/`): Stateless probes returning raw counters (CPU ticks, bytes). No computation.
 - **Domain** (`src/Domain/`): Computes deltas/rates from counters, maintains history, publishes immutable snapshots.
-- **UI** (`src/App/`, `src/UI/`): Renders snapshots via ImGui. Never calls Platform directly.
+- **UI** (`src/UI/`): Renders snapshots via ImGui. Never calls Platform directly.
+- **App** (`src/App/`): Panels and shell; the composition root. The panels' real-or-synthetic platform objects all come from `App/PanelPlatforms.cpp` (the only App file besides `App/SyntheticScenario.cpp` that calls `Platform::make*()`), called at construction/`onAttach` and wired by `App/ShellPanels`.
 - **Core** (`src/Core/`): Application lifecycle, windowing, event dispatch.
 - OpenGL calls confined to `Core/` and `UI/` only. Domain/Platform are graphics-agnostic.
 - Domain and Platform never depend on UI, Core, or graphics libraries.
@@ -128,14 +129,14 @@ struct ProcessCapabilities {
 - `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
-- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`, `ts-sampler-svc` (Services tab, only once it has been shown), `ts-conn-read`, `ts-dump` (a "Create dump file" dump, #807), `ts-folder-pick` (its "Save dump to..." folder dialog, #2001), `ts-batch-action` (a confirmed batch action or batch priority change over the Processes selection, #2142); 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
+- Every thread TaskSmack creates is named through `Platform/ThreadName.h`, whose `*_THREAD_NAME` constants are the complete list: the samplers (`ts-sampler-proc`, `ts-sampler-sys`, `ts-sampler-svc` for the Services tab once it has been shown, `ts-sampler-auto` for the Startup tab), the Process Details and System Information readers (`ts-conn-read`, `ts-mod-read`, `ts-files-read`, `ts-sec-read`, `ts-env-read`, `ts-sysinfo-read`, `ts-crash-read`, ...), and the action workers (`ts-svc-action`, `ts-auto-action`, `ts-dump` (#807), `ts-folder-pick` (#2001), `ts-batch-action` (a confirmed batch action or batch priority change over the Processes selection, #2142)). A new thread gets a new constant there, 15 bytes max for Linux, so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
 - An App view that runs one slow platform call off the UI thread (a dump, a service or startup action, a lazy read) uses `App::BackgroundTask<Result>` (`src/App/Panels/BackgroundTask.h`, #2139), never a hand-rolled `std::async` slot: it names the thread, turns work that throws into the view's Failed result on the worker (no exception object crosses threads, #1685/#1706), reports a thread that couldn't start, gives each start a new stop token, and requests a stop and waits on destruction
 
 ### Panel Lifecycle
 ```cpp
-void onAttach() override { /* create model, call refresh() to seed history */ }
-void onDetach() override { /* cleanup model */ }
-void onUpdate(float deltaTime) override { /* accumulate time, call model->refresh() on interval */ }
+void onAttach() override { /* get platform objects from App/PanelPlatforms (or an injected factory), create model, seed it, start its BackgroundSampler */ }
+void onDetach() override { /* stop the sampler, release the model */ }
+void onUpdate(float deltaTime) override { /* per-frame bookkeeping (sampler interval, finished background tasks); the sampler, not onUpdate, calls refresh() */ }
 void renderContent() override { /* draw into ShellLayer's tab (no ImGui::Begin/End), render version-cached snapshots */ }
 ```
 
@@ -148,7 +149,7 @@ void renderContent() override { /* draw into ShellLayer's tab (no ImGui::Begin/E
 - **Static Analysis:** `.clang-tidy` - run regularly
 
 ### Naming
-- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_PascalCase` | Constants: `UPPER_SNAKE_CASE`
+- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_PascalCase` | Constants: `UPPER_SNAKE_CASE` | Enumerators: `PascalCase` (`.clang-tidy` enforces all but constants; see CONTRIBUTING.md)
 
 ### Includes (order matters)
 1. Matching header (`.cpp` files only)
@@ -254,7 +255,7 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ## Testing
 
 - Framework: Google Test in `tests/` mirroring `src/` structure
-- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, `IProcessEnvironmentReader`, `IProcessConnectionsReader`
+- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, the Process Details readers (`IProcessEnvironmentReader`, `IProcessConnectionsReader`, `IProcessModulesReader`, `IProcessSecurityReader`, `IProcessOpenFilesReader`), and the Services/Startup probes and actions
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
 - `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a
@@ -310,9 +311,9 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 ## Adding New Features
 
-1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` (impl)
+1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` and `Platform/Windows/WindowsXxxProbe.cpp` (impls) → a `make*()` in `Platform/Factory.h` (both `Factory.cpp`s), called only from `App/PanelPlatforms.cpp`
 2. **New model**: `Domain/XxxModel.cpp` (computes deltas from probe counters)
-3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`). Implement `Panel::renderContent()`, add the owned panel member to `ShellLayer`, and register it once in the constructor's `PanelTabs` list with its event name and label provider. Registration order drives tabs and lifecycle forwarding; detach runs in reverse. Keep panel-specific model/snapshot coordination explicit in `ShellLayer`. Registry tests live in `tests/App/test_PanelTabs.cpp`.
+3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model; a `BackgroundSampler` drives refresh, not `onUpdate()`). Implement `Panel::renderContent()`, add the owned panel member to `App/ShellPanels` (with an accessor `ShellLayer` references), and register it once in `ShellLayer`'s constructor `PanelTabs` list with its event name and label provider. Registration order drives tabs and lifecycle forwarding; detach runs in reverse. Keep panel-specific model/snapshot coordination explicit in `ShellLayer`. Registry tests live in `tests/App/test_PanelTabs.cpp`.
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
 5. **System / process parity (maintainer guideline):** a metric that gets a system-wide tab or section
    (for example GPU, NPU, Network and I/O) should usually also get (a) a tab in Process Details for the
@@ -343,8 +344,8 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
 - ❌ Missing `override` keyword on virtual function overrides
 - ❌ Calling `Platform::makePathProvider()` from UI or App — use `Core::Application::get().paths()` instead
-- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in App panel `onAttach`, not in render loops
-- ❌ Adding `#include "Platform/Factory.h"` to `UI/` or non-panel `App/` files
+- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in `App/PanelPlatforms.cpp`, called from a panel's construction/`onAttach`, not in render loops
+- ❌ Adding `#include "Platform/Factory.h"` anywhere in `UI/` or `App/` other than `App/PanelPlatforms.cpp` and `App/SyntheticScenario.cpp` (panels get their platform objects from `PanelPlatforms`)
 
 ## Engineering Workflow
 
@@ -380,7 +381,7 @@ When performing a code review on this project:
    - Platform probes should return raw counters, not computed values
    - Domain should not depend on UI, Core, or graphics libraries
    - UI should not include `Platform/Factory.h` or call `Platform::make*()` directly; path resolution goes through `Core::Application::get().paths()`
-   - App panels (composition root) may call `Platform::make*Probe()` and `Platform::makeProcessActions()` at construction/`onAttach` time only — never in render loops
+   - App (composition root) calls `Platform::make*Probe()` and `Platform::makeProcessActions()` only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which panels call at construction/`onAttach` time only — never in render loops
    - `Platform::makePathProvider()` is called only inside `Core::PathService`; all other path access goes through `Core::Application::get().paths()`
    - All OpenGL calls should be in UI/Core layers only
 

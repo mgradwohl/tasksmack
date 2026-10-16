@@ -110,7 +110,7 @@ Users need to see how much memory is shared between processes.
 
 ## Context
 - Files: `src/Platform/ProcessTypes.h`, `src/Platform/Linux/LinuxProcessProbe.cpp`,
-  `src/Domain/ProcessSnapshot.h`, `src/App/Panels/ProcessPanel.cpp`
+  `src/Domain/ProcessSnapshot.h`, `src/App/Panels/ProcessesPanel.cpp`
 - Platform: Linux (use `/proc/[pid]/statm` field 2)
 - Windows: Use `WorkingSetSize - PrivateUsage` approximation
 - Pattern: Follow existing RES column implementation
@@ -168,7 +168,7 @@ You can request changes by commenting on the PR:
 
 ```markdown
 @copilot The CPU% calculation looks incorrect. It should divide by the number
-of CPU cores to get a percentage per core, not total. See `ProcessModel::computeSnapshot()`
+of CPU cores to get a percentage per core, not total. See `ProcessModel::computeSnapshotsLocked()`
 in existing code.
 ```
 
