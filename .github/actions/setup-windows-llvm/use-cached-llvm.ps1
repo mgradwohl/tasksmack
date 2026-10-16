@@ -19,6 +19,9 @@
     C:\Program Files\LLVM at step level, which overrides anything exported via GITHUB_ENV, and
     the presets derive CMAKE_C(XX)_COMPILER from LLVM_ROOT.
 
+    If the move of the cached tree fails after the rename, the image's LLVM is renamed back to the
+    destination and the error is rethrown, so the step fails naming the move (#2248).
+
     The "Verify LLVM" step that follows checks clang's version, so a bad swap fails there.
 .PARAMETER Source
     The cached LLVM tree (restored by actions/cache).
@@ -46,13 +49,13 @@ if (-not (Test-Path -LiteralPath $Source)) {
 
 $asideName = (Split-Path -Leaf $Destination) + '.runner-image'
 $aside = Join-Path (Split-Path -Parent $Destination) $asideName
+$renamed = $false
 
 if (Test-Path -LiteralPath $Destination) {
     if (Test-Path -LiteralPath $aside) {
         Write-Host "::error title=LLVM swap failed::$aside already exists"
         exit 1
     }
-    $renamed = $false
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
             Rename-Item -LiteralPath $Destination -NewName $asideName
@@ -81,6 +84,26 @@ if (Test-Path -LiteralPath $Destination) {
     Write-Host "Renamed image LLVM aside to $aside"
 }
 
-Move-Item -LiteralPath $Source -Destination $Destination
+try {
+    Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+} catch {
+    $moveError = $_
+    Write-Host "::error title=LLVM swap failed::moving $Source to $Destination failed: $($moveError.Exception.Message)"
+    # Put the image's LLVM back (#2248), so the failure is reported here, not later as a missing
+    # clang.exe. When the rename inside Move-Item is refused, it falls back to copy-and-delete and
+    # can leave a partial tree at the destination; that tree is ours, so it is removed first.
+    if ($renamed) {
+        try {
+            if (Test-Path -LiteralPath $Destination) {
+                Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction Stop
+            }
+            Rename-Item -LiteralPath $aside -NewName (Split-Path -Leaf $Destination) -ErrorAction Stop
+            Write-Host "Restored image LLVM from $aside to $Destination"
+        } catch {
+            Write-Host "::error title=LLVM restore failed::could not restore $aside to $Destination`: $($_.Exception.Message)"
+        }
+    }
+    throw "Moving cached LLVM from $Source to $Destination failed: $($moveError.Exception.Message)"
+}
 Write-Host "Moved cached LLVM to $Destination"
 exit 0
