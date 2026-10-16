@@ -124,7 +124,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
     }
 
     /// As attachedPanel(), with mock actions that can do everything; @p actions is left pointing at them
-    /// (the panel owns them).
+    /// (the panel owns them). onUpdate() is told no interaction redraw is on.
     [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanelWithActions(std::function<void(Core::Event&)> raiseEvent,
                                                                                   TestMocks::MockProcessActions*& actions)
     {
@@ -141,7 +141,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 actions = mock.get();
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
-            std::move(raiseEvent));
+            std::move(raiseEvent),
+            [] { return false; });
         panel->onAttach();
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
@@ -294,6 +295,26 @@ class ProcessesPanelRenderTest : public ::testing::Test
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         static_cast<void>(renderAndCapture(panel)); // the table draws the rows it now has
+    }
+
+    /// Draws frames, with onUpdate() before each as the app's loop runs it, until the toolbar shows
+    /// @p result: a confirmed batch runs on its worker and onUpdate() takes its line in (#2142). Once it
+    /// is shown the worker has finished (the panel took its result through the future), so its calls on
+    /// the mock can be counted. Bounded by a deadline, not a frame count, so a slow worker (ASan, a
+    /// loaded runner) is waited for and a broken one fails the test rather than hanging it.
+    [[nodiscard]] static bool updateUntilBatchResult(ProcessesPanel& panel, std::string_view result)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            panel.onUpdate(1.0F / 60.0F);
+            if (renderAndCapture(panel).contains(result))
+            {
+                return true;
+            }
+            std::this_thread::yield(); // let the worker run; the next frame polls again
+        }
+        return false;
     }
 
     /// As renderUntilLoaded(), with onUpdate() before each frame as the app's loop runs it: it adopts the
@@ -1332,8 +1353,10 @@ TEST_F(ProcessesPanelRenderTest, CtrlAThenF9KillsEverySelectedProcessAfterOneCon
     EXPECT_EQ(actions->killCount(), 0);
 
     pressModalFilledButton(*panel, "Kill");
-    EXPECT_EQ(actions->killCount(), 3); // each, by identity
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    // On the batch's worker (#2142): the toolbar's line comes on a later frame.
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Kill sent to 3 processes"));
+    EXPECT_EQ(actions->killCount(), 3); // each, by identity
     panel->onDetach();
 }
 
@@ -1357,8 +1380,9 @@ TEST_F(ProcessesPanelRenderTest, TheRowMenuOnASelectionSetsOnePriorityForAllOfIt
 
     // The dialog lists them, so it is the confirmation (#1539): Apply sets the value on each.
     pressModalFilledButton(*panel, "Apply to 3 processes");
-    EXPECT_EQ(actions->setPriorityCount(), 3);
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "Priority set to")); // from the batch's worker (#2142)
+    EXPECT_EQ(actions->setPriorityCount(), 3);
     panel->onDetach();
 }
 
