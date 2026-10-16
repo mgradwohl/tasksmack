@@ -132,6 +132,26 @@ TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
 
 static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) < Domain::Priority::HIGH_THRESHOLD);
 
+// The probe's nice values and Process Details' are one table, Domain::Priority::classNice() (#2168):
+// retuning it for one side retunes it for the other.
+static_assert(priorityClassToNice(IDLE_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Idle));
+static_assert(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::BelowNormal));
+static_assert(priorityClassToNice(NORMAL_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Normal));
+static_assert(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::AboveNormal));
+static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::High));
+static_assert(priorityClassToNice(REALTIME_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime));
+// And each value reads back as its own class, Realtime included.
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(IDLE_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Idle);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::BelowNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(NORMAL_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Normal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::AboveNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(HIGH_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::High);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(REALTIME_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Realtime);
+
 // =============================================================================
 // toPriorityClass: the class the probe reports beside nice (#1280)
 // =============================================================================

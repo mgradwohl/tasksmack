@@ -156,6 +156,43 @@ inline constexpr std::array<std::string_view, 6> PROCESS_PRIORITY_LABELS = {
     return PriorityClass::Idle;
 }
 
+/// The nice value that stands for a Windows priority class (#1204, #2168): what the Windows probe
+/// reports for it (Platform::priorityClassToNice()) and what Process Details passes to setPriority()
+/// to select it. The one table both use. Each sits in the middle of the class's getPriorityLabel()
+/// bucket, never on a threshold: -5 and -10 used to stand for Above Normal and High, but those are
+/// where getPriorityLabel() and Platform::niceToPriorityClass() start the next class down, so Above
+/// Normal was shown as Normal and High as Above Normal. Realtime has no bucket of its own; MIN_NICE
+/// keeps it distinct from High (the UI names it from that value) and still labels and sets it as
+/// High. None, a class not read, is Normal.
+[[nodiscard]] constexpr int32_t classNice(PriorityClass priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case PriorityClass::Idle:
+        return MAX_NICE;
+    case PriorityClass::BelowNormal:
+        return 10;
+    case PriorityClass::AboveNormal:
+        return -7;
+    case PriorityClass::High:
+        return -15;
+    case PriorityClass::Realtime:
+        return MIN_NICE;
+    case PriorityClass::Normal:
+    case PriorityClass::None:
+    default:
+        return NORMAL_NICE;
+    }
+}
+
+/// The class a nice value from classNice() stands for: its inverse for every class but None.
+/// Realtime is MIN_NICE, which no other class reports; every other value is the class whose
+/// getPriorityLabel() bucket it falls in (priorityClassForNice()).
+[[nodiscard]] constexpr PriorityClass classFromNice(int32_t nice) noexcept
+{
+    return nice <= MIN_NICE ? PriorityClass::Realtime : priorityClassForNice(nice);
+}
+
 /// Sort key for a process's priority, smallest = highest priority, as nice orders: by class first
 /// (Realtime before High, whatever nice values stand for them), then by nice. A process with no class
 /// sorts in the class its nice value's label names, so it sits with the rows that show the same
