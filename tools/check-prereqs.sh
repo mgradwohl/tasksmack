@@ -389,20 +389,21 @@ main() {
         fi
     fi
 
-    # ccache
+    # ccache (recommended, not required: CONTRIBUTING.md lists it as "recommended for faster rebuilds",
+    # cmake/CompilerOptions.cmake only warns when neither ccache nor sccache is found, and
+    # check-prereqs.ps1 warns too, #2270). Missing or too old is a warning; all_ok is left alone.
     local ccache_ver
     ccache_ver="$(get_ccache_version)"
     if [[ -z "${ccache_ver}" ]]; then
-        echo -e "${RED}ccache${NC}: not found"
-        all_ok=1
+        echo -e "${YELLOW}ccache${NC}: not found (recommended for faster rebuilds)"
+        echo -e "  ${CYAN}Hint${NC}: sudo apt install ccache"
     else
         local ccache_path
         ccache_path="$(command -v ccache 2>/dev/null || true)"
         if version_at_least "${MIN_CCACHE_VERSION}" "${ccache_ver}"; then
             echo -e "${GREEN}ccache${NC}: ${ccache_ver} (${ccache_path})"
         else
-            echo -e "${YELLOW}ccache${NC}: ${ccache_ver} (${ccache_path}) - minimum required ${MIN_CCACHE_VERSION}"
-            all_ok=1
+            echo -e "${YELLOW}ccache${NC}: ${ccache_ver} (${ccache_path}) - ${MIN_CCACHE_VERSION}+ recommended"
         fi
     fi
 
