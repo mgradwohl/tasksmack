@@ -718,6 +718,7 @@ TEST_F(WindowsSetAffinityTest, OneGroupSetsTheMaskThroughAVerifiedHandle)
     EXPECT_EQ(FakeWin::lastMask, DWORD_PTR{0b1010U});
     EXPECT_EQ(FakeWin::cpuSetCalls, 0);
     EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_TRUE(result.successNote.empty()) << "a hard affinity mask is what Set affinity promises: " << result.successNote;
 }
 
 TEST_F(WindowsSetAffinityTest, AReusedPidIsRefusedAndNothingIsSet)
@@ -805,6 +806,34 @@ TEST_F(WindowsSetAffinityTest, SeveralGroupsSetCpuSetsAndEveryCpuClearsThem)
     const auto missing = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1000U));
     EXPECT_FALSE(missing.success);
     EXPECT_NE(missing.errorMessage.find("0 of the 1"), std::string::npos) << missing.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, SeveralGroupsSaySoftCpuSetsWereSetNotAHardMask)
+{
+    // The regression (#2173): CPU sets are a preference that threads with an affinity or CPU sets of
+    // their own, and a hard affinity mask, override; success read as though a hard mask was set.
+    FakeWin::groupSizes = {2, 2};
+    FakeWin::cores = {{.group = 0, .mask = 0b11U, .efficiencyClass = 0}, {.group = 1, .mask = 0b11U, .efficiencyClass = 0}};
+    FakeWin::cpuSets = {{.id = 256, .group = 0, .logicalProcessorIndex = 0},
+                        {.id = 257, .group = 0, .logicalProcessorIndex = 1},
+                        {.id = 258, .group = 1, .logicalProcessorIndex = 0},
+                        {.id = 259, .group = 1, .logicalProcessorIndex = 1}};
+    WindowsProcessActions actions(FakeWin::functions());
+
+    const auto some = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    ASSERT_TRUE(some.success) << some.errorMessage;
+    EXPECT_NE(some.successNote.find("preferred CPUs (CPU sets)"), std::string::npos) << some.successNote;
+    EXPECT_NE(some.successNote.find("threads with their own affinity are not moved"), std::string::npos) << some.successNote;
+
+    const auto every = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1111U));
+    ASSERT_TRUE(every.success) << every.errorMessage;
+    EXPECT_NE(every.successNote.find("clearing its preferred CPUs"), std::string::npos) << every.successNote;
+    EXPECT_NE(every.successNote.find("affinity mask"), std::string::npos) << "an earlier hard mask is not undone: " << every.successNote;
+
+    FakeWin::setError = ERROR_ACCESS_DENIED;
+    const auto refused = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.successNote.empty()) << "a failure carries no success note";
 }
 
 TEST_F(WindowsSetAffinityTest, NoGroupSizesMeansNoAffinityAction)

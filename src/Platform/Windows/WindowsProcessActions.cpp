@@ -437,6 +437,7 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
     }
 
     BOOL ok = FALSE;
+    std::string note; // Default CPU sets are a preference: say so rather than claim a hard affinity (#2173)
     if (!useCpuSets)
     {
         // One group: masks holds exactly group 0's mask (an empty choice was refused above).
@@ -446,6 +447,7 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
     {
         // Every CPU: clear the default CPU sets rather than pin the process to today's processors.
         ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), nullptr, 0);
+        note = "by clearing its preferred CPUs (CPU sets); any affinity mask or thread affinity set earlier still applies";
     }
     else
     {
@@ -456,6 +458,7 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
         }
         const std::vector<ULONG> cpuSetIds(ids->begin(), ids->end()); // ULONG is 32 bits, but not uint32_t's type
         ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), cpuSetIds.data(), static_cast<ULONG>(cpuSetIds.size()));
+        note = "as preferred CPUs (CPU sets); threads with their own affinity are not moved";
     }
     if (ok == FALSE)
     {
@@ -463,8 +466,15 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
         spdlog::warn("{}", msg);
         return ProcessActionResult::error(std::move(msg));
     }
-    spdlog::info("Set CPU affinity ({} CPUs{}) for PID {}", cpus.count(), useCpuSets ? ", as CPU sets" : "", target.pid);
-    return ProcessActionResult::ok();
+    if (note.empty())
+    {
+        spdlog::info("Set CPU affinity ({} CPUs) for PID {}", cpus.count(), target.pid);
+    }
+    else
+    {
+        spdlog::info("Set CPU affinity ({} CPUs) for PID {} {}", cpus.count(), target.pid, note);
+    }
+    return ProcessActionResult::ok(std::move(note));
 }
 
 CpuAffinityLayout WindowsProcessActions::affinityLayout() const

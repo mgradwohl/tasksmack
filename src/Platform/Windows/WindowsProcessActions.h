@@ -81,7 +81,9 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     /// One processor group: SetProcessAffinityMask(), which every thread, and every thread started
     /// later, follows. Several: SetProcessDefaultCpuSets(), since one affinity mask can't span groups
-    /// (#1881); every CPU chosen clears the default CPU sets instead.
+    /// (#1881); every CPU chosen clears the default CPU sets instead. CPU sets are a preference: threads
+    /// given an affinity or CPU sets of their own, and a hard affinity mask, take precedence, so the
+    /// success carries a successNote saying the choice was set as preferred CPUs (#2173).
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
     /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
