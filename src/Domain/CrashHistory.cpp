@@ -50,11 +50,13 @@ void CrashHistory::read()
 {
     Platform::CrashesInfo crashes;
     std::uint64_t startedAt = 0;
+    std::uint64_t order = 0;
     {
         const std::scoped_lock lock(m_ReadMutex);
-        // When this read starts, once it has the read lock: publish() keeps the newest read by it, so a
-        // slower read that started earlier (this one or the System Information read) can't replace a
-        // newer list (#1773).
+        // When this read starts, once it has the read lock: publish() keeps the newest read by its
+        // ticket, so a slower read that started earlier (this one or the System Information read) can't
+        // replace a newer list (#1773). The wall-clock time is only shown: it can step backwards (#2157).
+        order = beginRead();
         startedAt = nowUnixSeconds();
         try
         {
@@ -76,21 +78,21 @@ void CrashHistory::read()
             crashes.unavailableReason = "Couldn't read the crash history: unknown error";
         }
     }
-    publish(std::move(crashes), startedAt);
+    publish(std::move(crashes), startedAt, order);
 }
 
-void CrashHistory::publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds)
+void CrashHistory::publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds, std::uint64_t readOrder)
 {
     auto next = std::make_shared<CrashHistorySnapshot>();
     next->crashes = std::move(crashes);
     next->readAtUnixSeconds = readAtUnixSeconds;
 
     const std::scoped_lock lock(m_PublishMutex);
-    if (m_LastVersion != 0 && readAtUnixSeconds < m_LastReadAtSeconds)
+    if (m_LastVersion != 0 && readOrder < m_LastReadOrder)
     {
         return; // a slower read that started before the one already shown
     }
-    m_LastReadAtSeconds = readAtUnixSeconds;
+    m_LastReadOrder = readOrder;
     next->version = ++m_LastVersion;
     m_Slot.commit(std::move(next));
 }

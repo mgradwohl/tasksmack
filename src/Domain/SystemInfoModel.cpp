@@ -35,8 +35,10 @@ void SystemInfoModel::read()
     const std::scoped_lock lock(m_ReadMutex);
 
     auto next = std::make_shared<SystemInfoSnapshot>();
-    // Stamped when the read starts, not when it ends: the crash cache orders publications by it, and a
-    // slow read that started earlier must not replace one that started later (#1773).
+    // Stamped when the read starts, not when it ends. The crash cache orders publications by its own
+    // ticket, taken here, so a slow read that started earlier can't replace one that started later
+    // (#1773); the wall-clock time is only shown, since it can step backwards (#2157).
+    const std::uint64_t crashReadOrder = m_CrashHistory ? m_CrashHistory->beginRead() : 0;
     const auto started = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = started > 0 ? static_cast<std::uint64_t>(started) : 0;
     if (m_Capabilities.hasOs)
@@ -69,7 +71,7 @@ void SystemInfoModel::read()
     if (m_CrashHistory && m_Capabilities.hasOs)
     {
         // Process Details' crash line (#1675) shows this read too, without a second one of its own.
-        m_CrashHistory->publish(next->crashes, next->readAtUnixSeconds);
+        m_CrashHistory->publish(next->crashes, next->readAtUnixSeconds, crashReadOrder);
     }
     next->version = ++m_LastVersion;
     m_Slot.commit(std::move(next));

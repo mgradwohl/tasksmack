@@ -10,12 +10,14 @@
 #include "Domain/PublicationSlot.h"
 #include "Platform/ISystemInfoProbe.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Domain
@@ -25,7 +27,7 @@ namespace Domain
 struct CrashHistorySnapshot
 {
     std::uint64_t version = 0;           ///< 0 until the first read.
-    std::uint64_t readAtUnixSeconds = 0; ///< When the read started (publications are ordered by it, #1773).
+    std::uint64_t readAtUnixSeconds = 0; ///< When the read started, for display only (#1773, #2157).
     Platform::CrashesInfo crashes;
 };
 
@@ -45,10 +47,25 @@ class CrashHistory
     /// message, so nothing crosses threads but a plain value (#1685, #1706).
     void read();
 
-    /// Publishes @p crashes from a read that started at @p readAtUnixSeconds: the System Information
-    /// read's (#1399), so Process Details shows what the System tab shows without reading the log again.
-    /// A read that started before the one already published is dropped, however late it finishes (#1773).
-    void publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds);
+    /// Takes the start-order ticket of a read starting now. Tickets only grow, whatever the wall clock
+    /// does: publications are ordered by them, not by readAtUnixSeconds, so a backward clock step
+    /// doesn't drop every later read (#2157).
+    [[nodiscard]] std::uint64_t beginRead() noexcept
+    {
+        return m_NextReadOrder.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    /// Publishes @p crashes from a read that started at @p readAtUnixSeconds (shown, not compared) and
+    /// took @p readOrder from beginRead() as it started: the System Information read's (#1399), so
+    /// Process Details shows what the System tab shows without reading the log again. A read that
+    /// started before the one already published is dropped, however late it finishes (#1773).
+    void publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds, std::uint64_t readOrder);
+
+    /// Publishes @p crashes as a read starting now (its ticket is taken here).
+    void publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds)
+    {
+        publish(std::move(crashes), readAtUnixSeconds, beginRead());
+    }
 
     /// The newest read (an empty version-0 one before the first).
     [[nodiscard]] std::shared_ptr<const CrashHistorySnapshot> snapshot() const noexcept
@@ -62,11 +79,12 @@ class CrashHistory
     }
 
   private:
-    ReadFn m_Read;                         // called under m_ReadMutex only
-    std::mutex m_ReadMutex;                // one read() at a time
-    std::mutex m_PublishMutex;             // orders publications from read() and from the System Information read
-    std::uint64_t m_LastVersion = 0;       // guarded by m_PublishMutex
-    std::uint64_t m_LastReadAtSeconds = 0; // guarded by m_PublishMutex
+    ReadFn m_Read;                     // called under m_ReadMutex only
+    std::mutex m_ReadMutex;            // one read() at a time
+    std::mutex m_PublishMutex;         // orders publications from read() and from the System Information read
+    std::uint64_t m_LastVersion = 0;   // guarded by m_PublishMutex
+    std::uint64_t m_LastReadOrder = 0; // guarded by m_PublishMutex
+    std::atomic<std::uint64_t> m_NextReadOrder{0};
     PublicationSlot<CrashHistorySnapshot> m_Slot;
 };
 

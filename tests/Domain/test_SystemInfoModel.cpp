@@ -413,6 +413,13 @@ TEST(SystemInfoModelTest, HandsEachReadsCrashesToTheSharedCrashHistory)
     EXPECT_EQ(history->snapshot()->readAtUnixSeconds, model.snapshot()->readAtUnixSeconds);
     EXPECT_EQ(historyReads, 0);
 
+    // A later read replaces it even when the shown one is stamped in the future (a backward clock
+    // step, #2157): the ticket it took as it started orders it, not its wall-clock stamp.
+    history->publish(Platform::CrashesInfo{}, 4'000'000'000);
+    model.read();
+    EXPECT_EQ(history->version(), 3U);
+    EXPECT_EQ(history->snapshot()->readAtUnixSeconds, model.snapshot()->readAtUnixSeconds);
+
     // A probe without OS facts publishes nothing: the history's own read stays due.
     const auto untouched = std::make_shared<CrashHistory>([] { return Platform::CrashesInfo{}; });
     SystemInfoModel unsupported(std::make_unique<FakeSystemInfoProbe>(false, &reads), untouched);

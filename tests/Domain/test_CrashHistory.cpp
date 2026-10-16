@@ -179,12 +179,45 @@ TEST(CrashHistoryTest, AReadThrowingANonStandardExceptionIsPublishedAsUnlisted)
 TEST(CrashHistoryTest, AnOlderPublicationThanTheShownOneIsDropped)
 {
     CrashHistory history([] { return CrashesInfo{}; });
-    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), 2000);
-    history.publish(listed(OsFamily::Windows, {crash("old.exe", 1)}), 1000);
+    const std::uint64_t older = history.beginRead();
+    const std::uint64_t newer = history.beginRead();
+    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), 2000, newer);
+    history.publish(listed(OsFamily::Windows, {crash("old.exe", 1)}), 2000, older);
     EXPECT_EQ(history.version(), 1U);
     EXPECT_EQ(history.snapshot()->crashes.events[0].application, "new.exe");
-    history.publish(listed(OsFamily::Windows, {}), 2000); // the same time is as fresh
+    history.publish(listed(OsFamily::Windows, {}), 2000); // a read starting now is newer
     EXPECT_EQ(history.version(), 2U);
+}
+
+// #2157: publications are ordered by when the read started, not by the wall clock. A read that started
+// later but is stamped an hour earlier (the clock stepped back, say an NTP correction after a resume)
+// replaces the shown one; it used to be dropped until the clock caught up.
+TEST(CrashHistoryTest, AReadAfterTheClockSteppedBackReplacesTheShownOne)
+{
+    constexpr std::uint64_t shownAt = 1'790'003'600;
+    constexpr std::uint64_t steppedBack = shownAt - 3600;
+
+    CrashHistory history([] { return CrashesInfo{}; });
+    const std::uint64_t first = history.beginRead();
+    const std::uint64_t second = history.beginRead();
+    history.publish(listed(OsFamily::Windows, {crash("first.exe", 1)}), shownAt, first);
+    history.publish(listed(OsFamily::Windows, {crash("second.exe", 1)}), steppedBack, second);
+    EXPECT_EQ(history.version(), 2U);
+    ASSERT_EQ(history.snapshot()->crashes.events.size(), 1U);
+    EXPECT_EQ(history.snapshot()->crashes.events[0].application, "second.exe");
+    EXPECT_EQ(history.snapshot()->readAtUnixSeconds, steppedBack); // shown as stamped
+
+    // The same through the overload that takes its ticket as it publishes (Process Details' tests).
+    history.publish(listed(OsFamily::Windows, {crash("third.exe", 1)}), steppedBack - 3600);
+    EXPECT_EQ(history.version(), 3U);
+    EXPECT_EQ(history.snapshot()->crashes.events[0].application, "third.exe");
+
+    // And a read() of its own, stamped by the real clock, after a publication stamped in the future.
+    CrashHistory reading([] { return listed(OsFamily::Windows, {crash("read.exe", 1)}); });
+    reading.publish(listed(OsFamily::Windows, {crash("future.exe", 1)}), 4'000'000'000);
+    reading.read();
+    EXPECT_EQ(reading.version(), 2U);
+    EXPECT_EQ(reading.snapshot()->crashes.events[0].application, "read.exe");
 }
 
 /// Wall-clock seconds now, as CrashHistory stamps reads.
@@ -211,13 +244,10 @@ TEST(CrashHistoryTest, ASlowReadThatStartedEarlierDoesNotReplaceANewerList)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    // While it reads, a newer list arrives (the System Information read, a second or more later). The
-    // time is taken now the read has started -- read() stamps itself before calling the reader -- so it
-    // is never earlier than the slow read's stamp. Taken before the thread started, a slow thread start
-    // across a second boundary stamped the read with the same second as this list, which counts as
-    // fresh, and the slow read won (a Windows CI flake on #1863).
-    const std::uint64_t newer = secondsNow() + 1;
-    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), newer);
+    // While it reads, a newer list arrives (the System Information read). Its ticket is taken now the
+    // read has started -- read() takes its own before calling the reader -- so it is the newer one,
+    // whatever the wall-clock stamps say (#2157).
+    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), secondsNow());
     slow.join();
     ASSERT_FALSE(history.snapshot()->crashes.events.empty());
     EXPECT_EQ(history.snapshot()->crashes.events[0].application, "new.exe");
