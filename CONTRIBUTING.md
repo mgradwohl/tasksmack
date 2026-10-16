@@ -748,8 +748,8 @@ cover the capture. Unset, the variables do nothing.
 
 **Every agent and developer test launch should set `TASKSMACK_CONFIG_DIR` to a fresh directory.**
 Without it, a test instance shares the lock and `config.toml` with the TaskSmack you use every day:
-whichever starts second is told "TaskSmack is already running" and exits, and a test instance that
-saves overwrites your settings. A per-run temp directory starts each run from default settings and
+whichever starts second is told "TaskSmack is already running" and exits (with code 75 once the box
+is dismissed, so a script can tell it never ran), and a test instance that saves overwrites your settings. A per-run temp directory starts each run from default settings and
 lets it run beside your own instance. (`tasksmack-debug.log` stays in the temp directory either way.)
 
 Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
@@ -1317,6 +1317,13 @@ capture, `--include-startup` included, TaskSmack's own stdout and stderr go to
 `perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
 pass `--preset release` to profile the shipped build's code generation.
 
+Every app capture, with `profile-perf.sh` and `profile-heap.sh` alike, runs TaskSmack with a fresh,
+empty `TASKSMACK_CONFIG_DIR` that is removed afterwards (#2250). The run starts from default settings,
+never rewrites yours, and is not stopped by the single-instance lock of a TaskSmack you already have
+open. Pass `--user-config` to profile with your own settings instead; the run then refuses to start
+while a TaskSmack of yours is running. A TaskSmack turned away by the lock (it logs "TaskSmack is
+already running" or exits with code 75) fails the run instead of being profiled.
+
 ```bash
 # App trace — steady state after a 5 s warm-up; exercise the app, then close it
 ./tools/profile-perf.sh app
@@ -1385,7 +1392,7 @@ in CPU profiles. Approximately 2–3× runtime overhead (vs. Valgrind's ~50×).
 # Install (already done for you by tools/setup-dev.sh, unless run with --minimal)
 sudo apt install heaptrack
 
-# App trace
+# App trace (fresh temporary config; --user-config profiles with your own settings)
 ./tools/profile-heap.sh app
 
 # Benchmark trace — pinpoint per-call allocation sources
@@ -1406,7 +1413,12 @@ Run captures from a **normal (non-elevated) terminal**. `app` and `bench` elevat
 collector (one UAC prompt) and run the target at ordinary-user integrity, because an elevated
 target sees and does different things, which skews what is measured (#872). The target's
 measured integrity level is written to `perf-data/etw-<mode>-<timestamp>.manifest.json`. The
-scripts build before prompting for elevation. For resize diagnosis, use the `resize`
+scripts build before prompting for elevation. App mode runs TaskSmack with a fresh, temporary
+`TASKSMACK_CONFIG_DIR`, removed afterwards and recorded in the manifest, so a TaskSmack you already
+have open neither blocks the capture nor has its settings touched (#2250). `-UseUserConfig` profiles
+with your own settings instead and refuses to start while TaskSmack is running. An app that exits
+with the "already running" code (75) fails the capture, and `resize` mode's App phase uses a
+`config` folder in its run directory. For resize diagnosis, use the `resize`
 procedure below.
 
 ```powershell

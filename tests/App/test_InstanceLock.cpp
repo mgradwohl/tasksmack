@@ -3,8 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
@@ -46,6 +48,25 @@ class InstanceLockTest : public ::testing::Test
 
     std::filesystem::path m_Dir;
 };
+
+// #2250: a launch the lock turned away must not exit 0, or a profiling script that launched it
+// reports the "already running" box as a successful capture.
+TEST(InstanceLockExitCodeTest, OnlyALockHeldByAnotherInstanceEndsTheLaunch)
+{
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::HeldByAnotherInstance), std::optional<int>(ALREADY_RUNNING_EXIT_CODE));
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::Acquired), std::nullopt);
+    // A lock that can't be taken at all doesn't stop TaskSmack starting.
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::Unavailable), std::nullopt);
+}
+
+TEST(InstanceLockExitCodeTest, AlreadyRunningExitCodeIsDistinct)
+{
+    static_assert(ALREADY_RUNNING_EXIT_CODE != EXIT_SUCCESS);
+    static_assert(ALREADY_RUNNING_EXIT_CODE != EXIT_FAILURE);
+    static_assert(ALREADY_RUNNING_EXIT_CODE != 3); // abort() on Windows
+    // 75 is what tools/profile-perf.sh, profile-heap.sh and profile-etw-common.ps1 look for.
+    EXPECT_EQ(ALREADY_RUNNING_EXIT_CODE, 75);
+}
 
 TEST_F(InstanceLockTest, FirstInstanceAcquiresTheLock)
 {

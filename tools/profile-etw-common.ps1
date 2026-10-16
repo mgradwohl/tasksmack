@@ -283,6 +283,30 @@ function Wait-AppMainWindow {
     return $false
 }
 
+# TaskSmack's exit code when another TaskSmack already holds its config directory's single-instance
+# lock (App::ALREADY_RUNNING_EXIT_CODE in src/App/InstanceLock.h, #2250). Such a launch shows only an
+# "already running" box, so a capture of it profiles nothing worth having.
+$script:TaskSmackAlreadyRunningExitCode = 75
+
+function New-ProfileConfigDirectory {
+    # A fresh, empty TASKSMACK_CONFIG_DIR for one profiled launch (#2250): the run starts from default
+    # settings, never reads or rewrites the user's config.toml, and takes its own single-instance
+    # lock, so a TaskSmack the user already has open neither blocks it nor is touched by it.
+    $path = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-profile-config-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $path | Out-Null
+    return $path
+}
+
+function Format-AppExitFailure {
+    # The failure text for an app that exited when it should not have: the "already running" exit
+    # code gets its own explanation (#2250); any other code gets $Otherwise.
+    param([Parameter(Mandatory = $true)][int]$ExitCode, [Parameter(Mandatory = $true)][string]$Otherwise)
+    if ($ExitCode -eq $script:TaskSmackAlreadyRunningExitCode) {
+        return "The app exited with code ${ExitCode}: another TaskSmack is already running with the same config directory, so this one only showed its 'already running' message and nothing worth profiling was captured. Close the other TaskSmack, or drop -UseUserConfig so the capture gets its own config directory."
+    }
+    return $Otherwise
+}
+
 function Invoke-AppCapture {
     # The app-mode lifecycle (#1186). Launches the app and lets it warm up -- its main window
     # exists, then -WarmupSeconds more -- before the trace starts, so font, theme and
@@ -299,6 +323,10 @@ function Invoke-AppCapture {
     # StartTrace/StopTrace start and stop the recording (WPR directly, or the elevated collector).
     # StopTrace runs exactly once if StartTrace returned, also when an error is thrown, and as soon
     # as the app exits early, so a crash does not leave the recording running.
+    #
+    # The app runs with TASKSMACK_CONFIG_DIR set to a fresh temporary directory, removed once it has
+    # exited (#2250), unless -UseUserConfig asks for the config it would use on its own. An app that
+    # exits with the "already running" code fails the capture with that reason.
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][scriptblock]$StartTrace,
@@ -308,7 +336,8 @@ function Invoke-AppCapture {
         [switch]$IncludeStartup,
         [int]$MainWindowTimeoutSeconds = 60,
         [int]$InteractiveTimeoutSeconds = 14400,
-        [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal'
+        [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal',
+        [switch]$UseUserConfig
     )
     Initialize-TokenInfoType # before the trace starts, so the compile is not recorded in it
     $result = [ordered]@{
@@ -321,12 +350,14 @@ function Invoke-AppCapture {
         IncludeStartup = [bool]$IncludeStartup
         WarmupSeconds  = if ($IncludeStartup) { 0 } else { $WarmupSeconds }
         MainWindowSeen = $null
+        ConfigDirectory = $null
         StartUtc       = (Get-Date).ToUniversalTime().ToString('o')
         TraceStartUtc  = $null
         TraceStopUtc   = $null
         EndUtc         = $null
     }
     $proc = $null
+    $configDir = $null
     $traceRunning = $false
     $completed = $false
     # Dot-sourced (. $stopTraceNow), so it updates $traceRunning in this scope.
@@ -343,8 +374,19 @@ function Invoke-AppCapture {
         $result.TraceStartUtc = (Get-Date).ToUniversalTime().ToString('o')
     }
     try {
+        if (-not $UseUserConfig) { $configDir = New-ProfileConfigDirectory }
+        $result.ConfigDirectory = if ($configDir) { $configDir } else { 'the user config (-UseUserConfig)' }
+        Write-Host "Config directory: $($result.ConfigDirectory)"
         if ($IncludeStartup) { . $startTraceNow }
-        $proc = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle $WindowStyle
+        # The app inherits this process's environment; restored at once, so nothing else sees it.
+        $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+        try {
+            if ($configDir) { $env:TASKSMACK_CONFIG_DIR = $configDir }
+            $proc = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle $WindowStyle
+        }
+        finally {
+            $env:TASKSMACK_CONFIG_DIR = $savedConfigDir
+        }
         $null = $proc.Handle # keep a handle so ExitCode is available after exit
         $result.Pid = $proc.Id
         $result.IntegrityLevel = Get-ProcessIntegrityLevel -ProcessId $proc.Id
@@ -359,13 +401,13 @@ function Invoke-AppCapture {
             if (-not $proc.HasExited -and $WarmupSeconds -gt 0) { $null = $proc.WaitForExit($WarmupSeconds * 1000) }
             if ($proc.HasExited) {
                 $result.EndReason = 'exited during warm-up, before the trace started'
-                $result.Failure = "The app exited during warm-up (exit code $($proc.ExitCode)) before recording started, so nothing was captured. It most likely crashed at startup."
+                $result.Failure = Format-AppExitFailure -ExitCode $proc.ExitCode -Otherwise "The app exited during warm-up (exit code $($proc.ExitCode)) before recording started, so nothing was captured. It most likely crashed at startup."
             }
             else {
                 . $startTraceNow
                 if ($proc.HasExited) {
                     $result.EndReason = 'exited while the trace was starting'
-                    $result.Failure = "The app exited (exit code $($proc.ExitCode)) while the trace was starting, so the trace does not cover a running app. It most likely crashed."
+                    $result.Failure = Format-AppExitFailure -ExitCode $proc.ExitCode -Otherwise "The app exited (exit code $($proc.ExitCode)) while the trace was starting, so the trace does not cover a running app. It most likely crashed."
                 }
             }
         }
@@ -377,7 +419,7 @@ function Invoke-AppCapture {
                 if ($proc.WaitForExit($DurationSeconds * 1000)) {
                     $elapsed = [int]((Get-Date) - $windowStart).TotalSeconds
                     $result.EndReason = 'exited during the -DurationSeconds capture window'
-                    $result.Failure = "The app exited (exit code $($proc.ExitCode)) after $elapsed s of the $DurationSeconds s capture window, so the trace does not cover the requested window. It most likely crashed."
+                    $result.Failure = Format-AppExitFailure -ExitCode $proc.ExitCode -Otherwise "The app exited (exit code $($proc.ExitCode)) after $elapsed s of the $DurationSeconds s capture window, so the trace does not cover the requested window. It most likely crashed."
                 }
                 else {
                     # The expected path: the app is still running. Stop recording first, so the
@@ -395,7 +437,7 @@ function Invoke-AppCapture {
                 if ($proc.WaitForExit($InteractiveTimeoutSeconds * 1000)) {
                     $result.EndReason = 'exited'
                     if ($proc.ExitCode -ne 0) {
-                        $result.Failure = "The app exited with code $($proc.ExitCode) (0x$('{0:X8}' -f $proc.ExitCode)), not 0, so the capture ends in a crash or error exit rather than a normal close."
+                        $result.Failure = Format-AppExitFailure -ExitCode $proc.ExitCode -Otherwise "The app exited with code $($proc.ExitCode) (0x$('{0:X8}' -f $proc.ExitCode)), not 0, so the capture ends in a crash or error exit rather than a normal close."
                     }
                 }
             }
@@ -409,6 +451,11 @@ function Invoke-AppCapture {
         if (-not $completed -and $null -ne $proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             $null = $proc.WaitForExit(30000)
+        }
+        # The run's own config directory goes once the app is gone; one still running keeps it (and
+        # its lock) until it closes, so it is left for the temp folder's own cleanup then.
+        if ($configDir -and ($null -eq $proc -or $proc.HasExited)) {
+            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     if ($proc.HasExited) { $result.ExitCode = $proc.ExitCode }

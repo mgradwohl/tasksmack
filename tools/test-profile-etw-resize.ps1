@@ -131,8 +131,10 @@ try {
     function Start-Process { throw 'simulated launch failure' }
     $env:TASKSMACK_TRACE_RESIZE_PERF = 'prior-trace'
     $env:TASKSMACK_LOG_LEVEL = 'prior-level'
+    $env:TASKSMACK_CONFIG_DIR = 'prior-config'
     Assert-Throws { Invoke-ResizeCapture -Phase App -RunDirectory $run } 'simulated launch failure'
-    Assert-True ($env:TASKSMACK_TRACE_RESIZE_PERF -eq 'prior-trace' -and $env:TASKSMACK_LOG_LEVEL -eq 'prior-level') 'Environment not restored'
+    Assert-True ($env:TASKSMACK_TRACE_RESIZE_PERF -eq 'prior-trace' -and $env:TASKSMACK_LOG_LEVEL -eq 'prior-level' -and $env:TASKSMACK_CONFIG_DIR -eq 'prior-config') 'Environment not restored'
+    $env:TASKSMACK_CONFIG_DIR = $null
     Assert-True ((Get-Content (Join-Path $run 'app.json') -Raw | ConvertFrom-Json).State -eq 'failed') 'App failure not preserved'
 
     # Successful app launch and Check: verify separate streams, inherited trace flag,
@@ -141,6 +143,8 @@ try {
         param($FilePath, $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError, [switch]$PassThru)
         Assert-True ($env:TASKSMACK_TRACE_RESIZE_PERF -eq '1') 'Trace not enabled'
         Assert-True ($env:TASKSMACK_LOG_LEVEL -eq 'info') 'Trace logs suppressed'
+        # #2250: the run's own config directory, never the user's.
+        Assert-True ($env:TASKSMACK_CONFIG_DIR -eq (Join-Path $WorkingDirectory 'config')) "Config not isolated: '$env:TASKSMACK_CONFIG_DIR'"
         @(
             'ResizePerfAnchor: pid=42 uiTid=7 clock=QPC frequency=10000000'
             'ResizePerfWallSummary: loops=10'
@@ -172,6 +176,20 @@ try {
     $script:failOn = ''
     'missing anchors' | Set-Content -LiteralPath (Join-Path $run 'stdout.log') -Encoding utf8
     Assert-Throws { Invoke-ResizeCapture -Phase Check -RunDirectory $run } 'expected startup/shutdown'
+
+    # #2250: the "already running" exit code (another TaskSmack held the lock) fails with that reason.
+    function Start-Process {
+        param($FilePath, $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError, [switch]$PassThru)
+        $process = [pscustomobject]@{ Id = 43; ExitCode = 75 }
+        $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($Timeout) return $true }
+        return $process
+    }
+    $run = New-TestRun
+    Write-ResizeCaptureJson (Join-Path $run 'collector.json') @{
+        State = 'recording'; DeadlineUtc = [DateTimeOffset]::UtcNow.AddSeconds(90).ToString('o')
+    }
+    Assert-Throws { Invoke-ResizeCapture -Phase App -RunDirectory $run } 'already running'
+    Assert-True ((Get-Content (Join-Path $run 'app.json') -Raw | ConvertFrom-Json).ExitCode -eq 75) 'Already-running exit code not preserved'
 
     function Start-Process {
         $process = [pscustomobject]@{ Id = 42; ExitCode = $null }

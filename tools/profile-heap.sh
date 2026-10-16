@@ -2,7 +2,7 @@
 # tools/profile-heap.sh — Heap allocation profiling for TaskSmack using heaptrack.
 #
 # Usage:
-#   ./tools/profile-heap.sh app   [--preset <preset>] [--skip-build]
+#   ./tools/profile-heap.sh app   [--preset <preset>] [--skip-build] [--user-config]
 #   ./tools/profile-heap.sh bench [--preset <preset>] [--skip-build]
 #                                 [--bench-filter <regex>] [--bench-reps <n>]
 #                                 [--bench-min-time <t>]
@@ -11,9 +11,17 @@
 #   app   — launch TaskSmack under heaptrack, wait for exit. Default preset: profile.
 #   bench — run TaskSmackBenchmarks under heaptrack. Default preset: benchmark.
 #
+# App mode runs TaskSmack with a fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250), so it
+# starts from default settings, cannot rewrite yours, and is not stopped by the single-instance lock
+# of a TaskSmack you already have open. --user-config runs it with the config it would use on its own
+# instead, and refuses to start while a TaskSmack of yours is running. A TaskSmack turned away by
+# another instance's lock (it logs "TaskSmack is already running", or exits with code 75) fails the
+# run. TaskSmack's stdout is also copied to heaptrack-app-<timestamp>-app.log.
+#
 # Outputs under perf-data/:
 #   heaptrack-<mode>-<timestamp>.gz|.zst — heaptrack data (open with heaptrack_gui or heaptrack_print)
 #   heaptrack-<mode>-<timestamp>.log   — session log
+#   heaptrack-app-<timestamp>-app.log  — TaskSmack's own stdout (app mode)
 #   heaptrack-<mode>-<timestamp>-summary.txt  — top allocators (if heaptrack_print available)
 #
 # Why heaptrack?
@@ -46,12 +54,14 @@ MODE="${1:-}"
 shift || true
 
 if [[ -z "${MODE}" || ( "${MODE}" != "app" && "${MODE}" != "bench" ) ]]; then
-    echo "Usage: $0 app|bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
+    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--user-config]" >&2
+    echo "       $0 bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
     exit 1
 fi
 
 PRESET=""
 SKIP_BUILD=0
+USE_USER_CONFIG=0
 BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 BENCH_REPS=3
 BENCH_MIN_TIME="0.5s"
@@ -63,9 +73,15 @@ while [[ $# -gt 0 ]]; do
         --bench-filter)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";     shift 2 ;;
         --bench-reps)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";       shift 2 ;;
         --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2";   shift 2 ;;
+        --user-config)    USE_USER_CONFIG=1;      shift   ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ "${MODE}" != "app" && "${USE_USER_CONFIG}" -eq 1 ]]; then
+    echo "ERROR: --user-config applies to app mode only" >&2
+    exit 1
+fi
 
 if [[ -z "${PRESET}" ]]; then
     PRESET=$([ "${MODE}" = "app" ] && echo "profile" || echo "benchmark")
@@ -77,10 +93,27 @@ PREFIX="heaptrack-${MODE}"
 HEAPTRACK_BASE="${PERF_DIR}/${PREFIX}-${TIMESTAMP}"
 LOG_FILE="${PERF_DIR}/${PREFIX}-${TIMESTAMP}.log"
 SUMMARY_FILE="${PERF_DIR}/${PREFIX}-${TIMESTAMP}-summary.txt"
+APP_LOG="${PERF_DIR}/${PREFIX}-${TIMESTAMP}-app.log"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "  $*"; }
+
+# The single-instance lock (#1230, #2250): a TaskSmack started while another holds its config
+# directory's lock logs this, shows an "already running" box, and exits with this code
+# (App::ALREADY_RUNNING_EXIT_CODE in src/App/InstanceLock.h).
+ALREADY_RUNNING_MARKER="TaskSmack is already running"
+ALREADY_RUNNING_EXIT_CODE=75
+
+# The capture's own TASKSMACK_CONFIG_DIR (#2250), removed on exit; empty with --user-config.
+CONFIG_DIR=""
+# shellcheck disable=SC2317,SC2329 # invoked from EXIT traps
+remove_config_dir() {
+    if [[ -n "${CONFIG_DIR}" ]]; then
+        rm -rf -- "${CONFIG_DIR}"
+    fi
+    return 0
+}
 
 print_step() {
     echo
@@ -117,10 +150,30 @@ fi
 
 [[ -x "${BINARY}" ]] || die "Binary not found or not executable: ${BINARY}. Build with: cmake --build --preset ${PRESET}"
 
+# ── config isolation (#2250) ──────────────────────────────────────────────────
+if [[ "${MODE}" = "app" ]]; then
+    if [[ "${USE_USER_CONFIG}" -eq 1 ]]; then
+        # With the user's config, a TaskSmack of theirs already running holds the lock.
+        RUNNING_PIDS="$(pgrep -u "$(id -u)" -x "$(basename "${BINARY}")" || true)"
+        if [[ -n "${RUNNING_PIDS}" ]]; then
+            die "--user-config: TaskSmack is already running (pid ${RUNNING_PIDS//$'\n'/, }). It holds the single-instance lock, so the profiled copy would only show its 'already running' message. Close it first, or drop --user-config to profile with a fresh config directory."
+        fi
+    else
+        CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-profile-config.XXXXXX")"
+        trap remove_config_dir EXIT
+        # Exported for TaskSmack only: heaptrack and the other tools run here ignore it.
+        export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+    fi
+fi
+
 # ── capture ───────────────────────────────────────────────────────────────────
 print_step "Starting heaptrack capture (mode=${MODE}, preset=${PRESET})"
 info "Output base: ${HEAPTRACK_BASE}"
 info "Binary:      ${BINARY}"
+if [[ "${MODE}" = "app" ]]; then
+    info "Config dir:  ${CONFIG_DIR:-the user config (--user-config)}"
+    info "App log:     ${APP_LOG}"
+fi
 
 {
     echo "HEAP_MODE=${MODE}"
@@ -128,6 +181,10 @@ info "Binary:      ${BINARY}"
     echo "BINARY=${BINARY}"
     echo "HEAPTRACK_BASE=${HEAPTRACK_BASE}"
     echo "TIMESTAMP=${TIMESTAMP}"
+    if [[ "${MODE}" = "app" ]]; then
+        echo "CONFIG_DIR=${CONFIG_DIR:-user config (--user-config)}"
+        echo "APP_LOG=${APP_LOG}"
+    fi
 } > "${LOG_FILE}"
 
 HEAP_EXIT_CODE=0
@@ -136,9 +193,15 @@ if [[ "${MODE}" = "app" ]]; then
     echo "Launching TaskSmack under heaptrack. Exercise the application, then close it."
     echo ""
     set +e
-    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
-    HEAP_EXIT_CODE=$?
+    # stdout is also copied to the app log, where the "already running" line is looked for below;
+    # heaptrack exits with TaskSmack's own exit code, which PIPESTATUS keeps.
+    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2) | tee "${APP_LOG}"
+    HEAP_EXIT_CODE=${PIPESTATUS[0]}
     set -e
+    echo "EXIT_CODE=${HEAP_EXIT_CODE}" >> "${LOG_FILE}"
+    if [[ "${HEAP_EXIT_CODE}" -eq "${ALREADY_RUNNING_EXIT_CODE}" ]] || grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
+        die "TaskSmack exited (code ${HEAP_EXIT_CODE}): another TaskSmack is already running with the same config directory, so this one only showed its 'already running' message and the allocation profile is of nothing worth having. Close the other TaskSmack, or drop --user-config so the capture gets its own config directory. See ${APP_LOG}."
+    fi
 else
     set +e
     heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" \

@@ -4,6 +4,7 @@
 # Usage:
 #   ./tools/profile-perf.sh app   [--preset <preset>] [--skip-build]
 #                                 [--warmup <seconds>] [--duration <seconds>] [--include-startup]
+#                                 [--user-config]
 #   ./tools/profile-perf.sh bench [--preset <preset>] [--skip-build]
 #                                 [--bench-filter <regex>] [--bench-reps <n>]
 #                                 [--bench-min-time <t>]
@@ -22,6 +23,12 @@
 #                        stops the capture and closes TaskSmack).
 #   --include-startup    Launch TaskSmack under perf as before, so startup is profiled too, until
 #                        you close it. --warmup is ignored; --duration cannot be combined with it.
+#   --user-config        Run TaskSmack with the config it would use on its own (your config.toml,
+#                        or an inherited TASKSMACK_CONFIG_DIR). By default every app capture gets a
+#                        fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250): TaskSmack
+#                        starts from default settings, cannot rewrite yours, and is not stopped by
+#                        the single-instance lock of a TaskSmack you already have open. With
+#                        --user-config the run refuses to start while a TaskSmack of yours is running.
 #
 # Steady-state captures wait for TaskSmack to log "Entering main loop" (up to 30 s; launched with
 # TASKSMACK_LOG_LEVEL=info unless already set, so release builds log it too), then for --warmup.
@@ -29,7 +36,8 @@
 # perf-app-<timestamp>-app.log; perf's messages stay on the terminal and in the session log.
 #
 # The run fails if TaskSmack exits before recording starts, before --duration elapses, or with a
-# non-zero exit code. When the script closes TaskSmack (after --duration or Ctrl+C), a clean exit
+# non-zero exit code. A TaskSmack turned away by another instance's single-instance lock (it logs
+# "TaskSmack is already running", or exits with code 75) fails the run with that reason. When the script closes TaskSmack (after --duration or Ctrl+C), a clean exit
 # after SIGTERM (code 0) passes; needing SIGKILL after 10 s, or any other exit code, fails.
 #
 # The preset, its build directory, build type, compiler and CMAKE_CXX_FLAGS* entries are printed and
@@ -80,7 +88,7 @@ MODE="${1:-}"
 shift || true
 
 if [[ -z "${MODE}" || ( "${MODE}" != "app" && "${MODE}" != "bench" ) ]]; then
-    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--warmup <seconds>] [--duration <seconds>] [--include-startup]" >&2
+    echo "Usage: $0 app   [--preset <preset>] [--skip-build] [--warmup <seconds>] [--duration <seconds>] [--include-startup] [--user-config]" >&2
     echo "       $0 bench [--preset <preset>] [--skip-build] [--bench-filter <regex>] [--bench-reps <n>] [--bench-min-time <t>]" >&2
     exit 1
 fi
@@ -90,6 +98,7 @@ SKIP_BUILD=0
 WARMUP_SECONDS=5
 DURATION_SECONDS=0
 INCLUDE_STARTUP=0
+USE_USER_CONFIG=0
 APP_OPTION_GIVEN=""
 BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 BENCH_REPS=5
@@ -105,6 +114,7 @@ while [[ $# -gt 0 ]]; do
         --warmup)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; WARMUP_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
+        --user-config)  USE_USER_CONFIG=1; APP_OPTION_GIVEN="$1"; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -136,6 +146,23 @@ LOG_FILE="${PERF_DIR}/${PREFIX}-${TIMESTAMP}.log"
 # ── helpers ───────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "  $*"; }
+
+# The single-instance lock (#1230, #2250): a TaskSmack started while another holds its config
+# directory's lock logs this, shows an "already running" box, and exits with this code
+# (App::ALREADY_RUNNING_EXIT_CODE in src/App/InstanceLock.h).
+ALREADY_RUNNING_MARKER="TaskSmack is already running"
+ALREADY_RUNNING_EXIT_CODE=75
+ALREADY_RUNNING_MESSAGE="another TaskSmack is already running with the same config directory, so this one only showed its 'already running' message and there is nothing worth profiling. Close the other TaskSmack, or drop --user-config so the capture gets its own config directory"
+
+# The capture's own TASKSMACK_CONFIG_DIR (#2250), removed on exit; empty with --user-config.
+CONFIG_DIR=""
+# shellcheck disable=SC2317,SC2329 # invoked from EXIT traps
+remove_config_dir() {
+    if [[ -n "${CONFIG_DIR}" ]]; then
+        rm -rf -- "${CONFIG_DIR}"
+    fi
+    return 0
+}
 
 print_step() {
     echo
@@ -339,6 +366,22 @@ if [[ "${MODE}" = "bench" ]]; then
     fi
 fi
 
+# ── config isolation (#2250) ──────────────────────────────────────────────────
+if [[ "${MODE}" = "app" ]]; then
+    if [[ "${USE_USER_CONFIG}" -eq 1 ]]; then
+        # With the user's config, a TaskSmack of theirs already running holds the lock.
+        RUNNING_PIDS="$(pgrep -u "$(id -u)" -x "$(basename "${BINARY}")" || true)"
+        if [[ -n "${RUNNING_PIDS}" ]]; then
+            die "--user-config: TaskSmack is already running (pid ${RUNNING_PIDS//$'\n'/, }). It holds the single-instance lock, so the profiled copy would only show its 'already running' message. Close it first, or drop --user-config to profile with a fresh config directory."
+        fi
+    else
+        CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-profile-config.XXXXXX")"
+        trap remove_config_dir EXIT
+        # Exported for TaskSmack only: perf and the other tools run here ignore it.
+        export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+    fi
+fi
+
 # ── capture ───────────────────────────────────────────────────────────────────
 print_step "Starting perf capture (mode=${MODE}, preset=${PRESET})"
 info "Preset:     ${PRESET}"
@@ -356,6 +399,9 @@ fi
 info "Binary:     ${BINARY}"
 info "Data:       ${DATA_FILE}"
 info "Log:        ${LOG_FILE}"
+if [[ "${MODE}" = "app" ]]; then
+    info "Config dir: ${CONFIG_DIR:-the user config (--user-config)}"
+fi
 
 {
     echo "PROFILE_MODE=${MODE}"
@@ -379,6 +425,7 @@ info "Log:        ${LOG_FILE}"
         echo "INCLUDE_STARTUP=${INCLUDE_STARTUP}"
         echo "WARMUP_SECONDS=${WARMUP_SECONDS}"
         echo "DURATION_SECONDS=${DURATION_SECONDS}"
+        echo "CONFIG_DIR=${CONFIG_DIR:-user config (--user-config)}"
     fi
 } > "${LOG_FILE}"
 
@@ -410,6 +457,9 @@ if [[ "${MODE}" = "app" && "${INCLUDE_STARTUP}" -eq 1 ]]; then
     PERF_EXIT_CODE=$?
     set -e
     echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
+    if [[ "${PERF_EXIT_CODE}" -eq "${ALREADY_RUNNING_EXIT_CODE}" ]] || grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
+        die "TaskSmack exited (code ${PERF_EXIT_CODE}): ${ALREADY_RUNNING_MESSAGE}. See ${APP_LOG}."
+    fi
 elif [[ "${MODE}" = "app" ]]; then
     # Steady-state capture (#1371): launch TaskSmack on its own, wait for its main loop plus a
     # warm-up, then attach perf to the running process, so startup costs (fonts, themes, the first
@@ -456,14 +506,22 @@ elif [[ "${MODE}" = "app" ]]; then
         if ! app_alive; then
             reap_app
             echo "APP_EXIT_CODE=${APP_EXIT_CODE}" >> "${LOG_FILE}"
+            if [[ "${APP_EXIT_CODE}" -eq "${ALREADY_RUNNING_EXIT_CODE}" ]]; then
+                die "TaskSmack exited (code ${APP_EXIT_CODE}) before recording started: ${ALREADY_RUNNING_MESSAGE}. See ${APP_LOG}."
+            fi
             die "TaskSmack exited (code ${APP_EXIT_CODE}) before recording started; nothing was captured. See ${APP_LOG}."
+        fi
+        # Turned away by the lock, it waits at its "already running" box (until dismissed, or at
+        # once without a display) and never reaches its main loop. The EXIT trap closes it.
+        if grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
+            die "TaskSmack logged '${ALREADY_RUNNING_MARKER}': ${ALREADY_RUNNING_MESSAGE}. See ${APP_LOG}."
         fi
     }
 
     # A background job in a non-interactive shell ignores SIGINT, so Ctrl+C reaches perf and this
     # script but not TaskSmack: note it here and close TaskSmack ourselves. Never leave it running.
     trap 'INTERRUPTED=1' INT
-    trap 'stop_app' EXIT
+    trap 'stop_app; remove_config_dir' EXIT
 
     info "App log:    ${APP_LOG}"
     echo "APP_LOG=${APP_LOG}" >> "${LOG_FILE}"
@@ -549,7 +607,8 @@ elif [[ "${MODE}" = "app" ]]; then
         echo "APP_EXIT_CODE=${APP_EXIT_CODE}"
         echo "APP_END_REASON=${END_REASON}"
     } >> "${LOG_FILE}"
-    trap - INT EXIT
+    trap - INT
+    trap remove_config_dir EXIT
     if [[ "${APP_FAILED}" -eq 1 ]]; then
         die "TaskSmack ${END_REASON} (code ${APP_EXIT_CODE}). The trace at ${DATA_FILE} was kept but the run failed; see ${APP_LOG}."
     fi
@@ -578,7 +637,7 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     # Clean up unconditionally on exit from this point (success, the die() below, or any
     # unexpected error) rather than only on the success path -- die() calls exit
     # immediately, so an `rm -f` placed after the check it guards would never run.
-    trap 'rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"' EXIT
+    trap 'rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"; remove_config_dir' EXIT
     # Separate stdout/stderr into files rather than piping into `wc -l` with stderr
     # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
     # empty trace) would otherwise abort the script right here with no diagnostic at all,

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace App
@@ -67,5 +68,24 @@ class InstanceLock
     int m_Fd = -1; // -1 when not held
 #endif
 };
+
+/// The exit code of a launch that finds another TaskSmack holding its config directory's lock
+/// (#2250), returned once the "already running" message is dismissed. Non-zero, so a script that
+/// launches TaskSmack (the tools/profile-* captures) can tell the launch never ran, and distinct
+/// from EXIT_FAILURE (1) and from the 3 that abort() exits with on Windows. 75 is sysexits.h's
+/// EX_TEMPFAIL: a temporary failure, worth retrying once the other instance has closed.
+inline constexpr int ALREADY_RUNNING_EXIT_CODE = 75;
+
+/// How a launch whose instance lock ended up in @p status ends: ALREADY_RUNNING_EXIT_CODE when another
+/// instance holds the lock, nullopt to start normally. A lock that couldn't be taken at all
+/// (Unavailable) doesn't stop TaskSmack starting.
+[[nodiscard]] constexpr std::optional<int> exitCodeForLockStatus(const InstanceLock::Status status) noexcept
+{
+    if (status == InstanceLock::Status::HeldByAnotherInstance)
+    {
+        return ALREADY_RUNNING_EXIT_CODE;
+    }
+    return std::nullopt;
+}
 
 } // namespace App

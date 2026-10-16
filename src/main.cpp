@@ -119,7 +119,7 @@ auto runApp() -> int
     // (console) logger.
     const std::filesystem::path instanceLockPath = App::instanceLockPath(userConfig.configPath().parent_path());
     const App::InstanceLock instanceLock(instanceLockPath);
-    if (instanceLock.status() == App::InstanceLock::Status::HeldByAnotherInstance)
+    if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock.status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
@@ -127,7 +127,8 @@ auto runApp() -> int
                                  "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
                                  "each other's settings.",
                                  nullptr);
-        return EXIT_SUCCESS;
+        // Not EXIT_SUCCESS (#2250): a profiling script that launched this copy must see it never ran.
+        return *lockExitCode;
     }
 
     // Logger construction runs in EVERY configuration. It used to sit inside the console-attach

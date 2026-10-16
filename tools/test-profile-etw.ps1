@@ -182,6 +182,15 @@ try {
     Set-Content -LiteralPath $exitNow0 -Encoding ascii -Value "@exit /b 0"
     $exitNow3 = Join-Path $root 'exit-now-3.cmd'
     Set-Content -LiteralPath $exitNow3 -Encoding ascii -Value "@exit /b 3"
+    # #2250: TaskSmack turned away by another instance's lock. It records the TASKSMACK_CONFIG_DIR
+    # it was given, then exits with App::ALREADY_RUNNING_EXIT_CODE.
+    $configSeenFile = Join-Path $root 'config-dir-seen.txt'
+    $exitNow75 = Join-Path $root 'exit-now-75.cmd'
+    Set-Content -LiteralPath $exitNow75 -Encoding ascii -Value @(
+        '@echo off'
+        'echo [%TASKSMACK_CONFIG_DIR%]>"%~dp0config-dir-seen.txt"'
+        'exit /b 75'
+    )
     # The release file sits next to the stubs, which find it through %~dp0 (their own directory),
     # so no path has to survive the ASCII batch file.
     $releaseFile = Join-Path $root 'release-exit-later'
@@ -215,7 +224,7 @@ try {
     $traceStart = { $script:events.Add('start') }
     $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubLeaf))") }
     function Invoke-StubCapture {
-        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart)
+        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart, [switch]$UseUserConfig)
         $script:events.Clear()
         Remove-Item -LiteralPath $releaseFile -ErrorAction SilentlyContinue
         # The "exits later" stubs are released only once Invoke-AppCapture has entered the capture
@@ -236,7 +245,7 @@ try {
         # 3>$null: the no-main-window warning is expected for a hidden stub.
         $r = Invoke-AppCapture -BinaryPath $App -StartTrace $StartTrace -StopTrace $traceStop -DurationSeconds $DurationSeconds `
             -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup -MainWindowTimeoutSeconds 0 -InteractiveTimeoutSeconds 60 `
-            -WindowStyle Hidden 3>$null
+            -WindowStyle Hidden -UseUserConfig:$UseUserConfig 3>$null
         $r.Elapsed = $watch.Elapsed.TotalSeconds
         $r.Released = Test-Path -LiteralPath $releaseFile
         return $r
@@ -253,6 +262,31 @@ try {
             Assert-True ($r.ExitCode -eq $case.Code) "Exit code $($r.ExitCode), expected $($case.Code)"
             Assert-True ($script:events.Count -eq 0) "The trace must not start for an app that died in warm-up: $($script:events -join ', ')"
         }
+    }
+
+    # #2250: by default the app gets a fresh TASKSMACK_CONFIG_DIR of its own, removed once it has
+    # exited, and this process's own value is left as it was. The "already running" exit code fails
+    # the capture with that reason, before any trace starts.
+    $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+    try {
+        $env:TASKSMACK_CONFIG_DIR = 'inherited-config'
+        Remove-Item -LiteralPath $configSeenFile -ErrorAction SilentlyContinue
+        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 30 -WarmupSeconds 30
+        $seen = (Get-Content -LiteralPath $configSeenFile -Raw).Trim()
+        Assert-True ($seen -eq "[$($r.ConfigDirectory)]" -and $seen -like '*tasksmack-profile-config-*') "The app must get the capture's own config directory: saw $seen, capture used $($r.ConfigDirectory)"
+        Assert-True (-not (Test-Path -LiteralPath $r.ConfigDirectory)) "The capture's config directory must be removed once the app exits: $($r.ConfigDirectory)"
+        Assert-True ($env:TASKSMACK_CONFIG_DIR -eq 'inherited-config') "The script's own TASKSMACK_CONFIG_DIR must be restored: '$env:TASKSMACK_CONFIG_DIR'"
+        Assert-True ($r.ExitCode -eq 75 -and $r.Failure -like '*already running*') "The 'already running' exit must fail with that reason: $($r.Failure) (exit $($r.ExitCode))"
+        Assert-True ($script:events.Count -eq 0) "The trace must not start for an 'already running' launch: $($script:events -join ', ')"
+        # -UseUserConfig: the config the app would use on its own, here the inherited value.
+        Remove-Item -LiteralPath $configSeenFile -ErrorAction SilentlyContinue
+        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 0 -WarmupSeconds 30 -UseUserConfig
+        $seen = (Get-Content -LiteralPath $configSeenFile -Raw).Trim()
+        Assert-True ($seen -eq '[inherited-config]') "-UseUserConfig must leave the app's config directory alone: saw $seen"
+        Assert-True ($r.Failure -like '*already running*') "-UseUserConfig 'already running' exit must fail: $($r.Failure)"
+    }
+    finally {
+        $env:TASKSMACK_CONFIG_DIR = $savedConfigDir
     }
 
     # Exits with an error during a fixed window: fails, and the trace is stopped at once rather
@@ -314,6 +348,9 @@ try {
         Assert-True ($run.Output -notmatch '(?m)^(TRACE|DRY_RUN)=') "A failed capture must not report success ($($case.Name)): $($run.Output)"
         Assert-True (Test-Path -LiteralPath (Join-Path $root "dry\etw-app-$($case.Name).manifest.json")) "The manifest must still be written ($($case.Name))"
     }
+    $run = Invoke-DryRun -App $exitNow75 -Name 'running75' -DurationSeconds 30
+    Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*Capture failed*already running*') "An 'already running' launch must fail the script (#2250): $($run.Output)"
+    Assert-True ($run.Output -notmatch '(?m)^(TRACE|DRY_RUN)=') "An 'already running' launch must not report success: $($run.Output)"
     $run = Invoke-DryRun -App $runForever -Name 'ok' -DurationSeconds 2
     Assert-True ($run.ExitCode -eq 0 -and $run.Output -match '(?m)^DRY_RUN=ok') "A running app must succeed: $($run.Output)"
     Assert-True ($run.Output -match 'Preset: win-release') "The default app preset must be win-release and logged: $($run.Output)"

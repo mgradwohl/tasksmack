@@ -333,10 +333,16 @@ function Invoke-ResizeCapture {
         $app = @{ State = 'starting'; Identity = $identity; Pid = $null; StartUtc = $null; EndUtc = $null; ExitCode = $null; Error = $null }
         $previousTrace = $env:TASKSMACK_TRACE_RESIZE_PERF
         $previousLog = $env:TASKSMACK_LOG_LEVEL
+        $previousConfigDir = $env:TASKSMACK_CONFIG_DIR
+        # The run's own config directory (#2250): default settings, the user's config.toml never read
+        # or rewritten, and a single-instance lock of its own, so a TaskSmack already open does not
+        # turn this launch into an "already running" box. Kept with the run's other artifacts.
+        $app.ConfigDirectory = Join-Path $RunDirectory 'config'
         try {
             Invoke-ResizeCaptureCommand $WhoamiExe @('/all') (Join-Path $RunDirectory 'app-launcher-token.txt')
             $env:TASKSMACK_TRACE_RESIZE_PERF = '1'
             $env:TASKSMACK_LOG_LEVEL = 'info'
+            $env:TASKSMACK_CONFIG_DIR = $app.ConfigDirectory
             $app.StartUtc = [DateTimeOffset]::UtcNow.ToString('o')
             $process = Start-Process -FilePath (Join-Path $RunDirectory 'binary\TaskSmack.exe') -WorkingDirectory $RunDirectory `
                 -RedirectStandardOutput (Join-Path $RunDirectory 'stdout.log') `
@@ -357,6 +363,8 @@ function Invoke-ResizeCapture {
             $app.ExitCode = $process.ExitCode
             $app.EndUtc = [DateTimeOffset]::UtcNow.ToString('o')
             $app.State = 'exited'
+            # App::ALREADY_RUNNING_EXIT_CODE (src/App/InstanceLock.h): another TaskSmack held the lock.
+            if ($app.ExitCode -eq 75) { throw "App exited with code 75: another TaskSmack is already running with the config directory $($app.ConfigDirectory); retain this incomplete run." }
             if ($null -eq $app.ExitCode -or $app.ExitCode -ne 0) { throw "App exit status '$($app.ExitCode)' is not successful; retain this incomplete run." }
         }
         catch {
@@ -367,6 +375,7 @@ function Invoke-ResizeCapture {
         finally {
             $env:TASKSMACK_TRACE_RESIZE_PERF = $previousTrace
             $env:TASKSMACK_LOG_LEVEL = $previousLog
+            $env:TASKSMACK_CONFIG_DIR = $previousConfigDir
             Write-ResizeCaptureJson $appPath $app
         }
         return

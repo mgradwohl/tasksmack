@@ -26,7 +26,8 @@
             either wait for it to be closed manually (default) or record for a fixed window
             and close it automatically (-DurationSeconds). The capture fails, without printing
             TRACE=, if the app exits during warm-up, exits before a -DurationSeconds window ends,
-            or is closed with a nonzero exit code (#1186).
+            or is closed with a nonzero exit code (#1186). The app runs with its own fresh, temporary
+            TASKSMACK_CONFIG_DIR (see -UseUserConfig).
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
     resize - separated normal-user app / elevated collector diagnostic capture (#882).
 .PARAMETER Phase
@@ -53,6 +54,13 @@
     warm-up).
 .PARAMETER MainWindowTimeoutSeconds
     app mode: how long warm-up waits for the main window before warning and continuing. Default 60.
+.PARAMETER UseUserConfig
+    app mode: run the app with the config it would use on its own (your config.toml, or an inherited
+    TASKSMACK_CONFIG_DIR) instead of a fresh temporary config directory (#2250). By default each
+    capture gets its own empty TASKSMACK_CONFIG_DIR, removed afterwards: the app starts from default
+    settings, cannot rewrite yours, and is not stopped by the single-instance lock of a TaskSmack you
+    already have open. With -UseUserConfig the capture refuses to start while a TaskSmack is running,
+    and an app that exits because another instance holds the lock fails the capture.
 .PARAMETER SkipTrace
     app mode: dry run of the launch/warm-up/monitor logic without WPR, the elevated collector or a
     UAC prompt. Nothing is recorded; the manifest is written and the run fails or succeeds as a
@@ -148,6 +156,8 @@ param(
 
     [switch]$SkipTrace,
 
+    [switch]$UseUserConfig,
+
     # Internal (tests): run this executable instead of the preset's TaskSmack.exe, with a hidden
     # window.
     [string]$TargetPath,
@@ -201,8 +211,8 @@ if ([string]::IsNullOrWhiteSpace($Preset)) {
     $Preset = if ($Mode -eq 'app') { 'win-release' } else { 'win-benchmark' }
 }
 if ($SkipTrace -and $Mode -ne 'app') { throw '-SkipTrace is supported in app mode only.' }
-if ($Mode -ne 'app' -and ($IncludeStartup -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
-    throw '-WarmupSeconds and -IncludeStartup apply to app mode only.'
+if ($Mode -ne 'app' -and ($IncludeStartup -or $UseUserConfig -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
+    throw '-WarmupSeconds, -IncludeStartup and -UseUserConfig apply to app mode only.'
 }
 
 if (-not $Timestamp) {
@@ -288,7 +298,7 @@ function Invoke-ProfileTarget {
         $windowStyle = if ($TargetPath) { 'Hidden' } else { 'Normal' }
         return Invoke-AppCapture -BinaryPath $binaryPath -StartTrace $StartTrace -StopTrace $StopTrace `
             -DurationSeconds $DurationSeconds -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup `
-            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle
+            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig
     }
     $result = [ordered]@{
         Binary         = $binaryPath
@@ -505,6 +515,16 @@ if (-not $SkipTrace) { $null = Ensure-Tool 'wpr' }
 Ensure-Binary $wprProfilePath
 Ensure-Binary $binaryPath
 
+# With the user's own config, a TaskSmack already open holds the single-instance lock, so the
+# launched one would only show its "already running" box (#2250). Refuse before any elevation. The
+# default, a fresh config directory per capture, has a lock of its own and needs no such check.
+if ($Mode -eq 'app' -and $UseUserConfig) {
+    $running = @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($binaryPath)) -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        throw "-UseUserConfig: $([IO.Path]::GetFileName($binaryPath)) is already running (PID $(($running | ForEach-Object Id) -join ', ')). It would hold the single-instance lock, so the profiled copy would only show its 'already running' message. Close it first, or drop -UseUserConfig to profile with a fresh config directory."
+    }
+}
+
 # ── Dry run (-SkipTrace): the app lifecycle and its failure checks, with nothing recorded ────
 if ($SkipTrace) {
     Write-Warning '-SkipTrace: dry run. No WPR session is started and nothing is recorded.'
@@ -534,6 +554,7 @@ if ($ElevatedTarget) {
     if ($Mode -eq 'app') {
         $argList += @('-WarmupSeconds', "$WarmupSeconds", '-MainWindowTimeoutSeconds', "$MainWindowTimeoutSeconds")
         if ($IncludeStartup) { $argList += '-IncludeStartup' }
+        if ($UseUserConfig) { $argList += '-UseUserConfig' }
     }
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
     if (Test-IsAdministrator) {
