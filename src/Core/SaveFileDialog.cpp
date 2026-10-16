@@ -4,7 +4,9 @@
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_video.h>
+#include <spdlog/spdlog.h>
 
+#include <exception>
 #include <memory>
 #include <string>
 #include <utility>
@@ -25,22 +27,48 @@ struct DialogRequest
     SaveFileCallback callback;
 };
 
-void SDLCALL onDialogClosed(void* userdata, const char* const* fileList, int filter)
+/// Logs that the dialog's callback threw, best-effort: logging allocates too, and nothing may leave
+/// onDialogClosed() (as guardLayerCall does).
+void logCallbackFailure(const char* what) noexcept
+{
+    try
+    {
+        spdlog::error("File dialog callback threw: {}", what);
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here, must not throw
+    {}
+}
+
+/// SDL's C callback, maybe on SDL's dialog thread (the portal or zenity thread on Linux). Nothing may
+/// unwind out of it into SDL's C frames (#2162): building the result allocates and the caller's callback
+/// can throw, so both are caught and logged here. The request is freed either way.
+void SDLCALL onDialogClosed(void* userdata, const char* const* fileList, int filter) noexcept
 {
     const std::unique_ptr<DialogRequest> request(static_cast<DialogRequest*>(userdata));
-    SaveFileResult result;
-    if (fileList == nullptr)
+    try
     {
-        result.error = SDL_GetError();
+        SaveFileResult result;
+        if (fileList == nullptr)
+        {
+            result.error = SDL_GetError();
+        }
+        else if (fileList[0] != nullptr) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic): SDL's null-terminated list
+        {
+            result.path = fileList[0]; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            result.filter = filter;
+        }
+        if (request->callback)
+        {
+            request->callback(std::move(result));
+        }
     }
-    else if (fileList[0] != nullptr) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic): SDL's null-terminated list
+    catch (const std::exception& e)
     {
-        result.path = fileList[0]; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        result.filter = filter;
+        logCallbackFailure(e.what());
     }
-    if (request->callback)
+    catch (...)
     {
-        request->callback(std::move(result));
+        logCallbackFailure("unknown exception");
     }
 }
 
