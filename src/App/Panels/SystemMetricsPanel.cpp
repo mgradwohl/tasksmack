@@ -889,18 +889,9 @@ void SystemMetricsPanel::renderOverview()
             // A view into the power history, plotted as doubles -- no per-frame copy (#1018).
             const auto powerHist = UI::Widgets::tailAlignedSpan(m_ProcessPowerHistory, powerCount).values;
 
-            // Battery history, with the model's "no reading" value (-1) as NaN: a gap in the line,
-            // not a dive to 0 %. Rebuilt into a member each frame, reusing its capacity (#1171).
-            std::vector<float>& batteryHist = m_BatteryChartHistory;
-            batteryHist.clear();
-            if (batteryCount > 0)
-            {
-                const auto startIt = batteryHistFloat.end() - static_cast<std::ptrdiff_t>(batteryCount);
-                for (auto it = startIt; it != batteryHistFloat.end(); ++it)
-                {
-                    batteryHist.push_back(*it >= 0.0F ? *it : std::numeric_limits<float>::quiet_NaN());
-                }
-            }
+            // A view into the battery history, too: the model already stores "no reading" as NaN, a
+            // gap in the line rather than a dive to 0 %, so it is plotted as is (#2159).
+            const auto batteryHist = UI::Widgets::tailAlignedSpan(batteryHistFloat, batteryCount).values;
 
             const auto powerTimeData = frameTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
             const auto batteryTimeData = frameTimeAxis(timestamps, batteryCount, nowSeconds);
