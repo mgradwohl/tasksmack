@@ -99,7 +99,7 @@ ctest --preset win-debug
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
-- FreeType 2.13+ (font rendering library) - typically auto-detected from system or fetched if not found
+- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
   - ROCm SMI library (librocm_smi64.so) for AMD GPU support
@@ -108,16 +108,27 @@ ctest --preset win-debug
 Example (Ubuntu/Debian):
 
 ```bash
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
+# clang-22 comes from apt.llvm.org, and Ubuntu 24.04's own cmake (3.28) is older than 3.29, so add
+# apt.llvm.org's and Kitware's repositories first (tools/setup-dev.sh does both)
+sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 libc++-22-dev libc++abi-22-dev cmake ninja-build ccache
+
+# Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
+# with GLAD's hash-locked dependencies in the project venv
+sudo apt install python3.14 python3.14-venv
+python3.14 -m venv .venv && source .venv/bin/activate
+python -m pip install --require-hashes -r requirements-glad.txt
 
 # Optional: For GPU monitoring
 # NVIDIA drivers (download from nvidia.com)
 # ROCm SMI (download from amd.com/rocm)
 # Intel: no package needed (reads /sys/class/drm via sysfs)
 
-# Optional: for the System Information page's Boot performance section (#1525), which reads systemd
-# over D-Bus with sd-bus. Found with pkg-config at configure time; without it the section says it is
-# unavailable. -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
+# Optional, but needed for everything TaskSmack reads or controls over D-Bus or the journal: the
+# Services tab (systemd), and on the System Information page Boot performance (#1525), disk SMART
+# health (udisks2), crash details (systemd-coredump's journal entries), and each network adapter's
+# DNS, Wi-Fi and DHCP details (systemd-resolved, NetworkManager, systemd-networkd). Found with
+# pkg-config at configure time; without it those say they are unavailable.
+# -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
 ```
 
@@ -129,7 +140,7 @@ sudo apt install libsystemd-dev pkg-config
 - Ninja
 - ccache 4.9.1+ (optional but recommended)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
-- FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
+- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
 - **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version
@@ -883,7 +894,9 @@ pwsh tools/check-format.ps1    # Windows
 
 Coverage reports are written to `coverage/` (gitignored).
 
-CI heavy checks also publish a coverage summary and may emit a warning if coverage is below the configured threshold.
+CI heavy checks also publish a line-coverage summary and compare it with a floor (`LINUX_COVERAGE_THRESHOLD` and
+`WINDOWS_COVERAGE_THRESHOLD` in `heavy-checks.yml`): Linux below 95% fails the coverage job, Windows below 85%
+warns.
 
 The report counts all of `src/`, not just the files linked into `TaskSmackTests`: the coverage
 scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `llvm-cov` as an extra
@@ -1969,8 +1982,8 @@ Both targets are about 1.5× the measured median on a quiet machine, rounded up:
 9.02% → 14%. That leaves room for run-to-run noise (one default repetition read 15.0% against a
 median of 8.1%; the median over five absorbs a single outlier) while still catching a regression
 that adds a few percent of one core at idle. A median above the target is a regression to explain
-or fix. The targets cover **Linux/WSL app CPU only**; Windows targets will follow from
-`tools/measure-idle.ps1` captures. Re-measure and revisit them when the renderer, the default
+or fix. The targets cover **Linux/WSL app CPU only**; there is no Windows capture script yet, so Windows has
+no targets. Re-measure and revisit them when the renderer, the default
 scenario or the sampling defaults change.
 
 Measure at the targets' window geometry. TaskSmack restores its saved size and maximized state, and
@@ -2327,7 +2340,7 @@ The root `CMakeLists.txt` is intentionally declarative and delegates to focused 
 
 The root file keeps project setup, the version header, source/header lists, the `TaskSmack` target definition, and `tests`/`benchmarks` subdirectory wiring. Note that `CompilerOptions.cmake` must stay included before `Dependencies.cmake` so global flags (coverage, hardening, compiler launcher) apply to third-party builds, and `StaticAnalysis.cmake` is included before the Windows `.rc` file is appended to `TASKSMACK_SOURCES` so analysis targets only see real C++ sources.
 
-Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks is tracked in GitHub issues; #60, #61, #62, and #64 are done, and #63 (`modernize-use-auto`) is in progress (PR #738).
+Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks was tracked in GitHub issues #60 through #64, all done (#63, `modernize-use-auto`, by PR #738).
 
 ## Adding Dependencies
 
@@ -2390,7 +2403,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).

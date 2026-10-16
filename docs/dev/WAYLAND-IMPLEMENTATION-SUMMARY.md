@@ -20,7 +20,10 @@ the codebase (and CI) actually depends on them being right:
 
 ## Outstanding work
 
-- **#382** — manual Wayland/XWayland/X11 validation gate; `wayland-test-matrix.md` is defined but not yet run on real compositors
-- **#744** — title-bar drag likely doesn't work on native Wayland (`updateDrag()` moves the window un-gated; native Wayland can't do client-side absolute positioning)
-- **#745** — feature request for a native-decorations-on-Wayland fallback setting
-- **#746** — fixed and closed: `build-windows-debug` was hanging indefinitely compiling `tasksmack.rc` with the Windows SDK's `rc.exe`; fixed by switching RC-compiler priority to prefer `llvm-rc`
+- **#865** — manual Wayland/XWayland/X11 validation gate (it replaced #382, now closed); `wayland-test-matrix.md` is defined but not yet run on real compositors
+
+Done since:
+
+- **#744** — title-bar drag on native Wayland: fixed by #750, which hands the drag to the compositor (`SDL_HITTEST_DRAGGABLE`)
+- **#745** — native-decorations fallback on Wayland: Settings > Advanced > "Use native window decorations instead of the custom title bar" (#767)
+- **#746** — `build-windows-debug` hung compiling `tasksmack.rc` with the Windows SDK's `rc.exe`; fixed by requiring `llvm-rc`
