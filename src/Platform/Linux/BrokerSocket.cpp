@@ -7,12 +7,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -63,8 +63,7 @@ bool sendFrame(int fd, std::span<const std::uint8_t> frame, std::string& error)
         {
             continue;
         }
-        error = sent < 0 ? std::string(std::strerror(errno))
-                         : std::string("a short send"); // NOLINT(concurrency-mt-unsafe) - one thread per socket
+        error = sent < 0 ? std::system_category().message(errno) : std::string("a short send");
         return false;
     }
 }
