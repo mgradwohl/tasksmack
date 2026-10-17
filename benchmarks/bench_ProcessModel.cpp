@@ -84,8 +84,11 @@ static void BM_ProcessModel_GetSnapshots(benchmark::State& state)
 }
 BENCHMARK(BM_ProcessModel_GetSnapshots);
 
-// Benchmark process lookup by PID (linear search through snapshots)
-// This simulates finding a specific process in the list
+// Benchmark process lookup by PID through ProcessModel::findSnapshot(), the lookup the app makes
+// (ProcessesPanel::findSnapshot() delegates to it): a linear search under the model's lock that
+// copies only the matching snapshot. It used to copy the whole vector with snapshots() and search
+// the copy, which made it a second GetSnapshots: the copy was nearly all of its time, and that
+// copy's cost swings about 40% between hosted-runner CPU classes (#2332).
 static void BM_ProcessModel_FindByPid(benchmark::State& state)
 {
     auto probe = Platform::makeProcessProbe();
@@ -105,11 +108,7 @@ static void BM_ProcessModel_FindByPid(benchmark::State& state)
 
     for (auto _ : state)
     {
-        // Linear search through snapshots using std::ranges
-        const auto currentSnapshots = model.snapshots();
-        auto it = std::ranges::find_if(currentSnapshots, [targetPid](const auto& snap) { return snap.pid == targetPid; });
-        // Use boolean instead of pointer to avoid dangling reference to temporary vector
-        const bool found = (it != currentSnapshots.end());
+        const auto found = model.findSnapshot(targetPid);
         benchmark::DoNotOptimize(found);
     }
 }
