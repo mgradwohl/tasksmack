@@ -1,7 +1,7 @@
 # Dependabot configuration
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
 #
-# Note: Dependabot covers GitHub Actions and pip only. C++ dependencies are fetched via CMake
+# Note: Dependabot covers GitHub Actions, pip, and the dev container base image only. C++ dependencies are fetched via CMake
 # FetchContent (SHA-pinned in cmake/Dependencies.cmake, plus tests/CMakeLists.txt and
 # benchmarks/CMakeLists.txt); the scheduled osv-scanner workflow monitors them for known
 # vulnerabilities, and the scheduled Renovate workflow (.github/renovate.json5,
@@ -34,6 +34,19 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+
+  # Dev container base image digest (.devcontainer/Dockerfile, see #136)
+  - package-ecosystem: "docker"
+    directory: "/.devcontainer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
     commit-message:
       prefix: "build"
       include: "scope"
