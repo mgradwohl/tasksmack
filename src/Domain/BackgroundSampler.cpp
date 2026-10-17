@@ -48,32 +48,39 @@ void recordTiming(SampleTiming& timing, std::chrono::steady_clock::duration dura
     }
 }
 
-void logSamplerLoopException(std::string_view message,
-                             std::chrono::steady_clock::time_point now,
-                             std::chrono::steady_clock::time_point& nextLogTime,
-                             std::size_t& suppressedCount)
-{
-    if (now >= nextLogTime)
-    {
-        if (suppressedCount > 0)
-        {
-            spdlog::error(
-                "BackgroundSampler: sampler loop exception repeated {} additional times; latest error: {}", suppressedCount, message);
-        }
-        else
-        {
-            spdlog::error("BackgroundSampler: exception in sampler loop: {}", message);
-        }
-
-        nextLogTime = now + EXCEPTION_LOG_THROTTLE;
-        suppressedCount = 0;
-        return;
-    }
-
-    ++suppressedCount;
-}
-
 } // namespace
+
+void BackgroundSampler::logLoopException(std::string_view message,
+                                         std::chrono::steady_clock::time_point now,
+                                         ExceptionLogThrottle& throttle) noexcept
+{
+    // Called from catch handlers, the sampler thread's last line of defence: a failure to log (spdlog
+    // formats into allocated buffers) must not escape the thread and terminate the app (#2317).
+    try
+    {
+        if (now >= throttle.nextLogTime)
+        {
+            if (throttle.suppressedCount > 0)
+            {
+                spdlog::error("BackgroundSampler: sampler loop exception repeated {} additional times; latest error: {}",
+                              throttle.suppressedCount,
+                              message);
+            }
+            else
+            {
+                spdlog::error("BackgroundSampler: exception in sampler loop: {}", message);
+            }
+
+            throttle.nextLogTime = now + EXCEPTION_LOG_THROTTLE;
+            throttle.suppressedCount = 0;
+            return;
+        }
+
+        ++throttle.suppressedCount;
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - a lost log line must not terminate the app
+    {}
+}
 
 std::chrono::steady_clock::time_point nextSampleTime(std::chrono::steady_clock::time_point passStart,
                                                      std::chrono::steady_clock::duration passDuration,
@@ -140,13 +147,28 @@ void BackgroundSampler::start()
     try
     {
         m_SamplerThread = std::jthread(
-            [this, name = std::move(threadName)](const std::stop_token& st)
+            [this, name = std::move(threadName)](const std::stop_token& st) noexcept
             {
-                if (!Platform::setCurrentThreadName(name))
+                // Nothing may escape a thread's entry point: it would std::terminate the app. Each pass
+                // contains its own failures (samplerLoop()), so this only catches what is left -- the
+                // wait between passes, a log line -- and ends sampling rather than the app (#2317).
+                try
                 {
-                    spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
+                    if (!Platform::setCurrentThreadName(name))
+                    {
+                        spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
+                    }
+                    samplerLoop(st);
                 }
-                samplerLoop(st);
+                catch (...)
+                {
+                    try
+                    {
+                        spdlog::critical("BackgroundSampler: sampler thread stopped by an unexpected exception");
+                    }
+                    catch (...) // NOLINT(bugprone-empty-catch) - a lost log line must not terminate the app
+                    {}
+                }
             });
     }
     catch (...)
@@ -263,22 +285,27 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
     auto slowestDuration = std::chrono::steady_clock::duration::min();
     {
         const std::scoped_lock lock(m_MetricsMutex);
+        // Everything that allocates (the resize, the name copies) comes before any timing is recorded,
+        // so a std::bad_alloc here leaves none of this pass half-recorded: the pass is simply not
+        // counted, and the names are filled in by the next pass that gets this far (#2317).
         if (m_Metrics.samplables.size() < entries.size())
         {
             m_Metrics.samplables.resize(entries.size());
         }
         for (std::size_t i = 0; i < entries.size(); ++i)
         {
-            SampleTiming& timing = m_Metrics.samplables[i];
-            if (timing.name.empty())
+            if (SampleTiming& timing = m_Metrics.samplables[i]; timing.name.empty())
             {
                 timing.name = entries[i].name;
             }
+        }
+        for (std::size_t i = 0; i < entries.size(); ++i)
+        {
             // No duration: not called this pass (expired, or the sampler was stopping). A sample that
             // threw has one: it was timed like any other.
             if (const auto& duration = durations[i]; duration.has_value())
             {
-                recordTiming(timing, *duration, interval);
+                recordTiming(m_Metrics.samplables[i], *duration, interval);
                 if (*duration > slowestDuration)
                 {
                     slowest = i;
@@ -307,16 +334,84 @@ void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
                  std::chrono::duration_cast<std::chrono::milliseconds>(passDuration).count(),
                  interval.count(),
                  m_OverrunsSinceLog,
-                 (slowest < entries.size()) ? entries[slowest].name : std::string("none"));
+                 (slowest < entries.size()) ? std::string_view{entries[slowest].name} : std::string_view{"none"});
     m_OverrunsSinceLog = 0;
     m_NextOverrunLogTime = now + OVERRUN_LOG_THROTTLE;
+}
+
+BackgroundSampler::PassTiming BackgroundSampler::runPass(const std::stop_token& stopToken,
+                                                         bool samplePass,
+                                                         std::chrono::steady_clock::time_point startTime,
+                                                         ExceptionLogThrottle& exceptionLog)
+{
+    bool hadException = false;
+
+    std::vector<Entry> currentSamplables;
+    if (samplePass)
+    {
+        std::scoped_lock const lock(m_SamplablesMutex);
+        currentSamplables = m_Samplables;
+    }
+
+    // How long each samplable's sample() took this pass, whether it returned or threw; empty for
+    // one not called (expired, or the sampler was stopping) (#1416).
+    std::vector<std::optional<std::chrono::steady_clock::duration>> durations(currentSamplables.size());
+    for (std::size_t index = 0; index < currentSamplables.size(); ++index)
+    {
+        if (stopToken.stop_requested())
+        {
+            break;
+        }
+
+        // Lock the weak_ptr to get a temporary shared_ptr for the duration of this sample()
+        // call. If the owner has already destroyed the samplable, lock() returns empty and
+        // this entry is skipped rather than dereferencing a dangling pointer.
+        const auto samplable = currentSamplables[index].samplable.lock();
+        if (!samplable)
+        {
+            continue;
+        }
+
+        const auto sampleStart = std::chrono::steady_clock::now();
+        try
+        {
+            samplable->sample();
+            durations[index] = std::chrono::steady_clock::now() - sampleStart;
+        }
+        // A sample that throws still took its time: timed too, so a slow failing model is
+        // counted (samples, overruns) and named as the slowest rather than hidden (#1416).
+        catch (const std::exception& ex)
+        {
+            durations[index] = std::chrono::steady_clock::now() - sampleStart;
+            logLoopException(ex.what(), startTime, exceptionLog);
+            hadException = true;
+        }
+        catch (...)
+        {
+            durations[index] = std::chrono::steady_clock::now() - sampleStart;
+            logLoopException("unknown exception", startTime, exceptionLog);
+            hadException = true;
+        }
+    }
+
+    const auto passEnd = std::chrono::steady_clock::now();
+    const PassTiming timing{.duration = passEnd - startTime, .interval = interval()};
+    if (!currentSamplables.empty())
+    {
+        recordPass(currentSamplables, durations, timing.duration, timing.interval, passEnd);
+    }
+
+    if (!hadException)
+    {
+        exceptionLog = {};
+    }
+    return timing;
 }
 
 void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 {
     spdlog::debug("BackgroundSampler: thread started");
-    auto nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
-    std::size_t suppressedExceptionCount = 0;
+    ExceptionLogThrottle exceptionLog;
     bool skipFirstSample = false;
     {
         const std::scoped_lock lock(m_ConfigMutex);
@@ -325,81 +420,32 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 
     while (!stopToken.stop_requested())
     {
-        auto startTime = std::chrono::steady_clock::now();
-        bool hadException = false;
+        const auto startTime = std::chrono::steady_clock::now();
+        // Already seeded by the owner (SamplerConfig::firstSampleAfterInterval): the first pass only waits.
+        const bool samplePass = !std::exchange(skipFirstSample, false);
 
-        std::vector<Entry> currentSamplables;
-        if (skipFirstSample)
+        PassTiming timing;
+        try
         {
-            // Already seeded by the owner (SamplerConfig::firstSampleAfterInterval): this pass only waits.
-            skipFirstSample = false;
+            timing = runPass(stopToken, samplePass, startTime, exceptionLog);
         }
-        else
+        // The pass's own bookkeeping failed -- a std::bad_alloc copying the registrations, sizing the
+        // durations or recording the metrics; each sample() has its own catch in runPass() (#2317).
+        // The models keep their last snapshots and this pass's metrics are skipped. The wait below
+        // keeps the normal cadence from this pass's start, so a persistent failure is retried once
+        // an interval, never in a busy loop.
+        catch (const std::exception& ex)
         {
-            std::scoped_lock const lock(m_SamplablesMutex);
-            currentSamplables = m_Samplables;
+            timing = {.duration = std::chrono::steady_clock::now() - startTime, .interval = interval()};
+            logLoopException(ex.what(), startTime, exceptionLog);
         }
-
-        // How long each samplable's sample() took this pass, whether it returned or threw; empty for
-        // one not called (expired, or the sampler was stopping) (#1416).
-        std::vector<std::optional<std::chrono::steady_clock::duration>> durations(currentSamplables.size());
-        for (std::size_t index = 0; index < currentSamplables.size(); ++index)
+        catch (...)
         {
-            if (stopToken.stop_requested())
-            {
-                break;
-            }
-
-            // Lock the weak_ptr to get a temporary shared_ptr for the duration of this sample()
-            // call. If the owner has already destroyed the samplable, lock() returns empty and
-            // this entry is skipped rather than dereferencing a dangling pointer.
-            const auto samplable = currentSamplables[index].samplable.lock();
-            if (!samplable)
-            {
-                continue;
-            }
-
-            const auto sampleStart = std::chrono::steady_clock::now();
-            try
-            {
-                samplable->sample();
-                durations[index] = std::chrono::steady_clock::now() - sampleStart;
-            }
-            // A sample that throws still took its time: timed too, so a slow failing model is
-            // counted (samples, overruns) and named as the slowest rather than hidden (#1416).
-            catch (const std::exception& ex)
-            {
-                durations[index] = std::chrono::steady_clock::now() - sampleStart;
-                logSamplerLoopException(ex.what(), startTime, nextExceptionLogTime, suppressedExceptionCount);
-                hadException = true;
-            }
-            catch (...)
-            {
-                durations[index] = std::chrono::steady_clock::now() - sampleStart;
-                logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
-                hadException = true;
-            }
+            timing = {.duration = std::chrono::steady_clock::now() - startTime, .interval = interval()};
+            logLoopException("unknown exception", startTime, exceptionLog);
         }
-
-        if (!hadException)
-        {
-            nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
-            suppressedExceptionCount = 0;
-        }
-
-        // Get current interval
-        std::chrono::milliseconds currentInterval;
-        {
-            const std::scoped_lock lock(m_ConfigMutex);
-            currentInterval = m_Config.interval;
-        }
-
-        const auto passEnd = std::chrono::steady_clock::now();
-        const auto passDuration = passEnd - startTime;
-        if (!currentSamplables.empty())
-        {
-            recordPass(currentSamplables, durations, passDuration, currentInterval, passEnd);
-        }
+        const auto passDuration = timing.duration;
+        auto currentInterval = timing.interval;
 
         // The fixed cadence, or a bounded backoff after a pass that overran its interval (#1416).
         std::unique_lock wakeLock(m_WakeMutex);
@@ -435,10 +481,7 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             }
 
             m_IntervalChanged = false;
-            {
-                const std::scoped_lock lock(m_ConfigMutex);
-                currentInterval = m_Config.interval;
-            }
+            currentInterval = interval();
             // Rebase on when this sample started, not on now: resetting the wait on every change
             // let repeated changes (the interaction throttle toggling during a drag) postpone
             // sampling indefinitely, and a faster interval took a whole interval to apply (#1118).

@@ -6,12 +6,14 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -113,7 +115,33 @@ class BackgroundSampler
         std::string name;
     };
 
+    /// What one pass took, and the interval it was measured against.
+    struct PassTiming
+    {
+        std::chrono::steady_clock::duration duration{};
+        std::chrono::milliseconds interval{};
+    };
+
+    /// Rate-limits the sampler thread's exception log: one line per EXCEPTION_LOG_THROTTLE, with the
+    /// count of those suppressed since.
+    struct ExceptionLogThrottle
+    {
+        std::chrono::steady_clock::time_point nextLogTime = std::chrono::steady_clock::time_point::min();
+        std::size_t suppressedCount = 0;
+    };
+
     void samplerLoop(const std::stop_token& stopToken);
+    /// One sampling pass: every samplable's sample() (each failure caught and logged), then the pass's
+    /// metrics. Throws (std::bad_alloc) only from the pass's own bookkeeping, which samplerLoop()
+    /// contains (#2317). `samplePass` false: the pass samples nothing and only waits.
+    [[nodiscard]] PassTiming runPass(const std::stop_token& stopToken,
+                                     bool samplePass,
+                                     std::chrono::steady_clock::time_point startTime,
+                                     ExceptionLogThrottle& exceptionLog);
+    /// Log one of the sampler thread's exceptions, rate-limited by `throttle`. Never throws: it runs in
+    /// the catch handlers that keep exceptions from escaping the thread (#2317).
+    static void
+    logLoopException(std::string_view message, std::chrono::steady_clock::time_point now, ExceptionLogThrottle& throttle) noexcept;
     /// stop()'s debug summary line. Never throws (stop() runs from the destructor), and does nothing
     /// unless debug logging is on.
     void logStopSummary() const noexcept;

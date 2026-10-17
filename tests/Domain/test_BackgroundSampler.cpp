@@ -1141,3 +1141,151 @@ TEST(BackgroundSamplerTest, AFailedStartLeavesTheSamplerStoppedAndStartable)
     EXPECT_GT(failedStarts, 0);
 #endif
 }
+
+#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+namespace
+{
+
+/// From inside its first sample() -- on the sampler thread -- arms the allocation hook to fail the
+/// sampler thread's `failAt`-th allocation after it returns: the sampler's own bookkeeping (the pass's
+/// metrics, then the next pass's registration copy and duration storage), outside every sample()'s
+/// catch (#2317). Its second sample() records whether that failure fired, and disarms.
+class AllocationFailureArmingSamplable : public Domain::ISamplable
+{
+  public:
+    static constexpr std::size_t MAX_SAMPLES = 64;
+
+    explicit AllocationFailureArmingSamplable(std::int64_t failAt) : m_FailAt(failAt)
+    {
+        m_SampleTimes.reserve(MAX_SAMPLES); // so sample() itself never allocates
+    }
+
+    void sample() override
+    {
+        bool arm = false;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            if (m_SampleTimes.size() < MAX_SAMPLES)
+            {
+                m_SampleTimes.push_back(std::chrono::steady_clock::now());
+            }
+            if (m_SampleTimes.size() == 1)
+            {
+                arm = true;
+            }
+            else if (m_SampleTimes.size() == 2)
+            {
+                m_FailurePending = TestSupport::allocationFailurePending();
+                TestSupport::armAllocationFailure(-1);
+            }
+        }
+        m_Changed.notify_all();
+        if (arm)
+        {
+            TestSupport::armAllocationFailure(m_FailAt); // last: nothing of this sample() is counted
+        }
+    }
+
+    [[nodiscard]] bool waitForSamples(std::size_t count)
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, 5000ms, [this, count] { return m_SampleTimes.size() >= count; });
+    }
+
+    [[nodiscard]] std::size_t samples() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_SampleTimes.size();
+    }
+
+    /// The time between the first two samples: the pass whose bookkeeping failed, and the next.
+    [[nodiscard]] std::chrono::steady_clock::duration firstGap() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_SampleTimes.at(1) - m_SampleTimes.at(0);
+    }
+
+    /// Whether the armed failure had yet to fire by the second sample: the sampler made fewer than
+    /// failAt + 1 allocations between them.
+    [[nodiscard]] bool failurePending() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_FailurePending;
+    }
+
+  private:
+    std::int64_t m_FailAt;
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_Changed;
+    std::vector<std::chrono::steady_clock::time_point> m_SampleTimes;
+    bool m_FailurePending = false;
+};
+
+} // namespace
+#endif
+
+// A std::bad_alloc in the sampler's own bookkeeping -- the metrics resize and name copies after a
+// pass, the next pass's registration copy and duration storage -- is outside every sample()'s catch:
+// it escaped the thread's entry point and std::terminate'd the app (#2317). Fails each of those
+// allocations in turn: the sampler must survive, keep sampling at its interval (no busy retry), and
+// keep its metrics consistent.
+TEST(BackgroundSamplerTest, AFailedAllocationInThePassBookkeepingIsContained)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    constexpr auto INTERVAL = 100ms;
+    constexpr std::size_t SAMPLES = 3;
+    // Longer than any small-string buffer, so copying the names allocates too.
+    const std::string armingName(48, 'a');
+    const std::string otherName(48, 'b');
+    int failures = 0;
+    for (std::int64_t failAt = 0; failAt < 256; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        const auto arming = std::make_shared<AllocationFailureArmingSamplable>(failAt);
+        const auto other = std::make_shared<MockSamplable>();
+        Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = INTERVAL});
+        sampler.addSamplable(arming, armingName);
+        sampler.addSamplable(other, otherName);
+        sampler.start();
+
+        // Sampling carries on after the failure (before #2317 the test binary terminated here).
+        ASSERT_TRUE(arming->waitForSamples(SAMPLES));
+        sampler.stop();
+
+        // A failed pass is not retried straight away: the next sample waits for the interval. (A
+        // 10 ms margin for the time between a pass's start and its first sample.)
+        EXPECT_GE(arming->firstGap(), INTERVAL - 10ms);
+
+        // The metrics were left consistent: every samplable named, and no sample counted that did not
+        // happen; at most the one failed pass is missing (and the last pass's second sample, when
+        // stop() landed between the two).
+        const auto metrics = sampler.metrics();
+        ASSERT_EQ(metrics.samplables.size(), 2U);
+        EXPECT_EQ(metrics.samplables[0].name, armingName);
+        EXPECT_EQ(metrics.samplables[1].name, otherName);
+        const auto armingSamples = static_cast<std::uint64_t>(arming->samples());
+        const std::uint64_t recorded = metrics.samplables[0].samples;
+        EXPECT_LE(recorded, armingSamples);
+        EXPECT_GE(recorded + 1, armingSamples);
+        EXPECT_LE(metrics.samplables[1].samples, recorded);
+        EXPECT_GE(metrics.samplables[1].samples + 1, recorded);
+        EXPECT_GE(metrics.pass.samples, recorded);
+        EXPECT_LE(metrics.pass.samples, recorded + 1);
+
+        if (arming->failurePending())
+        {
+            break; // the bookkeeping made fewer allocations than failAt + 1: every one has been failed
+        }
+        ++failures;
+        if (HasFailure())
+        {
+            return; // one failing allocation point is enough to report
+        }
+    }
+    // The metrics resize, both name copies, the registration copy (its buffer and both names) and the
+    // durations: each was failed.
+    EXPECT_GE(failures, 7);
+#endif
+}
