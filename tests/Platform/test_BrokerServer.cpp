@@ -10,6 +10,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/PkexecBroker.h"
@@ -180,6 +181,24 @@ TEST(BrokerServerTest, AConnectionsRequestIsReadThroughItsReader)
     EXPECT_EQ(connections.readCount(), 1);
     EXPECT_TRUE(
         std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions)));
+}
+
+TEST(BrokerServerTest, AMemoryRollupRequestIsReadThroughItsFunction)
+{
+    TestMocks::MockProcessActions actions;
+    ProcessTarget asked;
+    BrokerServer::Readers readers;
+    readers.memoryRollup = [&asked](std::int32_t pid, std::uint64_t start) -> MemoryRollupRead
+    {
+        asked = {.pid = pid, .startTimeTicks = start};
+        return MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3};
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(response));
+    EXPECT_TRUE(std::get<Broker::MemoryRollupReply>(response).result.has_value());
+    EXPECT_EQ(asked, TARGET);
+    EXPECT_TRUE(
+        std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions)));
 }
 
 /// A connected SOCK_SEQPACKET pair, both ends closed on scope exit and on exec.
@@ -638,6 +657,24 @@ TEST(PkexecBrokerTest, TheHelperListsAProcesssConnections)
     ASSERT_TRUE(response.has_value()) << response.error();
     ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(*response));
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*response).result.status, ConnectionsReadStatus::Ok); // none open, but read
+}
+
+TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::MemoryRollupRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*response));
+    const MemoryRollupRead& rollup = std::get<Broker::MemoryRollupReply>(*response).result;
+    if (!rollup.has_value() && rollup.error() == MemoryRollupFailure::Unavailable)
+    {
+        GTEST_SKIP() << "This kernel has no smaps_rollup";
+    }
+    ASSERT_TRUE(rollup.has_value());
+    EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)

@@ -1055,6 +1055,16 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
                        "(smaps_rollup Private_Clean + Private_Dirty)",
         };
     }
+    else if (ctx.snapshot != nullptr && ctx.snapshot->memoryRollupDenied)
+    {
+        // Refused, not absent (#2309): another user's process, whose smaps_rollup needs ptrace read access.
+        constexpr const char* DENIED_TOOLTIP = "Not readable: this is another user's process. TaskSmack needs administrator rights "
+                                               "(or CAP_SYS_PTRACE) to read its PSS and USS";
+        memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
+            .label = MEM_PSS_LABEL, .value = "not readable", .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F), .tooltip = DENIED_TOOLTIP};
+        memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
+            .label = MEM_USS_LABEL, .value = "not readable", .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F), .tooltip = DENIED_TOOLTIP};
+    }
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras(memoryExtras.data(), memoryExtraCount);
     renderHistoryWithNowBars("ProcessMemoryOverviewLayout",
                              fill.plotHeight(),

@@ -15,9 +15,11 @@
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
+#include "Platform/Linux/MemoryRollupRead.h"
 
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -89,7 +91,13 @@ int main(int argc, char** argv)
         Platform::LinuxProcessOpenFilesReader openFiles;
         Platform::LinuxProcessConnectionsReader connections;
         const Platform::BrokerServer::Readers readers{
-            .environment = &environment, .modules = &modules, .openFiles = &openFiles, .connections = &connections};
+            .environment = &environment,
+            .modules = &modules,
+            .openFiles = &openFiles,
+            .connections = &connections,
+            .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
+            { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
+        };
         const std::stop_source never;
         switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))
         {

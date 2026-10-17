@@ -12,6 +12,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
 #include <gtest/gtest.h>
 
@@ -301,6 +302,36 @@ TEST(BrokeredConnectionsReaderTest, ARefusedReadGoesThroughARunningHelperAndOthe
     EXPECT_TRUE(reader.canReadAuthorized());
     EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::Ok);
     EXPECT_EQ(broker->connectCount(), 1);
+}
+
+// --- BrokeredProcessProbe (#2309) ----------------------------------------------------------------------
+
+TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        { return Broker::Response{Broker::MemoryRollupReply{.result = MemoryRollup{.pssBytes = 7, .ussBytes = 5, .swapPssBytes = 0}}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    owned->setMemoryRollupDenied(TARGET.pid);
+    owned->setMemoryRollup(99, MemoryRollup{.pssBytes = 1, .ussBytes = 1, .swapPssBytes = 0});
+    const std::unique_ptr<IProcessProbe> probe = withPrivilegedBroker(std::move(owned), broker);
+
+    const MemoryRollupRead own = probe->readMemoryRollup(99, 1);
+    EXPECT_TRUE(own.has_value());
+    EXPECT_TRUE(broker->requests().empty()); // read in-process
+
+    const MemoryRollupRead other = probe->readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
+    ASSERT_TRUE(other.has_value());
+    EXPECT_EQ(other.value_or(MemoryRollup{}).pssBytes, 7U);
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::MemoryRollupRequest{.target = TARGET}}));
+
+    broker->setConnected(false); // no helper running: the refusal stands, and nothing prompts
+    const MemoryRollupRead refused = probe->readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), MemoryRollupFailure::PermissionDenied);
+    EXPECT_EQ(broker->connectCount(), 0);
 }
 
 } // namespace

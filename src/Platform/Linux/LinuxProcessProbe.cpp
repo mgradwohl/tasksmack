@@ -17,13 +17,13 @@
 #include "NetlinkSocketStats.h"
 #endif
 
+#include "MemoryRollupRead.h"
 #include "Platform/ProcessTypes.h"
 #include "PosixGuards.h"
 #include "ProcFdScan.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
-#include "SmapsRollupParser.h"
 
 #include <spdlog/spdlog.h>
 
@@ -1319,29 +1319,9 @@ std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
     return energyUj; // Already in microjoules
 }
 
-std::optional<MemoryRollup> LinuxProcessProbe::readMemoryRollup(const std::int32_t pid, const std::uint64_t startTimeTicks) const
+MemoryRollupRead LinuxProcessProbe::readMemoryRollup(const std::int32_t pid, const std::uint64_t startTimeTicks) const
 {
-    if (pid <= 0)
-    {
-        return std::nullopt;
-    }
-    // One open of the process's directory for both reads: the descriptor stays bound to the process it
-    // was opened for, so once stat confirms that is the expected one (not a later process given the
-    // same PID), smaps_rollup read through it can't be another's -- a process gone since reads empty.
-    const FdGuard pidDirFd(::open((m_ProcRoot / std::to_string(pid)).c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-    if (pidDirFd.get() < 0)
-    {
-        return std::nullopt;
-    }
-    std::array<char, 1024> stat{}; // As parseProcessStat(): ample for one stat line
-    const std::size_t statLength = readProcFileOnceAt(pidDirFd.get(), "stat", stat.data(), stat.size());
-    if (const std::optional<std::uint64_t> startTime = ProcParsing::parseStatStartTime(std::string_view(stat.data(), statLength));
-        !startTime.has_value() || *startTime != startTimeTicks)
-    {
-        return std::nullopt;
-    }
-    const std::vector<char> text = ProcParsing::readProcFileFullAt(pidDirFd.get(), "smaps_rollup");
-    return SmapsRollup::parse(std::string_view(text.data(), text.size()));
+    return Linux::readMemoryRollupAt(m_ProcRoot, pid, startTimeTicks);
 }
 
 std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const

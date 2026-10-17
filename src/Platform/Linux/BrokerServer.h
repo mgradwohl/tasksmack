@@ -11,9 +11,11 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <stop_token>
 
 namespace Platform::BrokerServer
@@ -29,6 +31,9 @@ struct Readers
     IProcessModulesReader* modules = nullptr;
     IProcessOpenFilesReader* openFiles = nullptr;
     IProcessConnectionsReader* connections = nullptr;
+    /// PSS and USS: process ID and start time to the read's result.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};
 };
 
 /// A read request goes to its reader in @p readers.

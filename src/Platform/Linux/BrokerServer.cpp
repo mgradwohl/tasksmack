@@ -7,10 +7,12 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <expected>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -122,6 +124,21 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
         catch (...)
         {
             return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = {}}};
+        }
+    }
+    if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
+    {
+        if (!readers.memoryRollup)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't read PSS and USS"};
+        }
+        try
+        {
+            return Broker::MemoryRollupReply{.result = readers.memoryRollup(read->target.pid, read->target.startTimeTicks)};
+        }
+        catch (...)
+        {
+            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
         }
     }
     try

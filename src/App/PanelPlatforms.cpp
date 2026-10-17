@@ -44,7 +44,9 @@ namespace
 
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {
-    return {.probe = Synthetic::makeProcessProbe(scenario),
+    // PSS and USS of another user's process through the helper, once it runs (#2309).
+    return {.probe = (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessProbe(scenario), sharedPrivilegedBroker())
+                                           : Synthetic::makeProcessProbe(scenario),
             .actions = processActionsFor(scenario),
             .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
             .icons = Synthetic::makeProcessIconSource(scenario)};

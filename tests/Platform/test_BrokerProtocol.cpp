@@ -12,6 +12,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
 #include <gtest/gtest.h>
 
@@ -295,6 +296,21 @@ TEST(BrokerProtocolTest, ConnectionsRoundTripAndBadEnumsAreRefused)
     std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
     // status, detail (4), count (4), then the first socket's protocol
     bytes[4 + HEADER_BYTES + 1 + 4 + 4] = 7;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
+TEST(BrokerProtocolTest, MemoryRollupsRoundTrip)
+{
+    EXPECT_EQ(roundTrip(Request{MemoryRollupRequest{.target = TARGET}}), Request{MemoryRollupRequest{.target = TARGET}});
+    const Response figures = MemoryRollupReply{.result = MemoryRollup{.pssBytes = 2560000, .ussBytes = 2048000, .swapPssBytes = 65536}};
+    EXPECT_EQ(roundTrip(figures), figures);
+    const Response refused = MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::PermissionDenied)};
+    EXPECT_EQ(roundTrip(refused), refused);
+    const Response absent = MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+    EXPECT_EQ(roundTrip(absent), absent);
+
+    std::vector<std::uint8_t> bytes = encodeResponse(1, figures);
+    bytes[4 + HEADER_BYTES] = 9; // no such failure
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 

@@ -8,16 +8,22 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
+#include "Platform/ProcessTypes.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace Platform
 {
@@ -420,6 +426,83 @@ ConnectionsReadResult BrokeredConnectionsReader::viaBroker(const ProcessTarget& 
         return reply->result;
     }
     return {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = "The administrator helper gave an unexpected answer"};
+}
+
+std::unique_ptr<IProcessProbe> withPrivilegedBroker(std::unique_ptr<IProcessProbe> probe, std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || probe == nullptr || !probe->capabilities().hasMemoryRollup)
+    {
+        return probe;
+    }
+    return std::make_unique<BrokeredProcessProbe>(std::move(probe), std::move(broker));
+}
+
+BrokeredProcessProbe::BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner, std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+std::vector<ProcessCounters> BrokeredProcessProbe::enumerate()
+{
+    return m_Inner->enumerate();
+}
+
+ProcessCapabilities BrokeredProcessProbe::capabilities() const
+{
+    return m_Inner->capabilities();
+}
+
+std::uint64_t BrokeredProcessProbe::totalCpuTime() const
+{
+    return m_Inner->totalCpuTime();
+}
+
+long BrokeredProcessProbe::ticksPerSecond() const
+{
+    return m_Inner->ticksPerSecond();
+}
+
+std::uint64_t BrokeredProcessProbe::systemTotalMemory() const
+{
+    return m_Inner->systemTotalMemory();
+}
+
+std::optional<PackageEnergyReading> BrokeredProcessProbe::readPackageEnergy() const
+{
+    return m_Inner->readPackageEnergy();
+}
+
+SocketTrafficReading BrokeredProcessProbe::readSocketTraffic() const
+{
+    return m_Inner->readSocketTraffic();
+}
+
+MemoryRollupRead BrokeredProcessProbe::readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const
+{
+    MemoryRollupRead read = m_Inner->readMemoryRollup(pid, startTimeTicks);
+    if (read.has_value() || read.error() != MemoryRollupFailure::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return read;
+    }
+    const std::expected<Broker::Response, std::string> response =
+        m_Broker->call(Broker::MemoryRollupRequest{.target = {.pid = pid, .startTimeTicks = startTimeTicks}}, std::stop_token{});
+    if (response.has_value())
+    {
+        if (const auto* reply = std::get_if<Broker::MemoryRollupReply>(&*response))
+        {
+            return reply->result;
+        }
+    }
+    return read; // the helper couldn't be asked: the refusal stands
+}
+
+void BrokeredProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
+{
+    m_Inner->setSocketStatsCacheTtl(ttlMs);
+}
+
+void BrokeredProcessProbe::setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector)
+{
+    m_Inner->setUdpTrafficCollector(collector);
 }
 
 } // namespace Platform

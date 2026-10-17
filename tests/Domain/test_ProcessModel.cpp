@@ -4476,3 +4476,22 @@ TEST(ProcessModelTest, WithoutMemoryRollupSupportNothingIsRead)
     ASSERT_NE(samples.back().snapshot, nullptr);
     EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
 }
+
+// #2309: a refused read (another user's process) is said, so Process Details shows "not readable"
+// rather than leaving the figures out.
+TEST(ProcessModelTest, ARefusedMemoryRollupIsMarkedNotReadable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+    probe->setMemoryRollupDenied(100);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_FALSE(samples.empty());
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
+    EXPECT_TRUE(samples.back().snapshot->memoryRollupDenied);
+}

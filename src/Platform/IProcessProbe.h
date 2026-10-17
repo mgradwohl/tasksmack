@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -33,6 +34,16 @@ struct MemoryRollup
     std::uint64_t ussBytes = 0;     ///< Unique set size: the pages only it maps (Private_Clean + Private_Dirty)
     std::uint64_t swapPssBytes = 0; ///< Its proportional share of swapped-out pages
 };
+
+/// Why readMemoryRollup() has no figures (#2309).
+enum class MemoryRollupFailure : std::uint8_t
+{
+    Unavailable,      ///< Not readable here: no smaps_rollup, the process is gone, or its PID names another process now
+    PermissionDenied, ///< The OS refused (another user's process: smaps_rollup needs ptrace read access)
+};
+
+/// One process's PSS and USS, or why there are none.
+using MemoryRollupRead = std::expected<MemoryRollup, MemoryRollupFailure>;
 
 /// Interface for platform-specific process enumeration.
 /// Implementations read raw counters from OS APIs.
@@ -87,14 +98,14 @@ class IProcessProbe
     }
 
     /// Reads the PSS and USS (#1885) of process @p pid started at @p startTimeTicks (ProcessCounters::
-    /// startTimeTicks), where ProcessCapabilities::hasMemoryRollup says the platform can: nullopt
-    /// otherwise, when the process is gone or unreadable, and when @p pid now names another process
+    /// startTimeTicks), where ProcessCapabilities::hasMemoryRollup says the platform can: Unavailable
+    /// otherwise, when the process is gone, and when @p pid now names another process
     /// (reused since the snapshot), whose figures would be shown as this one's. Costly, so ProcessModel
     /// reads it only for its watched process (the one Process Details shows).
-    [[nodiscard]] virtual std::optional<MemoryRollup> readMemoryRollup([[maybe_unused]] std::int32_t pid,
-                                                                       [[maybe_unused]] std::uint64_t startTimeTicks) const
+    [[nodiscard]] virtual MemoryRollupRead readMemoryRollup([[maybe_unused]] std::int32_t pid,
+                                                            [[maybe_unused]] std::uint64_t startTimeTicks) const
     {
-        return std::nullopt;
+        return std::unexpected(MemoryRollupFailure::Unavailable);
     }
 
     /// Set socket stats cache TTL (Linux only; no-op on Windows).

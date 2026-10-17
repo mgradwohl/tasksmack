@@ -24,12 +24,16 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stop_token>
+#include <vector>
 
 namespace Platform
 {
@@ -156,6 +160,34 @@ class BrokeredConnectionsReader final : public IProcessConnectionsReader
     std::unique_ptr<IProcessConnectionsReader> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
+
+/// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
+/// when the in-process read is refused (another user's process). Everything else is the inner probe's.
+/// There is no prompt here: the figures follow once the user has authenticated for anything else.
+class BrokeredProcessProbe final : public IProcessProbe
+{
+  public:
+    BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
+    [[nodiscard]] ProcessCapabilities capabilities() const override;
+    [[nodiscard]] std::uint64_t totalCpuTime() const override;
+    [[nodiscard]] long ticksPerSecond() const override;
+    [[nodiscard]] std::uint64_t systemTotalMemory() const override;
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
+    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
+    [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
+    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
+
+  private:
+    std::unique_ptr<IProcessProbe> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
+/// @p probe decorated with @p broker, or @p probe as it is when there is no broker.
+[[nodiscard]] std::unique_ptr<IProcessProbe> withPrivilegedBroker(std::unique_ptr<IProcessProbe> probe,
+                                                                  std::shared_ptr<IPrivilegedBroker> broker);
 
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,

@@ -655,8 +655,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // goes without them until the next refresh.
     if (watchedSnapshot != nullptr && publishedCapabilities.hasMemoryRollup)
     {
-        if (const std::optional<Platform::MemoryRollup> rollup = m_Probe->readMemoryRollup(watchedPid, watchedSnapshot->startTimeTicks);
-            rollup.has_value())
+        const Platform::MemoryRollupRead rollup = m_Probe->readMemoryRollup(watchedPid, watchedSnapshot->startTimeTicks);
+        if (rollup.has_value())
         {
             auto withRollup = std::make_shared<ProcessSnapshot>(*watchedSnapshot);
             withRollup->pssBytes = rollup->pssBytes;
@@ -664,6 +664,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             withRollup->swapPssBytes = rollup->swapPssBytes;
             withRollup->memoryRollupRead = true;
             watchedSnapshot = std::move(withRollup);
+        }
+        else if (rollup.error() == Platform::MemoryRollupFailure::PermissionDenied)
+        {
+            // Said, not left out: Process Details shows them as not readable (#2309).
+            auto withRefusal = std::make_shared<ProcessSnapshot>(*watchedSnapshot);
+            withRefusal->memoryRollupDenied = true;
+            watchedSnapshot = std::move(withRefusal);
         }
     }
 

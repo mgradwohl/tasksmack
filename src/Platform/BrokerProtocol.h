@@ -27,6 +27,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -64,16 +65,18 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetPriority = 17,
     SetIoPriority = 18,
     SetAffinity = 19,
-    ReadEnvironment = 32,   ///< Another user's process's environment, for Process Details (#2309)
-    ReadModules = 33,       ///< Its loaded modules (#2309)
-    ReadOpenFiles = 34,     ///< Its open files (#2309)
-    ReadConnections = 35,   ///< Its TCP and UDP sockets (#2309)
-    ActionResult = 48,      ///< The answer to a process action
-    EnvironmentResult = 49, ///< The answer to ReadEnvironment
-    ModulesResult = 50,     ///< The answer to ReadModules
-    OpenFilesResult = 51,   ///< The answer to ReadOpenFiles
-    ConnectionsResult = 52, ///< The answer to ReadConnections
-    Error = 63,             ///< A request the helper refused to read (malformed, or a kind it doesn't do)
+    ReadEnvironment = 32,    ///< Another user's process's environment, for Process Details (#2309)
+    ReadModules = 33,        ///< Its loaded modules (#2309)
+    ReadOpenFiles = 34,      ///< Its open files (#2309)
+    ReadConnections = 35,    ///< Its TCP and UDP sockets (#2309)
+    ReadMemoryRollup = 36,   ///< Its PSS and USS (#2309)
+    ActionResult = 48,       ///< The answer to a process action
+    EnvironmentResult = 49,  ///< The answer to ReadEnvironment
+    ModulesResult = 50,      ///< The answer to ReadModules
+    OpenFilesResult = 51,    ///< The answer to ReadOpenFiles
+    ConnectionsResult = 52,  ///< The answer to ReadConnections
+    MemoryRollupResult = 53, ///< The answer to ReadMemoryRollup
+    Error = 63,              ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
 /// The signals a Signal request sends.
@@ -233,6 +236,33 @@ struct ConnectionsReply
     }
 };
 
+/// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup as root.
+struct MemoryRollupRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const MemoryRollupRequest&, const MemoryRollupRequest&) = default;
+};
+
+/// The answer to MemoryRollupRequest: the figures, or why there are none.
+struct MemoryRollupReply
+{
+    MemoryRollupRead result = std::unexpected(MemoryRollupFailure::Unavailable);
+
+    friend bool operator==(const MemoryRollupReply& left, const MemoryRollupReply& right)
+    {
+        if (left.result.has_value() != right.result.has_value())
+        {
+            return false;
+        }
+        if (!left.result.has_value())
+        {
+            return left.result.error() == right.result.error();
+        }
+        return left.result->pssBytes == right.result->pssBytes && left.result->ussBytes == right.result->ussBytes &&
+               left.result->swapPssBytes == right.result->swapPssBytes;
+    }
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -265,8 +295,10 @@ using Request = std::variant<Hello,
                              EnvironmentRequest,
                              ModulesRequest,
                              OpenFilesRequest,
-                             ConnectionsRequest>;
-using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply, ConnectionsReply>;
+                             ConnectionsRequest,
+                             MemoryRollupRequest>;
+using Response =
+    std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply, ConnectionsReply, MemoryRollupReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -528,6 +560,11 @@ template<typename Message>
         kind = MessageKind::ReadConnections;
         writer.target(connections->target);
     }
+    else if (const auto* rollup = std::get_if<MemoryRollupRequest>(&request))
+    {
+        kind = MessageKind::ReadMemoryRollup;
+        writer.target(rollup->target);
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -633,12 +670,18 @@ template<typename Message>
         const ProcessTarget target = reader.target();
         return Detail::finish<Request>(reader, frame->requestId, ConnectionsRequest{.target = target});
     }
+    case MessageKind::ReadMemoryRollup:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, frame->requestId, MemoryRollupRequest{.target = target});
+    }
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
     case MessageKind::ModulesResult:
     case MessageKind::OpenFilesResult:
     case MessageKind::ConnectionsResult:
+    case MessageKind::MemoryRollupResult:
     case MessageKind::Error:
         break;
     }
@@ -764,6 +807,16 @@ template<typename Message>
             endpoint(connection.remote);
             writer.u8(static_cast<std::uint8_t>(connection.state));
         }
+    }
+    else if (const auto* rollup = std::get_if<MemoryRollupReply>(&response))
+    {
+        kind = MessageKind::MemoryRollupResult;
+        // 0: the figures follow; else 1 + the failure.
+        writer.u8(rollup->result.has_value() ? 0 : static_cast<std::uint8_t>(1 + static_cast<std::uint8_t>(rollup->result.error())));
+        const MemoryRollup figures = rollup->result.value_or(MemoryRollup{});
+        writer.u64(figures.pssBytes);
+        writer.u64(figures.ussBytes);
+        writer.u64(figures.swapPssBytes);
     }
     return writer.frame(kind, requestId);
 }
@@ -958,6 +1011,28 @@ template<typename Message>
         }
         return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
     }
+    case MessageKind::MemoryRollupResult:
+    {
+        const std::uint8_t tag = reader.u8();
+        MemoryRollup figures;
+        figures.pssBytes = reader.u64();
+        figures.ussBytes = reader.u64();
+        figures.swapPssBytes = reader.u64();
+        MemoryRollupReply reply;
+        if (tag == 0)
+        {
+            reply.result = figures;
+        }
+        else if (tag - 1U <= static_cast<unsigned>(MemoryRollupFailure::PermissionDenied))
+        {
+            reply.result = std::unexpected(static_cast<MemoryRollupFailure>(tag - 1U));
+        }
+        else
+        {
+            reader.fail();
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -967,6 +1042,7 @@ template<typename Message>
     case MessageKind::ReadModules:
     case MessageKind::ReadOpenFiles:
     case MessageKind::ReadConnections:
+    case MessageKind::ReadMemoryRollup:
         break;
     }
     return std::unexpected("Not a response");

@@ -106,6 +106,7 @@ struct ProcessSnapshot
     std::uint64_t ussBytes = 0;
     std::uint64_t swapPssBytes = 0;
     bool memoryRollupRead = false;
+    bool memoryRollupDenied = false;   // The OS refused it (another user's process, #2309): "not readable", not just absent
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 

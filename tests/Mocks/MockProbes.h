@@ -329,12 +329,27 @@ class MockProcessProbe : public Platform::IProcessProbe
         m_MemoryRollups[pid] = rollup;
     }
 
-    [[nodiscard]] std::optional<Platform::MemoryRollup> readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override
+    /// readMemoryRollup() refuses @p pid as the OS refuses another user's process (#2309).
+    void setMemoryRollupDenied(std::int32_t pid)
+    {
+        m_Capabilities.hasMemoryRollup = true;
+        m_MemoryRollupsDenied.push_back(pid);
+    }
+
+    [[nodiscard]] Platform::MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override
     {
         ++m_MemoryRollupReads;
         m_LastMemoryRollupStartTime = startTimeTicks;
+        if (std::ranges::find(m_MemoryRollupsDenied, pid) != m_MemoryRollupsDenied.end())
+        {
+            return std::unexpected(Platform::MemoryRollupFailure::PermissionDenied);
+        }
         const auto it = m_MemoryRollups.find(pid);
-        return it == m_MemoryRollups.end() ? std::nullopt : std::optional<Platform::MemoryRollup>(it->second);
+        if (it == m_MemoryRollups.end())
+        {
+            return std::unexpected(Platform::MemoryRollupFailure::Unavailable);
+        }
+        return it->second;
     }
 
     /// The start time the last readMemoryRollup() was asked to verify.
@@ -419,6 +434,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
     Platform::SocketTrafficReading m_SocketTraffic;
     std::map<std::int32_t, Platform::MemoryRollup> m_MemoryRollups;
+    std::vector<std::int32_t> m_MemoryRollupsDenied;
     mutable std::atomic<int> m_MemoryRollupReads{0};
     mutable std::atomic<std::uint64_t> m_LastMemoryRollupStartTime{0};
 };

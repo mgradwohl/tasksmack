@@ -1139,7 +1139,7 @@ TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
               "Private_Dirty: 1900 kB\nSwapPss: 64 kB\n");
     const LinuxProcessProbe probe(proc.path);
     EXPECT_TRUE(probe.capabilities().hasMemoryRollup);
-    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(4242, 12345);
+    const MemoryRollupRead rollup = probe.readMemoryRollup(4242, 12345);
     ASSERT_TRUE(rollup.has_value());
     EXPECT_EQ(rollup.value_or(MemoryRollup{}).pssBytes, 2500U * 1024U);
     EXPECT_EQ(rollup.value_or(MemoryRollup{}).ussBytes, 2000U * 1024U);
@@ -1148,6 +1148,30 @@ TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
     EXPECT_FALSE(probe.readMemoryRollup(4242, 999).has_value());
     EXPECT_FALSE(probe.readMemoryRollup(4343, 12345).has_value()); // Gone, or never there
     EXPECT_FALSE(probe.readMemoryRollup(0, 0).has_value());
+}
+
+// #2309: an smaps_rollup the kernel won't open for this user (another user's process) is a refusal,
+// told apart from one that is just absent.
+TEST(LinuxProcessProbeTest, ARefusedSmapsRollupIsPermissionDenied)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root opens a file of mode 000 anyway";
+    }
+    ScopedTempDir proc("ts_test_proc_smaps_refused");
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4242" / "smaps_rollup", "Pss: 2500 kB\nPrivate_Clean: 100 kB\nPrivate_Dirty: 1900 kB\n");
+    std::filesystem::permissions(proc.path / "4242" / "smaps_rollup", std::filesystem::perms::none);
+    const LinuxProcessProbe probe(proc.path);
+    const MemoryRollupRead refused = probe.readMemoryRollup(4242, 12345);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), MemoryRollupFailure::PermissionDenied);
+    const MemoryRollupRead gone = probe.readMemoryRollup(4343, 12345);
+    ASSERT_FALSE(gone.has_value());
+    EXPECT_EQ(gone.error(), MemoryRollupFailure::Unavailable);
 }
 
 TEST(LinuxProcessProbeTest, ThisProcessOwnPssAndUssReadFromTheRealProc)
@@ -1161,7 +1185,7 @@ TEST(LinuxProcessProbeTest, ThisProcessOwnPssAndUssReadFromTheRealProc)
     const auto processes = probe.enumerate();
     const auto me = std::ranges::find_if(processes, [self](const ProcessCounters& p) { return p.pid == self; });
     ASSERT_NE(me, processes.end());
-    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(self, me->startTimeTicks);
+    const MemoryRollupRead rollup = probe.readMemoryRollup(self, me->startTimeTicks);
     ASSERT_TRUE(rollup.has_value());
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
     EXPECT_GT(rollup.value_or(MemoryRollup{}).ussBytes, 0U);
