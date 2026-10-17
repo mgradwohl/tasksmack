@@ -589,7 +589,7 @@ TEST(PkexecBrokerTest, AHelperThatNeverAnswersTimesOut)
 {
     // A launcher that keeps the socket open and says nothing.
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "sleep 5", "sh"});
-    const auto connected = broker.connect(std::stop_token{}, std::chrono::milliseconds{200});
+    const auto connected = broker.connectWithin(std::stop_token{}, std::chrono::milliseconds{200});
     ASSERT_FALSE(connected.has_value());
     EXPECT_EQ(connected.error(), "the helper didn't answer in time");
 }

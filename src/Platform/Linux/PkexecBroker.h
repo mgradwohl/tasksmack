@@ -50,8 +50,13 @@ class PkexecBroker final : public IPrivilegedBroker
     /// Starts the helper (asking for the password) and does the handshake, unless already connected.
     /// The error says why there is no helper: the prompt was dismissed or refused, the helper isn't
     /// installed, it speaks another protocol version, or it didn't answer in @p timeout.
-    [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& stopToken,
-                                                           std::chrono::milliseconds timeout = CONNECT_TIMEOUT);
+    [[nodiscard]] std::expected<void, std::string> connectWithin(const std::stop_token& stopToken, std::chrono::milliseconds timeout);
+
+    /// connectWithin(), waiting up to CONNECT_TIMEOUT: the interface's connect().
+    [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& stopToken) override
+    {
+        return connectWithin(stopToken, CONNECT_TIMEOUT);
+    }
 
     /// Closes the socket, so the helper exits; connected() is false after.
     void disconnect();

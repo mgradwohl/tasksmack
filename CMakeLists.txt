@@ -207,6 +207,7 @@ set(TASKSMACK_SOURCES
     src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
+    src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)

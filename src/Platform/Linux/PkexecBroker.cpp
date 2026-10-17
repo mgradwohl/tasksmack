@@ -65,7 +65,7 @@ bool PkexecBroker::connected() const noexcept
     return m_Connected.load();
 }
 
-std::expected<void, std::string> PkexecBroker::connect(const std::stop_token& stopToken, std::chrono::milliseconds timeout)
+std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_token& stopToken, std::chrono::milliseconds timeout)
 {
     const std::scoped_lock lock(m_Mutex);
     if (m_Connected.load())

@@ -300,6 +300,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
     Platform/test_BrokerProtocol.cpp
+    Platform/test_BrokeredProcessActions.cpp
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
     Platform/test_Factory.cpp
@@ -689,6 +690,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp

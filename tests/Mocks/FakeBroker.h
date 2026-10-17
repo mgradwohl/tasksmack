@@ -44,6 +44,32 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_Connected;
     }
 
+    /// What connect() does: succeed (and connect) by default, or fail with this reason.
+    void setConnectFailure(std::string reason)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_ConnectFailure = std::move(reason);
+    }
+
+    [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& /*stopToken*/) override
+    {
+        const std::scoped_lock lock(m_Mutex);
+        ++m_ConnectCount;
+        if (!m_ConnectFailure.empty())
+        {
+            return std::unexpected(m_ConnectFailure);
+        }
+        m_Connected = true;
+        return {};
+    }
+
+    /// How many times connect() was called.
+    [[nodiscard]] int connectCount() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_ConnectCount;
+    }
+
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> call(const Platform::Broker::Request& request,
                                                                               const std::stop_token& /*stopToken*/) override
     {
@@ -71,6 +97,8 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     mutable std::mutex m_Mutex;
     Answer m_Answer;
     std::vector<Platform::Broker::Request> m_Requests;
+    std::string m_ConnectFailure;
+    int m_ConnectCount = 0;
     std::atomic<bool> m_Connected{true};
 };
 

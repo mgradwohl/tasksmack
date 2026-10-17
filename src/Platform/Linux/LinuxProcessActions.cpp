@@ -168,6 +168,12 @@ struct PidfdOpen
 {
     return syscalls.pidfdSendSignal(pidfd.get(), signal);
 }
+/// Whether @p err is the OS refusing for want of permission: an administrator may succeed (#2308).
+[[nodiscard]] constexpr bool isPermissionError(int err) noexcept
+{
+    return err == EPERM || err == EACCES;
+}
+
 [[nodiscard]] std::string signalErrorMessage(int err)
 {
     switch (err)
@@ -531,7 +537,10 @@ constexpr ChangeWording AFFINITY_WORDING{.lower = "CPU affinity", .leading = "CP
     }
 
     spdlog::warn("Failed to set {} for PID {}: {}", wording.lower, target.pid, errorMsg);
-    return ProcessActionResult::error(std::move(errorMsg));
+    // A thread refused for want of permission (another user's process, or a raise without
+    // CAP_SYS_NICE): the privileged helper may make the whole change (#2308).
+    return isPermissionError(change.firstError) ? ProcessActionResult::denied(std::move(errorMsg))
+                                                : ProcessActionResult::error(std::move(errorMsg));
 }
 
 } // namespace
@@ -1000,9 +1009,11 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
         return ProcessActionResult::ok();
     }
 
-    const std::string errorMsg = signalErrorMessage(errno);
+    const int err = errno;
+    const std::string errorMsg = signalErrorMessage(err);
     spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, errorMsg);
-    return ProcessActionResult::error(errorMsg);
+    // EPERM: another user's process, which the privileged helper may signal (#2308).
+    return isPermissionError(err) ? ProcessActionResult::denied(errorMsg) : ProcessActionResult::error(errorMsg);
 }
 
 namespace

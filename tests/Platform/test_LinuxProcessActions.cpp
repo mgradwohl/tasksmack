@@ -669,6 +669,15 @@ TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
     const ProcessActionResult result = actions.resume({.pid = 1, .startTimeTicks = startTicks});
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
+    EXPECT_TRUE(result.permissionDenied); // what an administrator could do: BrokeredProcessActions retries it (#2308)
+}
+
+TEST(LinuxProcessActionsTest, OtherFailuresAreNotPermissionRefusals)
+{
+    LinuxProcessActions actions;
+    const ProcessActionResult result = actions.resume({.pid = IMPOSSIBLE_PID, .startTimeTicks = 1});
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
 }
 
 TEST(LinuxProcessActionsTest, SetIoPriorityBestEffortLevelIsReadBack)

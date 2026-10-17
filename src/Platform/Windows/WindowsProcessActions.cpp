@@ -268,9 +268,10 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
-        .canCreateDump = true,       // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
-        .canChooseDumpFolder = true, // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
-        .dumpsFromSnapshot = true,   // PssCaptureSnapshot, else from the running process (#2001)
+        .canCreateDump = true,              // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = true,        // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = true,          // PssCaptureSnapshot, else from the running process (#2001)
+        .canAuthorizeInteractively = false, // the elevated helper comes with #2311
     };
 }
 

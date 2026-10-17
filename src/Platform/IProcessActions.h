@@ -24,14 +24,23 @@ struct ProcessActionResult
     /// phrase the result line appends: Windows affinity across processor groups is only a preference
     /// (#2173). Empty for a plain success and on failure.
     std::string successNote;
+    /// On failure, whether the OS refused it for want of permission over the process (Linux: EPERM or
+    /// EACCES), which acting as an administrator could cure: BrokeredProcessActions retries such a
+    /// failure through the privileged helper (#2308). False for every other failure.
+    bool permissionDenied = false;
 
     static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}, .successNote = std::move(note)};
+        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg), .successNote = {}};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false};
+    }
+    /// A failure for want of permission over the process (permissionDenied).
+    static ProcessActionResult denied(std::string msg)
+    {
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true};
     }
 };
 
@@ -181,6 +190,29 @@ using FolderChoice = std::expected<std::optional<std::filesystem::path>, std::st
 /// What chooseDumpFolder() says where the platform has no folder dialog.
 inline constexpr const char* FOLDER_CHOICE_UNSUPPORTED_MESSAGE = "Choosing a folder isn't available on this system";
 
+/// An action to retry as an administrator (IProcessActions::runAuthorized(), #2308): which one, its
+/// target, and its argument where it has one.
+struct AuthorizedAction
+{
+    enum class Kind : std::uint8_t
+    {
+        Terminate,
+        Kill,
+        Stop,
+        Resume,
+        SetPriority,   ///< nice
+        SetIoPriority, ///< ioClass and level
+        SetAffinity,   ///< cpus
+    };
+    Kind kind = Kind::Terminate;
+    ProcessTarget target;
+    std::int32_t nice = 0;
+    IoPriorityClass ioClass = IoPriorityClass::BestEffort;
+    std::int32_t level = 4;
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    CpuAffinity cpus{};
+};
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
@@ -207,6 +239,9 @@ struct ProcessActionCapabilities
     /// False: every dump is written from the running process, stopped for the whole write (Linux:
     /// gdb's gcore), and that is the normal case, not a fallback (#2241).
     bool dumpsFromSnapshot = false;
+    /// runAuthorized() can retry a permissionDenied failure as an administrator, after a password
+    /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
+    bool canAuthorizeInteractively = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -320,6 +355,18 @@ class IProcessActions
         static_cast<void>(initial);
         static_cast<void>(ownerWindow);
         return std::unexpected(std::string(FOLDER_CHOICE_UNSUPPORTED_MESSAGE));
+    }
+
+    /// Retries @p request (a signal, priority, I/O priority or affinity change) as an administrator,
+    /// asking for the password first if need be (#2308): what "Authenticate and retry" does after a
+    /// permissionDenied failure. Blocks for as long as the prompt is up, so it runs on a worker, never
+    /// the UI thread. The default refuses it, matching ProcessActionCapabilities'
+    /// canAuthorizeInteractively default (false).
+    [[nodiscard]] virtual ProcessActionResult runAuthorized(const AuthorizedAction& action, const std::stop_token& stopToken)
+    {
+        static_cast<void>(action);
+        static_cast<void>(stopToken);
+        return ProcessActionResult::error("Acting as an administrator isn't available");
     }
 
     /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).

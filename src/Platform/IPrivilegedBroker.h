@@ -32,6 +32,12 @@ class IPrivilegedBroker
     /// breaks; callers then act in-process, and the UI offers to reconnect.
     [[nodiscard]] virtual bool connected() const noexcept = 0;
 
+    /// Starts the helper if it isn't running, asking for the administrator's password first, and does
+    /// the handshake (#2308). Blocking for as long as the prompt is up: call it from a worker, never
+    /// the UI thread. The error says why there is no helper (the prompt was dismissed or refused, the
+    /// helper isn't installed, it didn't answer).
+    [[nodiscard]] virtual std::expected<void, std::string> connect(const std::stop_token& stopToken) = 0;
+
     /// Sends @p request and waits for its response, for at most the transport's bounded wait or until
     /// @p stopToken is stopped. Blocking: call it from a worker (ProcessActionRun, #2305), never the
     /// UI thread. The error is why there is no response (not connected, broken channel, timed out).
