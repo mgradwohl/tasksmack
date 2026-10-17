@@ -45,19 +45,23 @@ PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> laun
 
 PkexecBroker::~PkexecBroker()
 {
-    const std::scoped_lock lock(m_Mutex);
-    closeLocked();
-    // The helper exits once its socket closes, and pkexec with it; wait briefly so it isn't left a
-    // zombie. One that outlives the wait is reaped by init when TaskSmack exits.
-    for (int attempt = 0; attempt < REAP_ATTEMPTS && m_Child > 0; ++attempt)
+    try
     {
-        if (::waitpid(m_Child, nullptr, WNOHANG) != 0)
+        const std::scoped_lock lock(m_Mutex);
+        closeLocked();
+        // The helper exits once its socket closes, and pkexec with it; wait briefly so none is left a
+        // zombie. One that outlives the wait is reaped by init when TaskSmack exits.
+        for (int attempt = 0; attempt < REAP_ATTEMPTS && !m_Abandoned.empty(); ++attempt)
         {
-            m_Child = -1;
-            break;
+            reapAbandonedLocked();
+            if (!m_Abandoned.empty())
+            {
+                ::usleep(REAP_STEP_MICROSECONDS);
+            }
         }
-        ::usleep(REAP_STEP_MICROSECONDS);
     }
+    catch (...) // NOLINT(bugprone-empty-catch) - a destructor mustn't throw; what it couldn't reap init does
+    {}
 }
 
 bool PkexecBroker::connected() const noexcept
@@ -194,10 +198,20 @@ void PkexecBroker::closeLocked()
         ::close(m_Fd);
         m_Fd = -1;
     }
-    if (m_Child > 0 && ::waitpid(m_Child, nullptr, WNOHANG) != 0)
+    // A launcher still running (a prompt still up, a helper still exiting) is kept and reaped later, by
+    // the next connect() or close or the destructor, never forgotten: forgotten, it would stay this
+    // process's zombie once it exited, and its child for anything that waits for any child (#2333).
+    if (m_Child > 0)
     {
+        m_Abandoned.push_back(m_Child);
         m_Child = -1;
     }
+    reapAbandonedLocked();
+}
+
+void PkexecBroker::reapAbandonedLocked()
+{
+    std::erase_if(m_Abandoned, [](pid_t pid) { return ::waitpid(pid, nullptr, WNOHANG) != 0; });
 }
 
 std::string PkexecBroker::launcherExitReason()

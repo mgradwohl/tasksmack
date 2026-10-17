@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -657,11 +658,19 @@ TEST(PkexecBrokerTest, AMissingLauncherIsReported)
 
 TEST(PkexecBrokerTest, AHelperThatNeverAnswersTimesOut)
 {
-    // A launcher that keeps the socket open and says nothing.
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "sleep 5", "sh"});
-    const auto connected = broker.connectWithin(std::stop_token{}, std::chrono::milliseconds{200});
-    ASSERT_FALSE(connected.has_value());
-    EXPECT_EQ(connected.error(), "the helper didn't answer in time");
+    // A launcher that keeps the socket open and says nothing, and exits once the broker closes it, so it
+    // is reaped then: a launcher left running would be this process's child for later tests that wait
+    // for any child (DetachedSpawnTest, #2333).
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "cat >/dev/null", "sh"});
+        const auto connected = broker.connectWithin(std::stop_token{}, std::chrono::milliseconds{200});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper didn't answer in time");
+    }
+    // The broker gone, so is its launcher: nothing of it is left for this process to wait for.
+    errno = 0;
+    EXPECT_EQ(::waitpid(-1, nullptr, WNOHANG), -1);
+    EXPECT_EQ(errno, ECHILD);
 }
 
 // NOLINTEND(misc-include-cleaner)

@@ -71,6 +71,8 @@ class PkexecBroker final : public IPrivilegedBroker
     roundTrip(const Broker::Request& request, std::chrono::milliseconds timeout, const std::stop_token& stopToken);
     /// Under m_Mutex: closes the socket and reaps the launcher if it has exited.
     void closeLocked();
+    /// Under m_Mutex: reaps the launchers in m_Abandoned that have exited.
+    void reapAbandonedLocked();
     /// Why the launcher exited, once it has: pkexec's 126 (dismissed) and 127 (not authorised) in words.
     [[nodiscard]] std::string launcherExitReason();
 
@@ -79,6 +81,7 @@ class PkexecBroker final : public IPrivilegedBroker
     mutable std::mutex m_Mutex;
     int m_Fd = -1;
     pid_t m_Child = -1;
+    std::vector<pid_t> m_Abandoned; // Launchers closed while still running, reaped once they exit (#2333)
     std::uint32_t m_NextRequestId = 1;
     std::atomic<bool> m_Connected{false};
 };
