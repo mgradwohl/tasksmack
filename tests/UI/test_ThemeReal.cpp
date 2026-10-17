@@ -212,5 +212,61 @@ TEST_F(ThemeRealTest, ClearingTheFontRegistrationsForgetsThemAndBumpsTheGenerati
     EXPECT_GT(theme.fontGeneration(), generation); // font-dependent caches rebuild
 }
 
+// #2338: the headless UI training driver pushed the body font with PushFont(font, 0.0F), which keeps
+// the size current at the start of the frame -- the atlas's first font, Small -- so a Medium run drew
+// its text at the Small size. UILayer and the driver both go through pushRegularFont(), which must
+// select the configured preset's own size.
+TEST_F(ThemeRealTest, PushRegularFontSelectsTheConfiguredPresetsSizeNotTheFramesStartingSize)
+{
+    constexpr float SMALL_PX = 10.0F;
+    constexpr float MEDIUM_PX = 20.0F;
+    Theme& theme = Theme::get();
+    const FontSize original = theme.currentFontSize();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.DisplaySize = ImVec2(800.0F, 600.0F);
+    io.DeltaTime = 1.0F / 60.0F;
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // no renderer: ImGui owns the atlas
+    // Registered in the same order as UI::loadAllFonts(): Small first, so it is the frame's default.
+    ImFontConfig smallConfig;
+    smallConfig.SizePixels = SMALL_PX;
+    ImFont* small = io.Fonts->AddFontDefault(&smallConfig);
+    ImFontConfig mediumConfig;
+    mediumConfig.SizePixels = MEDIUM_PX;
+    ImFont* medium = io.Fonts->AddFontDefault(&mediumConfig);
+    theme.registerFonts(FontSize::Small, small, small);
+    theme.registerFonts(FontSize::Medium, medium, medium);
+    theme.setFontSize(FontSize::Medium);
+    static_cast<void>(theme.applyPendingStyleChanges());
+
+    ImGui::NewFrame();
+    EXPECT_FLOAT_EQ(ImGui::GetFontSize(), SMALL_PX); // what PushFont(font, 0.0F) would have kept
+    const ImFont* pushed = theme.pushRegularFont();
+    EXPECT_EQ(pushed, medium);
+    EXPECT_EQ(ImGui::GetFont(), medium);
+    EXPECT_FLOAT_EQ(ImGui::GetFontSize(), MEDIUM_PX);
+    EXPECT_FLOAT_EQ(ImGui::GetStyle().FontSizeBase, medium->LegacySize);
+    if (pushed != nullptr)
+    {
+        ImGui::PopFont();
+    }
+    ImGui::EndFrame();
+
+    // No font registered for the preset: nothing is pushed, and the caller has nothing to pop.
+    theme.clearFontRegistrations();
+    ImGui::NewFrame();
+    const ImFont* fontBefore = ImGui::GetFont();
+    const float sizeBefore = ImGui::GetFontSize();
+    EXPECT_EQ(theme.pushRegularFont(), nullptr);
+    EXPECT_EQ(ImGui::GetFont(), fontBefore);
+    EXPECT_FLOAT_EQ(ImGui::GetFontSize(), sizeBefore);
+    ImGui::EndFrame();
+
+    theme.setFontSize(original);
+    static_cast<void>(theme.applyPendingStyleChanges());
+}
+
 } // namespace
 } // namespace UI

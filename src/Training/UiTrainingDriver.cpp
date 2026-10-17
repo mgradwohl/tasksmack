@@ -436,11 +436,8 @@ class HeadlessUi
         ImGui::GetIO().DeltaTime = deltaTime;
         ImGui::NewFrame();
         UI::Widgets::trimFrameCaches();
-        ImFont* font = UI::Theme::get().regularFont();
-        if (font != nullptr)
-        {
-            ImGui::PushFont(font, 0.0F);
-        }
+        // The same body font, at the same size, as UILayer::beginFrame() (#2338).
+        const ImFont* font = UI::Theme::get().pushRegularFont();
         shell.onRender();
         if (font != nullptr)
         {

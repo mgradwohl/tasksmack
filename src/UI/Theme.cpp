@@ -524,6 +524,16 @@ auto Theme::regularFont() const -> ImFont*
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].regular;
 }
 
+auto Theme::pushRegularFont() const -> ImFont*
+{
+    ImFont* font = regularFont();
+    if (font != nullptr)
+    {
+        ImGui::PushFont(font, font->LegacySize);
+    }
+    return font;
+}
+
 auto Theme::largeFont() const -> ImFont*
 {
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;

@@ -448,6 +448,17 @@ class Theme
     /// Get the current regular font (based on font size setting)
     [[nodiscard]] auto regularFont() const -> ImFont*;
 
+    /// Push regularFont() as the frame's body font, at that font's own preset size.
+    ///
+    /// The one way to select the body font for a frame, shared by UILayer and the headless UI
+    /// training driver so both draw at the same size (#2338). ImGui's PushFont(font, 0.0F) would keep
+    /// the size already current -- at the start of a frame, that of the atlas's first font, Small --
+    /// so this passes the font's LegacySize, the size it was baked for.
+    ///
+    /// @return The font pushed, which the caller pops with ImGui::PopFont() at the end of the frame;
+    ///         nullptr, with nothing pushed, when no font is registered for the current preset.
+    [[nodiscard]] auto pushRegularFont() const -> ImFont*;
+
     /// Get the current large/heading font (based on font size setting)
     [[nodiscard]] auto largeFont() const -> ImFont*;
 

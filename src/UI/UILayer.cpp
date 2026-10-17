@@ -291,13 +291,9 @@ void UILayer::beginFrame()
     // Let frame-keyed chart caches age and free memory even on frames that draw no charts (#1173).
     UI::Widgets::trimFrameCaches();
 
-    // Push the current font - store pointer so endFrame() can pop without a
+    // Push the current font at its preset size - store pointer so endFrame() can pop without a
     // second Theme lookup.
-    m_PushedFont = Theme::get().regularFont();
-    if (m_PushedFont != nullptr)
-    {
-        ImGui::PushFont(m_PushedFont);
-    }
+    m_PushedFont = Theme::get().pushRegularFont();
 
     // Viewport is kept up-to-date by onEvent(WindowResizedEvent) and seeded in
     // onAttach(); no per-frame SDL_GetWindowSizeInPixels() query is needed.
