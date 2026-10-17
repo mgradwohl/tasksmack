@@ -192,13 +192,23 @@ class OpenHelpEvent : public Event
     EVENT_CLASS_TYPE(OpenHelp)
 };
 
-/// Elevation notice dialog request event - emitted at startup when running without elevated privileges
+/// Elevation notice dialog request event - emitted at startup when running without elevated privileges.
+/// Carries the missing permissions (Platform::MissingPrivilege bits, #2303) the Linux text names; 0 elsewhere.
 class OpenElevationNoticeEvent : public Event
 {
   public:
-    OpenElevationNoticeEvent() = default;
+    explicit OpenElevationNoticeEvent(std::uint8_t missingPrivileges = 0) : m_MissingPrivileges(missingPrivileges)
+    {}
+
+    [[nodiscard]] std::uint8_t missingPrivileges() const noexcept
+    {
+        return m_MissingPrivileges;
+    }
 
     EVENT_CLASS_TYPE(OpenElevationNotice)
+
+  private:
+    std::uint8_t m_MissingPrivileges = 0;
 };
 
 } // namespace Core

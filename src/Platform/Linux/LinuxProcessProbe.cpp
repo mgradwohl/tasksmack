@@ -41,6 +41,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -238,6 +239,21 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
     if (m_BootTimeEpoch == 0)
     {
         spdlog::warn("Failed to read boot time from {}", (m_ProcRoot / "stat").string());
+    }
+
+    // How /proc is mounted, for the hidepid bit of capabilities().missingPrivileges (#2303).
+    if (const std::vector<char> mountinfo = readProcFileFull((m_ProcRoot / "self" / "mountinfo").c_str()); !mountinfo.empty())
+    {
+        m_ProcMount = ProcPrivileges::parseProcMount(std::string_view(mountinfo.data(), mountinfo.size()));
+    }
+    if (m_ProcMount.has_value() && m_ProcMount->gid.has_value())
+    {
+        const auto gid = static_cast<gid_t>(*m_ProcMount->gid);
+        std::array<gid_t, 256> groups{};
+        const int count = ::getgroups(static_cast<int>(groups.size()), groups.data());
+        m_InProcMountGroup =
+            ::getegid() == gid || (count > 0 && std::ranges::find(std::span(groups.data(), static_cast<std::size_t>(count)), gid) !=
+                                                    std::span(groups.data(), static_cast<std::size_t>(count)).end());
     }
 
     // Detect and initialize power monitoring if available
@@ -445,14 +461,18 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
-    // attribution for processes owned by other users need CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE in
-    // the effective set -- root with its normal capabilities has them, but root alone isn't enough
-    // where capabilities are dropped (docs/guide/faq.md's setcap line).
+    // Missing privileges (#2303): reading other users' FD counts, I/O and network attribution needs
+    // CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE; signalling them CAP_KILL; raising priority, the Realtime
+    // I/O class and their priority or affinity CAP_SYS_NICE; and hidepid hides them unless TaskSmack is
+    // in /proc's gid= group (or has CAP_SYS_PTRACE). Root with its normal capabilities has them all, but
+    // root alone isn't enough where capabilities are dropped (docs/guide/faq.md's setcap line). The
+    // effective set is re-read on every call: a probe can lose a capability after the first sample.
     const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
-    const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
+    const std::uint8_t missingPrivileges = ProcPrivileges::missingPrivileges(
         geteuid() == 0,
-        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
+        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())),
+        m_ProcMount,
+        m_InProcMountGroup);
 
     std::error_code ignored; // A missing smaps_rollup (before Linux 4.14) is just "no PSS/USS"
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
@@ -469,16 +489,17 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasSwapBytes = true,    // From /proc/[pid]/status VmSwap (#1885)
                                // From /proc/[pid]/smaps_rollup (Linux 4.14+), for one process at a time (#1885)
                                .hasMemoryRollup = std::filesystem::exists(m_ProcRoot / "self" / "smaps_rollup", ignored),
-                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
-                               .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
-                               .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
-                               .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
-                               .hasStatus = true,                         // From cgroup freezer state
-                               .hasContainer = true,                      // From /proc/[pid]/cgroup paths
-                               .hasServices = true,                       // The systemd service, from the same paths (#1886)
-                               .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
-                               .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
-                               .hasSharedMemory = true};                  // From /proc/[pid]/statm
+                               .hasCpuAffinity = true,                         // From status Cpus_allowed_list
+                               .hasNetworkCounters = hasNetworkCounters,       // From Netlink INET_DIAG (if available)
+                               .hasUdpNetworkCounters = false,                 // sock_diag has no UDP byte counters (#1101)
+                               .hasPowerUsage = m_HasPowerCap,                 // Available if RAPL is detected
+                               .hasStatus = true,                              // From cgroup freezer state
+                               .hasContainer = true,                           // From /proc/[pid]/cgroup paths
+                               .hasServices = true,                            // The systemd service, from the same paths (#1886)
+                               .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
+                               .networkCountersBlocked = false,                // Linux gaps are privilege gaps (#1358)
+                               .hasSharedMemory = true,                        // From /proc/[pid]/statm
+                               .missingPrivileges = missingPrivileges};
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const

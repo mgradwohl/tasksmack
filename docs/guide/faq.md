@@ -29,7 +29,7 @@ sudo ./TaskSmack
 **Fix (option 2 — grant capabilities):**
 
 ```bash
-sudo setcap cap_dac_read_search,cap_sys_ptrace+ep /path/to/TaskSmack
+sudo setcap cap_dac_read_search,cap_sys_ptrace,cap_kill,cap_sys_nice+ep /path/to/TaskSmack
 ```
 
 Each value needs a different kernel check, so one capability alone doesn't restore all of them:
@@ -39,8 +39,12 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 | FD count | Listing `/proc/[pid]/fd` (a directory only its owner can read) | `CAP_DAC_READ_SEARCH` |
 | I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 | Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+| End, suspend or resume another user's process | Sending it a signal | `CAP_KILL` |
+| Raise a priority (nice below 0, the Realtime I/O class); another user's priority or CPU affinity | `setpriority`, `ioprio_set`, `sched_setaffinity` | `CAP_SYS_NICE` |
 
-With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow those two there. Re-apply the capabilities after each update.
+With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only matter for acting on processes: without them the Limited Data notice says which actions are refused. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, and `CAP_KILL` lets it end any process, so grant them only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow them there. Re-apply the capabilities after each update.
+
+If `/proc` is mounted with `hidepid=invisible` (or `2`, or `ptraceable`), other users' processes aren't listed at all; the notice says so. Membership of the mount's `gid=` group, or `CAP_SYS_PTRACE`, shows them.
 
 > On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
 

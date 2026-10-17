@@ -159,7 +159,7 @@ TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
         static_cast<void>(frame());
         seen += frame();
     }
-    EXPECT_TRUE(seen.contains("Limited data: some details of other users' processes are unavailable")) << seen;
+    EXPECT_TRUE(seen.contains("Limited: some details of other users' processes, or actions on them, are unavailable")) << seen;
     EXPECT_TRUE(seen.contains("Per-process network counters are blocked on this system")) << seen;
     EXPECT_TRUE(seen.contains("Settings (F2)")) << seen;
     EXPECT_TRUE(seen.contains("Help: keyboard shortcuts, columns and tabs (F1)")) << seen;

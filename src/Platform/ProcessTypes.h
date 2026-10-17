@@ -154,6 +154,19 @@ struct SocketTrafficReading
     std::uint64_t sampleTimeNs = 0;
 };
 
+/// The permissions a ProcessCapabilities::missingPrivileges bit stands for (Linux, #2303).
+namespace MissingPrivilege
+{
+/// Reading other users' FD counts, I/O and network attribution: CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE.
+inline constexpr std::uint8_t READ_OTHERS = 1U << 0U;
+/// Ending, suspending or resuming other users' processes: CAP_KILL.
+inline constexpr std::uint8_t SIGNAL_OTHERS = 1U << 1U;
+/// Raising priority, the Realtime I/O class, other users' priority and affinity: CAP_SYS_NICE.
+inline constexpr std::uint8_t RAISE_PRIORITY = 1U << 2U;
+/// /proc is mounted with hidepid, so other users' processes aren't listed at all.
+inline constexpr std::uint8_t PROCESSES_HIDDEN = 1U << 3U;
+} // namespace MissingPrivilege
+
 /// Reports what this platform's probe supports.
 /// UI can degrade gracefully for missing capabilities.
 struct ProcessCapabilities
@@ -188,13 +201,10 @@ struct ProcessCapabilities
                                         // Domain::ProcessModel once a service list with PIDs is attached (#1880)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
-    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not
-                                        // necessarily curable by elevation: sudo can't restore capabilities a
-                                        // container or service dropped).
-                                        // Linux: the effective set (CapEff), for root too, lacks CAP_SYS_PTRACE
-                                        //        or has neither CAP_DAC_READ_SEARCH nor CAP_DAC_OVERRIDE; when
-                                        //        it can't be read, not root. FD counts, I/O and network for other
-                                        //        users' processes are then (partly) unavailable (ProcPrivileges.h).
+    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data, or act
+                                        // on other users' processes (not necessarily curable by elevation: sudo
+                                        // can't restore capabilities a container or service dropped).
+                                        // Linux: missingPrivileges isn't empty (ProcPrivileges::missingPrivileges()).
                                         // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.
@@ -204,6 +214,9 @@ struct ProcessCapabilities
     // hasReducedPrivileges. Linux: always false (its gaps are hasReducedPrivileges).
     bool networkCountersBlocked = false;
     bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    // Which permissions are missing, as MissingPrivilege bits (#2303), so the Limited Data notice and the
+    // status bar can say what each one blocks. Linux only; 0 elsewhere (Windows keeps its own notice).
+    std::uint8_t missingPrivileges = 0;
     // How many bits ProcessCounters::pageFaultCount is kept in by the OS before it wraps to 0 (#1184).
     // Linux: 64 (minflt + majflt, unsigned long). Windows: 32 (SYSTEM_PROCESS_INFORMATION's ULONG
     // PageFaultCount, which a long-lived process can pass). Domain takes deltas modulo 2^bits.

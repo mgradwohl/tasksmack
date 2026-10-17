@@ -2,6 +2,7 @@
 
 #include "App/ElevationNoticeText.h"
 
+#include <string>
 #include <string_view>
 
 namespace App::ElevationNoticeDialog
@@ -15,6 +16,8 @@ struct State
 {
     bool openRequested = false; ///< Set to open it on the next frame; cleared when it opens
     bool dontShowAgain = false; ///< The "Don't show again" checkbox
+    /// The body: what is missing (#2303). Empty: the platform's text with nothing more known.
+    std::string bodyText;
     // The viewport size and dialog width it was last centred for: either changing re-centres it (#1601).
     float centredViewportWidth = 0.0F;
     float centredViewportHeight = 0.0F;
@@ -35,7 +38,10 @@ struct State
 
 /// Width the dialog's content needs unwrapped, window padding and title bar included (#1601), with
 /// @p bodyText as its body.
-[[nodiscard]] float measureContentWidth(std::string_view bodyText = ElevationNoticeText::forCurrentPlatform());
+[[nodiscard]] float measureContentWidth(std::string_view bodyText);
+
+/// The body @p state shows: its bodyText, or the platform's text when that is empty.
+[[nodiscard]] std::string bodyTextOf(const State& state);
 
 /// The dialog's width this frame, with @p bodyText as its body: fitted to its text between its floor
 /// and authored width (#1601), clamped to the viewport, and -- where the body has to wrap -- moved

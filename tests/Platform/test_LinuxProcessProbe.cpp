@@ -118,12 +118,75 @@ TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities
     const LinuxProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // Not reduced with CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE) effective -- root with
-    // its normal capabilities, or setcap; with CapEff unreadable, only as root.
+    // Reading other users' data needs CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE); acting
+    // on them CAP_KILL and CAP_SYS_NICE (#2303). Root with its normal capabilities has them all.
     std::ifstream statusFile("/proc/self/status");
     const std::string status{std::istreambuf_iterator<char>(statusFile), std::istreambuf_iterator<char>()};
-    const bool expectedReducedPrivileges = ProcPrivileges::hasReducedPrivileges(geteuid() == 0, ProcPrivileges::parseCapEff(status));
-    EXPECT_EQ(caps.hasReducedPrivileges, expectedReducedPrivileges);
+    const std::optional<std::uint64_t> capEff = ProcPrivileges::parseCapEff(status);
+    const std::uint8_t readAndAct = caps.missingPrivileges & static_cast<std::uint8_t>(~MissingPrivilege::PROCESSES_HIDDEN);
+    EXPECT_EQ(readAndAct, ProcPrivileges::missingPrivileges(geteuid() == 0, capEff, std::nullopt, false));
+    EXPECT_EQ(caps.hasReducedPrivileges, caps.missingPrivileges != 0);
+}
+
+// #2303: the /proc mount's hidepid= and gid= from mountinfo, its words and numbers; the last /proc wins.
+TEST(ProcPrivilegesTest, ParsesTheProcMountsHidepidAndGid)
+{
+    constexpr std::string_view PLAIN = "22 28 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw\n";
+    ASSERT_TRUE(ProcPrivileges::parseProcMount(PLAIN).has_value());
+    EXPECT_EQ(ProcPrivileges::parseProcMount(PLAIN)->hidepid, 0);
+    EXPECT_FALSE(ProcPrivileges::parseProcMount(PLAIN)->gid.has_value());
+
+    constexpr std::string_view HIDDEN = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                                        "22 28 0:21 / /proc rw,relatime shared:12 - proc proc rw,hidepid=invisible,gid=1001\n";
+    const auto hidden = ProcPrivileges::parseProcMount(HIDDEN);
+    ASSERT_TRUE(hidden.has_value());
+    EXPECT_EQ(hidden->hidepid, 2);
+    EXPECT_EQ(hidden->gid, std::optional<std::uint32_t>{1001});
+
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=2\n")->hidepid, 2);
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=ptraceable\n")->hidepid, 4);
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=noaccess\n")->hidepid, 1);
+    // A later mount of /proc hides the earlier one.
+    EXPECT_EQ(ProcPrivileges::parseProcMount(std::string(PLAIN) + "9 1 0:9 / /proc rw - proc proc rw,hidepid=2\n")->hidepid, 2);
+    // Not /proc, or not a proc filesystem there: no answer.
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n").has_value());
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("3 1 0:3 / /proc rw - tmpfs tmpfs rw\n").has_value());
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("").has_value());
+}
+
+// #2303: each missing permission is its own bit.
+TEST(ProcPrivilegesTest, MissingPrivilegesHasABitForEachPermission)
+{
+    constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << ProcPrivileges::CAP_DAC_READ_SEARCH_BIT;
+    constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << ProcPrivileges::CAP_SYS_PTRACE_BIT;
+    constexpr std::uint64_t KILL = std::uint64_t{1} << ProcPrivileges::CAP_KILL_BIT;
+    constexpr std::uint64_t SYS_NICE = std::uint64_t{1} << ProcPrivileges::CAP_SYS_NICE_BIT;
+    namespace Missing = MissingPrivilege;
+    const auto missing = [](bool root, std::optional<std::uint64_t> capEff)
+    {
+        return ProcPrivileges::missingPrivileges(root, capEff, std::nullopt, false);
+    };
+
+    EXPECT_EQ(missing(true, 0x1ffffffffffULL), 0); // root with its normal capabilities
+    EXPECT_EQ(missing(false, DAC_READ_SEARCH | SYS_PTRACE | KILL | SYS_NICE), 0);
+    // The FAQ's old setcap line (read access only) can't act on other users' processes.
+    EXPECT_EQ(missing(false, DAC_READ_SEARCH | SYS_PTRACE), Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY);
+    EXPECT_EQ(missing(false, KILL | SYS_NICE), Missing::READ_OTHERS);
+    EXPECT_EQ(missing(true, 0), Missing::READ_OTHERS | Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY); // dropped
+    // Unknown capabilities: root has them all, anyone else none.
+    EXPECT_EQ(missing(true, std::nullopt), 0);
+    EXPECT_EQ(missing(false, std::nullopt), Missing::READ_OTHERS | Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY);
+
+    // hidepid=invisible hides other users' processes, except from its gid= group and CAP_SYS_PTRACE.
+    const ProcPrivileges::ProcMount invisible{.hidepid = 2, .gid = 1001};
+    constexpr std::uint64_t ALL = DAC_READ_SEARCH | SYS_PTRACE | KILL | SYS_NICE;
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, invisible, false) & Missing::PROCESSES_HIDDEN,
+              Missing::PROCESSES_HIDDEN);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, invisible, true) & Missing::PROCESSES_HIDDEN, 0);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, ALL, invisible, false), 0);
+    // hidepid=noaccess still lists them: only the read bit applies.
+    const ProcPrivileges::ProcMount noaccess{.hidepid = 1, .gid = std::nullopt};
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, false), Missing::READ_OTHERS);
 }
 
 // #1327 review: the privilege notice fired for every non-root process, including one granted the
@@ -1354,9 +1417,24 @@ TEST(LinuxProcessProbeTest, ServicesAreTheSystemdServiceFromTheCgroup)
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
     // A readable CapEff decides for root too, so these hold whatever the test runs as.
+    // CAP_DAC_READ_SEARCH (bit 2), CAP_KILL (5), CAP_SYS_PTRACE (19) and CAP_SYS_NICE (23): nothing missing.
     ScopedTempDir withCaps("ts_test_proc_capeff_full");
-    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000880024\n");
     EXPECT_FALSE(LinuxProcessProbe(withCaps.path).capabilities().hasReducedPrivileges);
+    EXPECT_EQ(LinuxProcessProbe(withCaps.path).capabilities().missingPrivileges, 0);
+
+    // Read access alone (the FAQ's old setcap line) still can't act on other users' processes (#2303).
+    ScopedTempDir readOnly("ts_test_proc_capeff_read");
+    writeFile(readOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    EXPECT_TRUE(LinuxProcessProbe(readOnly.path).capabilities().hasReducedPrivileges);
+    EXPECT_EQ(LinuxProcessProbe(readOnly.path).capabilities().missingPrivileges,
+              MissingPrivilege::SIGNAL_OTHERS | MissingPrivilege::RAISE_PRIORITY);
+
+    // hidepid=invisible under the proc root, outside its group: hidden too.
+    ScopedTempDir hidden("ts_test_proc_capeff_hidepid");
+    writeFile(hidden.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000800024\n"); // no CAP_SYS_PTRACE
+    writeFile(hidden.path / "self" / "mountinfo", "22 28 0:21 / /proc rw - proc proc rw,hidepid=invisible,gid=4294967290\n");
+    EXPECT_NE(LinuxProcessProbe(hidden.path).capabilities().missingPrivileges & MissingPrivilege::PROCESSES_HIDDEN, 0);
 
     ScopedTempDir dacOnly("ts_test_proc_capeff_dac");
     writeFile(dacOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000004\n");

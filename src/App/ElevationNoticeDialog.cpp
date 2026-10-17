@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -74,6 +75,11 @@ float measureContentWidth(std::string_view bodyText)
     return std::max(widest + (style.WindowPadding.x * 2.0F), titleWidth);
 }
 
+std::string bodyTextOf(const State& state)
+{
+    return state.bodyText.empty() ? ElevationNoticeText::forCurrentPlatform() : state.bodyText;
+}
+
 float computeWidth(std::string_view bodyText, float viewportWidthPx)
 {
     const float emPx = ImGui::GetFontSize();
@@ -132,7 +138,7 @@ bool render(State& state)
     if (ImGui::IsPopupOpen(POPUP_ID))
     {
         const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
-        const float widthPx = computeWidth(ElevationNoticeText::forCurrentPlatform(), sizingViewport->WorkSize.x);
+        const float widthPx = computeWidth(bodyTextOf(state), sizingViewport->WorkSize.x);
         ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
 
         // Centred on the TaskSmack window when it opens, and again whenever the window is resized or
@@ -184,7 +190,7 @@ bool render(State& state)
         // paragraphs; within one, the wrap decides where lines end (#1200), where a hard-coded break
         // used to cut a line short beside a wrapped one.
         ImGui::PushTextWrapPos(0.0F);
-        constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
+        const std::string bodyText = bodyTextOf(state);
         ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
         ImGui::PopTextWrapPos();
 

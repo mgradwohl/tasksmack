@@ -3,6 +3,8 @@
 #include "App/ElevationNoticeDialog.h"
 #include "Core/Layer.h"
 
+#include <cstdint>
+
 namespace App
 {
 
@@ -31,7 +33,7 @@ class ElevationNoticeLayer : public Core::Layer
     void onEvent(Core::Event& event) override;
 
   private:
-    void requestOpen();
+    void requestOpen(std::uint8_t missingPrivileges);
 
     ElevationNoticeDialog::State m_State;
 };

@@ -329,7 +329,7 @@ void ShellLayer::onUpdate(float deltaTime)
     if (m_PendingPrivilegeNotice)
     {
         m_PendingPrivilegeNotice = false;
-        Core::OpenElevationNoticeEvent evt;
+        Core::OpenElevationNoticeEvent evt(m_ProcessesPanel.processCapabilities().missingPrivileges);
         m_Host->raiseEvent(evt);
     }
 

@@ -60,7 +60,7 @@ Action render(const Input& input)
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Limited data: some details of other users' processes are unavailable");
+                ImGui::SetTooltip("Limited: some details of other users' processes, or actions on them, are unavailable");
             }
             ImGui::SameLine();
         }

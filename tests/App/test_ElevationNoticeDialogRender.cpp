@@ -109,7 +109,7 @@ class ElevationNoticeDialogRenderTest : public ::testing::Test
         Measured measured;
         ImGui::NewFrame();
         measured.emPx = ImGui::GetFontSize();
-        measured.contentWidth = ElevationNoticeDialog::measureContentWidth();
+        measured.contentWidth = ElevationNoticeDialog::measureContentWidth(ElevationNoticeText::forCurrentPlatform());
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
@@ -357,7 +357,15 @@ TEST_F(ElevationNoticeFontTest, NoLineIsALoneWordAtSmallOrMedium)
 TEST_F(ElevationNoticeFontTest, NoPlatformsWordingLeavesALoneWordAtSmallOrMedium)
 {
     constexpr float VIEWPORT_WIDTH = 1200.0F;
-    for (const std::string_view text : {ElevationNoticeText::LINUX, ElevationNoticeText::WINDOWS, ElevationNoticeText::OTHER})
+    namespace Missing = Platform::MissingPrivilege;
+    // Linux's text has a paragraph per missing permission (#2303): the shortest, the longest, and one between.
+    const std::array<std::string, 5> texts{
+        ElevationNoticeText::linuxText(Missing::READ_OTHERS),
+        ElevationNoticeText::linuxText(Missing::READ_OTHERS | Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY | Missing::PROCESSES_HIDDEN),
+        ElevationNoticeText::linuxText(Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY),
+        std::string(ElevationNoticeText::WINDOWS),
+        std::string(ElevationNoticeText::OTHER)};
+    for (const std::string_view text : texts)
     {
         for (const UI::FontSize preset : PRESETS)
         {

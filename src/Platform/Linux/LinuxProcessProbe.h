@@ -7,6 +7,7 @@
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/Linux/ProcPrivileges.h"
 #endif
 
 #include <atomic>
@@ -144,6 +145,10 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = NO_CAPTURED_TOTAL;
     std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
     bool m_HasPowerCap = false;
+    // How /proc is mounted (hidepid, gid=) and whether TaskSmack is in its group: read once at
+    // construction, for the PROCESSES_HIDDEN privilege bit (#2303). Remounting /proc is rare enough.
+    std::optional<ProcPrivileges::ProcMount> m_ProcMount;
+    bool m_InProcMountGroup = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
 

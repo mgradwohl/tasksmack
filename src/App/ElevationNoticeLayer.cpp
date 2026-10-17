@@ -1,12 +1,15 @@
 #include "ElevationNoticeLayer.h"
 
 #include "App/ElevationNoticeDialog.h"
+#include "App/ElevationNoticeText.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 
 #include <spdlog/spdlog.h>
+
+#include <cstdint>
 
 namespace App
 {
@@ -37,17 +40,18 @@ void ElevationNoticeLayer::onEvent(Core::Event& event)
     Core::EventDispatcher dispatcher(event);
 
     dispatcher.dispatch<Core::OpenElevationNoticeEvent>(
-        [this](Core::OpenElevationNoticeEvent&)
+        [this](Core::OpenElevationNoticeEvent& open)
         {
-            requestOpen();
+            requestOpen(open.missingPrivileges());
             return false; // Don't consume; allow other layers to observe
         });
 }
 
-void ElevationNoticeLayer::requestOpen()
+void ElevationNoticeLayer::requestOpen(std::uint8_t missingPrivileges)
 {
     m_State.openRequested = true;
     m_State.dontShowAgain = false;
+    m_State.bodyText = ElevationNoticeText::forCurrentPlatform(missingPrivileges);
 }
 
 } // namespace App
