@@ -6,6 +6,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -158,7 +159,7 @@ TEST(BrokerServerTest, ModulesAndOpenFilesRequestsAreReadThroughTheirReaders)
     TestMocks::MockProcessActions actions;
     TestMocks::MockProcessModulesReader modules;
     TestMocks::MockProcessOpenFilesReader openFiles;
-    const BrokerServer::Readers readers{.environment = nullptr, .modules = &modules, .openFiles = &openFiles};
+    const BrokerServer::Readers readers{.environment = nullptr, .modules = &modules, .openFiles = &openFiles, .connections = nullptr};
     EXPECT_TRUE(std::holds_alternative<Broker::ModulesReply>(
         BrokerServer::handleRequest(Broker::ModulesRequest{.target = TARGET}, actions, readers)));
     EXPECT_EQ(modules.readCount(), 1);
@@ -166,6 +167,18 @@ TEST(BrokerServerTest, ModulesAndOpenFilesRequestsAreReadThroughTheirReaders)
         BrokerServer::handleRequest(Broker::OpenFilesRequest{.target = TARGET}, actions, readers)));
     EXPECT_EQ(openFiles.readCount(), 1);
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ModulesRequest{.target = TARGET}, actions)));
+}
+
+TEST(BrokerServerTest, AConnectionsRequestIsReadThroughItsReader)
+{
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessConnectionsReader connections;
+    const BrokerServer::Readers readers{.environment = nullptr, .modules = nullptr, .openFiles = nullptr, .connections = &connections};
+    EXPECT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(
+        BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions, readers)));
+    EXPECT_EQ(connections.readCount(), 1);
+    EXPECT_TRUE(
+        std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions)));
 }
 
 /// A connected SOCK_SEQPACKET pair, both ends closed on scope exit and on exec.
@@ -612,6 +625,18 @@ TEST(PkexecBrokerTest, TheHelperListsAProcesssModulesAndOpenFiles)
     ASSERT_TRUE(files.has_value()) << files.error();
     ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(*files));
     EXPECT_EQ(std::get<Broker::OpenFilesReply>(*files).result.status, OpenFilesReadStatus::Ok);
+}
+
+TEST(PkexecBrokerTest, TheHelperListsAProcesssConnections)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::ConnectionsRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(*response));
+    EXPECT_EQ(std::get<Broker::ConnectionsReply>(*response).result.status, ConnectionsReadStatus::Ok); // none open, but read
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)

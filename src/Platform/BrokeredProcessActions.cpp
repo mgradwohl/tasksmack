@@ -4,6 +4,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -355,6 +356,70 @@ OpenFilesReadResult BrokeredOpenFilesReader::viaBroker(const ProcessTarget& targ
     }
     failed.detail = "The administrator helper gave an unexpected answer";
     return failed;
+}
+
+std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
+                                                                std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasConnections())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredConnectionsReader>(std::move(reader), std::move(broker));
+}
+
+BrokeredConnectionsReader::BrokeredConnectionsReader(std::unique_ptr<IProcessConnectionsReader> inner,
+                                                     std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredConnectionsReader::hasConnections() const
+{
+    return m_Inner->hasConnections();
+}
+
+ConnectionsReadResult BrokeredConnectionsReader::readConnections(const ProcessTarget& target)
+{
+    ConnectionsReadResult result = m_Inner->readConnections(target);
+    if (result.status != ConnectionsReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredConnectionsReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr;
+}
+
+ConnectionsReadResult BrokeredConnectionsReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (m_Broker == nullptr)
+    {
+        return m_Inner->readConnections(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        return {.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}}; // the refusal stands
+    }
+    return viaBroker(target, stopToken);
+}
+
+ConnectionsReadResult BrokeredConnectionsReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ConnectionsRequest{.target = target}, stopToken);
+    if (!response.has_value())
+    {
+        return {.status = ConnectionsReadStatus::Failed,
+                .connections = {},
+                .detail = "The administrator helper couldn't be asked: " + response.error()};
+    }
+    if (const auto* reply = std::get_if<Broker::ConnectionsReply>(&*response))
+    {
+        return reply->result;
+    }
+    return {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = "The administrator helper gave an unexpected answer"};
 }
 
 } // namespace Platform

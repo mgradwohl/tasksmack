@@ -1208,7 +1208,31 @@ class MockProcessConnectionsReader : public Platform::IProcessConnectionsReader
         return m_LastTarget;
     }
 
+    /// readAuthorized() (#2309): offered when set, returning @p result and counting its calls.
+    void setAuthorizedResult(Platform::ConnectionsReadResult result)
+    {
+        m_AuthorizedResult = std::move(result);
+        m_CanReadAuthorized = true;
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_CanReadAuthorized;
+    }
+    [[nodiscard]] Platform::ConnectionsReadResult readAuthorized(const Platform::ProcessTarget& /*target*/,
+                                                                 const std::stop_token& /*stopToken*/) override
+    {
+        ++m_AuthorizedReadCount;
+        return m_AuthorizedResult;
+    }
+    [[nodiscard]] int authorizedReadCount() const
+    {
+        return m_AuthorizedReadCount;
+    }
+
   private:
+    bool m_CanReadAuthorized = false;
+    int m_AuthorizedReadCount = 0;
+    Platform::ConnectionsReadResult m_AuthorizedResult;
     bool m_HasConnections = true;
     Platform::ConnectionsReadResult m_Result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     int m_ReadCount = 0;

@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -130,6 +131,18 @@ class ProcessConnectionsView
     bool update(Platform::IProcessConnectionsReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
+        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
+        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        {
+            if (auto failed = m_Read.start(target,
+                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
+                                           { return reader->readAuthorized(t, stopToken); }))
+            {
+                applyResult(*failed);
+            }
+            return true;
+        }
         if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasConnections())
         {
             return false;
@@ -139,6 +152,19 @@ class ProcessConnectionsView
             applyResult(*failed); // no thread to run it on: shown as a failed read, retried at the next refresh
         }
         return true;
+    }
+
+    /// Whether the status line offers "Authenticate to read" (#2309): the read was refused for want of
+    /// permission and the reader can read as an administrator.
+    [[nodiscard]] bool offersAuthenticateToRead() const noexcept
+    {
+        return m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+    }
+
+    /// "Authenticate to read" was pressed: the next update() reads as an administrator.
+    void requestAuthorizedRead() noexcept
+    {
+        m_AuthorizeRequested = true;
     }
 
     /// Whether a read is running on its worker.
@@ -159,6 +185,7 @@ class ProcessConnectionsView
     /// result is dropped when it arrives. The sort column is a viewing preference and stays.
     void onSelectionChanged() noexcept
     {
+        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::ConnectionsReadStatus::Ok;
@@ -304,7 +331,9 @@ class ProcessConnectionsView
 
     void renderTable();
 
-    bool m_HasRead = false; // a read was taken in since the selection changed
+    bool m_HasRead = false;            // a read was taken in since the selection changed
+    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
+    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::ConnectionsReadStatus m_Status = Platform::ConnectionsReadStatus::Ok;
     std::string m_Detail;
     std::vector<Row> m_Rows;

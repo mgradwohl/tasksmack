@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -114,6 +115,22 @@ class IProcessConnectionsReader
     /// it reports ProcessExited instead of showing a stranger's sockets. An unknown start time (0) is
     /// refused with IdentityUnknown and nothing is read (Platform::checkProcessIdentity()).
     [[nodiscard]] virtual ConnectionsReadResult readConnections(const ProcessTarget& target) = 0;
+
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
+    /// pkexec-started helper, #2309). The UI then offers "Authenticate to read" on PermissionDenied.
+    [[nodiscard]] virtual bool canReadAuthorized() const
+    {
+        return false;
+    }
+
+    /// Reads @p target's sockets as an administrator, asking for the password first if need be (#2309).
+    /// Blocks for as long as the prompt is up, so it runs on a worker. The default reads as
+    /// readConnections() does.
+    [[nodiscard]] virtual ConnectionsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return readConnections(target);
+    }
 };
 
 /// The reader for a platform (or run) that cannot list another process's sockets (synthetic runs).

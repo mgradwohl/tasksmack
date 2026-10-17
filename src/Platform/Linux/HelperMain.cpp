@@ -11,6 +11,7 @@
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/LinuxProcessActions.h"
+#include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
@@ -86,7 +87,9 @@ int main(int argc, char** argv)
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;
         Platform::LinuxProcessOpenFilesReader openFiles;
-        const Platform::BrokerServer::Readers readers{.environment = &environment, .modules = &modules, .openFiles = &openFiles};
+        Platform::LinuxProcessConnectionsReader connections;
+        const Platform::BrokerServer::Readers readers{
+            .environment = &environment, .modules = &modules, .openFiles = &openFiles, .connections = &connections};
         const std::stop_source never;
         switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))
         {

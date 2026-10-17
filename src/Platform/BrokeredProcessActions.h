@@ -20,6 +20,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -138,6 +139,24 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
+/// Process Details' connections list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
+class BrokeredConnectionsReader final : public IProcessConnectionsReader
+{
+  public:
+    BrokeredConnectionsReader(std::unique_ptr<IProcessConnectionsReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasConnections() const override;
+    [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] ConnectionsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] ConnectionsReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessConnectionsReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
@@ -145,5 +164,8 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
                                                                           std::shared_ptr<IPrivilegedBroker> broker);
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader> reader,
                                                                             std::shared_ptr<IPrivilegedBroker> broker);
+
+[[nodiscard]] std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
+                                                                              std::shared_ptr<IPrivilegedBroker> broker);
 
 } // namespace Platform

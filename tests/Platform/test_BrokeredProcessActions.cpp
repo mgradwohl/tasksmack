@@ -8,6 +8,7 @@
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -277,6 +278,29 @@ TEST(BrokeredOpenFilesReaderTest, ARefusedReadGoesThroughARunningHelperAndADismi
     broker->setConnectFailure("the password prompt was dismissed");
     EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, OpenFilesReadStatus::PermissionDenied);
     EXPECT_EQ(broker->requests().size(), 1U); // only the first
+}
+
+TEST(BrokeredConnectionsReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            return Broker::Response{
+                Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessConnectionsReader>();
+    owned->setResult({.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
+    BrokeredConnectionsReader reader(std::move(owned), broker);
+    EXPECT_EQ(reader.readConnections(TARGET).status, ConnectionsReadStatus::Ok);
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ConnectionsRequest{.target = TARGET}}));
+
+    broker->setConnected(false);
+    EXPECT_EQ(reader.readConnections(TARGET).status, ConnectionsReadStatus::PermissionDenied);
+    EXPECT_TRUE(reader.canReadAuthorized());
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::Ok);
+    EXPECT_EQ(broker->connectCount(), 1);
 }
 
 } // namespace

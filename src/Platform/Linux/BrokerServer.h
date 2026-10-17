@@ -7,6 +7,7 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -27,6 +28,7 @@ struct Readers
     IProcessEnvironmentReader* environment = nullptr;
     IProcessModulesReader* modules = nullptr;
     IProcessOpenFilesReader* openFiles = nullptr;
+    IProcessConnectionsReader* connections = nullptr;
 };
 
 /// A read request goes to its reader in @p readers.

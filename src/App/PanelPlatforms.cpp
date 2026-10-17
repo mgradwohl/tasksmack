@@ -64,7 +64,9 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
             .environment = (scenario == nullptr)
                              ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
                              : Synthetic::makeProcessEnvironmentReader(scenario),
-            .connections = Synthetic::makeProcessConnectionsReader(scenario),
+            .connections = (scenario == nullptr)
+                             ? Platform::withPrivilegedBroker(Synthetic::makeProcessConnectionsReader(scenario), sharedPrivilegedBroker())
+                             : Synthetic::makeProcessConnectionsReader(scenario),
             .modules = (scenario == nullptr)
                          ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
                          : Synthetic::makeProcessModulesReader(scenario),

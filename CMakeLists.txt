@@ -750,6 +750,8 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         src/Platform/Linux/LinuxProcessModulesReader.cpp
         src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
+        src/Platform/Linux/LinuxProcessConnectionsReader.cpp
+        src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/DetachedSpawn.cpp
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)

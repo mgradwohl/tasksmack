@@ -23,6 +23,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -50,6 +51,8 @@ inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
 inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
 /// The most modules a ModulesReply carries; a read with more keeps the first.
 inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
+/// The most sockets a ConnectionsReply carries; a read with more keeps the first.
+inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
 /// The frame header after the length: version, kind, request id.
 inline constexpr std::size_t HEADER_BYTES = 2 + 2 + 4;
 
@@ -64,10 +67,12 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadEnvironment = 32,   ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,       ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,     ///< Its open files (#2309)
+    ReadConnections = 35,   ///< Its TCP and UDP sockets (#2309)
     ActionResult = 48,      ///< The answer to a process action
     EnvironmentResult = 49, ///< The answer to ReadEnvironment
     ModulesResult = 50,     ///< The answer to ReadModules
     OpenFilesResult = 51,   ///< The answer to ReadOpenFiles
+    ConnectionsResult = 52, ///< The answer to ReadConnections
     Error = 63,             ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -200,6 +205,34 @@ struct OpenFilesReply
     }
 };
 
+/// List a process's TCP and UDP sockets (#2309), as the helper reads them as root.
+struct ConnectionsRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const ConnectionsRequest&, const ConnectionsRequest&) = default;
+};
+
+/// The answer to ConnectionsRequest: the read's result, as IProcessConnectionsReader returns it.
+struct ConnectionsReply
+{
+    ConnectionsReadResult result;
+
+    friend bool operator==(const ConnectionsReply& left, const ConnectionsReply& right)
+    {
+        const auto sameEnd = [](const ConnectionEndpoint& a, const ConnectionEndpoint& b)
+        {
+            return a.address == b.address && a.port == b.port;
+        };
+        const auto same = [&sameEnd](const ProcessConnection& a, const ProcessConnection& b)
+        {
+            return a.protocol == b.protocol && a.family == b.family && sameEnd(a.local, b.local) && sameEnd(a.remote, b.remote) &&
+                   a.state == b.state;
+        };
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               std::ranges::equal(left.result.connections, right.result.connections, same);
+    }
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -231,8 +264,9 @@ using Request = std::variant<Hello,
                              AffinityRequest,
                              EnvironmentRequest,
                              ModulesRequest,
-                             OpenFilesRequest>;
-using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply>;
+                             OpenFilesRequest,
+                             ConnectionsRequest>;
+using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply, ConnectionsReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -489,6 +523,11 @@ template<typename Message>
         kind = MessageKind::ReadOpenFiles;
         writer.target(files->target);
     }
+    else if (const auto* connections = std::get_if<ConnectionsRequest>(&request))
+    {
+        kind = MessageKind::ReadConnections;
+        writer.target(connections->target);
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -589,11 +628,17 @@ template<typename Message>
         const ProcessTarget target = reader.target();
         return Detail::finish<Request>(reader, frame->requestId, OpenFilesRequest{.target = target});
     }
+    case MessageKind::ReadConnections:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, frame->requestId, ConnectionsRequest{.target = target});
+    }
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
     case MessageKind::ModulesResult:
     case MessageKind::OpenFilesResult:
+    case MessageKind::ConnectionsResult:
     case MessageKind::Error:
         break;
     }
@@ -693,6 +738,31 @@ template<typename Message>
             writer.u8(file.flags.has_value() ? 1 : 0);
             writer.u32(file.flags.value_or(0));
             writer.u8(file.deleted ? 1 : 0);
+        }
+    }
+    else if (const auto* connections = std::get_if<ConnectionsReply>(&response))
+    {
+        kind = MessageKind::ConnectionsResult;
+        writer.u8(static_cast<std::uint8_t>(connections->result.status));
+        writer.text(connections->result.detail);
+        const std::size_t count = std::min(connections->result.connections.size(), MAX_CONNECTIONS);
+        writer.u32(static_cast<std::uint32_t>(count));
+        const auto endpoint = [&writer](const ConnectionEndpoint& end)
+        {
+            for (const std::uint8_t byte : end.address)
+            {
+                writer.u8(byte);
+            }
+            writer.u16(end.port);
+        };
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const ProcessConnection& connection = connections->result.connections[i];
+            writer.u8(static_cast<std::uint8_t>(connection.protocol));
+            writer.u8(static_cast<std::uint8_t>(connection.family));
+            endpoint(connection.local);
+            endpoint(connection.remote);
+            writer.u8(static_cast<std::uint8_t>(connection.state));
         }
     }
     return writer.frame(kind, requestId);
@@ -835,6 +905,59 @@ template<typename Message>
         }
         return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
     }
+    case MessageKind::ConnectionsResult:
+    {
+        ConnectionsReply reply;
+        const std::uint8_t value = reader.u8();
+        if (value <= static_cast<std::uint8_t>(ConnectionsReadStatus::Failed))
+        {
+            reply.result.status = static_cast<ConnectionsReadStatus>(value);
+        }
+        else
+        {
+            reader.fail();
+        }
+        reply.result.detail = reader.text();
+        const std::uint32_t count = reader.u32();
+        if (count > MAX_CONNECTIONS)
+        {
+            reader.fail();
+        }
+        const auto endpoint = [&reader]
+        {
+            ConnectionEndpoint end;
+            for (std::uint8_t& byte : end.address)
+            {
+                byte = reader.u8();
+            }
+            end.port = reader.u16();
+            return end;
+        };
+        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+        {
+            ProcessConnection connection;
+            const std::uint8_t protocol = reader.u8();
+            const std::uint8_t family = reader.u8();
+            if (protocol > static_cast<std::uint8_t>(ConnectionProtocol::Udp) || family > static_cast<std::uint8_t>(ConnectionFamily::IPv6))
+            {
+                reader.fail();
+                break;
+            }
+            connection.protocol = static_cast<ConnectionProtocol>(protocol);
+            connection.family = static_cast<ConnectionFamily>(family);
+            connection.local = endpoint();
+            connection.remote = endpoint();
+            const std::uint8_t state = reader.u8();
+            if (state > static_cast<std::uint8_t>(ConnectionState::Closing))
+            {
+                reader.fail();
+                break;
+            }
+            connection.state = static_cast<ConnectionState>(state);
+            reply.result.connections.push_back(connection);
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -843,6 +966,7 @@ template<typename Message>
     case MessageKind::ReadEnvironment:
     case MessageKind::ReadModules:
     case MessageKind::ReadOpenFiles:
+    case MessageKind::ReadConnections:
         break;
     }
     return std::unexpected("Not a response");

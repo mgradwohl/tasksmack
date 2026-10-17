@@ -8,6 +8,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -268,6 +269,32 @@ TEST(BrokerProtocolTest, AnOpenFileOfNoKnownKindIsRefused)
     std::vector<std::uint8_t> bytes = encodeResponse(1, Response{OpenFilesReply{.result = files}});
     // status, detail (4), three flags, count (4), descriptor (8), then the kind
     bytes[4 + HEADER_BYTES + 1 + 4 + 3 + 4 + 8] = 0xEE;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
+TEST(BrokerProtocolTest, ConnectionsRoundTripAndBadEnumsAreRefused)
+{
+    EXPECT_EQ(roundTrip(Request{ConnectionsRequest{.target = TARGET}}), Request{ConnectionsRequest{.target = TARGET}});
+    ConnectionsReadResult result{.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
+    ProcessConnection tcp;
+    tcp.protocol = ConnectionProtocol::Tcp;
+    tcp.family = ConnectionFamily::IPv6;
+    tcp.local.address[15] = 1; // ::1
+    tcp.local.port = 8080;
+    tcp.state = ConnectionState::Listen;
+    result.connections.push_back(tcp);
+    ProcessConnection udp;
+    udp.protocol = ConnectionProtocol::Udp;
+    udp.remote.address = {192, 168, 1, 2};
+    udp.remote.port = 53;
+    udp.state = ConnectionState::Established;
+    result.connections.push_back(udp);
+    const Response reply = ConnectionsReply{.result = result};
+    EXPECT_EQ(roundTrip(reply), reply);
+
+    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
+    // status, detail (4), count (4), then the first socket's protocol
+    bytes[4 + HEADER_BYTES + 1 + 4 + 4] = 7;
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 

@@ -410,5 +410,22 @@ TEST(ProcessConnectionsViewTest, CountTextIsSingularForOne)
     EXPECT_EQ(Detail::connectionsCountText(12), "12 connections");
 }
 
+// #2309: a refused read offers "Authenticate to read", which reads as the administrator.
+TEST(ProcessConnectionsViewTest, ARefusedReadOffersAuthenticateToRead)
+{
+    ProcessConnectionsView view;
+    TestMocks::MockProcessConnectionsReader reader;
+    reader.setResult({.status = Platform::ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
+    reader.setAuthorizedResult({.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}});
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
+}
+
 } // namespace
 } // namespace App

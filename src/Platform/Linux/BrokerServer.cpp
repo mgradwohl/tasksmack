@@ -3,6 +3,7 @@
 #include "BrokerSocket.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -106,6 +107,21 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
             OpenFilesReadResult failed;
             failed.status = OpenFilesReadStatus::Failed;
             return Broker::OpenFilesReply{.result = std::move(failed)};
+        }
+    }
+    if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
+    {
+        if (readers.connections == nullptr)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't list connections"};
+        }
+        try
+        {
+            return Broker::ConnectionsReply{.result = readers.connections->readConnections(read->target)};
+        }
+        catch (...)
+        {
+            return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = {}}};
         }
     }
     try
