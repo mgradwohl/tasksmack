@@ -39,6 +39,7 @@
 #include <netinet/in.h> // IPPROTO_TCP
 // NOLINTEND(misc-include-cleaner)
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Platform
@@ -119,12 +120,23 @@ TEST(NetlinkSocketStatsTest, SocketStatsHaveValidInodes)
 
 // ========== buildInodeToPidMap Tests ==========
 
-TEST(BuildInodeToPidMapTest, ReturnsNonEmptyMapOnRunningSystem)
+TEST(BuildInodeToPidMapTest, MapsThisProcesssOwnSocketToItsPid)
 {
-    auto inodeToPid = buildInodeToPidMap();
-    // A running system should have at least some sockets
-    // The test process itself might have open sockets; reaching here is success
-    SUCCEED() << "buildInodeToPidMap completed with " << inodeToPid.size() << " mappings";
+    // A socket of this test's own: its inode must map to this process. The test only reached the end
+    // before (#2165), so a regression returning an empty map everywhere would still have passed.
+    std::array<int, 2> sockets{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0) << std::strerror(errno);
+    struct stat info{};
+    const bool statted = ::fstat(sockets[0], &info) == 0;
+    const auto inodeToPid = buildInodeToPidMap();
+    ::close(sockets[0]);
+    ::close(sockets[1]);
+    ASSERT_TRUE(statted);
+
+    const auto it = inodeToPid.find(static_cast<std::uint64_t>(info.st_ino));
+    ASSERT_NE(it, inodeToPid.end()) << "inode " << info.st_ino << " of this process's socket isn't in the map";
+    EXPECT_EQ(it->second.pid, static_cast<std::int32_t>(::getpid()));
+    EXPECT_NE(it->second.startTimeTicks, 0U) << "this process's start time is readable";
 }
 
 TEST(BuildInodeToPidMapTest, MapsSocketsToValidPids)

@@ -25,8 +25,10 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -325,16 +327,35 @@ TEST(LinuxSystemProbeTest, NetworkCountersReadMultipleTimes)
 // Per-Interface Network Counter Tests
 // =============================================================================
 
-TEST(LinuxSystemProbeTest, PerInterfaceNetworkCountersAreAccessible)
+// #2165: every interface the kernel lists in /sys/class/net, an independent source from the probe's
+// /proc/net/dev, is read, except loopback; and nothing else is.
+TEST(LinuxSystemProbeTest, PerInterfaceCountersCoverEveryNonLoopbackInterface)
 {
     LinuxSystemProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
-    // The vector should be accessible even if empty.
-    // Note: loopback (lo) is filtered out, so systems with only loopback may have 0 interfaces.
-    // Most systems have at least one physical or virtual interface besides loopback.
-    // size() is always >= 0 by type; just verify the vector is accessible.
-    (void) counters.networkInterfaces.size();
+    std::vector<std::string> expected;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator("/sys/class/net", ec))
+    {
+        if (std::string name = entry.path().filename().string(); name != "lo")
+        {
+            expected.push_back(std::move(name));
+        }
+    }
+    if (ec)
+    {
+        GTEST_SKIP() << "/sys/class/net isn't readable here: " << ec.message();
+    }
+    std::vector<std::string> read;
+    read.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        read.push_back(iface.name);
+    }
+    std::ranges::sort(expected);
+    std::ranges::sort(read);
+    EXPECT_EQ(read, expected);
 }
 
 TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
@@ -349,20 +370,6 @@ TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
 
         // Display name should not be empty (may be same as name on Linux)
         EXPECT_FALSE(iface.displayName.empty()) << "Display name should not be empty";
-    }
-}
-
-TEST(LinuxSystemProbeTest, PerInterfaceCountersAreNonNegative)
-{
-    LinuxSystemProbe probe;
-    auto counters = probe.read();
-
-    for (const auto& iface : counters.networkInterfaces)
-    {
-        // Counters are uint64_t, so always non-negative by type.
-        // Access the fields to verify the structure is correctly populated.
-        (void) iface.rxBytes;
-        (void) iface.txBytes;
     }
 }
 
@@ -466,18 +473,22 @@ TEST(LinuxSystemProbeTest, PerInterfaceStatusConsistent)
 {
     LinuxSystemProbe probe;
 
-    // Read multiple times - interface status should be stable
-    for (int i = 0; i < 3; ++i)
+    // Consecutive reads list the same interfaces in the same state: the claim is now checked (#2165).
+    // An interface coming or going between two reads a few microseconds apart would be a coincidence.
+    const auto snapshot = [&probe]
     {
-        auto counters = probe.read();
-
-        // Just verify structure is valid
-        for (const auto& iface : counters.networkInterfaces)
+        std::vector<std::pair<std::string, bool>> interfaces;
+        for (const auto& iface : probe.read().networkInterfaces)
         {
-            // isUp is a boolean - no specific value check needed
-            // Just ensure the field is accessible
-            (void) iface.isUp;
+            interfaces.emplace_back(iface.name, iface.isUp);
         }
+        std::ranges::sort(interfaces);
+        return interfaces;
+    };
+    const auto first = snapshot();
+    for (int i = 0; i < 2; ++i)
+    {
+        EXPECT_EQ(snapshot(), first) << "read " << (i + 2);
     }
 }
 
