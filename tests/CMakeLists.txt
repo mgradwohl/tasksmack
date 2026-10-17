@@ -120,6 +120,14 @@ if(TASKSMACK_BASH)
     set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 600)
 endif()
 
+# tools/install-local.sh writes its binary path as one escaped desktop-entry Exec argument (#2342).
+# The installer is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME InstallLocalShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_install_local_sh.py)
+    set_tests_properties(InstallLocalShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript

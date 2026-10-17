@@ -22,6 +22,37 @@ refresh_desktop_caches() {
     fi
 }
 
+# One Desktop Entry Exec argument for a path (#2342): quoted, with the quoting rule's escapes
+# (\ " ` $), % doubled, then the string type's backslash escape. A newline cannot be represented.
+desktop_exec_quote() {
+    local path="$1"
+    if [[ "${path}" == *$'\n'* ]]; then
+        echo "A launcher path cannot contain a newline: ${path}" >&2
+        return 1
+    fi
+    path="${path//\\/\\\\}"
+    path="${path//\"/\\\"}"
+    path="${path//\`/\\\`}"
+    path="${path//\$/\\\$}"
+    path="\"${path}\""
+    path="${path//%/%%}"
+    path="${path//\\/\\\\}"
+    printf '%s' "${path}"
+}
+
+# Point a desktop entry's Exec line at a binary, without passing the path through sed syntax
+set_desktop_exec() {
+    local entry="$1" exec_value
+    exec_value="$(desktop_exec_quote "$2")" || return 1
+    EXEC_LINE="Exec=${exec_value}" awk '/^Exec=/ { print ENVIRON["EXEC_LINE"]; next } { print }' "${entry}" >"${entry}.tmp"
+    mv "${entry}.tmp" "${entry}"
+}
+
+# Sourced (tests/tools/test_install_local_sh.py): define the functions only
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 if [[ -x "${BUILD_BIN}" ]]; then
     :
 elif [[ -x "${ALT_BUILD_BIN}" ]]; then
@@ -43,7 +74,7 @@ ICON_DST="${HOME}/.local/share/icons/hicolor/256x256/apps/app.tasksmack.TaskSmac
 BINARY_PATH="${PREFIX}/bin/TaskSmack"
 
 install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
-sed -i "s|^Exec=.*|Exec=${BINARY_PATH}|" "${DESKTOP_DST}"
+set_desktop_exec "${DESKTOP_DST}" "${BINARY_PATH}"
 install -Dm644 "${ICON_SRC_PNG}" "${ICON_DST}"
 
 # Ensure a hicolor index so gtk-update-icon-cache keeps all sizes. Only when there is none: an
