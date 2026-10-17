@@ -370,10 +370,31 @@ Section buildOsSection(const Platform::OsInfo& os, std::uint64_t readAtUnixSecon
     return section;
 }
 
-Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
+namespace
+{
+
+/// The "Authenticate to read" row a section with facts readable by root only leads with (#2310).
+[[nodiscard]] Row authenticateRow()
+{
+    Row ask = row("Readable by root only",
+                  {},
+                  std::format("Some facts here need an administrator: \"Authenticate to read\" reads them through TaskSmack's "
+                              "helper ({})",
+                              AUTHENTICATE_NOTE));
+    ask.action = RowAction::AuthenticateToRead;
+    return ask;
+}
+
+} // namespace
+
+Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate)
 {
     Section section{.title = "Firmware & board", .icon = ICON_FA_MICROCHIP, .rows = {}};
     auto& rows = section.rows;
+    if (canAuthenticate && (firmware.identifiersNeedAdmin || firmware.smbiosVersionNeedsAdmin))
+    {
+        rows.push_back(authenticateRow());
+    }
     const std::string_view identifierReason = firmware.identifiersNeedAdmin ? NEEDS_ADMIN : NOT_REPORTED;
     rows.push_back(row("Manufacturer", firmware.systemManufacturer));
     rows.push_back(row("Model", firmware.systemModel));
@@ -416,10 +437,14 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
     return section;
 }
 
-Section buildMemorySection(const Platform::MemoryModulesInfo& memory)
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate)
 {
     Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
     auto& rows = section.rows;
+    if (canAuthenticate && memory.tableNeedsAdmin)
+    {
+        rows.push_back(authenticateRow());
+    }
     // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
     const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
     const bool hasSlots = memory.tableRead && memory.slotCount > 0;
@@ -2338,11 +2363,11 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.firmware.available)
     {
-        sections.push_back(buildFirmwareSection(snapshot.firmware));
+        sections.push_back(buildFirmwareSection(snapshot.firmware, capabilities.canReadAuthorized));
     }
     if (snapshot.memory.available)
     {
-        sections.push_back(buildMemorySection(snapshot.memory));
+        sections.push_back(buildMemorySection(snapshot.memory, capabilities.canReadAuthorized));
     }
     if (snapshot.paging.available)
     {

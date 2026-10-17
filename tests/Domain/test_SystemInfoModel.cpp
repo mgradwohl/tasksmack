@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -51,7 +52,23 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return {.hasOs = m_HasOs,
                 .unavailableReason = m_HasOs ? std::string{} : std::string{"not here"},
                 .wifiDetailsGated = false,
-                .hasPublicIp = m_PublicIpReads != nullptr};
+                .hasPublicIp = m_PublicIpReads != nullptr,
+                .canReadAuthorized = m_Authorizations != nullptr};
+    }
+
+    /// Offers authorize() (#2310), counting its calls in @p authorizations.
+    void offerAuthorization(int* authorizations) noexcept
+    {
+        m_Authorizations = authorizations;
+    }
+
+    bool authorize(const std::stop_token& /*stopToken*/) override
+    {
+        if (m_Authorizations != nullptr)
+        {
+            ++*m_Authorizations;
+        }
+        return m_Authorizations != nullptr;
     }
 
     /// Reports a public IP lookup (#1518), counting its calls in @p reads.
@@ -218,6 +235,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     std::chrono::milliseconds m_ReadOsDelay;
     std::size_t m_SensorReads = 0;
     int* m_PublicIpReads = nullptr;
+    int* m_Authorizations = nullptr;
 };
 
 TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
@@ -311,6 +329,36 @@ TEST(SystemInfoModelTest, PublicIpOnlyOnceAskedThenForTheSession)
     EXPECT_EQ(model.snapshot()->publicIp.v4, "203.0.113.7") << "kept from the last full read";
     model.read(); // Refresh
     EXPECT_EQ(lookups, 2) << "the choice holds";
+}
+
+// #2310: "Authenticate to read" asks for the password once, before the next read, not on every read.
+TEST(SystemInfoModelTest, AuthorizationIsAskedOnceBeforeTheNextRead)
+{
+    int reads = 0;
+    int authorizations = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->offerAuthorization(&authorizations);
+    SystemInfoModel model(std::move(probe));
+    EXPECT_TRUE(model.capabilities().canReadAuthorized);
+    model.read();
+    EXPECT_EQ(authorizations, 0) << "never without a click";
+
+    model.requestAuthorization();
+    model.read();
+    EXPECT_EQ(authorizations, 1);
+    EXPECT_EQ(reads, 2) << "the read goes on after the prompt";
+    model.read();
+    EXPECT_EQ(authorizations, 1) << "the helper stays authorized by itself";
+}
+
+TEST(SystemInfoModelTest, AuthorizationIsNeverAskedOfAProbeWithoutIt)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    EXPECT_FALSE(model.capabilities().canReadAuthorized);
+    model.requestAuthorization();
+    model.read();
+    EXPECT_EQ(reads, 1);
 }
 
 // #1518: a probe without a lookup is never asked, even once the user asked.

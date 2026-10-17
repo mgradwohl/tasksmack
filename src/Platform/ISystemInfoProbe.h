@@ -656,6 +656,8 @@ struct SystemInfoCapabilities
     bool wifiDetailsGated = false;
     /// readPublicIp() looks the public addresses up (#1518). False where it isn't implemented.
     bool hasPublicIp = false;
+    /// authorize() can ask for an administrator's password to read the root-only facts (#2310)
+    bool canReadAuthorized = false;
 };
 
 /// Reads the System Information page's static facts. Called from one thread at a time, which may

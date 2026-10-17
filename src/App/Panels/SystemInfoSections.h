@@ -36,7 +36,13 @@ enum class RowAction : std::uint8_t
     /// "Show public IP", with a note that it asks OpenDNS (#1518): looks the public addresses up on every
     /// read from then on.
     ShowPublicIp,
+    /// "Authenticate to read" (#2310): asks for an administrator's password, then reads the facts
+    /// readable by root only through the privileged helper.
+    AuthenticateToRead,
 };
+
+/// The note beside the "Authenticate to read" button (#2310).
+inline constexpr std::string_view AUTHENTICATE_NOTE = "Asks for an administrator's password";
 
 /// The note beside the "Show Wi-Fi details" button (#1782).
 inline constexpr std::string_view WIFI_DETAILS_NOTE = "Windows may ask for location access";
@@ -126,7 +132,8 @@ struct VisibleSection
 
 /// The Firmware & board section (#1513). Serials and the UUID are identifiers; the embedded controller
 /// row is left out when there is none.
-[[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware);
+/// With @p canAuthenticate, a fact readable by root only adds an "Authenticate to read" row (#2310).
+[[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate = false);
 
 /// A memory size: whole GiB ("16 GiB") or, under 1 GiB, whole MiB ("512 MiB") when exact, else
 /// UI::Format::formatBytes() ("31.7 GiB"). Empty for 0 (unknown).
@@ -147,7 +154,8 @@ struct VisibleSection
 /// The Memory modules section (#1515): slots used of total, maximum capacity, installed and usable
 /// memory (with the hardware-reserved difference), then one row per populated module, labelled by its
 /// locator. Without the SMBIOS table (Linux, unprivileged) a "Modules" row says it needs administrator.
-[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory);
+/// With @p canAuthenticate, an SMBIOS table readable by root only adds an "Authenticate to read" row (#2310).
+[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate = false);
 
 /// A commit charge: "12.3 GiB / 31.7 GiB (39%)"; the used figure alone without a limit, empty when
 /// the charge is unknown (0).

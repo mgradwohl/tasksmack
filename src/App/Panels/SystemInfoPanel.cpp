@@ -285,6 +285,13 @@ void SystemInfoPanel::renderContent()
         m_Model->includePublicIp();
         m_OptInReadDue = true;
     }
+    if (result.authenticateRequested)
+    {
+        // The next read asks for the password first, on its own thread, then reads the root-only
+        // facts through the helper (#2310)
+        m_Model->requestAuthorization();
+        m_OptInReadDue = true;
+    }
     if (m_OptInReadDue && !m_Pending.busy())
     {
         startRead(); // if it can't start, Refresh still reads them: the model keeps the choice

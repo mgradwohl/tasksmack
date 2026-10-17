@@ -5,6 +5,7 @@
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <utility>
 
@@ -41,6 +43,11 @@ void SystemInfoModel::read()
     const std::uint64_t crashReadOrder = m_CrashHistory ? m_CrashHistory->beginRead() : 0;
     const auto started = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = started > 0 ? static_cast<std::uint64_t>(started) : 0;
+    if (m_AuthorizationRequested.exchange(false, std::memory_order_relaxed) && m_Capabilities.canReadAuthorized)
+    {
+        // The password prompt, on this (the read's) thread; a dismissed prompt just leaves the facts marked
+        static_cast<void>(m_Probe->authorize(std::stop_token{}));
+    }
     if (m_Capabilities.hasOs)
     {
         next->os = m_Probe->readOs();

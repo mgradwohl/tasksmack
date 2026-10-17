@@ -150,6 +150,14 @@ class SystemInfoModel
         return m_IncludePublicIp.load(std::memory_order_relaxed);
     }
 
+    /// The next read() first asks for an administrator's password, so the facts readable by root only
+    /// are read through the privileged helper (#2310): the user clicked "Authenticate to read". Once,
+    /// not for the session: the helper stays authorized for a few minutes by itself. Thread-safe.
+    void requestAuthorization() noexcept
+    {
+        m_AuthorizationRequested.store(true, std::memory_order_relaxed);
+    }
+
     /// What the probe can read, fixed at construction.
     [[nodiscard]] const Platform::SystemInfoCapabilities& capabilities() const noexcept
     {
@@ -159,9 +167,10 @@ class SystemInfoModel
   private:
     std::unique_ptr<Platform::ISystemInfoProbe> m_Probe; // used under m_ReadMutex only
     Platform::SystemInfoCapabilities m_Capabilities;
-    std::shared_ptr<CrashHistory> m_CrashHistory;  // may be null
-    std::atomic<bool> m_IncludeWifiDetails{false}; // set from the UI thread, read by read() (#1782)
-    std::atomic<bool> m_IncludePublicIp{false};    // set from the UI thread, read by read() (#1518)
+    std::shared_ptr<CrashHistory> m_CrashHistory;      // may be null
+    std::atomic<bool> m_IncludeWifiDetails{false};     // set from the UI thread, read by read() (#1782)
+    std::atomic<bool> m_IncludePublicIp{false};        // set from the UI thread, read by read() (#1518)
+    std::atomic<bool> m_AuthorizationRequested{false}; // set from the UI thread, taken by read() (#2310)
     std::mutex m_ReadMutex;
     std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
     std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex

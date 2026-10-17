@@ -50,7 +50,9 @@ BrokeredSystemInfoProbe::BrokeredSystemInfoProbe(std::unique_ptr<ISystemInfoProb
 
 SystemInfoCapabilities BrokeredSystemInfoProbe::capabilities() const
 {
-    return m_Inner->capabilities();
+    SystemInfoCapabilities capabilities = m_Inner->capabilities();
+    capabilities.canReadAuthorized = canReadAuthorized();
+    return capabilities;
 }
 
 OsInfo BrokeredSystemInfoProbe::readOs()

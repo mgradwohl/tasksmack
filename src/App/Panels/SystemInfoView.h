@@ -127,6 +127,9 @@ struct SystemInfoViewState
     /// "Show public IP" was clicked (#1518): its button stays disabled until a read with the addresses
     /// replaces it.
     bool publicIpClicked = false;
+    /// "Authenticate to read" was clicked (#2310): its buttons stay disabled until the next read
+    /// replaces them, which offers them again if the prompt was dismissed.
+    bool authenticateClicked = false;
 
     /// A save dialog is open (#1866): Save report... is disabled until it closes. Set by the panel.
     bool saveDialogOpen = false;
@@ -144,6 +147,9 @@ struct SystemInfoViewResult
     /// "Show public IP" was clicked this frame (#1518): read again with the public addresses, and keep
     /// looking them up for the rest of the session.
     bool publicIpRequested = false;
+    /// "Authenticate to read" was clicked this frame (#2310): read again after asking for an
+    /// administrator's password.
+    bool authenticateRequested = false;
     /// "Save report..." was clicked this frame (#1866): ask where to save the page.
     bool saveReportRequested = false;
 };

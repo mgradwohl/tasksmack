@@ -56,6 +56,7 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
     {
         state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host, capabilities);
         state.sectionsVersion = snapshot.version;
+        state.authenticateClicked = false; // a new read: offered again if the facts are still root-only
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : std::string{READ_AT_PREFIX} + when.substr(when.find(' ') + 1);
     }
@@ -192,6 +193,13 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
                   "on every Refresh";
         note = SystemInfo::PUBLIC_IP_NOTE;
         clickedFlag = &state.publicIpClicked;
+        break;
+    case SystemInfo::RowAction::AuthenticateToRead:
+        label = ICON_FA_LOCK "  Authenticate to read";
+        tooltip = "Ask for an administrator's password, then read the serial numbers, UUID, SMBIOS version and memory modules "
+                  "through TaskSmack's helper";
+        note = SystemInfo::AUTHENTICATE_NOTE;
+        clickedFlag = &state.authenticateClicked;
         break;
     }
     ImGui::BeginDisabled(reading || *clickedFlag);
@@ -370,6 +378,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
                 .refreshRequested = false,
                 .wifiDetailsRequested = false,
                 .publicIpRequested = false,
+                .authenticateRequested = false,
                 .saveReportRequested = false};
     }
     if (snapshot == nullptr || snapshot->version == 0)
@@ -379,6 +388,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
                 .refreshRequested = false,
                 .wifiDetailsRequested = false,
                 .publicIpRequested = false,
+                .authenticateRequested = false,
                 .saveReportRequested = false};
     }
 
@@ -390,6 +400,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
 
     bool wifiDetails = false;
     bool publicIp = false;
+    bool authenticate = false;
     if (ImGui::BeginChild("##SystemInfoSections", ImVec2(0.0F, 0.0F)))
     {
         float widestLabel = 0.0F;
@@ -408,6 +419,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
             const SystemInfo::RowAction clicked = renderSection(visible, labelWidth, snapshot->sensorHistories, reading, state, scheme);
             wifiDetails = wifiDetails || clicked == SystemInfo::RowAction::ShowWifiDetails;
             publicIp = publicIp || clicked == SystemInfo::RowAction::ShowPublicIp;
+            authenticate = authenticate || clicked == SystemInfo::RowAction::AuthenticateToRead;
         }
         if (state.visible.empty())
         {
@@ -419,6 +431,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
             .refreshRequested = clicks.refresh,
             .wifiDetailsRequested = wifiDetails,
             .publicIpRequested = publicIp,
+            .authenticateRequested = authenticate,
             .saveReportRequested = clicks.saveReport};
 }
 

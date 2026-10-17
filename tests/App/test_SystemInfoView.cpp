@@ -306,6 +306,19 @@ TEST(SystemInfoSectionsTest, FirmwareRootOnlyRowsSayWhy)
         EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
     }
     EXPECT_FALSE(findRow(section, "Model")->unavailableReason.contains("administrator"));
+    EXPECT_EQ(findRow(section, "Readable by root only"), nullptr) << "nothing to offer without the helper";
+
+    // With the helper installed, the section leads with "Authenticate to read" (#2310)
+    const Section offered = SystemInfo::buildFirmwareSection(rootOnly, /*canAuthenticate=*/true);
+    ASSERT_FALSE(offered.rows.empty());
+    EXPECT_EQ(offered.rows.front().label, "Readable by root only");
+    EXPECT_EQ(offered.rows.front().action, SystemInfo::RowAction::AuthenticateToRead);
+    EXPECT_FALSE(offered.rows.front().isIdentifier) << "its button must stay visible";
+
+    Platform::FirmwareInfo readable = rootOnly;
+    readable.identifiersNeedAdmin = false;
+    readable.smbiosVersionNeedsAdmin = false;
+    EXPECT_EQ(findRow(SystemInfo::buildFirmwareSection(readable, true), "Readable by root only"), nullptr);
 }
 
 TEST(SystemInfoSectionsTest, FirmwareSectionFollowsTheOsSection)
@@ -442,6 +455,9 @@ TEST(SystemInfoSectionsTest, MemoryWithoutTheTableSaysWhy)
     rootOnly.usableBytes = 16 * GIB;
     const Section section = SystemInfo::buildMemorySection(rootOnly);
     EXPECT_EQ(findRow(section, "Usable memory")->value, "16 GiB");
+    EXPECT_EQ(findRow(section, "Readable by root only"), nullptr);
+    EXPECT_EQ(SystemInfo::buildMemorySection(rootOnly, /*canAuthenticate=*/true).rows.front().action,
+              SystemInfo::RowAction::AuthenticateToRead); // #2310
     for (const std::string_view label : {"Slots used", "Maximum capacity", "Installed memory", "Modules"})
     {
         const Row* item = findRow(section, label);
