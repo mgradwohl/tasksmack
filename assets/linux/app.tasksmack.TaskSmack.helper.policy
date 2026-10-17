@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  TaskSmack's privileged helper (#2307, #2181). TaskSmack starts it with pkexec when you choose to act on
+  a process you don't own (end, suspend or resume it, or change its priority or CPU affinity). It answers
+  only those requests, from the TaskSmack that started it, and exits when TaskSmack closes it or after a
+  few idle minutes. auth_admin_keep: one password covers a few minutes of actions.
+-->
+<policyconfig>
+  <vendor>TaskSmack</vendor>
+  <vendor_url>https://github.com/mgradwohl/tasksmack</vendor_url>
+  <icon_name>app.tasksmack.TaskSmack</icon_name>
+  <action id="app.tasksmack.TaskSmack.helper">
+    <description>Act on processes you don't own in TaskSmack</description>
+    <message>Authentication is required for TaskSmack to act on processes owned by other users</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tasksmack/tasksmack-helper</annotate>
+  </action>
+</policyconfig>

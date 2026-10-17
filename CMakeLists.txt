@@ -223,6 +223,7 @@ set(PLATFORM_SOURCES_LINUX
     # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
     src/Platform/Linux/BrokerSocket.cpp
     src/Platform/Linux/BrokerServer.cpp
+    src/Platform/Linux/PkexecBroker.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp

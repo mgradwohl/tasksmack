@@ -8,6 +8,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
+#include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
 
 #include <gtest/gtest.h>
@@ -521,6 +522,76 @@ TEST(TasksmackHelperTest, RefusesToRunWithoutBroker)
     HelperProcess helper(pair.server(), "--help");
     ASSERT_TRUE(helper.started());
     EXPECT_EQ(helper.exitCode(), 2);
+}
+
+TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
+{
+    SleepingChild child;
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+    ASSERT_NE(target.startTimeTicks, 0U);
+
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}); // the helper itself, without pkexec
+    EXPECT_FALSE(broker.connected());
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.connected());
+    EXPECT_TRUE(broker.connect(std::stop_token{}).has_value()); // already connected: nothing to do
+
+    const ProcessActionResult result =
+        actionResultOf(broker.call(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Terminate}, std::stop_token{}));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(child.terminatingSignal(), SIGTERM);
+}
+
+TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    const auto response = broker.call(Broker::Hello{}, std::stop_token{});
+    ASSERT_FALSE(response.has_value());
+    EXPECT_EQ(response.error(), "not connected");
+    EXPECT_FALSE(actionResultOf(response).success);
+}
+
+TEST(PkexecBrokerTest, DisconnectEndsTheSessionAndConnectStartsAnother)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    broker.disconnect();
+    EXPECT_FALSE(broker.connected());
+    EXPECT_FALSE(broker.call(Broker::Hello{}, std::stop_token{}).has_value());
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto hello = broker.call(Broker::Hello{}, std::stop_token{});
+    ASSERT_TRUE(hello.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::HelloReply>(*hello));
+}
+
+TEST(PkexecBrokerTest, ADismissedPromptIsReportedAsSuch)
+{
+    // A launcher that exits as pkexec does when the prompt is dismissed (126).
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "exit 126", "sh"});
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "the password prompt was dismissed");
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PkexecBrokerTest, AMissingLauncherIsReported)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"/nonexistent/tasksmack-pkexec"});
+    const auto connected = broker.connect(std::stop_token{});
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_FALSE(connected.error().empty());
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PkexecBrokerTest, AHelperThatNeverAnswersTimesOut)
+{
+    // A launcher that keeps the socket open and says nothing.
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "sleep 5", "sh"});
+    const auto connected = broker.connect(std::stop_token{}, std::chrono::milliseconds{200});
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "the helper didn't answer in time");
 }
 
 // NOLINTEND(misc-include-cleaner)

@@ -1,0 +1,6 @@
+# Read by CPack per generator (CPACK_PROJECT_CONFIG_FILE, cmake/Packaging.cmake). The .deb and .rpm
+# also package the "helper" component: tasksmack-helper in libexec and its polkit action (#2307). Every
+# other generator keeps the default component alone.
+if(CPACK_GENERATOR STREQUAL "DEB" OR CPACK_GENERATOR STREQUAL "RPM")
+    set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;helper;/")
+endif()

@@ -18,6 +18,10 @@ set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
 # (googletest, rapidcheck) and benchmarks/ install into their own third_party/tests/benchmarks
 # components, so nothing a dependency installs ends up in a package (#1398).
 set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};Unspecified;/")
+# The .deb and .rpm add the privileged helper and its polkit policy (the "helper" component,
+# cmake/InstallRules.cmake; #2307): cmake/CPackProjectConfig.cmake.in widens the list above for them.
+configure_file(${CMAKE_SOURCE_DIR}/cmake/CPackProjectConfig.cmake.in ${CMAKE_BINARY_DIR}/CPackProjectConfig.cmake @ONLY)
+set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CPackProjectConfig.cmake")
 
 # Output directory for packages
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")
@@ -54,7 +58,7 @@ elseif(UNIX)
         # rest SDL3 uses when present: the other X11 extensions, Wayland, and Mesa's drivers.
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "libx11-6, libxext6, libgl1, libegl1")
         set(CPACK_DEBIAN_PACKAGE_RECOMMENDS
-            "libxcursor1, libxi6, libxrandr2, libxfixes3, libxkbcommon0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libdecor-0-0, libgl1-mesa-dri, libegl-mesa0")
+            "libxcursor1, libxi6, libxrandr2, libxfixes3, libxkbcommon0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libdecor-0-0, libgl1-mesa-dri, libegl-mesa0, pkexec | policykit-1")
     endif()
     # Check for rpmbuild (Red Hat/Fedora)
     find_program(RPMBUILD_PROGRAM rpmbuild)

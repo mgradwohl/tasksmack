@@ -140,3 +140,18 @@ if(UNIX AND NOT APPLE)
         RENAME app.tasksmack.TaskSmack.svg
     )
 endif()
+
+# The privileged helper (#2307; #2181) and its polkit action, in the "helper" component, which
+# cmake/Packaging.cmake adds to the .deb and .rpm only: polkit needs the policy in the system's
+# share/polkit-1/actions and the helper at the path its exec.path names, which only a system package
+# provides. The portable .tar.gz has neither, and TaskSmack then acts without it, as before.
+if(UNIX AND NOT APPLE AND TARGET tasksmack-helper)
+    install(TARGETS tasksmack-helper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/${PROJECT_NAME_LOWER}
+        COMPONENT helper
+    )
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.helper.policy
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/polkit-1/actions
+        COMPONENT helper
+    )
+endif()
