@@ -7,6 +7,7 @@
 
 #include "Platform/IServiceProbe.h"
 
+#include <cstdint>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -24,18 +25,29 @@ struct ServiceActionResult
     /// The wait was abandoned on a stop request (#1591). Whatever request was already sent to the
     /// service manager stands: the service may still reach its new state.
     bool cancelled = false;
+    /// Refused only because authorizing it would need a password prompt, which the call didn't allow
+    /// (polkit's InteractiveAuthorizationRequired, #2304): runAuthorized() may then succeed.
+    bool needsAuthorization = false;
+    /// runAuthorized() allowed a prompt, but nothing could show one (no polkit agent in the session):
+    /// offering the retry again would only fail the same way.
+    bool authorizationUnavailable = false;
 
     [[nodiscard]] static ServiceActionResult succeeded()
     {
-        return {.ok = true, .message = {}, .cancelled = false};
+        return {.ok = true, .message = {}, .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false};
     }
     [[nodiscard]] static ServiceActionResult failed(std::string message)
     {
-        return {.ok = false, .message = std::move(message), .cancelled = false};
+        return {
+            .ok = false, .message = std::move(message), .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false};
     }
     [[nodiscard]] static ServiceActionResult stopRequested()
     {
-        return {.ok = false, .message = "Cancelled before it finished", .cancelled = true};
+        return {.ok = false,
+                .message = "Cancelled before it finished",
+                .cancelled = true,
+                .needsAuthorization = false,
+                .authorizationUnavailable = false};
     }
 };
 
@@ -52,6 +64,18 @@ struct ServiceActionCapabilities
     /// Whether TaskSmack runs elevated. Not elevated, most actions are refused, but a service's own
     /// security descriptor may still allow some, so the UI only warns rather than disabling them.
     bool elevated = false;
+    /// Whether runAuthorized() can ask for authorization with a password prompt (Linux: polkit through
+    /// systemd, #2304). The UI then offers "Authenticate and retry" on a needsAuthorization refusal.
+    bool canAuthorizeInteractively = false;
+};
+
+/// The actions, for runAuthorized().
+enum class ServiceAction : std::uint8_t
+{
+    Start,
+    Stop,
+    Restart,
+    SetStartType,
 };
 
 /// Controls services by name (the ServiceInfo::name key). Every call is self-contained, so an
@@ -84,6 +108,27 @@ class IServiceActions
     [[nodiscard]] virtual ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) = 0;
     /// Sets the start type: Automatic, AutomaticDelayed, Manual or Disabled (others are refused).
     [[nodiscard]] virtual ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) = 0;
+
+    /// @p action as the plain call would run it, but allowed to ask the user for authorization with a
+    /// password prompt (#2304). Only after a needsAuthorization refusal, on the user's say-so: the
+    /// plain calls never prompt. @p startType is SetStartType's target. Without
+    /// capabilities().canAuthorizeInteractively it is the plain call.
+    [[nodiscard]] virtual ServiceActionResult
+    runAuthorized(ServiceAction action, std::string_view name, ServiceStartType startType, const std::stop_token& stopToken)
+    {
+        switch (action)
+        {
+        case ServiceAction::Start:
+            return start(name, stopToken);
+        case ServiceAction::Stop:
+            return stop(name, stopToken);
+        case ServiceAction::Restart:
+            return restart(name, stopToken);
+        case ServiceAction::SetStartType:
+            return setStartType(name, startType);
+        }
+        return ServiceActionResult::failed("Unknown action");
+    }
 };
 
 /// The actions for a platform without service control (synthetic runs, a Linux build without systemd

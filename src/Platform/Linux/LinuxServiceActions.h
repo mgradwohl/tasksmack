@@ -27,6 +27,9 @@ class LinuxServiceActions final : public IServiceActions
     [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
+    /// The action with polkit allowed to prompt (#2304): the user's "Authenticate and retry".
+    [[nodiscard]] ServiceActionResult
+    runAuthorized(ServiceAction action, std::string_view name, ServiceStartType startType, const std::stop_token& stopToken) override;
 
   private:
     bool m_Available = false;

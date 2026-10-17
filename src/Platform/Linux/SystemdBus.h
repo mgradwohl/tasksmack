@@ -92,19 +92,23 @@ struct UnitWait
 };
 
 /// Starts the unit @p name (Manager.StartUnit, mode "replace") and waits until it is running, it
-/// fails, @p wait runs out or @p stopToken is stopped (#2006). Never asks polkit to prompt: refused
-/// unprivileged, it says "Requires administrator".
-[[nodiscard]] ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
+/// fails, @p wait runs out or @p stopToken is stopped (#2006). Unless @p allowInteractive, polkit is
+/// never let prompt: refused unprivileged, it says "Requires administrator", and the result's
+/// needsAuthorization says a prompt could allow it. @p allowInteractive is the user's "Authenticate and
+/// retry" (#2304); stopUnit() and setUnitStartType() take it the same way.
+[[nodiscard]] ServiceActionResult
+startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {}, bool allowInteractive = false);
 
 /// Stops the unit @p name and waits until it has stopped, unless a running unit would go down with it
 /// (its RequiredBy, BoundBy, ConsistsOf or RequisiteOf, #2124): then nothing is sent and the refusal
 /// names them, as on Windows (#2006).
-[[nodiscard]] ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
+[[nodiscard]] ServiceActionResult
+stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {}, bool allowInteractive = false);
 
 /// Sets the start type of @p name's unit file: Automatic enables it, Manual disables it, Disabled masks
 /// it, unmasking first when moving off Disabled; then reloads systemd, as systemctl does (#2006).
 /// Automatic (delayed) and the read-only types are refused.
-[[nodiscard]] ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType);
+[[nodiscard]] ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive = false);
 
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.

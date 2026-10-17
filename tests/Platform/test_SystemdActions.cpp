@@ -101,6 +101,16 @@ TEST(SystemdActionsTest, RunningMeansAStopWouldTakeItDown)
     EXPECT_FALSE(SystemdActions::isRunning(""));
 }
 
+TEST(SystemdActionsTest, RefusalsAfterAllowingAPromptSayWhatHappenedToIt)
+{
+    using SystemdActions::errorText;
+    EXPECT_EQ(errorText(SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, "", false), "Requires administrator");
+    EXPECT_EQ(errorText(SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, "", false, true),
+              "No authentication agent is running to ask for the password");
+    EXPECT_EQ(errorText("org.freedesktop.DBus.Error.AccessDenied", "", false, true), "Authentication was canceled or refused");
+    EXPECT_EQ(errorText("org.freedesktop.systemd1.NoSuchUnit", "", false, true), "No such service") << "unrelated errors unchanged";
+}
+
 TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
 {
     // polkit's answer to an unprivileged caller that won't be prompted (#2006), and plain denial.
@@ -133,6 +143,7 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     EXPECT_TRUE(caps.canRestart);
     EXPECT_TRUE(caps.canSetStartType);
     EXPECT_FALSE(caps.canDelayStart);
+    EXPECT_TRUE(caps.canAuthorizeInteractively); // polkit, through systemd (#2304)
 
     const TestSupport::ScopedTempDir bare("ts_service_actions_bare");
     LinuxServiceActions withoutSystemd(bare.path, /*built=*/true);
@@ -141,9 +152,13 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     const std::stop_source stop;
     EXPECT_EQ(withoutSystemd.start("cron.service", stop.get_token()).message, "systemd isn't running");
     EXPECT_EQ(withoutSystemd.setStartType("cron.service", ServiceStartType::Manual).message, "systemd isn't running");
+    EXPECT_FALSE(withoutSystemd.capabilities().canAuthorizeInteractively);
+    EXPECT_EQ(withoutSystemd.runAuthorized(ServiceAction::Start, "cron.service", ServiceStartType::Unknown, stop.get_token()).message,
+              "systemd isn't running");
 
     LinuxServiceActions notBuilt(root.path, /*built=*/false);
     EXPECT_FALSE(notBuilt.capabilities().canStop);
+    EXPECT_FALSE(notBuilt.capabilities().canAuthorizeInteractively);
     EXPECT_FALSE(notBuilt.stop("cron.service", stop.get_token()).ok);
 }
 
@@ -426,6 +441,58 @@ TEST_F(SystemdActionsFakeTest, AnUnprivilegedStartIsRefusedAsRequiringAdministra
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "Requires administrator");
+}
+
+// #2304: the plain call never lets polkit prompt, and its refusal says a prompt could allow it; the
+// user's retry lets it prompt, and its refusals say what happened to the prompt.
+TEST_F(SystemdActionsFakeTest, OnlyTheAuthorizedRetryLetsPolkitPrompt)
+{
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StartUnit",
+                       [](sd_bus_message* call) -> int
+                       {
+                           // polkit with a password needed: refused without the flag; with it, the user
+                           // dismissed the prompt.
+                           return sd_bus_message_get_allow_interactive_authorization(call) > 0
+                                    ? sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.AccessDenied", "Access denied")
+                                    : sd_bus_reply_method_errorf(call,
+                                                                 "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired",
+                                                                 "Interactive authentication required.");
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+
+    const ServiceActionResult plain = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(plain.ok);
+    EXPECT_EQ(plain.message, "Requires administrator");
+    EXPECT_TRUE(plain.needsAuthorization);
+    EXPECT_FALSE(plain.authorizationUnavailable);
+
+    const ServiceActionResult retried = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK, /*allowInteractive=*/true);
+    EXPECT_FALSE(retried.ok);
+    EXPECT_EQ(retried.message, "Authentication was canceled or refused");
+    EXPECT_FALSE(retried.needsAuthorization);
+    EXPECT_FALSE(retried.authorizationUnavailable);
+}
+
+TEST_F(SystemdActionsFakeTest, AnAuthorizedRetryWithNoAgentToPromptSaysSo)
+{
+    // No polkit agent in the session: still "interactive authorization required", even when allowed.
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StartUnit",
+                       [](sd_bus_message* call) -> int
+                       {
+                           return sd_bus_reply_method_errorf(
+                               call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult retried = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK, /*allowInteractive=*/true);
+    EXPECT_EQ(retried.message, "No authentication agent is running to ask for the password");
+    EXPECT_TRUE(retried.authorizationUnavailable);
+    EXPECT_FALSE(retried.needsAuthorization);
 }
 
 TEST_F(SystemdActionsFakeTest, AnUnknownServiceIsNoSuchService)

@@ -349,6 +349,111 @@ TEST(ServiceActionsViewTest, DestroyingTheViewCancelsTheRunningActionAndReturnsP
     EXPECT_LT(took, GATE_LIMIT / 2);
 }
 
+/// The plain actions are refused as needing a password prompt; runAuthorized() answers `authorized`,
+/// recording what it was asked (#2304).
+class AuthorizingServiceActions final : public Platform::IServiceActions
+{
+  public:
+    explicit AuthorizingServiceActions(bool canAuthorize = true)
+    {
+        m_Caps.canAuthorizeInteractively = canAuthorize;
+    }
+
+    Platform::ServiceActionResult authorized = Platform::ServiceActionResult::succeeded();
+    std::atomic<int> authorizedCalls{0};
+    std::atomic<Platform::ServiceAction> lastAction{Platform::ServiceAction::Restart};
+
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        return m_Caps;
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    {
+        return refused();
+    }
+    [[nodiscard]] Platform::ServiceActionResult runAuthorized(Platform::ServiceAction action,
+                                                              std::string_view /*name*/,
+                                                              Platform::ServiceStartType /*startType*/,
+                                                              const std::stop_token& /*stopToken*/) override
+    {
+        lastAction = action;
+        ++authorizedCalls;
+        return authorized;
+    }
+
+  private:
+    [[nodiscard]] static Platform::ServiceActionResult refused()
+    {
+        Platform::ServiceActionResult result = Platform::ServiceActionResult::failed("Requires administrator");
+        result.needsAuthorization = true;
+        return result;
+    }
+
+    Platform::ServiceActionCapabilities m_Caps = ALL;
+};
+
+TEST(ServiceActionsViewTest, ARefusalAPromptCouldAllowOffersAnAuthorizedRetry)
+{
+    const auto fake = std::make_shared<AuthorizingServiceActions>();
+    ServiceActionsView view(fake);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("cron.service", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(view.lastResult().text, "Could not start cron.service: Requires administrator");
+    EXPECT_TRUE(view.lastResult().canAuthorize);
+    EXPECT_EQ(fake->authorizedCalls.load(), 0) << "the plain action never prompts";
+
+    view.retryAuthorized();
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->authorizedCalls.load(), 1);
+    EXPECT_EQ(fake->lastAction.load(), Platform::ServiceAction::Start);
+    EXPECT_TRUE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Started cron.service");
+    EXPECT_FALSE(view.lastResult().canAuthorize);
+}
+
+TEST(ServiceActionsViewTest, NoAuthorizedRetryWhereThePlatformCantPrompt)
+{
+    const auto fake = std::make_shared<AuthorizingServiceActions>(/*canAuthorize=*/false);
+    ServiceActionsView view(fake);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("cron.service", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().canAuthorize);
+    view.retryAuthorized(); // ignored
+    EXPECT_FALSE(view.busy());
+    EXPECT_EQ(fake->authorizedCalls.load(), 0);
+}
+
+TEST(ServiceActionsViewTest, WithNoAgentToPromptTheRetryIsntOfferedAgainThisSession)
+{
+    const auto fake = std::make_shared<AuthorizingServiceActions>();
+    fake->authorized = Platform::ServiceActionResult::failed("No authentication agent is running to ask for the password");
+    fake->authorized.authorizationUnavailable = true;
+    ServiceActionsView view(fake);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("cron.service", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    view.retryAuthorized();
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(view.lastResult().text, "Could not start cron.service: No authentication agent is running to ask for the password");
+    EXPECT_FALSE(view.lastResult().canAuthorize);
+
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("cron.service", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(view.lastResult().text, "Could not start cron.service: Requires administrator");
+    EXPECT_FALSE(view.lastResult().canAuthorize) << "no agent: not offered again";
+}
+
 TEST(ServiceActionsViewTest, CancelWhileIdleDoesNotCarryOverToTheNextAction)
 {
     const auto fake = std::make_shared<FakeServiceActions>();

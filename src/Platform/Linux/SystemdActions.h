@@ -10,8 +10,9 @@
 // which is Windows' Manual; masking is what stops that, Windows' Disabled). There is no delayed start.
 // A stop never takes running dependents with it (systemd would stop every unit that Requires=, BindsTo=,
 // PartOf= or Requisite= it):
-// it is refused, naming them, as on Windows. polkit's "interactive authentication required", which
-// TaskSmack never asks for, reads as "Requires administrator".
+// it is refused, naming them, as on Windows. polkit's "interactive authentication required" reads as
+// "Requires administrator": TaskSmack lets polkit prompt only on the user's "Authenticate and retry"
+// (#2304), and then reads its refusals as a dismissed prompt or no agent to show one.
 
 #include "Platform/IServiceProbe.h"
 
@@ -136,16 +137,28 @@ enum class WaitStep : std::uint8_t
     return text;
 }
 
+/// polkit's refusal when it would have to prompt and the call didn't allow it (#2304).
+inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired";
+
 /// A refused or failed call in the user's terms, from its D-Bus error name and @p message (the error's
 /// own text). @p timedOut: the call ran out of time.
-[[nodiscard]] inline std::string errorText(std::string_view errorName, std::string_view message, bool timedOut)
+[[nodiscard]] inline std::string errorText(std::string_view errorName, std::string_view message, bool timedOut, bool interactive = false)
 {
     if (timedOut)
     {
         return "systemd didn't answer in time";
     }
-    if (errorName == "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired" ||
-        errorName == "org.freedesktop.DBus.Error.AccessDenied")
+    // With a prompt allowed (#2304): still "interactive authorization required" means nothing could ask
+    // (no polkit agent in the session); access denied, that the prompt was dismissed or refused.
+    if (interactive && errorName == INTERACTIVE_AUTHORIZATION_REQUIRED)
+    {
+        return "No authentication agent is running to ask for the password";
+    }
+    if (interactive && errorName == "org.freedesktop.DBus.Error.AccessDenied")
+    {
+        return "Authentication was canceled or refused";
+    }
+    if (errorName == INTERACTIVE_AUTHORIZATION_REQUIRED || errorName == "org.freedesktop.DBus.Error.AccessDenied")
     {
         return "Requires administrator";
     }

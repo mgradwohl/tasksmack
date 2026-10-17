@@ -293,27 +293,35 @@ namespace
 constexpr const char* SYSTEMD_UNIT = "org.freedesktop.systemd1.Unit";
 constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
 
-/// A failed call as a ServiceActionResult, in the user's terms (SystemdActions::errorText()).
-[[nodiscard]] ServiceActionResult actionFailure(const BusError& error, int result)
+/// A failed call on @p bus as a ServiceActionResult, in the user's terms (SystemdActions::errorText()).
+/// Whether @p bus allowed a password prompt decides how a polkit refusal reads, and whether a retry
+/// that allows one is worth offering (#2304).
+[[nodiscard]] ServiceActionResult actionFailure(sd_bus* bus, const BusError& error, int result)
 {
     const sd_bus_error& raw = error.raw();
     const std::string_view name = raw.name != nullptr ? std::string_view(raw.name) : std::string_view{};
     const std::string message = (raw.message != nullptr)
                                   ? std::string(raw.message)
                                   : std::string(std::strerror(-result)); // NOLINT(concurrency-mt-unsafe) - one worker thread
-    return ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result)));
+    const bool interactive = sd_bus_get_allow_interactive_authorization(bus) > 0;
+    ServiceActionResult failure = ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result), interactive));
+    const bool authorizationRequired = name == SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED;
+    failure.needsAuthorization = authorizationRequired && !interactive;
+    failure.authorizationUnavailable = authorizationRequired && interactive;
+    return failure;
 }
 
-/// The system bus for an action, or why not.
-[[nodiscard]] std::optional<std::string> openForAction(Bus& bus)
+/// The system bus for an action, or why not. Unless @p allowInteractive, polkit may never prompt:
+/// unprivileged, the call is refused with InteractiveAuthorizationRequired, which reads as "Requires
+/// administrator" (#2006). @p allowInteractive is the user's "Authenticate and retry" (#2304), the one
+/// case where polkit's agent may ask for a password.
+[[nodiscard]] std::optional<std::string> openForAction(Bus& bus, bool allowInteractive)
 {
     if (const int result = openSystemBus(bus); result < 0)
     {
         return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
     }
-    // Never let polkit prompt: unprivileged, the call is refused with InteractiveAuthorizationRequired,
-    // which reads as "Requires administrator" (#2006).
-    (void) sd_bus_set_allow_interactive_authorization(bus.get(), 0);
+    (void) sd_bus_set_allow_interactive_authorization(bus.get(), allowInteractive ? 1 : 0);
     return std::nullopt;
 }
 
@@ -327,7 +335,7 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
             sd_bus_call_method(bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "LoadUnit", error.get(), reply.out(), "s", unit.c_str());
         result < 0)
     {
-        return actionFailure(error, result);
+        return actionFailure(bus, error, result);
     }
     const char* object = nullptr;
     if (const int result = sd_bus_message_read(reply.get(), "o", &object); result < 0 || object == nullptr)
@@ -416,7 +424,7 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
                 bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method, error.get(), reply.out(), "ss", unit.c_str(), "replace");
             result < 0)
         {
-            return actionFailure(error, result);
+            return actionFailure(bus, error, result);
         }
         const char* job = nullptr;
         if (sd_bus_message_read(reply.get(), "o", &job) >= 0 && job != nullptr)
@@ -516,7 +524,7 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     }
     if (result < 0)
     {
-        return actionFailure(error, result);
+        return actionFailure(bus, error, result);
     }
     if (std::string_view(method) == "EnableUnitFiles")
     {
@@ -531,10 +539,10 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
 
 } // namespace
 
-ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
+ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait, bool allowInteractive)
 {
     Bus bus;
-    if (const auto failed = openForAction(bus))
+    if (const auto failed = openForAction(bus, allowInteractive))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -546,10 +554,10 @@ ServiceActionResult startUnit(std::string_view name, const std::stop_token& stop
     return runJob(bus.get(), name, unitObject, "StartUnit", SystemdActions::Goal::Running, stopToken, wait);
 }
 
-ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
+ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait, bool allowInteractive)
 {
     Bus bus;
-    if (const auto failed = openForAction(bus))
+    if (const auto failed = openForAction(bus, allowInteractive))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -566,7 +574,7 @@ ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopT
     return runJob(bus.get(), name, unitObject, "StopUnit", SystemdActions::Goal::Stopped, stopToken, wait);
 }
 
-ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType)
+ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive)
 {
     const std::optional<SystemdActions::StartTypeSteps> steps = SystemdActions::startTypeSteps(startType);
     if (!steps.has_value())
@@ -574,7 +582,7 @@ ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType sta
         return ServiceActionResult::failed("systemd services have no such startup type");
     }
     Bus bus;
-    if (const auto failed = openForAction(bus))
+    if (const auto failed = openForAction(bus, allowInteractive))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -610,7 +618,7 @@ ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType sta
     if (const int result = sd_bus_call_method(bus.get(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "Reload", error.get(), reply.out(), "");
         result < 0)
     {
-        return actionFailure(error, result);
+        return actionFailure(bus.get(), error, result);
     }
     return ServiceActionResult::succeeded();
 }
@@ -631,17 +639,17 @@ ServicesRead readServices(UnitFileCache* /*cache*/, std::chrono::steady_clock::t
     return read;
 }
 
-ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
+ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/, bool /*allowInteractive*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
+ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/, bool /*allowInteractive*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/)
+ServiceActionResult setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool /*allowInteractive*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }

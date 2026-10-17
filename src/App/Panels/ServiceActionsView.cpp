@@ -105,8 +105,16 @@ constexpr std::string_view SYSTEM_NAME = "the system";
 }
 
 [[nodiscard]] Platform::ServiceActionResult
-dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken)
+dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken, bool authorized)
 {
+    if (authorized)
+    {
+        constexpr std::array<Platform::ServiceAction, 4> ACTIONS{Platform::ServiceAction::Start,
+                                                                 Platform::ServiceAction::Stop,
+                                                                 Platform::ServiceAction::Restart,
+                                                                 Platform::ServiceAction::SetStartType};
+        return actions.runAuthorized(ACTIONS.at(static_cast<std::size_t>(request.kind)), request.name, request.startType, stopToken);
+    }
     switch (request.kind)
     {
     case ServiceActionKind::Start:
@@ -317,15 +325,15 @@ void ServiceActionsView::request(ServiceActionRequest request)
     m_ShowConfirm = true;
 }
 
-void ServiceActionsView::run(ServiceActionRequest request)
+void ServiceActionsView::run(ServiceActionRequest request, bool authorized)
 {
     m_Result = {};
     m_Running = request;
     // The worker owns copies of everything it uses; it shares only its result and a new stop token's
     // state (a cancel() of an earlier action does not carry over) with this view. An action that throws
     // is a failed result, built on the worker (BackgroundTask, #1685).
-    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request)](const std::stop_token& stopToken)
-                                     { return SvcDetail::dispatch(*actions, request, stopToken); }))
+    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request), authorized](const std::stop_token& stopToken)
+                                     { return SvcDetail::dispatch(*actions, request, stopToken, authorized); }))
     {
         m_Result = SvcDetail::resultMessage(m_Running, *failed);
         m_ResultSecondsLeft = SvcDetail::RESULT_SECONDS;
@@ -340,8 +348,21 @@ bool ServiceActionsView::takeFinished()
         return false;
     }
     m_Result = SvcDetail::resultMessage(m_Running, *result);
-    m_ResultSecondsLeft = SvcDetail::RESULT_SECONDS;
+    // A refusal a password prompt could allow offers the retry; one that found nothing to show a prompt
+    // stops it being offered this session (#2304).
+    m_AuthorizationUnavailable = m_AuthorizationUnavailable || result->authorizationUnavailable;
+    m_Result.canAuthorize = result->needsAuthorization && m_Capabilities.canAuthorizeInteractively && !m_AuthorizationUnavailable;
+    m_ResultSecondsLeft = m_Result.canAuthorize ? SvcDetail::AUTHORIZE_RESULT_SECONDS : SvcDetail::RESULT_SECONDS;
     return true;
+}
+
+void ServiceActionsView::retryAuthorized()
+{
+    if (busy() || !m_Result.canAuthorize)
+    {
+        return;
+    }
+    run(m_Running, true);
 }
 
 void ServiceActionsView::tick(float deltaSeconds) noexcept
@@ -422,8 +443,12 @@ void ServiceActionsView::renderActionBar(const Platform::ServiceInfo* selected)
     {
         // Kept enabled: a service's own permissions may still allow the change.
         ImGui::TextColored(scheme.textMuted, ICON_FA_CIRCLE_INFO "  Requires administrator for most services");
-        ImGui::SetItemTooltip("TaskSmack isn't running as administrator. Some services may still be allowed, by their own "
-                              "permissions on Windows or by polkit on Linux; the others report \"Requires administrator\".");
+        ImGui::SetItemTooltip("%s",
+                              m_Capabilities.canAuthorizeInteractively
+                                  ? "TaskSmack isn't running as root. polkit may allow some services as they are; the others report "
+                                    "\"Requires administrator\" and offer Authenticate and retry, which asks for your password."
+                                  : "TaskSmack isn't running as administrator. Some services may still be allowed, by their own "
+                                    "permissions on Windows or by polkit on Linux; the others report \"Requires administrator\".");
     }
     else if (selected == nullptr)
     {
@@ -466,7 +491,7 @@ void ServiceActionsView::renderContextMenu(const Platform::ServiceInfo& service)
     ImGui::EndPopup();
 }
 
-void ServiceActionsView::renderResultLine() const
+void ServiceActionsView::renderResultLine()
 {
     const auto& scheme = UI::Theme::get().scheme();
     if (busy())
@@ -477,6 +502,15 @@ void ServiceActionsView::renderResultLine() const
     {
         // The colour comes from the result's flag, never from its text.
         ImGui::TextColored(m_Result.ok ? scheme.textSuccess : scheme.textError, "%s", m_Result.text.c_str());
+        if (m_Result.canAuthorize)
+        {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+            {
+                retryAuthorized();
+            }
+            ImGui::SetItemTooltip("Shows your system's authentication prompt (polkit) and runs it again");
+        }
     }
 }
 

@@ -46,7 +46,8 @@ struct ServiceActionRequest
 struct ServiceActionMessage
 {
     bool ok = false;
-    std::string text; ///< Empty when there is nothing to show.
+    std::string text;          ///< Empty when there is nothing to show.
+    bool canAuthorize = false; ///< Offer "Authenticate and retry" beside it (#2304)
 };
 
 namespace ServiceActionsDetail
@@ -54,6 +55,8 @@ namespace ServiceActionsDetail
 
 /// How long a finished action's result line stays up, in seconds.
 inline constexpr float RESULT_SECONDS = 8.0F;
+/// How long one offering "Authenticate and retry" stays up: long enough to read it and decide (#2304).
+inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 
 /// Whether stopping @p name (a short name, case-insensitive) or a service of @p serviceType ("Driver":
 /// a kernel or file-system driver) can destabilise Windows: RpcSs, EventLog, Winmgmt and the like.
@@ -132,8 +135,9 @@ class ServiceActionsView
     void renderActionBar(const Platform::ServiceInfo* selected);
     /// The row's right-click menu; call right after the row's item.
     void renderContextMenu(const Platform::ServiceInfo& service);
-    /// The progress or result line, when there is one.
-    void renderResultLine() const;
+    /// The progress or result line, when there is one, with "Authenticate and retry" beside a refusal
+    /// a password prompt could allow (#2304).
+    void renderResultLine();
     /// The confirm dialog while one is pending; call every frame outside the table.
     void renderConfirmation();
 
@@ -150,8 +154,12 @@ class ServiceActionsView
         return m_Result;
     }
 
+    /// Runs the last action again, allowed to ask for authorization with a password prompt (#2304): the
+    /// result line's "Authenticate and retry". Ignored while another action runs.
+    void retryAuthorized();
+
   private:
-    void run(ServiceActionRequest request);
+    void run(ServiceActionRequest request, bool authorized = false);
     /// The Start / Stop / Restart items or buttons and the start-type choices, for @p service.
     void renderStartTypeItems(const Platform::ServiceInfo& service);
 
@@ -166,6 +174,8 @@ class ServiceActionsView
     ServiceActionRequest m_Running;
     ServiceActionMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;
+    /// An authorized retry found nothing to ask with (no polkit agent): not offered again this session.
+    bool m_AuthorizationUnavailable = false;
 };
 
 } // namespace App
