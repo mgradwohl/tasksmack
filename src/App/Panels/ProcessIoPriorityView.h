@@ -14,9 +14,13 @@
 // IProcessActions::getIoPriority(), for the shown process only -- when the target changes, after an
 // apply, and otherwise at most every IO_PRIORITY_REFRESH_SECONDS while the control is drawn.
 //
+// Apply runs on a worker of its own (ProcessActionRun, #2305), as ProcessPriorityView's does; update()
+// takes its result in on a later frame, and only then is the current value read again.
+//
 // Everything but render() is defined here, free of ImGui, so the state can be tested against a mock
 // IProcessActions without an ImGui context (test_ProcessIoPriorityView.cpp).
 
+#include "App/Panels/ProcessActionRun.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "PriorityEditTarget.h"
@@ -239,6 +243,7 @@ class ProcessIoPriorityView
     /// for the previous process.
     void onSelectionChanged() noexcept
     {
+        ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
         m_Edit = {};
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -357,13 +362,14 @@ class ProcessIoPriorityView
     }
 
     /// Apply was pressed with @p liveTarget shown: set the edited class and level on the edit's own
-    /// target through @p actions, as ProcessPriorityView::apply(). Success clears the error line;
-    /// failure shows the platform's message and puts the control back at the current value. Either
-    /// way the edit is finished and a fresh read is asked for, so the control shows what the process
-    /// really has.
+    /// target through @p actions, as ProcessPriorityView::apply(), on the apply worker (#2305). Success
+    /// clears the error line; failure shows the platform's message and, unless the value has been edited
+    /// again meanwhile, puts the control back at the current value. Either way the edit is finished and,
+    /// once the result is in, a fresh read is asked for, so the control shows what the process really
+    /// has. Nothing is sent while an apply still runs.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
-        if (dropEditIfTargetMoved(liveTarget) || !canApply(liveTarget))
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(liveTarget) || applying())
         {
             return;
         }
@@ -371,20 +377,40 @@ class ProcessIoPriorityView
         const Platform::IoPriority priority = m_Edit;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
-        m_ReadDue = true;
+        if (actions == nullptr)
+        {
+            finishApply(Platform::ProcessActionResult::error("Process actions unavailable"));
+            return;
+        }
+        static_cast<void>(m_ApplyRun.start(
+            std::format("Setting the I/O priority of PID {}...", target.pid),
+            [actions, target, priority] { return actions->setIoPriority(target, priority.ioClass, priority.level); },
+            [this, generation = m_Generation](const Platform::ProcessActionResult& result)
+            {
+                if (generation == m_Generation)
+                {
+                    finishApply(result);
+                }
+            }));
+    }
 
-        const Platform::ProcessActionResult result = (actions != nullptr)
-                                                       ? actions->setIoPriority(target, priority.ioClass, priority.level)
-                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
-        if (result.success)
-        {
-            m_Error.clear();
-        }
-        else
-        {
-            m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
-            m_Edit = m_Current.value_or(Platform::IoPriority{});
-        }
+    /// Each frame, before drawing: a finished apply's result goes to the error line. @p wait blocks
+    /// until a running apply finishes (the tests' way to take it in deterministically).
+    void update(bool wait = false)
+    {
+        m_ApplyRun.update(wait);
+    }
+
+    /// Whether an apply runs on the worker now: Apply is disabled and the line under it says so.
+    [[nodiscard]] bool applying() const noexcept
+    {
+        return m_ApplyRun.busy();
+    }
+
+    /// What the line under Apply says while applying().
+    [[nodiscard]] const std::string& applyingText() const noexcept
+    {
+        return m_ApplyRun.pendingText();
     }
 
     /// The class and level the control shows: the edit, or the process's own.
@@ -426,6 +452,22 @@ class ProcessIoPriorityView
   private:
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
+    /// An apply's result, on the UI thread.
+    void finishApply(const Platform::ProcessActionResult& result)
+    {
+        m_ReadDue = true; // Read what the process has now, whichever way it went
+        if (result.success)
+        {
+            m_Error.clear();
+            return;
+        }
+        m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
+        if (!m_Changed)
+        {
+            m_Edit = m_Current.value_or(Platform::IoPriority{});
+        }
+    }
+
     /// Whether m_Current was read for exactly @p liveTarget.
     [[nodiscard]] bool hasCurrentFor(const Platform::ProcessTarget& liveTarget) const noexcept
     {
@@ -443,6 +485,9 @@ class ProcessIoPriorityView
     std::string m_ReadError;
     double m_LastReadSeconds = 0.0;
     bool m_ReadDue = true;
+    std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
+    // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
+    ProcessActionRun m_ApplyRun;
 };
 
 } // namespace App

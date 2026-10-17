@@ -36,6 +36,9 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    const Platform::ProcessTarget& target,
                                    bool realtimeSettable)
 {
+    // An apply finished on its worker since the last frame (#2305): its result first, so the read
+    // below sees the read it asks for.
+    update();
     // An edit made for another process is never shown for, or applied to, this one.
     (void) dropEditIfTargetMoved(target);
     (void) refreshCurrent(actions, target, ImGui::GetTime());
@@ -68,7 +71,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // shown is explicit: back to IOPRIO_CLASS_NONE, which follows the nice value.
     const auto& theme = UI::Theme::get();
     const ImGuiStyle& style = ImGui::GetStyle();
-    const bool enabled = canApply(target);
+    // Disabled, too, while an apply runs on its worker (#2305).
+    const bool enabled = canApply(target) && !applying();
     const bool waiting = waitingForProcessDetails(target);
     const bool showReset = m_Edit.ioClass != Platform::IoPriorityClass::None;
     // The panel does not scroll horizontally: when the pair is wider than it, Reset takes a row of its
@@ -131,13 +135,27 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
-        ImGui::SetTooltip("%s", waiting ? "Waiting for process details" : "Apply the selected I/O priority to the process");
+        const char* tooltip = "Apply the selected I/O priority to the process";
+        if (applying())
+        {
+            tooltip = "Applying the last change";
+        }
+        else if (waiting)
+        {
+            tooltip = "Waiting for process details";
+        }
+        ImGui::SetTooltip("%s", tooltip);
     }
     (void) UI::Widgets::trailingNote(currentDetail);
 
     // Wrapped at the content edge: the privilege and identity messages are long, and the panel does
     // not scroll horizontally, so unwrapped they would lose the remediation at narrow widths.
-    if (!m_Error.empty())
+    if (applying())
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", applyingText().c_str());
+    }
+    else if (!m_Error.empty())
     {
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0.0F);

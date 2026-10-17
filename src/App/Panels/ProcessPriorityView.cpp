@@ -332,6 +332,8 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
                                  std::optional<std::int32_t> currentNice,
                                  const Platform::ProcessTarget& target)
 {
+    // An apply finished on its worker since the last frame (#2305): its result line, now.
+    update();
     if (!capabilities.canSetPriority && !capabilities.canSetIoPriority)
     {
         return;
@@ -365,8 +367,13 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     ImGui::Spacing();
     renderApplyButton(actions, currentNice, target, controlRightEdge);
 
-    // Display persistent error message if priority change failed
-    if (!m_Error.empty())
+    // While an apply runs on its worker (#2305), what it is doing; then, if it failed, why.
+    if (applying())
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", applyingText().c_str());
+    }
+    else if (!m_Error.empty())
     {
         const auto& theme = UI::Theme::get();
         ImGui::Spacing();
@@ -627,7 +634,8 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     const auto& theme = UI::Theme::get();
     // Disabled without an edit, and also until a snapshot has confirmed the start time: no platform
     // acts on an unknown one (IProcessActions' checkProcessIdentity()).
-    const bool enabled = canApply(currentNice, target);
+    // Disabled, too, while an apply runs on its worker (#2305).
+    const bool enabled = canApply(currentNice, target) && !applying();
     const bool waiting = waitingForProcessDetails(currentNice, target);
 
     // Right-align the Apply button. As wide as its label, the same rule as Terminate's and Kill's
@@ -665,7 +673,16 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
-        ImGui::SetTooltip("%s", waiting ? "Waiting for process details" : "Apply the selected priority to the process");
+        const char* tooltip = "Apply the selected priority to the process";
+        if (applying())
+        {
+            tooltip = "Applying the last change";
+        }
+        else if (waiting)
+        {
+            tooltip = "Waiting for process details";
+        }
+        ImGui::SetTooltip("%s", tooltip);
     }
 }
 

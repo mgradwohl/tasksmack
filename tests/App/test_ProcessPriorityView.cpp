@@ -4,6 +4,7 @@
 /// the reset on a selection change, and that an apply is never replayed or sent to another process,
 /// without an ImGui context. render() itself is covered headless in test_ProcessPriorityViewRender.cpp.
 
+#include "App/Panels/PriorityEditTarget.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Domain/PriorityConfig.h"
@@ -13,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -151,6 +153,7 @@ TEST(ProcessPriorityViewTest, ApplySetsTheEditOnTheTargetWithItsStartTime)
     ProcessPriorityView view;
     view.editNice(10, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
 
     EXPECT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(mock.lastSetPriorityPid(), TARGET_A.pid);
@@ -170,6 +173,7 @@ TEST(ProcessPriorityViewTest, AnEditBeforeTheStartTimeIsKnownIsDroppedOnceItIs)
         ProcessPriorityView view;
         view.editNice(10, TARGET_A_UNCONFIRMED);
         view.apply(&mock, live, NICE_OF_A);
+        view.update(/*wait=*/true);
 
         EXPECT_EQ(mock.setPriorityCount(), 0);
         EXPECT_FALSE(view.hasPendingEdit());
@@ -189,6 +193,7 @@ TEST(ProcessPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeIsU
     EXPECT_TRUE(view.waitingForProcessDetails(NICE_OF_A, TARGET_A_UNCONFIRMED));
 
     view.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setPriorityCount(), 0);
     EXPECT_TRUE(view.hasPendingEdit()); // Kept until the start time is known, then dropped
 
@@ -197,6 +202,7 @@ TEST(ProcessPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeIsU
     known.editNice(10, TARGET_A);
     EXPECT_FALSE(known.canApply(NICE_OF_A, TARGET_A_UNCONFIRMED));
     known.apply(&mock, TARGET_A_UNCONFIRMED, NICE_OF_A);
+    known.update(/*wait=*/true);
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
 
@@ -238,6 +244,7 @@ TEST(ProcessPriorityViewTest, SameEditTargetRules)
         // canApply() on its own, with no dropEditIfTargetMoved() first: it must not rely on one.
         EXPECT_EQ(view.canApply(NICE_OF_A, c.live), c.applies);
         view.apply(&mock, c.live, NICE_OF_A);
+        view.update(/*wait=*/true);
         EXPECT_EQ(mock.setPriorityCount(), c.applies ? 1 : 0);
     }
 }
@@ -256,6 +263,7 @@ TEST(ProcessPriorityViewTest, CanApplyIsFalseForAnotherKnownProcessWithoutADropF
         EXPECT_TRUE(view.canApply(NICE_OF_A, TARGET_A)); // Still pending for A: canApply() changes nothing
 
         view.apply(&mock, other, NICE_OF_A);
+        view.update(/*wait=*/true);
         EXPECT_EQ(mock.setPriorityCount(), 0);
     }
 }
@@ -267,11 +275,13 @@ TEST(ProcessPriorityViewTest, SuccessClearsTheErrorAndEndsTheEdit)
     ProcessPriorityView view;
     view.editNice(-5, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     ASSERT_EQ(view.error(), "Permission denied");
 
     mock.setPriorityResult(Platform::ProcessActionResult::ok());
     view.editNice(5, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
 
     EXPECT_TRUE(view.error().empty());
     EXPECT_FALSE(view.hasPendingEdit());
@@ -287,6 +297,7 @@ TEST(ProcessPriorityViewTest, FailureShowsThePlatformMessageAndRevertsTheControl
     view.syncToProcess(2);
     view.editNice(-10, TARGET_A);
     view.apply(&mock, TARGET_A, 2);
+    view.update(/*wait=*/true);
 
     EXPECT_EQ(view.error(), "Permission denied");
     EXPECT_EQ(view.niceValue(), 2);
@@ -301,6 +312,7 @@ TEST(ProcessPriorityViewTest, AnotherEditClearsTheError)
     ProcessPriorityView view;
     view.editNice(-10, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     ASSERT_FALSE(view.error().empty());
 
     view.editNice(3, TARGET_A);
@@ -312,6 +324,7 @@ TEST(ProcessPriorityViewTest, NullActionsGiveAnUnavailableError)
     ProcessPriorityView view;
     view.editNice(5, TARGET_A);
     view.apply(nullptr, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(view.error(), "Process actions unavailable");
     EXPECT_FALSE(view.hasPendingEdit());
 }
@@ -328,7 +341,9 @@ TEST(ProcessPriorityViewTest, ASecondApplyIsNotAReplay)
         ProcessPriorityView view;
         view.editNice(8, TARGET_A);
         view.apply(&mock, TARGET_A, NICE_OF_A);
+        view.update(/*wait=*/true);
         view.apply(&mock, TARGET_A, NICE_OF_A);
+        view.update(/*wait=*/true);
         EXPECT_EQ(mock.setPriorityCount(), 1);
         EXPECT_FALSE(view.canApply(NICE_OF_A, TARGET_A));
     }
@@ -341,9 +356,11 @@ TEST(ProcessPriorityViewTest, ApplyWithNothingPendingDoesNothing)
     ProcessPriorityView view;
     view.editNice(8, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     ASSERT_EQ(view.error(), "denied");
 
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(view.error(), "denied"); // Left as it was
 }
@@ -355,6 +372,7 @@ TEST(ProcessPriorityViewTest, ASelectionChangeResetsTheEditAndTheError)
     ProcessPriorityView view;
     view.editNice(-3, TARGET_A);
     view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
     view.editNice(12, TARGET_A);
     ASSERT_TRUE(view.hasPendingEdit());
 
@@ -373,6 +391,7 @@ TEST(ProcessPriorityViewTest, AnEditIsNotAppliedAfterASelectionChange)
     view.editNice(12, TARGET_A);
     view.onSelectionChanged(); // B is selected
     view.apply(&mock, TARGET_B, 0);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
 
@@ -387,6 +406,7 @@ TEST(ProcessPriorityViewTest, AnEditIsNotAppliedToAnotherProcess)
         ProcessPriorityView view;
         view.editNice(12, TARGET_A);
         view.apply(&mock, other, 0);
+        view.update(/*wait=*/true);
         EXPECT_EQ(mock.setPriorityCount(), 0);
         EXPECT_FALSE(view.hasPendingEdit());
         EXPECT_EQ(view.editTarget().pid, -1);
@@ -415,6 +435,78 @@ TEST(ProcessPriorityViewTest, DropEditIfTargetMovedDropsAnUnknownIdentityOnceKno
 
     EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_A)); // Now known: the user edits again
     EXPECT_FALSE(view.hasPendingEdit());
+}
+
+/// Actions whose setPriority waits until the test opens the gate: a password prompt or a privileged
+/// helper's round trip as the view sees it (#2305).
+class GatedPriorityActions : public TestMocks::MockProcessActions
+{
+  public:
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, std::int32_t nice) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::setPriority(target, nice);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+TEST(ProcessPriorityViewTest, AnApplyRunsOnItsWorkerAndShowsWhatItIsDoing)
+{
+    GatedPriorityActions mock;
+    ProcessPriorityView view;
+    view.editNice(5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    EXPECT_TRUE(view.applying());
+    EXPECT_EQ(view.applyingText(), "Setting the priority of PID 1001...");
+    EXPECT_FALSE(view.hasPendingEdit()); // the edit is finished once sent
+
+    view.editNice(7, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A); // another apply waits for the first: nothing is sent
+    EXPECT_TRUE(view.hasPendingEdit());
+
+    mock.open();
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.applying());
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetPriorityNice(), 5);
+}
+
+TEST(ProcessPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
+{
+    GatedPriorityActions mock;
+    mock.setPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.onSelectionChanged(); // B is shown now
+    mock.open();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_TRUE(view.error().empty()); // A's failure is not shown for B
+    EXPECT_EQ(view.niceValue(), Domain::Priority::NORMAL_NICE);
+}
+
+TEST(ProcessPriorityViewTest, AFailedApplyKeepsAnEditMadeWhileItRan)
+{
+    GatedPriorityActions mock;
+    mock.setPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.editNice(9, TARGET_A);
+    mock.open();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(view.error(), "Permission denied");
+    EXPECT_EQ(view.niceValue(), 9); // not reverted under the user's new edit
+    EXPECT_TRUE(view.hasPendingEdit());
 }
 
 } // namespace

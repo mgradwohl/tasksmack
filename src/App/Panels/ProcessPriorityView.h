@@ -12,7 +12,13 @@
 //
 // Everything but render() is defined here, free of ImGui, so the edit and apply state can be tested
 // against a mock IProcessActions without an ImGui context (test_ProcessPriorityView.cpp).
+//
+// Apply runs on a worker of its own (ProcessActionRun, #2305), so a password prompt or a privileged
+// helper's round trip never holds the frame: render() takes the result in on a later frame through
+// update(). The panel declares the IProcessActions it passes in before this view, so the view (and its
+// worker, waited for) is destroyed first.
 
+#include "App/Panels/ProcessActionRun.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "PriorityEditTarget.h"
@@ -20,6 +26,7 @@
 #include "ProcessIoPriorityView.h"
 
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string>
 
@@ -115,6 +122,7 @@ class ProcessPriorityView
     /// priority control's.
     void onSelectionChanged() noexcept
     {
+        ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -184,14 +192,16 @@ class ProcessPriorityView
     }
 
     /// Apply was pressed with @p liveTarget selected: set the edited value on that target through
-    /// @p actions, captured now and checked against the process the edit was made for. Success clears
-    /// the error line; failure shows the platform's message and puts the control back at
-    /// @p currentNice. Either way the edit is finished, so a second apply does nothing until the next
-    /// edit. With no pending edit, one made for another process (dropped), or a start time not yet
-    /// known (kept, but not applicable: canApply()), there is no platform call.
+    /// @p actions, captured now and checked against the process the edit was made for, on the apply
+    /// worker (#2305); update() takes the result in on a later frame. Success clears the error line;
+    /// failure shows the platform's message and, unless the value has been edited again meanwhile, puts
+    /// the control back at @p currentNice. Either way the edit is finished, so a second apply does
+    /// nothing until the next edit. With no pending edit, one made for another process (dropped), a
+    /// start time not yet known (kept, but not applicable: canApply()), or an apply still running (kept),
+    /// there is no platform call. Null @p actions is the "unavailable" error at once.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget, std::optional<std::int32_t> currentNice)
     {
-        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget))
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(currentNice, liveTarget) || applying())
         {
             return;
         }
@@ -199,21 +209,45 @@ class ProcessPriorityView
         // same, known start time.
         const Platform::ProcessTarget target = m_EditTarget;
         const std::int32_t nice = m_NiceValue;
+        const std::int32_t revertTo = currentNice.value_or(Domain::Priority::NORMAL_NICE);
         m_Changed = false;
         m_EditTarget = NO_TARGET;
+        if (actions == nullptr)
+        {
+            finishApply(Platform::ProcessActionResult::error("Process actions unavailable"), revertTo);
+            return;
+        }
+        static_cast<void>(m_ApplyRun.start(
+            std::format("Setting the priority of PID {}...", target.pid),
+            [actions, target, nice] { return actions->setPriority(target, nice); },
+            [this, generation = m_Generation, revertTo](const Platform::ProcessActionResult& result)
+            {
+                if (generation == m_Generation)
+                {
+                    finishApply(result, revertTo);
+                }
+            }));
+    }
 
-        const Platform::ProcessActionResult result =
-            (actions != nullptr) ? actions->setPriority(target, nice) : Platform::ProcessActionResult::error("Process actions unavailable");
-        if (result.success)
-        {
-            m_Error.clear();
-        }
-        else
-        {
-            m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
-            // Back to the process's actual priority, since the change failed.
-            m_NiceValue = currentNice.value_or(Domain::Priority::NORMAL_NICE);
-        }
+    /// Each frame, before drawing: a finished apply's result, its own and the I/O priority control's,
+    /// goes to the error line. @p wait blocks until a running apply finishes (the tests' way to take it
+    /// in deterministically).
+    void update(bool wait = false)
+    {
+        m_ApplyRun.update(wait);
+        m_IoPriorityView.update(wait);
+    }
+
+    /// Whether an apply runs on the worker now: Apply is disabled and the line under it says so.
+    [[nodiscard]] bool applying() const noexcept
+    {
+        return m_ApplyRun.busy();
+    }
+
+    /// What the line under Apply says while applying(): "Setting the priority of PID 1234...".
+    [[nodiscard]] const std::string& applyingText() const noexcept
+    {
+        return m_ApplyRun.pendingText();
     }
 
     /// The value the control shows: the edit, or the process's own nice value.
@@ -266,11 +300,29 @@ class ProcessPriorityView
                            const Platform::ProcessTarget& target,
                            float controlRightEdge);
 
+    /// An apply's result, on the UI thread.
+    void finishApply(const Platform::ProcessActionResult& result, std::int32_t revertTo)
+    {
+        if (result.success)
+        {
+            m_Error.clear();
+            return;
+        }
+        m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
+        if (!m_Changed)
+        {
+            m_NiceValue = revertTo; // Back to the process's actual priority, since the change failed
+        }
+    }
+
     std::int32_t m_NiceValue = Domain::Priority::NORMAL_NICE;
     bool m_Changed = false;
     Platform::ProcessTarget m_EditTarget = NO_TARGET;
-    std::string m_Error; // Persistent error message for priority changes
+    std::string m_Error;            // Persistent error message for priority changes
+    std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
+    // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
+    ProcessActionRun m_ApplyRun;
 };
 
 } // namespace App

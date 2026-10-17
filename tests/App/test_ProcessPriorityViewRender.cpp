@@ -152,6 +152,7 @@ TEST_F(ProcessPriorityViewRenderTest, ApplyIsDisabledUntilAnEdit)
     ProcessPriorityView view;
     const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
 
@@ -163,12 +164,14 @@ TEST_F(ProcessPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedProce
     view.editNice(10, TARGET_A);
 
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
     EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
     EXPECT_EQ(mock.lastSetPriorityNice(), 10);
 
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // Disabled again
+    view.update(/*wait=*/true);                                               // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 1);
 }
 
@@ -182,6 +185,7 @@ TEST_F(ProcessPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeAppl
     view.editNice(10, TARGET_A);
 
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_B); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 0);
     EXPECT_FALSE(view.hasPendingEdit());
 }
@@ -195,6 +199,7 @@ TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     view.editNice(-10, TARGET_A);
 
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(view.error(), "Permission denied");
     EXPECT_EQ(view.niceValue(), 0);
@@ -511,6 +516,7 @@ TEST_F(ProcessPriorityViewRenderTest, PickingAClassOnTheSliderAndApplyingSetsTha
     EXPECT_EQ(mock.setPriorityCount(), 0); // Picking alone sends nothing
 
     click(apply, body);
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(mock.lastSetPriorityNice(), high);
     EXPECT_EQ(Detail::windowsPriorityClassFromNice(mock.lastSetPriorityNice()), Detail::WindowsPriorityClass::High);

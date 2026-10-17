@@ -5,6 +5,7 @@
 /// never replayed or sent to another process. render() is covered headless in
 /// test_ProcessIoPriorityViewRender.cpp.
 
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
@@ -12,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -289,6 +291,7 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledUntilTheCurrentValueIsRead)
     EXPECT_TRUE(view.waitingForProcessDetails(TARGET_A));
 
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
 
@@ -300,6 +303,7 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeI
     view.editIoPriority(IDLE, TARGET_A_UNCONFIRMED);
     EXPECT_FALSE(view.canApply(TARGET_A_UNCONFIRMED));
     view.apply(&mock, TARGET_A_UNCONFIRMED);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_TRUE(view.hasPendingEdit()); // Kept, but not applicable
 
@@ -320,6 +324,7 @@ TEST(ProcessIoPriorityViewTest, AStartTimeMismatchIsRefused)
 
     EXPECT_FALSE(view.canApply(TARGET_A_REUSED));
     view.apply(&mock, TARGET_A_REUSED);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_FALSE(view.hasPendingEdit());
 }
@@ -334,6 +339,7 @@ TEST(ProcessIoPriorityViewTest, AnEditIsNotAppliedToAnotherProcess)
 
     EXPECT_FALSE(view.canApply(TARGET_B));
     view.apply(&mock, TARGET_B);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
 
@@ -347,6 +353,7 @@ TEST(ProcessIoPriorityViewTest, ApplySetsTheEditOnTheTargetWithItsStartTime)
     view.editIoPriority({.ioClass = IoPriorityClass::BestEffort, .level = 6}, TARGET_A);
 
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
     EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
@@ -362,7 +369,9 @@ TEST(ProcessIoPriorityViewTest, ASecondApplyIsNotAReplay)
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
 
@@ -373,6 +382,7 @@ TEST(ProcessIoPriorityViewTest, ApplyAsksForAFreshRead)
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
 
     // Well inside the refresh interval, the next frame still reads what the process has now.
     mock.setIoPriorityReadResult(IDLE);
@@ -391,6 +401,7 @@ TEST(ProcessIoPriorityViewTest, FailureShowsThePlatformMessageAndRevertsTheContr
     view.editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, TARGET_A);
 
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(view.error(), "Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root).");
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4);
@@ -407,6 +418,7 @@ TEST(ProcessIoPriorityViewTest, NullActionsGiveAnUnavailableError)
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
     view.apply(nullptr, TARGET_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(view.error(), "Process actions unavailable");
 }
 
@@ -420,6 +432,7 @@ TEST(ProcessIoPriorityViewTest, ASelectionChangeResetsTheEditTheErrorAndTheRead)
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     view.editIoPriority(IDLE, TARGET_A);
     ASSERT_TRUE(view.hasPendingEdit());
 
@@ -432,6 +445,7 @@ TEST(ProcessIoPriorityViewTest, ASelectionChangeResetsTheEditTheErrorAndTheRead)
     // Even back on A, the edit is gone: nothing to apply.
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
 
@@ -443,6 +457,61 @@ TEST(ProcessIoPriorityViewTest, ThePriorityViewResetsItsIoControlOnASelectionCha
     priorityView.ioPriorityView().editIoPriority(IDLE, TARGET_A);
     priorityView.onSelectionChanged();
     EXPECT_FALSE(priorityView.ioPriorityView().hasPendingEdit());
+}
+
+/// Actions whose setIoPriority waits until the test opens the gate (#2305).
+class GatedIoPriorityActions : public TestMocks::MockProcessActions
+{
+  public:
+    [[nodiscard]] Platform::ProcessActionResult
+    setIoPriority(const Platform::ProcessTarget& target, IoPriorityClass ioClass, std::int32_t level) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::setIoPriority(target, ioClass, level);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+// #2305: the apply runs on its worker, and the current value is read again only once its result is in,
+// so the read shows what the change left, not what was there before it.
+TEST(ProcessIoPriorityViewTest, TheCurrentValueIsReadAgainOnlyAfterTheApplysResult)
+{
+    GatedIoPriorityActions mock;
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+    view.apply(&mock, TARGET_A);
+    EXPECT_TRUE(view.applying());
+    EXPECT_EQ(view.applyingText(), "Setting the I/O priority of PID 1001...");
+    EXPECT_FALSE(view.refreshCurrent(&mock, TARGET_A, 0.1)); // nothing asked for a read yet
+
+    mock.open();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.setIoPriorityCount(), 1);
+    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A, 0.2)); // now it is
+}
+
+TEST(ProcessIoPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
+{
+    GatedIoPriorityActions mock;
+    mock.setIoPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+    view.apply(&mock, TARGET_A);
+    view.onSelectionChanged();
+    mock.open();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.setIoPriorityCount(), 1);
+    EXPECT_TRUE(view.error().empty());
 }
 
 } // namespace

@@ -5,6 +5,7 @@
 /// edit; a click on Apply sets the edit on the selected process once; an edit made for another process
 /// is dropped before it can be applied; and a failed apply shows the error line.
 
+#include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -158,6 +159,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsDisabledUntilAnEdit)
     ProcessPriorityView view;
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
     click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
@@ -173,6 +175,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedPro
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
 
     click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(mock.setPriorityCount(), 0); // The nice control's Apply is a different button
     EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
@@ -180,6 +183,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedPro
     EXPECT_EQ(mock.lastSetIoPriority(), IDLE);
 
     click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); }); // Disabled again
+    view.update(/*wait=*/true);                                             // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
 
@@ -194,6 +198,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeAp
     view.ioPriorityView().editIoPriority(IDLE, TARGET_A);
 
     click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_B); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_FALSE(view.ioPriorityView().hasPendingEdit());
 }
@@ -208,6 +213,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     view.ioPriorityView().editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, TARGET_A);
 
     click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(view.ioPriorityView().error(), "Permission denied");
     EXPECT_EQ(view.ioPriorityView().shownIoPriority(), BEST_EFFORT_4);
