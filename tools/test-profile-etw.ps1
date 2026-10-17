@@ -241,17 +241,22 @@ try {
 
     # The recording is a log of events, so the order of trace start/stop against the app is checked.
     $script:events = [System.Collections.Generic.List[string]]::new()
-    $script:stubLeaf = $null
-    function Test-StubRunning([string]$Leaf) {
+    $script:stubPath = $null
+    function Test-StubRunning([string]$Path) {
+        # Matched by the stub's full path, which holds this run's own $root, not its file name: a
+        # cmd.exe running another copy of this script's stubs (a second ctest in another checkout or
+        # worktree, which RESOURCE_LOCK can't serialise with this one) must not count (#2054).
         # Each match's own exit state decides, not its presence in the list: a process that has
         # exited can still be listed for a while, and longer under load, while a handle to it is
         # open, as Invoke-AppCapture keeps one (#1438).
-        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object { $_.CommandLine -like "*$Leaf*" } | Where-Object {
+        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object {
+                $null -ne $_.CommandLine -and $_.CommandLine.IndexOf($Path, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            } | Where-Object {
                 try { -not (Get-Process -Id $_.ProcessId -ErrorAction Stop).HasExited } catch { $false }
             }).Count -gt 0
     }
     $traceStart = { $script:events.Add('start') }
-    $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubLeaf))") }
+    $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubPath))") }
     function Invoke-StubCapture {
         param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart, [switch]$UseUserConfig)
         $script:events.Clear()
@@ -269,7 +274,7 @@ try {
             }
             Microsoft.PowerShell.Utility\Write-Host $text
         }
-        $script:stubLeaf = Split-Path -Leaf $App
+        $script:stubPath = $App
         $watch = [Diagnostics.Stopwatch]::StartNew()
         # 3>$null: the no-main-window warning is expected for a hidden stub.
         $r = Invoke-AppCapture -BinaryPath $App -StartTrace $StartTrace -StopTrace $traceStop -DurationSeconds $DurationSeconds `
@@ -353,7 +358,7 @@ try {
     $failed = try { Invoke-StubCapture -App $runForever -DurationSeconds 30 -WarmupSeconds 0 -StartTrace { throw 'UAC denied' }; $null } catch { $_ }
     Assert-True ($null -ne $failed -and $failed.ToString() -like '*UAC denied*') "A failed trace start must throw: $failed"
     Assert-True ($script:events.Count -eq 0) "Nothing to stop after a failed start: $($script:events -join ', ')"
-    Assert-True (-not (Test-StubRunning 'run-forever.cmd')) 'The app launched for a failed capture was left running'
+    Assert-True (-not (Test-StubRunning $runForever)) 'The app launched for a failed capture was left running'
 
     # The elevated-run role cannot run without -ElevatedTarget, which names and labels the capture
     # as elevated. Checked before elevation, so this needs no elevated token.
@@ -515,7 +520,7 @@ try {
                 Assert-True ($run.Output -notmatch 'ETW_TRACE=') "Elevated $($case.Mode) run with a failed stop must not report a trace"
                 Assert-StopRetried "elevated $($case.Mode)"
             }
-            Assert-True (-not (Test-StubRunning 'run-forever.cmd')) 'The elevated run left the app running'
+            Assert-True (-not (Test-StubRunning $runForever)) 'The elevated run left the app running'
         }
         finally {
             $env:PATH = $savedPath
