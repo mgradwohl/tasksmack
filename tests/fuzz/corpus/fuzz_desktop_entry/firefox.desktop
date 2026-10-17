@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Firefox
+Exec=/usr/lib/firefox/firefox %u
+Icon=firefox
+StartupWMClass=firefox
+Type=Application
+
+[Desktop Action new-window]
+Exec=firefox --new-window %u

@@ -69,6 +69,15 @@ seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
 build_fuzzer fuzz_networkd_json
 seed_corpus fuzz_networkd_json tests/fuzz/corpus/fuzz_networkd_json/*
 
+# The DNS reply parser (#2172): header-only, the only parser fed bytes from the network. Seeded with A,
+# AAAA and NXDOMAIN replies, a compression pointer that points at itself, and an RDLENGTH past the end.
+build_fuzzer fuzz_dns_message
+seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
+
+# The .desktop entry parser (#2172): header-only, on files any program the user runs can write.
+build_fuzzer fuzz_desktop_entry
+seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*
+
 # The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
 # buffers and udev partition type strings.
 build_fuzzer fuzz_partition_layout

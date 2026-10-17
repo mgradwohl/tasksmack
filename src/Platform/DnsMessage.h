@@ -158,7 +158,11 @@ constexpr int MAX_POINTERS = 16;
                                                                        std::span<const std::uint8_t> query)
 {
     using Detail::read16;
-    if (query.size() <= Detail::HEADER_SIZE || reply.size() < Detail::HEADER_SIZE)
+    // The query needs at least a question: a name (the root's one byte at least), its type and class.
+    // Its type is read from the question's last four bytes, which a shorter query doesn't have (#2172,
+    // found by fuzz_dns_message passing its input as the query too; buildQuery()'s queries always do).
+    constexpr std::size_t MIN_QUESTION = 1 + 4;
+    if (query.size() < Detail::HEADER_SIZE + MIN_QUESTION || reply.size() < Detail::HEADER_SIZE)
     {
         return AnswerError::Malformed;
     }

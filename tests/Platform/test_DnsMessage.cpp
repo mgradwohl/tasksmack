@@ -158,6 +158,10 @@ TEST(DnsMessageTest, RefusesMalformedReplies)
     const Bytes query = buildQuery(13, "myip.opendns.com", RecordType::A);
     EXPECT_EQ(std::get<AnswerError>(parseAnswer(Bytes{0x00, 0x0D}, query)), AnswerError::Malformed) << "shorter than a header";
     EXPECT_EQ(std::get<AnswerError>(parseAnswer(reply(query, 0, {}), Bytes{})), AnswerError::Malformed) << "no query";
+    // #2172: a query with less than a whole question (fuzz_dns_message found the out-of-bounds read of
+    // its type). The reply here repeats it, as a reply to such a query would.
+    const Bytes shortQuery{0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x0D, 0x01, 0x00, 0x00, 0x83};
+    EXPECT_EQ(std::get<AnswerError>(parseAnswer(shortQuery, shortQuery)), AnswerError::Malformed) << "query shorter than a question";
 
     Bytes truncated = reply(query, 1, record(1, {1, 2, 3, 4}));
     truncated[2] = static_cast<std::uint8_t>(truncated[2] | 0x02U);
