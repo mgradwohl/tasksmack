@@ -52,6 +52,8 @@ Published packages are built with default compiler optimizations and run on any 
 
 Every release asset is signed with Sigstore; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
 
+Windows release binaries are to be Authenticode-signed through SignPath Foundation (being set up in [#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); see the [Code signing policy](docs/code-signing-policy.md).
+
 ## Documentation
 
 | Document | Scope |
