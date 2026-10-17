@@ -62,11 +62,8 @@ namespace TestSupport
     {
         return false;
     }
-#if defined(_WIN32) && !defined(_WIN64)
-    using GetStringFn = const unsigned char*(__stdcall*) (unsigned int);
-#else
+    // 64-bit builds only (#2214): no __stdcall, which only 32-bit x86 Windows distinguished.
     using GetStringFn = const unsigned char* (*) (unsigned int);
-#endif
     constexpr unsigned int GL_VERSION_ENUM = 0x1F02; // GL_VERSION
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SDL returns GL entry points as a generic function pointer
     const auto getString = reinterpret_cast<GetStringFn>(SDL_GL_GetProcAddress("glGetString"));

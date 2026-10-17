@@ -272,6 +272,9 @@ rather than in per-file headers.
 
 ## Build
 
+TaskSmack builds only 64-bit targets (x64 today; ARM64 is planned, #2214). Configuring for a 32-bit
+target fails at configure time.
+
 This repo uses CMake Presets; list them with:
 
 ```bash

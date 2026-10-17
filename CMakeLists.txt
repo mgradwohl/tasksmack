@@ -19,6 +19,15 @@ include(cmake/RCCompiler.cmake)
 # Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
 project(TaskSmack VERSION 0.9.0 LANGUAGES C CXX)
 
+# 64-bit targets only (x64, ARM64): nothing builds, tests or ships 32-bit, and the code no longer
+# carries 32-bit branches (#2214). Fail here, before any dependency is configured, rather than
+# deep inside a build.
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "TaskSmack builds only 64-bit targets (x64, ARM64); this toolchain targets "
+                        "${CMAKE_SIZEOF_VOID_P}-byte pointers. "
+                        "See https://github.com/mgradwohl/tasksmack/issues/2214.")
+endif()
+
 # Focused modules keep this root file declarative. Order matters:
 #   Options          - cache options consumed by every later module
 #   CompilerOptions  - toolchain, warnings, hardening, ccache, IPO, linker selection

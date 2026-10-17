@@ -49,8 +49,8 @@
 
 #include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
 
-#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
-#include <intrin.h> // __cpuid: the hypervisor-present bit (#809)
+#if defined(_M_X64) || defined(__x86_64__)
+#include <intrin.h> // __cpuid: the hypervisor-present bit (#809); x64 only (64-bit builds only, #2214)
 #endif
 
 namespace Platform
@@ -271,7 +271,8 @@ void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails&
 {
     details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
     details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
-#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+    // CPUID is x64-only; on ARM64 hypervisorPresent stays unknown (#2214).
+#if defined(_M_X64) || defined(__x86_64__)
     std::array<int, 4> registers{};
     __cpuid(registers.data(), 1);
     details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
