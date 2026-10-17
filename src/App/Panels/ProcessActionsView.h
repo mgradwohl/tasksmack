@@ -98,8 +98,6 @@ inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
 
 /// How long a result line stays up after an action is dispatched, in seconds.
 inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
-/// How long a result line offering "Authenticate and retry" stays up: long enough to read it and decide (#2308).
-inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 
 /// The "Trace system calls (strace)" button's label, also its ImGui ID.
 inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";

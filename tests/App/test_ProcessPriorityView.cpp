@@ -509,5 +509,48 @@ TEST(ProcessPriorityViewTest, AFailedApplyKeepsAnEditMadeWhileItRan)
     EXPECT_TRUE(view.hasPendingEdit());
 }
 
+// #2308: a permission refusal, where the actions can ask for authorization, offers "Authenticate and
+// retry", which sends the same change through runAuthorized().
+TEST(ProcessPriorityViewTest, APermissionRefusalOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(-5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_EQ(view.error(), "Permission denied");
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    view.retryAuthorized();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetPriority);
+    EXPECT_EQ(mock.lastAuthorizedAction().nice, -5);
+    EXPECT_EQ(mock.lastAuthorizedAction().target, TARGET_A);
+    EXPECT_TRUE(view.error().empty());
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+TEST(ProcessPriorityViewTest, NoRetryIsOfferedWhereThePlatformCannotAskOrAfterANewEdit)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    view.editNice(-5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.offersAuthenticateAndRetry()); // the mock can't ask
+
+    mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
+    view.editNice(-6, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+    view.editNice(3, TARGET_A); // a new edit replaces the refused one
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
 } // namespace
 } // namespace App

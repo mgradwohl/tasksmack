@@ -313,6 +313,18 @@ class ProcessesPanel : public Panel
         m_RowActionRun.update(/*wait=*/true);
     }
 
+    /// Whether the toolbar offers "Authenticate and retry" after a refused row action (#2308).
+    [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
+    {
+        return m_RowRetry.has_value() && m_RowActionResultSeconds > 0.0F && !rowActionRunning();
+    }
+
+    /// Presses the toolbar's "Authenticate and retry", for tests.
+    void retryRowActionAuthorizedForTesting()
+    {
+        retryRowActionAuthorized();
+    }
+
     /// End of frame: drop a shortcut request this frame's render did not take (#170).
     void expireFrameRequests() noexcept
     {
@@ -453,10 +465,25 @@ class ProcessesPanel : public Panel
     {
         return m_BatchRun.busy() || m_RowActionRun.busy();
     }
+    /// Turns a row action's result into the toolbar's line.
+    using RowResultFormat = std::function<Detail::ActionResultMessage(const Platform::ProcessActionResult&)>;
     /// Starts @p work (a platform call through m_ProcessActions) on the row action worker, the toolbar
-    /// showing @p pending until it finishes; @p format turns its result into the toolbar's line.
-    template<typename Work, typename Format> void runRowAction(std::string pending, Work work, Format format);
+    /// showing @p pending until it finishes; @p format turns its result into the toolbar's line. A
+    /// permission refusal of @p retry, where the actions can ask for authorization, offers
+    /// "Authenticate and retry" beside the line (#2308).
+    template<typename Work>
+    void runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry);
     void showRowActionResult(Detail::ActionResultMessage message, bool succeeded);
+    /// The toolbar's "Authenticate and retry" was pressed: the refused action again, as an
+    /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
+    void retryRowActionAuthorized();
+    /// A refused single-process action "Authenticate and retry" would redo, and its line's wording.
+    struct RowRetry
+    {
+        Platform::AuthorizedAction action;
+        RowResultFormat format;
+    };
+    std::optional<RowRetry> m_RowRetry;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the

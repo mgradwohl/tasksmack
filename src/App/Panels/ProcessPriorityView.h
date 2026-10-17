@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <stop_token>
 #include <string>
 
 namespace App
@@ -123,6 +124,7 @@ class ProcessPriorityView
     void onSelectionChanged() noexcept
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
+        m_Retry.reset();
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -154,6 +156,7 @@ class ProcessPriorityView
         m_Changed = true;
         m_EditTarget = target;
         m_Error.clear();
+        m_Retry.reset(); // a new edit replaces the refused one
     }
 
     /// Drops a pending edit that may be for a process other than @p liveTarget, which the panel can
@@ -217,14 +220,50 @@ class ProcessPriorityView
             finishApply(Platform::ProcessActionResult::error("Process actions unavailable"), revertTo);
             return;
         }
+        m_Retry.reset();
+        Platform::AuthorizedAction retry;
+        retry.kind = Platform::AuthorizedAction::Kind::SetPriority;
+        retry.target = target;
+        retry.nice = nice;
         static_cast<void>(m_ApplyRun.start(
             std::format("Setting the priority of PID {}...", target.pid),
             [actions, target, nice] { return actions->setPriority(target, nice); },
-            [this, generation = m_Generation, revertTo](const Platform::ProcessActionResult& result)
+            [this, generation = m_Generation, revertTo, actions, retry](const Platform::ProcessActionResult& result)
             {
                 if (generation == m_Generation)
                 {
                     finishApply(result, revertTo);
+                    offerRetry(result, actions, retry, revertTo);
+                }
+            }));
+    }
+
+    /// Whether the error line offers "Authenticate and retry" (#2308): the last apply was refused for want
+    /// of permission, the platform can ask for authorization, and nothing has changed since.
+    [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
+    {
+        return m_Retry.has_value() && !applying();
+    }
+
+    /// "Authenticate and retry" was pressed: the refused change again, as an administrator, after the
+    /// password prompt (IProcessActions::runAuthorized()), on the apply worker.
+    void retryAuthorized()
+    {
+        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
+        {
+            return;
+        }
+        const Retry retry = *m_Retry;
+        m_Retry.reset();
+        static_cast<void>(m_ApplyRun.start(
+            std::format("Waiting for authorization to set the priority of PID {}...", retry.action.target.pid),
+            [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
+            { return actions->runAuthorized(action, stopToken); },
+            [this, generation = m_Generation, revertTo = retry.revertTo](const Platform::ProcessActionResult& result)
+            {
+                if (generation == m_Generation)
+                {
+                    finishApply(result, revertTo); // a refusal to the administrator isn't offered again
                 }
             }));
     }
@@ -300,6 +339,28 @@ class ProcessPriorityView
                            const Platform::ProcessTarget& target,
                            float controlRightEdge);
 
+    /// A permission refusal the platform can ask to redo (#2308): what "Authenticate and retry" sends,
+    /// through the panel's actions (which outlive this view), and where a failure puts the control.
+    struct Retry
+    {
+        Platform::AuthorizedAction action;
+        Platform::IProcessActions* actions = nullptr;
+        std::int32_t revertTo = Domain::Priority::NORMAL_NICE;
+    };
+
+    /// After an apply's result: offer "Authenticate and retry" when it was refused for want of
+    /// permission and @p actions can ask for authorization.
+    void offerRetry(const Platform::ProcessActionResult& result,
+                    Platform::IProcessActions* actions,
+                    const Platform::AuthorizedAction& action,
+                    std::int32_t revertTo)
+    {
+        if (result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+        {
+            m_Retry = Retry{.action = action, .actions = actions, .revertTo = revertTo};
+        }
+    }
+
     /// An apply's result, on the UI thread.
     void finishApply(const Platform::ProcessActionResult& result, std::int32_t revertTo)
     {
@@ -321,6 +382,7 @@ class ProcessPriorityView
     std::string m_Error;            // Persistent error message for priority changes
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
+    std::optional<Retry> m_Retry;
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

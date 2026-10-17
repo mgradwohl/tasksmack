@@ -32,6 +32,7 @@
 #include <format>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -244,6 +245,7 @@ class ProcessIoPriorityView
     void onSelectionChanged() noexcept
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
+        m_Retry.reset();
         m_Edit = {};
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -316,6 +318,7 @@ class ProcessIoPriorityView
         m_Changed = true;
         m_EditTarget = target;
         m_Error.clear();
+        m_Retry.reset(); // a new edit replaces the refused one
     }
 
     /// The user picked class @p ioClass in the combo for @p target. A class with levels keeps the
@@ -382,14 +385,53 @@ class ProcessIoPriorityView
             finishApply(Platform::ProcessActionResult::error("Process actions unavailable"));
             return;
         }
+        m_Retry.reset();
+        Platform::AuthorizedAction retry;
+        retry.kind = Platform::AuthorizedAction::Kind::SetIoPriority;
+        retry.target = target;
+        retry.ioClass = priority.ioClass;
+        retry.level = priority.level;
         static_cast<void>(m_ApplyRun.start(
             std::format("Setting the I/O priority of PID {}...", target.pid),
             [actions, target, priority] { return actions->setIoPriority(target, priority.ioClass, priority.level); },
-            [this, generation = m_Generation](const Platform::ProcessActionResult& result)
+            [this, generation = m_Generation, actions, retry](const Platform::ProcessActionResult& result)
             {
                 if (generation == m_Generation)
                 {
                     finishApply(result);
+                    if (result.permissionDenied && actions->actionCapabilities().canAuthorizeInteractively)
+                    {
+                        m_Retry = Retry{.action = retry, .actions = actions};
+                    }
+                }
+            }));
+    }
+
+    /// Whether the error line offers "Authenticate and retry" (#2308), as ProcessPriorityView's does.
+    [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
+    {
+        return m_Retry.has_value() && !applying();
+    }
+
+    /// "Authenticate and retry" was pressed: the refused change again, as an administrator, after the
+    /// password prompt (IProcessActions::runAuthorized()), on the apply worker.
+    void retryAuthorized()
+    {
+        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
+        {
+            return;
+        }
+        const Retry retry = *m_Retry;
+        m_Retry.reset();
+        static_cast<void>(m_ApplyRun.start(
+            std::format("Waiting for authorization to set the I/O priority of PID {}...", retry.action.target.pid),
+            [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
+            { return actions->runAuthorized(action, stopToken); },
+            [this, generation = m_Generation](const Platform::ProcessActionResult& result)
+            {
+                if (generation == m_Generation)
+                {
+                    finishApply(result); // a refusal to the administrator isn't offered again
                 }
             }));
     }
@@ -452,6 +494,14 @@ class ProcessIoPriorityView
   private:
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
+    /// A permission refusal the platform can ask to redo (#2308), through the panel's actions (which
+    /// outlive this view).
+    struct Retry
+    {
+        Platform::AuthorizedAction action;
+        Platform::IProcessActions* actions = nullptr;
+    };
+
     /// An apply's result, on the UI thread.
     void finishApply(const Platform::ProcessActionResult& result)
     {
@@ -486,6 +536,7 @@ class ProcessIoPriorityView
     double m_LastReadSeconds = 0.0;
     bool m_ReadDue = true;
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
+    std::optional<Retry> m_Retry;
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

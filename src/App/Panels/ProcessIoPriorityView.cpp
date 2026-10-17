@@ -161,6 +161,15 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
         ImGui::PopTextWrapPos();
+        // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
+        if (offersAuthenticateAndRetry())
+        {
+            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+            {
+                retryAuthorized();
+            }
+            ImGui::SetItemTooltip("Asks for an administrator's password, then sets the I/O priority as the administrator");
+        }
     }
     else if (!m_ReadError.empty())
     {

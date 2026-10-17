@@ -514,5 +514,34 @@ TEST(ProcessIoPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
     EXPECT_TRUE(view.error().empty());
 }
 
+// #2308: as for the nice control, a permission refusal offers "Authenticate and retry".
+TEST(ProcessIoPriorityViewTest, APermissionRefusalOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetIoPriority = true, .canAuthorizeInteractively = true});
+    mock.setIoPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    view.retryAuthorized();
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetIoPriority);
+    EXPECT_EQ(mock.lastAuthorizedAction().ioClass, IoPriorityClass::Idle);
+    EXPECT_TRUE(view.error().empty());
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+
+    view.editIoPriority(IDLE, TARGET_A); // the refusal put the control back at Best-effort 4
+    view.apply(&mock, TARGET_A);
+    view.update(/*wait=*/true);
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
 } // namespace
 } // namespace App

@@ -77,6 +77,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -143,6 +144,8 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
 
 // How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
+/// The toolbar's offer after a refused single-process action (#2308): the lock and the words.
+constexpr const char* AUTHENTICATE_AND_RETRY_LABEL = ICON_FA_LOCK "  Authenticate and retry";
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
 {
@@ -1447,7 +1450,11 @@ void ProcessesPanel::renderContent()
     // In tree view, Expand all and Collapse all follow the List | Tree control (#838).
     const float foldButtonWidth = m_TextSizeCache.foldIconWidth + (style.FramePadding.x * 2.0F);
     const float foldButtonsWidth = m_TreeViewEnabled ? (style.ItemSpacing.x + foldButtonWidth) * 2.0F : 0.0F;
-    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth;
+    // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
+    const bool offerRetry = offersAuthenticateAndRetry();
+    const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AUTHENTICATE_AND_RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
+                                (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
@@ -1512,6 +1519,15 @@ void ProcessesPanel::renderContent()
         {
             ImGui::PopStyleColor();
         }
+    }
+    if (offerRetry)
+    {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(AUTHENTICATE_AND_RETRY_LABEL))
+        {
+            retryRowActionAuthorized();
+        }
+        ImGui::SetItemTooltip("Asks for an administrator's password, then does it as the administrator");
     }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
@@ -2953,6 +2969,7 @@ void ProcessesPanel::renderBatchPriorityDialog()
 
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
 {
+    m_RowRetry.reset();
     m_RowActionResult = std::move(outcome.message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (outcome.anySucceeded)
@@ -2973,10 +2990,12 @@ void ProcessesPanel::renderAffinityDialog()
         std::format("Setting the CPU affinity of PID {}...", target.pid),
         [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
         [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
-        { return affinityResultMessage(name, pid, cpus, result); });
+        { return affinityResultMessage(name, pid, cpus, result); },
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
 }
 
-template<typename Work, typename Format> void ProcessesPanel::runRowAction(std::string pending, Work work, Format format)
+template<typename Work>
+void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry)
 {
     if (!m_ProcessActions)
     {
@@ -2988,15 +3007,41 @@ template<typename Work, typename Format> void ProcessesPanel::runRowAction(std::
         showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
         return;
     }
-    // The formatter is moved, never copied, into the finish: it may hold the process's name.
-    static_cast<void>(m_RowActionRun.start(std::move(pending),
-                                           std::move(work),
-                                           [this, format = std::move(format)](const Platform::ProcessActionResult& result)
-                                           { showRowActionResult(format(result), result.success); }));
+    static_cast<void>(m_RowActionRun.start(
+        std::move(pending),
+        std::move(work),
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the std::function moved into the finish is owned by it, not leaked
+        [this, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
+        {
+            showRowActionResult(format(result), result.success);
+            if (result.permissionDenied && retry.has_value() && m_ProcessActions &&
+                m_ProcessActions->actionCapabilities().canAuthorizeInteractively)
+            {
+                m_RowRetry = RowRetry{.action = *retry, .format = format};
+                m_RowActionResultSeconds = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
+            }
+        }));
+}
+
+void ProcessesPanel::retryRowActionAuthorized()
+{
+    if (!m_RowRetry.has_value() || !offersAuthenticateAndRetry())
+    {
+        return;
+    }
+    RowRetry retry = std::move(*m_RowRetry);
+    m_RowRetry.reset();
+    runRowAction(
+        std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
+        [actions = m_ProcessActions.get(), action = retry.action](const std::stop_token& stopToken)
+        { return actions->runAuthorized(action, stopToken); },
+        std::move(retry.format),
+        std::nullopt); // a refusal to the administrator isn't offered again
 }
 
 void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)
 {
+    m_RowRetry.reset();
     m_RowActionResult = std::move(message);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (succeeded)
@@ -3047,7 +3092,8 @@ void ProcessesPanel::renderRowActionConfirm()
         std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
         [actions = m_ProcessActions.get(), action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
         [action, pid = target.pid](const Platform::ProcessActionResult& result)
-        { return Detail::formatActionResultMessage(action, pid, result); });
+        { return Detail::formatActionResultMessage(action, pid, result); },
+        Detail::authorizedActionFor(action, target));
 }
 
 } // namespace App

@@ -54,6 +54,9 @@ enum class ProcessAction : std::uint8_t
     return "";
 }
 
+/// How long a result line offering "Authenticate and retry" stays up: long enough to read it and decide (#2308).
+inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
+
 /// @p action on @p target as an administrator would redo it (#2308): "Authenticate and retry" after a
 /// permission refusal. Nullopt for None.
 [[nodiscard]] inline std::optional<Platform::AuthorizedAction> authorizedActionFor(ProcessAction action,

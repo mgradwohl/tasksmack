@@ -950,6 +950,35 @@ TEST_F(ProcessesPanelRenderTest, ARowActionRunsOffTheFrameAndShowsItsProgress)
     panel->onDetach();
 }
 
+// #2308: a row action refused for want of permission, where the actions can ask for authorization,
+// offers "Authenticate and retry" in the toolbar; pressing it sends the action through runAuthorized().
+TEST_F(ProcessesPanelRenderTest, ARefusedRowActionOffersAuthenticateAndRetry)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    actions->setCapabilities({.canTerminate = true, .canKill = true, .canAuthorizeInteractively = true});
+    actions->setKillResult(Platform::ProcessActionResult::denied("Permission denied - process belongs to another user"));
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, std::format("{} Kill...###Kill", ICON_FA_SKULL));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalFilledButton(*panel, "Kill");
+    panel->waitForRowActionForTesting();
+    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
+    EXPECT_NE(renderAndCapture(*panel).find("Authenticate and retry"), std::string::npos) << "drawn in the toolbar";
+
+    panel->retryRowActionAuthorizedForTesting();
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->runAuthorizedCount(), 1);
+    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::Kill);
+    EXPECT_EQ(actions->lastAuthorizedAction().target.pid, menuPid.value_or(-1));
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry());
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, F9OnOneSelectedRowAsksToKillThatProcess)
 {
     TestMocks::MockProcessActions* actions = nullptr;
