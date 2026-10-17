@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Domain
@@ -50,10 +51,18 @@ void appendSensorHistory(SensorHistory& history, double value, double nowSeconds
 /// A pause longer than this many sensor refreshes breaks a sensor's history line.
 inline constexpr double SENSOR_HISTORY_GAP_INTERVALS = 3.0;
 
-/// A sensor's key in SystemInfoSnapshot::sensorRanges: "device: label", as its row is labelled.
-[[nodiscard]] inline std::string sensorRangeKey(std::string_view device, std::string_view label)
+/// A sensor's key in SystemInfoSnapshot::sensorRanges and sensorHistories: its device's and its own
+/// identity (SensorDevice::id, SensorReading::id), never its label, so two channels that share a label
+/// (two "acpitz" zones, a voltage and a current both "VDD_IN") keep their own range and history (#2340).
+/// From a source without ids, the device's name and the reading's kind and label stand in.
+[[nodiscard]] inline std::string sensorKey(const Platform::SensorDevice& device, const Platform::SensorReading& reading)
 {
-    return std::format("{}: {}", device, label);
+    const std::string_view deviceId = device.id.empty() ? std::string_view(device.name) : std::string_view(device.id);
+    if (!reading.id.empty())
+    {
+        return std::format("{}\x1F{}", deviceId, reading.id);
+    }
+    return std::format("{}\x1F{}\x1F{}", deviceId, std::to_underlying(reading.kind), reading.label);
 }
 
 struct SystemInfoSnapshot
@@ -73,7 +82,7 @@ struct SystemInfoSnapshot
     Platform::CrashesInfo crashes;
     Platform::NetworkAdaptersInfo adapters;
     Platform::BootPerformanceInfo boot;
-    /// Each sensor's range over the reads so far (sensorRangeKey()); full reads and readSensors() add to it.
+    /// Each sensor's range over the reads so far (sensorKey()); full reads and readSensors() add to it.
     std::map<std::string, SensorRange> sensorRanges;
     /// Each sensor's recent readings, keyed as sensorRanges; appended to by the same reads (#1522).
     std::map<std::string, SensorHistory> sensorHistories;

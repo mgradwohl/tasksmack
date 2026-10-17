@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -22,6 +23,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace Domain
 {
@@ -146,8 +148,19 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    /// Each sensors read returns the next of @p reads (the last one again once they run out), in place
+    /// of the one coretemp sensor (#2340).
+    void scriptSensors(std::vector<Platform::SensorsInfo> reads)
+    {
+        m_ScriptedSensors = std::move(reads);
+    }
+
     [[nodiscard]] Platform::SensorsInfo readSensors() override
     {
+        if (!m_ScriptedSensors.empty())
+        {
+            return m_ScriptedSensors.at(std::min(m_SensorReads++, m_ScriptedSensors.size() - 1));
+        }
         Platform::SensorsInfo info;
         info.available = true;
         info.listed = true;
@@ -155,8 +168,10 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         constexpr std::array<double, 3> TEMPERATURES{50.0, 40.0, 60.0};
         Platform::SensorDevice device;
         device.name = "coretemp";
+        device.id = "hwmon2";
         device.readings.push_back({.kind = Platform::SensorKind::Temperature,
                                    .label = "Package id 0",
+                                   .id = "temp1",
                                    .value = TEMPERATURES.at(m_SensorReads++ % TEMPERATURES.size()),
                                    .high = std::nullopt,
                                    .critical = std::nullopt});
@@ -217,8 +232,27 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     ReadOsThrows m_Throws;
     std::chrono::milliseconds m_ReadOsDelay;
     std::size_t m_SensorReads = 0;
+    std::vector<Platform::SensorsInfo> m_ScriptedSensors;
     int* m_PublicIpReads = nullptr;
 };
+
+/// The key of the coretemp sensor FakeSystemInfoProbe reads by default.
+[[nodiscard]] std::string coretempKey()
+{
+    return sensorKey(Platform::SensorDevice{.name = "coretemp", .id = "hwmon2", .readings = {}},
+                     Platform::SensorReading{.kind = Platform::SensorKind::Temperature,
+                                             .label = "Package id 0",
+                                             .id = "temp1",
+                                             .value = 0.0,
+                                             .high = std::nullopt,
+                                             .critical = std::nullopt});
+}
+
+/// A temperature or other reading for a scripted sensors read (#2340).
+[[nodiscard]] Platform::SensorReading scriptedReading(Platform::SensorKind kind, std::string label, std::string id, double value)
+{
+    return {.kind = kind, .label = std::move(label), .id = std::move(id), .value = value, .high = std::nullopt, .critical = std::nullopt};
+}
 
 TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
 {
@@ -336,7 +370,7 @@ TEST(SystemInfoModelTest, ReadSensorsKeepsTheRestAndTracksEachSensorsRange)
 
     model.read();
     const auto first = model.snapshot();
-    const std::string key = sensorRangeKey("coretemp", "Package id 0");
+    const std::string key = coretempKey();
     ASSERT_TRUE(first->sensorRanges.contains(key));
     EXPECT_EQ(first->sensorRanges.at(key), (SensorRange{.min = 50.0, .max = 50.0, .samples = 1}));
 
@@ -457,7 +491,7 @@ TEST(SystemInfoModelTest, BothKindsOfReadAppendToEachSensorsHistory)
 {
     int reads = 0;
     SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
-    const std::string key = sensorRangeKey("coretemp", "Package id 0");
+    const std::string key = coretempKey();
     model.read(); // 50 °C
     ASSERT_TRUE(model.snapshot()->sensorHistories.contains(key));
     EXPECT_EQ(model.snapshot()->sensorHistories.at(key).values.size(), 1U);
@@ -474,6 +508,101 @@ TEST(SystemInfoModelTest, BothKindsOfReadAppendToEachSensorsHistory)
     EXPECT_FLOAT_EQ(range.values[2], 60.0F);
     EXPECT_LT(range.times[0], range.times[1]);
     EXPECT_LT(range.times[1], range.times[2]);
+}
+
+// #2340: two sensors that share a label (two "acpitz" thermal zones; a voltage and a current both
+// "VDD_IN") keep their own range and history, through a read that reorders the channels and one that
+// drops one of them.
+TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
+{
+    using Platform::SensorKind;
+    const auto sensors = [](std::vector<Platform::SensorReading> zones, std::vector<Platform::SensorReading> chip)
+    {
+        Platform::SensorsInfo info;
+        info.available = true;
+        info.listed = true;
+        info.devices.push_back({.name = "fixture-chip", .id = "hwmon0", .readings = std::move(chip)});
+        info.devices.push_back({.name = "Thermal zones", .id = "thermal", .readings = std::move(zones)});
+        return info;
+    };
+    const auto zone0 = [](double value)
+    {
+        return scriptedReading(SensorKind::Temperature, "acpitz", "thermal_zone0", value);
+    };
+    const auto zone1 = [](double value)
+    {
+        return scriptedReading(SensorKind::Temperature, "acpitz", "thermal_zone1", value);
+    };
+    const auto volts = [](double value)
+    {
+        return scriptedReading(SensorKind::Voltage, "VDD_IN", "in1", value);
+    };
+    const auto amps = [](double value)
+    {
+        return scriptedReading(SensorKind::Current, "VDD_IN", "curr1", value);
+    };
+
+    int reads = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->scriptSensors({
+        sensors({zone0(40.0), zone1(70.0)}, {volts(12.0), amps(2.0)}),
+        sensors({zone1(72.0), zone0(41.0)}, {amps(2.5), volts(12.1)}), // the same channels, listed the other way round
+        sensors({zone1(74.0)}, {amps(3.0)}),                           // thermal_zone0 and in1 gone
+    });
+    SystemInfoModel model(std::move(probe));
+
+    model.read();
+    const auto first = model.snapshot();
+    const Platform::SensorDevice& chip = first->sensors.devices[0];
+    const Platform::SensorDevice& thermal = first->sensors.devices[1];
+    const std::string zone0Key = sensorKey(thermal, thermal.readings[0]);
+    const std::string zone1Key = sensorKey(thermal, thermal.readings[1]);
+    const std::string voltsKey = sensorKey(chip, chip.readings[0]);
+    const std::string ampsKey = sensorKey(chip, chip.readings[1]);
+    EXPECT_NE(zone0Key, zone1Key);
+    EXPECT_NE(voltsKey, ampsKey);
+    ASSERT_EQ(first->sensorRanges.size(), 4U);
+    ASSERT_EQ(first->sensorHistories.size(), 4U);
+    EXPECT_EQ(first->sensorRanges.at(zone0Key), (SensorRange{.min = 40.0, .max = 40.0, .samples = 1}));
+    EXPECT_EQ(first->sensorRanges.at(zone1Key), (SensorRange{.min = 70.0, .max = 70.0, .samples = 1}));
+    EXPECT_EQ(first->sensorRanges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.0, .samples = 1}));
+    EXPECT_EQ(first->sensorRanges.at(ampsKey), (SensorRange{.min = 2.0, .max = 2.0, .samples = 1}));
+    // Every channel enters its own history, though they were all read at the same time.
+    EXPECT_EQ(first->sensorHistories.at(zone0Key).values, std::vector<float>{40.0F});
+    EXPECT_EQ(first->sensorHistories.at(zone1Key).values, std::vector<float>{70.0F});
+    EXPECT_EQ(first->sensorHistories.at(voltsKey).values, std::vector<float>{12.0F});
+    EXPECT_EQ(first->sensorHistories.at(ampsKey).values, std::vector<float>{2.0F});
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
+    model.readSensors();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    model.readSensors();
+    const auto latest = model.snapshot();
+    ASSERT_EQ(latest->sensorRanges.size(), 4U);
+    EXPECT_EQ(latest->sensorRanges.at(zone0Key), (SensorRange{.min = 40.0, .max = 41.0, .samples = 2}));
+    EXPECT_EQ(latest->sensorRanges.at(zone1Key), (SensorRange{.min = 70.0, .max = 74.0, .samples = 3}));
+    EXPECT_EQ(latest->sensorRanges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.1, .samples = 2}));
+    EXPECT_EQ(latest->sensorRanges.at(ampsKey), (SensorRange{.min = 2.0, .max = 3.0, .samples = 3}));
+    EXPECT_EQ(latest->sensorHistories.at(zone0Key).values, (std::vector<float>{40.0F, 41.0F}));
+    EXPECT_EQ(latest->sensorHistories.at(zone1Key).values, (std::vector<float>{70.0F, 72.0F, 74.0F}));
+    EXPECT_EQ(latest->sensorHistories.at(voltsKey).values, (std::vector<float>{12.0F, 12.1F}));
+    EXPECT_EQ(latest->sensorHistories.at(ampsKey).values, (std::vector<float>{2.0F, 2.5F, 3.0F}));
+}
+
+// #2340: a source without ids still keeps a voltage and a current that share a label apart.
+TEST(SystemInfoModelTest, SensorKeyWithoutIdsStillTellsKindsApart)
+{
+    using Platform::SensorKind;
+    const Platform::SensorDevice device{.name = "chip", .id = {}, .readings = {}};
+    const Platform::SensorReading volts = scriptedReading(SensorKind::Voltage, "VDD_IN", {}, 12.0);
+    const Platform::SensorReading amps = scriptedReading(SensorKind::Current, "VDD_IN", {}, 2.0);
+    EXPECT_NE(sensorKey(device, volts), sensorKey(device, amps));
+    // With ids, the device's and the reading's ids are the identity, not the name or label.
+    const Platform::SensorDevice renamed{.name = "chip #2", .id = "hwmon4", .readings = {}};
+    const Platform::SensorDevice same{.name = "chip", .id = "hwmon4", .readings = {}};
+    const Platform::SensorReading relabelled = scriptedReading(SensorKind::Voltage, "VCORE", "in1", 1.0);
+    const Platform::SensorReading labelled = scriptedReading(SensorKind::Voltage, "VDD_IN", "in1", 1.0);
+    EXPECT_EQ(sensorKey(renamed, relabelled), sensorKey(same, labelled));
 }
 
 TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)

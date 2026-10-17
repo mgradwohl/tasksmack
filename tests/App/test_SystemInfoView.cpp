@@ -725,29 +725,37 @@ TEST(SystemInfoSectionsTest, SensorRows)
 {
     using Platform::SensorKind;
     using Platform::SensorReading;
-    EXPECT_EQ(
-        SystemInfo::formatSensorReading({.kind = SensorKind::Temperature, .label = "t", .value = 52.0, .high = 100.0, .critical = 105.0}),
-        "52.0 \u00B0C (high 100.0 \u00B0C, critical 105.0 \u00B0C)");
     EXPECT_EQ(SystemInfo::formatSensorReading(
-                  {.kind = SensorKind::Temperature, .label = "t", .value = 38.86, .high = std::nullopt, .critical = 85.0}),
+                  {.kind = SensorKind::Temperature, .label = "t", .id = {}, .value = 52.0, .high = 100.0, .critical = 105.0}),
+              "52.0 \u00B0C (high 100.0 \u00B0C, critical 105.0 \u00B0C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading(
+                  {.kind = SensorKind::Temperature, .label = "t", .id = {}, .value = 38.86, .high = std::nullopt, .critical = 85.0}),
               "38.9 \u00B0C (critical 85.0 \u00B0C)");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Fan, .label = "f", .value = 1180.0, .high = {}, .critical = {}}),
-              "1180 RPM");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .value = 12.18, .high = {}, .critical = {}}),
-              "12.18 V");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .value = 1.2, .high = {}, .critical = {}}),
-              "1.20 A");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .value = 15.24, .high = {}, .critical = {}}),
-              "15.2 W");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Fan, .label = "f", .id = {}, .value = 1180.0, .high = {}, .critical = {}}),
+        "1180 RPM");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .id = {}, .value = 12.18, .high = {}, .critical = {}}),
+        "12.18 V");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .id = {}, .value = 1.2, .high = {}, .critical = {}}),
+        "1.20 A");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .id = {}, .value = 15.24, .high = {}, .critical = {}}),
+        "15.2 W");
 
     Platform::SensorsInfo sensors;
     sensors.available = true;
     sensors.listed = true;
     sensors.devices = {
         {.name = "coretemp",
-         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Package id 0", .value = 52.0, .high = {}, .critical = {}}}},
+         .id = {},
+         .readings = {SensorReading{
+             .kind = SensorKind::Temperature, .label = "Package id 0", .id = {}, .value = 52.0, .high = {}, .critical = {}}}},
         {.name = "nvme #2",
-         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Composite", .value = 41.0, .high = {}, .critical = {}}}},
+         .id = {},
+         .readings = {SensorReading{
+             .kind = SensorKind::Temperature, .label = "Composite", .id = {}, .value = 41.0, .high = {}, .critical = {}}}},
     };
     const Section section = SystemInfo::buildSensorsSection(sensors);
     EXPECT_EQ(section.title, "Sensors");
@@ -765,15 +773,18 @@ TEST(SystemInfoSectionsTest, ValuesAndCopyTextUseTheDisplayLocale)
     using Platform::SensorKind;
     using Platform::SensorReading;
     const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(SystemInfo::formatSensorReading(
+                  {.kind = SensorKind::Temperature, .label = "t", .id = {}, .value = 52.0, .high = 100.0, .critical = 105.0}),
+              "52,0 °C (high 100,0 °C, critical 105,0 °C)");
     EXPECT_EQ(
-        SystemInfo::formatSensorReading({.kind = SensorKind::Temperature, .label = "t", .value = 52.0, .high = 100.0, .critical = 105.0}),
-        "52,0 °C (high 100,0 °C, critical 105,0 °C)");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .value = 12.18, .high = {}, .critical = {}}),
-              "12,18 V");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .value = 1.2, .high = {}, .critical = {}}),
-              "1,20 A");
-    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .value = 15.24, .high = {}, .critical = {}}),
-              "15,2 W");
+        SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .id = {}, .value = 12.18, .high = {}, .critical = {}}),
+        "12,18 V");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .id = {}, .value = 1.2, .high = {}, .critical = {}}),
+        "1,20 A");
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .id = {}, .value = 15.24, .high = {}, .critical = {}}),
+        "15,2 W");
     EXPECT_EQ(SystemInfo::formatUsbSpeed(480.0), "480 Mbps");
     EXPECT_EQ(SystemInfo::formatUsbSpeed(2500.0), "2,5 Gbps");
 
@@ -782,7 +793,9 @@ TEST(SystemInfoSectionsTest, ValuesAndCopyTextUseTheDisplayLocale)
     sensors.listed = true;
     sensors.devices = {
         {.name = "coretemp",
-         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Package id 0", .value = 52.5, .high = {}, .critical = {}}}},
+         .id = {},
+         .readings = {SensorReading{
+             .kind = SensorKind::Temperature, .label = "Package id 0", .id = {}, .value = 52.5, .high = {}, .critical = {}}}},
     };
     const std::vector<Section> sections{SystemInfo::buildSensorsSection(sensors)};
     EXPECT_TRUE(SystemInfo::allSectionsText(sections, false).contains("coretemp: Package id 0: 52,5 °C"))
@@ -1284,25 +1297,30 @@ TEST(SystemInfoSectionsTest, DhcpLeaseRowWhereThereIsOne)
 // #1522: a sensor's range since the page first read it, in its unit, once it has moved.
 TEST(SystemInfoSectionsTest, SensorRowsShowTheirRangeOnceItHasMoved)
 {
-    const Platform::SensorReading temperature{
-        .kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 55.0, .high = 80.0, .critical = std::nullopt};
+    const Platform::SensorReading temperature{.kind = Platform::SensorKind::Temperature,
+                                              .label = "Package id 0",
+                                              .id = {},
+                                              .value = 55.0,
+                                              .high = 80.0,
+                                              .critical = std::nullopt};
     EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 41.0, .max = 63.0, .samples = 5}),
               "min " + UI::Format::formatFixedLocalized(41.0, 1, " \u00B0C") + ", max " +
                   UI::Format::formatFixedLocalized(63.0, 1, " \u00B0C"));                                // no thresholds repeated
     EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 55.0, .max = 55.0, .samples = 5}), ""); // unchanged
     EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 50.0, .max = 55.0, .samples = 1}), ""); // one read
 
-    const Platform::SensorReading fan{.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = {}, .critical = {}};
+    const Platform::SensorReading fan{
+        .kind = Platform::SensorKind::Fan, .label = "fan1", .id = {}, .value = 1200.0, .high = {}, .critical = {}};
     EXPECT_EQ(SystemInfo::formatSensorRange(fan, {.min = 900.0, .max = 1500.0, .samples = 3}), "min 900 RPM, max 1500 RPM");
 
     Platform::SensorsInfo sensors;
     sensors.available = true;
     sensors.listed = true;
-    sensors.devices.push_back({.name = "coretemp", .readings = {temperature}});
-    sensors.devices.push_back({.name = "it8792", .readings = {fan}});
+    sensors.devices.push_back({.name = "coretemp", .id = {}, .readings = {temperature}});
+    sensors.devices.push_back({.name = "it8792", .id = {}, .readings = {fan}});
     const std::map<std::string, Domain::SensorRange> ranges{
-        {Domain::sensorRangeKey("coretemp", "Package id 0"), {.min = 41.0, .max = 63.0, .samples = 5}},
-        {Domain::sensorRangeKey("it8792", "fan1"), {.min = 1200.0, .max = 1200.0, .samples = 5}},
+        {Domain::sensorKey(sensors.devices[0], temperature), {.min = 41.0, .max = 63.0, .samples = 5}},
+        {Domain::sensorKey(sensors.devices[1], fan), {.min = 1200.0, .max = 1200.0, .samples = 5}},
     };
     const Section section = SystemInfo::buildSensorsSection(sensors, ranges);
     const auto* temp = findRow(section, "coretemp: Package id 0");
@@ -1728,9 +1746,10 @@ TEST(SystemInfoSectionsTest, WindowsSensorsRowsAndVendorDriverNote)
     sensors.devices = {
         {
             .name = "Thermal zones",
+            .id = {},
             .readings =
                 {
-                    {.kind = Platform::SensorKind::Temperature, .label = "TZ00", .value = 45.0, .high = {}, .critical = {}},
+                    {.kind = Platform::SensorKind::Temperature, .label = "TZ00", .id = {}, .value = 45.0, .high = {}, .critical = {}},
                 },
         },
     };
@@ -3057,18 +3076,18 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
     EXPECT_FALSE(UI::Widgets::sparklineYRange({}).has_value());
 }
 
-/// A package temperature and a fan, with a few seconds of history for the first (keyed as its row is).
+/// A package temperature and a fan, with a few seconds of history for the first (Domain::sensorKey()).
 [[nodiscard]] Domain::SystemInfoSnapshot snapshotWithSensorHistory()
 {
     Domain::SystemInfoSnapshot snap = snapshot();
     snap.sensors.available = true;
     snap.sensors.listed = true;
-    snap.sensors.devices.push_back({.name = "coretemp", .readings = {}});
+    snap.sensors.devices.push_back({.name = "coretemp", .id = {}, .readings = {}});
     snap.sensors.devices[0].readings.push_back(
-        {.kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 55.0, .high = {}, .critical = {}});
+        {.kind = Platform::SensorKind::Temperature, .label = "Package id 0", .id = {}, .value = 55.0, .high = {}, .critical = {}});
     snap.sensors.devices[0].readings.push_back(
-        {.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = {}, .critical = {}});
-    const std::string key = Domain::sensorRangeKey("coretemp", "Package id 0");
+        {.kind = Platform::SensorKind::Fan, .label = "fan1", .id = {}, .value = 1200.0, .high = {}, .critical = {}});
+    const std::string key = Domain::sensorKey(snap.sensors.devices[0], snap.sensors.devices[0].readings[0]);
     Domain::SensorRange& range = snap.sensorRanges[key];
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     int sample = 0;
@@ -3097,6 +3116,37 @@ TEST(SystemInfoSectionsTest, SensorRowsNameTheirKindForTheirChart)
     {
         EXPECT_FALSE(item.sensorKind.has_value()) << item.label;
     }
+}
+
+// #2340: two thermal zones of the same type are two rows with the same label, each showing its own range
+// and keyed to its own history.
+TEST(SystemInfoSectionsTest, SensorRowsSharingALabelShowTheirOwnRange)
+{
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.listed = true;
+    sensors.devices.push_back({.name = "Thermal zones", .id = "thermal", .readings = {}});
+    sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Temperature, .label = "acpitz", .id = "thermal_zone0", .value = 40.0, .high = {}, .critical = {}});
+    sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Temperature, .label = "acpitz", .id = "thermal_zone1", .value = 70.0, .high = {}, .critical = {}});
+    const std::map<std::string, Domain::SensorRange> ranges{
+        {Domain::sensorKey(sensors.devices[0], sensors.devices[0].readings[0]), {.min = 38.0, .max = 42.0, .samples = 3}},
+        {Domain::sensorKey(sensors.devices[0], sensors.devices[0].readings[1]), {.min = 65.0, .max = 75.0, .samples = 3}},
+    };
+    const Section section = SystemInfo::buildSensorsSection(sensors, ranges);
+    ASSERT_GE(section.rows.size(), 2U);
+    const Row& first = section.rows[0];
+    const Row& second = section.rows[1];
+    EXPECT_EQ(first.label, "Thermal zones: acpitz");
+    EXPECT_EQ(second.label, "Thermal zones: acpitz");
+    EXPECT_NE(first.sensorKey, second.sensorKey);
+    EXPECT_TRUE(ranges.contains(first.sensorKey));
+    EXPECT_TRUE(ranges.contains(second.sensorKey));
+    EXPECT_TRUE(first.value.contains(UI::Format::formatFixedLocalized(42.0, 1, " °C"))) << first.value;
+    EXPECT_FALSE(first.value.contains(UI::Format::formatFixedLocalized(75.0, 1, " °C"))) << first.value;
+    EXPECT_TRUE(second.value.contains(UI::Format::formatFixedLocalized(75.0, 1, " °C"))) << second.value;
+    EXPECT_FALSE(second.value.contains(UI::Format::formatFixedLocalized(42.0, 1, " °C"))) << second.value;
 }
 
 TEST_F(SystemInfoViewRenderTest, SensorsSectionDrawsEachSensorsHistory)

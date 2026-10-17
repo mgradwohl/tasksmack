@@ -945,6 +945,45 @@ TEST(LinuxSensorsTest, ReadsChipsAndThermalZonesUnderARoot)
     EXPECT_EQ(info.devices[5].readings[0].label, "x86_pkg_temp");
 }
 
+// #2340: channels that share a label (two zones of one type; a voltage and a current both "VDD_IN") each
+// carry their own identity, and a chip is identified by its hwmon directory, not its "#2" name.
+TEST(LinuxSensorsTest, RepeatedLabelsKeepTheirOwnIdentity)
+{
+    const FixtureRoot root;
+    root.write("sys/class/hwmon/hwmon0/name", "fixture-chip\n");
+    root.write("sys/class/hwmon/hwmon0/in1_input", "12000\n");
+    root.write("sys/class/hwmon/hwmon0/in1_label", "VDD_IN\n");
+    root.write("sys/class/hwmon/hwmon0/curr1_input", "2000\n");
+    root.write("sys/class/hwmon/hwmon0/curr1_label", "VDD_IN\n");
+    root.write("sys/class/hwmon/hwmon3/name", "fixture-chip\n");
+    root.write("sys/class/hwmon/hwmon3/temp1_input", "30000\n");
+    root.write("sys/class/thermal/thermal_zone0/type", "acpitz\n");
+    root.write("sys/class/thermal/thermal_zone0/temp", "40000\n");
+    root.write("sys/class/thermal/thermal_zone1/type", "acpitz\n");
+    root.write("sys/class/thermal/thermal_zone1/temp", "70000\n");
+
+    SensorsInfo info;
+    LinuxSensors::readSensorFacts(root.path(), info);
+    ASSERT_EQ(info.devices.size(), 3U);
+    EXPECT_EQ(info.devices[0].id, "hwmon0");
+    ASSERT_EQ(info.devices[0].readings.size(), 2U);
+    EXPECT_EQ(info.devices[0].readings[0].label, "VDD_IN");
+    EXPECT_EQ(info.devices[0].readings[0].id, "in1");
+    EXPECT_EQ(info.devices[0].readings[1].label, "VDD_IN");
+    EXPECT_EQ(info.devices[0].readings[1].id, "curr1");
+    EXPECT_EQ(info.devices[1].name, "fixture-chip #2");
+    EXPECT_EQ(info.devices[1].id, "hwmon3");
+    EXPECT_EQ(info.devices[1].readings[0].id, "temp1"); // the default label's channel name
+    EXPECT_EQ(info.devices[2].id, "thermal");
+    ASSERT_EQ(info.devices[2].readings.size(), 2U);
+    EXPECT_EQ(info.devices[2].readings[0].label, "acpitz");
+    EXPECT_EQ(info.devices[2].readings[0].id, "thermal_zone0");
+    EXPECT_DOUBLE_EQ(info.devices[2].readings[0].value, 40.0);
+    EXPECT_EQ(info.devices[2].readings[1].label, "acpitz");
+    EXPECT_EQ(info.devices[2].readings[1].id, "thermal_zone1");
+    EXPECT_DOUBLE_EQ(info.devices[2].readings[1].value, 70.0);
+}
+
 TEST(LinuxSensorsTest, NoSensorsAndNoSysfs)
 {
     {

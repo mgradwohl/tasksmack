@@ -46,6 +46,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
         .unavailableReason = std::move(why),
         .isIdentifier = identifier,
         .sensorKind = std::nullopt,
+        .sensorKey = {},
         .action = RowAction::None,
         .valueTooltip = {},
         .redacted = std::nullopt,
@@ -1124,18 +1125,20 @@ Section buildSensorsSection(const Platform::SensorsInfo& sensors, const std::map
     {
         for (const Platform::SensorReading& reading : device.readings)
         {
-            std::string label = Domain::sensorRangeKey(device.name, reading.label);
+            std::string key = Domain::sensorKey(device, reading);
             std::string value = formatSensorReading(reading);
-            // Since the page first read it, while it shows (#1522).
-            if (const auto it = ranges.find(label); it != ranges.end())
+            // Since the page first read it, while it shows (#1522); kept by the sensor's identity, not its
+            // label (#2340).
+            if (const auto it = ranges.find(key); it != ranges.end())
             {
                 if (const std::string range = formatSensorRange(reading, it->second); !range.empty())
                 {
                     value += " \u00B7 " + range;
                 }
             }
-            Row item = row(std::move(label), std::move(value));
+            Row item = row(std::format("{}: {}", device.name, reading.label), std::move(value));
             item.sensorKind = reading.kind; // its history is charted beside it (#1522)
+            item.sensorKey = std::move(key);
             section.rows.push_back(std::move(item));
         }
     }

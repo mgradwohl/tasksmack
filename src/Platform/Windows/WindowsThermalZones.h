@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -81,7 +82,7 @@ inline void readSensors(SensorsInfo& info, const Functions& fns)
         return; // listed stays false: the counters couldn't be read
     }
     info.listed = true;
-    SensorDevice device{.name = std::string(DEVICE_NAME), .readings = {}};
+    SensorDevice device{.name = std::string(DEVICE_NAME), .id = "thermal", .readings = {}};
     for (const ZoneSample& zone : zones)
     {
         if (zone.kelvin <= 0.0)
@@ -91,6 +92,7 @@ inline void readSensors(SensorsInfo& info, const Functions& fns)
         device.readings.push_back({
             .kind = SensorKind::Temperature,
             .label = zoneLabel(zone.instance),
+            .id = zone.instance, // unique, where labels might not be (#2340)
             .value = zone.kelvin - KELVIN_AT_ZERO_CELSIUS,
             .high = {},
             .critical = {},
@@ -100,7 +102,10 @@ inline void readSensors(SensorsInfo& info, const Functions& fns)
     {
         return;
     }
-    std::ranges::sort(device.readings, {}, &SensorReading::label);
+    // By label, then identity, so zones that share a label keep one order from read to read.
+    std::ranges::sort(device.readings,
+                      [](const SensorReading& left, const SensorReading& right)
+                      { return std::tie(left.label, left.id) < std::tie(right.label, right.id); });
     info.devices.push_back(std::move(device));
 }
 

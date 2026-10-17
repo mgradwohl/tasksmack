@@ -110,8 +110,9 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
     return static_cast<double>(*raw) / family.divisor;
 }
 
-/// One hwmon chip's readings, ordered by kind then channel. A channel whose input can't be read (a
-/// disconnected fan header reads as an error on some chips) is left out.
+/// One hwmon chip's readings, ordered by kind then channel, each identified by its input's channel
+/// name ("temp1", "in1"), as labels can repeat across channels and kinds (#2340). A channel whose input
+/// can't be read (a disconnected fan header reads as an error on some chips) is left out.
 [[nodiscard]] inline std::vector<SensorReading> readHwmonReadings(const std::filesystem::path& dir)
 {
     // (kind, channel, power input suffix) -> reading, so the order is stable and a chip that offers
@@ -141,15 +142,17 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
                 continue;
             }
             const std::string labelFile = std::string(family.prefix) + std::to_string(*channel) + "_label";
+            std::string id = defaultLabel(family, *channel);
             std::string label = LinuxOsInfo::readLine(dir / labelFile);
             if (label.empty())
             {
-                label = defaultLabel(family, *channel);
+                label = id;
             }
             const bool temperature = family.kind == SensorKind::Temperature;
             byChannel.emplace(std::pair{family.kind, *channel},
                               SensorReading{.kind = family.kind,
                                             .label = std::move(label),
+                                            .id = std::move(id),
                                             .value = *value,
                                             .high = temperature ? readScaled(dir, family, *channel, "_max") : std::nullopt,
                                             .critical = temperature ? readScaled(dir, family, *channel, "_crit") : std::nullopt});
@@ -164,8 +167,9 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
     return readings;
 }
 
-/// The thermal zones' temperatures, labelled by zone type ("x86_pkg_temp", "acpitz"), leaving out any
-/// type in @p hwmonNames: those zones also register a hwmon chip of the same name, already listed.
+/// The thermal zones' temperatures, labelled by zone type ("x86_pkg_temp", "acpitz") and identified by
+/// zone ("thermal_zone1"), since several zones can share a type (#2340), leaving out any type in
+/// @p hwmonNames: those zones also register a hwmon chip of the same name, already listed.
 [[nodiscard]] inline std::vector<SensorReading> readThermalZones(const std::filesystem::path& root, const std::set<std::string>& hwmonNames)
 {
     std::vector<std::pair<unsigned, SensorReading>> zones;
@@ -191,6 +195,7 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
         zones.emplace_back(index,
                            SensorReading{.kind = SensorKind::Temperature,
                                          .label = type,
+                                         .id = name,
                                          .value = static_cast<double>(*milli) / 1000.0,
                                          .high = std::nullopt,
                                          .critical = std::nullopt});
@@ -244,14 +249,18 @@ inline void readSensorFacts(const std::filesystem::path& root, SensorsInfo& info
             continue; // a chip with nothing to read (an AC adapter's online flag only)
         }
         const unsigned count = ++seen[name];
-        info.devices.push_back({.name = (count == 1) ? name : name + " #" + std::to_string(count), .readings = std::move(readings)});
+        // Identified by its hwmon directory, which stays its own while other chips come and go, unlike the
+        // "#2" its name may take (#2340).
+        info.devices.push_back({.name = (count == 1) ? name : name + " #" + std::to_string(count),
+                                .id = dir.filename().string(),
+                                .readings = std::move(readings)});
     }
 
     std::vector<SensorReading> zones = readThermalZones(root, hwmonNames);
     if (!zones.empty())
     {
         info.listed = true;
-        info.devices.push_back({.name = "Thermal zones", .readings = std::move(zones)});
+        info.devices.push_back({.name = "Thermal zones", .id = "thermal", .readings = std::move(zones)});
     }
 }
 

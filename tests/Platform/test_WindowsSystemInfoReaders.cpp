@@ -194,6 +194,23 @@ TEST(WindowsThermalZonesTest, ZonesAreOneDeviceInCelsius)
     EXPECT_NEAR(info.devices[0].readings[1].value, 45.0, 1e-9);
     EXPECT_EQ(info.devices[0].readings[1].kind, SensorKind::Temperature);
     EXPECT_FALSE(info.devices[0].readings[1].high.has_value());
+    // Identified by the counter instance, not the label (#2340).
+    EXPECT_EQ(info.devices[0].id, "thermal");
+    EXPECT_EQ(info.devices[0].readings[0].id, "\\_TZ.TZ00");
+    EXPECT_EQ(info.devices[0].readings[1].id, "\\_TZ.TZ01");
+}
+
+// #2340: two instances whose labels match ("\_TZ.TZ00" and "TZ00") keep their own identities.
+TEST(WindowsThermalZonesTest, ZonesSharingALabelKeepTheirOwnIdentity)
+{
+    SensorsInfo info;
+    WindowsThermalZones::readSensors(
+        info, fakeZoneFunctions({{.instance = "\\_TZ.TZ00", .kelvin = 300.0}, {.instance = "TZ00", .kelvin = 310.0}}, 0));
+    ASSERT_EQ(info.devices.size(), 1U);
+    ASSERT_EQ(info.devices[0].readings.size(), 2U);
+    EXPECT_EQ(info.devices[0].readings[0].label, "TZ00");
+    EXPECT_EQ(info.devices[0].readings[1].label, "TZ00");
+    EXPECT_NE(info.devices[0].readings[0].id, info.devices[0].readings[1].id);
 }
 
 TEST(WindowsThermalZonesTest, NoZonesIsListedAndAFailureIsNot)

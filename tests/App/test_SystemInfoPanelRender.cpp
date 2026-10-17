@@ -139,28 +139,41 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         info.available = true;
         info.listed = true;
         info.devices.push_back({.name = "coretemp",
+                                .id = "hwmon1",
                                 .readings = {{.kind = Platform::SensorKind::Temperature,
                                               .label = "Package id 0",
+                                              .id = "temp1",
                                               .value = 40.0 + static_cast<double>(m_Log->sensorReads.load()),
                                               .high = std::nullopt,
                                               .critical = std::nullopt}}});
         if (m_Log->allSensorKinds)
         {
-            info.devices.push_back(
-                {.name = "nct6775",
-                 .readings = {
-                     {.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = std::nullopt, .critical = std::nullopt},
-                     {.kind = Platform::SensorKind::Power,
-                      .label = "power1",
-                      .value = 35.0,
-                      .high = std::nullopt,
-                      .critical = std::nullopt},
-                     {.kind = Platform::SensorKind::Voltage, .label = "in0", .value = 1.2, .high = std::nullopt, .critical = std::nullopt},
-                     {.kind = Platform::SensorKind::Current,
-                      .label = "curr1",
-                      .value = 3.5,
-                      .high = std::nullopt,
-                      .critical = std::nullopt}}});
+            info.devices.push_back({.name = "nct6775",
+                                    .id = "hwmon2",
+                                    .readings = {{.kind = Platform::SensorKind::Fan,
+                                                  .label = "fan1",
+                                                  .id = {},
+                                                  .value = 1200.0,
+                                                  .high = std::nullopt,
+                                                  .critical = std::nullopt},
+                                                 {.kind = Platform::SensorKind::Power,
+                                                  .label = "power1",
+                                                  .id = {},
+                                                  .value = 35.0,
+                                                  .high = std::nullopt,
+                                                  .critical = std::nullopt},
+                                                 {.kind = Platform::SensorKind::Voltage,
+                                                  .label = "in0",
+                                                  .id = {},
+                                                  .value = 1.2,
+                                                  .high = std::nullopt,
+                                                  .critical = std::nullopt},
+                                                 {.kind = Platform::SensorKind::Current,
+                                                  .label = "curr1",
+                                                  .id = {},
+                                                  .value = 3.5,
+                                                  .high = std::nullopt,
+                                                  .critical = std::nullopt}}});
         }
         return info;
     }

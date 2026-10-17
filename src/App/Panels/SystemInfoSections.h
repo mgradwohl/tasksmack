@@ -60,9 +60,12 @@ struct Row
     std::string value;
     std::string unavailableReason;
     bool isIdentifier = false; ///< Names the user or the machine: hidden (and left out of Copy) unless shown.
-    /// A sensor row's kind (#1522): the row charts the history its label keys in the snapshot's
-    /// sensorHistories, in this kind's colour. Empty for every other row.
+    /// A sensor row's kind (#1522): the row charts its history (sensorKey) in this kind's colour. Empty
+    /// for every other row.
     std::optional<Platform::SensorKind> sensorKind;
+    /// A sensor row's key in the snapshot's sensorRanges and sensorHistories (Domain::sensorKey()), not
+    /// its label, which another sensor can share (#2340). Empty for every other row.
+    std::string sensorKey;
     RowAction action = RowAction::None; ///< A button the view draws in the value cell.
     /// A tooltip on an available value that needs explaining, such as a CPU vulnerability Windows reports
     /// as Unknown (#1781). Empty for most rows; an unavailable row's tooltip is unavailableReason.

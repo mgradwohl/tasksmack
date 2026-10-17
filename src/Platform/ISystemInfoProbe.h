@@ -368,7 +368,11 @@ enum class SensorKind : std::uint8_t
 struct SensorReading
 {
     SensorKind kind = SensorKind::Temperature;
-    std::string label;              ///< The driver's label ("Package id 0", "Tctl", "fan1"); never empty.
+    std::string label; ///< The driver's label ("Package id 0", "Tctl", "fan1"); never empty.
+    /// The channel's identity within its device, stable across reads and unique in it even where labels
+    /// repeat ("temp1", "in1", "curr1", "thermal_zone3", "\_TZ.TZ00"): what its range and history are
+    /// kept by (#2340), never shown. Empty only from a source that has none; the label stands in then.
+    std::string id;
     double value = 0.0;             ///< In the kind's unit.
     std::optional<double> high;     ///< The driver's high (warning) threshold, when it reports one.
     std::optional<double> critical; ///< The driver's critical threshold, when it reports one.
@@ -378,6 +382,10 @@ struct SensorReading
 struct SensorDevice
 {
     std::string name; ///< The driver's device name, made unique on the page ("nvme", "nvme #2").
+    /// The device's identity, stable across reads whatever other devices come and go ("hwmon3",
+    /// "thermal"): what its sensors' ranges and histories are kept by (#2340), never shown. Empty only from
+    /// a source that has none; the name stands in then.
+    std::string id;
     std::vector<SensorReading> readings;
 };
 

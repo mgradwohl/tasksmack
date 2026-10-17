@@ -298,7 +298,7 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
         {
             return nullptr;
         }
-        const auto it = sensorHistories.find(row.label);
+        const auto it = sensorHistories.find(row.sensorKey);
         return (it != sensorHistories.end() && !it->second.times.empty()) ? &it->second : nullptr;
     };
     const bool charts = std::ranges::any_of(visible.rows, [&](std::size_t index) { return history(section.rows[index]) != nullptr; });

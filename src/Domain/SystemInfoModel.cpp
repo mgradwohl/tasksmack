@@ -136,7 +136,7 @@ void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
     {
         for (const Platform::SensorReading& reading : device.readings)
         {
-            const std::string key = sensorRangeKey(device.name, reading.label);
+            const std::string key = sensorKey(device, reading);
             SensorRange& range = m_SensorRanges[key];
             range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
             range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);
