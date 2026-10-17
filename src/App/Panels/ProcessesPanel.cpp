@@ -1061,6 +1061,8 @@ void ProcessesPanel::onDetach()
     m_DumpView.shutdown();
     // So is a batch still running (#2142): stopped before its next process.
     m_BatchRun.shutdown();
+    // And a single-process action (#2305): one platform call, waited for while its actions are here.
+    m_RowActionRun.update(/*wait=*/true);
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492).
     applyUdpEventTrace(false);
@@ -1144,6 +1146,8 @@ void ProcessesPanel::onUpdate(float deltaTime)
     {
         showBatchOutcome(std::move(*outcome));
     }
+    // So has a single-process action (#2305): its result line replaces "Killing PID 123...".
+    m_RowActionRun.update();
 
     if (!m_ProcessModel || !m_Sampler)
     {
@@ -1448,12 +1452,12 @@ void ProcessesPanel::renderContent()
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
     // While a batch runs (#2142), its progress stands there instead, uncoloured.
-    const bool batchRunning = m_BatchRun.busy();
+    const bool batchRunning = rowActionRunning();
     const bool showActionResult = !batchRunning && (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
     const std::string* statusSource = &m_CachedSummaryStr;
     if (batchRunning)
     {
-        statusSource = &m_BatchRun.statusText();
+        statusSource = m_BatchRun.busy() ? &m_BatchRun.statusText() : &m_RowActionRun.pendingText();
     }
     else if (showActionResult)
     {
@@ -2639,7 +2643,7 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
     // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
-                                  m_AffinityDialog.isPending() || m_DumpView.active() || m_BatchRun.busy();
+                                  m_AffinityDialog.isPending() || m_DumpView.active() || rowActionRunning();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -2775,8 +2779,8 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         ImGui::SetClipboardText(proc.command.c_str());
     }
 
-    // No other process action while a batch runs on its worker (#2142): its result is still to come.
-    const bool actionsIdle = !m_BatchRun.busy();
+    // No other process action while one runs on its worker (#2142, #2305): its result is still to come.
+    const bool actionsIdle = !rowActionRunning();
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
     const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
@@ -2964,14 +2968,40 @@ void ProcessesPanel::renderAffinityDialog()
     {
         return;
     }
-    const Platform::ProcessTarget& target = m_AffinityDialog.target();
-    const Platform::ProcessActionResult result = m_ProcessActions ? m_ProcessActions->setAffinity(target, *cpus)
-                                                                  : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_RowActionResult = affinityResultMessage(m_AffinityDialog.name(), target.pid, *cpus, result);
-    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
-    if (result.success)
+    const Platform::ProcessTarget target = m_AffinityDialog.target();
+    runRowAction(
+        std::format("Setting the CPU affinity of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
+        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
+        { return affinityResultMessage(name, pid, cpus, result); });
+}
+
+template<typename Work, typename Format> void ProcessesPanel::runRowAction(std::string pending, Work work, Format format)
+{
+    if (!m_ProcessActions)
     {
-        requestRefresh(); // Show the new affinity without waiting for the next sample
+        showRowActionResult(format(Platform::ProcessActionResult::error("Process actions unavailable")), false);
+        return;
+    }
+    if (rowActionRunning())
+    {
+        showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
+        return;
+    }
+    // The formatter is moved, never copied, into the finish: it may hold the process's name.
+    static_cast<void>(m_RowActionRun.start(std::move(pending),
+                                           std::move(work),
+                                           [this, format = std::move(format)](const Platform::ProcessActionResult& result)
+                                           { showRowActionResult(format(result), result.success); }));
+}
+
+void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)
+{
+    m_RowActionResult = std::move(message);
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (succeeded)
+    {
+        requestRefresh(); // Show the process changed or gone without waiting for the next sample
     }
 }
 
@@ -3002,26 +3032,22 @@ void ProcessesPanel::renderRowActionConfirm()
         }
         return;
     }
-    bool anySucceeded = false;
-    if (m_RowAction.targets.size() == 1)
+    if (m_RowAction.targets.size() != 1)
     {
-        const Platform::ProcessTarget& target = m_RowAction.targets.front().target;
-        const Platform::ProcessActionResult result = m_ProcessActions
-                                                       ? Detail::dispatchProcessAction(*m_ProcessActions, m_RowAction.action, target)
-                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
-        m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, target.pid, result);
-        anySucceeded = result.success;
+        showRowActionResult({.ok = false, .text = "Process actions unavailable"}, false);
+        m_RowAction = {};
+        return;
     }
-    else
-    {
-        m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
-    }
-    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    // One process, on the row action worker (#2305): "Killing PID 123..." in the toolbar until its
+    // result comes on a later frame.
+    const Detail::ProcessAction action = m_RowAction.action;
+    const Platform::ProcessTarget target = m_RowAction.targets.front().target;
     m_RowAction = {}; // Acted on once; nothing is pending any more
-    if (anySucceeded)
-    {
-        requestRefresh(); // Show the processes suspended, resumed or gone without waiting for the next sample
-    }
+    runRowAction(
+        std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
+        [actions = m_ProcessActions.get(), action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
+        [action, pid = target.pid](const Platform::ProcessActionResult& result)
+        { return Detail::formatActionResultMessage(action, pid, result); });
 }
 
 } // namespace App

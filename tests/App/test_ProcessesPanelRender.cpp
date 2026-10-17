@@ -47,6 +47,7 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstddef>
@@ -673,6 +674,7 @@ TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuAreConfirmedThenS
     ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
     EXPECT_EQ(actions->stopCount(), 0);  // asked, not done
     pressModalButton(*panel, "Suspend"); // Not destructive: a plain button, not the danger fill
+    panel->waitForRowActionForTesting(); // it runs on the row action worker (#2305)
     EXPECT_EQ(actions->stopCount(), 1);
     EXPECT_EQ(actions->lastStopPid(), menuPid.value_or(-1));
 
@@ -687,6 +689,7 @@ TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuAreConfirmedThenS
     static_cast<void>(renderAndCapture(*panel));
     ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
     pressModalButton(*panel, "Resume");
+    panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->resumeCount(), 1);
     EXPECT_EQ(actions->lastResumePid(), menuPid.value_or(-1));
     panel->onDetach();
@@ -752,6 +755,7 @@ TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatPro
     ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
     static_cast<void>(renderAndCapture(*panel));
     static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->killCount(), 1);
     EXPECT_EQ(actions->lastKillPid(), menuPid.value_or(-1));
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
@@ -776,6 +780,7 @@ TEST_F(ProcessesPanelRenderTest, AClippedActionResultShowsInFullOnHover)
     ASSERT_NE(modal, nullptr);
     ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
     static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting(); // the kill runs on the row action worker (#2305)
     // The cut-off text is logged once as drawn; the tooltip, when shown, logs it a second time.
     const auto copies = [&panel, TAIL]
     {
@@ -848,10 +853,100 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
 
     pressModalFilledButton(*panel, "Apply");
     static_cast<void>(renderAndCapture(*panel));
+    panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->setAffinityCount(), 1);
     EXPECT_EQ(actions->lastAffinity(), Platform::CpuAffinity::fromMask(0b1U));
     EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+/// Actions whose kill waits until the test opens the gate: a password prompt or a helper's round trip
+/// as the panel sees it (#2305).
+class GatedKillActions : public TestMocks::MockProcessActions
+{
+  public:
+    explicit GatedKillActions(std::atomic<bool>& gate) : m_Gate(&gate)
+    {}
+
+    [[nodiscard]] Platform::ProcessActionResult kill(const Platform::ProcessTarget& target) override
+    {
+        m_Gate->wait(false);
+        return TestMocks::MockProcessActions::kill(target);
+    }
+
+  private:
+    std::atomic<bool>* m_Gate;
+};
+
+/// Opens a gate (GatedKillActions') when it goes out of scope, so a failed assertion never leaves a worker
+/// waiting on it for the panel's destructor to wait on in turn.
+class GateOpener
+{
+  public:
+    explicit GateOpener(std::atomic<bool>& gate) : m_Gate(&gate)
+    {}
+    GateOpener(const GateOpener&) = delete;
+    GateOpener& operator=(const GateOpener&) = delete;
+    GateOpener(GateOpener&&) = delete;
+    GateOpener& operator=(GateOpener&&) = delete;
+    ~GateOpener()
+    {
+        open(*m_Gate);
+    }
+
+    static void open(std::atomic<bool>& gate)
+    {
+        gate = true;
+        gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool>* m_Gate;
+};
+
+// #2305: a confirmed kill runs on the row action worker. The frames go on meanwhile, the toolbar says
+// "Killing PID n..." and the row menu offers no other action; its result line comes once it returns.
+TEST_F(ProcessesPanelRenderTest, ARowActionRunsOffTheFrameAndShowsItsProgress)
+{
+    std::atomic<bool> gate{false};
+    GatedKillActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&gate, &actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<GatedKillActions>(gate);
+            mock->setCapabilities({.canTerminate = true, .canKill = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {},
+        [] { return false; });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    const GateOpener guard(gate); // the gate opens at the end whatever happens, before the panel waits for its worker
+
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, std::format("{} Kill...###Kill", ICON_FA_SKULL));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalFilledButton(*panel, "Kill");
+
+    const std::string pending = std::format("Killing PID {}...", menuPid.value_or(-1));
+    EXPECT_NE(renderAndCapture(*panel).find(pending), std::string::npos) << "the toolbar shows the kill in progress";
+    EXPECT_NE(renderAndCapture(*panel).find(pending), std::string::npos) << "and the frames go on";
+
+    GateOpener::open(gate);
+    panel->waitForRowActionForTesting();
+    EXPECT_EQ(actions->killCount(), 1);
+    EXPECT_EQ(actions->lastKillPid(), menuPid.value_or(-1));
+    EXPECT_EQ(renderAndCapture(*panel).find(pending), std::string::npos) << "its result replaces the progress";
     panel->onDetach();
 }
 
@@ -875,6 +970,7 @@ TEST_F(ProcessesPanelRenderTest, F9OnOneSelectedRowAsksToKillThatProcess)
     EXPECT_EQ(actions->killCount(), 0); // asked, not done
 
     pressModalFilledButton(*panel, "Kill");
+    panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->killCount(), 1);
     EXPECT_EQ(actions->lastKillPid(), pid); // the highlighted row's process
     panel->onDetach();

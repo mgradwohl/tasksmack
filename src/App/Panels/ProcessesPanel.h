@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessBatchPriorityDialog.h"
@@ -305,6 +306,13 @@ class ProcessesPanel : public Panel
         m_KillShortcut.request();
     }
 
+    /// Waits for a single-process row action running on its worker (#2305) and takes its result in, as
+    /// the next frame would: for tests, which check the platform call straight after confirming.
+    void waitForRowActionForTesting()
+    {
+        m_RowActionRun.update(/*wait=*/true);
+    }
+
     /// End of frame: drop a shortcut request this frame's render did not take (#170).
     void expireFrameRequests() noexcept
     {
@@ -436,6 +444,19 @@ class ProcessesPanel : public Panel
     // A confirmed batch action or batch priority change, run on its worker (#2142). Declared after
     // m_ProcessActions, which the worker uses, so it is destroyed (stopping and waiting for it) first.
     ProcessBatch::BatchRun m_BatchRun;
+    // A confirmed single-process action or affinity change, run on its worker (#2305) so a password
+    // prompt or a privileged helper's round trip never holds the frame. Declared after m_ProcessActions
+    // for the same reason as m_BatchRun.
+    ProcessActionRun m_RowActionRun;
+    /// Whether a row action runs on a worker (a batch, or one process): no other starts meanwhile.
+    [[nodiscard]] bool rowActionRunning() const noexcept
+    {
+        return m_BatchRun.busy() || m_RowActionRun.busy();
+    }
+    /// Starts @p work (a platform call through m_ProcessActions) on the row action worker, the toolbar
+    /// showing @p pending until it finishes; @p format turns its result into the toolbar's line.
+    template<typename Work, typename Format> void runRowAction(std::string pending, Work work, Format format);
+    void showRowActionResult(Detail::ActionResultMessage message, bool succeeded);
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the
