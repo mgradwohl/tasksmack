@@ -176,31 +176,42 @@ TEST(WindowsDiskProbeTest, PhysicalDeviceFlagIsSet)
     }
 }
 
-TEST(WindowsDiskProbeTest, PDHCountersProvideRealData)
+TEST(WindowsDiskProbeTest, RealDisksAreReadThroughDiskPerformanceOrTheFallback)
 {
+    // A smoke test of the real system calls, with no wait and nothing that needs disk activity
+    // (#2298): PDH only names the physical disks and IOCTL_DISK_PERFORMANCE supplies cumulative
+    // counters, which an idle disk may leave unchanged. How those counters map to DiskCounters,
+    // and that they rise with I/O, is tested deterministically against fake calls in
+    // test_WindowsDiskProbeSeams.cpp.
     WindowsDiskProbe probe;
+    const auto caps = probe.capabilities();
+    const auto counters = probe.read();
 
-    // Wait for PDH to initialize and collect data
-    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-
-    auto counters = probe.read();
-
-    // If PDH is working, we should have at least one disk with some activity
-    // This is a weak test since a system might have no I/O at the moment
-    if (!counters.disks.empty())
+    if (caps.hasReadWriteBytes)
     {
-        bool hasAnyActivity = false;
+        // At least one physical drive opened, so every disk is a PDH PhysicalDisk instance
+        // ("0 C:"), whose name starts with the drive index.
+        ASSERT_FALSE(counters.disks.empty());
         for (const auto& disk : counters.disks)
         {
-            if (disk.readsCompleted > 0 || disk.writesCompleted > 0 || disk.readSectors > 0 || disk.writeSectors > 0)
-            {
-                hasAnyActivity = true;
-                break;
-            }
+            ASSERT_FALSE(disk.deviceName.empty());
+            EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(disk.deviceName.front())) != 0) << disk.deviceName;
+            EXPECT_EQ(disk.sectorSize, 512U) << disk.deviceName;
+            // A first read is the busy-time baseline: zero when the driver reports IdleTime,
+            // otherwise read + write time, in the same milliseconds.
+            EXPECT_TRUE(disk.ioTimeMs == 0 || disk.ioTimeMs == disk.readTimeMs + disk.writeTimeMs) << disk.deviceName;
         }
-
-        // It's okay if there's no activity, but the structure should be valid
-        [[maybe_unused]] const bool activityDetected = hasAnyActivity;
+    }
+    else
+    {
+        // No physical drive could be opened: the fixed logical drives ("C:"), with zero counters.
+        for (const auto& disk : counters.disks)
+        {
+            ASSERT_EQ(disk.deviceName.size(), 2U) << disk.deviceName;
+            EXPECT_EQ(disk.deviceName[1], ':') << disk.deviceName;
+            EXPECT_EQ(disk.readsCompleted + disk.writesCompleted + disk.readSectors + disk.writeSectors + disk.ioTimeMs, 0U)
+                << disk.deviceName;
+        }
     }
 }
 

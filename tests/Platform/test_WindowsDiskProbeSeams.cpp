@@ -290,6 +290,36 @@ TEST_F(WindowsDiskProbeSeamsTest, PhysicalDisksAreReadThroughDiskPerformanceOnly
     EXPECT_TRUE(fake().otherIoctls.empty());
 }
 
+TEST_F(WindowsDiskProbeSeamsTest, EachReadReportsTheDisksCurrentCounters)
+{
+    // The deterministic form of "the counters rise with disk I/O" (#2298): every read queries
+    // IOCTL_DISK_PERFORMANCE afresh, so I/O between two reads shows in the second, by exactly
+    // as much as the disk reported.
+    fake().failOpen = {1};
+    WindowsDiskProbe probe(fakeFunctions());
+    const DiskCounters before = probe.read().disks.at(0);
+
+    DISK_PERFORMANCE perf = defaultPerf(0);
+    perf.BytesRead.QuadPart += 4LL * 1'048'576; // 4 MiB read in 4 requests
+    perf.ReadCount += 4;
+    perf.ReadTime.QuadPart += 20'000;              // 2 ms
+    perf.BytesWritten.QuadPart += 2LL * 1'048'576; // 2 MiB written in 2 requests
+    perf.WriteCount += 2;
+    perf.WriteTime.QuadPart += 10'000; // 1 ms
+    fake().perf[0] = perf;
+    const DiskCounters after = probe.read().disks.at(0);
+
+    EXPECT_EQ(after.readSectors - before.readSectors, 4ULL * 1'048'576 / 512);
+    EXPECT_EQ(after.readsCompleted - before.readsCompleted, 4U);
+    EXPECT_EQ(after.readTimeMs - before.readTimeMs, 2U);
+    EXPECT_EQ(after.writeSectors - before.writeSectors, 2ULL * 1'048'576 / 512);
+    EXPECT_EQ(after.writesCompleted - before.writesCompleted, 2U);
+    EXPECT_EQ(after.writeTimeMs - before.writeTimeMs, 1U);
+    EXPECT_EQ(after.ioTimeMs - before.ioTimeMs, 3U) << "no IdleTime: busy time is read + write time";
+
+    EXPECT_EQ(probe.read().disks.at(0).readSectors, after.readSectors) << "no I/O, no change";
+}
+
 TEST_F(WindowsDiskProbeSeamsTest, NoOpenableDriveFallsBackToTheFixedLogicalDrives)
 {
     fake().failOpen = {0, 1};
