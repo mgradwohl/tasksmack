@@ -15,6 +15,7 @@ on:
       - 'src/App/Panels/ProcessDetailsHistory.*'
       - 'benchmarks/**'
       - 'perf-data/linux-ci-baseline.json'
+      - 'perf-data/linux-ci-thresholds.json'
       - 'tools/bench.sh'
       - 'tools/check-benchmark-regression.py'
       - '.github/workflows/heavy-checks.yml'
@@ -611,6 +612,7 @@ jobs:
             --baseline perf-data/linux-ci-baseline.json \
             --current  perf-data/benchmark-current.json \
             --threshold 40 \
+            --threshold-overrides perf-data/linux-ci-thresholds.json \
             2>&1 | tee benchmark-regression-output.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
