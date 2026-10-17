@@ -521,8 +521,9 @@ jobs:
         # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
         # install() calls, so a dependency that installs its static libraries, headers or CMake
         # package files (or a TaskSmack rule with a bare "." destination) silently ships them
-        # to users under /usr. Allow exactly the executable and the app's data, desktop entry,
-        # icons, docs, AppStream metadata and man pages; fail on anything else.
+        # to users under /usr. Allow exactly the executable, the privileged helper and its polkit
+        # action, and the app's data, desktop entry, icons, docs, AppStream metadata and man pages;
+        # fail on anything else.
         run: |
           shopt -s nullglob
           debs=(dist/*.deb)
@@ -531,10 +532,11 @@ jobs:
             exit 1
           fi
           dpkg -c "${debs[0]}"
-          allowed='^(|usr/|usr/share/|usr/bin/[^/]*|usr/share/(tasksmack|applications|icons|doc|metainfo|pixmaps|man)(/.*)?)$'
+          # usr/libexec/tasksmack and usr/share/polkit-1: the privileged helper and its polkit action (#2307).
+          allowed='^(|usr/|usr/share/|usr/bin/[^/]*|usr/libexec/|usr/libexec/tasksmack(/.*)?|usr/share/(tasksmack|applications|icons|doc|metainfo|pixmaps|man|polkit-1)(/.*)?)$'
           unexpected=$(dpkg-deb --fsys-tarfile "${debs[0]}" | tar -tf - | sed -e 's|^\./||' | grep -Ev "$allowed" || true)
           if [[ -n "$unexpected" ]]; then
-            echo "The .deb ships files outside usr/bin and usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man}:" >&2
+            echo "The .deb ships files outside usr/bin, usr/libexec/tasksmack and usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}:" >&2
             echo "$unexpected" >&2
             exit 1
           fi
