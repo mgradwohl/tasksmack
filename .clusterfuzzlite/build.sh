@@ -78,6 +78,11 @@ seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
 build_fuzzer fuzz_desktop_entry
 seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*
 
+# The privileged-broker protocol (#2306): header-only; the elevated helper decodes what an unprivileged
+# process sends. Seeded with one frame of every message kind.
+build_fuzzer fuzz_broker_protocol
+seed_corpus fuzz_broker_protocol tests/fuzz/corpus/fuzz_broker_protocol/*
+
 # The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
 # buffers and udev partition type strings.
 build_fuzzer fuzz_partition_layout

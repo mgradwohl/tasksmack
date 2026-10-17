@@ -345,6 +345,8 @@ set(TASKSMACK_HEADERS
     src/Platform/IGPUProbe.h
     src/Platform/IPowerProbe.h
     src/Platform/IProcessProbe.h
+    src/Platform/BrokerProtocol.h
+    src/Platform/IPrivilegedBroker.h
     src/Platform/IProcessActions.h
     src/Platform/IProcessEnvironment.h
     src/Platform/IProcessIconSource.h
