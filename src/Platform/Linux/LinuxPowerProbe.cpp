@@ -156,8 +156,10 @@ void LinuxPowerProbe::discoverBatteries()
         m_Capabilities.hasVoltage = Fs::exists(batteryPath + "/voltage_now", ec);
         m_Capabilities.hasTechnology = Fs::exists(batteryPath + "/technology", ec);
         m_Capabilities.hasCycleCount = Fs::exists(batteryPath + "/cycle_count", ec);
+        // Health is full/design capacity, from the energy_* or the charge_* pair; neither needs voltage (#2341)
         m_Capabilities.hasHealthPercent =
-            Fs::exists(batteryPath + "/energy_full", ec) && Fs::exists(batteryPath + "/energy_full_design", ec);
+            (Fs::exists(batteryPath + "/energy_full", ec) && Fs::exists(batteryPath + "/energy_full_design", ec)) ||
+            (Fs::exists(batteryPath + "/charge_full", ec) && Fs::exists(batteryPath + "/charge_full_design", ec));
         // Design and full-charge capacity are read with the charge capacity, from energy_* or charge_* (#1523)
         m_Capabilities.hasDesignCapacity = m_Capabilities.hasChargeCapacity && (Fs::exists(batteryPath + "/energy_full_design", ec) ||
                                                                                 Fs::exists(batteryPath + "/charge_full_design", ec));
@@ -293,10 +295,17 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         counters.cycleCount = readSysfsUInt64(batteryPath + "/cycle_count");
     }
 
-    // Calculate health percentage
-    if (m_Capabilities.hasHealthPercent && counters.chargeDesignWh > 0)
+    // Calculate health percentage from the raw full/design pair, so a charge-based battery needs no voltage (#2341)
+    if (m_Capabilities.hasHealthPercent)
     {
-        counters.healthPercent = static_cast<int>((counters.chargeFullWh * 100) / counters.chargeDesignWh);
+        const bool energyPair =
+            std::filesystem::exists(batteryPath + "/energy_full") && std::filesystem::exists(batteryPath + "/energy_full_design");
+        const auto fullCapacity = readSysfsUInt64(batteryPath + (energyPair ? "/energy_full" : "/charge_full"));
+        const auto designCapacity = readSysfsUInt64(batteryPath + (energyPair ? "/energy_full_design" : "/charge_full_design"));
+        if (designCapacity > 0)
+        {
+            counters.healthPercent = static_cast<int>((static_cast<double>(fullCapacity) * 100.0) / static_cast<double>(designCapacity));
+        }
     }
 
     // Estimate time remaining (rough calculation)

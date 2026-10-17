@@ -386,6 +386,53 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_ConvertedViaVoltage)
     EXPECT_NEAR(counters.chargeNowWh, 22.0, 0.01);
     // chargeFullWh = (4000000 * 11000000) / 1e12 = 44 Wh
     EXPECT_NEAR(counters.chargeFullWh, 44.0, 0.01);
+
+    // healthPercent = (4.0 / 4.5) * 100 ≈ 88 (#2341)
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_EQ(counters.healthPercent, 88);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_HealthNeedsNoVoltage)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "capacity", "50");
+    writeFile(batPath / "charge_now", "2000000");
+    writeFile(batPath / "charge_full", "4000000");
+    writeFile(batPath / "charge_full_design", "4500000");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_TRUE(probe.capabilities().hasHealthPercent);
+    auto counters = probe.read();
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 0.0); // No voltage, no Wh figures
+    EXPECT_EQ(counters.healthPercent, 88);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, Battery_ZeroDesignCapacity_HealthStaysUnavailable)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "charge_now", "2000000");
+    writeFile(batPath / "charge_full", "4000000");
+    writeFile(batPath / "charge_full_design", "0");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_EQ(probe.read().healthPercent, -1);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, Battery_NoDesignCapacity_NoHealthCapability)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "charge_now", "2000000");
+    writeFile(batPath / "charge_full", "4000000");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_FALSE(probe.capabilities().hasHealthPercent);
+    EXPECT_EQ(probe.read().healthPercent, -1);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_ZeroVoltage_NoConversion)
