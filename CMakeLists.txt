@@ -741,7 +741,7 @@ endif()
 # or themes -- so as little as possible runs as root. Linux only; Windows has its own transport (#2311).
 if(UNIX AND NOT APPLE)
     add_executable(tasksmack-helper
-        src/Helper/main.cpp
+        src/Platform/Linux/HelperMain.cpp
         src/Platform/Linux/BrokerServer.cpp
         src/Platform/Linux/BrokerSocket.cpp
         src/Platform/Linux/LinuxProcessActions.cpp
