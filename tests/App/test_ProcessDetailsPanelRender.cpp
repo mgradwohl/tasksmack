@@ -795,16 +795,27 @@ TEST_F(ProcessDetailsPanelRenderTest, ThePanelWithoutTheOptionalReadersStillRend
 TEST_F(ProcessDetailsPanelRenderTest, AProcessThatLeavesTheListIsReportedExited)
 {
     const auto panel = activePanel();
+    EXPECT_FALSE(panel->showsRunningProcess());
     panel->setSelectedPid(PID, START_TICKS);
+    EXPECT_FALSE(panel->showsRunningProcess()); // selected, not yet sampled
     const std::vector first{sampleAt(0.0, 10.0)};
     panel->updateWithSamples(first, 1.0F);
+    EXPECT_TRUE(panel->showsRunningProcess());
+    EXPECT_FALSE(panel->selectedProcessExited());
     static_cast<void>(renderAndCapture(*panel));
 
     const std::vector gone{emptySampleAt(1.0)};
     panel->updateWithSamples(gone, 1.0F);
+    // What the UI training driver reads to replace the process, and not count the pane as Details (#2343).
+    EXPECT_FALSE(panel->showsRunningProcess());
+    EXPECT_TRUE(panel->selectedProcessExited());
     const std::string text = renderAndCapture(*panel);
     EXPECT_TRUE(text.contains("Process exited")) << text;
     EXPECT_TRUE(text.contains("server (PID 4242) is no longer running")) << text;
+
+    // Another selection clears it.
+    panel->setSelectedPid(PID + 1, START_TICKS);
+    EXPECT_FALSE(panel->selectedProcessExited());
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, AnInactivePanelDrawsNothing)

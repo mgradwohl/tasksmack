@@ -187,6 +187,20 @@ class ProcessDetailsPanel : public Panel
         return m_SelectedPid;
     }
 
+    /// Whether the pane shows a running process: one is selected, a sample of it has arrived, and it
+    /// has not exited. False while it shows the empty, "Process not found" or "Process exited" state.
+    [[nodiscard]] bool showsRunningProcess() const noexcept
+    {
+        return m_SelectedPid != -1 && m_HasSnapshot && !m_ProcessExited;
+    }
+
+    /// Whether the selected process has left the process list since it was sampled, so the pane shows
+    /// "Process exited" (#927) until another process is selected.
+    [[nodiscard]] bool selectedProcessExited() const noexcept
+    {
+        return m_ProcessExited;
+    }
+
     /// What process actions the underlying IProcessActions supports. Exposed publicly so
     /// tests constructing this panel with an injected mock can assert the capability flags
     /// were actually pulled from it.

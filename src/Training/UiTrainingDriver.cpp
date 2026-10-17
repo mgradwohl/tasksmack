@@ -186,7 +186,6 @@ class TrainingShell : public Core::Layer
         if (m_Probes == Probes::Real)
         {
             m_Processes.requestStartupSelection(App::SelectOverride::Target{.pid = Platform::currentProcessId(), .name = {}}, false);
-            m_SelectionRequested = true;
         }
     }
 
@@ -210,6 +209,13 @@ class TrainingShell : public Core::Layer
     [[nodiscard]] std::string_view activeTab() const noexcept
     {
         return m_ActiveTab;
+    }
+
+    /// Whether Process Details shows a running process, rather than its empty, "not found" or
+    /// "Process exited" pane: what a Details workload is meant to train on (#2343).
+    [[nodiscard]] bool detailsShowsRunningProcess() const noexcept
+    {
+        return m_ProcessDetails.showsRunningProcess();
     }
 
     /// Makes @p workload the one on show from the next frame.
@@ -349,12 +355,17 @@ class TrainingShell : public Core::Layer
         return shown;
     }
 
-    /// Synthetic probes: select the synthetic machine's busiest process (the lowest PID on a tie), so
+    /// Synthetic probes: select the synthetic machine's busiest process (chooseSyntheticProcess()), so
     /// Process Details has a process whose charts move. Waits for a snapshot with CPU usage in it (the
     /// first one has none: usage is a delta), unless @p force, as the first Details workload begins.
+    /// Once one is asked for, it looks again only when that process has exited: synthetic processes
+    /// come and go (a compiler lives for seconds), and Details then picks a live one rather than train
+    /// on the "Process exited" pane (#2343). Each look copies the process list, so it is not done
+    /// every frame.
     void selectSyntheticProcess(bool force)
     {
-        if (m_SelectionRequested || m_Processes.processCount() == 0)
+        if (m_Probes != Probes::Synthetic || (m_RequestedPid.has_value() && !m_ProcessDetails.selectedProcessExited()) ||
+            m_Processes.processCount() == 0)
         {
             return;
         }
@@ -364,17 +375,23 @@ class TrainingShell : public Core::Layer
             return;
         }
         const std::vector<Domain::ProcessSnapshot> snapshots = model->snapshots();
-        const auto busiest =
-            std::ranges::max_element(snapshots,
-                                     [](const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b)
-                                     { return a.cpuPercent < b.cpuPercent || (a.cpuPercent == b.cpuPercent && a.pid > b.pid); });
-        if (busiest == snapshots.end() || (!force && busiest->cpuPercent <= 0.0))
+        const std::optional<std::int32_t> pid = chooseSyntheticProcess(snapshots, m_RequestedPid, force);
+        if (!pid.has_value())
         {
             return;
         }
-        spdlog::info("UI training: selecting synthetic PID {} ({})", busiest->pid, busiest->name);
-        m_Processes.requestStartupSelection(App::SelectOverride::Target{.pid = busiest->pid, .name = {}}, false);
-        m_SelectionRequested = true;
+        const auto chosen = std::ranges::find(snapshots, *pid, &Domain::ProcessSnapshot::pid);
+        const std::string_view name = chosen != snapshots.end() ? std::string_view(chosen->name) : std::string_view();
+        if (m_RequestedPid.has_value())
+        {
+            spdlog::info("UI training: synthetic PID {} exited; selecting PID {} ({})", *m_RequestedPid, *pid, name);
+        }
+        else
+        {
+            spdlog::info("UI training: selecting synthetic PID {} ({})", *pid, name);
+        }
+        m_Processes.requestStartupSelection(App::SelectOverride::Target{.pid = pid, .name = {}}, false);
+        m_RequestedPid = pid;
     }
 
     Probes m_Probes;
@@ -385,8 +402,8 @@ class TrainingShell : public Core::Layer
     App::ProcessDetailsPanel& m_ProcessDetails = m_Panels.processDetails();
 
     bool m_PendingStartupSettings = true;
-    bool m_ShowRenderMetrics = false; // ShellLayer's Ctrl+Shift+M overlay, off as it starts
-    bool m_SelectionRequested = false;
+    bool m_ShowRenderMetrics = false;           // ShellLayer's Ctrl+Shift+M overlay, off as it starts
+    std::optional<std::int32_t> m_RequestedPid; // synthetic probes: the process last asked for
     std::string_view m_WantedTab = tabId(Tab::SystemOverview);
     std::string_view m_ActiveTab;
     std::string m_SystemTabLabel;
@@ -496,7 +513,9 @@ int run(const Options& options)
             {
                 shell.begin(*segment.workload);
                 const std::string_view wanted = tabId(segment.workload->tab);
+                const bool details = segment.workload->tab == Tab::ProcessDetails;
                 int shownFrames = 0;
+                int liveFrames = 0; // Details: frames that drew a running process, not a placeholder
                 std::int64_t vertices = 0;
                 for (int i = 0; i < segment.frames; ++i)
                 {
@@ -506,6 +525,10 @@ int run(const Options& options)
                     if (shell.activeTab() == wanted)
                     {
                         ++shownFrames;
+                        if (details && shell.detailsShowsRunningProcess())
+                        {
+                            ++liveFrames;
+                        }
                         if (const ImDrawData* drawData = ImGui::GetDrawData(); drawData != nullptr)
                         {
                             vertices += drawData->TotalVtxCount;
@@ -517,17 +540,25 @@ int run(const Options& options)
                         std::this_thread::sleep_until(nextFrame);
                     }
                 }
-                spdlog::info("UI training: {:<18} {} frames, {} with {} on show, {} vertices a frame",
+                spdlog::info("UI training: {:<18} {} frames, {} with {} on show{}, {} vertices a frame",
                              segment.workload->name,
                              segment.frames,
                              shownFrames,
                              wanted,
+                             details ? std::format(" ({} of a running process)", liveFrames) : std::string(),
                              shownFrames > 0 ? vertices / shownFrames : 0);
                 // The tab bar brings a tab forward one frame after it is asked to, so a workload of
                 // two or more frames must have shown its tab at least once.
                 if (segment.frames >= 2 && shownFrames == 0)
                 {
                     spdlog::error("UI training: workload {} never showed tab {}", segment.workload->name, wanted);
+                    exitCode = 1;
+                }
+                // A Details workload that only ever drew a placeholder ("Process exited", "not found")
+                // trained nothing of what it is for (#2343).
+                else if (details && segment.frames >= 2 && liveFrames == 0)
+                {
+                    spdlog::error("UI training: workload {} never showed a running process", segment.workload->name);
                     exitCode = 1;
                 }
             }

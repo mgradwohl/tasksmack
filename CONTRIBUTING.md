@@ -2165,7 +2165,7 @@ The weights are percentages of a run's frames, in `src/Training/UiTrainingPlan.h
 | `startup` | Startup | 7 | The startup items table |
 | `system` | System (information) | 8 | The static facts page |
 
-Process Details shows the driver's own process with the real probes, and the synthetic machine's busiest process with the synthetic ones. Run it by hand to see the plan or to train with other settings:
+Process Details shows the driver's own process with the real probes, and the synthetic machine's busiest long-lived process with the synthetic ones, replaced by a live one if it exits. A Details workload fails the run if it never drew a running process, only the "Process exited" or "not found" pane. Run it by hand to see the plan or to train with other settings:
 
 ```bash
 ./build/pgo-generate/bin/TaskSmackUiTraining --list                       # the plan, then exit

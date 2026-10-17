@@ -1,7 +1,9 @@
 /// @file test_UiTrainingPlan.cpp
 /// @brief The PGO UI training plan (#880): the workload weights, how a run's frames are split between
-/// them, and the driver's command line. The driver itself is run by the UiTrainingSmoke* ctest tests.
+/// them, the driver's command line, and which synthetic process Process Details trains on (#2343). The
+/// driver itself is run by the UiTrainingSmoke* ctest tests.
 
+#include "Domain/ProcessSnapshot.h"
 #include "Training/UiTrainingPlan.h"
 
 #include <gtest/gtest.h>
@@ -9,7 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,6 +23,7 @@ namespace
 {
 
 using Training::allocateFrames;
+using Training::chooseSyntheticProcess;
 using Training::Options;
 using Training::parseArguments;
 using Training::Probes;
@@ -46,6 +51,16 @@ using Training::WORKLOADS;
         return Options{};
     }
     return *result.options;
+}
+
+/// A synthetic process: @p pid, named @p name, using @p cpuPercent.
+[[nodiscard]] Domain::ProcessSnapshot process(std::int32_t pid, const char* name, double cpuPercent)
+{
+    Domain::ProcessSnapshot snapshot;
+    snapshot.pid = pid;
+    snapshot.name = name;
+    snapshot.cpuPercent = cpuPercent;
+    return snapshot;
 }
 
 [[nodiscard]] Training::ParseResult parse(std::initializer_list<std::string_view> args)
@@ -219,6 +234,69 @@ TEST(UiTrainingPlanTest, DescribesThePlan)
     EXPECT_NE(text.find("overview"), std::string::npos) << text;
     EXPECT_NE(text.find("50 frames"), std::string::npos) << text; // overview: 25% of 200
     EXPECT_NE(Training::usage().find("--synthetic SPEC"), std::string::npos);
+}
+
+TEST(UiTrainingPlanTest, TheFirstSyntheticChoiceWaitsForUsageUnlessForced)
+{
+    const std::vector processes{process(10, "init", 0.0), process(20, "shell", 0.0)};
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::nullopt, false), std::nullopt);
+    // The first Details workload begins: the lowest PID on a tie.
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::nullopt, true), std::optional<std::int32_t>(10));
+    EXPECT_EQ(chooseSyntheticProcess({}, std::nullopt, true), std::nullopt);
+}
+
+TEST(UiTrainingPlanTest, TheFirstSyntheticChoiceIsTheBusiestProcess)
+{
+    const std::vector processes{process(10, "init", 1.0), process(30, "rustc", 90.0), process(20, "db", 90.0)};
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::nullopt, false), std::optional<std::int32_t>(20));
+}
+
+TEST(UiTrainingPlanTest, ALiveSyntheticChoiceIsKept)
+{
+    // Still listed, however busy the others now are: Details keeps the process it shows.
+    const std::vector processes{process(10, "init", 1.0), process(30, "rustc", 90.0)};
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::optional<std::int32_t>(10), false), std::nullopt);
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::optional<std::int32_t>(10), true), std::nullopt);
+}
+
+TEST(UiTrainingPlanTest, AnExitedSyntheticChoiceIsReplacedBeforeDetails)
+{
+    // #2343: the busiest process when the run started was a short-lived compiler, which exited long
+    // before the Details workloads began. Details must get a live replacement, not "Process exited".
+    const std::vector before{process(10, "init", 1.0), process(30, "rustc", 90.0), process(40, "db", 20.0)};
+    const std::optional<std::int32_t> first = chooseSyntheticProcess(before, std::nullopt, false);
+    ASSERT_EQ(first, std::optional<std::int32_t>(30));
+
+    const std::vector after{process(10, "init", 1.0), process(40, "db", 20.0)};
+    EXPECT_EQ(chooseSyntheticProcess(after, first, false), std::optional<std::int32_t>(40));
+    EXPECT_EQ(chooseSyntheticProcess(after, first, true), std::optional<std::int32_t>(40));
+
+    // A replacement does not wait for usage: an idle machine still gets a live process.
+    const std::vector idle{process(10, "init", 0.0), process(40, "db", 0.0)};
+    EXPECT_EQ(chooseSyntheticProcess(idle, first, false), std::optional<std::int32_t>(10));
+}
+
+TEST(UiTrainingPlanTest, TheSyntheticChoicePrefersALongLivedProcess)
+{
+    // A busier compiler that started seconds ago loses to a daemon that has run for days, so Details
+    // keeps one process on show rather than replacing a compiler every few seconds (#2343).
+    constexpr std::uint64_t NOW = 1'000'000;
+    auto daemon = process(40, "db", 20.0);
+    daemon.startTimeEpoch = NOW - (3 * Training::LONG_LIVED_SECONDS);
+    auto compiler = process(30, "rustc", 90.0);
+    compiler.startTimeEpoch = NOW - 5;
+    auto idleDaemon = process(50, "cron", 0.0);
+    idleDaemon.startTimeEpoch = NOW - (2 * Training::LONG_LIVED_SECONDS);
+    const std::vector processes{compiler, daemon, idleDaemon};
+    EXPECT_EQ(chooseSyntheticProcess(processes, std::nullopt, false), std::optional<std::int32_t>(40));
+
+    // The daemon exits: the other long-lived process replaces it, idle or not.
+    const std::vector after{compiler, idleDaemon};
+    EXPECT_EQ(chooseSyntheticProcess(after, std::optional<std::int32_t>(40), false), std::optional<std::int32_t>(50));
+
+    // No process is long-lived (a machine up for minutes): the busiest of them all.
+    const std::vector young{compiler, process(60, "sh", 1.0)};
+    EXPECT_EQ(chooseSyntheticProcess(young, std::nullopt, false), std::optional<std::int32_t>(30));
 }
 
 } // namespace

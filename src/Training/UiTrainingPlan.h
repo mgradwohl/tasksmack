@@ -26,6 +26,8 @@
 // history preloaded. The probe set is chosen per process (TASKSMACK_SYNTHETIC is read once), so the
 // PGO scripts run the driver twice, once each way, and merge both profiles.
 
+#include "Domain/ProcessSnapshot.h"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -143,5 +145,25 @@ struct ParseResult
 
 /// The plan, one line per segment: "overview  450 frames (25%)", and the probe set.
 [[nodiscard]] std::string describePlan(const Options& options, std::span<const Segment> segments);
+
+/// How much older than the newest process one must be to count as long-lived (chooseSyntheticProcess()):
+/// longer than any synthetic churning process lives (at most 15 minutes).
+inline constexpr std::uint64_t LONG_LIVED_SECONDS = 3600;
+
+/// Synthetic probes: the process the Process Details workloads show, given the synthetic machine's
+/// @p processes and the PID last asked for (@p requested, nullopt before the first). Returns the PID to
+/// select now, or nullopt to leave the selection as it is:
+///   - @p requested is still listed: it stays, whether it is on show or still being selected;
+///   - nothing requested yet and not @p force: wait for a snapshot with CPU usage in it (the first one
+///     has none, usage being a delta), so the choice has charts that move;
+///   - otherwise, the busiest long-lived process (the lowest PID on a tie): the first choice, once some
+///     process shows usage or the first Details workload begins (@p force), or a live replacement for
+///     a requested process that has exited, so Details never trains on the "Process exited" pane (#2343).
+/// Long-lived: started at least LONG_LIVED_SECONDS before the newest process listed, which outlives
+/// every synthetic churning process (a compiler lives for seconds), so the choice stays on show. With
+/// none (a young machine, or no start times), every process is a candidate.
+/// Nullopt when @p processes is empty.
+[[nodiscard]] std::optional<std::int32_t>
+chooseSyntheticProcess(std::span<const Domain::ProcessSnapshot> processes, std::optional<std::int32_t> requested, bool force);
 
 } // namespace Training

@@ -1,5 +1,7 @@
 #include "Training/UiTrainingPlan.h"
 
+#include "Domain/ProcessSnapshot.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
@@ -244,6 +246,44 @@ std::string describePlan(const Options& options, std::span<const Segment> segmen
         text += std::format("  {:<18} {:>7} frames  (weight {})\n", segment.workload->name, segment.frames, segment.workload->weight);
     }
     return text;
+}
+
+std::optional<std::int32_t>
+chooseSyntheticProcess(std::span<const Domain::ProcessSnapshot> processes, std::optional<std::int32_t> requested, bool force)
+{
+    if (requested.has_value() &&
+        std::ranges::any_of(processes, [pid = *requested](const Domain::ProcessSnapshot& process) { return process.pid == pid; }))
+    {
+        return std::nullopt;
+    }
+    std::uint64_t newestStart = 0;
+    for (const Domain::ProcessSnapshot& process : processes)
+    {
+        newestStart = std::max(newestStart, process.startTimeEpoch);
+    }
+    const auto longLived = [newestStart](const Domain::ProcessSnapshot& process)
+    {
+        return process.startTimeEpoch != 0 && newestStart - process.startTimeEpoch >= LONG_LIVED_SECONDS;
+    };
+    const bool anyLongLived = std::ranges::any_of(processes, longLived);
+    // Long-lived first (when there are any), then the busiest, then the lowest PID.
+    const auto busiest = std::ranges::max_element(processes,
+                                                  [&](const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b)
+                                                  {
+                                                      const bool aLongLived = anyLongLived && longLived(a);
+                                                      const bool bLongLived = anyLongLived && longLived(b);
+                                                      if (aLongLived != bLongLived)
+                                                      {
+                                                          return bLongLived;
+                                                      }
+                                                      return a.cpuPercent < b.cpuPercent || (a.cpuPercent == b.cpuPercent && a.pid > b.pid);
+                                                  });
+    // A replacement is wanted now, usage or not: the requested process has gone.
+    if (busiest == processes.end() || (!requested.has_value() && !force && busiest->cpuPercent <= 0.0))
+    {
+        return std::nullopt;
+    }
+    return busiest->pid;
 }
 
 } // namespace Training

@@ -347,8 +347,7 @@ void ProcessDetailsPanel::renderContent()
     // the dialogs are given no live target, so a confirm or the affinity dialog closes unconfirmed, while a dump in flight keeps its
     // progress and then shows its result.
     const Platform::ProcessTarget noTarget{.pid = -1, .startTimeTicks = 0};
-    const bool showsRunningProcess = m_SelectedPid != -1 && m_HasSnapshot && !m_ProcessExited;
-    m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess ? selectedTarget() : noTarget);
+    m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
 }
 
 void ProcessDetailsPanel::renderPane(bool killRequested)
