@@ -1229,6 +1229,21 @@ created to solve (a red gate nobody could trust). Catching smaller regressions r
 this would need either a same-job speed-calibration measurement to normalize away the class
 effect, or requiring two independent runs to agree before failing; neither is implemented here.
 
+The runner classes do not slow every benchmark alike, either (#2336). Allocator/memory-bound
+benchmarks such as `BM_ProcessModel_GetSnapshots` (a full copy of ~150 `ProcessSnapshot`s) and
+`BM_ChartWidgets_ComputeAlpha` measured 1.18-1.44x the baseline on most of 47 main captures, with
+no code change, and failed the gate on 2 of them, while the arithmetic-bound benchmarks sat near 1.0x
+on the same runs. Normalizing by the run's own speed does not fix that: the run-wide median or
+geometric-mean ratio is pulled to 0.4-0.9x by benchmarks that have improved since the baseline
+was recorded, so dividing by it fails every capture; a stable arithmetic reference set
+(`BM_Numeric_ProcessTableWorkload/*`) is near 1.0x exactly on the runs where the memory-bound pair
+is high, and judging faster runners against it fails the wall-clock-bound
+`BM_ProcessModel_RefreshRate/*`. Instead, `--threshold-overrides FILE` gives the benchmarks a JSON
+file lists their own threshold, each with a required `reason`; `perf-data/linux-ci-thresholds.json`
+puts those two at 60%, which no capture reached and a 2x slowdown on the baseline's runner class
+still crosses. Add an entry only with the captures that justify it, and remove it when a baseline
+refresh makes it unnecessary. The flag is opt-in: without it every benchmark uses `--threshold`.
+
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
 changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
 deliberate, reviewed performance change that the gate should treat as the new normal):
