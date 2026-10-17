@@ -480,6 +480,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxSystemProbe.cpp
     Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_BrokerServer.cpp  # the privileged helper's server and tasksmack-helper itself (#2307)
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
@@ -797,6 +798,12 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
+endif()
+
+# test_BrokerServer.cpp runs the privileged helper binary directly over a socketpair (#2307).
+if(TARGET tasksmack-helper)
+    add_dependencies(TaskSmackTests tasksmack-helper)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_HELPER_PATH="$<TARGET_FILE:tasksmack-helper>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.

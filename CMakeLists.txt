@@ -220,6 +220,9 @@ set(TASKSMACK_SOURCES
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
+    # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
+    src/Platform/Linux/BrokerSocket.cpp
+    src/Platform/Linux/BrokerServer.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
@@ -731,6 +734,27 @@ if(TASKSMACK_BUILD_UI_TRAINING)
         set_target_properties(TaskSmackUiTraining PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     endif()
     unset(_is_multi_config)
+endif()
+
+# tasksmack-helper (#2307; #2181): the privileged broker TaskSmack starts with pkexec when the user
+# authenticates for an action it can't do itself. Platform sources only -- no SDL, ImGui, GL, config
+# or themes -- so as little as possible runs as root. Linux only; Windows has its own transport (#2311).
+if(UNIX AND NOT APPLE)
+    add_executable(tasksmack-helper
+        src/Helper/main.cpp
+        src/Platform/Linux/BrokerServer.cpp
+        src/Platform/Linux/BrokerSocket.cpp
+        src/Platform/Linux/LinuxProcessActions.cpp
+        src/Platform/Linux/DetachedSpawn.cpp
+    )
+    target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
+    tasksmack_apply_linux_toolchain(tasksmack-helper)
+    tasksmack_apply_default_warnings(tasksmack-helper)
+    tasksmack_apply_text_encoding(tasksmack-helper)
+    target_include_directories(tasksmack-helper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
+    target_link_libraries(tasksmack-helper PRIVATE spdlog::spdlog_header_only)
+    # Beside TaskSmack in the build tree, where the tests find it.
+    set_target_properties(tasksmack-helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
 
 include(cmake/InstallRules.cmake)
