@@ -48,6 +48,9 @@ inline constexpr std::string_view DUMP_THREAD_NAME = "ts-dump";
 /// The worker that runs a confirmed batch action or batch priority change over the Processes table's
 /// selection, one batch at a time (#2142).
 inline constexpr std::string_view BATCH_ACTION_THREAD_NAME = "ts-batch-action";
+/// The worker that runs one single-process action at a time (terminate, kill, suspend, resume,
+/// affinity, a trace's launch), so a slow platform call or a password prompt never blocks the UI (#2305).
+inline constexpr std::string_view PROCESS_ACTION_THREAD_NAME = "ts-proc-action";
 /// The worker that shows the dump confirm's "Save dump to..." folder dialog while it is up (#2001).
 inline constexpr std::string_view FOLDER_DIALOG_THREAD_NAME = "ts-folder-pick";
 /// The worker that reads process icons for the Processes table and Process Details (#1800).

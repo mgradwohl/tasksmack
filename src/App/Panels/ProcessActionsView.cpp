@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <thread>
@@ -102,7 +103,7 @@ void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions
         }
     }
     const bool noTarget = target.pid <= 0;
-    ImGui::BeginDisabled(noTarget);
+    ImGui::BeginDisabled(noTarget || m_ActionRun.busy());
     const bool pressed = ImGui::Button(Detail::SET_AFFINITY_LABEL, ImVec2(width, 0.0F));
     ImGui::EndDisabled();
     if (pressed && !noTarget)
@@ -129,11 +130,13 @@ void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions
     {
         return;
     }
-    const Platform::ProcessTarget& target = m_AffinityDialog.target();
-    const Platform::ProcessActionResult result =
-        actions != nullptr ? actions->setAffinity(target, *cpus) : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_LastResult = affinityResultMessage(m_AffinityDialog.name(), target.pid, *cpus, result);
-    m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+    const Platform::ProcessTarget target = m_AffinityDialog.target();
+    runAction(
+        actions,
+        std::format("Setting the CPU affinity of PID {}...", target.pid),
+        [actions, target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
+        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
+        { return affinityResultMessage(name, pid, cpus, result); });
 }
 
 void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
@@ -163,7 +166,7 @@ void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* act
             ImGui::SameLine();
         }
     }
-    const bool disabled = button.state == Detail::SyscallTraceButtonState::Disabled;
+    const bool disabled = button.state == Detail::SyscallTraceButtonState::Disabled || m_ActionRun.busy();
     ImGui::BeginDisabled(disabled);
     const bool pressed = ImGui::Button(Detail::SYSCALL_TRACE_LABEL, ImVec2(width, 0.0F));
     ImGui::EndDisabled();
@@ -186,12 +189,18 @@ void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* act
 
 void ProcessActionsView::renderResultFeedback() const
 {
+    const auto& theme = UI::Theme::get();
+    if (m_ActionRun.busy())
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "%s", m_ActionRun.pendingText().c_str()); // #2305
+        ImGui::Spacing();
+        return;
+    }
     if (m_LastResult.empty())
     {
         return;
     }
 
-    const auto& theme = UI::Theme::get();
     // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
     const ImVec4 color = m_LastResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
     ImGui::TextColored(color, "%s", m_LastResult.text.c_str());
@@ -297,6 +306,8 @@ bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
     // Suspend and Resume, which can be undone (#1273).
     const auto& theme = UI::Theme::get();
 
+    // Not while an action runs on the worker (#2305): one at a time.
+    ImGui::BeginDisabled(m_ActionRun.busy());
     bool first = true;
     for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
     {
@@ -338,6 +349,7 @@ bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
             }
         }
     }
+    ImGui::EndDisabled();
     return !first;
 }
 

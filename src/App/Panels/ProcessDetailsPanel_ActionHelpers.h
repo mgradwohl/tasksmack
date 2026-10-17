@@ -53,6 +53,25 @@ enum class ProcessAction : std::uint8_t
     return "";
 }
 
+/// The action as the result line says it while it runs (#2305): "Terminating", "Suspending".
+[[nodiscard]] inline const char* actionProgressLabel(ProcessAction action)
+{
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        return "Terminating";
+    case ProcessAction::Kill:
+        return "Killing";
+    case ProcessAction::Stop:
+        return "Suspending";
+    case ProcessAction::Resume:
+        return "Resuming";
+    case ProcessAction::None:
+        break;
+    }
+    return "Acting on";
+}
+
 /// The action's name as its button, the confirm dialog's title and its confirm button show it:
 /// actionVerb() capitalised ("Kill", "Suspend"), so all three use one word (#1203).
 [[nodiscard]] inline const char* actionLabel(ProcessAction action)

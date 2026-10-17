@@ -481,6 +481,7 @@ TEST_F(ProcessActionsBlockRenderTest, ConfirmingActsAndShowsTheResultAndCancelli
     ASSERT_NE(modal, nullptr);
     ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
     (void) runFrame(body);
+    h.actionsView.waitForActionForTesting(); // the kill runs on the action worker (#2305)
     (void) runFrame(body);
     EXPECT_EQ(h.mock.killCount(), 1);
     EXPECT_FALSE(h.actionsView.lastResult().text.empty());

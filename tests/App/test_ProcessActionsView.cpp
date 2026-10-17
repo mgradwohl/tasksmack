@@ -149,6 +149,7 @@ TEST(ProcessActionsViewTest, ConfirmedActionIsDispatchedToTheTarget)
         ProcessActionsView view;
         view.requestAction(action, {.pid = 321, .startTimeTicks = 99}, "proc");
         view.dispatchConfirmed(&mock);
+        view.waitForActionForTesting();
 
         EXPECT_EQ(mock.terminateCount(), action == ProcessAction::Terminate ? 1 : 0);
         EXPECT_EQ(mock.killCount(), action == ProcessAction::Kill ? 1 : 0);
@@ -169,6 +170,7 @@ TEST(ProcessActionsViewTest, FailedDispatchShowsTheError)
     ProcessActionsView view;
     view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
 
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not kill PID 7: Operation not permitted");
@@ -179,6 +181,7 @@ TEST(ProcessActionsViewTest, NullActionsReportUnavailableInsteadOfCrashing)
     ProcessActionsView view;
     view.requestAction(ProcessAction::Terminate, {.pid = 55, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(nullptr);
+    view.waitForActionForTesting();
 
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not terminate PID 55: Process actions unavailable");
@@ -192,6 +195,7 @@ TEST(ProcessActionsViewTest, ResultStaysUntilItsTimeoutRunsOut)
     ProcessActionsView view;
     view.requestAction(ProcessAction::Stop, {.pid = 1, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
 
     view.tick(Detail::ACTION_RESULT_SECONDS - 1.0F);
     EXPECT_FALSE(view.lastResult().empty());
@@ -210,10 +214,12 @@ TEST(ProcessActionsViewTest, ANewResultRestartsTheTimeout)
     ProcessActionsView view;
     view.requestAction(ProcessAction::Stop, {.pid = 1, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     view.tick(4.0F);
 
     view.requestAction(ProcessAction::Resume, {.pid = 1, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     view.tick(4.0F);
     EXPECT_EQ(view.lastResult().text, "Resume sent to PID 1");
 }
@@ -232,6 +238,7 @@ TEST(ProcessActionsViewTest, SelectionChangeClosesTheDialogAndDropsTheResult)
     ProcessActionsView view;
     view.requestAction(ProcessAction::Kill, {.pid = 9, .startTimeTicks = 1}, "proc");
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     view.requestAction(ProcessAction::Terminate, TARGET_A, "a");
     ASSERT_TRUE(view.confirmRequested());
     ASSERT_FALSE(view.lastResult().empty());
@@ -262,6 +269,7 @@ TEST(ProcessActionsViewTest, ConfirmActsOnTheCapturedTargetNotALaterOne)
     EXPECT_TRUE(view.takeDismiss(TARGET_B));
     EXPECT_FALSE(view.confirmRequested());
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     EXPECT_EQ(mock.killCount(), 0);
     EXPECT_NE(mock.lastTarget().pid, TARGET_B.pid);
 }
@@ -282,6 +290,7 @@ TEST(ProcessActionsViewTest, SelectionChangeCancelsThePendingConfirm)
 
     // A confirm now reaches no platform call at all, for A or B, and shows no result.
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     EXPECT_EQ(mock.terminateCount(), 0);
     EXPECT_EQ(mock.killCount(), 0);
     EXPECT_EQ(mock.stopCount(), 0);
@@ -353,6 +362,7 @@ TEST(ProcessActionsViewTest, ANewRequestAfterASelectionChangeTargetsTheNewProces
     view.requestAction(ProcessAction::Kill, TARGET_B, "b");
     EXPECT_FALSE(view.takeDismiss(TARGET_B));
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     EXPECT_EQ(mock.killCount(), 1);
     EXPECT_EQ(mock.lastTarget().pid, TARGET_B.pid);
 }
@@ -391,6 +401,7 @@ TEST(ProcessActionsViewTest, ConfirmClearsThePendingConfirmAndRunsOnce)
         ProcessActionsView view;
         view.requestAction(action, TARGET_A, "a");
         view.dispatchConfirmed(&mock);
+        view.waitForActionForTesting();
 
         EXPECT_FALSE(view.confirmRequested());
         EXPECT_EQ(view.pendingAction(), ProcessAction::None);
@@ -400,6 +411,7 @@ TEST(ProcessActionsViewTest, ConfirmClearsThePendingConfirmAndRunsOnce)
 
         // A second dispatch has nothing to replay: no platform call, and the result line is kept.
         view.dispatchConfirmed(&mock);
+        view.waitForActionForTesting();
         const int calls = mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount();
         EXPECT_EQ(calls, 1);
         EXPECT_EQ(view.lastResult().text, firstResult);
@@ -422,6 +434,7 @@ TEST(ProcessActionsViewTest, CancelClearsThePendingConfirmAndDispatchesNothing)
         EXPECT_TRUE(view.confirmTarget().processName.empty());
 
         view.dispatchConfirmed(&mock);
+        view.waitForActionForTesting();
         const int calls = mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount();
         EXPECT_EQ(calls, 0);
         EXPECT_TRUE(view.lastResult().empty());
@@ -433,7 +446,9 @@ TEST(ProcessActionsViewTest, DispatchWithNothingPendingDoesNothing)
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
     view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
     view.dispatchConfirmed(nullptr);
+    view.waitForActionForTesting();
     EXPECT_EQ(mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount(), 0);
     EXPECT_TRUE(view.lastResult().empty());
 }
@@ -495,6 +510,7 @@ TEST(ProcessActionsViewTest, TraceLaunchesOnTheTargetAndShowsTheResult)
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
     view.launchSyscallTrace(&mock, TARGET_A);
+    view.waitForActionForTesting();
     EXPECT_EQ(mock.syscallTraceCount(), 1);
     EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
     EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
@@ -511,6 +527,7 @@ TEST(ProcessActionsViewTest, TraceFailureShowsThePlatformMessage)
     mock.setSyscallTraceResult(Platform::ProcessActionResult::error("ptrace is limited (/proc/sys/kernel/yama/ptrace_scope is 1)"));
     ProcessActionsView view;
     view.launchSyscallTrace(&mock, TARGET_B);
+    view.waitForActionForTesting();
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not trace PID 2002: ptrace is limited (/proc/sys/kernel/yama/ptrace_scope is 1)");
 
@@ -523,6 +540,7 @@ TEST(ProcessActionsViewTest, TraceWithoutActionsReportsUnavailable)
 {
     ProcessActionsView view;
     view.launchSyscallTrace(nullptr, TARGET_A);
+    view.waitForActionForTesting();
     EXPECT_FALSE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Could not trace PID 1001: Process actions unavailable");
 }

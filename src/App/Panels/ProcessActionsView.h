@@ -12,6 +12,7 @@
 // Everything but render() is defined here, free of ImGui, so the confirm and result state can be
 // tested against a mock IProcessActions without an ImGui context (test_ProcessActionsView.cpp).
 
+#include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "Platform/CpuAffinity.h"
@@ -232,6 +233,7 @@ class ProcessActionsView
     /// confirm closed unconfirmed the same way.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
+        m_ActionRun.update(); // a confirmed action, trace launch or affinity change that has finished (#2305)
         renderConfirmDialog(actions, liveTarget);
         renderAffinityDialog(actions, liveTarget);
         m_DumpView.render(actions, &liveTarget);
@@ -333,34 +335,50 @@ class ProcessActionsView
     }
 
     /// The confirm dialog's action was pressed: run the pending action on the captured target through
-    /// @p actions (null gives an "unavailable" error rather than a dereference), show the result, and
-    /// clear the pending confirm, so it runs once. With nothing pending this does nothing at all: no
-    /// platform call, and the result line is left as it is.
+    /// @p actions (null gives an "unavailable" error rather than a dereference) on the action worker
+    /// (#2305), and clear the pending confirm, so it runs once; the result line shows its progress, then
+    /// its result. With nothing pending this does nothing at all: no platform call, and the result line
+    /// is left as it is.
     void dispatchConfirmed(Platform::IProcessActions* actions)
     {
         if (m_ConfirmAction == Detail::ProcessAction::None)
         {
             return;
         }
-        const Platform::ProcessTarget& target = m_ConfirmTarget.target;
-        const Platform::ProcessActionResult result = (actions != nullptr)
-                                                       ? Detail::dispatchProcessAction(*actions, m_ConfirmAction, target)
-                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
-        m_LastResult = Detail::formatActionResultMessage(m_ConfirmAction, target.pid, result);
-        m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+        const Detail::ProcessAction action = m_ConfirmAction;
+        const Platform::ProcessTarget target = m_ConfirmTarget.target;
         cancelConfirm();
+        runAction(
+            actions,
+            std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
+            [actions, action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
+            [action, pid = target.pid](const Platform::ProcessActionResult& result)
+            { return Detail::formatActionResultMessage(action, pid, result); });
     }
 
     /// The trace button was pressed: open strace on @p target through @p actions (null gives an
-    /// "unavailable" error) and show the outcome in the result line. Returns once the terminal has
-    /// started; never waits for the trace.
+    /// "unavailable" error) on the action worker, and show the outcome in the result line. The worker
+    /// returns once the terminal has started; it never waits for the trace.
     void launchSyscallTrace(Platform::IProcessActions* actions, const Platform::ProcessTarget& target)
     {
-        const Platform::ProcessActionResult result = (actions != nullptr)
-                                                       ? actions->launchSyscallTrace(target)
-                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
-        m_LastResult = Detail::formatSyscallTraceResult(target.pid, result);
-        m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+        runAction(
+            actions,
+            std::format("Starting a trace of PID {}...", target.pid),
+            [actions, target] { return actions->launchSyscallTrace(target); },
+            [pid = target.pid](const Platform::ProcessActionResult& result) { return Detail::formatSyscallTraceResult(pid, result); });
+    }
+
+    /// Whether an action runs on the worker now (#2305): the action buttons are disabled meanwhile.
+    [[nodiscard]] bool actionRunning() const noexcept
+    {
+        return m_ActionRun.busy();
+    }
+
+    /// Waits for the running action and takes its result in, as the next frame would: for tests, which
+    /// read the result line straight after dispatching.
+    void waitForActionForTesting()
+    {
+        m_ActionRun.update(/*wait=*/true);
     }
 
     /// Whether the confirm dialog is open, or requested to open this frame.
@@ -388,6 +406,35 @@ class ProcessActionsView
     }
 
   private:
+    /// Runs @p work (a platform call through @p actions) on the action worker, showing @p pending until it
+    /// finishes; @p format turns its result into the result line. Null @p actions is the "unavailable"
+    /// result at once, without a worker.
+    template<typename Work, typename Format>
+    void runAction(Platform::IProcessActions* actions, std::string pending, Work work, Format format)
+    {
+        if (actions == nullptr)
+        {
+            showResult(format(Platform::ProcessActionResult::error("Process actions unavailable")));
+            return;
+        }
+        if (m_ActionRun.busy())
+        {
+            showResult(format(Platform::ProcessActionResult::error("Another action is still running")));
+            return;
+        }
+        // The formatter is moved, never copied, into the finish: it may hold the process's name.
+        static_cast<void>(m_ActionRun.start(std::move(pending),
+                                            std::move(work),
+                                            [this, format = std::move(format)](const Platform::ProcessActionResult& result)
+                                            { showResult(format(result)); }));
+    }
+
+    void showResult(Detail::ActionResultMessage message) noexcept
+    {
+        m_LastResult = std::move(message);
+        m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+    }
+
     void renderResultFeedback() const;
     void renderConfirmDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
     /// Returns whether any button was drawn, so the trace button knows whether to follow on the row.
@@ -428,6 +475,10 @@ class ProcessActionsView
     // panel declares this view after its actions, so the view (and its destructor's wait) goes first.
     ProcessDumpView m_DumpView;
     float m_ResultSecondsLeft = 0.0F;
+    // The confirmed action, trace launch or affinity change in flight (#2305). Its worker calls the
+    // panel's IProcessActions until it finishes: last, so it is destroyed (and waited for) first, and the
+    // panel declares this view after its actions.
+    ProcessActionRun m_ActionRun;
 };
 
 } // namespace App

@@ -118,6 +118,7 @@ class ProcessActionConfirmPopupTest : public ::testing::Test
         static_cast<void>(runFrame(draw));
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
         static_cast<void>(runFrame(draw));
+        view.waitForActionForTesting(); // the launch runs on the action worker (#2305)
         static_cast<void>(runFrame(draw));
         return mock.syscallTraceCount();
     }

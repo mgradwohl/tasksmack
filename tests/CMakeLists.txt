@@ -369,6 +369,7 @@ set(COMMON_TEST_SOURCES
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchRun.cpp
+    App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_ProcessAffinityDialog.cpp
     App/test_AboutDialogRender.cpp
