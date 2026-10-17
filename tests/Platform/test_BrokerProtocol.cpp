@@ -339,6 +339,36 @@ TEST(BrokerProtocolTest, FirmwareFilesRoundTrip)
     EXPECT_FALSE(decodeResponse(reply).has_value());
 }
 
+TEST(BrokerProtocolTest, CrashesRoundTrip)
+{
+    EXPECT_EQ(roundTrip(Request{CrashesRequest{}}), Request{CrashesRequest{}});
+    CrashesReply reply;
+    reply.info.available = true;
+    reply.info.family = OsFamily::Linux;
+    reply.info.listed = true;
+    reply.info.journalRead = true;
+    reply.info.capped = true;
+    CrashEvent own;
+    own.unixSeconds = 1'760'000'000;
+    own.application = "python3";
+    own.pid = 4242;
+    own.uid = 1000;
+    own.coreBytes = 1 << 20;
+    own.coreKept = true;
+    own.signal = "SIGSEGV";
+    own.executable = "/usr/bin/python3.12";
+    CrashEvent others;
+    others.unixSeconds = 1'759'000'000;
+    others.application = "postgres";
+    others.signal = "SIGABRT";
+    reply.info.events = {own, others};
+    EXPECT_EQ(roundTrip(Response{reply}), Response{reply});
+
+    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
+    bytes[4 + HEADER_BYTES + 1] = 9; // no such OS family
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
 TEST(BrokerProtocolTest, AFirmwareFileIsCappedAtItsLimit)
 {
     const std::vector<std::uint8_t> big(MAX_FIRMWARE_FILE_BYTES + 10, 0xAB);

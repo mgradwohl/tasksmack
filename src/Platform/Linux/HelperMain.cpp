@@ -9,21 +9,25 @@
 // TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly as the tests do, its own.
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
+#include "Platform/Linux/LinuxCoredumps.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 #include "Platform/Linux/MemoryRollupRead.h"
+#include "Platform/Linux/SystemdJournal.h"
 
 #include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <optional>
 #include <stop_token>
 #include <string_view>
@@ -101,6 +105,16 @@ int main(int argc, char** argv)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
+            // Every user's crashes: the journal and core files as root (#2310)
+            .crashes =
+                []
+            {
+                Platform::CrashesInfo info;
+                const std::time_t now = std::time(nullptr);
+                Platform::LinuxCoredumps::readCrashFacts(
+                    "/", now > 0 ? static_cast<std::uint64_t>(now) : 0, info, Platform::SystemdJournal::makeCoredumpJournalReader());
+                return info;
+            },
         };
         const std::stop_source never;
         switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))

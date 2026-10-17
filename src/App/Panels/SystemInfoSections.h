@@ -297,7 +297,8 @@ struct VisibleSection
 /// The Recent crashes & hangs section (#1524), titled "Recent crashes" on Linux, the page's last: the counts
 /// of the last CRASH_HISTORY_DAYS days, a muted note when only the newest CRASH_LIST_MAX are listed, then
 /// one row per event, newest first, labelled by its local time.
-[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes);
+/// With @p canAuthenticate, other users' hidden journal entries add an "Authenticate to read" row (#2310).
+[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate = false);
 
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
 [[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);

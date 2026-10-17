@@ -196,8 +196,8 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
         break;
     case SystemInfo::RowAction::AuthenticateToRead:
         label = ICON_FA_LOCK "  Authenticate to read";
-        tooltip = "Ask for an administrator's password, then read the serial numbers, UUID, SMBIOS version and memory modules "
-                  "through TaskSmack's helper";
+        tooltip = "Ask for an administrator's password, then read what only root can read here through TaskSmack's helper: "
+                  "the serial numbers, UUID, SMBIOS version, memory modules and every user's crashes";
         note = SystemInfo::AUTHENTICATE_NOTE;
         clickedFlag = &state.authenticateClicked;
         break;

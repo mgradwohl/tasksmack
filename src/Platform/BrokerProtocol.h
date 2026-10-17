@@ -28,6 +28,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -73,6 +74,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadConnections = 35,    ///< Its TCP and UDP sockets (#2309)
     ReadMemoryRollup = 36,   ///< Its PSS and USS (#2309)
     ReadFirmwareFile = 37,   ///< One of System Information's root-only firmware files (#2310)
+    ReadCrashes = 38,        ///< Recent crashes, every user's (#2310)
     ActionResult = 48,       ///< The answer to a process action
     EnvironmentResult = 49,  ///< The answer to ReadEnvironment
     ModulesResult = 50,      ///< The answer to ReadModules
@@ -80,6 +82,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ConnectionsResult = 52,  ///< The answer to ReadConnections
     MemoryRollupResult = 53, ///< The answer to ReadMemoryRollup
     FirmwareFileResult = 54, ///< The answer to ReadFirmwareFile
+    CrashesResult = 55,      ///< The answer to ReadCrashes
     Error = 63,              ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -300,6 +303,35 @@ struct FirmwareFileReply
     friend bool operator==(const FirmwareFileReply&, const FirmwareFileReply&) = default;
 };
 
+/// Read System Information's Recent crashes (#2310) as the helper reads them as root: systemd-coredump's
+/// journal entries and core files of every user, not only this one's.
+struct CrashesRequest
+{
+    friend bool operator==(const CrashesRequest&, const CrashesRequest&) = default;
+};
+
+/// The answer to CrashesRequest: the Linux facts of CrashesInfo (the Windows-only fields stay empty), at
+/// most CRASH_LIST_MAX events.
+struct CrashesReply
+{
+    CrashesInfo info;
+
+    friend bool operator==(const CrashesReply& left, const CrashesReply& right)
+    {
+        const auto same = [](const CrashEvent& a, const CrashEvent& b)
+        {
+            return a.unixSeconds == b.unixSeconds && a.application == b.application && a.pid == b.pid && a.uid == b.uid &&
+                   a.coreBytes == b.coreBytes && a.coreKept == b.coreKept && a.signal == b.signal && a.executable == b.executable;
+        };
+        const CrashesInfo& l = left.info;
+        const CrashesInfo& r = right.info;
+        return l.available == r.available && l.family == r.family && l.listed == r.listed && l.accessDenied == r.accessDenied &&
+               l.unavailableReason == r.unavailableReason && l.capped == r.capped && l.journalRead == r.journalRead &&
+               l.journalUnavailableReason == r.journalUnavailableReason && l.otherUsersHidden == r.otherUsersHidden &&
+               std::ranges::equal(l.events, r.events, same);
+    }
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -334,7 +366,8 @@ using Request = std::variant<Hello,
                              OpenFilesRequest,
                              ConnectionsRequest,
                              MemoryRollupRequest,
-                             FirmwareFileRequest>;
+                             FirmwareFileRequest,
+                             CrashesRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -343,7 +376,8 @@ using Response = std::variant<HelloReply,
                               OpenFilesReply,
                               ConnectionsReply,
                               MemoryRollupReply,
-                              FirmwareFileReply>;
+                              FirmwareFileReply,
+                              CrashesReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -635,6 +669,10 @@ template<typename Message>
         kind = MessageKind::ReadFirmwareFile;
         writer.u8(static_cast<std::uint8_t>(firmware->file));
     }
+    else if (std::holds_alternative<CrashesRequest>(request))
+    {
+        kind = MessageKind::ReadCrashes;
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -759,6 +797,8 @@ template<typename Message>
         }
         return Detail::finish<Request>(reader, frame->requestId, firmware);
     }
+    case MessageKind::ReadCrashes:
+        return Detail::finish<Request>(reader, frame->requestId, CrashesRequest{});
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -767,6 +807,7 @@ template<typename Message>
     case MessageKind::ConnectionsResult:
     case MessageKind::MemoryRollupResult:
     case MessageKind::FirmwareFileResult:
+    case MessageKind::CrashesResult:
     case MessageKind::Error:
         break;
     }
@@ -908,6 +949,36 @@ template<typename Message>
         kind = MessageKind::FirmwareFileResult;
         writer.u8(static_cast<std::uint8_t>(firmware->status));
         writer.blob(firmware->bytes, MAX_FIRMWARE_FILE_BYTES);
+    }
+    else if (const auto* crashes = std::get_if<CrashesReply>(&response))
+    {
+        kind = MessageKind::CrashesResult;
+        const CrashesInfo& info = crashes->info;
+        writer.u8(info.available ? 1 : 0);
+        writer.u8(static_cast<std::uint8_t>(info.family));
+        writer.u8(info.listed ? 1 : 0);
+        writer.u8(info.accessDenied ? 1 : 0);
+        writer.text(info.unavailableReason);
+        writer.u8(info.capped ? 1 : 0);
+        writer.u8(info.journalRead ? 1 : 0);
+        writer.text(info.journalUnavailableReason);
+        writer.u8(info.otherUsersHidden ? 1 : 0);
+        const std::size_t count = std::min(info.events.size(), CRASH_LIST_MAX);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const CrashEvent& event = info.events[i];
+            writer.u64(event.unixSeconds);
+            writer.text(event.application);
+            writer.u8(event.pid.has_value() ? 1 : 0);
+            writer.u32(event.pid.value_or(0));
+            writer.u8(event.uid.has_value() ? 1 : 0);
+            writer.u32(event.uid.value_or(0));
+            writer.u64(event.coreBytes);
+            writer.u8(event.coreKept ? 1 : 0);
+            writer.text(event.signal);
+            writer.text(event.executable);
+        }
     }
     return writer.frame(kind, requestId);
 }
@@ -1139,6 +1210,57 @@ template<typename Message>
         reply.bytes = reader.blob(MAX_FIRMWARE_FILE_BYTES);
         return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
     }
+    case MessageKind::CrashesResult:
+    {
+        CrashesReply reply;
+        CrashesInfo& info = reply.info;
+        info.available = reader.flag();
+        const std::uint8_t family = reader.u8();
+        if (family <= static_cast<std::uint8_t>(OsFamily::Linux))
+        {
+            info.family = static_cast<OsFamily>(family);
+        }
+        else
+        {
+            reader.fail();
+        }
+        info.listed = reader.flag();
+        info.accessDenied = reader.flag();
+        info.unavailableReason = reader.text();
+        info.capped = reader.flag();
+        info.journalRead = reader.flag();
+        info.journalUnavailableReason = reader.text();
+        info.otherUsersHidden = reader.flag();
+        const std::uint32_t count = reader.u32();
+        if (count > CRASH_LIST_MAX)
+        {
+            reader.fail();
+        }
+        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+        {
+            CrashEvent event;
+            event.unixSeconds = reader.u64();
+            event.application = reader.text();
+            const bool hasPid = reader.flag();
+            const std::uint32_t pid = reader.u32();
+            if (hasPid)
+            {
+                event.pid = pid;
+            }
+            const bool hasUid = reader.flag();
+            const std::uint32_t uid = reader.u32();
+            if (hasUid)
+            {
+                event.uid = uid;
+            }
+            event.coreBytes = reader.u64();
+            event.coreKept = reader.flag();
+            event.signal = reader.text();
+            event.executable = reader.text();
+            info.events.push_back(std::move(event));
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1150,6 +1272,7 @@ template<typename Message>
     case MessageKind::ReadConnections:
     case MessageKind::ReadMemoryRollup:
     case MessageKind::ReadFirmwareFile:
+    case MessageKind::ReadCrashes:
         break;
     }
     return std::unexpected("Not a response");

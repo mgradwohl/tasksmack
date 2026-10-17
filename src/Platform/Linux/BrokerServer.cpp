@@ -156,6 +156,21 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
             return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
         }
     }
+    if (std::holds_alternative<Broker::CrashesRequest>(request))
+    {
+        if (!readers.crashes)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't read crashes"};
+        }
+        try
+        {
+            return Broker::CrashesReply{.info = readers.crashes()};
+        }
+        catch (...)
+        {
+            return Broker::ErrorReply{.message = "The crash read failed"};
+        }
+    }
     try
     {
         return act(request, actions);

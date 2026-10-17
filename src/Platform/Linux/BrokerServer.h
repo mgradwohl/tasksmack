@@ -12,6 +12,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 
 #include <chrono>
 #include <cstdint>
@@ -37,6 +38,9 @@ struct Readers
     /// System Information's root-only firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};
+    /// System Information's Recent crashes, every user's (#2310)
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<CrashesInfo()> crashes{};
 };
 
 /// A read request goes to its reader in @p readers.

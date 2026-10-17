@@ -2659,6 +2659,24 @@ TEST(SystemInfoSectionsTest, CrashesRowsWindows)
     EXPECT_EQ(section.rows[3].value, "Unknown application crashed, exception 0x12345678");
 }
 
+TEST(SystemInfoSectionsTest, HiddenCrashesOfferAuthenticateToRead)
+{
+    Platform::CrashesInfo crashes;
+    crashes.available = true;
+    crashes.family = Platform::OsFamily::Linux;
+    crashes.listed = true;
+    crashes.journalRead = true;
+    crashes.otherUsersHidden = true;
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(crashes), "Other users' crashes"), nullptr) << "not without the helper";
+    const Section offered = SystemInfo::buildCrashesSection(crashes, /*canAuthenticate=*/true);
+    ASSERT_FALSE(offered.rows.empty());
+    EXPECT_EQ(offered.rows.front().label, "Other users' crashes");
+    EXPECT_EQ(offered.rows.front().action, SystemInfo::RowAction::AuthenticateToRead);
+
+    crashes.otherUsersHidden = false; // root, or in systemd-journal: nothing to offer
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(crashes, true), "Other users' crashes"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
 {
     Platform::CrashesInfo cores;

@@ -374,14 +374,14 @@ Section buildOsSection(const Platform::OsInfo& os, std::uint64_t readAtUnixSecon
 namespace
 {
 
-/// The "Authenticate to read" row a section with facts readable by root only leads with (#2310).
-[[nodiscard]] Row authenticateRow()
+/// The "Authenticate to read" row a section with facts readable by root only leads with (#2310):
+/// @p label and @p why it's offered.
+[[nodiscard]] Row authenticateRow(std::string_view label = "Readable by root only",
+                                  std::string_view why = "Some facts here need an administrator")
 {
-    Row ask = row("Readable by root only",
+    Row ask = row(std::string(label),
                   {},
-                  std::format("Some facts here need an administrator: \"Authenticate to read\" reads them through TaskSmack's "
-                              "helper ({})",
-                              AUTHENTICATE_NOTE));
+                  std::format("{}: \"Authenticate to read\" reads them through TaskSmack's helper ({})", why, AUTHENTICATE_NOTE));
     ask.action = RowAction::AuthenticateToRead;
     return ask;
 }
@@ -1531,11 +1531,16 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
     return joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", ");
 }
 
-Section buildCrashesSection(const Platform::CrashesInfo& crashes)
+Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate)
 {
     const bool windows = crashes.family == Platform::OsFamily::Windows;
     Section section{.title = windows ? "Recent crashes & hangs" : "Recent crashes", .icon = ICON_FA_TRIANGLE_EXCLAMATION, .rows = {}};
     std::vector<Row>& rows = section.rows;
+    if (canAuthenticate && crashes.otherUsersHidden)
+    {
+        rows.push_back(authenticateRow("Other users' crashes",
+                                       "The journal shows you only your own crashes' details, and other users' core files by name"));
+    }
     const std::string period = std::format("Last {} days", Platform::CRASH_HISTORY_DAYS);
     const auto plural = [](std::size_t count, std::string_view one, std::string_view many)
     {
@@ -2413,7 +2418,7 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.crashes.available)
     {
-        sections.push_back(buildCrashesSection(snapshot.crashes)); // the page's last section
+        sections.push_back(buildCrashesSection(snapshot.crashes, capabilities.canReadAuthorized)); // the page's last section
     }
     // Further sections (#1514 and on) follow here, in the page's order.
 

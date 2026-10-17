@@ -11,6 +11,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
@@ -227,6 +228,23 @@ TEST(FirmwareFileReadTest, EachFileIsReadFromItsOnePath)
     }
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
+}
+
+TEST(BrokerServerTest, ACrashesRequestIsReadThroughItsFunction)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.crashes = []
+    {
+        CrashesInfo info;
+        info.available = true;
+        info.listed = true;
+        return info;
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::CrashesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(response));
+    EXPECT_TRUE(std::get<Broker::CrashesReply>(response).info.listed);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::CrashesRequest{}, actions)));
 }
 
 TEST(BrokerServerTest, AMemoryRollupRequestIsReadThroughItsFunction)
@@ -731,6 +749,16 @@ TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
     ASSERT_TRUE(response.has_value()) << response.error();
     // Unprivileged here, so Unreadable where the table exists; NotFound in a VM or container without one
     ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(*response));
+}
+
+TEST(PkexecBrokerTest, TheHelperAnswersACrashesRequest)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::CrashesRequest{}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(*response));
+    EXPECT_TRUE(std::get<Broker::CrashesReply>(*response).info.available);
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
