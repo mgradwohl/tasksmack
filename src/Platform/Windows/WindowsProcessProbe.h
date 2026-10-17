@@ -110,6 +110,8 @@ struct WindowsProcessProbeFunctions
         /// ntdll's NtQueryInformationProcess, its class passed as a ULONG. Nullable: status and
         /// command line are then not read.
         LONG(NTAPI* ntQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG) = nullptr;
+        /// GetProcessInformation: the power-throttling state behind Efficiency Mode (#2312).
+        BOOL(WINAPI* getProcessInformation)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD) = nullptr;
         DWORD(WINAPI* getGuiResources)(HANDLE, DWORD) = nullptr;
         BOOL(WINAPI* getProcessAffinityMask)(HANDLE, PDWORD_PTR, PDWORD_PTR) = nullptr;
         BOOL(WINAPI* getProcessGroupAffinity)(HANDLE, PUSHORT, PUSHORT) = nullptr;

@@ -83,7 +83,7 @@ Each process's name has its program's icon beside it, as in Task Manager, and so
 
 - **User** — the account the process runs as
 - **Publisher** (Windows, hidden by default) — the company named in the executable's version information
-- **Status** (hidden by default) — **Suspended** or **Efficiency Mode** on Windows; **Suspended** on Linux for a process its cgroup has frozen. Process Details' **State** row shows it after the state.
+- **Status** (hidden by default) — on Windows, **Suspended** for a frozen process (such as a suspended Store app) or **Efficiency Mode** for one running with EcoQoS, as Task Manager's Efficiency mode sets it; **Suspended** on Linux for a process its cgroup has frozen. Process Details' **State** row shows it after the state.
 - **Type** (Windows, hidden by default) — **App** (it has a window), **Background Process** or **Windows Process**, as Task Manager groups them
 - **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample

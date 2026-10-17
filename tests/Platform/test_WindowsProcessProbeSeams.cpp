@@ -128,7 +128,11 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failStatus = false;
     bool failCommandLine = false;
     bool commandLineOutsideBuffer = false; ///< The command line's characters aren't in the returned buffer
-    ULONG statusFlags = 0x20;              // PEBI_IS_BACKGROUND
+    ULONG statusFlags = 0;                 // PROCESS_EXTENDED_BASIC_INFORMATION::Flags
+    bool failPowerThrottling = false;
+    ULONG powerControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED; // EcoQoS on: Efficiency Mode
+    ULONG powerStateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    std::vector<ULONG> infoClasses; // Every NtQueryInformationProcess class asked for
     bool failGdiOnLimitedHandle = false;
     bool failGdi = false;
     DWORD gdiObjects = 7;
@@ -373,27 +377,46 @@ BOOL WINAPI fakeQueryFullProcessImageNameW(HANDLE /*process*/, DWORD /*flags*/, 
     return TRUE;
 }
 
-/// ProcessExtendedBasicInformation's layout, as the probe reads it.
+/// PROCESS_EXTENDED_BASIC_INFORMATION's layout.
 struct ExtendedBasicInformation
 {
     SIZE_T size;
     PROCESS_BASIC_INFORMATION basicInfo;
     ULONG flags;
 };
+static_assert(sizeof(void*) != 8 || sizeof(ExtendedBasicInformation) == 64, "The 64-byte structure Windows fills");
 
+/// NtQueryInformationProcess as Windows answers it (#2312): ProcessBasicInformation (class 0) fills
+/// PROCESS_EXTENDED_BASIC_INFORMATION only for a buffer of exactly its size whose Size field says
+/// so, and every class but class 0 and ProcessCommandLineInformation (60) refuses the buffers the
+/// probe passes -- class 64, ProcessTelemetryIdInformation, among them, as the real one does.
 LONG NTAPI fakeNtQueryInformationProcess(HANDLE /*process*/, ULONG infoClass, PVOID buffer, ULONG length, PULONG returned)
 {
-    constexpr ULONG EXTENDED_BASIC = 64;
-    if (infoClass == EXTENDED_BASIC)
+    constexpr ULONG BASIC = 0;
+    constexpr ULONG COMMAND_LINE = 60;
+    fake().infoClasses.push_back(infoClass);
+    if (infoClass == BASIC)
     {
         if (fake().failStatus)
         {
             return STATUS_ACCESS_DENIED_NT;
         }
         ExtendedBasicInformation info{};
+        if (length != sizeof(info) || static_cast<const ExtendedBasicInformation*>(buffer)->size != sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH_NT;
+        }
+        info.size = sizeof(info);
         info.flags = fake().statusFlags;
-        std::memcpy(buffer, &info, std::min<std::size_t>(length, sizeof(info)));
+        std::memcpy(buffer, &info, sizeof(info));
+        *returned = sizeof(info);
         return 0;
+    }
+    if (infoClass != COMMAND_LINE)
+    {
+        constexpr ULONG TELEMETRY_BYTES = 422; // What class 64 asked for on Windows 11 build 26300
+        *returned = TELEMETRY_BYTES;
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
     }
     if (fake().failCommandLine)
     {
@@ -416,6 +439,26 @@ LONG NTAPI fakeNtQueryInformationProcess(HANDLE /*process*/, ULONG infoClass, PV
     std::memcpy(out, &text, sizeof(text));
     std::memcpy(out + sizeof(UNICODE_STRING), fake().commandLine.data(), textBytes);
     return 0;
+}
+
+/// GetProcessInformation(ProcessPowerThrottling): refuses any other class, size or version.
+BOOL WINAPI fakeGetProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+{
+    if (infoClass != ProcessPowerThrottling || size != sizeof(PROCESS_POWER_THROTTLING_STATE) ||
+        static_cast<const PROCESS_POWER_THROTTLING_STATE*>(info)->Version != PROCESS_POWER_THROTTLING_CURRENT_VERSION)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (fake().failPowerThrottling)
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    auto* state = static_cast<PROCESS_POWER_THROTTLING_STATE*>(info);
+    state->ControlMask = fake().powerControlMask;
+    state->StateMask = fake().powerStateMask;
+    return TRUE;
 }
 
 DWORD WINAPI fakeGetGuiResources(HANDLE process, DWORD flags)
@@ -621,6 +664,7 @@ WindowsProcessProbeFunctions fakeFunctions()
                 .getPriorityClass = &fakeGetPriorityClass,
                 .queryFullProcessImageNameW = &fakeQueryFullProcessImageNameW,
                 .ntQueryInformationProcess = &fakeNtQueryInformationProcess,
+                .getProcessInformation = &fakeGetProcessInformation,
                 .getGuiResources = &fakeGetGuiResources,
                 .getProcessAffinityMask = &fakeGetProcessAffinityMask,
                 .getProcessGroupAffinity = &fakeGetProcessGroupAffinity,
@@ -771,25 +815,75 @@ TEST_F(WindowsProcessProbeSeamTest, LongImagePathsAndCommandLinesGrowTheirBuffer
     EXPECT_EQ(sampleOne().command.size(), fake().imagePath.size());
 }
 
-TEST_F(WindowsProcessProbeSeamTest, StatusFlagsAndAFailedStatusRead)
+TEST_F(WindowsProcessProbeSeamTest, StatusIsReadThroughProcessBasicInformationNotTheTelemetryClass)
 {
-    fake().statusFlags = 0x10; // PEBI_IS_FROZEN
+    // #2312: the status was asked for with class 64, ProcessTelemetryIdInformation, which refuses
+    // the extended-basic buffer, so a frozen process never read as Suspended.
+    fake().powerControlMask = 0;
+    fake().powerStateMask = 0;
+    fake().statusFlags = EXTENDED_BASIC_IS_FROZEN;
     EXPECT_EQ(sampleOne().status, "Suspended");
-    fake().statusFlags = 0;
-    EXPECT_TRUE(sampleOne().status.empty());
-    fake().failStatus = true;
-    const ProcessCounters process = sampleOne();
-    EXPECT_TRUE(process.status.empty());
-    EXPECT_EQ(process.user, "alice");
+    EXPECT_NE(std::ranges::find(fake().infoClasses, ULONG{0}), fake().infoClasses.end());
+    EXPECT_EQ(std::ranges::find(fake().infoClasses, ULONG{64}), fake().infoClasses.end());
 }
 
-TEST_F(WindowsProcessProbeSeamTest, NoNtQueryInformationProcessLeavesStatusAndCommandLineUnread)
+TEST_F(WindowsProcessProbeSeamTest, EfficiencyModeIsEcoQosNotTheBackgroundFlag)
+{
+    // #2312: IsBackground (0x20) was taken for Efficiency Mode; it is execution-speed throttling.
+    fake().statusFlags = 0x20; // IsBackground
+    fake().powerControlMask = 0;
+    fake().powerStateMask = 0;
+    EXPECT_TRUE(sampleOne().status.empty());
+
+    fake().statusFlags = 0;
+    fake().powerControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    fake().powerStateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    EXPECT_EQ(sampleOne().status, "Efficiency Mode");
+
+    fake().powerStateMask = 0; // Taken control of, but switched off (HighQoS)
+    EXPECT_TRUE(sampleOne().status.empty());
+}
+
+TEST_F(WindowsProcessProbeSeamTest, SuspendedWinsOverEfficiencyMode)
+{
+    fake().statusFlags = EXTENDED_BASIC_IS_FROZEN;
+    EXPECT_EQ(sampleOne().status, "Suspended");
+}
+
+TEST_F(WindowsProcessProbeSeamTest, EachStatusReadStandsWithoutTheOther)
+{
+    fake().failStatus = true; // No extended basic information: power throttling still read
+    EXPECT_EQ(sampleOne().status, "Efficiency Mode");
+
+    fake().failStatus = false;
+    fake().failPowerThrottling = true; // No power throttling: IsFrozen still read
+    fake().statusFlags = EXTENDED_BASIC_IS_FROZEN;
+    EXPECT_EQ(sampleOne().status, "Suspended");
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnUnreadableStatusKeepsTheLastOneRead)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).status, "Efficiency Mode");
+
+    fake().failStatus = true;
+    fake().failPowerThrottling = true;
+    fake().now += std::chrono::hours(1); // Past every TTL, so the status is read again
+    const ProcessCounters process = find(probe.enumerate());
+    EXPECT_EQ(process.status, "Efficiency Mode"); // Unknown is not "nothing to show"
+    EXPECT_EQ(process.user, "alice");
+
+    EXPECT_TRUE(sampleOne().status.empty()); // A process never read has no status
+}
+
+TEST_F(WindowsProcessProbeSeamTest, NoNtQueryInformationProcessLeavesTheCommandLineAndFrozenStateUnread)
 {
     WindowsProcessProbeFunctions functions = fakeFunctions();
     functions.process.ntQueryInformationProcess = nullptr;
+    fake().statusFlags = EXTENDED_BASIC_IS_FROZEN; // Not read without it
     WindowsProcessProbe probe(functions);
     const ProcessCounters process = find(probe.enumerate());
-    EXPECT_TRUE(process.status.empty());
+    EXPECT_EQ(process.status, "Efficiency Mode"); // Power throttling needs no ntdll
     EXPECT_EQ(process.command, "C:\\fake\\app.exe");
 }
 

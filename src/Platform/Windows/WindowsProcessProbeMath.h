@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -140,6 +141,46 @@ struct ProcessThreadTally
         return '?';
     }
     return threads.suspended == threads.waiting ? 'T' : 'S';
+}
+
+/// PROCESS_EXTENDED_BASIC_INFORMATION::Flags' IsFrozen bit: the process is frozen (a suspended UWP
+/// or packaged app, or a frozen job). Spelled out so this header stays free of <windows.h>.
+inline constexpr std::uint32_t EXTENDED_BASIC_IS_FROZEN = 0x10;
+/// PROCESS_POWER_THROTTLING_EXECUTION_SPEED: EcoQoS, which Task Manager shows as Efficiency Mode.
+inline constexpr std::uint32_t POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+
+/// PROCESS_POWER_THROTTLING_STATE's masks, as GetProcessInformation(ProcessPowerThrottling) reads them.
+struct PowerThrottlingMasks
+{
+    std::uint32_t controlMask = 0; ///< Mechanisms the process (or Task Manager) took control of
+    std::uint32_t stateMask = 0;   ///< Of those, the ones switched on
+};
+
+/// The Windows Status (#186, #2312) from its two independent reads, either of which may be
+/// unavailable (std::nullopt):
+///  - @p extendedBasicFlags: PROCESS_EXTENDED_BASIC_INFORMATION::Flags, from ProcessBasicInformation
+///    (class 0) with the extended structure's size. Only IsFrozen is used: IsBackground is not
+///    Efficiency Mode.
+///  - @p powerThrottling: the process's power-throttling state. Efficiency Mode is execution-speed
+///    throttling (EcoQoS) the process has taken control of and switched on.
+/// "Suspended" wins over "Efficiency Mode"; an empty status is a process with neither. std::nullopt
+/// only when neither read was available, so the caller can tell "unknown" from "nothing to show".
+[[nodiscard]] constexpr std::optional<std::string_view> windowsProcessStatus(std::optional<std::uint32_t> extendedBasicFlags,
+                                                                             std::optional<PowerThrottlingMasks> powerThrottling) noexcept
+{
+    if (extendedBasicFlags.has_value() && (*extendedBasicFlags & EXTENDED_BASIC_IS_FROZEN) != 0)
+    {
+        return "Suspended";
+    }
+    if (powerThrottling.has_value() && (powerThrottling->controlMask & powerThrottling->stateMask & POWER_THROTTLING_EXECUTION_SPEED) != 0)
+    {
+        return "Efficiency Mode";
+    }
+    if (!extendedBasicFlags.has_value() && !powerThrottling.has_value())
+    {
+        return std::nullopt;
+    }
+    return std::string_view{};
 }
 
 /// Which TTL-cached details getProcessDetails() refreshes for one process this sample (#1156).

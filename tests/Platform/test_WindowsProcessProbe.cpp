@@ -501,6 +501,72 @@ TEST(WindowsProcessProbeTest, PriorityChangeShowsOnTheNextSample)
     EXPECT_EQ(ourNice(), priorityClassToNice(originalClass));
 }
 
+TEST(WindowsProcessProbeTest, AChildInEfficiencyModeShowsItAndAPlainOneDoesNot)
+{
+    // #2312: the status was read with the telemetry information class (refused) and took the
+    // IsBackground flag for Efficiency Mode. Two disposable children, held suspended so they run
+    // nothing, one switched to EcoQoS as Task Manager's Efficiency Mode does.
+    const auto startChild = []
+    {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION child{};
+        std::wstring commandLine = L"cmd.exe /c exit 0";
+        if (CreateProcessW(nullptr,
+                           commandLine.data(),
+                           nullptr,
+                           nullptr,
+                           FALSE,
+                           CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                           nullptr,
+                           nullptr,
+                           &startup,
+                           &child) == 0)
+        {
+            return PROCESS_INFORMATION{};
+        }
+        return child;
+    };
+    const auto stopChild = [](const PROCESS_INFORMATION& child)
+    {
+        if (child.hProcess != nullptr)
+        {
+            TerminateProcess(child.hProcess, 0);
+            CloseHandle(child.hThread);
+            CloseHandle(child.hProcess);
+        }
+    };
+
+    const PROCESS_INFORMATION eco = startChild();
+    const PROCESS_INFORMATION plain = startChild();
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    const bool ecoSet =
+        eco.hProcess != nullptr && SetProcessInformation(eco.hProcess, ProcessPowerThrottling, &state, sizeof(state)) != FALSE;
+    const DWORD setError = ecoSet ? DWORD{0} : GetLastError();
+
+    WindowsProcessProbe probe;
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto statusOf = [&processes](const PROCESS_INFORMATION& child) -> std::optional<std::string>
+    {
+        const auto it = std::ranges::find(processes, static_cast<std::int32_t>(child.dwProcessId), &ProcessCounters::pid);
+        return it != processes.end() ? std::optional<std::string>(it->status) : std::nullopt;
+    };
+    const std::optional<std::string> ecoStatus = statusOf(eco);
+    const std::optional<std::string> plainStatus = statusOf(plain);
+    stopChild(eco);
+    stopChild(plain);
+
+    ASSERT_NE(eco.hProcess, nullptr);
+    ASSERT_NE(plain.hProcess, nullptr);
+    ASSERT_TRUE(ecoSet) << "SetProcessInformation(ProcessPowerThrottling) failed: " << setError;
+    EXPECT_EQ(ecoStatus, "Efficiency Mode");
+    ASSERT_TRUE(plainStatus.has_value());
+    EXPECT_NE(*plainStatus, "Efficiency Mode");
+}
+
 // =============================================================================
 // Consistency Tests
 // =============================================================================

@@ -175,6 +175,47 @@ TEST(DeriveProcessStateTest, SystemIdleProcessIsIdle)
     EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_RUNNING, 0}, {THREAD_STATE_RUNNING, 0}}), true), 'I');
 }
 
+// ==========================================================================
+// windowsProcessStatus: the Status column from its two independent reads (#2312)
+// ==========================================================================
+
+constexpr PowerThrottlingMasks ECO_QOS{.controlMask = POWER_THROTTLING_EXECUTION_SPEED, .stateMask = POWER_THROTTLING_EXECUTION_SPEED};
+
+TEST(WindowsProcessStatusTest, NeitherFrozenNorThrottledIsAnEmptyStatus)
+{
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, FrozenIsSuspendedAndWinsOverEfficiencyMode)
+{
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, PowerThrottlingMasks{}), "Suspended");
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, ECO_QOS), "Suspended");
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, std::nullopt), "Suspended");
+}
+
+TEST(WindowsProcessStatusTest, EcoQosIsEfficiencyModeAndTheBackgroundFlagIsNot)
+{
+    constexpr std::uint32_t IS_BACKGROUND = 0x20;
+    EXPECT_EQ(windowsProcessStatus(0U, ECO_QOS), "Efficiency Mode");
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, ECO_QOS), "Efficiency Mode");
+    EXPECT_EQ(windowsProcessStatus(IS_BACKGROUND, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, ThrottlingTakenControlOfButSwitchedOffIsNotEfficiencyMode)
+{
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{.controlMask = POWER_THROTTLING_EXECUTION_SPEED, .stateMask = 0}),
+              std::optional<std::string_view>{""});
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{.controlMask = 0, .stateMask = POWER_THROTTLING_EXECUTION_SPEED}),
+              std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, OnlyNeitherReadIsUnknown)
+{
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, std::nullopt), std::nullopt);
+    EXPECT_EQ(windowsProcessStatus(0U, std::nullopt), std::optional<std::string_view>{""});
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
 TEST(PlanDetailRefreshTest, FirstSampleRefreshesEverything)
 {
     const auto plan = planDetailRefresh(true, false, false, false);

@@ -273,34 +273,27 @@ constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC000
 constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{512} * std::size_t{1024};
 constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * std::size_t{1024};
 
-// Structure for ProcessExtendedBasicInformation
-// Available since Windows 8/10, contains IsFrozen and IsBackground flags
+// PROCESS_EXTENDED_BASIC_INFORMATION (Windows 8+). It has no information class of its own: it is
+// ProcessBasicInformation (class 0) asked for with a buffer of this size whose Size field says so
+// (#2312). Class 64 is ProcessTelemetryIdInformation, which refuses this buffer.
 struct ProcessExtendedBasicInformation
 {
     SIZE_T size = 0;
     PROCESS_BASIC_INFORMATION basicInfo{};
-    ULONG flags = 0;
+    ULONG flags = 0; // IsProtectedProcess, IsWow64Process, ..., IsFrozen (EXTENDED_BASIC_IS_FROZEN), ...
 };
+static_assert(offsetof(ProcessExtendedBasicInformation, basicInfo) == sizeof(SIZE_T));
+static_assert(offsetof(ProcessExtendedBasicInformation, flags) == sizeof(SIZE_T) + sizeof(PROCESS_BASIC_INFORMATION));
 
-// ProcessExtendedBasicInformation: past the PROCESSINFOCLASS range some SDKs declare.
-constexpr ULONG PROCESS_INFO_EXTENDED_BASIC = 64;
+constexpr ULONG PROCESS_INFO_BASIC = 0; // ProcessBasicInformation
 
-// Bit flags for ProcessExtendedBasicInformation.flags (only keep flags we use)
-constexpr ULONG PEBI_IS_FROZEN = 0x00000010;     // Process is suspended (UWP apps, frozen by OS)
-constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficiency mode)
-
-/// Query process status (Suspended, Efficiency Mode)
-[[nodiscard]] std::string_view getProcessStatus(const ProcessFunctions& fns, HANDLE hProcess)
+/// PROCESS_EXTENDED_BASIC_INFORMATION::Flags, or std::nullopt if it can't be read.
+[[nodiscard]] std::optional<std::uint32_t> readExtendedBasicFlags(const ProcessFunctions& fns, HANDLE hProcess)
 {
-    if (hProcess == nullptr)
-    {
-        return {};
-    }
-
     auto* fn = fns.ntQueryInformationProcess;
     if (fn == nullptr)
     {
-        return {};
+        return std::nullopt;
     }
 
     ProcessExtendedBasicInformation extInfo{};
@@ -310,27 +303,36 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     static_assert(sizeof(extInfo) <= std::numeric_limits<ULONG>::max(), "ProcessExtendedBasicInformation size exceeds ULONG range");
     const auto extInfoSize = Domain::Numeric::narrowOr<ULONG>(sizeof(extInfo), ULONG{0});
 
-    const NTSTATUS status = fn(hProcess, PROCESS_INFO_EXTENDED_BASIC, &extInfo, extInfoSize, &returnLen);
-    if (status < 0)
+    const NTSTATUS status = fn(hProcess, PROCESS_INFO_BASIC, &extInfo, extInfoSize, &returnLen);
+    if (status < 0 || returnLen < extInfoSize)
     {
-        // API not available or process not accessible
-        return {};
+        // Not accessible, or an older Windows that filled only PROCESS_BASIC_INFORMATION
+        return std::nullopt;
     }
+    return std::uint32_t{extInfo.flags};
+}
 
-    // Check for frozen state (Suspended)
-    if ((extInfo.flags & PEBI_IS_FROZEN) != 0)
+/// The process's power-throttling masks, or std::nullopt if they can't be read.
+[[nodiscard]] std::optional<PowerThrottlingMasks> readPowerThrottling(const ProcessFunctions& fns, HANDLE hProcess)
+{
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    if (fns.getProcessInformation(hProcess, ProcessPowerThrottling, &state, sizeof(state)) == FALSE)
     {
-        return "Suspended";
+        return std::nullopt;
     }
+    return PowerThrottlingMasks{.controlMask = state.ControlMask, .stateMask = state.StateMask};
+}
 
-    // Check for background/efficiency mode
-    if ((extInfo.flags & PEBI_IS_BACKGROUND) != 0)
+/// The process's status (Suspended, Efficiency Mode, or empty), or std::nullopt if neither of the
+/// reads behind it could be made (windowsProcessStatus()).
+[[nodiscard]] std::optional<std::string_view> getProcessStatus(const ProcessFunctions& fns, HANDLE hProcess)
+{
+    if (hProcess == nullptr)
     {
-        return "Efficiency Mode";
+        return std::nullopt;
     }
-
-    // No special status
-    return {};
+    return windowsProcessStatus(readExtendedBasicFlags(fns, hProcess), readPowerThrottling(fns, hProcess));
 }
 
 // ProcessCommandLineInformation (Windows 8.1+): the command line from the process's PEB, as a
@@ -793,6 +795,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .getPriorityClass = &GetPriorityClass,
                 .queryFullProcessImageNameW = &QueryFullProcessImageNameW,
                 .ntQueryInformationProcess = getNtQueryInformationProcessFn(),
+                .getProcessInformation = &GetProcessInformation,
                 .getGuiResources = &GetGuiResources,
                 .getProcessAffinityMask = &GetProcessAffinityMask,
                 .getProcessGroupAffinity = &GetProcessGroupAffinity,
@@ -1142,7 +1145,11 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     if (plan.light || plan.heavy)
     {
         // Medium-cost data refreshed more frequently than heavy details.
-        counters.status = getProcessStatus(m_Fns.process, hProcess.get());
+        // An unreadable status keeps the last one read (empty for a process seen for the first time).
+        if (const std::optional<std::string_view> status = getProcessStatus(m_Fns.process, hProcess.get()))
+        {
+            counters.status = *status;
+        }
 
         // GDI objects change as the process draws, so on the light cadence (#1156), with the handle
         // already open. A refused read is retried with PROCESS_QUERY_INFORMATION (see
@@ -1283,7 +1290,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // time) used to stand in for it, which read ~2 W regardless of load and depended only on
         // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
         .hasPowerUsage = false,
-        .hasStatus = true,      // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasStatus = true,      // Extended basic information (Suspended) and power throttling (Efficiency Mode)
         .hasPublisher = true,   // From GetFileVersionInfo on process image path
         .hasContainer = false,  // cgroup containers are Linux's
         .hasServices = false,   // Matched by PID from the service list, by Domain::ProcessModel (#1880)
