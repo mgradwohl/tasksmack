@@ -54,6 +54,8 @@ inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
 inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 /// The most sockets a ConnectionsReply carries; a read with more keeps the first.
 inline constexpr std::size_t MAX_CONNECTIONS = std::size_t{1} << 16U;
+/// The largest firmware file a FirmwareFileReply carries; SMBIOS tables are a few KiB to some tens.
+inline constexpr std::size_t MAX_FIRMWARE_FILE_BYTES = std::size_t{1} << 20U;
 /// The frame header after the length: version, kind, request id.
 inline constexpr std::size_t HEADER_BYTES = 2 + 2 + 4;
 
@@ -70,12 +72,14 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadOpenFiles = 34,      ///< Its open files (#2309)
     ReadConnections = 35,    ///< Its TCP and UDP sockets (#2309)
     ReadMemoryRollup = 36,   ///< Its PSS and USS (#2309)
+    ReadFirmwareFile = 37,   ///< One of System Information's root-only firmware files (#2310)
     ActionResult = 48,       ///< The answer to a process action
     EnvironmentResult = 49,  ///< The answer to ReadEnvironment
     ModulesResult = 50,      ///< The answer to ReadModules
     OpenFilesResult = 51,    ///< The answer to ReadOpenFiles
     ConnectionsResult = 52,  ///< The answer to ReadConnections
     MemoryRollupResult = 53, ///< The answer to ReadMemoryRollup
+    FirmwareFileResult = 54, ///< The answer to ReadFirmwareFile
     Error = 63,              ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -263,6 +267,39 @@ struct MemoryRollupReply
     }
 };
 
+/// The root-only firmware files System Information reads through the helper (#2310). The helper reads
+/// these and nothing else: a request names one of them, never a path.
+enum class FirmwareFile : std::uint8_t
+{
+    SmbiosEntryPoint, ///< /sys/firmware/dmi/tables/smbios_entry_point
+    SmbiosTable,      ///< /sys/firmware/dmi/tables/DMI
+    ProductSerial,    ///< /sys/class/dmi/id/product_serial
+    ProductUuid,      ///< /sys/class/dmi/id/product_uuid
+    BoardSerial,      ///< /sys/class/dmi/id/board_serial
+};
+
+/// Read one of the firmware files (#2310), as the helper reads it as root.
+struct FirmwareFileRequest
+{
+    FirmwareFile file = FirmwareFile::SmbiosTable;
+    friend bool operator==(const FirmwareFileRequest&, const FirmwareFileRequest&) = default;
+};
+
+enum class FirmwareFileStatus : std::uint8_t
+{
+    Ok,
+    NotFound,   ///< The machine has no such file (no DMI, or a VM without the field)
+    Unreadable, ///< It exists but couldn't be read, or is larger than MAX_FIRMWARE_FILE_BYTES
+};
+
+/// The answer to FirmwareFileRequest: the file's bytes when the status is Ok.
+struct FirmwareFileReply
+{
+    FirmwareFileStatus status = FirmwareFileStatus::NotFound;
+    std::vector<std::uint8_t> bytes;
+    friend bool operator==(const FirmwareFileReply&, const FirmwareFileReply&) = default;
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -296,9 +333,17 @@ using Request = std::variant<Hello,
                              ModulesRequest,
                              OpenFilesRequest,
                              ConnectionsRequest,
-                             MemoryRollupRequest>;
-using Response =
-    std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply, ConnectionsReply, MemoryRollupReply>;
+                             MemoryRollupRequest,
+                             FirmwareFileRequest>;
+using Response = std::variant<HelloReply,
+                              ActionResult,
+                              ErrorReply,
+                              EnvironmentReply,
+                              ModulesReply,
+                              OpenFilesReply,
+                              ConnectionsReply,
+                              MemoryRollupReply,
+                              FirmwareFileReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -345,6 +390,13 @@ class Writer
     void text(std::string_view value)
     {
         const std::string_view capped = value.substr(0, MAX_STRING_BYTES); // never more than the reader takes
+        u32(static_cast<std::uint32_t>(capped.size()));
+        m_Bytes.insert(m_Bytes.end(), capped.begin(), capped.end());
+    }
+    /// A length and raw bytes, up to @p limit (more is cut off, as the reader would refuse it)
+    void blob(std::span<const std::uint8_t> value, std::size_t limit)
+    {
+        const std::span<const std::uint8_t> capped = value.first(std::min(value.size(), limit));
         u32(static_cast<std::uint32_t>(capped.size()));
         m_Bytes.insert(m_Bytes.end(), capped.begin(), capped.end());
     }
@@ -447,6 +499,19 @@ class Reader
         }
         std::string value(reinterpret_cast<const char*>(m_Bytes.data() + m_At),
                           size); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - bytes as chars
+        m_At += size;
+        return value;
+    }
+    std::vector<std::uint8_t> blob(std::size_t limit)
+    {
+        const std::uint32_t size = u32();
+        if (!m_Ok || size > limit || m_Bytes.size() - m_At < size)
+        {
+            m_Ok = false;
+            return {};
+        }
+        const auto start = m_Bytes.begin() + static_cast<std::ptrdiff_t>(m_At);
+        std::vector<std::uint8_t> value(start, start + static_cast<std::ptrdiff_t>(size));
         m_At += size;
         return value;
     }
@@ -565,6 +630,11 @@ template<typename Message>
         kind = MessageKind::ReadMemoryRollup;
         writer.target(rollup->target);
     }
+    else if (const auto* firmware = std::get_if<FirmwareFileRequest>(&request))
+    {
+        kind = MessageKind::ReadFirmwareFile;
+        writer.u8(static_cast<std::uint8_t>(firmware->file));
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -675,6 +745,20 @@ template<typename Message>
         const ProcessTarget target = reader.target();
         return Detail::finish<Request>(reader, frame->requestId, MemoryRollupRequest{.target = target});
     }
+    case MessageKind::ReadFirmwareFile:
+    {
+        const std::uint8_t file = reader.u8();
+        FirmwareFileRequest firmware;
+        if (file <= static_cast<std::uint8_t>(FirmwareFile::BoardSerial))
+        {
+            firmware.file = static_cast<FirmwareFile>(file);
+        }
+        else
+        {
+            reader.fail();
+        }
+        return Detail::finish<Request>(reader, frame->requestId, firmware);
+    }
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -682,6 +766,7 @@ template<typename Message>
     case MessageKind::OpenFilesResult:
     case MessageKind::ConnectionsResult:
     case MessageKind::MemoryRollupResult:
+    case MessageKind::FirmwareFileResult:
     case MessageKind::Error:
         break;
     }
@@ -817,6 +902,12 @@ template<typename Message>
         writer.u64(figures.pssBytes);
         writer.u64(figures.ussBytes);
         writer.u64(figures.swapPssBytes);
+    }
+    else if (const auto* firmware = std::get_if<FirmwareFileReply>(&response))
+    {
+        kind = MessageKind::FirmwareFileResult;
+        writer.u8(static_cast<std::uint8_t>(firmware->status));
+        writer.blob(firmware->bytes, MAX_FIRMWARE_FILE_BYTES);
     }
     return writer.frame(kind, requestId);
 }
@@ -1033,6 +1124,21 @@ template<typename Message>
         }
         return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
     }
+    case MessageKind::FirmwareFileResult:
+    {
+        const std::uint8_t status = reader.u8();
+        FirmwareFileReply reply;
+        if (status <= static_cast<std::uint8_t>(FirmwareFileStatus::Unreadable))
+        {
+            reply.status = static_cast<FirmwareFileStatus>(status);
+        }
+        else
+        {
+            reader.fail();
+        }
+        reply.bytes = reader.blob(MAX_FIRMWARE_FILE_BYTES);
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1043,6 +1149,7 @@ template<typename Message>
     case MessageKind::ReadOpenFiles:
     case MessageKind::ReadConnections:
     case MessageKind::ReadMemoryRollup:
+    case MessageKind::ReadFirmwareFile:
         break;
     }
     return std::unexpected("Not a response");

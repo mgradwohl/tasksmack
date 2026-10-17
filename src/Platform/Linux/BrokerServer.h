@@ -34,6 +34,9 @@ struct Readers
     /// PSS and USS: process ID and start time to the read's result.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};
+    /// System Information's root-only firmware files (#2310)
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};
 };
 
 /// A read request goes to its reader in @p readers.

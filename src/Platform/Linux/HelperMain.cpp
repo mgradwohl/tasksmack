@@ -8,8 +8,10 @@
 // that the socket's peer is the process that started it (pkexec execs this in its own place, so that is
 // TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly as the tests do, its own.
 
+#include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
+#include "Platform/Linux/FirmwareFileRead.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
@@ -97,6 +99,8 @@ int main(int argc, char** argv)
             .connections = &connections,
             .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
+            // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
+            .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
         };
         const std::stop_source never;
         switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))

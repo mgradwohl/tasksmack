@@ -13,6 +13,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
+#include "Platform/Linux/FirmwareFileRead.h"
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
 
@@ -22,6 +23,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
@@ -29,6 +31,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -181,6 +184,49 @@ TEST(BrokerServerTest, AConnectionsRequestIsReadThroughItsReader)
     EXPECT_EQ(connections.readCount(), 1);
     EXPECT_TRUE(
         std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions)));
+}
+
+TEST(BrokerServerTest, AFirmwareFileRequestIsReadThroughItsFunction)
+{
+    TestMocks::MockProcessActions actions;
+    std::optional<Broker::FirmwareFile> asked;
+    BrokerServer::Readers readers;
+    readers.firmwareFile = [&asked](Broker::FirmwareFile file)
+    {
+        asked = file;
+        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Ok, .bytes = {1, 2, 3}};
+    };
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(response));
+    EXPECT_EQ(std::get<Broker::FirmwareFileReply>(response).bytes, (std::vector<std::uint8_t>{1, 2, 3}));
+    EXPECT_EQ(asked, Broker::FirmwareFile::ProductUuid);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
+        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, actions)));
+}
+
+TEST(FirmwareFileReadTest, EachFileIsReadFromItsOnePath)
+{
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / ("tasksmack_fw_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(root / "sys/firmware/dmi/tables");
+    std::filesystem::create_directories(root / "sys/class/dmi/id");
+    std::ofstream(root / "sys/firmware/dmi/tables/DMI", std::ios::binary) << std::string("\x11\x15table", 7);
+    std::ofstream(root / "sys/class/dmi/id/product_uuid") << "uuid\n";
+    std::ofstream(root / "sys/class/dmi/id/board_serial") << "secret\n";
+    std::filesystem::permissions(root / "sys/class/dmi/id/board_serial", std::filesystem::perms::none);
+
+    const Broker::FirmwareFileReply table = Linux::readFirmwareFileAt(root, Broker::FirmwareFile::SmbiosTable);
+    EXPECT_EQ(table.status, Broker::FirmwareFileStatus::Ok);
+    EXPECT_EQ(table.bytes.size(), 7U);
+    const Broker::FirmwareFileReply uuid = Linux::readFirmwareFileAt(root, Broker::FirmwareFile::ProductUuid);
+    EXPECT_EQ(std::string(uuid.bytes.begin(), uuid.bytes.end()), "uuid\n");
+    EXPECT_EQ(Linux::readFirmwareFileAt(root, Broker::FirmwareFile::ProductSerial).status, Broker::FirmwareFileStatus::NotFound);
+    if (::geteuid() != 0) // root reads a mode-000 file
+    {
+        EXPECT_EQ(Linux::readFirmwareFileAt(root, Broker::FirmwareFile::BoardSerial).status, Broker::FirmwareFileStatus::Unreadable);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
 }
 
 TEST(BrokerServerTest, AMemoryRollupRequestIsReadThroughItsFunction)
@@ -675,6 +721,16 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
     }
     ASSERT_TRUE(rollup.has_value());
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
+}
+
+TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    // Unprivileged here, so Unreadable where the table exists; NotFound in a VM or container without one
+    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(*response));
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)

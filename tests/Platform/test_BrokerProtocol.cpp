@@ -23,6 +23,7 @@
 #include <span>
 #include <stop_token>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace Platform::Broker
@@ -312,6 +313,40 @@ TEST(BrokerProtocolTest, MemoryRollupsRoundTrip)
     std::vector<std::uint8_t> bytes = encodeResponse(1, figures);
     bytes[4 + HEADER_BYTES] = 9; // no such failure
     EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
+TEST(BrokerProtocolTest, FirmwareFilesRoundTrip)
+{
+    for (const FirmwareFile file : {FirmwareFile::SmbiosEntryPoint,
+                                    FirmwareFile::SmbiosTable,
+                                    FirmwareFile::ProductSerial,
+                                    FirmwareFile::ProductUuid,
+                                    FirmwareFile::BoardSerial})
+    {
+        EXPECT_EQ(roundTrip(Request{FirmwareFileRequest{.file = file}}), Request{FirmwareFileRequest{.file = file}});
+    }
+    const Response table = FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = {0x11, 0x15, 0x00, 0x00, 0x7F}};
+    EXPECT_EQ(roundTrip(table), table);
+    const Response missing = FirmwareFileReply{.status = FirmwareFileStatus::NotFound, .bytes = {}};
+    EXPECT_EQ(roundTrip(missing), missing);
+
+    std::vector<std::uint8_t> request = encodeRequest(1, FirmwareFileRequest{.file = FirmwareFile::BoardSerial});
+    request[4 + HEADER_BYTES] = 5; // no such file: the helper never maps it to a path
+    EXPECT_FALSE(decodeRequest(request).has_value());
+
+    std::vector<std::uint8_t> reply = encodeResponse(1, table);
+    reply[4 + HEADER_BYTES] = 3; // no such status
+    EXPECT_FALSE(decodeResponse(reply).has_value());
+}
+
+TEST(BrokerProtocolTest, AFirmwareFileIsCappedAtItsLimit)
+{
+    const std::vector<std::uint8_t> big(MAX_FIRMWARE_FILE_BYTES + 10, 0xAB);
+    const auto decoded = decodeResponse(encodeResponse(1, FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = big}));
+    ASSERT_TRUE(decoded.has_value());
+    const auto* reply = std::get_if<FirmwareFileReply>(&decoded->message);
+    ASSERT_NE(reply, nullptr);
+    EXPECT_EQ(reply->bytes.size(), MAX_FIRMWARE_FILE_BYTES);
 }
 
 } // namespace

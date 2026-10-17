@@ -141,6 +141,21 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
             return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
         }
     }
+    if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
+    {
+        if (!readers.firmwareFile)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't read firmware files"};
+        }
+        try
+        {
+            return readers.firmwareFile(read->file);
+        }
+        catch (...)
+        {
+            return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
+        }
+    }
     try
     {
         return act(request, actions);

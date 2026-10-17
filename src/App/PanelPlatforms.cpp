@@ -6,6 +6,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
+#include "Platform/BrokeredSystemInfoProbe.h"
 #include "Platform/Factory.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
@@ -90,7 +91,8 @@ StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scena
 
 std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* /*scenario*/)
 {
-    return Platform::makeSystemInfoProbe();
+    // The facts readable by root only, through the helper (#2310)
+    return Platform::withPrivilegedBroker(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
 }
 
 std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario)
