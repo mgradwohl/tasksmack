@@ -17,7 +17,9 @@ leak:SDL_EGL_InitializeOffscreen
 leak:ImGui_ImplOpenGL3_RenderDrawData
 
 # The same driver keeps small internal allocations it makes while building a texture's mipmaps
-# (glGenerateMipmap), again reported as indirect leaks under unsymbolized driver frames. The test
-# binaries load the real icons since #1954, so the title bar's icon texture reaches this path; the
-# texture itself is released (UI::Texture deletes it). UI::loadTexture is the narrowest frame we own.
-leak:UI::loadTexture
+# (glGenerateMipmap), again reported as indirect leaks under unsymbolized driver frames, so a module
+# name (libgallium) can't match them. The test binaries load the real icons since #1954, so the title
+# bar's icon texture reaches this path; the texture itself is released (UI::Texture deletes it).
+# UI::loadTexture() calls glGenerateMipmap through a frame of its own that allocates nothing:
+# suppressing loadTexture itself also hid any leak of its own, such as its decoded pixels (#2166).
+leak:generateBoundTextureMipmaps

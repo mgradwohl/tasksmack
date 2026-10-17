@@ -28,6 +28,15 @@ namespace
     glBindTexture(GL_TEXTURE_2D, textureId);
     return previous;
 }
+
+/// glGenerateMipmap() for the bound 2D texture, and nothing else. A frame of its own, never inlined, so
+/// the LeakSanitizer suppression for the allocations Mesa's software driver keeps from building
+/// mipmaps (tests/sanitizer-suppressions/lsan.supp) can name it: a suppression on loadTexture() would
+/// also hide a leak of loadTexture()'s own, such as its decoded pixels (#2166).
+[[gnu::noinline]] void generateBoundTextureMipmaps()
+{
+    glGenerateMipmap(GL_TEXTURE_2D);
+}
 } // namespace
 
 Texture::~Texture()
@@ -102,7 +111,7 @@ auto loadTexture(const std::filesystem::path& path) -> Texture
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glGenerateMipmap(GL_TEXTURE_2D);
+    generateBoundTextureMipmaps();
 
     glBindTexture(GL_TEXTURE_2D, previousBinding);
     stbi_image_free(pixels);
