@@ -7,6 +7,7 @@
 #include "App/SyntheticScenario.h"
 #include "App/WindowOverride.h"
 #include "Core/ConfigDirOverride.h"
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Core/LocaleSetup.h"
 

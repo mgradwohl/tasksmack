@@ -1,6 +1,6 @@
 #include "LocaleSetup.h"
 
-#include "Core/EnvUtils.h"
+#include "Core/EnvRead.h"
 #include "Platform/AsciiTrim.h"
 
 #include <SDL3/SDL_stdinc.h>

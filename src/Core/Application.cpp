@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "Core/AnimationRequest.h"
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/FramePacing.h"

@@ -1,20 +1,17 @@
 #pragma once
 
 // The TASKSMACK_* environment hooks in one place (#2170): their names and what each does
-// (KNOWN_ENV_HOOKS), how a value is read (readEnv(): SDL_getenv(), UTF-8 on Windows too) and trimmed
-// (Platform::trimAscii(), the same for every hook), and the parsing two hooks share. Each hook's own
+// (KNOWN_ENV_HOOKS), how a value is trimmed (Platform::trimAscii(), the same for every hook), and the
+// flag parsing several share. Reading them (readEnv(), with SDL and spdlog) is in Core/EnvRead.h, so
+// this header stays dependency-free for the parsers that include it (and the fuzz builds of them). Each hook's own
 // parser stays beside the code it configures; each of their name constants is checked against
 // KNOWN_ENV_HOOKS at compile time (isKnownEnvHook()), so a new hook can't be left off the list.
 
 #include "Platform/AsciiTrim.h"
 
-#include <SDL3/SDL_stdinc.h>
-#include <spdlog/common.h>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <string>
 #include <string_view>
 
 namespace Core
@@ -54,13 +51,6 @@ inline constexpr std::array KNOWN_ENV_HOOKS{
 
 static_assert(isKnownEnvHook(TRACE_RESIZE_PERF_ENV_VAR) && isKnownEnvHook(LOG_LEVEL_ENV_VAR));
 
-/// The environment variable @p name, or nullptr when unset. SDL_getenv(): UTF-8 on Windows too, no CRT
-/// deprecation, and it needs no SDL_Init.
-[[nodiscard]] inline const char* readEnv(std::string_view name)
-{
-    return SDL_getenv(std::string(name).c_str());
-}
-
 /// Returns true if the environment variable value represents a truthy flag.
 /// "0", "false", "off", "no" (case-insensitive) and nullptr, empty or blank are treated
 /// as disabled. Any other value (e.g. "1", "true", "yes", "on") is treated as enabled.
@@ -96,20 +86,6 @@ static_assert(isKnownEnvHook(TRACE_RESIZE_PERF_ENV_VAR) && isKnownEnvHook(LOG_LE
     };
 
     return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
-}
-
-/// Whether TASKSMACK_TRACE_RESIZE_PERF asks for resize tracing. Read on each call, not once: the
-/// tests set and clear it around the Application they construct.
-[[nodiscard]] inline bool resizePerfTraceRequested()
-{
-    return isEnvFlagEnabled(readEnv(TRACE_RESIZE_PERF_ENV_VAR));
-}
-
-/// The log level a TASKSMACK_LOG_LEVEL value names (spdlog's names), surrounding whitespace ignored.
-/// spdlog maps an unknown name to off.
-[[nodiscard]] inline spdlog::level::level_enum logLevelFromEnv(const char* value)
-{
-    return spdlog::level::from_str(std::string(Platform::trimAscii(value != nullptr ? value : "")));
 }
 
 } // namespace Core

@@ -15,7 +15,7 @@
 #include "Core/Application.h"
 #include "Core/ConfigDirOverride.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
-#include "Core/EnvUtils.h"
+#include "Core/EnvRead.h"
 #include "Core/LocaleSetup.h"
 #include "Core/LogFileSink.h"
 #include "Core/Utf8Path.h"

@@ -1,5 +1,6 @@
 #include "SyntheticScenario.h"
 
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"

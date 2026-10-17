@@ -1,9 +1,9 @@
 #include "SelectOverride.h"
 
 #include "Core/ConfigDirOverride.h"
+#include "Core/EnvRead.h"
 
 #ifdef _WIN32
-#include "Core/EnvUtils.h"
 #include "Platform/Windows/WinString.h"
 #endif
 

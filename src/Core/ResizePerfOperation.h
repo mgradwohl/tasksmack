@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Core/ResizePerfTrace.h"
 
