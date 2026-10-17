@@ -5,19 +5,47 @@
 #include "Panels/ServicesPanel.h"
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/BrokeredProcessActions.h"
 #include "Platform/Factory.h"
+#include "Platform/IPrivilegedBroker.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "SyntheticScenario.h"
 
 #include <memory>
+#include <utility>
 
 namespace App
 {
 
+namespace
+{
+
+/// The one privileged broker every real run's IProcessActions shares (#2308): made once, on first use,
+/// and started only when the user first chooses "Authenticate and retry". Null where there is none.
+[[nodiscard]] const std::shared_ptr<Platform::IPrivilegedBroker>& sharedPrivilegedBroker()
+{
+    static const std::shared_ptr<Platform::IPrivilegedBroker> broker = Platform::makePrivilegedBroker();
+    return broker;
+}
+
+/// @p scenario's process actions, or the platform's, which an administrator can finish (#2308).
+[[nodiscard]] std::unique_ptr<Platform::IProcessActions> processActionsFor(const Synthetic::Scenario* scenario)
+{
+    std::unique_ptr<Platform::IProcessActions> actions = Synthetic::makeProcessActions(scenario);
+    if (scenario != nullptr)
+    {
+        return actions;
+    }
+    return Platform::withPrivilegedBroker(std::move(actions), sharedPrivilegedBroker());
+}
+
+} // namespace
+
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {
     return {.probe = Synthetic::makeProcessProbe(scenario),
-            .actions = Synthetic::makeProcessActions(scenario),
+            .actions = processActionsFor(scenario),
             .udpCollector = Synthetic::makeUdpTrafficCollector(scenario),
             .icons = Synthetic::makeProcessIconSource(scenario)};
 }
@@ -32,7 +60,7 @@ SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario)
 
 ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario)
 {
-    return {.actions = Synthetic::makeProcessActions(scenario),
+    return {.actions = processActionsFor(scenario),
             .environment = Synthetic::makeProcessEnvironmentReader(scenario),
             .connections = Synthetic::makeProcessConnectionsReader(scenario),
             .modules = Synthetic::makeProcessModulesReader(scenario),

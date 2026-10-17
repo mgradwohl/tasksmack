@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -51,6 +52,34 @@ enum class ProcessAction : std::uint8_t
         break;
     }
     return "";
+}
+
+/// @p action on @p target as an administrator would redo it (#2308): "Authenticate and retry" after a
+/// permission refusal. Nullopt for None.
+[[nodiscard]] inline std::optional<Platform::AuthorizedAction> authorizedActionFor(ProcessAction action,
+                                                                                   const Platform::ProcessTarget& target)
+{
+    using Kind = Platform::AuthorizedAction::Kind;
+    Platform::AuthorizedAction authorized;
+    authorized.target = target;
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        authorized.kind = Kind::Terminate;
+        return authorized;
+    case ProcessAction::Kill:
+        authorized.kind = Kind::Kill;
+        return authorized;
+    case ProcessAction::Stop:
+        authorized.kind = Kind::Stop;
+        return authorized;
+    case ProcessAction::Resume:
+        authorized.kind = Kind::Resume;
+        return authorized;
+    case ProcessAction::None:
+        break;
+    }
+    return std::nullopt;
 }
 
 /// The action as the result line says it while it runs (#2305): "Terminating", "Suspending".

@@ -151,5 +151,21 @@ TEST(BrokeredProcessActionsTest, ReadsAndOtherCallsAreTheInProcessOnes)
     EXPECT_TRUE(f.broker->requests().empty());
 }
 
+TEST(BrokeredProcessActionsTest, WithoutABrokerTheActionsAreLeftAsTheyAre)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessActions>();
+    const IProcessActions* const raw = owned.get();
+    const std::unique_ptr<IProcessActions> actions = withPrivilegedBroker(std::move(owned), nullptr);
+    EXPECT_EQ(actions.get(), raw);
+    EXPECT_FALSE(actions->actionCapabilities().canAuthorizeInteractively);
+}
+
+TEST(BrokeredProcessActionsTest, WithABrokerTheActionsCanAskForAuthorization)
+{
+    const std::unique_ptr<IProcessActions> actions =
+        withPrivilegedBroker(std::make_unique<TestMocks::MockProcessActions>(), std::make_shared<Mocks::FakeBroker>(false));
+    EXPECT_TRUE(actions->actionCapabilities().canAuthorizeInteractively);
+}
+
 } // namespace
 } // namespace Platform

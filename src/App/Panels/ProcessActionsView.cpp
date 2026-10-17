@@ -7,6 +7,7 @@
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDumpView.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -136,7 +137,8 @@ void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions
         std::format("Setting the CPU affinity of PID {}...", target.pid),
         [actions, target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
         [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
-        { return affinityResultMessage(name, pid, cpus, result); });
+        { return affinityResultMessage(name, pid, cpus, result); },
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
 }
 
 void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
@@ -187,7 +189,7 @@ void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* act
     }
 }
 
-void ProcessActionsView::renderResultFeedback() const
+void ProcessActionsView::renderResultFeedback()
 {
     const auto& theme = UI::Theme::get();
     if (m_ActionRun.busy())
@@ -204,6 +206,15 @@ void ProcessActionsView::renderResultFeedback() const
     // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
     const ImVec4 color = m_LastResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
     ImGui::TextColored(color, "%s", m_LastResult.text.c_str());
+    // A permission refusal an administrator could redo (#2308): the shield and the words, never colour alone.
+    if (offersAuthenticateAndRetry())
+    {
+        if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+        {
+            retryAuthorized();
+        }
+        ImGui::SetItemTooltip("Asks for an administrator's password, then does it as the administrator");
+    }
     ImGui::Spacing();
 }
 

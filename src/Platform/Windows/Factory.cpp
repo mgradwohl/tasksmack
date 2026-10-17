@@ -4,6 +4,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -58,6 +59,11 @@ std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
     return std::make_unique<WindowsProcessActions>();
+}
+
+std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker()
+{
+    return nullptr; // the elevated helper comes with #2311
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

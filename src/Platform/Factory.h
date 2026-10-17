@@ -4,6 +4,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -35,6 +36,12 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessActions implementation.
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();
+
+/// The privileged broker (#2307, #2308): on Linux the pkexec-started helper, where the .deb or .rpm
+/// installed it and TaskSmack isn't already root; null otherwise, and on Windows until #2311. Not
+/// started here: the first IProcessActions::runAuthorized() starts it, after the password prompt. App
+/// makes one and shares it between every IProcessActions it composes (BrokeredProcessActions).
+[[nodiscard]] std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker();
 
 /// Creates the platform-appropriate IProcessIconSource (#1800): executables' icons on Windows, desktop
 /// entries' PNG icons on Linux.

@@ -16,10 +16,12 @@
 #include "LinuxServiceProbe.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
+#include "PkexecBroker.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -38,6 +40,8 @@
 
 #include <memory>
 
+#include <unistd.h>
+
 namespace Platform
 {
 
@@ -55,6 +59,17 @@ std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
     return std::make_unique<LinuxProcessActions>();
+}
+
+std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker()
+{
+    // Root needs no helper, and a refusal to root is nothing an administrator can cure. Without the
+    // installed helper polkit has no action for it, so nothing is offered (#2308).
+    if (::geteuid() == 0 || ::access(PkexecBroker::INSTALLED_HELPER_PATH, X_OK) != 0)
+    {
+        return nullptr;
+    }
+    return std::make_shared<PkexecBroker>(PkexecBroker::INSTALLED_HELPER_PATH);
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

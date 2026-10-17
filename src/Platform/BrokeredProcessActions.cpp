@@ -39,6 +39,15 @@ Broker::Request brokerRequestFor(const AuthorizedAction& action)
     return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
 }
 
+std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions, std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || actions == nullptr)
+    {
+        return actions;
+    }
+    return std::make_unique<BrokeredProcessActions>(std::move(actions), std::move(broker));
+}
+
 BrokeredProcessActions::BrokeredProcessActions(std::unique_ptr<IProcessActions> inner, std::shared_ptr<IPrivilegedBroker> broker)
     : m_Inner(std::move(inner)), m_Broker(std::move(broker))
 {}

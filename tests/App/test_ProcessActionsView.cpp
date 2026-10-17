@@ -187,6 +187,96 @@ TEST(ProcessActionsViewTest, NullActionsReportUnavailableInsteadOfCrashing)
     EXPECT_EQ(view.lastResult().text, "Could not terminate PID 55: Process actions unavailable");
 }
 
+// --- Authenticate and retry (#2308) ----------------------------------------------------------------
+
+TEST(ProcessActionsViewTest, APermissionRefusalOffersAuthenticateAndRetryWhereThePlatformCanAsk)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canAuthorizeInteractively = true});
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied - process belongs to another user"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    view.retryAuthorizedForTesting();
+    view.waitForActionForTesting();
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::Kill);
+    EXPECT_EQ(mock.lastAuthorizedAction().target.pid, 7);
+    EXPECT_TRUE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Kill sent to PID 7");
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+TEST(ProcessActionsViewTest, NoRetryIsOfferedWhereThePlatformCannotAsk)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true});
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+TEST(ProcessActionsViewTest, NoRetryIsOfferedForAFailureOtherThanPermission)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canAuthorizeInteractively = true});
+    mock.setKillResult(Platform::ProcessActionResult::error("Process not found - may have already exited"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+TEST(ProcessActionsViewTest, TheRetryOfferGoesWithASelectionChangeOrItsTimeout)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canStop = true, .canAuthorizeInteractively = true});
+    mock.setStopResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Stop, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+    view.tick(Detail::ACTION_RESULT_SECONDS + 1.0F); // longer than a plain result: time to decide
+    EXPECT_TRUE(view.offersAuthenticateAndRetry());
+    view.tick(Detail::AUTHORIZE_RESULT_SECONDS);
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+
+    view.requestAction(ProcessAction::Stop, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+    view.retryAuthorizedForTesting(); // nothing to retry any more
+    EXPECT_EQ(mock.runAuthorizedCount(), 0);
+}
+
+TEST(ProcessActionsViewTest, ADismissedPromptIsTheResultAndIsNotOfferedAgain)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canAuthorizeInteractively = true});
+    mock.setKillResult(Platform::ProcessActionResult::denied("Permission denied"));
+    mock.setRunAuthorizedResult(
+        Platform::ProcessActionResult::error("Couldn't act as an administrator: the password prompt was dismissed"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+    view.retryAuthorizedForTesting();
+    view.waitForActionForTesting();
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not kill PID 7: Couldn't act as an administrator: the password prompt was dismissed");
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
 // --- Result line timeout and reset ----------------------------------------------------------------
 
 TEST(ProcessActionsViewTest, ResultStaysUntilItsTimeoutRunsOut)

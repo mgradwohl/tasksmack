@@ -642,6 +642,27 @@ class MockProcessActions : public Platform::IProcessActions
     {
         return m_SetAffinityCount;
     }
+
+    /// runAuthorized() (#2308): records the action and returns this.
+    void setRunAuthorizedResult(Platform::ProcessActionResult result)
+    {
+        m_RunAuthorizedResult = std::move(result);
+    }
+    [[nodiscard]] Platform::ProcessActionResult runAuthorized(const Platform::AuthorizedAction& action,
+                                                              const std::stop_token& /*stopToken*/) override
+    {
+        m_LastAuthorizedAction = action;
+        ++m_RunAuthorizedCount;
+        return m_RunAuthorizedResult;
+    }
+    [[nodiscard]] int runAuthorizedCount() const
+    {
+        return m_RunAuthorizedCount;
+    }
+    [[nodiscard]] const Platform::AuthorizedAction& lastAuthorizedAction() const
+    {
+        return m_LastAuthorizedAction;
+    }
     [[nodiscard]] const Platform::CpuAffinity& lastAffinity() const
     {
         return m_LastAffinity;
@@ -894,6 +915,9 @@ class MockProcessActions : public Platform::IProcessActions
     int m_SetIoPriorityCount = 0;
     int m_SetAffinityCount = 0;
     Platform::CpuAffinity m_LastAffinity;
+    Platform::ProcessActionResult m_RunAuthorizedResult = Platform::ProcessActionResult::ok();
+    int m_RunAuthorizedCount = 0;
+    Platform::AuthorizedAction m_LastAuthorizedAction;
     int m_GetIoPriorityCount = 0;
     Platform::IoPriority m_LastSetIoPriority;
     Platform::ProcessTarget m_LastIoPriorityReadTarget;

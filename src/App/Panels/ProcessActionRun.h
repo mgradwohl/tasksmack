@@ -21,6 +21,7 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace App
@@ -32,10 +33,9 @@ class ProcessActionRun
     /// Takes a finished action's result in, on the UI thread.
     using Finish = std::function<void(const Platform::ProcessActionResult&)>;
 
-    /// Runs @p work (a callable returning a ProcessActionResult) on the worker, showing @p pendingText
-    /// meanwhile; @p finish takes its result in at the update() that finds it done. Returns false, and
-    /// runs nothing, while another action runs. When no thread can be started, @p finish gets the failed
-    /// result at once.
+    /// Runs @p work (a callable returning a ProcessActionResult, taking the worker's stop token or nothing) on the worker, showing @p
+    /// pendingText meanwhile; @p finish takes its result in at the update() that finds it done. Returns false, and runs nothing, while
+    /// another action runs. When no thread can be started, @p finish gets the failed result at once.
     template<typename Work> bool start(std::string pendingText, Work work, Finish finish)
     {
         if (busy())
@@ -44,7 +44,19 @@ class ProcessActionRun
         }
         m_Pending = std::move(pendingText);
         m_Finish = std::move(finish);
-        if (auto failed = m_Worker.start([work = std::move(work)](const std::stop_token& /*stopToken*/) mutable { return work(); }))
+        // Work that takes the stop token (a password prompt's wait, #2308) is stopped by the destructor.
+        auto task = [work = std::move(work)](const std::stop_token& stopToken) mutable
+        {
+            if constexpr (std::is_invocable_v<Work&, const std::stop_token&>)
+            {
+                return work(stopToken);
+            }
+            else
+            {
+                return work();
+            }
+        };
+        if (auto failed = m_Worker.start(std::move(task)))
         {
             finishWith(*failed);
         }

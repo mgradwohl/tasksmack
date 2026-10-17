@@ -29,6 +29,11 @@
 namespace Platform
 {
 
+/// @p actions decorated with @p broker (BrokeredProcessActions), or @p actions as they are when there is
+/// no broker.
+[[nodiscard]] std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions,
+                                                                    std::shared_ptr<IPrivilegedBroker> broker);
+
 /// The broker request that does @p action.
 [[nodiscard]] Broker::Request brokerRequestFor(const AuthorizedAction& action);
 

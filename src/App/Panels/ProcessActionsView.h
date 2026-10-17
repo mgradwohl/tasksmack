@@ -23,6 +23,8 @@
 #include <array>
 #include <cstdint>
 #include <format>
+#include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -96,6 +98,8 @@ inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
 
 /// How long a result line stays up after an action is dispatched, in seconds.
 inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
+/// How long a result line offering "Authenticate and retry" stays up: long enough to read it and decide (#2308).
+inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 
 /// The "Trace system calls (strace)" button's label, also its ImGui ID.
 inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";
@@ -199,10 +203,23 @@ class ProcessActionsView
                         const Platform::ProcessTarget& target,
                         const Platform::CpuAffinity* currentAffinity = nullptr);
 
-    /// Draws the last action's result line, when there is one.
-    void renderResultLine() const
+    /// Draws the last action's result line, when there is one, with "Authenticate and retry" beside a
+    /// permission refusal the platform can retry as an administrator (#2308).
+    void renderResultLine()
     {
         renderResultFeedback();
+    }
+
+    /// Whether the result line offers "Authenticate and retry" (#2308).
+    [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
+    {
+        return m_Retry.has_value() && !m_ActionRun.busy();
+    }
+
+    /// Presses "Authenticate and retry", for tests.
+    void retryAuthorizedForTesting()
+    {
+        retryAuthorized();
     }
 
     /// Width the buttons renderControls() draws for @p capabilities need, at the current font (needs
@@ -260,6 +277,7 @@ class ProcessActionsView
             if (m_ResultSecondsLeft <= 0.0F)
             {
                 m_LastResult = {};
+                m_Retry.reset();
             }
         }
     }
@@ -275,6 +293,7 @@ class ProcessActionsView
         m_AffinityDialog.dismiss();
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
+        m_Retry.reset(); // never offer to retry an action on a process no longer shown
     }
 
     /// Whether a confirm is requested, open, or holds a captured action and target.
@@ -353,7 +372,8 @@ class ProcessActionsView
             std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
             [actions, action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
             [action, pid = target.pid](const Platform::ProcessActionResult& result)
-            { return Detail::formatActionResultMessage(action, pid, result); });
+            { return Detail::formatActionResultMessage(action, pid, result); },
+            Detail::authorizedActionFor(action, target));
     }
 
     /// The trace button was pressed: open strace on @p target through @p actions (null gives an
@@ -365,7 +385,8 @@ class ProcessActionsView
             actions,
             std::format("Starting a trace of PID {}...", target.pid),
             [actions, target] { return actions->launchSyscallTrace(target); },
-            [pid = target.pid](const Platform::ProcessActionResult& result) { return Detail::formatSyscallTraceResult(pid, result); });
+            [pid = target.pid](const Platform::ProcessActionResult& result) { return Detail::formatSyscallTraceResult(pid, result); },
+            std::nullopt); // a trace runs as the user, in a terminal: not one the helper does
     }
 
     /// Whether an action runs on the worker now (#2305): the action buttons are disabled meanwhile.
@@ -406,11 +427,19 @@ class ProcessActionsView
     }
 
   private:
+    /// Turns an action's result into the result line.
+    using ResultFormat = std::function<Detail::ActionResultMessage(const Platform::ProcessActionResult&)>;
+
     /// Runs @p work (a platform call through @p actions) on the action worker, showing @p pending until it
     /// finishes; @p format turns its result into the result line. Null @p actions is the "unavailable"
-    /// result at once, without a worker.
-    template<typename Work, typename Format>
-    void runAction(Platform::IProcessActions* actions, std::string pending, Work work, Format format)
+    /// result at once, without a worker. A permission refusal of @p retry, where the platform can ask
+    /// for authorization, offers "Authenticate and retry" beside the result line (#2308).
+    template<typename Work>
+    void runAction(Platform::IProcessActions* actions,
+                   std::string pending,
+                   Work work,
+                   ResultFormat format,
+                   std::optional<Platform::AuthorizedAction> retry)
     {
         if (actions == nullptr)
         {
@@ -422,20 +451,48 @@ class ProcessActionsView
             showResult(format(Platform::ProcessActionResult::error("Another action is still running")));
             return;
         }
-        // The formatter is moved, never copied, into the finish: it may hold the process's name.
-        static_cast<void>(m_ActionRun.start(std::move(pending),
-                                            std::move(work),
-                                            [this, format = std::move(format)](const Platform::ProcessActionResult& result)
-                                            { showResult(format(result)); }));
+        static_cast<void>(m_ActionRun.start(
+            std::move(pending),
+            std::move(work),
+            // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the std::function moved into the finish is owned by it, not leaked
+            [this, actions, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
+            {
+                showResult(format(result));
+                if (result.permissionDenied && retry.has_value() && actions->actionCapabilities().canAuthorizeInteractively)
+                {
+                    m_Retry = Retry{.action = *retry, .actions = actions, .format = format};
+                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
+                }
+            }));
+    }
+
+    /// The result line's "Authenticate and retry" was pressed: the refused action again, as an
+    /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
+    void retryAuthorized()
+    {
+        if (!m_Retry.has_value() || m_ActionRun.busy())
+        {
+            return;
+        }
+        Retry retry = std::move(*m_Retry);
+        m_Retry.reset();
+        runAction(
+            retry.actions,
+            std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
+            [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
+            { return actions->runAuthorized(action, stopToken); },
+            std::move(retry.format),
+            std::nullopt); // a refusal to the administrator isn't offered again
     }
 
     void showResult(Detail::ActionResultMessage message) noexcept
     {
         m_LastResult = std::move(message);
         m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+        m_Retry.reset();
     }
 
-    void renderResultFeedback() const;
+    void renderResultFeedback();
     void renderConfirmDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
     /// Returns whether any button was drawn, so the trace button knows whether to follow on the row.
     bool renderButtons(const Platform::ProcessActionCapabilities& capabilities,
@@ -470,6 +527,15 @@ class ProcessActionsView
     Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
     ConfirmTarget m_ConfirmTarget;
     Detail::ActionResultMessage m_LastResult;
+    /// A permission refusal "Authenticate and retry" would redo (#2308): the action, the actions it was
+    /// refused through (the panel's, which outlive this view), and its result line's wording.
+    struct Retry
+    {
+        Platform::AuthorizedAction action;
+        Platform::IProcessActions* actions = nullptr;
+        ResultFormat format;
+    };
+    std::optional<Retry> m_Retry;
     ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
     // Create dump file... (#807). Its worker uses the panel's IProcessActions until it finishes: the
     // panel declares this view after its actions, so the view (and its destructor's wait) goes first.
