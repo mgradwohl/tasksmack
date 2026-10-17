@@ -52,6 +52,11 @@ jobs:
             heavy-checks.yml|Heavy Checks
             osv-scanner.yml|OSV Dependency Scan
             pre-commit.yml|Pre-commit
+          # Jobs that only some runs of one event execute (#2313): workflow file|display name|event|job id.
+          # CI's unity build runs only on the Sunday schedule, so the weekday nightly that follows a red
+          # Sunday skips it and passes; these are judged by the latest run that actually ran the job.
+          WATCHED_JOBS: |-
+            ci.yml|CI|schedule|build-linux-unity
           TRIGGER_NAME: ${{ github.event.workflow_run.name }}
           TRIGGER_URL: ${{ github.event.workflow_run.html_url }}
           TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
@@ -82,6 +87,29 @@ jobs:
             done
           done <<<"$WATCHED"
 
+          # A job that only some runs execute (#2313) keeps the result of the latest run in which it
+          # actually ran: runs that skipped or cancelled it neither clear nor set it. A reusable-workflow
+          # job is listed as "<job id> / <inner name>" when it ran and as "<job id>" when skipped. 20
+          # runs reach back about three weeks of nightlies; if none ran the job, nothing changes.
+          while IFS='|' read -r file name event job; do
+            [[ -n "$file" ]] || continue
+            while IFS='|' read -r run_id url sha created; do
+              [[ -n "$run_id" ]] || continue
+              conclusion=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" </dev/null \
+                --jq "[.jobs[] | select(.name == \"$job\" or (.name | startswith(\"$job / \")))
+                       | .conclusion | select(. != null and . != \"skipped\" and . != \"cancelled\")]
+                      | if length == 0 then empty
+                        else (map(select(. != \"success\" and . != \"neutral\")) | first // \"success\") end")
+              [[ -n "$conclusion" ]] || continue
+              echo "$name ($job): $conclusion ($sha, $url)"
+              if [[ "$conclusion" != 'success' ]]; then
+                red+="- **${name}** (${job}): \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
+              fi
+              break
+            done < <(gh api "repos/$REPO/actions/workflows/$file/runs?branch=main&event=$event&status=completed&per_page=20" \
+              --jq '.workflow_runs[] | "\(.id)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
+          done <<<"$WATCHED_JOBS"
+
           # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
           issue=$(gh api "repos/$REPO/issues?labels=$LABEL&state=open&per_page=1" --jq '.[0].number // empty')
           run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
@@ -100,7 +128,7 @@ jobs:
 
           body="One or more workflows are failing on \`main\`. This issue is maintained by \`.github/workflows/main-health.yml\` (#1406): it is rewritten after every watched run on \`main\` and closed automatically once all of them pass again.
 
-          **Currently red** (latest finished, non-cancelled push or nightly run on \`main\`):
+          **Currently red** (latest finished, non-cancelled push or nightly run on \`main\`, or for a job listed by name, the latest run that ran it):
 
           ${red}
           File a separate bug for each root cause and link it here. Last updated by ${run_link}."
