@@ -13,10 +13,12 @@
 #include "Platform/Linux/LinuxPowerProbe.h"
 #include "Platform/PowerTypes.h"
 
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 
 #include <unistd.h>
 
@@ -600,28 +602,210 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_VoltageNow_ConvertedToMillivolts)
 // Multiple batteries
 // -----------------------------------------------------------------------
 
-TEST_F(LinuxPowerProbeUnitTest, MultipleBatteries_PrimaryUsedForRead)
-{
-    // Two primary batteries exist: BAT0 and BAT1.
-    // The probe reads only the first discovered primary battery; regardless of which
-    // one the filesystem iterator returns first, a valid battery state must be reported.
-    const auto bat0 = makeBatteryDevice("BAT0");
-    writeFile(bat0 / "status", "Discharging");
-    writeFile(bat0 / "capacity", "40");
+// The system's battery combines every pack (#2319)
 
-    const auto bat1 = makeBatteryDevice("BAT1");
-    writeFile(bat1 / "status", "Discharging");
-    writeFile(bat1 / "capacity", "40");
+namespace
+{
+
+struct PackFiles
+{
+    const char* status = "Discharging";
+    const char* capacity = nullptr;
+    const char* energyNow = nullptr; // µWh
+    const char* energyFull = nullptr;
+    const char* energyDesign = nullptr;
+    const char* chargeNow = nullptr; // µAh
+    const char* chargeFull = nullptr;
+    const char* chargeDesign = nullptr;
+    const char* voltage = nullptr; // µV
+    const char* power = nullptr;   // µW
+    const char* cycles = nullptr;
+    const char* model = nullptr;
+};
+
+} // namespace
+
+class LinuxPowerProbeMultiPackTest : public LinuxPowerProbeUnitTest
+{
+  protected:
+    void makePack(const std::string& name, const PackFiles& files) const
+    {
+        const auto path = makeBatteryDevice(name);
+        const std::array<std::pair<const char*, const char*>, 12> entries{{
+            {"status", files.status},
+            {"capacity", files.capacity},
+            {"energy_now", files.energyNow},
+            {"energy_full", files.energyFull},
+            {"energy_full_design", files.energyDesign},
+            {"charge_now", files.chargeNow},
+            {"charge_full", files.chargeFull},
+            {"charge_full_design", files.chargeDesign},
+            {"voltage_now", files.voltage},
+            {"power_now", files.power},
+            {"cycle_count", files.cycles},
+            {"model_name", files.model},
+        }};
+        for (const auto& [file, value] : entries)
+        {
+            if (value != nullptr)
+            {
+                writeFile(path / file, value);
+            }
+        }
+    }
+};
+
+TEST_F(LinuxPowerProbeMultiPackTest, UnequalPacksAreEnergyWeighted)
+{
+    // The issue's fixture: 10/20 Wh at 50% and 54/60 Wh at 90%, 5 W each. The system holds 64 of
+    // 80 Wh (80%) and draws 10 W; which pack is listed first must not matter.
+    makePack("BAT1", {.capacity = "90", .energyNow = "54000000", .energyFull = "60000000", .energyDesign = "60000000", .power = "5000000"});
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "25000000", .power = "5000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.state, BatteryState::Discharging);
+    EXPECT_EQ(counters.chargePercent, 80);
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 64.0);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 80.0);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 85.0);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 10.0);
+    EXPECT_EQ(counters.healthPercent, 94); // 80 / 85, truncated
+    EXPECT_NEAR(static_cast<double>(counters.timeToEmptySec), 6.4 * 3600.0, 1.0);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, TextFieldsAreTheFirstPackByNameAndCyclesTheMost)
+{
+    makePack("BAT1", {.capacity = "50", .voltage = "12000000", .cycles = "300", .model = "External"});
+    makePack("BAT0", {.capacity = "50", .voltage = "11000000", .cycles = "120", .model = "Internal"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.model, "Internal");
+    EXPECT_EQ(counters.voltageNowMv, 11000ULL);
+    EXPECT_EQ(counters.cycleCount, 300ULL);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, CapabilitiesCoverEveryPack)
+{
+    makePack("BAT0", {.capacity = "50"});
+    makePack("BAT1", {.capacity = "50", .chargeNow = "1000000", .chargeFull = "2000000", .chargeDesign = "2500000", .cycles = "7"});
+
+    const LinuxPowerProbe probe(m_SysRoot.string());
+    const auto caps = probe.capabilities();
+
+    EXPECT_TRUE(caps.hasChargeCapacity);
+    EXPECT_TRUE(caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_TRUE(caps.hasDesignCapacity);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, ChargePacksWithVoltageAreWeightedInWattHours)
+{
+    // 1 of 2 Ah at 10 V (10/20 Wh) and 3 of 4 Ah at 15 V (45/60 Wh): 55 of 80 Wh
+    makePack("BAT0", {.chargeNow = "1000000", .chargeFull = "2000000", .chargeDesign = "2000000", .voltage = "10000000"});
+    makePack("BAT1", {.chargeNow = "3000000", .chargeFull = "4000000", .chargeDesign = "5000000", .voltage = "15000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_NEAR(counters.chargeNowWh, 55.0, 1e-9);
+    EXPECT_NEAR(counters.chargeFullWh, 80.0, 1e-9);
+    EXPECT_EQ(counters.chargePercent, 69); // 68.75, rounded
+    EXPECT_EQ(counters.healthPercent, 84); // 80 / 95 Wh
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, ChargePacksWithoutVoltageAreWeightedByCharge)
+{
+    makePack("BAT0", {.capacity = "50", .chargeNow = "1000000", .chargeFull = "2000000", .chargeDesign = "2000000"});
+    makePack("BAT1", {.capacity = "75", .chargeNow = "3000000", .chargeFull = "4000000", .chargeDesign = "4000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.chargePercent, 67); // 4 of 6 Ah
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 0.0);
+    EXPECT_EQ(counters.healthPercent, 100);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, MixedUnitsLeaveCombinedFiguresUnavailable)
+{
+    // Wh and bare µAh cannot be added up: no figure is better than a wrong one
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000", .power = "4000000"});
+    makePack("BAT1", {.capacity = "90", .chargeNow = "3000000", .chargeFull = "4000000", .chargeDesign = "4000000", .power = "1000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.chargePercent, -1);
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 0.0);
+    EXPECT_EQ(counters.healthPercent, -1);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 5.0);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, PercentagesWithoutCapacitiesAreNotAveraged)
+{
+    makePack("BAT0", {.capacity = "40"});
+    makePack("BAT1", {.capacity = "80"});
 
     LinuxPowerProbe probe(m_SysRoot.string());
 
-    auto caps = probe.capabilities();
-    EXPECT_TRUE(caps.hasBattery);
+    EXPECT_EQ(probe.read().chargePercent, -1);
+}
 
+TEST_F(LinuxPowerProbeMultiPackTest, StatesCombine)
+{
+    makePack("BAT0", {.status = "Full", .capacity = "100"});
+    const auto bat0 = m_SysRoot / "BAT0";
+    makePack("BAT1", {.status = "Charging", .capacity = "60"});
+    const auto bat1 = m_SysRoot / "BAT1";
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_EQ(probe.read().state, BatteryState::Charging);
+
+    writeFile(bat1 / "status", "Not charging");
+    EXPECT_EQ(probe.read().state, BatteryState::NotCharging);
+
+    writeFile(bat1 / "status", "Full");
+    EXPECT_EQ(probe.read().state, BatteryState::Full);
+
+    writeFile(bat0 / "status", "Discharging");
+    EXPECT_EQ(probe.read().state, BatteryState::Discharging);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, AbsentAndRemovedPacksAreLeftOut)
+{
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000"});
+    makePack("BAT1", {.capacity = "90", .energyNow = "54000000", .energyFull = "60000000", .energyDesign = "60000000"});
+    const auto bat1 = m_SysRoot / "BAT1";
+    writeFile(bat1 / "present", "0"); // An empty bay
+
+    LinuxPowerProbe probe(m_SysRoot.string());
     auto counters = probe.read();
-    // Both batteries report the same state to make the test order-independent.
-    EXPECT_EQ(counters.state, BatteryState::Discharging);
-    EXPECT_EQ(counters.chargePercent, 40);
+    EXPECT_EQ(counters.chargePercent, 50);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 20.0);
+
+    writeFile(bat1 / "present", "1"); // Inserted
+    EXPECT_EQ(probe.read().chargePercent, 80);
+
+    std::filesystem::remove_all(bat1); // Hot-removed: the device goes away
+    counters = probe.read();
+    EXPECT_EQ(counters.chargePercent, 50);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 20.0);
+
+    std::filesystem::remove_all(m_SysRoot / "BAT0");
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, OtherSystemBatteriesAreNotPacks)
+{
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000"});
+    makePack("ups_battery", {.capacity = "100", .energyNow = "90000000", .energyFull = "90000000", .energyDesign = "90000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_EQ(probe.read().chargePercent, 50);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, DeviceScopedBatteryIsNotTheSystemBattery)

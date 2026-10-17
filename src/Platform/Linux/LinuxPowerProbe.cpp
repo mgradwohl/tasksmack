@@ -8,7 +8,9 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -135,9 +137,16 @@ void LinuxPowerProbe::discoverBatteries()
         }
     }
 
-    // Prefer primary batteries, then peripherals
+    // Every primary battery is one of the system's packs, combined on each read (#2319), in name order
+    // so which pack is "first" doesn't depend on directory order. Without one, the first other
+    // system-scoped battery stands in for the system's, as before.
+    std::ranges::sort(primaryBatteries);
+    std::ranges::sort(peripheralBatteries);
     m_BatteryPaths = std::move(primaryBatteries);
-    m_BatteryPaths.insert(m_BatteryPaths.end(), peripheralBatteries.begin(), peripheralBatteries.end());
+    if (m_BatteryPaths.empty() && !peripheralBatteries.empty())
+    {
+        m_BatteryPaths.push_back(peripheralBatteries.front());
+    }
 
     if (ec)
     {
@@ -146,42 +155,62 @@ void LinuxPowerProbe::discoverBatteries()
 
     // Set capabilities based on discovery
     m_Capabilities.hasBattery = !m_BatteryPaths.empty();
-    if (m_Capabilities.hasBattery)
+    for (const auto& batteryPath : m_BatteryPaths)
     {
-        // Probe the first (primary) battery to determine available fields
-        const auto& batteryPath = m_BatteryPaths[0];
-        m_Capabilities.hasChargePercent = Fs::exists(batteryPath + "/capacity", ec);
-        m_Capabilities.hasChargeCapacity = Fs::exists(batteryPath + "/energy_now", ec) || Fs::exists(batteryPath + "/charge_now", ec);
-        m_Capabilities.hasPowerRate = Fs::exists(batteryPath + "/power_now", ec) || Fs::exists(batteryPath + "/current_now", ec);
-        m_Capabilities.hasVoltage = Fs::exists(batteryPath + "/voltage_now", ec);
-        m_Capabilities.hasTechnology = Fs::exists(batteryPath + "/technology", ec);
-        m_Capabilities.hasCycleCount = Fs::exists(batteryPath + "/cycle_count", ec);
-        // Health is full/design capacity, from the energy_* or the charge_* pair; neither needs voltage (#2341)
-        m_Capabilities.hasHealthPercent =
-            (Fs::exists(batteryPath + "/energy_full", ec) && Fs::exists(batteryPath + "/energy_full_design", ec)) ||
-            (Fs::exists(batteryPath + "/charge_full", ec) && Fs::exists(batteryPath + "/charge_full_design", ec));
-        // Design and full-charge capacity are read with the charge capacity, from energy_* or charge_* (#1523)
-        m_Capabilities.hasDesignCapacity = m_Capabilities.hasChargeCapacity && (Fs::exists(batteryPath + "/energy_full_design", ec) ||
-                                                                                Fs::exists(batteryPath + "/charge_full_design", ec));
-        m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
+        addPackCapabilities(batteryPath);
     }
+    m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
+}
+
+/// What any of the packs offers is what the combined battery offers (#2319)
+void LinuxPowerProbe::addPackCapabilities(const std::string& batteryPath)
+{
+    namespace Fs = std::filesystem;
+    std::error_code ec;
+    const auto has = [&](const char* name)
+    {
+        return Fs::exists(batteryPath + name, ec);
+    };
+
+    const bool hasChargeCapacity = has("/energy_now") || has("/charge_now");
+    m_Capabilities.hasChargePercent |= has("/capacity");
+    m_Capabilities.hasChargeCapacity |= hasChargeCapacity;
+    m_Capabilities.hasPowerRate |= has("/power_now") || has("/current_now");
+    m_Capabilities.hasVoltage |= has("/voltage_now");
+    m_Capabilities.hasTechnology |= has("/technology");
+    m_Capabilities.hasCycleCount |= has("/cycle_count");
+    // Health is full/design capacity, from the energy_* or the charge_* pair; neither needs voltage (#2341)
+    m_Capabilities.hasHealthPercent |=
+        (has("/energy_full") && has("/energy_full_design")) || (has("/charge_full") && has("/charge_full_design"));
+    // Design and full-charge capacity are read with the charge capacity, from energy_* or charge_* (#1523)
+    m_Capabilities.hasDesignCapacity |= hasChargeCapacity && (has("/energy_full_design") || has("/charge_full_design"));
 }
 
 PowerCounters LinuxPowerProbe::read()
 {
-    PowerCounters counters;
-
-    if (m_BatteryPaths.empty())
+    std::vector<PackReading> packs;
+    packs.reserve(m_BatteryPaths.size());
+    for (const auto& batteryPath : m_BatteryPaths)
     {
+        if (auto pack = readPack(batteryPath))
+        {
+            packs.push_back(std::move(*pack));
+        }
+    }
+
+    if (packs.empty())
+    {
+        PowerCounters counters;
         counters.state = BatteryState::NotPresent;
         counters.isOnAc = readMainsOnline().value_or(true); // Assume on AC if no battery and no adapter says otherwise
         return counters;
     }
 
-    // For simplicity, read from the first battery (most systems have one)
-    // Future: aggregate multiple batteries
-    readBattery(counters, m_BatteryPaths[0]);
-
+    PowerCounters counters = combinePacks(packs);
+    // The AC adapter's own `online` is authoritative; the battery's status is only a fallback for
+    // machines that expose no adapter (#1109).
+    counters.isOnAc = readMainsOnline().value_or(counters.state == BatteryState::Charging || counters.state == BatteryState::Full ||
+                                                 counters.state == BatteryState::NotCharging);
     return counters;
 }
 
@@ -190,136 +219,192 @@ PowerCapabilities LinuxPowerProbe::capabilities() const
     return m_Capabilities;
 }
 
-void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& batteryPath) const
+std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std::string& batteryPath)
 {
-    // Read battery state
-    const auto status = readSysfsFile(batteryPath + "/status");
-    counters.state = parseBatteryState(status);
-    // The AC adapter's own `online` is authoritative; the battery's status is only a fallback for
-    // machines that expose no adapter (#1109).
-    counters.isOnAc = readMainsOnline().value_or(counters.state == BatteryState::Charging || counters.state == BatteryState::Full ||
-                                                 counters.state == BatteryState::NotCharging);
+    namespace Fs = std::filesystem;
 
-    // Read charge percentage
-    if (m_Capabilities.hasChargePercent)
+    // Removed since discovery (hot-swapped out, or the driver unbound), or present but empty (#2319)
+    if (readSysfsFile(batteryPath + "/type") != "Battery" || readSysfsInt(batteryPath + "/present", 1) == 0)
     {
-        counters.chargePercent = readSysfsInt(batteryPath + "/capacity", -1);
+        return std::nullopt;
     }
 
-    // Read charge capacity (energy or charge, in µWh or µAh)
-    // Convert to Wh for consistency
-    if (m_Capabilities.hasChargeCapacity)
-    {
-        // Try energy first (Wh)
-        if (std::filesystem::exists(batteryPath + "/energy_now"))
-        {
-            counters.chargeNowWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_now")) / 1000000.0; // µWh to Wh
-            counters.chargeFullWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full")) / 1000000.0;
-            counters.chargeDesignWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full_design")) / 1000000.0;
-        }
-        // Fall back to charge (Ah) - need voltage to convert to Wh
-        else if (std::filesystem::exists(batteryPath + "/charge_now"))
-        {
-            const auto chargeNowUah = readSysfsUInt64(batteryPath + "/charge_now");
-            const auto chargeFullUah = readSysfsUInt64(batteryPath + "/charge_full");
-            const auto chargeDesignUah = readSysfsUInt64(batteryPath + "/charge_full_design");
-            const auto voltageUv = readSysfsUInt64(batteryPath + "/voltage_now", 0);
+    PackReading pack;
+    PowerCounters& counters = pack.counters;
+    counters.state = parseBatteryState(readSysfsFile(batteryPath + "/status"));
+    counters.chargePercent = readSysfsInt(batteryPath + "/capacity", -1);
 
-            if (voltageUv > 0)
-            {
-                // Convert µAh * µV = pWh, then to Wh
-                // Cast to double to prevent overflow before division
-                counters.chargeNowWh = (static_cast<double>(chargeNowUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
-                counters.chargeFullWh = (static_cast<double>(chargeFullUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
-                counters.chargeDesignWh = (static_cast<double>(chargeDesignUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
-            }
+    // Capacities: energy (µWh) when the pack gives it, else charge (µAh), in Wh with a voltage
+    const auto voltageUv = readSysfsUInt64(batteryPath + "/voltage_now", 0);
+    if (Fs::exists(batteryPath + "/energy_now"))
+    {
+        pack.unit = CapacityUnit::WattHours;
+        pack.now = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_now")) / 1000000.0; // µWh to Wh
+        pack.full = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full")) / 1000000.0;
+        pack.design = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full_design")) / 1000000.0;
+    }
+    else if (Fs::exists(batteryPath + "/charge_now"))
+    {
+        pack.now = static_cast<double>(readSysfsUInt64(batteryPath + "/charge_now"));
+        pack.full = static_cast<double>(readSysfsUInt64(batteryPath + "/charge_full"));
+        pack.design = static_cast<double>(readSysfsUInt64(batteryPath + "/charge_full_design"));
+        pack.unit = CapacityUnit::MicroAmpHours;
+        if (voltageUv > 0)
+        {
+            // µAh * µV = pWh, then to Wh
+            const double volts = static_cast<double>(voltageUv) / 1000000.0;
+            pack.unit = CapacityUnit::WattHours;
+            pack.now = pack.now * volts / 1000000.0;
+            pack.full = pack.full * volts / 1000000.0;
+            pack.design = pack.design * volts / 1000000.0;
         }
     }
-
-    // Read power rate
-    if (m_Capabilities.hasPowerRate)
+    if (pack.unit == CapacityUnit::WattHours)
     {
-        // Try power_now first (µW)
-        if (std::filesystem::exists(batteryPath + "/power_now"))
-        {
-            // Signed: the sysfs ABI lets some drivers report discharge as negative (#1158). The sign
-            // convention here comes from the battery state instead.
-            const auto powerUw = magnitude(readSysfsInt64(batteryPath + "/power_now"));
-            counters.powerNowW = static_cast<double>(powerUw) / 1000000.0; // µW to W
-
-            // Negate if charging (power going in)
-            if (counters.state == BatteryState::Charging)
-            {
-                counters.powerNowW = -counters.powerNowW;
-            }
-        }
-        // Fall back to current_now (µA) - need voltage
-        else if (std::filesystem::exists(batteryPath + "/current_now"))
-        {
-            const auto currentUa = magnitude(readSysfsInt64(batteryPath + "/current_now")); // Signed, as power_now
-            const auto voltageUv = readSysfsUInt64(batteryPath + "/voltage_now", 0);
-
-            if (voltageUv > 0)
-            {
-                // µA * µV = pW, then to W
-                // Cast to double to prevent overflow before division
-                counters.powerNowW = (static_cast<double>(currentUa) * static_cast<double>(voltageUv)) / 1000000000000.0;
-
-                if (counters.state == BatteryState::Charging)
-                {
-                    counters.powerNowW = -counters.powerNowW;
-                }
-            }
-        }
+        counters.chargeNowWh = pack.now;
+        counters.chargeFullWh = pack.full;
+        counters.chargeDesignWh = pack.design;
     }
 
-    // Read voltage
-    if (m_Capabilities.hasVoltage)
+    // Health is the raw full/design pair, so a charge-based pack needs no voltage (#2341)
+    const bool energyPair = Fs::exists(batteryPath + "/energy_full") && Fs::exists(batteryPath + "/energy_full_design");
+    if (energyPair || (Fs::exists(batteryPath + "/charge_full") && Fs::exists(batteryPath + "/charge_full_design")))
     {
-        counters.voltageNowMv = readSysfsUInt64(batteryPath + "/voltage_now") / 1000; // µV to mV
+        pack.healthFull = static_cast<double>(readSysfsUInt64(batteryPath + (energyPair ? "/energy_full" : "/charge_full")));
+        pack.healthDesign =
+            static_cast<double>(readSysfsUInt64(batteryPath + (energyPair ? "/energy_full_design" : "/charge_full_design")));
     }
 
-    // Read technology
-    if (m_Capabilities.hasTechnology)
+    // Power: power_now (µW), else current_now (µA) times voltage. Signed: the sysfs ABI lets some
+    // drivers report discharge as negative (#1158), so the sign comes from the battery state instead.
+    if (Fs::exists(batteryPath + "/power_now"))
     {
-        counters.technology = readSysfsFile(batteryPath + "/technology");
+        counters.powerNowW = static_cast<double>(magnitude(readSysfsInt64(batteryPath + "/power_now"))) / 1000000.0; // µW to W
+    }
+    else if (Fs::exists(batteryPath + "/current_now") && voltageUv > 0)
+    {
+        // µA * µV = pW, then to W; doubles so the product can't overflow
+        counters.powerNowW =
+            (static_cast<double>(magnitude(readSysfsInt64(batteryPath + "/current_now"))) * static_cast<double>(voltageUv)) /
+            1000000000000.0;
+    }
+    if (counters.state == BatteryState::Charging)
+    {
+        counters.powerNowW = -counters.powerNowW; // Power going in
     }
 
-    // Read model/manufacturer
+    counters.voltageNowMv = voltageUv / 1000; // µV to mV
+    counters.technology = readSysfsFile(batteryPath + "/technology");
     counters.model = readSysfsFile(batteryPath + "/model_name");
     counters.manufacturer = readSysfsFile(batteryPath + "/manufacturer");
+    counters.cycleCount = readSysfsUInt64(batteryPath + "/cycle_count");
+    return pack;
+}
 
-    // Read cycle count
-    if (m_Capabilities.hasCycleCount)
+/// The packs as the system's one battery (#2319):
+/// - State: Charging if any pack charges, else Discharging if any discharges, else Full if all are,
+///   else Not charging if any is held, else Unknown.
+/// - Charge: the energy-weighted percentage, sum(now) / sum(full), when every pack gives its
+///   capacities in the same unit; one pack's own `capacity`; otherwise unavailable rather than an
+///   unweighted average.
+/// - Wh figures: the sums, when every pack has them; otherwise unavailable (0).
+/// - Power: the sum of the packs' signed rates.
+/// - Health: sum(full) / sum(design) over the packs that report both, under the same unit rule
+///   (one pack: its own raw pair).
+/// - Cycle count: the most-cycled pack's. Voltage, technology, model and manufacturer: the first
+///   pack's (by name), as a combined value would mean nothing.
+PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& packs)
+{
+    PowerCounters counters;
+    const PackReading& first = packs.front();
+    counters.voltageNowMv = first.counters.voltageNowMv;
+    counters.technology = first.counters.technology;
+    counters.model = first.counters.model;
+    counters.manufacturer = first.counters.manufacturer;
+
+    const auto any = [&](BatteryState state)
     {
-        counters.cycleCount = readSysfsUInt64(batteryPath + "/cycle_count");
+        return std::ranges::any_of(packs, [state](const PackReading& p) { return p.counters.state == state; });
+    };
+    if (any(BatteryState::Charging))
+    {
+        counters.state = BatteryState::Charging;
+    }
+    else if (any(BatteryState::Discharging))
+    {
+        counters.state = BatteryState::Discharging;
+    }
+    else if (std::ranges::all_of(packs, [](const PackReading& p) { return p.counters.state == BatteryState::Full; }))
+    {
+        counters.state = BatteryState::Full;
+    }
+    else if (any(BatteryState::NotCharging))
+    {
+        counters.state = BatteryState::NotCharging;
     }
 
-    // Calculate health percentage from the raw full/design pair, so a charge-based battery needs no voltage (#2341)
-    if (m_Capabilities.hasHealthPercent)
+    const CapacityUnit unit = first.unit;
+    const bool sharedUnit =
+        unit != CapacityUnit::None && std::ranges::all_of(packs, [unit](const PackReading& p) { return p.unit == unit; });
+    double now = 0.0;
+    double full = 0.0;
+    double design = 0.0;
+    double pairedFull = 0.0; // Packs that report both full and design capacity, for health
+    double pairedDesign = 0.0;
+    for (const PackReading& pack : packs)
     {
-        const bool energyPair =
-            std::filesystem::exists(batteryPath + "/energy_full") && std::filesystem::exists(batteryPath + "/energy_full_design");
-        const auto fullCapacity = readSysfsUInt64(batteryPath + (energyPair ? "/energy_full" : "/charge_full"));
-        const auto designCapacity = readSysfsUInt64(batteryPath + (energyPair ? "/energy_full_design" : "/charge_full_design"));
-        if (designCapacity > 0)
+        now += pack.now;
+        full += pack.full;
+        design += pack.design;
+        if (pack.full > 0.0 && pack.design > 0.0)
         {
-            counters.healthPercent = static_cast<int>((static_cast<double>(fullCapacity) * 100.0) / static_cast<double>(designCapacity));
+            pairedFull += pack.full;
+            pairedDesign += pack.design;
+        }
+        counters.powerNowW += pack.counters.powerNowW;
+        counters.cycleCount = std::max(counters.cycleCount, pack.counters.cycleCount);
+    }
+
+    if (packs.size() == 1)
+    {
+        counters.chargePercent = first.counters.chargePercent;
+    }
+    else if (sharedUnit && full > 0.0)
+    {
+        counters.chargePercent = static_cast<int>(std::lround(std::clamp(now / full, 0.0, 1.0) * 100.0));
+    }
+
+    if (sharedUnit && unit == CapacityUnit::WattHours)
+    {
+        counters.chargeNowWh = now;
+        counters.chargeFullWh = full;
+        counters.chargeDesignWh = design;
+    }
+
+    // Health, truncated as a single pack's always was
+    if (packs.size() == 1)
+    {
+        if (first.healthDesign > 0.0)
+        {
+            counters.healthPercent = static_cast<int>((first.healthFull * 100.0) / first.healthDesign);
         }
     }
+    else if (sharedUnit && pairedDesign > 0.0)
+    {
+        counters.healthPercent = static_cast<int>((pairedFull * 100.0) / pairedDesign);
+    }
 
-    // Estimate time remaining (rough calculation)
+    // Time remaining from the combined figures (rough)
     if (counters.powerNowW > 0.1 && counters.chargeNowWh > 0)
     {
-        // Time to empty = charge / power
         counters.timeToEmptySec = static_cast<std::uint64_t>((counters.chargeNowWh / counters.powerNowW) * 3600.0);
     }
     else if (counters.powerNowW < -0.1 && counters.chargeFullWh > counters.chargeNowWh)
     {
-        // Time to full = (full - now) / power
         const auto remaining = counters.chargeFullWh - counters.chargeNowWh;
         counters.timeToFullSec = static_cast<std::uint64_t>((remaining / -counters.powerNowW) * 3600.0);
     }
+    return counters;
 }
 
 std::string LinuxPowerProbe::readSysfsFile(const std::string& path)

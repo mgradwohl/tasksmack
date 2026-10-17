@@ -220,6 +220,10 @@ On systems with a battery, TaskSmack shows:
 
 Power readings follow the convention: **positive watts = discharging/consuming**, negative watts = battery charging.
 
+With more than one battery (an internal and a removable pack, say), the figures describe them together: the
+charge is weighted by each pack's capacity, capacities and power are added up, and the cycle count is the
+most-cycled pack's. Chemistry, manufacturer and model are the first pack's.
+
 ### GPU Monitoring
 
 TaskSmack combines operating-system GPU APIs with optional vendor libraries:
