@@ -1,5 +1,7 @@
 #include "WindowOverride.h"
 
+#include "Core/EnvUtils.h"
+
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
@@ -14,8 +16,7 @@ const std::optional<Geometry>& active()
     // Read once: a function-local static is initialised exactly once, thread-safely.
     static const std::optional<Geometry> geometry = []() -> std::optional<Geometry>
     {
-        const std::string name(ENV_VAR);
-        const ParseResult parsed = parse(SDL_getenv(name.c_str()));
+        const ParseResult parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.warning.empty())
         {
             spdlog::warn("{}: {}", ENV_VAR, parsed.warning);

@@ -291,8 +291,7 @@ const Scenario* activeScenario()
     // Read once: a function-local static is initialised exactly once, thread-safely.
     static const std::optional<Scenario> scenario = []() -> std::optional<Scenario>
     {
-        const std::string name(ENV_VAR);
-        ParseResult parsed = parseScenario(SDL_getenv(name.c_str()));
+        ParseResult parsed = parseScenario(Core::readEnv(ENV_VAR));
         for (const auto& warning : parsed.warnings)
         {
             spdlog::warn("{}: {}", ENV_VAR, warning);

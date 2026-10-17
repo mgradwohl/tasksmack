@@ -26,6 +26,8 @@
 // unit-tested (tests/Core/test_LocaleSetup.cpp) without changing the test process's locale.
 // initialize() is the only part that uses the real C runtime and the global locale.
 
+#include "Core/EnvUtils.h"
+
 #include <cstdint>
 #include <locale>
 #include <string>
@@ -122,6 +124,7 @@ struct NumberPunctuation
 
 /// The test hook's environment variable: see the top of this file.
 inline constexpr const char* LOCALE_OVERRIDE_ENV = "TASKSMACK_LOCALE";
+static_assert(Core::isKnownEnvHook(LOCALE_OVERRIDE_ENV)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// The names to try for a TASKSMACK_LOCALE value, in order: "<value>.UTF-8" (unless it already names
 /// a codeset), then the value itself. Empty for an empty value.

@@ -1,6 +1,7 @@
 #include "ShellLayer.h"
 
 #include "Core/ApplicationEvents.h"
+#include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/WindowConstants.h"
@@ -140,8 +141,7 @@ void ShellLayer::onAttach()
     {
         tabInfos.push_back({.id = tab.eventName, .text = tab.text ? tab.text() : std::string_view{}});
     }
-    const SelectOverride::MainTabChoice mainTab =
-        SelectOverride::resolveMainTab(SDL_getenv(std::string(SelectOverride::MAIN_TAB_ENV_VAR).c_str()), tabInfos);
+    const SelectOverride::MainTabChoice mainTab = SelectOverride::resolveMainTab(Core::readEnv(SelectOverride::MAIN_TAB_ENV_VAR), tabInfos);
     if (!mainTab.warning.empty())
     {
         spdlog::warn("{}", mainTab.warning);

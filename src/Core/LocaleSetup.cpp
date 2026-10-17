@@ -1,5 +1,8 @@
 #include "LocaleSetup.h"
 
+#include "Core/EnvUtils.h"
+#include "Platform/AsciiTrim.h"
+
 #include <SDL3/SDL_stdinc.h>
 
 #ifdef _WIN32
@@ -394,7 +397,8 @@ const Summary& initialize(const NumericFacets numerics)
     std::locale display = user;
     std::string displayName = userName;
     // SDL_getenv: UTF-8 on Windows too, and no CRT deprecation; it needs no SDL_Init.
-    if (const char* overrideValue = SDL_getenv(LOCALE_OVERRIDE_ENV); overrideValue != nullptr && *overrideValue != '\0')
+    const char* const overrideEnv = Core::readEnv(LOCALE_OVERRIDE_ENV);
+    if (const std::string_view overrideValue = Platform::trimAscii(overrideEnv != nullptr ? overrideEnv : ""); !overrideValue.empty())
     {
         std::string overrideName;
         std::vector<std::string> overrideWarnings;
@@ -490,8 +494,9 @@ NumberPunctuation numberPunctuation(const std::locale& locale, const std::string
     return punctuation;
 }
 
-std::vector<std::string> localeOverrideCandidates(const std::string_view value)
+std::vector<std::string> localeOverrideCandidates(std::string_view value)
 {
+    value = Platform::trimAscii(value); // as every TASKSMACK_* hook (#2170)
     std::vector<std::string> names;
     if (value.empty())
     {

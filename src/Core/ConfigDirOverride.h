@@ -14,6 +14,9 @@
 // parse() and resolve() are pure and unit-tested (tests/Core/test_ConfigDirOverride.cpp);
 // ConfigDirOverride.cpp holds active(), the only part that reads the environment and touches the disk.
 
+#include "Core/EnvUtils.h"
+#include "Platform/AsciiTrim.h"
+
 #include <cctype>
 #include <filesystem>
 #include <optional>
@@ -24,24 +27,13 @@ namespace Core::ConfigDirOverride
 {
 
 inline constexpr std::string_view ENV_VAR = "TASKSMACK_CONFIG_DIR";
+static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// The directory a TASKSMACK_CONFIG_DIR value (UTF-8, nullptr when unset) names, with surrounding
 /// whitespace trimmed; nullopt when it is unset or blank.
 [[nodiscard]] inline std::optional<std::filesystem::path> parse(const char* value)
 {
-    std::string_view text = value != nullptr ? value : "";
-    const auto isSpace = [](const char c)
-    {
-        return std::isspace(static_cast<unsigned char>(c)) != 0;
-    };
-    while (!text.empty() && isSpace(text.front()))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && isSpace(text.back()))
-    {
-        text.remove_suffix(1);
-    }
+    const std::string_view text = Platform::trimAscii(value != nullptr ? value : "");
     if (text.empty())
     {
         return std::nullopt;

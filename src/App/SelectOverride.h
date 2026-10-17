@@ -19,6 +19,7 @@
 // (tests/App/test_SelectOverride.cpp); SelectOverride.cpp holds the platform name comparisons and
 // active(), the only part that reads the environment and logs.
 
+#include "Core/EnvUtils.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/AsciiTrim.h"
 
@@ -46,6 +47,8 @@ inline constexpr std::string_view TAB_ENV_VAR = "TASKSMACK_DETAILS_TAB";
 /// The top-level tab to open (machine/overview, processes, details, or any registered tab's id or label).
 /// It wins over the Process Details tab a TASKSMACK_SELECT_PID/_NAME selection would bring forward.
 inline constexpr std::string_view MAIN_TAB_ENV_VAR = "TASKSMACK_TAB";
+static_assert(Core::isKnownEnvHook(PID_ENV_VAR) && Core::isKnownEnvHook(NAME_ENV_VAR) && Core::isKnownEnvHook(TAB_ENV_VAR) &&
+              Core::isKnownEnvHook(MAIN_TAB_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// Snapshots to wait for the process before giving up (about 20 s at the default 1 s interval).
 inline constexpr int MAX_SNAPSHOTS = 20;
@@ -404,6 +407,7 @@ class PendingMainTab
 
 /// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
 inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
+static_assert(Core::isKnownEnvHook(OPEN_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 enum class StartupDialog : std::uint8_t
 {

@@ -1,5 +1,7 @@
 #include "ConfigDirOverride.h"
 
+#include "Core/EnvUtils.h"
+
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
@@ -16,7 +18,7 @@ const std::optional<std::filesystem::path>& active()
     // Read once: a function-local static is initialised exactly once, thread-safely.
     static const std::optional<std::filesystem::path> dir = [] -> std::optional<std::filesystem::path>
     {
-        std::optional<std::filesystem::path> parsed = parse(SDL_getenv(std::string(ENV_VAR).c_str()));
+        std::optional<std::filesystem::path> parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.has_value())
         {
             return std::nullopt;

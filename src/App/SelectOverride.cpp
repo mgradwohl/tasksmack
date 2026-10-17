@@ -3,6 +3,7 @@
 #include "Core/ConfigDirOverride.h"
 
 #ifdef _WIN32
+#include "Core/EnvUtils.h"
 #include "Platform/Windows/WinString.h"
 #endif
 
@@ -69,10 +70,7 @@ const std::optional<Target>& active()
     // Read once: a function-local static is initialised exactly once, thread-safely.
     static const std::optional<Target> target = [] -> std::optional<Target>
     {
-        const std::string pidName(PID_ENV_VAR);
-        const std::string nameName(NAME_ENV_VAR);
-        const std::string tabName(TAB_ENV_VAR);
-        ParseResult parsed = parse(SDL_getenv(pidName.c_str()), SDL_getenv(nameName.c_str()), SDL_getenv(tabName.c_str()));
+        ParseResult parsed = parse(Core::readEnv(PID_ENV_VAR), Core::readEnv(NAME_ENV_VAR), Core::readEnv(TAB_ENV_VAR));
         for (const std::string& warning : parsed.warnings)
         {
             spdlog::warn("{}", warning);
@@ -90,7 +88,7 @@ bool testHookActive()
 {
     const auto read = [](const std::string_view variable)
     {
-        return SDL_getenv(std::string(variable).c_str());
+        return Core::readEnv(variable);
     };
     // TASKSMACK_CONFIG_DIR (#1596) is a test hook too.
     return Core::ConfigDirOverride::active().has_value() ||
@@ -102,7 +100,7 @@ std::optional<StartupDialog> startupDialog()
     // Read once, as active() is.
     static const std::optional<StartupDialog> dialog = [] -> std::optional<StartupDialog>
     {
-        const StartupDialogChoice choice = parseStartupDialog(SDL_getenv(std::string(OPEN_ENV_VAR).c_str()));
+        const StartupDialogChoice choice = parseStartupDialog(Core::readEnv(OPEN_ENV_VAR));
         if (!choice.warning.empty())
         {
             spdlog::warn("{}", choice.warning);

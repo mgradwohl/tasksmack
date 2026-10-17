@@ -35,7 +35,7 @@ inline constexpr std::array<std::string_view, static_cast<std::size_t>(ResizePer
 /// UI-thread-only diagnostics. No clock reads, allocations or logging on the disabled path.
 struct ResizePerfOperations
 {
-    bool enabled = isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
+    bool enabled = resizePerfTraceRequested();
     std::array<ResizePerfDurationStats, static_cast<std::size_t>(ResizePerfOperation::Count)> durations{};
     std::array<std::uint64_t, static_cast<std::size_t>(ResizePerfOperation::Count)> failures{};
     std::array<std::pair<int, int>, static_cast<std::size_t>(ResizePerfOperation::Count)> maxRequests{};

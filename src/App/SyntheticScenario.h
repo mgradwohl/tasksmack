@@ -20,6 +20,7 @@
 //   refresh=MS    refresh interval to start at, instead of the configured one
 // The history and refresh overrides apply to this run only; the config file is not changed.
 
+#include "Core/EnvUtils.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
@@ -50,6 +51,7 @@ namespace App::Synthetic
 {
 
 inline constexpr std::string_view ENV_VAR = "TASKSMACK_SYNTHETIC";
+static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 struct ScenarioConfig
 {

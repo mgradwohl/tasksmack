@@ -37,6 +37,7 @@ namespace App::WindowOverride
 {
 
 inline constexpr std::string_view ENV_VAR = "TASKSMACK_WINDOW";
+static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// The geometry TASKSMACK_WINDOW asks for.
 struct Geometry

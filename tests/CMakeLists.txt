@@ -377,6 +377,7 @@ set(COMMON_TEST_SOURCES
     App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
     App/test_MainTabSelectionRender.cpp
+    App/test_EnvHooks.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp

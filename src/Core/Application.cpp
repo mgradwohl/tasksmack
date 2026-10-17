@@ -104,7 +104,6 @@ constexpr bool ADOPT_SYSTEM_MAXIMIZE = true;
 #else
 constexpr bool ADOPT_SYSTEM_MAXIMIZE = false;
 #endif
-constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr double RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5;
 // Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
 // interaction is a short, bounded burst where frequent logging is useful, but idle frames run
@@ -260,12 +259,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     bool sdlInitialized = false;
     try
     {
-        m_ResizePerfTraceEnabled = isEnvFlagEnabled(SDL_getenv(RESIZE_PERF_TRACE_ENV));
+        m_ResizePerfTraceEnabled = resizePerfTraceRequested();
         resizePerfOperations() = {};
         spdlog::info("Initializing {} application", m_Spec.Name);
         if (m_ResizePerfTraceEnabled)
         {
-            spdlog::info("Resize performance tracing enabled via {}", RESIZE_PERF_TRACE_ENV);
+            spdlog::info("Resize performance tracing enabled via {}", TRACE_RESIZE_PERF_ENV_VAR);
             logResizePerfAnchor();
         }
 
