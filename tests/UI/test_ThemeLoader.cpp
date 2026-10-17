@@ -1819,6 +1819,56 @@ memory = [0.1]
     expectMagenta(loaded.chartMemory);
 }
 
+// #2318: TOML accepts nan and inf, and ImGui's float-to-byte colour conversion is undefined for them.
+// An array colour with a non-finite (or non-numeric) component is error magenta, in both array paths
+// (a single colour and an accents entry); a finite component outside [0, 1] -- including one too big
+// for a float -- is clamped into it.
+TEST(ThemeLoaderTest, LoadThemeFromString_NonFiniteArrayColourIsErrorMagentaAndOutOfRangeIsClamped)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(R"(
+[meta]
+name = "Non-finite"
+
+[accents]
+colors = [[nan, 0.5, 0.5], [0.5, inf, 0.5], [0.5, 0.5, -inf], [0.5, 0.5, 0.5, nan], [1, 0, 0]]
+
+[semantic]
+text_primary = [nan, 0.5, 0.5, 1.0]
+text_error = [0.5, 0.5, 0.5, inf]
+text_warning = ["red", 0.5, 0.5]
+
+[charts]
+cpu = [1e300, -1e300, 0.5, 2.0]
+memory = [-0.25, 1.5, 0.25]
+)",
+                                                         "non-finite.toml");
+    ASSERT_TRUE(scheme.has_value());
+    // value_or, not ->: clang-tidy's optional check does not model ASSERT_TRUE's early return.
+    const ColorScheme loaded = scheme.value_or(ColorScheme{});
+    const auto expectColour = [](const ImVec4& colour, float r, float g, float b, float a)
+    {
+        EXPECT_FLOAT_EQ(colour.x, r);
+        EXPECT_FLOAT_EQ(colour.y, g);
+        EXPECT_FLOAT_EQ(colour.z, b);
+        EXPECT_FLOAT_EQ(colour.w, a);
+    };
+    const auto expectMagenta = [&expectColour](const ImVec4& colour)
+    {
+        expectColour(colour, 1.0F, 0.0F, 1.0F, 1.0F);
+    };
+
+    expectMagenta(loaded.accents[0]);
+    expectMagenta(loaded.accents[1]);
+    expectMagenta(loaded.accents[2]);
+    expectMagenta(loaded.accents[3]);
+    expectColour(loaded.accents[4], 1.0F, 0.0F, 0.0F, 1.0F); // integer components still read
+    expectMagenta(loaded.textPrimary);
+    expectMagenta(loaded.textError);
+    expectMagenta(loaded.textWarning);
+    expectColour(loaded.chartCpu, 1.0F, 0.0F, 0.5F, 1.0F);
+    expectColour(loaded.chartMemory, 0.0F, 1.0F, 0.25F, 1.0F);
+}
+
 TEST(ThemeLoaderTest, LoadThemeFromString_InvalidTomlReturnsNullopt)
 {
     EXPECT_FALSE(ThemeLoader::loadThemeFromString("[meta\nname = \"Broken\"\n").has_value());

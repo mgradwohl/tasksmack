@@ -106,6 +106,41 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
 namespace
 {
 
+/// One [r, g, b(, a)] component, read as a double so nothing narrows before it is checked (#2318).
+/// nullopt for a component that is not a number, or is NaN or infinite: TOML accepts nan and inf,
+/// and ImGui's float-to-byte colour conversion is undefined for them. A finite value outside
+/// [0, 1] is clamped into it (which also keeps it in float range).
+[[nodiscard]] auto parseColorComponent(const toml::node* node, std::size_t index) -> std::optional<float>
+{
+    const std::optional<double> value = (node != nullptr) ? node->value<double>() : std::nullopt;
+    if (!value.has_value() || !std::isfinite(*value))
+    {
+        spdlog::warn("Invalid color component {} (expected a finite number)", index);
+        return std::nullopt;
+    }
+    if (*value < 0.0 || *value > 1.0)
+    {
+        spdlog::warn("Color component {} = {} is outside [0, 1]; clamped", index, *value);
+    }
+    return static_cast<float>(std::clamp(*value, 0.0, 1.0));
+}
+
+/// Parse an [r, g, b] or [r, g, b, a] array (the caller has checked it has at least three
+/// elements; alpha defaults to 1). A component that is not a finite number makes the whole colour
+/// error magenta, as an invalid hex string does (#2318).
+[[nodiscard]] auto parseColorArray(const toml::array& arr) -> ImVec4
+{
+    const std::optional<float> r = parseColorComponent(arr.get(0), 0);
+    const std::optional<float> g = parseColorComponent(arr.get(1), 1);
+    const std::optional<float> b = parseColorComponent(arr.get(2), 2);
+    const std::optional<float> a = (arr.size() >= 4) ? parseColorComponent(arr.get(3), 3) : std::optional<float>{1.0F};
+    if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
+    {
+        return errorColor();
+    }
+    return {*r, *g, *b, *a};
+}
+
 /// Parse a color from a TOML node (hex string or [r,g,b,a] array)
 auto parseColorNode(const toml::node& node) -> ImVec4
 {
@@ -125,11 +160,7 @@ auto parseColorNode(const toml::node& node) -> ImVec4
         const auto* arr = node.as_array();
         if (arr && arr->size() >= 3)
         {
-            const float r = arr->get(0)->value_or(0.0F);
-            const float g = arr->get(1)->value_or(0.0F);
-            const float b = arr->get(2)->value_or(0.0F);
-            const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-            return {r, g, b, a};
+            return parseColorArray(*arr);
         }
     }
 
@@ -157,11 +188,7 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
         {
             if (arr->size() >= 3)
             {
-                const float r = arr->get(0)->value_or(0.0F);
-                const float g = arr->get(1)->value_or(0.0F);
-                const float b = arr->get(2)->value_or(0.0F);
-                const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-                return {r, g, b, a};
+                return parseColorArray(*arr);
             }
         }
     }
