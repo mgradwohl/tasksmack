@@ -65,6 +65,64 @@ inline bool g_ChartAntiAliasingEnabled = true;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline int g_PendingEaseRequestFrame = -1;
 
+/// The series of the chart being copied, while it draws (HistoryChart::m_Csv); defined further down.
+struct CsvCapture;
+
+// "Copy data as CSV" (HistoryChart): UI thread only. Named-namespace inline: one instance program-wide.
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
+inline CsvCapture* g_CsvCapture = nullptr; // Non-null only inside the chart being copied
+inline ImGuiID g_CsvRequestPlotId = 0;     // The chart whose menu asked for a copy; 0: none pending
+inline int g_CsvRequestFrame = -1;         // The frame it asked in
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+// The frame-keyed caches' generation (#2163): see frameCacheGeneration().
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
+inline std::uint64_t g_FrameCacheGeneration = 0;
+inline ImGuiContext* g_FrameCacheContext = nullptr; // The context the caches hold state for
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// Starts a new generation of the frame-keyed caches: each clears what it holds the next time it is
+/// used. The pending ease and copy requests, kept by frame number, go now.
+inline void advanceFrameCacheGeneration() noexcept
+{
+    ++g_FrameCacheGeneration;
+    g_PendingEaseRequestFrame = -1;
+    g_CsvRequestPlotId = 0;
+    g_CsvRequestFrame = -1;
+}
+
+/// The generation the frame-keyed caches' state belongs to (#2163). Their state is keyed on
+/// ImGui::GetFrameCount(), which starts again in each new ImGui context: a test fixture's own context,
+/// or UILayer's after a re-attach. A frame number left from the last context could then match, so a
+/// chart eased from another context's bound, or "now" was another test's. So the first use in a context
+/// the caches haven't seen starts a new generation, and a shutdown hook on that context starts another
+/// when it is destroyed, so a new context at the same address isn't taken for it. Each cache keeps the
+/// generation it filled under and clears itself when this has moved on.
+[[nodiscard]] inline std::uint64_t frameCacheGeneration()
+{
+    ImGuiContext* const context = ImGui::GetCurrentContext();
+    if (context != g_FrameCacheContext)
+    {
+        advanceFrameCacheGeneration();
+        g_FrameCacheContext = context;
+        if (context != nullptr)
+        {
+            ImGuiContextHook hook{};
+            hook.Type = ImGuiContextHookType_Shutdown;
+            hook.Callback = [](ImGuiContext* destroyed, ImGuiContextHook* /*hook*/)
+            {
+                if (destroyed == g_FrameCacheContext)
+                {
+                    g_FrameCacheContext = nullptr;
+                    advanceFrameCacheGeneration();
+                }
+            };
+            ImGui::AddContextHook(context, &hook);
+        }
+    }
+    return g_FrameCacheGeneration;
+}
+
 // Frame-keyed caches (#1181)
 // --------------------------
 // historyFrameNowSeconds(), frameTimeAxis() (its TimeAxisPool), plotLineWithFill() (its drawX/drawY),
@@ -75,8 +133,9 @@ inline int g_PendingEaseRequestFrame = -1;
 //     ImGui::Render()), on the UI thread -- never from onUpdate(), which runs outside the frame, or
 //     from another thread. Outside a frame the frame count is the previous frame's: "now" would be
 //     stale and the time-axis buffers would carry on that frame's hand-out cycle.
-//   - They are process-wide, not per ImGui context: there is one context, and a second one would
-//     share (and confuse) their per-frame state.
+//   - They are process-wide, but follow the current ImGui context: the first use in a new one, and
+//     the destruction of the one they served, clears them (frameCacheGeneration(), #2163). Two
+//     contexts used by turns would keep clearing each other's state; the app has one.
 //   - Never store what they return across frames. A span from frameTimeAxis() is valid only until
 //     its buffer is handed out again in a later frame (TimeAxisPool); keep the timestamps and
 //     rebuild the axis each frame instead.
@@ -1080,10 +1139,13 @@ class ReducedPointsCache
 {
     Detail::assertWithinImGuiFrame();
     static int cachedFrame = -1;
+    static std::uint64_t cachedGeneration = 0;
     static double cachedNow = 0.0;
-    if (const int frame = ImGui::GetFrameCount(); frame != cachedFrame)
+    const std::uint64_t generation = Detail::frameCacheGeneration();
+    if (const int frame = ImGui::GetFrameCount(); frame != cachedFrame || generation != cachedGeneration)
     {
         cachedFrame = frame;
+        cachedGeneration = generation;
         cachedNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
     return cachedNow;
@@ -1277,9 +1339,16 @@ inline ChartDataScope g_ActiveChartDataScope;
     };
     static std::unordered_map<std::uint64_t, Entry> entries;
     static int lastPruneFrame = -1;
+    static std::uint64_t entriesGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
     constexpr int STALE_FRAMES = 600;
 
+    if (const std::uint64_t generation = Detail::frameCacheGeneration(); generation != entriesGeneration)
+    {
+        entries.clear(); // filled in another ImGui context (#2163)
+        lastPruneFrame = -1;
+        entriesGeneration = generation;
+    }
     const int frame = ImGui::GetFrameCount();
     if (entries.size() > PRUNE_ABOVE && frame != lastPruneFrame)
     {
@@ -1318,12 +1387,8 @@ struct CsvCapture
     std::vector<std::string> labels; // Each series' full ImGui label, "##" part included: one per item
 };
 
-// UI thread only. Named-namespace inline: one instance program-wide.
-// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
-inline CsvCapture* g_CsvCapture = nullptr; // Non-null only inside the chart being copied
-inline ImGuiID g_CsvRequestPlotId = 0;     // The chart whose menu asked for a copy; 0: none pending
-inline int g_CsvRequestFrame = -1;         // The frame it asked in
-// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+// g_CsvCapture, g_CsvRequestPlotId and g_CsvRequestFrame are declared at the top of this header, so a
+// new ImGui context can clear them with the frame-keyed caches (frameCacheGeneration(), #2163).
 
 /// Frames a copy request waits for its chart to draw again before it is dropped: the next frame
 /// normally, a little more if a frame is skipped. A chart that has gone (its tab closed) never
@@ -2639,9 +2704,16 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
     // entries not drawn for a while are dropped once there are many (per-disk charts come and go).
     static std::unordered_map<ImGuiID, EasedBound> state;
     static int lastPruneFrame = -1;
+    static std::uint64_t stateGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
     constexpr int STALE_FRAMES = 600;
 
+    if (const std::uint64_t generation = Detail::frameCacheGeneration(); generation != stateGeneration)
+    {
+        state.clear(); // eased in another ImGui context (#2163)
+        lastPruneFrame = -1;
+        stateGeneration = generation;
+    }
     const int frame = ImGui::GetFrameCount();
     // At most once per frame, not once per chart: a full scan per chart would make axis setup
     // quadratic in the number of charts exactly when there are many.
@@ -3510,9 +3582,16 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
     // UI thread only. Bounded like easedChartUpperBound(): stale bars are dropped once there are many.
     static std::unordered_map<ImGuiID, LastDrawn> state;
     static int lastPruneFrame = -1;
+    static std::uint64_t stateGeneration = 0;
     constexpr std::size_t PRUNE_ABOVE = 256;
     constexpr int STALE_FRAMES = 600;
 
+    if (const std::uint64_t generation = frameCacheGeneration(); generation != stateGeneration)
+    {
+        state.clear(); // drawn in another ImGui context (#2163)
+        lastPruneFrame = -1;
+        stateGeneration = generation;
+    }
     const int frame = ImGui::GetFrameCount();
     if (state.size() > PRUNE_ABOVE && frame != lastPruneFrame)
     {

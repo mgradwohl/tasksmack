@@ -181,6 +181,9 @@ void UILayer::onDetach()
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
+    // The fonts go with the context's atlas: Theme must not keep pointers to them, and caches keyed on
+    // (font, fontGeneration()) must not take a new font at a reused address for an old one (#2163).
+    Theme::get().clearFontRegistrations();
     ImGui::DestroyContext();
 }
 

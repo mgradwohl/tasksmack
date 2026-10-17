@@ -1075,6 +1075,7 @@ struct UiLayerObserved
     bool userThemeLoaded = false;
     int drawCalls = 0;
     int frames = 0;
+    std::uint64_t fontGeneration = 0; ///< Theme's, while the layer was attached
 };
 
 /// Pushed after UILayer: a display-scale event (noted, then re-measured at the next frame boundary;
@@ -1107,6 +1108,7 @@ class UiLayerDriverLayer : public Core::Layer
             m_Observed.userThemeLoaded =
                 std::ranges::any_of(themes, [](const UI::DiscoveredTheme& theme) { return theme.id == "app-tests-user-theme"; });
             m_Observed.drawCalls = UI::RenderMetrics::get().drawCalls();
+            m_Observed.fontGeneration = UI::Theme::get().fontGeneration();
             Core::Application::get().stop();
         }
     }
@@ -1157,6 +1159,10 @@ TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
 
     EXPECT_TRUE(observed.userThemeLoaded);
     EXPECT_GT(observed.drawCalls, 0); // counted after each Render(), while the overlay's metrics are on
+    // #2163: the fonts went with the ImGui context in onDetach(), so Theme keeps none of them, and a
+    // cache keyed on (font, fontGeneration()) can't take a new font at a reused address for an old one.
+    EXPECT_EQ(UI::Theme::get().regularFont(), nullptr);
+    EXPECT_GT(UI::Theme::get().fontGeneration(), observed.fontGeneration);
 }
 
 /// What the shell-shortcuts driver saw.

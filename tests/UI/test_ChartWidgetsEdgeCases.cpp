@@ -10,9 +10,11 @@
 #include <implot.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <span>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -203,6 +205,81 @@ TEST_F(HistoryChartEdgeTest, RenderMetricsRecordsAHistoryChartWhenOn)
         recorded = recorded || (sample.id == "##MeasuredChart" && sample.vertices > 0);
     }
     EXPECT_TRUE(recorded);
+}
+
+// #2163: the frame-keyed caches are keyed on ImGui::GetFrameCount(), which starts again in every new
+// ImGui context (each UI test fixture makes its own). One context of its own per step here.
+class HeadlessImGui
+{
+  public:
+    HeadlessImGui() : m_ImGui(ImGui::CreateContext()), m_ImPlot(ImPlot::CreateContext())
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.LogFilename = nullptr;
+        io.DisplaySize = ImVec2(800.0F, 600.0F);
+        io.DeltaTime = 1.0F / 60.0F;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.Fonts->AddFontDefault();
+    }
+    ~HeadlessImGui()
+    {
+        ImPlot::DestroyContext(m_ImPlot);
+        ImGui::DestroyContext(m_ImGui);
+    }
+    HeadlessImGui(const HeadlessImGui&) = delete;
+    HeadlessImGui& operator=(const HeadlessImGui&) = delete;
+    HeadlessImGui(HeadlessImGui&&) = delete;
+    HeadlessImGui& operator=(HeadlessImGui&&) = delete;
+
+    /// One frame running @p body.
+    template<typename Body> static void frame(const Body& body)
+    {
+        ImGui::NewFrame();
+        body();
+        ImGui::Render();
+    }
+
+  private:
+    ImGuiContext* m_ImGui;
+    ImPlotContext* m_ImPlot;
+};
+
+TEST(FrameKeyedCacheTest, AChartInANewContextStartsAtItsTargetNotAtAnEarlierContextsBound)
+{
+    constexpr ImGuiID CHART = 0xFEED0001U;
+    {
+        const HeadlessImGui first;
+        HeadlessImGui::frame([] { static_cast<void>(easedChartUpperBound(CHART, 100.0)); }); // frame 1
+        HeadlessImGui::frame([] { static_cast<void>(easedChartUpperBound(CHART, 100.0)); }); // frame 2
+        double easing = 0.0;
+        HeadlessImGui::frame([&easing] { easing = easedChartUpperBound(CHART, 200.0); }); // frame 3
+        ASSERT_LT(easing, 200.0) << "mid-ease when its context goes";
+    }
+    const HeadlessImGui second;
+    for (int i = 0; i < 3; ++i)
+    {
+        HeadlessImGui::frame([] {}); // frames 1 to 3: the next is the frame after the first context's last
+    }
+    double bound = 0.0;
+    HeadlessImGui::frame([&bound] { bound = easedChartUpperBound(CHART, 50.0); }); // frame 4
+    EXPECT_DOUBLE_EQ(bound, 50.0) << "a chart not drawn in this context starts at its target";
+}
+
+TEST(FrameKeyedCacheTest, ANewContextsFirstFrameHasItsOwnNow)
+{
+    double first = 0.0;
+    {
+        const HeadlessImGui context;
+        HeadlessImGui::frame([&first] { first = historyFrameNowSeconds(); }); // frame 1
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    double second = 0.0;
+    {
+        const HeadlessImGui context;
+        HeadlessImGui::frame([&second] { second = historyFrameNowSeconds(); }); // frame 1 again
+    }
+    EXPECT_GT(second, first) << "not the earlier context's frame-1 time";
 }
 
 } // namespace
