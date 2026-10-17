@@ -261,5 +261,31 @@ TEST_F(ProcessModulesViewRenderTest, PopulatedShowsTheCountColumnsAndRows)
     EXPECT_TRUE(renderAndCapture(view, true).contains("No modules match the filter"));
 }
 
+// #2309: a refused read offers "Authenticate to read", which reads as the administrator.
+TEST(ProcessModulesViewTest, ARefusedReadOffersAuthenticateToRead)
+{
+    ProcessModulesView view;
+    TestMocks::MockProcessModulesReader reader;
+    reader.setResult({.status = Platform::ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    static_cast<void>(view.update(&reader, TARGET, 0.0F)); // takes in what the reader can do
+    EXPECT_FALSE(view.offersAuthenticateToRead());         // the mock can't read as an administrator yet
+
+    reader.setAuthorizedResult(
+        {.status = Platform::ModulesReadStatus::Ok,
+         .modules = {{.path = "/usr/lib/libc.so.6", .baseAddress = 0x7f00, .sizeBytes = 4096, .version = std::nullopt, .deleted = false}},
+         .detail = {}});
+    static_cast<void>(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::ModulesReadStatus::Ok);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
+}
+
 } // namespace
 } // namespace App

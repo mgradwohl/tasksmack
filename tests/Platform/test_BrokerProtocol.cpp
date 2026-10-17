@@ -9,12 +9,15 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -210,6 +213,62 @@ TEST(BrokerProtocolTest, AnEnvironmentReplyOutOfRangeIsRefused)
         encodeResponse(1, Response{EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}}});
     count[4 + HEADER_BYTES + 4] = 0x7F; // claims far more variables than the protocol allows, and than follow
     EXPECT_FALSE(decodeResponse(count).has_value());
+}
+
+TEST(BrokerProtocolTest, ModulesAndOpenFilesRoundTrip)
+{
+    EXPECT_EQ(roundTrip(Request{ModulesRequest{.target = TARGET}}), Request{ModulesRequest{.target = TARGET}});
+    EXPECT_EQ(roundTrip(Request{OpenFilesRequest{.target = TARGET}}), Request{OpenFilesRequest{.target = TARGET}});
+
+    ModulesReadResult modules{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    modules.modules.push_back(
+        {.path = "/usr/lib/libc.so.6", .baseAddress = 0x7f0000, .sizeBytes = 0x1000, .version = std::nullopt, .deleted = true});
+    modules.modules.push_back({.path = "C:\\x.dll",
+                               .baseAddress = 1,
+                               .sizeBytes = 2,
+                               .version = ModuleVersion{.major = 10, .minor = 0, .build = 19041, .revision = 1},
+                               .deleted = false});
+    const Response modulesReply = ModulesReply{.result = modules};
+    EXPECT_EQ(roundTrip(modulesReply), modulesReply);
+
+    OpenFilesReadResult files;
+    files.status = OpenFilesReadStatus::Ok;
+    files.namesIncomplete = true;
+    files.files.push_back({.descriptor = 3, .kind = OpenFileKind::Socket, .path = "socket:[1234]", .flags = 02, .deleted = false});
+    files.files.push_back(
+        {.descriptor = 4, .kind = OpenFileKind::File, .path = "/tmp/x (deleted)", .flags = std::nullopt, .deleted = true});
+    const Response filesReply = OpenFilesReply{.result = files};
+    EXPECT_EQ(roundTrip(filesReply), filesReply);
+}
+
+TEST(BrokerProtocolTest, OpenFilesPastOneFrameAreCutAndSaySo)
+{
+    OpenFilesReadResult files;
+    files.status = OpenFilesReadStatus::Ok;
+    const std::string longPath(MAX_STRING_BYTES, 'p'); // 64 KiB each: 8 MiB holds about 127
+    for (std::uint64_t fd = 0; fd < 200; ++fd)
+    {
+        files.files.push_back({.descriptor = fd, .kind = OpenFileKind::File, .path = longPath, .flags = std::nullopt, .deleted = false});
+    }
+    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{OpenFilesReply{.result = files}});
+    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
+    const auto decoded = decodeResponse(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    const auto& result = std::get<OpenFilesReply>(decoded->message).result;
+    EXPECT_TRUE(result.truncated);
+    EXPECT_LT(result.files.size(), 200U);
+    EXPECT_GT(result.files.size(), 100U);
+}
+
+TEST(BrokerProtocolTest, AnOpenFileOfNoKnownKindIsRefused)
+{
+    OpenFilesReadResult files;
+    files.status = OpenFilesReadStatus::Ok;
+    files.files.push_back({.descriptor = 3, .kind = OpenFileKind::Other, .path = "", .flags = std::nullopt, .deleted = false});
+    std::vector<std::uint8_t> bytes = encodeResponse(1, Response{OpenFilesReply{.result = files}});
+    // status, detail (4), three flags, count (4), descriptor (8), then the kind
+    bytes[4 + HEADER_BYTES + 1 + 4 + 3 + 4 + 8] = 0xEE;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
 } // namespace

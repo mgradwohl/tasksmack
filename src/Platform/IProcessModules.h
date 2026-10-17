@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,21 @@ class IProcessModulesReader
     /// runs it on a worker. The target's start time is checked against the process holding the PID,
     /// so a reused PID reports ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual ModulesReadResult readModules(const ProcessTarget& target) = 0;
+
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
+    /// pkexec-started helper, #2309). The UI then offers "Authenticate to read" on PermissionDenied.
+    [[nodiscard]] virtual bool canReadAuthorized() const
+    {
+        return false;
+    }
+
+    /// Reads @p target as an administrator, asking for the password first if need be (#2309). Blocks for
+    /// as long as the prompt is up, so it runs on a worker. The default reads as readModules() does.
+    [[nodiscard]] virtual ModulesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return readModules(target);
+    }
 };
 
 /// The reader for a run that cannot list another process's modules (synthetic scenarios).

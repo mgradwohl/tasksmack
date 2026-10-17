@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,21 @@ class IProcessOpenFilesReader
     /// Read @p target's open files now. Synchronous and possibly slow: the view runs it on a worker.
     /// A reused PID reports ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual OpenFilesReadResult readOpenFiles(const ProcessTarget& target) = 0;
+
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
+    /// pkexec-started helper, #2309). The UI then offers "Authenticate to read" on PermissionDenied.
+    [[nodiscard]] virtual bool canReadAuthorized() const
+    {
+        return false;
+    }
+
+    /// Reads @p target as an administrator, asking for the password first if need be (#2309). Blocks for
+    /// as long as the prompt is up, so it runs on a worker. The default reads as readOpenFiles() does.
+    [[nodiscard]] virtual OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return readOpenFiles(target);
+    }
 
     /// How many handles the read in flight has typed so far, for a progress line; 0 when the reader
     /// does not count (Linux). The one call safe from another thread while readOpenFiles() runs.

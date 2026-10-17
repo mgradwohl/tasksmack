@@ -24,6 +24,8 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -46,6 +48,8 @@ inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first.
 inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
+/// The most modules a ModulesReply carries; a read with more keeps the first.
+inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
 /// The frame header after the length: version, kind, request id.
 inline constexpr std::size_t HEADER_BYTES = 2 + 2 + 4;
 
@@ -58,8 +62,12 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetIoPriority = 18,
     SetAffinity = 19,
     ReadEnvironment = 32,   ///< Another user's process's environment, for Process Details (#2309)
+    ReadModules = 33,       ///< Its loaded modules (#2309)
+    ReadOpenFiles = 34,     ///< Its open files (#2309)
     ActionResult = 48,      ///< The answer to a process action
     EnvironmentResult = 49, ///< The answer to ReadEnvironment
+    ModulesResult = 50,     ///< The answer to ReadModules
+    OpenFilesResult = 51,   ///< The answer to ReadOpenFiles
     Error = 63,             ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -144,6 +152,54 @@ struct EnvironmentReply
     }
 };
 
+/// List a process's loaded modules (#2309), as the helper reads them as root.
+struct ModulesRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const ModulesRequest&, const ModulesRequest&) = default;
+};
+
+/// The answer to ModulesRequest: the read's result, as IProcessModulesReader returns it.
+struct ModulesReply
+{
+    ModulesReadResult result;
+
+    friend bool operator==(const ModulesReply& left, const ModulesReply& right)
+    {
+        const auto same = [](const ProcessModule& a, const ProcessModule& b)
+        {
+            return a.path == b.path && a.baseAddress == b.baseAddress && a.sizeBytes == b.sizeBytes && a.version == b.version &&
+                   a.deleted == b.deleted;
+        };
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               std::ranges::equal(left.result.modules, right.result.modules, same);
+    }
+};
+
+/// List a process's open files (#2309), as the helper reads them as root.
+struct OpenFilesRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const OpenFilesRequest&, const OpenFilesRequest&) = default;
+};
+
+/// The answer to OpenFilesRequest: the read's result, as IProcessOpenFilesReader returns it.
+struct OpenFilesReply
+{
+    OpenFilesReadResult result;
+
+    friend bool operator==(const OpenFilesReply& left, const OpenFilesReply& right)
+    {
+        const auto same = [](const OpenFile& a, const OpenFile& b)
+        {
+            return a.descriptor == b.descriptor && a.kind == b.kind && a.path == b.path && a.flags == b.flags && a.deleted == b.deleted;
+        };
+        return left.result.status == right.result.status && left.result.detail == right.result.detail &&
+               left.result.truncated == right.result.truncated && left.result.namesIncomplete == right.result.namesIncomplete &&
+               left.result.hexDescriptors == right.result.hexDescriptors && std::ranges::equal(left.result.files, right.result.files, same);
+    }
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -168,8 +224,15 @@ struct ErrorReply
     friend bool operator==(const ErrorReply&, const ErrorReply&) = default;
 };
 
-using Request = std::variant<Hello, SignalRequest, PriorityRequest, IoPriorityRequest, AffinityRequest, EnvironmentRequest>;
-using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply>;
+using Request = std::variant<Hello,
+                             SignalRequest,
+                             PriorityRequest,
+                             IoPriorityRequest,
+                             AffinityRequest,
+                             EnvironmentRequest,
+                             ModulesRequest,
+                             OpenFilesRequest>;
+using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply, ModulesReply, OpenFilesReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -223,6 +286,12 @@ class Writer
     {
         i32(value.pid);
         u64(value.startTimeTicks);
+    }
+
+    /// How many payload bytes have been written so far.
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Bytes.size();
     }
 
     /// The frame: length, version, kind, request id, then what was written.
@@ -410,6 +479,16 @@ template<typename Message>
         kind = MessageKind::ReadEnvironment;
         writer.target(environment->target);
     }
+    else if (const auto* modules = std::get_if<ModulesRequest>(&request))
+    {
+        kind = MessageKind::ReadModules;
+        writer.target(modules->target);
+    }
+    else if (const auto* files = std::get_if<OpenFilesRequest>(&request))
+    {
+        kind = MessageKind::ReadOpenFiles;
+        writer.target(files->target);
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -500,9 +579,21 @@ template<typename Message>
         const ProcessTarget target = reader.target();
         return Detail::finish<Request>(reader, frame->requestId, EnvironmentRequest{.target = target});
     }
+    case MessageKind::ReadModules:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, frame->requestId, ModulesRequest{.target = target});
+    }
+    case MessageKind::ReadOpenFiles:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, frame->requestId, OpenFilesRequest{.target = target});
+    }
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
+    case MessageKind::ModulesResult:
+    case MessageKind::OpenFilesResult:
     case MessageKind::Error:
         break;
     }
@@ -541,6 +632,67 @@ template<typename Message>
         {
             writer.text(environment->result.variables[i].name);
             writer.text(environment->result.variables[i].value);
+        }
+    }
+    else if (const auto* modules = std::get_if<ModulesReply>(&response))
+    {
+        kind = MessageKind::ModulesResult;
+        writer.u8(static_cast<std::uint8_t>(modules->result.status));
+        writer.text(modules->result.detail);
+        const std::size_t count = std::min(modules->result.modules.size(), MAX_MODULES);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const ProcessModule& module = modules->result.modules[i];
+            writer.text(module.path);
+            writer.u64(module.baseAddress);
+            writer.u64(module.sizeBytes);
+            writer.u8(module.version.has_value() ? 1 : 0);
+            if (module.version.has_value())
+            {
+                writer.u16(module.version->major);
+                writer.u16(module.version->minor);
+                writer.u16(module.version->build);
+                writer.u16(module.version->revision);
+            }
+            writer.u8(module.deleted ? 1 : 0);
+        }
+    }
+    else if (const auto* files = std::get_if<OpenFilesReply>(&response))
+    {
+        kind = MessageKind::OpenFilesResult;
+        // As many files as fit in one frame: thousands of long paths could pass MAX_MESSAGE_BYTES, so the
+        // list stops short of it and says it was cut, as a read past MAX_OPEN_FILES does.
+        const std::size_t limit = std::min(files->result.files.size(), MAX_OPEN_FILES);
+        std::size_t count = 0;
+        std::size_t bytes = 0;
+        constexpr std::size_t FIXED_BYTES = 8 + 1 + 4 + 1 + 4 + 1; // descriptor, kind, path size, flag, flags, deleted
+        constexpr std::size_t ROOM = MAX_MESSAGE_BYTES - (4 + HEADER_BYTES) - (1 + 4 + MAX_STRING_BYTES + 3 + 4);
+        while (count < limit)
+        {
+            const std::size_t entry = FIXED_BYTES + std::min(files->result.files[count].path.size(), MAX_STRING_BYTES);
+            if (bytes + entry > ROOM)
+            {
+                break;
+            }
+            bytes += entry;
+            ++count;
+        }
+        writer.u8(static_cast<std::uint8_t>(files->result.status));
+        writer.text(files->result.detail);
+        writer.u8((files->result.truncated || count < files->result.files.size()) ? 1 : 0);
+        writer.u8(files->result.namesIncomplete ? 1 : 0);
+        writer.u8(files->result.hexDescriptors ? 1 : 0);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const OpenFile& file = files->result.files[i];
+            writer.u64(file.descriptor);
+            writer.u8(static_cast<std::uint8_t>(file.kind));
+            writer.text(file.path);
+            writer.u8(file.flags.has_value() ? 1 : 0);
+            writer.u32(file.flags.value_or(0));
+            writer.u8(file.deleted ? 1 : 0);
         }
     }
     return writer.frame(kind, requestId);
@@ -599,12 +751,98 @@ template<typename Message>
         }
         return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
     }
+    case MessageKind::ModulesResult:
+    {
+        ModulesReply reply;
+        const std::uint8_t value = reader.u8();
+        if (value <= static_cast<std::uint8_t>(ModulesReadStatus::Failed))
+        {
+            reply.result.status = static_cast<ModulesReadStatus>(value);
+        }
+        else
+        {
+            reader.fail();
+        }
+        reply.result.detail = reader.text();
+        const std::uint32_t count = reader.u32();
+        if (count > MAX_MODULES)
+        {
+            reader.fail();
+        }
+        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+        {
+            ProcessModule module;
+            module.path = reader.text();
+            module.baseAddress = reader.u64();
+            module.sizeBytes = reader.u64();
+            if (reader.flag())
+            {
+                ModuleVersion version;
+                version.major = reader.u16();
+                version.minor = reader.u16();
+                version.build = reader.u16();
+                version.revision = reader.u16();
+                module.version = version;
+            }
+            module.deleted = reader.flag();
+            reply.result.modules.push_back(std::move(module));
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
+    case MessageKind::OpenFilesResult:
+    {
+        OpenFilesReply reply;
+        const std::uint8_t value = reader.u8();
+        if (value <= static_cast<std::uint8_t>(OpenFilesReadStatus::Failed))
+        {
+            reply.result.status = static_cast<OpenFilesReadStatus>(value);
+        }
+        else
+        {
+            reader.fail();
+        }
+        reply.result.detail = reader.text();
+        reply.result.truncated = reader.flag();
+        reply.result.namesIncomplete = reader.flag();
+        reply.result.hexDescriptors = reader.flag();
+        const std::uint32_t count = reader.u32();
+        if (count > MAX_OPEN_FILES)
+        {
+            reader.fail();
+        }
+        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+        {
+            OpenFile file;
+            file.descriptor = reader.u64();
+            const std::uint8_t kind = reader.u8();
+            if (kind <= static_cast<std::uint8_t>(OpenFileKind::Other))
+            {
+                file.kind = static_cast<OpenFileKind>(kind);
+            }
+            else
+            {
+                reader.fail();
+            }
+            file.path = reader.text();
+            const bool hasFlags = reader.flag();
+            const std::uint32_t flags = reader.u32();
+            if (hasFlags)
+            {
+                file.flags = flags;
+            }
+            file.deleted = reader.flag();
+            reply.result.files.push_back(std::move(file));
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
     case MessageKind::SetIoPriority:
     case MessageKind::SetAffinity:
     case MessageKind::ReadEnvironment:
+    case MessageKind::ReadModules:
+    case MessageKind::ReadOpenFiles:
         break;
     }
     return std::unexpected("Not a response");

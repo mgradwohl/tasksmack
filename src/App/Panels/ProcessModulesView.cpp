@@ -58,6 +58,15 @@ void ProcessModulesView::render(bool hasModules)
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
+        // Another user's process: an administrator can read it (#2309). The lock and the words.
+        if (offersAuthenticateToRead())
+        {
+            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate to read"))
+            {
+                requestAuthorizedRead();
+            }
+            ImGui::SetItemTooltip("Asks for an administrator's password, then reads it as the administrator");
+        }
         return;
     }
     if (m_Rows.empty())

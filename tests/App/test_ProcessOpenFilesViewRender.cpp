@@ -380,5 +380,29 @@ TEST_F(ProcessOpenFilesViewRenderTest, PopulatedWindowsShowsHexHandlesAndNotes)
     EXPECT_FALSE(text.contains("MODE"));
 }
 
+// #2309: a refused scan offers "Authenticate to read", which scans as the administrator.
+TEST(ProcessOpenFilesViewTest, ARefusedScanOffersAuthenticateToRead)
+{
+    ProcessOpenFilesView view;
+    TestMocks::MockProcessOpenFilesReader reader;
+    Platform::OpenFilesReadResult refused;
+    refused.status = Platform::OpenFilesReadStatus::PermissionDenied;
+    reader.setResult(refused);
+    reader.setAuthorizedResult(linuxFiles());
+    view.requestScan();
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    static_cast<void>(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::OpenFilesReadStatus::Ok);
+    EXPECT_EQ(view.rows().size(), 3U);
+}
+
 } // namespace
 } // namespace App

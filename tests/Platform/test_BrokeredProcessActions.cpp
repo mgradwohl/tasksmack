@@ -9,6 +9,8 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
 #include <gtest/gtest.h>
 
@@ -230,6 +232,51 @@ TEST(BrokeredEnvironmentReaderTest, ADismissedPromptLeavesTheRefusal)
     f.broker->setConnectFailure("the password prompt was dismissed");
     EXPECT_EQ(f.reader->readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::PermissionDenied);
     EXPECT_TRUE(f.broker->requests().empty());
+}
+
+// --- BrokeredModulesReader and BrokeredOpenFilesReader (#2309) ----------------------------------------
+
+TEST(BrokeredModulesReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        { return Broker::Response{Broker::ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessModulesReader>();
+    owned->setResult({.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    BrokeredModulesReader reader(std::move(owned), broker);
+    EXPECT_EQ(reader.readModules(TARGET).status, ModulesReadStatus::Ok);
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ModulesRequest{.target = TARGET}}));
+
+    broker->setConnected(false);
+    EXPECT_EQ(reader.readModules(TARGET).status, ModulesReadStatus::PermissionDenied);
+    EXPECT_TRUE(reader.canReadAuthorized());
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::Ok);
+    EXPECT_EQ(broker->connectCount(), 1);
+}
+
+TEST(BrokeredOpenFilesReaderTest, ARefusedReadGoesThroughARunningHelperAndADismissedPromptLeavesTheRefusal)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            OpenFilesReadResult ok;
+            ok.status = OpenFilesReadStatus::Ok;
+            return Broker::Response{Broker::OpenFilesReply{.result = ok}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    OpenFilesReadResult refused;
+    refused.status = OpenFilesReadStatus::PermissionDenied;
+    owned->setResult(refused);
+    BrokeredOpenFilesReader reader(std::move(owned), broker);
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Ok);
+
+    broker->setConnected(false);
+    broker->setConnectFailure("the password prompt was dismissed");
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, OpenFilesReadStatus::PermissionDenied);
+    EXPECT_EQ(broker->requests().size(), 1U); // only the first
 }
 
 } // namespace

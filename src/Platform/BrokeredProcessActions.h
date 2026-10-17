@@ -21,7 +21,10 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -98,8 +101,49 @@ class BrokeredEnvironmentReader final : public IProcessEnvironmentReader
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
+/// Process Details' modules list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
+class BrokeredModulesReader final : public IProcessModulesReader
+{
+  public:
+    BrokeredModulesReader(std::unique_ptr<IProcessModulesReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasModules() const override;
+    [[nodiscard]] ModulesReadResult readModules(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] ModulesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] ModulesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessModulesReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
+/// Process Details' open files list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
+class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
+{
+  public:
+    BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasOpenFiles() const override;
+    [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override;
+    [[nodiscard]] std::size_t handlesScanned() const noexcept override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    [[nodiscard]] OpenFilesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessOpenFilesReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
                                                                               std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::unique_ptr<IProcessModulesReader> withPrivilegedBroker(std::unique_ptr<IProcessModulesReader> reader,
+                                                                          std::shared_ptr<IPrivilegedBroker> broker);
+[[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader> reader,
+                                                                            std::shared_ptr<IPrivilegedBroker> broker);
 
 } // namespace Platform

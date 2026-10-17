@@ -1240,7 +1240,31 @@ class MockProcessModulesReader : public Platform::IProcessModulesReader
         return m_ReadCount;
     }
 
+    /// readAuthorized() (#2309): offered when set, returning @p result and counting its calls.
+    void setAuthorizedResult(Platform::ModulesReadResult result)
+    {
+        m_AuthorizedResult = std::move(result);
+        m_CanReadAuthorized = true;
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_CanReadAuthorized;
+    }
+    [[nodiscard]] Platform::ModulesReadResult readAuthorized(const Platform::ProcessTarget& /*target*/,
+                                                             const std::stop_token& /*stopToken*/) override
+    {
+        ++m_AuthorizedReadCount;
+        return m_AuthorizedResult;
+    }
+    [[nodiscard]] int authorizedReadCount() const
+    {
+        return m_AuthorizedReadCount;
+    }
+
   private:
+    bool m_CanReadAuthorized = false;
+    int m_AuthorizedReadCount = 0;
+    Platform::ModulesReadResult m_AuthorizedResult;
     Platform::ModulesReadResult m_Result{.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}};
     int m_ReadCount = 0;
 };
@@ -1300,7 +1324,31 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
         return m_ReadCount;
     }
 
+    /// readAuthorized() (#2309): offered when set, returning @p result and counting its calls.
+    void setAuthorizedResult(Platform::OpenFilesReadResult result)
+    {
+        m_AuthorizedResult = std::move(result);
+        m_CanReadAuthorized = true;
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_CanReadAuthorized;
+    }
+    [[nodiscard]] Platform::OpenFilesReadResult readAuthorized(const Platform::ProcessTarget& /*target*/,
+                                                               const std::stop_token& /*stopToken*/) override
+    {
+        ++m_AuthorizedReadCount;
+        return m_AuthorizedResult;
+    }
+    [[nodiscard]] int authorizedReadCount() const
+    {
+        return m_AuthorizedReadCount;
+    }
+
   private:
+    bool m_CanReadAuthorized = false;
+    int m_AuthorizedReadCount = 0;
+    Platform::OpenFilesReadResult m_AuthorizedResult;
     Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
 };

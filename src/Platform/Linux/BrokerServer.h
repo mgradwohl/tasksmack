@@ -8,6 +8,8 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
 #include <chrono>
 #include <cstdint>
@@ -18,9 +20,17 @@ namespace Platform::BrokerServer
 
 /// The answer to @p request through @p actions: a HelloReply to the handshake, an ActionResult to a
 /// process action. Never throws past it: an exception from @p actions is a failed ActionResult.
-/// An EnvironmentRequest is read through @p environment (#2309); without one it is an ErrorReply.
-[[nodiscard]] Broker::Response
-handleRequest(const Broker::Request& request, IProcessActions& actions, IProcessEnvironmentReader* environment = nullptr);
+/// The readers the helper answers Process Details' reads through (#2309); a read without its reader is
+/// an ErrorReply.
+struct Readers
+{
+    IProcessEnvironmentReader* environment = nullptr;
+    IProcessModulesReader* modules = nullptr;
+    IProcessOpenFilesReader* openFiles = nullptr;
+};
+
+/// A read request goes to its reader in @p readers.
+[[nodiscard]] Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers = {});
 
 /// How a session ended, for the helper's exit status and the tests.
 enum class SessionEnd : std::uint8_t
@@ -35,10 +45,7 @@ enum class SessionEnd : std::uint8_t
 /// Answers requests on @p fd until the client closes it, nothing arrives for @p idleTimeout, or
 /// @p stopToken is stopped. The first frame must be a Hello of this protocol version; until then
 /// nothing else is acted on. A frame that doesn't decode gets an ErrorReply, and the session goes on.
-[[nodiscard]] SessionEnd serve(int fd,
-                               IProcessActions& actions,
-                               std::chrono::milliseconds idleTimeout,
-                               const std::stop_token& stopToken,
-                               IProcessEnvironmentReader* environment = nullptr);
+[[nodiscard]] SessionEnd serve(
+    int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers = {});
 
 } // namespace Platform::BrokerServer

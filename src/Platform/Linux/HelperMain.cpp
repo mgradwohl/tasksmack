@@ -12,6 +12,8 @@
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
+#include "Platform/Linux/LinuxProcessModulesReader.h"
+#include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 
 #include <charconv>
 #include <chrono>
@@ -77,18 +79,29 @@ int main(int argc, char** argv)
         std::fputs("tasksmack-helper: stdin isn't a socket from the process that started this, as its user\n", stderr);
         return EXIT_UNTRUSTED_PEER;
     }
-    Platform::LinuxProcessActions actions;
-    Platform::LinuxProcessEnvironmentReader environment; // Process Details' Environment for another user's process (#2309)
-    const std::stop_source never;
-    switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), &environment))
+    try
     {
-    case Platform::BrokerServer::SessionEnd::ClientClosed:
-    case Platform::BrokerServer::SessionEnd::Idle:
-    case Platform::BrokerServer::SessionEnd::Stopped:
-        return EXIT_DONE;
-    case Platform::BrokerServer::SessionEnd::HandshakeFailed:
-    case Platform::BrokerServer::SessionEnd::Broken:
-        break;
+        Platform::LinuxProcessActions actions;
+        // Process Details' reads of another user's process (#2309).
+        Platform::LinuxProcessEnvironmentReader environment;
+        Platform::LinuxProcessModulesReader modules;
+        Platform::LinuxProcessOpenFilesReader openFiles;
+        const Platform::BrokerServer::Readers readers{.environment = &environment, .modules = &modules, .openFiles = &openFiles};
+        const std::stop_source never;
+        switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), readers))
+        {
+        case Platform::BrokerServer::SessionEnd::ClientClosed:
+        case Platform::BrokerServer::SessionEnd::Idle:
+        case Platform::BrokerServer::SessionEnd::Stopped:
+            return EXIT_DONE;
+        case Platform::BrokerServer::SessionEnd::HandshakeFailed:
+        case Platform::BrokerServer::SessionEnd::Broken:
+            break;
+        }
+    }
+    catch (...)
+    {
+        std::fputs("tasksmack-helper: failed\n", stderr); // an allocation failure or the like: TaskSmack sees the socket close
     }
     return EXIT_FAILED;
 }

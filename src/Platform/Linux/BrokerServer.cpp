@@ -4,12 +4,15 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
 #include <chrono>
 #include <cstdint>
 #include <exception>
 #include <stop_token>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace Platform::BrokerServer
@@ -50,26 +53,59 @@ namespace
 
 } // namespace
 
-Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, IProcessEnvironmentReader* environment)
+Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers)
 {
     if (const auto* hello = std::get_if<Broker::Hello>(&request))
     {
         return Broker::HelloReply{.version = Broker::PROTOCOL_VERSION, .accepted = hello->version == Broker::PROTOCOL_VERSION};
     }
+    // Process Details' reads (#2309): each reader checks the target's identity itself. The environment
+    // reader never logs a value (#179).
     if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request))
     {
-        if (environment == nullptr)
+        if (readers.environment == nullptr)
         {
             return Broker::ErrorReply{.message = "This helper doesn't read environments"};
         }
         try
         {
-            // The reader checks the target's identity and never logs a value (#179).
-            return Broker::EnvironmentReply{.result = environment->readEnvironment(read->target)};
+            return Broker::EnvironmentReply{.result = readers.environment->readEnvironment(read->target)};
         }
         catch (...)
         {
             return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
+        }
+    }
+    if (const auto* read = std::get_if<Broker::ModulesRequest>(&request))
+    {
+        if (readers.modules == nullptr)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't list modules"};
+        }
+        try
+        {
+            return Broker::ModulesReply{.result = readers.modules->readModules(read->target)};
+        }
+        catch (...)
+        {
+            return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = {}}};
+        }
+    }
+    if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request))
+    {
+        if (readers.openFiles == nullptr)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't list open files"};
+        }
+        try
+        {
+            return Broker::OpenFilesReply{.result = readers.openFiles->readOpenFiles(read->target)};
+        }
+        catch (...)
+        {
+            OpenFilesReadResult failed;
+            failed.status = OpenFilesReadStatus::Failed;
+            return Broker::OpenFilesReply{.result = std::move(failed)};
         }
     }
     try
@@ -86,11 +122,8 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     }
 }
 
-SessionEnd serve(int fd,
-                 IProcessActions& actions,
-                 std::chrono::milliseconds idleTimeout,
-                 const std::stop_token& stopToken,
-                 IProcessEnvironmentReader* environment)
+SessionEnd
+serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers)
 {
     bool greeted = false;
     while (true)
@@ -130,7 +163,7 @@ SessionEnd serve(int fd,
             }
             else
             {
-                response = handleRequest(decoded->message, actions, environment);
+                response = handleRequest(decoded->message, actions, readers);
                 if (hello)
                 {
                     greeted = std::get<Broker::HelloReply>(response).accepted;

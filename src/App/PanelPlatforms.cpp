@@ -65,9 +65,13 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
                              ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
                              : Synthetic::makeProcessEnvironmentReader(scenario),
             .connections = Synthetic::makeProcessConnectionsReader(scenario),
-            .modules = Synthetic::makeProcessModulesReader(scenario),
+            .modules = (scenario == nullptr)
+                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
+                         : Synthetic::makeProcessModulesReader(scenario),
             .security = Synthetic::makeProcessSecurityReader(scenario),
-            .openFiles = Synthetic::makeProcessOpenFilesReader(scenario)};
+            .openFiles = (scenario == nullptr)
+                           ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
+                           : Synthetic::makeProcessOpenFilesReader(scenario)};
 }
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)

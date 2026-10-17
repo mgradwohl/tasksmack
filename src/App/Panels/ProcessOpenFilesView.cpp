@@ -104,6 +104,15 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
             text += ": " + m_Detail;
         }
         mutedWrapped(text);
+        // Another user's process: an administrator can read it (#2309). The lock and the words.
+        if (offersAuthenticateToRead())
+        {
+            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate to read"))
+            {
+                requestAuthorizedRead();
+            }
+            ImGui::SetItemTooltip("Asks for an administrator's password, then reads it as the administrator");
+        }
         return;
     }
     if (m_Truncated)

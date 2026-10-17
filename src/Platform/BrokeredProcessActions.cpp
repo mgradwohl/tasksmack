@@ -5,7 +5,10 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -217,6 +220,141 @@ EnvironmentReadResult BrokeredEnvironmentReader::viaBroker(const ProcessTarget& 
         }
     }
     return {.status = EnvironmentReadStatus::Failed, .variables = {}};
+}
+
+std::unique_ptr<IProcessModulesReader> withPrivilegedBroker(std::unique_ptr<IProcessModulesReader> reader,
+                                                            std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasModules())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredModulesReader>(std::move(reader), std::move(broker));
+}
+
+std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader> reader,
+                                                              std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasOpenFiles())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredOpenFilesReader>(std::move(reader), std::move(broker));
+}
+
+BrokeredModulesReader::BrokeredModulesReader(std::unique_ptr<IProcessModulesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredModulesReader::hasModules() const
+{
+    return m_Inner->hasModules();
+}
+
+ModulesReadResult BrokeredModulesReader::readModules(const ProcessTarget& target)
+{
+    ModulesReadResult result = m_Inner->readModules(target);
+    if (result.status != ModulesReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredModulesReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr;
+}
+
+ModulesReadResult BrokeredModulesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (m_Broker == nullptr)
+    {
+        return m_Inner->readModules(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        return {.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}}; // the refusal stands
+    }
+    return viaBroker(target, stopToken);
+}
+
+ModulesReadResult BrokeredModulesReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ModulesRequest{.target = target}, stopToken);
+    if (!response.has_value())
+    {
+        return {.status = ModulesReadStatus::Failed,
+                .modules = {},
+                .detail = "The administrator helper couldn't be asked: " + response.error()};
+    }
+    if (const auto* reply = std::get_if<Broker::ModulesReply>(&*response))
+    {
+        return reply->result;
+    }
+    return {.status = ModulesReadStatus::Failed, .modules = {}, .detail = "The administrator helper gave an unexpected answer"};
+}
+
+BrokeredOpenFilesReader::BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredOpenFilesReader::hasOpenFiles() const
+{
+    return m_Inner->hasOpenFiles();
+}
+
+std::size_t BrokeredOpenFilesReader::handlesScanned() const noexcept
+{
+    return m_Inner->handlesScanned();
+}
+
+OpenFilesReadResult BrokeredOpenFilesReader::readOpenFiles(const ProcessTarget& target)
+{
+    OpenFilesReadResult result = m_Inner->readOpenFiles(target);
+    if (result.status != OpenFilesReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredOpenFilesReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr;
+}
+
+OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (m_Broker == nullptr)
+    {
+        return m_Inner->readOpenFiles(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        OpenFilesReadResult refused; // the refusal stands
+        refused.status = OpenFilesReadStatus::PermissionDenied;
+        return refused;
+    }
+    return viaBroker(target, stopToken);
+}
+
+OpenFilesReadResult BrokeredOpenFilesReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::OpenFilesRequest{.target = target}, stopToken);
+    OpenFilesReadResult failed;
+    failed.status = OpenFilesReadStatus::Failed;
+    if (!response.has_value())
+    {
+        failed.detail = "The administrator helper couldn't be asked: " + response.error();
+        return failed;
+    }
+    if (const auto* reply = std::get_if<Broker::OpenFilesReply>(&*response))
+    {
+        return reply->result;
+    }
+    failed.detail = "The administrator helper gave an unexpected answer";
+    return failed;
 }
 
 } // namespace Platform

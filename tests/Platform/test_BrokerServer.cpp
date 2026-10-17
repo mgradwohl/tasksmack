@@ -7,6 +7,8 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/PkexecBroker.h"
@@ -137,7 +139,8 @@ TEST(BrokerServerTest, AnEnvironmentRequestIsReadThroughTheReader)
     TestMocks::MockProcessActions actions;
     TestMocks::MockProcessEnvironmentReader environment;
     environment.setResult({.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}});
-    const Broker::Response response = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions, &environment);
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions, {.environment = &environment});
     ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(response));
     EXPECT_EQ(std::get<Broker::EnvironmentReply>(response).result.status, EnvironmentReadStatus::Ok);
     EXPECT_EQ(environment.lastTarget(), TARGET);
@@ -148,6 +151,21 @@ TEST(BrokerServerTest, AnEnvironmentRequestWithoutAReaderIsRefused)
     TestMocks::MockProcessActions actions;
     const Broker::Response response = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions);
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(response));
+}
+
+TEST(BrokerServerTest, ModulesAndOpenFilesRequestsAreReadThroughTheirReaders)
+{
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessModulesReader modules;
+    TestMocks::MockProcessOpenFilesReader openFiles;
+    const BrokerServer::Readers readers{.environment = nullptr, .modules = &modules, .openFiles = &openFiles};
+    EXPECT_TRUE(std::holds_alternative<Broker::ModulesReply>(
+        BrokerServer::handleRequest(Broker::ModulesRequest{.target = TARGET}, actions, readers)));
+    EXPECT_EQ(modules.readCount(), 1);
+    EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(
+        BrokerServer::handleRequest(Broker::OpenFilesRequest{.target = TARGET}, actions, readers)));
+    EXPECT_EQ(openFiles.readCount(), 1);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::ModulesRequest{.target = TARGET}, actions)));
 }
 
 /// A connected SOCK_SEQPACKET pair, both ends closed on scope exit and on exec.
@@ -575,6 +593,25 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)
     const EnvironmentReadResult& result = std::get<Broker::EnvironmentReply>(*response).result;
     EXPECT_EQ(result.status, EnvironmentReadStatus::Ok);
     EXPECT_FALSE(result.variables.empty()); // the child inherited this test's environment
+}
+
+TEST(PkexecBrokerTest, TheHelperListsAProcesssModulesAndOpenFiles)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+
+    const auto modules = broker.call(Broker::ModulesRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(modules.has_value()) << modules.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(*modules));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(*modules).result.status, ModulesReadStatus::Ok);
+    EXPECT_FALSE(std::get<Broker::ModulesReply>(*modules).result.modules.empty()); // at least the C library
+
+    const auto files = broker.call(Broker::OpenFilesRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(files.has_value()) << files.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(*files));
+    EXPECT_EQ(std::get<Broker::OpenFilesReply>(*files).result.status, OpenFilesReadStatus::Ok);
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
