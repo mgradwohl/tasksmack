@@ -20,6 +20,7 @@
 #include <expected>
 #include <filesystem>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -840,12 +841,31 @@ TEST(ProcessDumpViewTest, AMovedViewKeepsItsConfirm)
     EXPECT_EQ(mock.createDumpCount(), 1);
 }
 
+/// A folder of this test's own in the temp folder, removed afterwards. Its name has a random suffix and
+/// is taken only when create_directory() makes it, so the suite running at the same time from another
+/// build tree or worktree never shares it, or deletes it under this one (#2167).
 class TempFolder
 {
   public:
-    TempFolder() : m_Path(std::filesystem::temp_directory_path() / "tasksmack-dumpview-test-folder")
+    TempFolder()
     {
-        std::filesystem::create_directories(m_Path);
+        const std::filesystem::path base = std::filesystem::temp_directory_path() / "tasksmack-dumpview-test-folder-";
+        std::random_device random;
+        constexpr int MAX_ATTEMPTS = 100;
+        for (int attempt = 0; attempt < MAX_ATTEMPTS && m_Path.empty(); ++attempt)
+        {
+            std::filesystem::path candidate = base;
+            candidate += std::to_string(random());
+            std::error_code ec;
+            if (std::filesystem::create_directory(candidate, ec) && !ec)
+            {
+                m_Path = std::move(candidate);
+            }
+        }
+        if (m_Path.empty())
+        {
+            throw std::runtime_error("TempFolder: could not create a folder of its own in the temp folder");
+        }
     }
     TempFolder(const TempFolder&) = delete;
     TempFolder& operator=(const TempFolder&) = delete;
@@ -869,6 +889,15 @@ class TempFolder
   private:
     std::filesystem::path m_Path;
 };
+
+TEST(ProcessDumpViewTest, EachTempFolderIsItsOwn)
+{
+    const TempFolder first;
+    const TempFolder second;
+    EXPECT_NE(first.path(), second.path());
+    EXPECT_TRUE(std::filesystem::is_directory(first.path()));
+    EXPECT_TRUE(std::filesystem::is_directory(second.path()));
+}
 
 TEST(ProcessDumpViewTest, TheRememberedFolderIsUsedWhileItExists)
 {
