@@ -61,7 +61,9 @@ SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario)
 ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario)
 {
     return {.actions = processActionsFor(scenario),
-            .environment = Synthetic::makeProcessEnvironmentReader(scenario),
+            .environment = (scenario == nullptr)
+                             ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
+                             : Synthetic::makeProcessEnvironmentReader(scenario),
             .connections = Synthetic::makeProcessConnectionsReader(scenario),
             .modules = Synthetic::makeProcessModulesReader(scenario),
             .security = Synthetic::makeProcessSecurityReader(scenario),

@@ -11,6 +11,7 @@
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/LinuxProcessActions.h"
+#include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 
 #include <charconv>
 #include <chrono>
@@ -77,8 +78,9 @@ int main(int argc, char** argv)
         return EXIT_UNTRUSTED_PEER;
     }
     Platform::LinuxProcessActions actions;
+    Platform::LinuxProcessEnvironmentReader environment; // Process Details' Environment for another user's process (#2309)
     const std::stop_source never;
-    switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token()))
+    switch (Platform::BrokerServer::serve(CLIENT_FD, actions, IDLE_TIMEOUT, never.get_token(), &environment))
     {
     case Platform::BrokerServer::SessionEnd::ClientClosed:
     case Platform::BrokerServer::SessionEnd::Idle:

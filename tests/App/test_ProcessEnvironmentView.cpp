@@ -396,5 +396,50 @@ TEST(ProcessEnvironmentViewTest, FilterMatchesNamesAndPlainValuesButNeverMaskedV
     EXPECT_EQ(view.filteredRows().size(), 1U);
 }
 
+// ========== Authenticate to read (#2309) ==========
+
+TEST(ProcessEnvironmentViewTest, ARefusedReadOffersAuthenticateToReadWhichReadsAsTheAdministrator)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult({.status = Platform::EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    reader.setAuthorizedResult(okResult({{.name = "HOME", .value = "/root"}}));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_EQ(view.status(), Platform::EnvironmentReadStatus::PermissionDenied);
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(reader.lastTarget().pid, TARGET.pid);
+    EXPECT_EQ(view.status(), Platform::EnvironmentReadStatus::Ok);
+    EXPECT_FALSE(view.offersAuthenticateToRead());
+}
+
+TEST(ProcessEnvironmentViewTest, NoAuthenticateToReadWhereTheReaderCannot)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult({.status = Platform::EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    EXPECT_FALSE(view.offersAuthenticateToRead());
+}
+
+TEST(ProcessEnvironmentViewTest, ASelectionChangeWithdrawsAnAuthenticatedReadNotStartedYet)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult({.status = Platform::EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    reader.setAuthorizedResult(okResult({}));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    view.requestAuthorizedRead();
+    view.onSelectionChanged();
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.authorizedReadCount(), 0);
+}
+
 } // namespace
 } // namespace App

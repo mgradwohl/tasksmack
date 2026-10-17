@@ -7,6 +7,7 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <chrono>
 #include <cstdint>
@@ -17,7 +18,9 @@ namespace Platform::BrokerServer
 
 /// The answer to @p request through @p actions: a HelloReply to the handshake, an ActionResult to a
 /// process action. Never throws past it: an exception from @p actions is a failed ActionResult.
-[[nodiscard]] Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions);
+/// An EnvironmentRequest is read through @p environment (#2309); without one it is an ErrorReply.
+[[nodiscard]] Broker::Response
+handleRequest(const Broker::Request& request, IProcessActions& actions, IProcessEnvironmentReader* environment = nullptr);
 
 /// How a session ended, for the helper's exit status and the tests.
 enum class SessionEnd : std::uint8_t
@@ -32,6 +35,10 @@ enum class SessionEnd : std::uint8_t
 /// Answers requests on @p fd until the client closes it, nothing arrives for @p idleTimeout, or
 /// @p stopToken is stopped. The first frame must be a Hello of this protocol version; until then
 /// nothing else is acted on. A frame that doesn't decode gets an ErrorReply, and the session goes on.
-[[nodiscard]] SessionEnd serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken);
+[[nodiscard]] SessionEnd serve(int fd,
+                               IProcessActions& actions,
+                               std::chrono::milliseconds idleTimeout,
+                               const std::stop_token& stopToken,
+                               IProcessEnvironmentReader* environment = nullptr);
 
 } // namespace Platform::BrokerServer

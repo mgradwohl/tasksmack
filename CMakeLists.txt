@@ -747,6 +747,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/BrokerServer.cpp
         src/Platform/Linux/BrokerSocket.cpp
         src/Platform/Linux/LinuxProcessActions.cpp
+        src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         src/Platform/Linux/DetachedSpawn.cpp
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)

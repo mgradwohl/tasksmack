@@ -23,7 +23,9 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -42,6 +44,8 @@ inline constexpr std::uint16_t PROTOCOL_VERSION = 1;
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
+/// The most environment variables an EnvironmentReply carries; a read with more keeps the first.
+inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
 /// The frame header after the length: version, kind, request id.
 inline constexpr std::size_t HEADER_BYTES = 2 + 2 + 4;
 
@@ -53,8 +57,10 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetPriority = 17,
     SetIoPriority = 18,
     SetAffinity = 19,
-    ActionResult = 48, ///< The answer to a process action
-    Error = 63,        ///< A request the helper refused to read (malformed, or a kind it doesn't do)
+    ReadEnvironment = 32,   ///< Another user's process's environment, for Process Details (#2309)
+    ActionResult = 48,      ///< The answer to a process action
+    EnvironmentResult = 49, ///< The answer to ReadEnvironment
+    Error = 63,             ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
 /// The signals a Signal request sends.
@@ -108,6 +114,36 @@ struct AffinityRequest
     friend bool operator==(const AffinityRequest&, const AffinityRequest&) = default;
 };
 
+/// Read a process's environment (#2309): the helper reads it as root, after the same identity check.
+struct EnvironmentRequest
+{
+    ProcessTarget target;
+    friend bool operator==(const EnvironmentRequest&, const EnvironmentRequest&) = default;
+};
+
+/// The answer to EnvironmentRequest: the read's result, as IProcessEnvironmentReader returns it.
+struct EnvironmentReply
+{
+    EnvironmentReadResult result;
+
+    friend bool operator==(const EnvironmentReply& left, const EnvironmentReply& right)
+    {
+        if (left.result.status != right.result.status || left.result.variables.size() != right.result.variables.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < left.result.variables.size(); ++i)
+        {
+            if (left.result.variables[i].name != right.result.variables[i].name ||
+                left.result.variables[i].value != right.result.variables[i].value)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 /// The answer to a process action: ProcessActionResult's fields.
 struct ActionResult
 {
@@ -132,8 +168,8 @@ struct ErrorReply
     friend bool operator==(const ErrorReply&, const ErrorReply&) = default;
 };
 
-using Request = std::variant<Hello, SignalRequest, PriorityRequest, IoPriorityRequest, AffinityRequest>;
-using Response = std::variant<HelloReply, ActionResult, ErrorReply>;
+using Request = std::variant<Hello, SignalRequest, PriorityRequest, IoPriorityRequest, AffinityRequest, EnvironmentRequest>;
+using Response = std::variant<HelloReply, ActionResult, ErrorReply, EnvironmentReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -369,6 +405,11 @@ template<typename Message>
         writer.u8(static_cast<std::uint8_t>(io->ioClass));
         writer.i32(io->level);
     }
+    else if (const auto* environment = std::get_if<EnvironmentRequest>(&request))
+    {
+        kind = MessageKind::ReadEnvironment;
+        writer.target(environment->target);
+    }
     else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
     {
         kind = MessageKind::SetAffinity;
@@ -454,8 +495,14 @@ template<typename Message>
         }
         return Detail::finish<Request>(reader, frame->requestId, AffinityRequest{.target = target, .cpus = std::move(cpus)});
     }
+    case MessageKind::ReadEnvironment:
+    {
+        const ProcessTarget target = reader.target();
+        return Detail::finish<Request>(reader, frame->requestId, EnvironmentRequest{.target = target});
+    }
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
+    case MessageKind::EnvironmentResult:
     case MessageKind::Error:
         break;
     }
@@ -483,6 +530,18 @@ template<typename Message>
     {
         kind = MessageKind::Error;
         writer.text(error->message);
+    }
+    else if (const auto* environment = std::get_if<EnvironmentReply>(&response))
+    {
+        kind = MessageKind::EnvironmentResult;
+        writer.u8(static_cast<std::uint8_t>(environment->result.status));
+        const std::size_t count = std::min(environment->result.variables.size(), MAX_ENVIRONMENT_VARIABLES);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            writer.text(environment->result.variables[i].name);
+            writer.text(environment->result.variables[i].value);
+        }
     }
     return writer.frame(kind, requestId);
 }
@@ -515,11 +574,37 @@ template<typename Message>
     }
     case MessageKind::Error:
         return Detail::finish<Response>(reader, frame->requestId, ErrorReply{.message = reader.text()});
+    case MessageKind::EnvironmentResult:
+    {
+        const std::uint8_t value = reader.u8();
+        EnvironmentReply reply;
+        if (value <= static_cast<std::uint8_t>(EnvironmentReadStatus::Failed))
+        {
+            reply.result.status = static_cast<EnvironmentReadStatus>(value); // cast only once it is known to be in range
+        }
+        else
+        {
+            reader.fail();
+        }
+        const std::uint32_t count = reader.u32();
+        if (count > MAX_ENVIRONMENT_VARIABLES)
+        {
+            reader.fail();
+        }
+        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+        {
+            std::string name = reader.text();
+            std::string text = reader.text();
+            reply.result.variables.push_back({.name = std::move(name), .value = std::move(text)});
+        }
+        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
+    }
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
     case MessageKind::SetIoPriority:
     case MessageKind::SetAffinity:
+    case MessageKind::ReadEnvironment:
         break;
     }
     return std::unexpected("Not a response");

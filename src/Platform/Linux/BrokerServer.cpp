@@ -3,6 +3,7 @@
 #include "BrokerSocket.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <chrono>
 #include <cstdint>
@@ -49,11 +50,27 @@ namespace
 
 } // namespace
 
-Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions)
+Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, IProcessEnvironmentReader* environment)
 {
     if (const auto* hello = std::get_if<Broker::Hello>(&request))
     {
         return Broker::HelloReply{.version = Broker::PROTOCOL_VERSION, .accepted = hello->version == Broker::PROTOCOL_VERSION};
+    }
+    if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request))
+    {
+        if (environment == nullptr)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't read environments"};
+        }
+        try
+        {
+            // The reader checks the target's identity and never logs a value (#179).
+            return Broker::EnvironmentReply{.result = environment->readEnvironment(read->target)};
+        }
+        catch (...)
+        {
+            return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
+        }
     }
     try
     {
@@ -69,7 +86,11 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     }
 }
 
-SessionEnd serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken)
+SessionEnd serve(int fd,
+                 IProcessActions& actions,
+                 std::chrono::milliseconds idleTimeout,
+                 const std::stop_token& stopToken,
+                 IProcessEnvironmentReader* environment)
 {
     bool greeted = false;
     while (true)
@@ -109,7 +130,7 @@ SessionEnd serve(int fd, IProcessActions& actions, std::chrono::milliseconds idl
             }
             else
             {
-                response = handleRequest(decoded->message, actions);
+                response = handleRequest(decoded->message, actions, environment);
                 if (hello)
                 {
                     greeted = std::get<Broker::HelloReply>(response).accepted;

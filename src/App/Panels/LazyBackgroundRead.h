@@ -18,8 +18,10 @@
 
 #include <cstdint>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace App::Detail
@@ -136,7 +138,19 @@ template<typename Result> class LazyBackgroundRead
         m_SecondsSinceRequest = 0.0F;
         m_PendingGeneration = m_Generation;
         m_PendingTarget = target;
-        return m_Pending.start([read = std::move(read), target] { return read(target); });
+        // A read that takes the stop token (a password prompt's wait, #2309) is stopped by the destructor.
+        return m_Pending.start(
+            [read = std::move(read), target](const std::stop_token& stopToken) mutable
+            {
+                if constexpr (std::is_invocable_v<ReadFn&, const Platform::ProcessTarget&, const std::stop_token&>)
+                {
+                    return read(target, stopToken);
+                }
+                else
+                {
+                    return read(target);
+                }
+            });
     }
 
   private:

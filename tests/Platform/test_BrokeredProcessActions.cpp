@@ -8,6 +8,7 @@
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <gtest/gtest.h>
 
@@ -165,6 +166,70 @@ TEST(BrokeredProcessActionsTest, WithABrokerTheActionsCanAskForAuthorization)
     const std::unique_ptr<IProcessActions> actions =
         withPrivilegedBroker(std::make_unique<TestMocks::MockProcessActions>(), std::make_shared<Mocks::FakeBroker>(false));
     EXPECT_TRUE(actions->actionCapabilities().canAuthorizeInteractively);
+}
+
+// --- BrokeredEnvironmentReader (#2309) ---------------------------------------------------------------
+
+struct EnvironmentFixture
+{
+    explicit EnvironmentFixture(bool connected) : broker(std::make_shared<Mocks::FakeBroker>(connected))
+    {
+        auto owned = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+        inner = owned.get();
+        reader = std::make_unique<BrokeredEnvironmentReader>(std::move(owned), broker);
+        broker->setAnswer(
+            [](const Broker::Request&)
+            {
+                return Broker::Response{Broker::EnvironmentReply{
+                    .result = {.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}}}};
+            });
+    }
+
+    std::shared_ptr<Mocks::FakeBroker> broker;
+    TestMocks::MockProcessEnvironmentReader* inner = nullptr;
+    std::unique_ptr<BrokeredEnvironmentReader> reader;
+};
+
+TEST(BrokeredEnvironmentReaderTest, AnInProcessReadNeverReachesTheHelper)
+{
+    EnvironmentFixture f(/*connected=*/true);
+    EXPECT_EQ(f.reader->readEnvironment(TARGET).status, EnvironmentReadStatus::Ok);
+    EXPECT_TRUE(f.broker->requests().empty());
+}
+
+TEST(BrokeredEnvironmentReaderTest, ARefusedReadGoesThroughARunningHelper)
+{
+    EnvironmentFixture f(/*connected=*/true);
+    f.inner->setResult({.status = EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    const EnvironmentReadResult result = f.reader->readEnvironment(TARGET);
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Ok);
+    ASSERT_EQ(result.variables.size(), 1U);
+    ASSERT_EQ(f.broker->requests().size(), 1U);
+    EXPECT_EQ(f.broker->requests().front(), (Broker::Request{Broker::EnvironmentRequest{.target = TARGET}}));
+}
+
+TEST(BrokeredEnvironmentReaderTest, ARefusedReadWithoutAHelperIsReturnedForTheUiToOffer)
+{
+    EnvironmentFixture f(/*connected=*/false);
+    f.inner->setResult({.status = EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    EXPECT_EQ(f.reader->readEnvironment(TARGET).status, EnvironmentReadStatus::PermissionDenied);
+    EXPECT_TRUE(f.reader->canReadAuthorized());
+    EXPECT_EQ(f.broker->connectCount(), 0);
+}
+
+TEST(BrokeredEnvironmentReaderTest, ReadAuthorizedConnectsThenReadsThroughTheHelper)
+{
+    EnvironmentFixture f(/*connected=*/false);
+    EXPECT_EQ(f.reader->readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::Ok);
+    EXPECT_EQ(f.broker->connectCount(), 1);
+}
+
+TEST(BrokeredEnvironmentReaderTest, ADismissedPromptLeavesTheRefusal)
+{
+    EnvironmentFixture f(/*connected=*/false);
+    f.broker->setConnectFailure("the password prompt was dismissed");
+    EXPECT_EQ(f.reader->readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::PermissionDenied);
+    EXPECT_TRUE(f.broker->requests().empty());
 }
 
 } // namespace

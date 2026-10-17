@@ -1134,8 +1134,33 @@ class MockProcessEnvironmentReader : public Platform::IProcessEnvironmentReader
         return m_LastTarget;
     }
 
+    /// readAuthorized() (#2309): offered when set, returning @p result and counting its calls.
+    void setAuthorizedResult(Platform::EnvironmentReadResult result)
+    {
+        m_AuthorizedResult = std::move(result);
+        m_CanReadAuthorized = true;
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_CanReadAuthorized;
+    }
+    [[nodiscard]] Platform::EnvironmentReadResult readAuthorized(const Platform::ProcessTarget& target,
+                                                                 const std::stop_token& /*stopToken*/) override
+    {
+        ++m_AuthorizedReadCount;
+        m_LastTarget = target;
+        return m_AuthorizedResult;
+    }
+    [[nodiscard]] int authorizedReadCount() const
+    {
+        return m_AuthorizedReadCount;
+    }
+
   private:
     bool m_HasEnvironment = true;
+    bool m_CanReadAuthorized = false;
+    int m_AuthorizedReadCount = 0;
+    Platform::EnvironmentReadResult m_AuthorizedResult;
     Platform::EnvironmentReadResult m_Result{.status = Platform::EnvironmentReadStatus::Ok, .variables = {}};
     int m_ReadCount = 0;
     Platform::ProcessTarget m_LastTarget{};

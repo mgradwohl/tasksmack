@@ -11,6 +11,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,22 @@ class IProcessEnvironmentReader
     /// is refused with IdentityUnknown and nothing is read, as the process actions refuse it
     /// (Platform::checkProcessIdentity()): a PID alone cannot confirm whose environment it would be.
     [[nodiscard]] virtual EnvironmentReadResult readEnvironment(const ProcessTarget& target) = 0;
+
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
+    /// pkexec-started helper, #2309). The UI then offers "Authenticate to read" on PermissionDenied.
+    [[nodiscard]] virtual bool canReadAuthorized() const
+    {
+        return false;
+    }
+
+    /// Reads @p target's environment as an administrator, asking for the password first if need be
+    /// (#2309). Blocks for as long as the prompt is up, so it runs on a worker. The default reads as
+    /// readEnvironment() does.
+    [[nodiscard]] virtual EnvironmentReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return readEnvironment(target);
+    }
 };
 
 /// The reader for a platform (or run) that cannot read another process's environment.

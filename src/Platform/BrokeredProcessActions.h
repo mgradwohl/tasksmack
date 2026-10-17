@@ -20,6 +20,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -74,5 +75,31 @@ class BrokeredProcessActions final : public IProcessActions
     std::unique_ptr<IProcessActions> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
+
+/// Process Details' environment read that an administrator can finish (#2309), as
+/// BrokeredProcessActions does for the actions: read in-process first; a PermissionDenied read goes
+/// through the helper at once while it runs, and otherwise is returned for the UI to offer
+/// "Authenticate to read" (readAuthorized()). The helper reads as root, with the same identity check.
+class BrokeredEnvironmentReader final : public IProcessEnvironmentReader
+{
+  public:
+    BrokeredEnvironmentReader(std::unique_ptr<IProcessEnvironmentReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+
+    [[nodiscard]] bool hasEnvironment() const override;
+    [[nodiscard]] EnvironmentReadResult readEnvironment(const ProcessTarget& target) override;
+    [[nodiscard]] bool canReadAuthorized() const override;
+    [[nodiscard]] EnvironmentReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+
+  private:
+    /// The read through the helper; a failure to ask it is a Failed read.
+    [[nodiscard]] EnvironmentReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
+
+    std::unique_ptr<IProcessEnvironmentReader> m_Inner;
+    std::shared_ptr<IPrivilegedBroker> m_Broker;
+};
+
+/// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
+[[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
+                                                                              std::shared_ptr<IPrivilegedBroker> broker);
 
 } // namespace Platform

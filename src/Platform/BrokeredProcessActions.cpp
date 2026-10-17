@@ -4,6 +4,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <cstdint>
 #include <expected>
@@ -12,6 +13,7 @@
 #include <stop_token>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace Platform
 {
@@ -153,6 +155,68 @@ FolderChoice BrokeredProcessActions::chooseDumpFolder(const std::filesystem::pat
 CpuAffinityLayout BrokeredProcessActions::affinityLayout() const
 {
     return m_Inner->affinityLayout();
+}
+
+std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
+                                                                std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !reader->hasEnvironment())
+    {
+        return reader;
+    }
+    return std::make_unique<BrokeredEnvironmentReader>(std::move(reader), std::move(broker));
+}
+
+BrokeredEnvironmentReader::BrokeredEnvironmentReader(std::unique_ptr<IProcessEnvironmentReader> inner,
+                                                     std::shared_ptr<IPrivilegedBroker> broker)
+    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+{}
+
+bool BrokeredEnvironmentReader::hasEnvironment() const
+{
+    return m_Inner->hasEnvironment();
+}
+
+EnvironmentReadResult BrokeredEnvironmentReader::readEnvironment(const ProcessTarget& target)
+{
+    EnvironmentReadResult result = m_Inner->readEnvironment(target);
+    if (result.status != EnvironmentReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return result;
+    }
+    return viaBroker(target, std::stop_token{});
+}
+
+bool BrokeredEnvironmentReader::canReadAuthorized() const
+{
+    return m_Broker != nullptr;
+}
+
+EnvironmentReadResult BrokeredEnvironmentReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    if (m_Broker == nullptr)
+    {
+        return m_Inner->readEnvironment(target);
+    }
+    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    {
+        // The prompt was dismissed or the helper couldn't start: the refusal stands.
+        return {.status = EnvironmentReadStatus::PermissionDenied, .variables = {}};
+    }
+    return viaBroker(target, stopToken);
+}
+
+EnvironmentReadResult BrokeredEnvironmentReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
+{
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::EnvironmentRequest{.target = target}, stopToken);
+    if (response.has_value())
+    {
+        if (const auto* reply = std::get_if<Broker::EnvironmentReply>(&*response))
+        {
+            return reply->result;
+        }
+    }
+    return {.status = EnvironmentReadStatus::Failed, .variables = {}};
 }
 
 } // namespace Platform

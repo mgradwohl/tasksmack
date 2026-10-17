@@ -8,15 +8,16 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <span>
 #include <stop_token>
 #include <string>
-#include <variant>
 #include <vector>
 
 namespace Platform::Broker
@@ -183,6 +184,32 @@ TEST(BrokerProtocolTest, TheFakeBrokerRecordsRequestsAndAnswersFromItsScript)
     EXPECT_FALSE(actionResultOf(broker.call(kill, stop.get_token())).success);
     ASSERT_EQ(broker.requests().size(), 3U);
     EXPECT_EQ(broker.requests()[0], kill);
+}
+
+// #2309: Process Details' environment, read by the helper.
+TEST(BrokerProtocolTest, EnvironmentReadsRoundTrip)
+{
+    const Request request = EnvironmentRequest{.target = TARGET};
+    EXPECT_EQ(roundTrip(request), request);
+
+    const Response ok = EnvironmentReply{
+        .result = {.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}, {.name = "EMPTY", .value = ""}}}};
+    EXPECT_EQ(roundTrip(ok), ok);
+    const Response gone = EnvironmentReply{.result = {.status = EnvironmentReadStatus::ProcessExited, .variables = {}}};
+    EXPECT_EQ(roundTrip(gone), gone);
+}
+
+TEST(BrokerProtocolTest, AnEnvironmentReplyOutOfRangeIsRefused)
+{
+    std::vector<std::uint8_t> status =
+        encodeResponse(1, Response{EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}}});
+    status[4 + HEADER_BYTES] = 0xFF; // no such status
+    EXPECT_FALSE(decodeResponse(status).has_value());
+
+    std::vector<std::uint8_t> count =
+        encodeResponse(1, Response{EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}}});
+    count[4 + HEADER_BYTES + 4] = 0x7F; // claims far more variables than the protocol allows, and than follow
+    EXPECT_FALSE(decodeResponse(count).has_value());
 }
 
 } // namespace

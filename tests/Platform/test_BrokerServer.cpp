@@ -6,6 +6,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/PkexecBroker.h"
@@ -129,6 +130,24 @@ TEST(BrokerServerTest, AnActionThatThrowsIsAFailedResult)
         actionResult(BrokerServer::handleRequest(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate}, actions));
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
+}
+
+TEST(BrokerServerTest, AnEnvironmentRequestIsReadThroughTheReader)
+{
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessEnvironmentReader environment;
+    environment.setResult({.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}});
+    const Broker::Response response = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions, &environment);
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(response));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(response).result.status, EnvironmentReadStatus::Ok);
+    EXPECT_EQ(environment.lastTarget(), TARGET);
+}
+
+TEST(BrokerServerTest, AnEnvironmentRequestWithoutAReaderIsRefused)
+{
+    TestMocks::MockProcessActions actions;
+    const Broker::Response response = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(response));
 }
 
 /// A connected SOCK_SEQPACKET pair, both ends closed on scope exit and on exec.
@@ -542,6 +561,20 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
         actionResultOf(broker.call(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Terminate}, std::stop_token{}));
     EXPECT_TRUE(result.success) << result.errorMessage;
     EXPECT_EQ(child.terminatingSignal(), SIGTERM);
+}
+
+TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::EnvironmentRequest{.target = child.target()}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(*response));
+    const EnvironmentReadResult& result = std::get<Broker::EnvironmentReply>(*response).result;
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Ok);
+    EXPECT_FALSE(result.variables.empty()); // the child inherited this test's environment
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
