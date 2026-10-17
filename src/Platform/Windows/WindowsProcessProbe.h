@@ -90,6 +90,9 @@ struct WindowsProcessProbeFunctions
                                                        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
                                                        PDWORD) = nullptr;
         std::uint32_t (*windowsBuildNumber)() = nullptr; // 0 if unknown
+        /// The detail caches' clock (steady_clock::now()), so tests can hold time still or move it on
+        /// rather than depend on how fast they run (#2054).
+        std::chrono::steady_clock::time_point (*steadyNow)() = nullptr;
     } system;
 
     struct Token

@@ -687,6 +687,13 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return version.dwBuildNumber;
 }
 
+/// The detail caches' clock: std::chrono::steady_clock::now(), through a function of this file's
+/// own, since a standard library function's address can't portably be taken.
+[[nodiscard]] std::chrono::steady_clock::time_point steadyNow()
+{
+    return std::chrono::steady_clock::now();
+}
+
 /// Each thread's group affinity (GetThreadGroupAffinity), from the process's
 /// SYSTEM_THREAD_INFORMATION records in the snapshot (#1247). Incomplete if any thread has exited,
 /// can't be opened or read, or the records are missing: groupMasksFromThreads() then reports the
@@ -772,6 +779,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .getMaximumProcessorCount = &GetMaximumProcessorCount,
                 .getLogicalProcessorInformationEx = &GetLogicalProcessorInformationEx,
                 .windowsBuildNumber = &windowsBuildNumber,
+                .steadyNow = &steadyNow,
             },
         .token =
             {
@@ -1011,7 +1019,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
                                             std::int32_t basePriority,
                                             std::span<const std::byte> threadRecords)
 {
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = m_Fns.system.steadyNow();
 
     // When startTimeTicks is 0, the snapshot had no create time (Idle/System pseudo-processes).
     // Treat as always-miss: skip caching to prevent {pid, 0} from collapsing multiple processes onto
@@ -1186,7 +1194,7 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
     {
         // Active processors can change (hot-add, offlining): re-read with the heavy details, once
         // per heavy TTL for every process due this sample (#1247).
-        const auto now = std::chrono::steady_clock::now();
+        const auto now = m_Fns.system.steadyNow();
         if (now >= m_NextActiveMasksRead)
         {
             m_ActiveMasksRead = readActiveProcessorMasks(m_Fns.system, m_ProcessorGroups);

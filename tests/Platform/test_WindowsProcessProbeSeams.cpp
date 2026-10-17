@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -153,6 +154,9 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     int tableFillsTooSmall = 0; // Fills that report the table grew meanwhile
     int table6Calls = 0;
     bool failSnapshot = false;
+    // The detail caches' clock: still unless a test moves it, so no TTL runs out between two
+    // enumerate() calls however slowly the test runs (#2054).
+    std::chrono::steady_clock::time_point now;
 };
 
 FakeWin& fake()
@@ -262,6 +266,11 @@ BOOL WINAPI fakeGetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP 
 std::uint32_t fakeWindowsBuildNumber()
 {
     return fake().buildNumber;
+}
+
+std::chrono::steady_clock::time_point fakeSteadyNow()
+{
+    return fake().now;
 }
 
 // --- Token ----------------------------------------------------------------------------------
@@ -598,6 +607,7 @@ WindowsProcessProbeFunctions fakeFunctions()
                 .getMaximumProcessorCount = &fakeGetMaximumProcessorCount,
                 .getLogicalProcessorInformationEx = &fakeGetLogicalProcessorInformationEx,
                 .windowsBuildNumber = &fakeWindowsBuildNumber,
+                .steadyNow = &fakeSteadyNow,
             },
         .token =
             {
@@ -832,6 +842,18 @@ TEST_F(WindowsProcessProbeSeamTest, AReusedPidIsReadAgainButTheSameProcessIsCach
     EXPECT_EQ(fake().openProcessCalls, 1);
 
     fake().processes.front().createTime += 1; // The PID now belongs to a new process
+    EXPECT_EQ(find(probe.enumerate()).user, "bob");
+    EXPECT_EQ(fake().openProcessCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, TheSameProcessIsReadAgainOnceItsTtlsRunOut)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    fake().user = L"bob";
+
+    // An hour on is past the light and heavy TTLs whatever this machine's RAM tier makes them.
+    fake().now += std::chrono::hours(1);
     EXPECT_EQ(find(probe.enumerate()).user, "bob");
     EXPECT_EQ(fake().openProcessCalls, 2);
 }
