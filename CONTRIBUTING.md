@@ -660,8 +660,9 @@ helper was strictly better than writing a third copy of the same test.
 
 ### Testing Linux D-Bus readers (systemd, NetworkManager, udisks2)
 
-`Platform/Linux/SystemdBus.cpp` asks system services over D-Bus, and most machines (WSL, the CI
-runners) don't run NetworkManager, systemd-resolved, systemd-networkd or udisks2. So the live tests in
+The readers declared in `Platform/Linux/SystemdBus.h` ask system services over D-Bus, one file per
+service (`SystemdUnits.cpp`, `UDisks2Smart.cpp`, `NetworkManager.cpp`, `NetworkdResolved.cpp`, sharing
+`SdBusCall.h`), and most machines (WSL, the CI runners) don't run NetworkManager, systemd-resolved, systemd-networkd or udisks2. So the live tests in
 `tests/Platform/test_SystemdBus.cpp` usually skip. To test a reader's parsing, use
 `tests/Platform/FakeSystemBus.h` instead:
 

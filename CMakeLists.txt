@@ -219,7 +219,10 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
-    src/Platform/Linux/SystemdBus.cpp
+    src/Platform/Linux/SystemdUnits.cpp
+    src/Platform/Linux/UDisks2Smart.cpp
+    src/Platform/Linux/NetworkManager.cpp
+    src/Platform/Linux/NetworkdResolved.cpp
     src/Platform/Linux/LinuxServiceActions.cpp
     src/Platform/Linux/LinuxServiceProbe.cpp
     src/Platform/Linux/SystemdJournal.cpp
@@ -413,6 +416,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
+        src/Platform/Linux/SdBusCall.h
         src/Platform/Linux/SystemdJournal.h
         src/Platform/Linux/LinuxSensors.h
         src/Platform/Linux/LinuxNetworkAdapters.h

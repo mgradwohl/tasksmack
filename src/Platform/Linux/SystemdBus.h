@@ -6,6 +6,11 @@
 // Optional at build time: without libsystemd (TASKSMACK_HAS_SDBUS undefined) every read reports that
 // the build can't, so callers say "unavailable" rather than guess. Reads are synchronous and quick;
 // the System Information page makes them on its worker thread, never per frame.
+//
+// One header for the whole API; the implementation is split by service (#2171): SystemdUnits.cpp
+// (systemd's units, unit actions and boot timestamps), UDisks2Smart.cpp, NetworkManager.cpp (Wi-Fi
+// links and DHCP leases) and NetworkdResolved.cpp (networkd's leases and resolved's DNS), over the
+// shared connection, error and timeout handling in SdBusCall.h.
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
