@@ -43,7 +43,8 @@ namespace Platform
         {
             return std::nullopt;
         }
-        const int digit = ch - L'0';
+        // wchar_t is unsigned on aarch64 Linux, where this header is also compiled (#2214).
+        const int digit = static_cast<int>(ch - L'0');
         // An implausibly long numeric prefix would otherwise overflow signed int here
         // (undefined behavior) and could return an arbitrary drive index; fail closed instead.
         if (index > (std::numeric_limits<int>::max() - digit) / 10)

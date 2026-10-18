@@ -121,7 +121,10 @@ runs:
           Write-Host "::error title=LLVM install failed::LLVM-$env:WOA64_VERSION-woa64.exe exited with $($proc.ExitCode)"
           exit 1
         }
-        Remove-Item -LiteralPath $installer -Force
+        # The installer exe can stay locked for a moment after it exits (Access denied); it is in
+        # RUNNER_TEMP, which the runner cleans anyway, so a failed delete isn't an error.
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+        exit 0
 
     - name: Verify LLVM
       shell: pwsh
