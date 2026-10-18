@@ -771,6 +771,7 @@ TEST(LinuxStorageTest, ABtrfsMountIsMatchedToItsPartitionThroughItsSource)
                "45 29 0:50 / /tank rw shared:4 - zfs tank rw\n");
     root.write("sys/block/nvme0n1/size", "1953525168\n");
     root.write("sys/block/nvme0n1/dev", "259:0\n");
+    root.write("sys/block/nvme0n1/device/model", "Samsung SSD 980 PRO 1TB\n");
     root.write("sys/block/nvme0n1/nvme0n1p3/partition", "3\n");
     root.write("sys/block/nvme0n1/nvme0n1p3/start", "2048\n");
     root.write("sys/block/nvme0n1/nvme0n1p3/size", "1953523120\n");
