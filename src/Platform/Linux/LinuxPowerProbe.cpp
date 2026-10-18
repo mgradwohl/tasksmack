@@ -280,8 +280,9 @@ std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std:
 }
 
 /// The packs as the system's one battery (#2319):
-/// - State: Charging if any pack charges, else Discharging if any discharges, else Full if all are,
-///   else Not charging if any is held, else Unknown.
+/// - State: Charging or Discharging as the packs are; when some charge and others discharge, by the
+///   sign of the summed power (#2383). Otherwise Full if every pack whose state is known is, else Not
+///   charging if any is held, else Unknown.
 /// - Charge: the energy-weighted percentage, sum(now) / sum(full), when every pack gives its
 ///   capacities in the same unit; one pack's own `capacity`; otherwise unavailable rather than an
 ///   unweighted average.
@@ -300,25 +301,47 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
     counters.model = first.counters.model;
     counters.manufacturer = first.counters.manufacturer;
 
+    double netPower = 0.0;
+    for (const PackReading& pack : packs)
+    {
+        netPower += pack.counters.powerNowW;
+    }
     const auto any = [&](BatteryState state)
     {
         return std::ranges::any_of(packs, [state](const PackReading& p) { return p.counters.state == state; });
     };
-    if (any(BatteryState::Charging))
+    const bool charging = any(BatteryState::Charging);
+    const bool discharging = any(BatteryState::Discharging);
+    if (charging && discharging)
+    {
+        // One pack tops another up (#2383): the system's state is where the energy goes on net
+        counters.state = netPower > 0.0 ? BatteryState::Discharging : BatteryState::Charging;
+    }
+    else if (charging)
     {
         counters.state = BatteryState::Charging;
     }
-    else if (any(BatteryState::Discharging))
+    else if (discharging)
     {
         counters.state = BatteryState::Discharging;
     }
-    else if (std::ranges::all_of(packs, [](const PackReading& p) { return p.counters.state == BatteryState::Full; }))
+    else
     {
-        counters.state = BatteryState::Full;
-    }
-    else if (any(BatteryState::NotCharging))
-    {
-        counters.state = BatteryState::NotCharging;
+        // An idle pack some drivers report as Unknown doesn't hide the others' Full or Not charging
+        // (#2383); only when every pack is Unknown is the system's state unknown.
+        const auto known = [](const PackReading& p)
+        {
+            return p.counters.state != BatteryState::Unknown;
+        };
+        if (std::ranges::any_of(packs, known) &&
+            std::ranges::all_of(packs, [&known](const PackReading& p) { return !known(p) || p.counters.state == BatteryState::Full; }))
+        {
+            counters.state = BatteryState::Full;
+        }
+        else if (any(BatteryState::NotCharging))
+        {
+            counters.state = BatteryState::NotCharging;
+        }
     }
 
     const CapacityUnit unit = first.unit;

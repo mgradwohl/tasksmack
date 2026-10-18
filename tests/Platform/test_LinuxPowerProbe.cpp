@@ -774,6 +774,37 @@ TEST_F(LinuxPowerProbeMultiPackTest, StatesCombine)
     EXPECT_EQ(probe.read().state, BatteryState::Discharging);
 }
 
+TEST_F(LinuxPowerProbeMultiPackTest, PacksChargingAndDischargingAtOnceFollowTheNetFlow)
+{
+    // #2383: on battery, BAT1 tops up from BAT0; the system drains on net
+    makePack("BAT0", {.status = "Discharging", .capacity = "60", .power = "12000000"});
+    makePack("BAT1", {.status = "Charging", .capacity = "40", .power = "1000000"});
+    LinuxPowerProbe probe(m_SysRoot.string());
+    auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Discharging);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 11.0);
+
+    writeFile(m_SysRoot / "BAT0" / "power_now", "500000"); // now the charging dominates
+    writeFile(m_SysRoot / "BAT1" / "power_now", "20000000");
+    counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, -19.5);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, AnUnknownPackDoesntHideTheOthersState)
+{
+    makePack("BAT0", {.status = "Full", .capacity = "100"});
+    makePack("BAT1", {.status = "Unknown", .capacity = "100"});
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_EQ(probe.read().state, BatteryState::Full);
+
+    writeFile(m_SysRoot / "BAT0" / "status", "Not charging");
+    EXPECT_EQ(probe.read().state, BatteryState::NotCharging);
+
+    writeFile(m_SysRoot / "BAT0" / "status", "Unknown");
+    EXPECT_EQ(probe.read().state, BatteryState::Unknown) << "only when every pack is unknown";
+}
+
 TEST_F(LinuxPowerProbeMultiPackTest, AbsentAndRemovedPacksAreLeftOut)
 {
     makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000"});
