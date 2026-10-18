@@ -109,7 +109,7 @@ ServiceActionResult LinuxServiceActions::runAuthorized(ServiceAction action,
         return SystemdBus::startUnit(name, stopToken, m_Wait, PROMPT);
     }
     case ServiceAction::SetStartType:
-        return SystemdBus::setUnitStartType(name, startType, PROMPT);
+        return SystemdBus::setUnitStartType(name, startType, PROMPT, stopToken);
     }
     return ServiceActionResult::failed("Unknown action");
 }

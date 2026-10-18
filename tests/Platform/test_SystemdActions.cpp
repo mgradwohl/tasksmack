@@ -111,6 +111,22 @@ TEST(SystemdActionsTest, RefusalsAfterAllowingAPromptSayWhatHappenedToIt)
     EXPECT_EQ(errorText("org.freedesktop.systemd1.NoSuchUnit", "", false, true), "No such service") << "unrelated errors unchanged";
 }
 
+// #2402: a call that let polkit prompt and ran out of time may still be carried out (systemd holds the
+// request until the prompt is answered), so it isn't reported as a plain failure.
+TEST(SystemdActionsTest, AnInteractiveTimeoutSaysTheActionMayStillHappen)
+{
+    EXPECT_EQ(SystemdActions::errorText("", "", true, true), "No answer in time; it may still happen if the password prompt is answered");
+    EXPECT_EQ(SystemdActions::errorText("", "", true, false), "systemd didn't answer in time");
+}
+
+// #2402: an action that may prompt waits as long as pkexec's prompt does; every other call keeps the
+// short bound that keeps a hung systemd from holding a worker.
+TEST(SystemdActionsTest, OnlyAnActionThatMayPromptGetsTheLongTimeout)
+{
+    EXPECT_EQ(SystemdBus::actionCallTimeoutUsec(false), SystemdBus::CALL_TIMEOUT_USEC);
+    EXPECT_GE(SystemdBus::actionCallTimeoutUsec(true), std::uint64_t{120'000'000});
+}
+
 TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
 {
     // polkit's answer to an unprivileged caller that won't be prompted (#2006), and plain denial.
@@ -474,6 +490,58 @@ TEST_F(SystemdActionsFakeTest, OnlyTheAuthorizedRetryLetsPolkitPrompt)
     EXPECT_EQ(retried.message, "Authentication was canceled or refused");
     EXPECT_FALSE(retried.needsAuthorization);
     EXPECT_FALSE(retried.authorizationUnavailable);
+}
+
+// #2402: systemd answers an action allowed to prompt only once the password is entered. One answered
+// after the 2 s read bound still succeeds.
+TEST_F(SystemdActionsFakeTest, AnAuthorizedRetryWaitsPastTheReadTimeoutForThePrompt)
+{
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StopUnit",
+                       // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                       [this](sd_bus_message* call) -> int
+                       {
+                           std::this_thread::sleep_for(std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC) +
+                                                       std::chrono::milliseconds(500)); // the user typing
+                           record("StopUnit");
+                           m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+                           return sd_bus_reply_method_return(call, "o", JOB_PATH);
+                       });
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK, /*allowInteractive=*/true);
+    EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StopUnit"}));
+}
+
+// #2402: closing the panel or exiting while the prompt is up ends the wait at once, not after the
+// prompt's long bound.
+TEST_F(SystemdActionsFakeTest, AStopRequestEndsTheWaitOnThePrompt)
+{
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StartUnit",
+                       [](sd_bus_message* call) -> int
+                       {
+                           std::this_thread::sleep_for(std::chrono::seconds(2)); // the prompt still up
+                           return sd_bus_reply_method_return(call, "o", JOB_PATH);
+                       });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    std::stop_source stop;
+    const std::jthread stopper(
+        [&stop]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            (void) stop.request_stop();
+        });
+    const auto started = std::chrono::steady_clock::now();
+    const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK, /*allowInteractive=*/true);
+    const auto waited = std::chrono::steady_clock::now() - started;
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.cancelled) << result.message;
+    EXPECT_LT(waited, std::chrono::milliseconds(1500));
 }
 
 TEST_F(SystemdActionsFakeTest, AnAuthorizedRetryWithNoAgentToPromptSaysSo)

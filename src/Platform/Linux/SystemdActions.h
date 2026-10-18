@@ -146,7 +146,9 @@ inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.free
 {
     if (timedOut)
     {
-        return "systemd didn't answer in time";
+        // Allowed to prompt, systemd still holds the request (#2402): it may yet act once the password
+        // is entered, so say so rather than report a plain failure.
+        return interactive ? "No answer in time; it may still happen if the password prompt is answered" : "systemd didn't answer in time";
     }
     // With a prompt allowed (#2304): still "interactive authorization required" means nothing could ask
     // (no polkit agent in the session); access denied, that the prompt was dismissed or refused.

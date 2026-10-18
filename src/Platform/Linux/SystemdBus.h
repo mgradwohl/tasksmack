@@ -47,6 +47,18 @@ struct BootTimestampsRead
 /// worker read for minutes.
 inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 
+/// Longest an action call that may prompt for a password waits (#2402): systemd holds its answer until
+/// the user answers polkit's agent, so CALL_TIMEOUT_USEC would give up on nearly everyone typing one.
+/// pkexec's own bound (PkexecBroker::CONNECT_TIMEOUT). A stop request still ends the wait at once.
+inline constexpr std::uint64_t INTERACTIVE_CALL_TIMEOUT_USEC = 120'000'000;
+
+/// How long an action's call may take: INTERACTIVE_CALL_TIMEOUT_USEC when it may prompt (the user's
+/// "Authenticate and retry", #2304), CALL_TIMEOUT_USEC otherwise (#2402).
+[[nodiscard]] constexpr std::uint64_t actionCallTimeoutUsec(bool allowInteractive) noexcept
+{
+    return allowInteractive ? INTERACTIVE_CALL_TIMEOUT_USEC : CALL_TIMEOUT_USEC;
+}
+
 /// Whether this build was linked with libsystemd.
 [[nodiscard]] bool built() noexcept;
 
@@ -107,8 +119,10 @@ stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait 
 
 /// Sets the start type of @p name's unit file: Automatic enables it, Manual disables it, Disabled masks
 /// it, unmasking first when moving off Disabled; then reloads systemd, as systemctl does (#2006).
-/// Automatic (delayed) and the read-only types are refused.
-[[nodiscard]] ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive = false);
+/// Automatic (delayed) and the read-only types are refused. @p stopToken ends a wait on a password
+/// prompt (#2402); a change already made stays made.
+[[nodiscard]] ServiceActionResult
+setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive = false, const std::stop_token& stopToken = {});
 
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.

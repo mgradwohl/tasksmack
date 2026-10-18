@@ -325,6 +325,78 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     return std::nullopt;
 }
 
+/// How often callAction() looks at its stop token while it waits (#2402).
+constexpr std::uint64_t ACTION_STOP_POLL_USEC = 50'000;
+
+/// What an action call's answer handed callAction().
+struct PendingReply
+{
+    bool done = false;
+    int result = 0;
+    BusError* error = nullptr;
+    Message* reply = nullptr;
+};
+
+int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retError*/)
+{
+    auto* pending = static_cast<PendingReply*>(userdata);
+    pending->done = true;
+    if (const sd_bus_error* error = sd_bus_message_get_error(message); error != nullptr)
+    {
+        (void) sd_bus_error_copy(pending->error->get(), error);
+        const int errorNumber = sd_bus_message_get_errno(message);
+        pending->result = errorNumber > 0 ? -errorNumber : -EIO;
+        return 0;
+    }
+    *pending->reply->out() = sd_bus_message_ref(message);
+    pending->result = 1;
+    return 0;
+}
+
+/// Sends @p call on an action's @p bus and waits for its answer, as sd_bus_call() does, or for
+/// @p stopToken: -ECANCELED then (#2402). A bus allowed to prompt gets actionCallTimeoutUsec()'s long
+/// bound, since systemd answers only once the user has answered polkit's agent; the wait goes in short
+/// slices so closing the panel or exiting still ends it at once, as runJob()'s own wait does.
+[[nodiscard]] int callAction(sd_bus* bus, sd_bus_message* call, const std::stop_token& stopToken, BusError& error, Message& reply)
+{
+    PendingReply pending{.error = &error, .reply = &reply};
+    sd_bus_slot* slot = nullptr;
+    const std::uint64_t timeout = actionCallTimeoutUsec(sd_bus_get_allow_interactive_authorization(bus) > 0);
+    if (const int result = sd_bus_call_async(bus, &slot, call, onActionReply, &pending, timeout); result < 0)
+    {
+        return result;
+    }
+    int failure = 0;
+    while (!pending.done && failure == 0)
+    {
+        if (stopToken.stop_requested())
+        {
+            failure = -ECANCELED;
+            break;
+        }
+        const int processed = sd_bus_process(bus, nullptr);
+        if (processed < 0)
+        {
+            failure = processed;
+        }
+        else if (processed == 0)
+        {
+            if (const int waited = sd_bus_wait(bus, ACTION_STOP_POLL_USEC); waited < 0 && waited != -EINTR)
+            {
+                failure = waited;
+            }
+        }
+    }
+    (void) sd_bus_slot_unref(slot); // no answer may reach `pending` once it is gone
+    return pending.done ? pending.result : failure;
+}
+
+/// Manager.@p method's call message on @p bus, into @p call.
+[[nodiscard]] int newManagerCall(sd_bus* bus, Message& call, const char* method)
+{
+    return sd_bus_message_new_method_call(bus, call.out(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method);
+}
+
 /// @p name's unit object (Manager.LoadUnit, which loads an installed unit that isn't), into @p path.
 [[nodiscard]] std::optional<ServiceActionResult> unitPath(sd_bus* bus, std::string_view name, std::string& path)
 {
@@ -418,11 +490,23 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     std::string jobPath;
     {
         BusError error;
+        Message call;
         Message reply;
         const std::string unit(name);
-        if (const int result = sd_bus_call_method(
-                bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method, error.get(), reply.out(), "ss", unit.c_str(), "replace");
-            result < 0)
+        int result = newManagerCall(bus, call, method);
+        if (result >= 0)
+        {
+            result = sd_bus_message_append(call.get(), "ss", unit.c_str(), "replace");
+        }
+        if (result >= 0)
+        {
+            result = callAction(bus, call.get(), stopToken, error, reply);
+        }
+        if (result == -ECANCELED && stopToken.stop_requested())
+        {
+            return ServiceActionResult::stopRequested();
+        }
+        if (result < 0)
         {
             return actionFailure(bus, error, result);
         }
@@ -503,13 +587,14 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
 /// MaskUnitFiles (as, b runtime, b force) or EnableUnitFiles (as, b runtime, b force). The changes it
 /// answers with aren't needed, but EnableUnitFiles' carries_install_info is: false means the unit file
 /// has no [Install] section, so nothing was enabled and it would never start at boot (#2146).
-[[nodiscard]] std::optional<ServiceActionResult> changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool withForce)
+[[nodiscard]] std::optional<ServiceActionResult>
+changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool withForce, const std::stop_token& stopToken)
 {
     BusError error;
     Message call;
     Message reply;
     const std::string unit(name);
-    int result = sd_bus_message_new_method_call(bus, call.out(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method);
+    int result = newManagerCall(bus, call, method);
     if (result >= 0)
     {
         result = sd_bus_message_append(call.get(), "as", 1, unit.c_str());
@@ -520,7 +605,11 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     }
     if (result >= 0)
     {
-        result = sd_bus_call(bus, call.get(), 0, error.get(), reply.out());
+        result = callAction(bus, call.get(), stopToken, error, reply);
+    }
+    if (result == -ECANCELED && stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
     }
     if (result < 0)
     {
@@ -574,7 +663,8 @@ ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopT
     return runJob(bus.get(), name, unitObject, "StopUnit", SystemdActions::Goal::Stopped, stopToken, wait);
 }
 
-ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive)
+ServiceActionResult
+setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive, const std::stop_token& stopToken)
 {
     const std::optional<SystemdActions::StartTypeSteps> steps = SystemdActions::startTypeSteps(startType);
     if (!steps.has_value())
@@ -588,7 +678,7 @@ ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType sta
     }
     if (steps->unmaskFirst)
     {
-        if (auto failed = changeUnitFile(bus.get(), "UnmaskUnitFiles", name, false))
+        if (auto failed = changeUnitFile(bus.get(), "UnmaskUnitFiles", name, false, stopToken))
         {
             return std::move(*failed);
         }
@@ -608,15 +698,24 @@ ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType sta
     case SystemdActions::FileChange::Disable:
         break;
     }
-    if (auto failed = changeUnitFile(bus.get(), method, name, withForce))
+    if (auto failed = changeUnitFile(bus.get(), method, name, withForce, stopToken))
     {
         return std::move(*failed);
     }
     // As systemctl does after changing unit files, so systemd sees the new state.
     BusError error;
+    Message call;
     Message reply;
-    if (const int result = sd_bus_call_method(bus.get(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "Reload", error.get(), reply.out(), "");
-        result < 0)
+    int result = newManagerCall(bus.get(), call, "Reload");
+    if (result >= 0)
+    {
+        result = callAction(bus.get(), call.get(), stopToken, error, reply);
+    }
+    if (result == -ECANCELED && stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
+    if (result < 0)
     {
         return actionFailure(bus.get(), error, result);
     }
@@ -649,7 +748,8 @@ ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool /*allowInteractive*/)
+ServiceActionResult
+setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
