@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -32,6 +33,7 @@
 #include <stop_token>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -820,6 +822,59 @@ TEST(PkexecBrokerTest, DisconnectEndsTheSessionAndConnectStartsAnother)
     const auto hello = broker.call(Broker::Hello{}, std::stop_token{});
     ASSERT_TRUE(hello.has_value());
     EXPECT_TRUE(std::holds_alternative<Broker::HelloReply>(*hello));
+}
+
+/// This process's child running tasksmack-helper, or -1: the helper PkexecBroker started with no launcher.
+[[nodiscard]] pid_t helperChild()
+{
+    for (const auto& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos)
+        {
+            continue;
+        }
+        std::ifstream statFile(entry.path() / "stat");
+        const std::string stat((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+        const std::size_t close = stat.rfind(')');
+        if (close == std::string::npos || !stat.contains("(tasksmack-help"))
+        {
+            continue;
+        }
+        int ppid = 0;
+        char state = 0;
+        if (std::sscanf(stat.c_str() + close + 1, " %c %d", &state, &ppid) == 2 && ppid == ::getpid() && state != 'Z')
+        {
+            return static_cast<pid_t>(std::stoi(name));
+        }
+    }
+    return -1;
+}
+
+// #2368: the helper also ends on its own (its idle exit, a crash); connected() must then say so, so a
+// refused action is offered "Authenticate and retry" rather than sent to a socket nobody reads.
+TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    ASSERT_TRUE(broker.connected());
+    const pid_t helper = helperChild();
+    ASSERT_GT(helper, 0);
+    ASSERT_EQ(::kill(helper, SIGKILL), 0);
+    bool gone = false;
+    for (int attempt = 0; attempt < 200 && !gone; ++attempt) // up to 2 s for the kernel to close its end
+    {
+        gone = !broker.connected();
+        if (!gone)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+    EXPECT_TRUE(gone);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value()) << "a fresh helper starts";
+    EXPECT_TRUE(broker.connected());
+    const auto reply = broker.call(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, std::stop_token{});
+    EXPECT_TRUE(reply.has_value());
 }
 
 TEST(PkexecBrokerTest, ADismissedPromptIsReportedAsSuch)

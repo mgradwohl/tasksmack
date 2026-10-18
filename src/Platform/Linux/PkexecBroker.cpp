@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include <poll.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -66,6 +67,21 @@ PkexecBroker::~PkexecBroker()
 
 bool PkexecBroker::connected() const noexcept
 {
+    if (!m_Connected.load())
+    {
+        return false;
+    }
+    // The helper also ends on its own (its idle exit, a crash), and then its end of the socket hangs up
+    // (#2368). Looked at when no call holds the lock; a call in progress finds out for itself.
+    const std::unique_lock lock(m_Mutex, std::try_to_lock);
+    if (lock.owns_lock() && m_Fd >= 0)
+    {
+        pollfd peer{.fd = m_Fd, .events = POLLRDHUP, .revents = 0};
+        if (::poll(&peer, 1, 0) > 0 && (peer.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0)
+        {
+            m_Connected = false; // the next connect() closes the socket and reaps the launcher
+        }
+    }
     return m_Connected.load();
 }
 
