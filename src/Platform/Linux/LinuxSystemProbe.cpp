@@ -783,13 +783,25 @@ std::optional<bool> LinuxSystemProbe::isVirtualInterface(const std::filesystem::
 
 bool LinuxSystemProbe::readInterfaceOperState(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
 {
-    // Read operational state from <sysClassNetRoot>/<iface>/operstate.
-    // Returns true only when the content is "up" (with or without trailing newline).
+    // Read operational state from <sysClassNetRoot>/<iface>/operstate: "up" is up.
     const std::string path = (sysClassNetRoot / ifaceName / "operstate").string();
     std::array<char, 16> buf{};
     const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
-    // "up\n" is 3 bytes; "up" is 2 — anything shorter cannot be "up".
-    return (len >= 2 && buf[0] == 'u' && buf[1] == 'p');
+    const std::string_view state(buf.data(), len);
+    if (state.starts_with("up"))
+    {
+        return true;
+    }
+    // "unknown": a driver that never reports it (LTE modems' wwan0, tun/tap VPNs) while the link works.
+    // The kernel's operstates documentation says to go by the carrier then, which reads 1 only on an
+    // interface that is up with a link -- reading it fails on one administratively down (#2433).
+    if (state.starts_with("unknown"))
+    {
+        const std::string carrierPath = (sysClassNetRoot / ifaceName / "carrier").string();
+        std::array<char, 4> carrier{};
+        return readProcFile(carrierPath.c_str(), carrier.data(), carrier.size()) >= 1 && carrier[0] == '1';
+    }
+    return false;
 }
 
 } // namespace Platform

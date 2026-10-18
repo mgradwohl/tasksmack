@@ -997,6 +997,36 @@ TEST(LinuxSystemProbeTest, OperStateAndLinkSpeedAreReadFromTheInjectedSysClassNe
     EXPECT_EQ(counters.networkInterfaces[1].linkSpeedMbps, 0U);
 }
 
+// #2433: operstate "unknown" (a driver that never reports it: an LTE modem's wwan0, a tun VPN) is up when
+// the interface has a carrier, as the kernel's operstates documentation says; down without one.
+TEST(LinuxSystemProbeTest, AnUnknownOperStateIsUpWhenTheInterfaceHasACarrier)
+{
+    ScopedTempDir proc("ts_test_sys_net_unknown");
+    ScopedTempDir sys("ts_test_sys_class_net_unknown");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("tswwan0", 5000, 700) << netDevLine("tstun0", 300, 30)
+                                             << netDevLine("tsoff0", 10, 1);
+    for (const char* name : {"tswwan0", "tstun0", "tsoff0"})
+    {
+        addSysfsInterface(sys.path, name, true);
+        std::ofstream(sys.path / name / "operstate") << "unknown\n";
+    }
+    std::ofstream(sys.path / "tswwan0" / "carrier") << "1\n";
+    std::ofstream(sys.path / "tstun0" / "carrier") << "0\n";
+    // tsoff0: no readable carrier (administratively down)
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    const auto isUp = [&counters](std::string_view name)
+    {
+        const auto it = std::ranges::find(counters.networkInterfaces, name, &SystemCounters::InterfaceCounters::name);
+        return it != counters.networkInterfaces.end() && it->isUp;
+    };
+    EXPECT_TRUE(isUp("tswwan0"));
+    EXPECT_FALSE(isUp("tstun0"));
+    EXPECT_FALSE(isUp("tsoff0"));
+}
+
 TEST(LinuxSystemProbeTest, CpuFrequencyIsReadFromTheInjectedCpuSysfsRoot)
 {
     // #1183: cpu0's current frequency (kHz), scaling_cur_freq first, cpuinfo_cur_freq as the fallback.
