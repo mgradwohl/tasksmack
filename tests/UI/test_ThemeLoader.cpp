@@ -689,17 +689,21 @@ class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest
         std::string_view content;
     };
 
-    // Each input crashed toml++ before #1387/#1388/#1389/#1659 were fixed.
-    static constexpr std::array<MalformedTheme, 9> kTomlppCrashInputs = {{
-        {.name = "TableHeaderThenNewline", .content = "[\n"},             // #1387
-        {.name = "TableHeaderThenEquals", .content = "[="},               // #1387
-        {.name = "ArrayClosedWithBrace", .content = "m=[}"},              // #1388
-        {.name = "CommaThenBrace", .content = "m=[1,}"},                  // #1388
-        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"},             // #1389
-        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"},             // #1389
-        {.name = "DateBadDayThenValues", .content = "h=2000-02-1a 1 1"},  // #1659
-        {.name = "DateSpaceDigitNewline", .content = "h=2000-02-01 1\n"}, // #1659
-        {.name = "DateSpaceDigitInArray", .content = "h=[2000-02-01 1]"}, // #1659
+    // Each input crashed toml++ before #1387/#1388/#1389/#1659/#2427 were fixed.
+    static constexpr std::array<MalformedTheme, 13> kTomlppCrashInputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"},                                  // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},                                    // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},                                   // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},                                       // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"},                                  // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"},                                  // #1389
+        {.name = "DateBadDayThenValues", .content = "h=2000-02-1a 1 1"},                       // #1659
+        {.name = "DateSpaceDigitNewline", .content = "h=2000-02-01 1\n"},                      // #1659
+        {.name = "DateSpaceDigitInArray", .content = "h=[2000-02-01 1]"},                      // #1659
+        {.name = "DateTimeLowerTThenLetter", .content = "2h=0200-02-10thexxxxxxxxxxWq\x7f:t"}, // #2427 (the fuzzer's input)
+        {.name = "DateTimeUpperTThenLetter", .content = "h=2000-02-10Tx:"},                    // #2427
+        {.name = "DateTimeTThenSign", .content = "h=2000-02-10T+1:"},                          // #2427
+        {.name = "DateTimeTThenColonInArray", .content = "h=[2000-02-10t:00]"},                // #2427
     }};
 
     void SetUp() override
