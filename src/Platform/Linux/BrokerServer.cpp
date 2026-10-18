@@ -68,121 +68,139 @@ namespace
 
 } // namespace
 
-Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers)
+namespace
 {
-    if (const auto* hello = std::get_if<Broker::Hello>(&request))
+
+// One handler per read kind (#2514). Each runs as root for the TaskSmack that started the helper, so each
+// says what it allows. A reader that throws gives its kind's failure, never an escaped exception.
+
+/// Process Details' environment (#2309): the reader checks the target's identity (PID and start time)
+/// itself and never logs a value (#179).
+[[nodiscard]] Broker::Response handleEnvironment(const Broker::EnvironmentRequest& read, const Readers& readers)
+{
+    if (readers.environment == nullptr)
     {
-        return Broker::HelloReply{.version = Broker::PROTOCOL_VERSION, .accepted = hello->version == Broker::PROTOCOL_VERSION};
+        return Broker::ErrorReply{.message = "This helper doesn't read environments"};
     }
-    // Process Details' reads (#2309): each reader checks the target's identity itself. The environment
-    // reader never logs a value (#179).
-    if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request))
+    try
     {
-        if (readers.environment == nullptr)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't read environments"};
-        }
-        try
-        {
-            return Broker::EnvironmentReply{.result = readers.environment->readEnvironment(read->target)};
-        }
-        catch (...)
-        {
-            return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
-        }
+        return Broker::EnvironmentReply{.result = readers.environment->readEnvironment(read.target)};
     }
-    if (const auto* read = std::get_if<Broker::ModulesRequest>(&request))
+    catch (...)
     {
-        if (readers.modules == nullptr)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't list modules"};
-        }
-        try
-        {
-            return Broker::ModulesReply{.result = readers.modules->readModules(read->target)};
-        }
-        catch (...)
-        {
-            return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = {}}};
-        }
+        return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
     }
-    if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request))
+}
+
+/// Process Details' modules (#2309): the reader checks the target's identity itself.
+[[nodiscard]] Broker::Response handleModules(const Broker::ModulesRequest& read, const Readers& readers)
+{
+    if (readers.modules == nullptr)
     {
-        if (readers.openFiles == nullptr)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't list open files"};
-        }
-        try
-        {
-            return Broker::OpenFilesReply{.result = readers.openFiles->readOpenFiles(read->target)};
-        }
-        catch (...)
-        {
-            OpenFilesReadResult failed;
-            failed.status = OpenFilesReadStatus::Failed;
-            return Broker::OpenFilesReply{.result = std::move(failed)};
-        }
+        return Broker::ErrorReply{.message = "This helper doesn't list modules"};
     }
-    if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
+    try
     {
-        if (readers.connections == nullptr)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't list connections"};
-        }
-        try
-        {
-            return Broker::ConnectionsReply{.result = readers.connections->readConnections(read->target)};
-        }
-        catch (...)
-        {
-            return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = {}}};
-        }
+        return Broker::ModulesReply{.result = readers.modules->readModules(read.target)};
     }
-    if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
+    catch (...)
     {
-        if (!readers.memoryRollup)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't read PSS and USS"};
-        }
-        try
-        {
-            return Broker::MemoryRollupReply{.result = readers.memoryRollup(read->target.pid, read->target.startTimeTicks)};
-        }
-        catch (...)
-        {
-            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
-        }
+        return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = {}}};
     }
-    if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
+}
+
+/// Process Details' open files (#2309): the reader checks the target's identity itself.
+[[nodiscard]] Broker::Response handleOpenFiles(const Broker::OpenFilesRequest& read, const Readers& readers)
+{
+    if (readers.openFiles == nullptr)
     {
-        if (!readers.firmwareFile)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't read firmware files"};
-        }
-        try
-        {
-            return readers.firmwareFile(read->file);
-        }
-        catch (...)
-        {
-            return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
-        }
+        return Broker::ErrorReply{.message = "This helper doesn't list open files"};
     }
-    if (std::holds_alternative<Broker::CrashesRequest>(request))
+    try
     {
-        if (!readers.crashes)
-        {
-            return Broker::ErrorReply{.message = "This helper doesn't read crashes"};
-        }
-        try
-        {
-            return Broker::CrashesReply{.info = readers.crashes()};
-        }
-        catch (...)
-        {
-            return Broker::ErrorReply{.message = "The crash read failed"};
-        }
+        return Broker::OpenFilesReply{.result = readers.openFiles->readOpenFiles(read.target)};
     }
+    catch (...)
+    {
+        OpenFilesReadResult failed;
+        failed.status = OpenFilesReadStatus::Failed;
+        return Broker::OpenFilesReply{.result = std::move(failed)};
+    }
+}
+
+/// Process Details' connections (#2309): the reader checks the target's identity itself.
+[[nodiscard]] Broker::Response handleConnections(const Broker::ConnectionsRequest& read, const Readers& readers)
+{
+    if (readers.connections == nullptr)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list connections"};
+    }
+    try
+    {
+        return Broker::ConnectionsReply{.result = readers.connections->readConnections(read.target)};
+    }
+    catch (...)
+    {
+        return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = {}}};
+    }
+}
+
+/// The Memory section's PSS and USS (#2309): the read checks the target's start time before trusting
+/// smaps_rollup.
+[[nodiscard]] Broker::Response handleMemoryRollup(const Broker::MemoryRollupRequest& read, const Readers& readers)
+{
+    if (!readers.memoryRollup)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read PSS and USS"};
+    }
+    try
+    {
+        return Broker::MemoryRollupReply{.result = readers.memoryRollup(read.target.pid, read.target.startTimeTicks)};
+    }
+    catch (...)
+    {
+        return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+    }
+}
+
+/// System Information's root-only firmware facts (#2310): only the files FirmwareFile names, never a path.
+[[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
+{
+    if (!readers.firmwareFile)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read firmware files"};
+    }
+    try
+    {
+        return readers.firmwareFile(read.file);
+    }
+    catch (...)
+    {
+        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
+    }
+}
+
+/// Every user's crashes (#2310): journal entries the reader trust-checks, and cores from the coredump
+/// directory only.
+[[nodiscard]] Broker::Response handleCrashes(const Readers& readers)
+{
+    if (!readers.crashes)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read crashes"};
+    }
+    try
+    {
+        return Broker::CrashesReply{.info = readers.crashes()};
+    }
+    catch (...)
+    {
+        return Broker::ErrorReply{.message = "The crash read failed"};
+    }
+}
+
+/// An action on a process (act()): each re-verifies the target through a pidfd before acting.
+[[nodiscard]] Broker::Response handleAction(const Broker::Request& request, IProcessActions& actions)
+{
     try
     {
         return act(request, actions);
@@ -195,6 +213,46 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     {
         return Broker::ActionResult{.success = false, .errorMessage = "The action failed", .successNote = {}};
     }
+}
+
+} // namespace
+
+/// The reply to @p request: the handshake, a read through its handler above, or an action (#2514).
+Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers)
+{
+    if (const auto* hello = std::get_if<Broker::Hello>(&request))
+    {
+        return Broker::HelloReply{.version = Broker::PROTOCOL_VERSION, .accepted = hello->version == Broker::PROTOCOL_VERSION};
+    }
+    if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request))
+    {
+        return handleEnvironment(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ModulesRequest>(&request))
+    {
+        return handleModules(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request))
+    {
+        return handleOpenFiles(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
+    {
+        return handleConnections(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
+    {
+        return handleMemoryRollup(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
+    {
+        return handleFirmwareFile(*read, readers);
+    }
+    if (std::holds_alternative<Broker::CrashesRequest>(request))
+    {
+        return handleCrashes(readers);
+    }
+    return handleAction(request, actions);
 }
 
 SessionEnd
