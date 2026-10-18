@@ -212,6 +212,8 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_memory_total_get)(std::uint32_t, rsmi_memory_type_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_ave_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
+    // Newer ROCm SMI only; optional (#2464).
+    rsmi_status_t (*rsmi_dev_current_socket_power_get)(std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     // rsmi_frequencies_t's layout depends on the library version: see frequenciesLayout.
     rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
@@ -219,6 +221,20 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
+
+    /// The device's power draw in microwatts: its average power, else (#2464) its current socket power, for a
+    /// card or kernel that has only the latter (amdgpu's power1_input without power1_average, reportedly some
+    /// RDNA3 cards and APUs). Only a definitive "not supported" falls back; a busy device stays busy.
+    [[nodiscard]] rsmi_status_t readPower(std::uint32_t device, std::uint64_t* microWatts) const
+    {
+        const rsmi_status_t average = rsmi_dev_power_ave_get(device, 0, microWatts);
+        if (rsmi_dev_current_socket_power_get == nullptr ||
+            (average != RSMI_STATUS_NOT_SUPPORTED && average != RSMI_STATUS_NOT_FOUND && average != RSMI_STATUS_NOT_YET_IMPLEMENTED))
+        {
+            return average;
+        }
+        return rsmi_dev_current_socket_power_get(device, microWatts);
+    }
 
     // Which rsmi_frequencies_t layout to try first for the loaded library; set in loadROCmSMI().
     ROCmGPUProbeMath::FrequenciesLayout frequenciesLayout = ROCmGPUProbeMath::FrequenciesLayout::V6;
@@ -310,6 +326,7 @@ bool ROCmGPUProbe::Impl::loadSymbols()
     LOAD_ROCM_FUNC(rsmi_dev_fan_speed_get);
     LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_fan_speed_max_get);
     LOAD_ROCM_FUNC_OPTIONAL(rsmi_version_get);
+    LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_current_socket_power_get);
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
@@ -552,7 +569,7 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             sensors.hasTemperature =
                 supported(m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_EDGE, RSMI_TEMP_CURRENT, &probeTemp));
             std::uint64_t probePower = 0;
-            sensors.hasPowerMetrics = supported(m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower));
+            sensors.hasPowerMetrics = supported(m_Impl->readPower(deviceIdx, &probePower));
             ROCmGPUProbeMath::RsmiFrequenciesBuffer probeFreq;
             const rsmi_status_t freqResult = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(probeFreq));
             // Only a definitive answer removes the clock. A sample that came back but can't be decoded
@@ -656,9 +673,9 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.temperatureAvailable = false;
         }
 
-        // Power draw (average power in microwatts)
+        // Power draw in microwatts: average power, else current socket power (#2464)
         std::uint64_t powerMicroW = 0;
-        result = m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &powerMicroW);
+        result = m_Impl->readPower(deviceIdx, &powerMicroW);
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.powerDrawWatts = static_cast<double>(powerMicroW) / 1000000.0; // Convert µW to W

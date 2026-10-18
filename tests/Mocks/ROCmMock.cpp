@@ -11,6 +11,7 @@ using rsmi_status_t = std::uint32_t;
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
+constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
 constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
 constexpr rsmi_status_t RSMI_STATUS_BUSY = 16;
 
@@ -181,6 +182,9 @@ unsigned int g_IdCalls = 0;
 // Utilization, memory, edge temperature, average power and GPU clock reads fail with
 // RSMI_STATUS_BUSY, as a busy or resetting GPU does (#1111). Set through tasksmackRocmMockFailSensorReads().
 bool g_FailSensorReads = false;
+// #2464: rsmi_dev_power_ave_get answers RSMI_STATUS_NOT_SUPPORTED, as on a card with only power1_input; the
+// current socket power (powerMicroWatts + 1 W, to tell the two apart) still reads.
+bool g_AveragePowerUnsupported = false;
 // #1116: how many devices ROCm SMI reports (the first N of MOCK_DEVICES), so a test can hot-plug or
 // remove one; whether utilization reads return RSMI_STATUS_INIT_ERROR; and how often rsmi_init ran.
 unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
@@ -373,7 +377,26 @@ extern "C"
         {
             return RSMI_STATUS_BUSY;
         }
+        if (g_AveragePowerUnsupported)
+        {
+            return RSMI_STATUS_NOT_SUPPORTED;
+        }
         *power = device->powerMicroWatts;
+        return RSMI_STATUS_SUCCESS;
+    }
+
+    rsmi_status_t rsmi_dev_current_socket_power_get(std::uint32_t deviceIndex, std::uint64_t* power)
+    {
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (g_FailSensorReads)
+        {
+            return RSMI_STATUS_BUSY;
+        }
+        *power = device->powerMicroWatts + 1000000ULL;
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -459,6 +482,12 @@ extern "C"
     void tasksmackRocmMockFailSensorReads(int fail)
     {
         g_FailSensorReads = (fail != 0);
+    }
+
+    // Test control (#2464): see g_AveragePowerUnsupported.
+    void tasksmackRocmMockAveragePowerUnsupported(int unsupported)
+    {
+        g_AveragePowerUnsupported = (unsupported != 0);
     }
 
     // Test controls (#1116): see g_DeviceCount (capped at the mock's three), g_InitErrorReads and

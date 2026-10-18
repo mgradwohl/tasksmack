@@ -272,6 +272,41 @@ TEST(LinuxROCmGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_EQ(failed[0].fanSpeedRaw, good[0].fanSpeedRaw); // reads that still succeed are unaffected
 }
 
+// #2464: a card that reports no average power (amdgpu's power1_input only) still shows its power, from the
+// current socket power.
+TEST(LinuxROCmGPUProbeTest, WithoutAveragePowerTheCurrentSocketPowerIsShown)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+    const auto averageUnsupported = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockAveragePowerUnsupported"));
+    ASSERT_NE(averageUnsupported, nullptr);
+
+    averageUnsupported(1);
+    std::vector<GPUCounters> counters;
+    bool hasPower = false;
+    {
+        ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+        if (probe.isAvailable())
+        {
+            counters = probe.readGPUCounters();
+            hasPower = probe.capabilities().hasPowerMetrics;
+        }
+    }
+    averageUnsupported(0);
+    dlclose(library);
+
+    EXPECT_TRUE(hasPower);
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 151.0); // the socket power, not the 150 W average
+}
+
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
 {
     ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
