@@ -1,13 +1,8 @@
 #include "InstanceLock.h"
 
-#include "App/NewFileOwner.h"
-
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <system_error>
-#include <utility>
-#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -20,7 +15,12 @@
 #include <windows.h>
 // clang-format on
 #else
+#include "App/NewFileOwner.h"
+
 #include <cerrno>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/file.h>

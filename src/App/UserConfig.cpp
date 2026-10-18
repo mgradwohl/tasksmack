@@ -1,6 +1,5 @@
 #include "UserConfig.h"
 
-#include "App/NewFileOwner.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
@@ -46,6 +45,8 @@
 #include <ios>
 // clang-format on
 #else
+#include "App/NewFileOwner.h"
+
 #include <array>
 #include <cerrno>
 #include <functional>
