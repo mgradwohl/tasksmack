@@ -292,6 +292,7 @@ class ProcessActionsView
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
         m_Retry.reset(); // never offer to retry an action on a process no longer shown
+        ++m_Generation;  // an action still running reports to nobody: its process is no longer shown (#2389)
     }
 
     /// Whether a confirm is requested, open, or holds a captured action and target.
@@ -326,7 +327,9 @@ class ProcessActionsView
                              const Platform::ProcessTarget& target,
                              std::string processName)
     {
-        if (!Detail::killShortcutAllowed(capabilities, target, confirmPending() || m_DumpView.active()))
+        // Not while an action runs either: the Kill button is disabled then, and a confirmed kill would only
+        // be refused with "Another action is still running" (#2390)
+        if (!Detail::killShortcutAllowed(capabilities, target, confirmPending() || m_DumpView.active() || m_ActionRun.busy()))
         {
             return false;
         }
@@ -449,12 +452,18 @@ class ProcessActionsView
             showResult(format(Platform::ProcessActionResult::error("Another action is still running")));
             return;
         }
+        m_RunGeneration = m_Generation;
         static_cast<void>(m_ActionRun.start(
             std::move(pending),
             std::move(work),
             // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the std::function moved into the finish is owned by it, not leaked
-            [this, actions, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
+            [this, actions, generation = m_Generation, format = std::move(format), retry = std::move(retry)](
+                const Platform::ProcessActionResult& result)
             {
+                if (generation != m_Generation)
+                {
+                    return; // the selection changed while it ran: not this process's result to show (#2389)
+                }
                 showResult(format(result));
                 if (result.permissionDenied && retry.has_value() && actions->actionCapabilities().canAuthorizeInteractively)
                 {
@@ -534,6 +543,8 @@ class ProcessActionsView
         ResultFormat format;
     };
     std::optional<Retry> m_Retry;
+    std::uint64_t m_Generation = 0;         // bumped by onSelectionChanged() (#2389)
+    std::uint64_t m_RunGeneration = 0;      // m_Generation when the running action started
     ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
     // Create dump file... (#807). Its worker uses the panel's IProcessActions until it finishes: the
     // panel declares this view after its actions, so the view (and its destructor's wait) goes first.

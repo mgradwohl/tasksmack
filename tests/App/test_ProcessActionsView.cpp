@@ -259,6 +259,37 @@ TEST(ProcessActionsViewTest, TheRetryOfferGoesWithASelectionChangeOrItsTimeout)
     EXPECT_EQ(mock.runAuthorizedCount(), 0);
 }
 
+// #2389: an action that finishes after the selection changed reports to nobody: no result line and no
+// retry offer for the process now shown.
+TEST(ProcessActionsViewTest, AnActionFinishingAfterASelectionChangeShowsNothing)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canStop = true, .canAuthorizeInteractively = true});
+    mock.setStopResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Stop, {.pid = 7, .startTimeTicks = 1}, "proc");
+    view.dispatchConfirmed(&mock);
+    view.onSelectionChanged(); // before its result is taken in
+    view.waitForActionForTesting();
+    EXPECT_TRUE(view.lastResult().text.empty());
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+// #2390: F9 opens no Kill confirm while an action runs, as the Kill button is disabled then.
+TEST(ProcessActionsViewTest, KillShortcutWaitsForTheRunningAction)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canStop = true});
+    ProcessActionsView view;
+    const Platform::ProcessTarget target{.pid = 7, .startTimeTicks = 1};
+    view.requestAction(ProcessAction::Stop, target, "proc");
+    view.dispatchConfirmed(&mock);
+    ASSERT_TRUE(view.actionRunning());
+    EXPECT_FALSE(view.requestKillShortcut(mock.actionCapabilities(), target, "proc"));
+    view.waitForActionForTesting();
+    EXPECT_TRUE(view.requestKillShortcut(mock.actionCapabilities(), target, "proc"));
+}
+
 TEST(ProcessActionsViewTest, ADismissedPromptIsTheResultAndIsNotOfferedAgain)
 {
     TestMocks::MockProcessActions mock;

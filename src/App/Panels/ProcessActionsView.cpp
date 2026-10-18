@@ -192,7 +192,7 @@ void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* act
 void ProcessActionsView::renderResultFeedback()
 {
     const auto& theme = UI::Theme::get();
-    if (m_ActionRun.busy())
+    if (m_ActionRun.busy() && m_RunGeneration == m_Generation) // not another process's action (#2389)
     {
         ImGui::TextColored(theme.scheme().textMuted, "%s", m_ActionRun.pendingText().c_str()); // #2305
         ImGui::Spacing();
