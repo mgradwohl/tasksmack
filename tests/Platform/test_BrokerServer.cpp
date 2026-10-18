@@ -537,6 +537,70 @@ TEST(BrokerServeTest, PssAndUssReadsDontPutOffTheIdleExit)
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
 }
 
+// #2405: Process Details re-reads Environment, Modules, Open files and Connections through a connected helper
+// on its refresh timer, and System Information its firmware files and crashes; none of it is the user acting,
+// so none of it may keep the helper running past its idle timeout.
+TEST(BrokerServeTest, ProcessDetailsAndSystemInformationReadsDontPutOffTheIdleExit)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessEnvironmentReader environment;
+    TestMocks::MockProcessModulesReader modules;
+    TestMocks::MockProcessOpenFilesReader openFiles;
+    TestMocks::MockProcessConnectionsReader connections;
+    BrokerServer::Readers readers{.environment = &environment, .modules = &modules, .openFiles = &openFiles, .connections = &connections};
+    readers.firmwareFile = [](Broker::FirmwareFile)
+    {
+        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
+    };
+    readers.crashes = []
+    {
+        return CrashesInfo{};
+    };
+    constexpr std::chrono::milliseconds IDLE{1000};
+    auto session =
+        std::async(std::launch::async, [&] { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    std::uint32_t id = 2;
+    for (int round = 0; round < 2; ++round) // at about 400 and 800 ms
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{400});
+        EXPECT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(
+            roundTrip(pair.client(), id++, Broker::ConnectionsRequest{.target = TARGET}).message));
+        EXPECT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(
+            roundTrip(pair.client(), id++, Broker::EnvironmentRequest{.target = TARGET}).message));
+        EXPECT_TRUE(
+            std::holds_alternative<Broker::ModulesReply>(roundTrip(pair.client(), id++, Broker::ModulesRequest{.target = TARGET}).message));
+        EXPECT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(
+            roundTrip(pair.client(), id++, Broker::OpenFilesRequest{.target = TARGET}).message));
+        EXPECT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(
+            roundTrip(pair.client(), id++, Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}).message));
+        EXPECT_TRUE(std::holds_alternative<Broker::CrashesReply>(roundTrip(pair.client(), id++, Broker::CrashesRequest{}).message));
+    }
+    // Idle a second after the Hello, not after the last reads (which would be about 1.8 s)
+    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{700}), std::future_status::ready);
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
+}
+
+// The user acting is what keeps the helper running: an action restarts the idle timeout.
+TEST(BrokerServeTest, AnActionPutsOffTheIdleExit)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    constexpr std::chrono::milliseconds IDLE{2000};
+    auto session = serveAsync(pair, actions, IDLE);
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    EXPECT_TRUE(actionResult(roundTrip(pair.client(), 2, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}).message)
+                    .success);
+    // At about 2.5 s: past the Hello's timeout, inside the action's (about 3 s)
+    EXPECT_EQ(session.wait_for(std::chrono::milliseconds{1500}), std::future_status::timeout);
+    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{2000}), std::future_status::ready);
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
+}
+
 TEST(BrokerServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
 {
     SocketPair pair;

@@ -54,6 +54,17 @@ namespace
     return {.success = false, .errorMessage = "Not an action", .successNote = {}};
 }
 
+/// Whether @p request puts off the idle exit: only what the user does, the Hello (which an
+/// Authenticate and retry or Authenticate to read connects with) and an action. Every read kind can
+/// come on its own: Process Details re-reads Environment, Modules, Open files and Connections through
+/// a connected helper on its refresh timer, and the sampler reads PSS/USS every refresh (#2369, #2405).
+[[nodiscard]] bool putsOffTheIdleExit(const Broker::Request& request) noexcept
+{
+    return std::holds_alternative<Broker::Hello>(request) || std::holds_alternative<Broker::SignalRequest>(request) ||
+           std::holds_alternative<Broker::PriorityRequest>(request) || std::holds_alternative<Broker::IoPriorityRequest>(request) ||
+           std::holds_alternative<Broker::AffinityRequest>(request);
+}
+
 } // namespace
 
 Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers)
@@ -189,8 +200,8 @@ SessionEnd
 serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers)
 {
     bool greeted = false;
-    // The idle timeout runs from the last request the user made. The process sampler's PSS/USS reads of
-    // a watched process come every refresh on their own, so they don't keep the helper alive (#2369).
+    // The idle timeout runs from the last request the user made: reads come on their own timers, so they
+    // don't keep the helper alive (#2369, #2405).
     auto lastActivity = std::chrono::steady_clock::now();
     while (true)
     {
@@ -227,7 +238,7 @@ serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, c
         else
         {
             requestId = decoded->requestId;
-            if (!std::holds_alternative<Broker::MemoryRollupRequest>(decoded->message))
+            if (putsOffTheIdleExit(decoded->message))
             {
                 lastActivity = std::chrono::steady_clock::now();
             }
