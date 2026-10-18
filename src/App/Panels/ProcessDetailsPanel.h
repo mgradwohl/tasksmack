@@ -201,9 +201,10 @@ class ProcessDetailsPanel : public Panel
         return m_ProcessExited;
     }
 
-    /// What process actions the underlying IProcessActions supports. Exposed publicly so
-    /// tests constructing this panel with an injected mock can assert the capability flags
-    /// were actually pulled from it.
+    /// What process actions the underlying IProcessActions supports, read at construction and again
+    /// every renderContent() (some, like the Realtime I/O class, follow the privileged helper, #2407).
+    /// Exposed publicly so tests constructing this panel with an injected mock can assert the
+    /// capability flags were actually pulled from it.
     [[nodiscard]] const Platform::ProcessActionCapabilities& actionCapabilities() const
     {
         return m_ActionCapabilities;
@@ -250,6 +251,12 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
     {
         return m_ActionsView;
+    }
+
+    /// Test seam (#2407): the Priority card's view, with the I/O priority control's state.
+    [[nodiscard]] ProcessPriorityView& priorityViewForTesting() noexcept
+    {
+        return m_PriorityView;
     }
 
   private:

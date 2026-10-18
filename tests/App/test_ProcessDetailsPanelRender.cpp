@@ -4,11 +4,14 @@
 /// runtime, actions, the optional sections, the charts once it has history), the tab a selection asks
 /// for, a process that leaves the list, and an inactive panel drawing nothing. The Actions block's
 /// dialogs stay submitted whatever the pane shows: a confirm closes when its process exits or another is
-/// selected, and a dump in flight keeps its progress and then shows its result (#2117).
+/// selected, and a dump in flight keeps its progress and then shows its result (#2117). The I/O slider
+/// follows capabilities that change after construction, as Realtime does once the helper connects (#2407).
 
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessDetailsPanel.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessIoPriorityView.h"
+#include "App/Panels/ProcessPriorityView.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -609,6 +612,66 @@ TEST_F(ProcessDetailsPanelRenderTest, TheKillShortcutAsksFirst)
     ASSERT_NE(modal, nullptr);
     EXPECT_TRUE(std::string_view(modal->Name).starts_with("Kill")) << modal->Name;
     EXPECT_EQ(mock->killCount(), 0); // asked, not done
+}
+
+// #2407: the Realtime I/O class can become settable after the panel is built -- BrokeredProcessActions
+// reports it once the privileged helper connects -- and the I/O slider then offers its Realtime stops.
+// They used to come from a copy of the capabilities taken at construction, so they never appeared.
+TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanSetIt)
+{
+    auto actions = std::make_unique<TestMocks::MockProcessActions>();
+    Platform::ProcessActionCapabilities caps;
+    caps.canSetPriority = true;
+    caps.canSetIoPriority = true;
+    caps.canAuthorizeInteractively = true;
+    actions->setCapabilities(caps); // No Realtime yet: the helper is not connected
+    actions->setIoPriorityReadResult(Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 0});
+    TestMocks::MockProcessActions* mock = actions.get();
+    ProcessDetailsPanel panel(std::move(actions));
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    ASSERT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority);
+
+    caps.canSetRealtimeIoPriority = true; // The helper connected
+    mock->setCapabilities(caps);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority);
+
+    // One step toward the high end from Best-effort 0 is Realtime 7 on the slider with Realtime; the
+    // slider without it holds at its start.
+    const ImGuiWindow* card = nullptr;
+    for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains("ProcessPriorityBlock_"))
+        {
+            card = window;
+        }
+    }
+    ASSERT_NE(card, nullptr);
+    ImGuiWindow* cardForFocus = ImGui::FindWindowByID(card->ID);
+    const ImGuiID sliderId = ImHashStr(Detail::IO_PRIORITY_SLIDER_ID, 0, ImHashStr("io_priority", 0, card->ID));
+    // Focused as the slider's own tests do it, at the start of a frame that draws it.
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::SetFocusID(sliderId, cardForFocus);
+    panel.renderContent();
+    ImGui::End();
+    ImGui::Render();
+    static_cast<void>(renderAndCapture(panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_LeftArrow, true);
+    static_cast<void>(renderAndCapture(panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_LeftArrow, false);
+    static_cast<void>(renderAndCapture(panel));
+    const Platform::IoPriority picked = panel.priorityViewForTesting().ioPriorityView().shownIoPriority();
+    EXPECT_EQ(picked.ioClass, Platform::IoPriorityClass::Realtime);
+    EXPECT_EQ(picked.level, 7);
+    EXPECT_EQ(mock->setIoPriorityCount(), 0); // Picking applies nothing
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, TheOverviewShowsTheExecutablesRecentCrashes)

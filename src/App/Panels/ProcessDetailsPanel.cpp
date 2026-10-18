@@ -337,6 +337,15 @@ void ProcessDetailsPanel::renderContent()
     // every reason not to (no selection, not on show, exited, not yet sampled) has returned early.
     const bool killRequested = m_KillShortcut.take();
 
+    // What the actions can do, as of this frame: not all of it is fixed at construction. Once the
+    // privileged helper connects (an "Authenticate and retry"), BrokeredProcessActions can set the
+    // Realtime I/O class, so the I/O slider gains its Realtime stops (#2407). A struct copy and an
+    // atomic read.
+    if (m_ProcessActions)
+    {
+        m_ActionCapabilities = m_ProcessActions->actionCapabilities();
+    }
+
     renderPane(killRequested);
 
     // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
