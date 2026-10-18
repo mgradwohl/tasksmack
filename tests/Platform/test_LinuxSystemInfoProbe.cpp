@@ -24,6 +24,9 @@
 #include <thread>
 #include <vector>
 
+#include <pwd.h>
+#include <unistd.h>
+
 namespace Platform
 {
 namespace
@@ -112,6 +115,21 @@ TEST(LinuxSystemInfoProbeTest, ReadsEverySectionOnThisMachine)
 // #2416: System Information's read and the crash history's worker read the crashes at once, each on its
 // own probe; the user and group lookups behind the read are reentrant, so neither sees the other's entry.
 // Run under TSan by the tsan preset. A bounded number of reads, no busy loop.
+// #2197 (#2479): the home directory redacted from shown paths is this user's passwd entry's, even when it
+// isn't named after the login.
+TEST(LinuxSystemInfoProbeTest, TheHomeDirectoryIsThisUsersPasswdEntrys)
+{
+    passwd entry{};
+    passwd* found = nullptr;
+    std::array<char, 16384> buffer{};
+    if (::getpwuid_r(::geteuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr || entry.pw_dir == nullptr)
+    {
+        GTEST_SKIP() << "no passwd entry for this user here";
+    }
+    LinuxSystemInfoProbe probe;
+    EXPECT_EQ(probe.readOs().homeDirectory, std::string(entry.pw_dir));
+}
+
 TEST(LinuxSystemInfoProbeTest, TwoProbesReadTheCrashesOnTwoThreadsAtOnce)
 {
     constexpr int READS = 4;
