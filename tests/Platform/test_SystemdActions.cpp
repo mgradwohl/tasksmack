@@ -745,12 +745,21 @@ TEST_F(SystemdActionsFakeTest, AutomaticOnAUnitWithoutAnInstallSectionSaysWhy)
 {
     serveUnitFileCall("UnmaskUnitFiles");
     serveUnitFileCall("EnableUnitFiles", /*carriesInstallInfo=*/false);
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "Reload",
+                       [this](sd_bus_message* call) -> int
+                       {
+                           record("Reload");
+                           return sd_bus_reply_method_return(call, "");
+                       });
     ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
 
     const ServiceActionResult automatic = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic);
     EXPECT_FALSE(automatic.ok);
     EXPECT_EQ(automatic.message, SystemdActions::NO_INSTALL_SECTION_MESSAGE);
-    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service"}));
+    // The unmask changed the unit files, so systemd is reloaded anyway (#2426).
+    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service", "Reload"}));
 }
 
 // #1891: the unit files changed but systemd refused the Reload that tells it so: reported as a

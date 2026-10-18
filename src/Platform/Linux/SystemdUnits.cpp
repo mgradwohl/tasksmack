@@ -698,28 +698,38 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
     case SystemdActions::FileChange::Disable:
         break;
     }
+    // As systemctl does after changing unit files, so systemd sees the new state.
+    const auto reload = [&bus, &stopToken]() -> ServiceActionResult
+    {
+        BusError error;
+        Message call;
+        Message reply;
+        int result = newManagerCall(bus.get(), call, "Reload");
+        if (result >= 0)
+        {
+            result = callAction(bus.get(), call.get(), stopToken, error, reply);
+        }
+        if (result == -ECANCELED && stopToken.stop_requested())
+        {
+            return ServiceActionResult::stopRequested();
+        }
+        if (result < 0)
+        {
+            return actionFailure(bus.get(), error, result);
+        }
+        return ServiceActionResult::succeeded();
+    };
     if (auto failed = changeUnitFile(bus.get(), method, name, withForce, stopToken))
     {
+        // The unmask already changed the unit files (#2426): systemd is still told, or it keeps the unit
+        // masked in memory while the list reads it from disk. The step's own failure is what's reported.
+        if (steps->unmaskFirst && !failed->cancelled)
+        {
+            (void) reload();
+        }
         return std::move(*failed);
     }
-    // As systemctl does after changing unit files, so systemd sees the new state.
-    BusError error;
-    Message call;
-    Message reply;
-    int result = newManagerCall(bus.get(), call, "Reload");
-    if (result >= 0)
-    {
-        result = callAction(bus.get(), call.get(), stopToken, error, reply);
-    }
-    if (result == -ECANCELED && stopToken.stop_requested())
-    {
-        return ServiceActionResult::stopRequested();
-    }
-    if (result < 0)
-    {
-        return actionFailure(bus.get(), error, result);
-    }
-    return ServiceActionResult::succeeded();
+    return reload();
 }
 
 #else
