@@ -1166,7 +1166,7 @@ and hashed is the one that runs. They are also the only way to move the output: 
 and the manifest only look at the file the script chose. A benchmark that fails or crashes makes
 either script exit with the benchmark's own exit code. `bench.sh` runs its Python helpers with the
 interpreter `find_python` in `tools/common.sh` picks (the project `.venv`, else Python 3.14+ on
-`PATH`). `./tools/bench.sh --help` and `Get-Help tools/bench.ps1 -Full` describe the options.
+`PATH`; a Windows `.venv\Scripts\python.exe` only from Git Bash, never from WSL). `./tools/bench.sh --help` and `Get-Help tools/bench.ps1 -Full` describe the options.
 
 By default, benchmarks output to console. You can also:
 

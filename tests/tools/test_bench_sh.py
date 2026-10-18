@@ -610,9 +610,10 @@ class BenchShTest(unittest.TestCase):
         self.assertFalse(store_ran, "a python on PATH ran although the .venv has one")
         self.assertEqual(json.loads(results[0].read_text(encoding="utf-8"))["context"]["host_name"], "redacted")
 
+    @unittest.skipUnless(sys.platform == "win32", "only a Windows bash uses the Windows .venv (#2411)")
     def test_a_windows_venv_python_is_used_not_a_bare_python3(self):
         # #2276: setup-dev.ps1 creates .venv/Scripts/python.exe; from Git Bash, find_python uses it
-        # before anything on PATH.
+        # before anything on PATH. On Linux and WSL it never does; test_common_sh.py covers both.
         code, output, results, manifests, ran, store_ran = self.run_bench_with_venv(
             "winvenv", ("Scripts/python.exe",)
         )

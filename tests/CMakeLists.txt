@@ -139,6 +139,14 @@ if(TASKSMACK_BASH)
     set_tests_properties(SetupDevShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/common.sh's find_python uses a Windows .venv only from a Windows bash, never in WSL (#2411).
+# OSTYPE is set per case, so either kind of bash runs every case.
+if(TASKSMACK_BASH)
+    add_test(NAME CommonShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_common_sh.py)
+    set_tests_properties(CommonShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-prereqs.sh reads a two-component ccache version, and an unreadable or missing ccache
 # (optional) never ends the check before its summary (#2350). The checker is Linux-only, so the
 # test is too.
