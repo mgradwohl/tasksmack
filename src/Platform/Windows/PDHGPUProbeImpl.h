@@ -511,7 +511,8 @@ struct PDHGPUProbe::Impl
             return pdhFunctionsLoaded();
         }
 
-        pdhModule.reset(LoadLibraryW(L"pdh.dll"));
+        // System32 only, so a pdh.dll next to a portable TaskSmack.exe is never loaded (#2530).
+        pdhModule.reset(LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
         if (pdhModule == nullptr)
         {
             spdlog::debug("PDHGPUProbe: Failed to load pdh.dll");

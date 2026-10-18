@@ -740,14 +740,14 @@ readThreadGroupAffinities(const ProcessFunctions& fns, std::span<const std::byte
     {
         // Defensive guard: today this runs at most once per probe (detectNetworkCounters() is only
         // called from the constructor), so ownedModule is always null on first entry here. A future
-        // retry path re-entering it would otherwise call LoadLibraryW again and overwrite the
+        // retry path re-entering it would otherwise call LoadLibraryExW again and overwrite the
         // module without a matching FreeLibrary, leaking one DLL reference count (same latent class
         // as #781). Only the library load needs guarding: the GetProcAddress lookups and the
         // privilege probe still run on every call, so a privilege change would be seen on a retry.
         if (ownedModule == nullptr)
         {
             // iphlpapi.dll was not already loaded, so we own this reference; ownedModule frees it
-            ownedModule.reset(LoadLibraryW(L"iphlpapi.dll"));
+            ownedModule.reset(LoadLibraryExW(L"iphlpapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
             if (ownedModule == nullptr)
             {
                 return {};

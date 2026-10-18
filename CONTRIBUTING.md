@@ -237,6 +237,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-cache-prune-triggers**: Fail when a workflow that saves Actions caches (ccache, `actions/cache`, a
   repo cache action's `mode: save`, `setup-windows-llvm`, or a reusable workflow that does) is missing from
   `cache-prune.yml`'s `workflow_run` list (`tools/check-cache-prune-triggers.py`, #2410)
+- **check-dll-loads**: Fail when `src/` loads a DLL with bare `LoadLibrary`/`LoadLibraryA`/`LoadLibraryW`,
+  or `LoadLibraryEx*` without a `LOAD_LIBRARY_SEARCH_*` flag; either searches the application directory
+  first, so a planted DLL next to a portable `TaskSmack.exe` would load (`tools/check-dll-loads.py`, #2530)
 - **shellcheck**: Lint shell scripts
 - **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
   shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)

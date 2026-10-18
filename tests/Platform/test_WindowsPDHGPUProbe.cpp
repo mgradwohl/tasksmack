@@ -1195,7 +1195,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ContentChangeAtSameIndexIsDetectedNotStal
 // pdh.dll is a core OS component present on every Windows machine, so loadPDH()/initialize()'s
 // real dynamic-loading path always succeeds in CI - only the "already initialized" early-return
 // guard is exercisable this way, not the load-failure branches (those would need mocking
-// LoadLibraryW/GetProcAddress themselves, not worth it for a defensive guard like NVML's #781).
+// LoadLibraryExW/GetProcAddress themselves, not worth it for a defensive guard like NVML's #781).
 TEST(WindowsPDHGPUProbeRealImplTest, InitializeCalledTwiceReturnsTrueImmediately)
 {
     Impl impl;
