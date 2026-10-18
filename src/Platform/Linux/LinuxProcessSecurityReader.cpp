@@ -10,10 +10,8 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <string>
-#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -81,15 +79,6 @@ constexpr std::size_t MAX_FILE_BYTES = std::size_t{64} * 1024;
     }
 }
 
-/// The start time (/proc/[pid]/stat field 22) of the process whose directory @p pidDirFd is open on;
-/// 0 if it can't be read (the process exited).
-[[nodiscard]] std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
-{
-    std::array<char, 1024> buf{};
-    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
-}
-
 void nameUser(SecurityPrincipal& principal)
 {
     principal.name = lookUpUserName(static_cast<uid_t>(principal.id), ::getpwuid_r).value_or(std::string{});
@@ -129,7 +118,7 @@ SecurityReadResult LinuxProcessSecurityReader::readSecurity(const ProcessTarget&
     {
         return failure(errno);
     }
-    if (startTimeTicksAt(dir.get()) != target.startTimeTicks)
+    if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
         return failure(ESRCH); // gone, or the PID now names another process
     }
@@ -140,7 +129,7 @@ SecurityReadResult LinuxProcessSecurityReader::readSecurity(const ProcessTarget&
     }
 
     ProcessSecurity security = ProcStatusSecurity::parseStatus(*status);
-    if (!security.users.has_value() && startTimeTicksAt(dir.get()) != target.startTimeTicks)
+    if (!security.users.has_value() && ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
         return failure(ESRCH); // an exiting process's status can read short
     }

@@ -324,4 +324,14 @@ enum class StatParseExtent : std::uint8_t
     return fields.startTime;
 }
 
+/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory @p pidDirFd
+/// is open on; 0 if it can't be read (the process exited). The one copy of what each reader that checks
+/// a target's identity through its directory used to have of its own (#2500).
+[[nodiscard]] inline std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
+{
+    std::array<char, 1024> buf{};
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
+    return parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
+}
+
 } // namespace Platform::ProcParsing

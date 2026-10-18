@@ -28,7 +28,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <unordered_map>
@@ -718,7 +717,7 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
                                    {
                                        if (!startTimeTicks.has_value())
                                        {
-                                           startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+                                           startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
                                        }
                                        addSocketOwner(inodeToPid, inode, SocketOwner{.pid = pid, .startTimeTicks = *startTimeTicks});
                                    });
@@ -736,15 +735,6 @@ void addSocketOwner(std::unordered_map<std::uint64_t, SocketOwner>& inodeToPid, 
     {
         it->second = owner;
     }
-}
-
-std::uint64_t readStartTimeTicksAt(int pidDirFd) noexcept
-{
-    // Ample: comm is kernel-capped at 15 chars, and the start time is field 22. 0 if the file can't
-    // be read (the process exited, or a synthetic /proc without one).
-    std::array<char, 1024> buf{};
-    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
 }
 
 } // namespace Platform

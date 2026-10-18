@@ -20,9 +20,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -93,15 +91,6 @@ constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
 [[nodiscard]] ConnectionsReadResult failure(ConnectionsReadStatus status, std::string detail = {})
 {
     return {.status = status, .connections = {}, .detail = std::move(detail)};
-}
-
-/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory
-/// @p pidDirFd is open on; 0 if it can't be read (the process exited).
-[[nodiscard]] std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
-{
-    std::array<char, 1024> buf{};
-    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -240,7 +229,7 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     // passes for the process's sockets.
     const auto stillTarget = [&dir, &target]()
     {
-        return startTimeTicksAt(dir.get()) == target.startTimeTicks;
+        return ProcParsing::startTimeTicksAt(dir.get()) == target.startTimeTicks;
     };
     if (!stillTarget())
     {

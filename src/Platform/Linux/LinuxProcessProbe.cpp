@@ -1710,7 +1710,7 @@ void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<P
         }
         // The process behind this handle, which may not be the row's: its PID can have been reused
         // since the stat pass. Its sockets go into the map under its own start time either way.
-        const std::uint64_t startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+        const std::uint64_t startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
         ProcessCounters scanned{};
         scanned.pid = counters.pid;
         countProcessFds(pidDirFd.get(),

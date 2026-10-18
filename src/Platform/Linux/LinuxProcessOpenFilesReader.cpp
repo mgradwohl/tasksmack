@@ -50,15 +50,6 @@ using Posix::FdGuard;
     return result;
 }
 
-/// The start time (/proc/[pid]/stat field 22) of the process whose directory @p pidDirFd is open on;
-/// 0 if it can't be read (the process exited).
-[[nodiscard]] std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
-{
-    std::array<char, 1024> buf{};
-    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
-}
-
 /// The open flags in fdinfo/<name>, if they can be read (the descriptor may have closed since).
 [[nodiscard]] std::optional<std::uint32_t> readFlagsAt(int fdinfoDirFd, const char* name) noexcept
 {
@@ -99,7 +90,7 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
     {
         return failure(errno);
     }
-    if (startTimeTicksAt(dir.get()) != target.startTimeTicks)
+    if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
         return failure(ESRCH); // gone, or the PID now names another process
     }
@@ -166,7 +157,7 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
             return failure(EACCES);
         }
         // An exiting process's fd/ lists empty: confirmed before that is reported as "no open files".
-        if (startTimeTicksAt(dir.get()) != target.startTimeTicks)
+        if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
         {
             return failure(ESRCH);
         }
