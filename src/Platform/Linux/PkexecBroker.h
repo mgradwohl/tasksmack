@@ -7,7 +7,9 @@
 //
 // connect() blocks for as long as the password prompt is up, and call() for one round trip: both run on a
 // worker (ProcessActionRun, #2305), never the UI thread. One request at a time; calls from several
-// threads are serialised. The helper exits when this closes the socket (destruction or disconnect()),
+// threads are serialised. A callIfIdle() that times out keeps the session (#2406): the helper still
+// answers, and that late reply is dropped, by the next call or, before it asks again, by callIfIdle().
+// Any other failure closes the socket. The helper exits when this closes the socket (destruction or disconnect()),
 // and after a few idle minutes on its own, after which connected() is false and connect() starts it again.
 
 #include "Platform/BrokerProtocol.h"
@@ -68,9 +70,13 @@ class PkexecBroker final : public IPrivilegedBroker
                                                                     const std::stop_token& stopToken) override;
 
   private:
-    /// Under m_Mutex: sends @p request and waits up to @p timeout for the response with its id.
+    /// Under m_Mutex: sends @p request and waits up to @p timeout for the response with its id, dropping
+    /// the late reply to m_Unanswered on the way. On a timeout, the request becomes m_Unanswered.
     [[nodiscard]] std::expected<Broker::Response, std::string>
     roundTrip(const Broker::Request& request, std::chrono::milliseconds timeout, const std::stop_token& stopToken);
+    /// Under m_Mutex: takes m_Unanswered's late reply if it has come, without waiting for it to. The error
+    /// is the socket's failure, or a reply that isn't the one awaited.
+    [[nodiscard]] std::expected<void, std::string> settleUnansweredLocked(std::chrono::milliseconds timeout);
     /// Under m_Mutex: closes the socket and reaps the launcher if it has exited.
     void closeLocked();
     /// Under m_Mutex: reaps the launchers in m_Abandoned that have exited.
@@ -85,6 +91,7 @@ class PkexecBroker final : public IPrivilegedBroker
     pid_t m_Child = -1;
     std::vector<pid_t> m_Abandoned; // Launchers closed while still running, reaped once they exit (#2333)
     std::uint32_t m_NextRequestId = 1;
+    std::uint32_t m_Unanswered = 0;               // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)
     std::atomic<bool> m_Connecting{false};        // a connect is asking for the password (#2391)
     mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has hung up
 };

@@ -47,7 +47,8 @@ class IPrivilegedBroker
 
     /// call() for a thread that must not stall, such as the process sampler's PSS/USS read (#2369): never
     /// waits for another call to finish (the error is "busy" instead), and waits at most @p timeout for
-    /// its own response. Transports without contention keep this default, which is call().
+    /// its own response. A response that takes longer skips this read, not the session (#2406). Transports without contention keep this
+    /// default, which is call().
     [[nodiscard]] virtual std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
                                                                                   std::chrono::milliseconds timeout)
     {

@@ -3,6 +3,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <expected>
@@ -214,12 +215,57 @@ std::expected<Broker::Response, std::string> PkexecBroker::callIfIdle(const Brok
     {
         return std::unexpected(std::string("not connected"));
     }
-    auto response = roundTrip(request, timeout, std::stop_token{});
-    if (!response.has_value())
+    if (m_Unanswered != 0)
     {
-        closeLocked(); // as call(): a channel that failed once isn't trusted again
+        // An earlier read that timed out (#2406): the helper answers one request at a time, so until its
+        // reply is in, another request would only queue behind it. Skip this read instead.
+        if (auto settled = settleUnansweredLocked(timeout); !settled.has_value())
+        {
+            closeLocked();
+            return std::unexpected(std::move(settled.error()));
+        }
+        if (m_Unanswered != 0)
+        {
+            return std::unexpected(std::string("busy"));
+        }
+    }
+    auto response = roundTrip(request, timeout, std::stop_token{});
+    // A slow read (smaps_rollup of a huge process, a thrashing machine) is skipped, not the end of the
+    // session (#2406): the channel is still in step, and the late reply is dropped when it comes. Anything
+    // else is a channel that failed, which, as in call(), isn't trusted again.
+    if (!response.has_value() && m_Unanswered == 0)
+    {
+        closeLocked();
     }
     return response;
+}
+
+std::expected<void, std::string> PkexecBroker::settleUnansweredLocked(std::chrono::milliseconds timeout)
+{
+    pollfd waiting{.fd = m_Fd, .events = POLLIN, .revents = 0};
+    if (::poll(&waiting, 1, 0) <= 0)
+    {
+        return {}; // nothing yet (or poll failed: the receive that follows a later call finds out why)
+    }
+    // Readable: the reply has begun to arrive, or the helper has hung up. A frame's packets follow at
+    // once, so @p timeout only bounds a helper that stopped mid-frame.
+    const auto frame = BrokerSocket::receiveFrame(m_Fd, timeout, std::stop_token{});
+    if (!frame.has_value())
+    {
+        return std::unexpected(
+            std::string(frame.error() == BrokerSocket::ReceiveEnd::Closed ? "the helper exited" : "the helper's socket failed"));
+    }
+    const auto decoded = Broker::decodeResponse(*frame);
+    if (!decoded.has_value())
+    {
+        return std::unexpected(std::format("the helper's answer didn't decode: {}", decoded.error()));
+    }
+    if (decoded->requestId != m_Unanswered)
+    {
+        return std::unexpected(std::string("the helper answered another request"));
+    }
+    m_Unanswered = 0;
+    return {};
 }
 
 std::expected<Broker::Response, std::string>
@@ -231,37 +277,52 @@ PkexecBroker::roundTrip(const Broker::Request& request, std::chrono::millisecond
     {
         return std::unexpected(std::format("the helper's socket failed: {}", error));
     }
-    const auto frame = BrokerSocket::receiveFrame(m_Fd, timeout, stopToken);
-    if (!frame.has_value())
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true)
     {
-        switch (frame.error())
+        const auto left = std::max(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()),
+                                   std::chrono::milliseconds{0});
+        const auto frame = BrokerSocket::receiveFrame(m_Fd, left, stopToken);
+        if (!frame.has_value())
         {
-        case BrokerSocket::ReceiveEnd::Closed:
-            return std::unexpected(std::string("the helper exited"));
-        case BrokerSocket::ReceiveEnd::TimedOut:
-            return std::unexpected(std::string(HELPER_TIMED_OUT));
-        case BrokerSocket::ReceiveEnd::Stopped:
-            return std::unexpected(std::string(CANCELLED));
-        case BrokerSocket::ReceiveEnd::Failed:
-            break;
+            switch (frame.error())
+            {
+            case BrokerSocket::ReceiveEnd::Closed:
+                return std::unexpected(std::string("the helper exited"));
+            case BrokerSocket::ReceiveEnd::TimedOut:
+                // Still to come: the helper answers every request, in order. The caller decides whether
+                // to wait for it (callIfIdle(), #2406) or close the socket.
+                m_Unanswered = id;
+                return std::unexpected(std::string(HELPER_TIMED_OUT));
+            case BrokerSocket::ReceiveEnd::Stopped:
+                return std::unexpected(std::string(CANCELLED));
+            case BrokerSocket::ReceiveEnd::Failed:
+                break;
+            }
+            return std::unexpected(std::string("the helper's socket failed"));
         }
-        return std::unexpected(std::string("the helper's socket failed"));
+        auto decoded = Broker::decodeResponse(*frame);
+        if (!decoded.has_value())
+        {
+            return std::unexpected(std::format("the helper's answer didn't decode: {}", decoded.error()));
+        }
+        if (m_Unanswered != 0 && decoded->requestId == m_Unanswered)
+        {
+            m_Unanswered = 0; // the late reply to a read given up on (#2406): nobody waits for it now
+            continue;
+        }
+        if (decoded->requestId != id)
+        {
+            return std::unexpected(std::string("the helper answered another request"));
+        }
+        return std::move(decoded->message);
     }
-    auto decoded = Broker::decodeResponse(*frame);
-    if (!decoded.has_value())
-    {
-        return std::unexpected(std::format("the helper's answer didn't decode: {}", decoded.error()));
-    }
-    if (decoded->requestId != id)
-    {
-        return std::unexpected(std::string("the helper answered another request"));
-    }
-    return std::move(decoded->message);
 }
 
 void PkexecBroker::closeLocked()
 {
     m_Connected = false;
+    m_Unanswered = 0;
     if (m_Fd >= 0)
     {
         ::close(m_Fd);

@@ -475,6 +475,20 @@ TEST(BrokerSocketTest, AFrameCutShortMidwayIsAFailure)
     EXPECT_EQ(received.error(), BrokerSocket::ReceiveEnd::Failed);
 }
 
+// #2406: a client that keeps the channel after a timeout would read a frame's remaining packets as the next
+// frame, so a frame the timeout cuts short is a failure, not a timeout.
+TEST(BrokerSocketTest, AFrameCutShortByTheTimeoutIsAFailure)
+{
+    const SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    std::vector<std::uint8_t> first(BrokerSocket::MAX_PACKET_BYTES, 0);
+    first[2] = 0x10; // says 1 MiB follows; none does, and the server end stays open
+    ASSERT_EQ(::send(pair.server(), first.data(), first.size(), 0), static_cast<ssize_t>(first.size()));
+    const auto received = BrokerSocket::receiveFrame(pair.client(), std::chrono::milliseconds{50}, std::stop_token{});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerSocket::ReceiveEnd::Failed);
+}
+
 TEST(BrokerServeTest, AReplyLargerThanTheSocketBufferReachesTheClient)
 {
     SocketPair pair;
@@ -1221,6 +1235,18 @@ TEST(PkexecBrokerTest, ASecondStartWhileOneIsPromptingSaysSo)
 
 // --- #2417: a launcher that plays the helper, to answer the handshake and calls wrongly ----------------
 
+/// The sh command that sends @p frame from the scripted helper below, as one packet.
+[[nodiscard]] std::string sendScript(const std::vector<std::uint8_t>& frame)
+{
+    std::string script = "printf '";
+    for (const std::uint8_t byte : frame)
+    {
+        script += std::format("\\{:03o}", byte);
+    }
+    script += "' >&0; ";
+    return script;
+}
+
 /// A launcher (sh) that plays the helper: for each of @p replies it takes one request off its socket (its
 /// stdin) and answers with that frame, then runs @p then. The helper's path and --broker, which
 /// PkexecBroker appends, are the script's unused $1 and $2. A script that ends with `exec cat` keeps the
@@ -1231,12 +1257,7 @@ TEST(PkexecBrokerTest, ASecondStartWhileOneIsPromptingSaysSo)
     for (const std::vector<std::uint8_t>& reply : replies)
     {
         // One read takes one whole SEQPACKET packet: the request, whatever its size.
-        script += "head -c 1 >/dev/null; printf '";
-        for (const std::uint8_t byte : reply)
-        {
-            script += std::format("\\{:03o}", byte);
-        }
-        script += "' >&0; ";
+        script += "head -c 1 >/dev/null; " + sendScript(reply);
     }
     script += then;
     return {"sh", "-c", script, "sh"};
@@ -1364,6 +1385,178 @@ TEST(PkexecBrokerTest, AStoppedCallIsCancelledAndEndsTheSession)
         ASSERT_FALSE(response.has_value());
         EXPECT_EQ(response.error(), "cancelled");
         EXPECT_FALSE(broker.connected());
+    }
+    expectNoChildLeft();
+}
+
+// --- #2406: a PSS/USS read slower than callIfIdle()'s timeout skips a sample, not the session -----------
+
+/// The sh command that takes one request off the scripted helper's socket without answering it.
+constexpr std::string_view TAKE_REQUEST = "head -c 1 >/dev/null; ";
+
+/// A file the scripted helper waits for, or makes, so a test orders its steps without sleeping on a guess.
+class Marker
+{
+  public:
+    explicit Marker(std::string_view name)
+        : m_Path(std::filesystem::temp_directory_path() / std::format("tasksmack-test-{}-{}", ::getpid(), name))
+    {
+        std::error_code ignored;
+        std::filesystem::remove(m_Path, ignored);
+    }
+    Marker(const Marker&) = delete;
+    Marker& operator=(const Marker&) = delete;
+    Marker(Marker&&) = delete;
+    Marker& operator=(Marker&&) = delete;
+    ~Marker()
+    {
+        std::error_code ignored;
+        std::filesystem::remove(m_Path, ignored);
+    }
+
+    [[nodiscard]] std::string path() const
+    {
+        return m_Path.string();
+    }
+    void make() const
+    {
+        const std::ofstream file(m_Path);
+    }
+    /// Waits, bounded, for the scripted helper to make it.
+    [[nodiscard]] bool awaitMade() const
+    {
+        const auto deadline = std::chrono::steady_clock::now() + REPLY_TIMEOUT;
+        while (!std::filesystem::exists(m_Path))
+        {
+            if (std::chrono::steady_clock::now() > deadline)
+            {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        return true;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+[[nodiscard]] std::vector<std::uint8_t> rollupReply(std::uint32_t id, std::uint64_t pssBytes)
+{
+    return Broker::encodeResponse(
+        id, Broker::MemoryRollupReply{.result = MemoryRollup{.pssBytes = pssBytes, .ussBytes = 1, .swapPssBytes = 0}});
+}
+
+[[nodiscard]] std::uint64_t pssOf(const std::expected<Broker::Response, std::string>& response)
+{
+    if (!response.has_value())
+    {
+        ADD_FAILURE() << response.error();
+        return 0;
+    }
+    const auto* const reply = std::get_if<Broker::MemoryRollupReply>(&*response);
+    if (reply == nullptr || !reply->result.has_value())
+    {
+        ADD_FAILURE() << "not a PSS/USS reading";
+        return 0;
+    }
+    return reply->result->pssBytes;
+}
+
+TEST(PkexecBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDropped)
+{
+    {
+        // Takes the read (2) and doesn't answer it until the next request (3) is in; then answers both, in
+        // order, and then the read after them (4).
+        const std::vector<std::uint8_t> actionReply =
+            Broker::encodeResponse(3, Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = "the call's own"});
+        const std::string then = std::format("{0}{0}{1}{2}{0}{3}exec cat >/dev/null",
+                                             TAKE_REQUEST,
+                                             sendScript(rollupReply(2, 222)),
+                                             sendScript(actionReply),
+                                             sendScript(rollupReply(4, 444)));
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply()}, then));
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+
+        const auto slow = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::milliseconds{100});
+        ASSERT_FALSE(slow.has_value());
+        EXPECT_EQ(slow.error(), "the helper didn't answer in time");
+        EXPECT_TRUE(broker.connected()) << "a slow read skips a sample; it doesn't end the session";
+
+        // The helper is still on that read: another would only queue behind it.
+        const auto skipped = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::milliseconds{100});
+        ASSERT_FALSE(skipped.has_value());
+        EXPECT_EQ(skipped.error(), "busy");
+        EXPECT_TRUE(broker.connected());
+
+        const auto action = broker.call(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}, std::stop_token{});
+        ASSERT_TRUE(action.has_value()) << action.error();
+        EXPECT_EQ(actionResultOf(action).successNote, "the call's own") << "the call gets its own reply, not the late one";
+
+        EXPECT_EQ(pssOf(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::seconds{10})), 444U);
+        EXPECT_TRUE(broker.connected());
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, ALateReplyThatHasComeIsTakenBeforeTheNextCallIfIdle)
+{
+    {
+        const Marker answer("2406-answer");
+        // Takes the read (2), answers it once the test says so (or gives up waiting, should the test end
+        // first), then answers the next read (3).
+        const std::string then =
+            std::format("{0}i=0; while [ ! -e '{1}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i+1)); done; {2}{0}{3}exec cat >/dev/null",
+                        TAKE_REQUEST,
+                        answer.path(),
+                        sendScript(rollupReply(2, 222)),
+                        sendScript(rollupReply(3, 333)));
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply()}, then));
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+
+        ASSERT_FALSE(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::milliseconds{100}).has_value());
+        ASSERT_TRUE(broker.connected());
+        answer.make();
+
+        // "busy" until the late reply has come; then it is taken, and the next read is asked and answered.
+        std::expected<Broker::Response, std::string> next = std::unexpected(std::string("busy"));
+        const auto deadline = std::chrono::steady_clock::now() + REPLY_TIMEOUT;
+        while (!next.has_value() && next.error() == "busy" && std::chrono::steady_clock::now() < deadline)
+        {
+            next = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::seconds{10});
+            if (!next.has_value() && next.error() == "busy")
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+        }
+        EXPECT_EQ(pssOf(next), 333U);
+        EXPECT_TRUE(broker.connected());
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)
+{
+    {
+        const Marker taken("2406-taken");
+        // Takes the call's request, says so, and never answers it.
+        PkexecBroker broker(TASKSMACK_HELPER_PATH,
+                            scriptedHelper({helloReply()}, std::format("{}: > '{}'; exec cat >/dev/null", TAKE_REQUEST, taken.path())));
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+
+        std::stop_source stop;
+        auto calling = std::async(std::launch::async,
+                                  [&broker, token = stop.get_token()]
+                                  { return broker.call(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}, token); });
+        ASSERT_TRUE(taken.awaitMade());
+        const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::seconds{10});
+        ASSERT_FALSE(response.has_value());
+        EXPECT_EQ(response.error(), "busy") << "never queued behind the call";
+
+        stop.request_stop();
+        const auto called = calling.get();
+        ASSERT_FALSE(called.has_value());
+        EXPECT_EQ(called.error(), "cancelled");
     }
     expectNoChildLeft();
 }

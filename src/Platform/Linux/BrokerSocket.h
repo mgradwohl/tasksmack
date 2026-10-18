@@ -55,7 +55,8 @@ enum class ReceiveEnd : std::uint8_t
     Failed,   ///< A read error, a packet or frame larger than allowed, or a frame cut short
 };
 
-/// Waits up to @p timeout for one whole frame (all its packets), polling @p stopToken every 100 ms.
+/// Waits up to @p timeout for one whole frame (all its packets), polling @p stopToken every 100 ms. A frame
+/// whose first packet came but not the rest is Failed, not TimedOut: the socket is mid-frame (#2406).
 [[nodiscard]] std::expected<std::vector<std::uint8_t>, ReceiveEnd>
 receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& stopToken);
 

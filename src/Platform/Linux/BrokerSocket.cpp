@@ -162,8 +162,10 @@ receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& s
         auto packet = receivePacket(fd, deadline, stopToken);
         if (!packet.has_value())
         {
-            // A peer that closes mid-frame has sent something broken, not ended the session cleanly
-            return std::unexpected(packet.error() == ReceiveEnd::Closed ? ReceiveEnd::Failed : packet.error());
+            // A peer that closes mid-frame has sent something broken, not ended the session cleanly. One cut
+            // short by the timeout is broken too: its remaining packets would be read as the next frame, by a
+            // client that keeps the channel after a timeout (#2406).
+            return std::unexpected(packet.error() == ReceiveEnd::Stopped ? ReceiveEnd::Stopped : ReceiveEnd::Failed);
         }
         if (packet->size() > total - frame->size())
         {
