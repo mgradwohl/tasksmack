@@ -387,6 +387,73 @@ TEST(BrokerServeTest, AHelloOfAnotherVersionEndsTheSession)
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::HandshakeFailed);
 }
 
+// #2367: a SEQPACKET packet can't be larger than the socket's send buffer (about 208 KiB by default), so a
+// larger frame goes in packets and is joined again on receipt.
+TEST(BrokerSocketTest, AFrameLargerThanOnePacketArrivesWhole)
+{
+    for (const std::size_t size : {std::size_t{1} << 20U, BrokerSocket::MAX_PACKET_BYTES * 3 - 4 - Broker::HEADER_BYTES - 5})
+    {
+        SocketPair pair;
+        ASSERT_TRUE(pair.valid());
+        std::vector<std::uint8_t> bytes(size);
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+        {
+            bytes[i] = static_cast<std::uint8_t>(i * 31U);
+        }
+        const Broker::Response sent = Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Ok, .bytes = bytes};
+        const std::vector<std::uint8_t> frame = Broker::encodeResponse(5, sent);
+        // Sent from another thread: the socket buffers less than the frame
+        auto sending = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      std::string error;
+                                      return BrokerSocket::sendFrame(pair.server(), frame, error);
+                                  });
+        const auto received = BrokerSocket::receiveFrame(pair.client(), REPLY_TIMEOUT, std::stop_token{});
+        ASSERT_TRUE(sending.get());
+        ASSERT_TRUE(received.has_value()) << size;
+        EXPECT_EQ(received->size(), frame.size());
+        const auto decoded = Broker::decodeResponse(*received);
+        ASSERT_TRUE(decoded.has_value()) << decoded.error();
+        EXPECT_EQ(decoded->message, sent);
+    }
+}
+
+TEST(BrokerSocketTest, AFrameCutShortMidwayIsAFailure)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    std::vector<std::uint8_t> first(BrokerSocket::MAX_PACKET_BYTES, 0);
+    first[0] = 0x00; // says 1 MiB follows
+    first[2] = 0x10;
+    ASSERT_EQ(::send(pair.server(), first.data(), first.size(), 0), static_cast<ssize_t>(first.size()));
+    pair.closeServer();
+    const auto received = BrokerSocket::receiveFrame(pair.client(), REPLY_TIMEOUT, std::stop_token{});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerSocket::ReceiveEnd::Failed);
+}
+
+TEST(BrokerServeTest, AReplyLargerThanTheSocketBufferReachesTheClient)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.firmwareFile = [](Broker::FirmwareFile)
+    {
+        return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Ok, .bytes = std::vector<std::uint8_t>(900'000, 0x5A)};
+    };
+    auto session =
+        std::async(std::launch::async,
+                   [&] { return BrokerServer::serve(pair.server(), actions, std::chrono::seconds{10}, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    const auto reply = roundTrip(pair.client(), 2, Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable});
+    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(reply.message));
+    EXPECT_EQ(std::get<Broker::FirmwareFileReply>(reply.message).bytes.size(), 900'000U);
+    pair.closeClient();
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
 TEST(BrokerServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
 {
     SocketPair pair;

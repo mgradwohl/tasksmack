@@ -51,28 +51,38 @@ bool sendFrame(int fd, std::span<const std::uint8_t> frame, std::string& error)
         error = "a frame larger than the protocol allows";
         return false;
     }
-    while (true)
+    // In packets of at most MAX_PACKET_BYTES: a SEQPACKET packet can't exceed the socket's send buffer
+    // (about 208 KiB by default), far less than a frame may be (#2367). The receiver reassembles them by
+    // the frame's own length.
+    std::size_t at = 0;
+    while (at < frame.size())
     {
+        const std::span<const std::uint8_t> packet = frame.subspan(at, std::min(MAX_PACKET_BYTES, frame.size() - at));
         // MSG_NOSIGNAL: a peer that has gone is an error here, not a SIGPIPE that ends the process.
-        const ssize_t sent = ::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL);
-        if (std::cmp_equal(sent, frame.size()))
-        {
-            return true;
-        }
+        const ssize_t sent = ::send(fd, packet.data(), packet.size(), MSG_NOSIGNAL);
         if (sent < 0 && errno == EINTR)
         {
             continue;
         }
-        error = sent < 0 ? std::system_category().message(errno) : std::string("a short send");
-        return false;
+        if (!std::cmp_equal(sent, packet.size()))
+        {
+            error = sent < 0 ? std::system_category().message(errno) : std::string("a short send");
+            return false;
+        }
+        at += packet.size();
     }
+    return true;
 }
 
-std::expected<std::vector<std::uint8_t>, ReceiveEnd>
-receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
+namespace
+{
+
+/// The next packet, waiting until @p deadline and polling @p stopToken every 100 ms. Refuses one larger
+/// than MAX_PACKET_BYTES before anything is allocated for it.
+[[nodiscard]] std::expected<std::vector<std::uint8_t>, ReceiveEnd>
+receivePacket(int fd, std::chrono::steady_clock::time_point deadline, const std::stop_token& stopToken)
 {
     constexpr std::chrono::milliseconds POLL_STEP{100};
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true)
     {
         if (stopToken.stop_requested())
@@ -94,9 +104,8 @@ receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& s
         {
             continue;
         }
-        // One packet is one frame. Its real size first (MSG_PEEK | MSG_TRUNC reports it without taking
-        // the packet), so the buffer is exactly that and a packet larger than the protocol allows is
-        // refused before anything is allocated for it.
+        // Its real size first (MSG_PEEK | MSG_TRUNC reports it without taking the packet), so the buffer
+        // is exactly that.
         std::uint8_t probe = 0;
         const ssize_t size = ::recv(fd, &probe, 1, MSG_PEEK | MSG_TRUNC);
         if (size < 0 && errno == EINTR)
@@ -107,7 +116,7 @@ receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& s
         {
             return std::unexpected(ReceiveEnd::Closed);
         }
-        if (size < 0 || std::cmp_greater(size, Broker::MAX_MESSAGE_BYTES))
+        if (size < 0 || std::cmp_greater(size, MAX_PACKET_BYTES))
         {
             return std::unexpected(ReceiveEnd::Failed);
         }
@@ -119,6 +128,55 @@ receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& s
         }
         return buffer;
     }
+}
+
+} // namespace
+
+std::expected<std::vector<std::uint8_t>, ReceiveEnd>
+receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto frame = receivePacket(fd, deadline, stopToken);
+    if (!frame.has_value())
+    {
+        return frame;
+    }
+    // A frame larger than one packet follows in full packets, its last one shorter or exactly what its
+    // length prefix (the first four bytes, little-endian) still lacks (#2367). Anything else -- a short
+    // or malformed frame -- is returned as it is, for the decoder to refuse, as before.
+    const auto declaredTotal = [&frame]() -> std::size_t
+    {
+        const std::vector<std::uint8_t>& bytes = *frame;
+        const std::size_t length = static_cast<std::size_t>(bytes[0]) | (static_cast<std::size_t>(bytes[1]) << 8U) |
+                                   (static_cast<std::size_t>(bytes[2]) << 16U) | (static_cast<std::size_t>(bytes[3]) << 24U);
+        return length + 4;
+    };
+    if (frame->size() != MAX_PACKET_BYTES || declaredTotal() > Broker::MAX_MESSAGE_BYTES)
+    {
+        return frame;
+    }
+    const std::size_t total = declaredTotal();
+    frame->reserve(total);
+    while (frame->size() < total)
+    {
+        auto packet = receivePacket(fd, deadline, stopToken);
+        if (!packet.has_value())
+        {
+            // A peer that closes mid-frame has sent something broken, not ended the session cleanly
+            return std::unexpected(packet.error() == ReceiveEnd::Closed ? ReceiveEnd::Failed : packet.error());
+        }
+        if (packet->size() > total - frame->size())
+        {
+            return std::unexpected(ReceiveEnd::Failed);
+        }
+        const bool last = packet->size() < MAX_PACKET_BYTES;
+        frame->insert(frame->end(), packet->begin(), packet->end());
+        if (last)
+        {
+            break; // short of its length: the decoder refuses it
+        }
+    }
+    return frame;
 }
 
 } // namespace Platform::BrokerSocket
