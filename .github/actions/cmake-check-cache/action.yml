@@ -65,9 +65,15 @@ runs:
           done
           cat "$GITHUB_ACTION_PATH/export-check-results.ps1"
         } | sha256sum | cut -c1-16 )
-        echo "key=${RUNNER_OS}-cmake-checks-${PRESET}-${hash}-v1" >> "$GITHUB_OUTPUT"
+        # A non-x64 runner's architecture goes before "cmake-checks" (x64 keeps its existing key),
+        # so cache-prune.yml sees x64 and ARM64 as separate families and keeps the newest entry of
+        # each; with the architecture only in the hash, each prune deleted the other's entry (#2528).
+        arch=''
+        if [[ "${RUNNER_ARCH:-X64}" != 'X64' ]]; then arch="${RUNNER_ARCH}-"; fi
+        key="${RUNNER_OS}-${arch}cmake-checks-${PRESET}-${hash}-v1"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
         echo "file=.cache/cmake-checks/${PRESET}.cmake" >> "$GITHUB_OUTPUT"
-        echo "Configure-check cache key: ${RUNNER_OS}-cmake-checks-${PRESET}-${hash}-v1"
+        echo "Configure-check cache key: $key"
 
     - name: Restore configure-check results
       id: restore

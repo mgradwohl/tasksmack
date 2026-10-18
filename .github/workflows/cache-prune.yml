@@ -8,6 +8,8 @@ name: Cache Prune
 # 12.4 GB of the 10 GB quota (2026-10-09). Keeping only the newest entry per family keeps usage under
 # quota, so least-recently-used eviction never has to touch a live entry (such as the Windows LLVM
 # cache). Other entries (LLVM, CodeQL TRAP, setup-python) have a single live key and are left alone.
+# tools/cache-prune-stale.py decides what a family is; a non-x64 runner's entries carry its
+# architecture in the key, so x64 and ARM64 each keep their own newest entry (#2528).
 # workflow_run always runs this file from the default branch, with this file's permissions.
 on:
   workflow_run:
@@ -51,7 +53,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write
+      contents: read
     steps:
+      # Only the grouping script. workflow_run checks out the default branch's latest commit, never a PR's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/cache-prune-stale.py
+          sparse-checkout-cone-mode: false
+
       - name: Delete all but the newest entry of each cache family
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,29 +72,10 @@ jobs:
           gh api --paginate "repos/$REPO/actions/caches?ref=refs/heads/main&per_page=100" \
             --jq '.actions_caches[] | [.id, .key, .created_at, .size_in_bytes] | @tsv' > caches.tsv
 
-          # family <TAB> created_at <TAB> id <TAB> bytes <TAB> key, newest first within a family.
-          # (No {n} intervals: the runner's default awk is mawk.)
-          awk -F'\t' '{
-            family = $2
-            if (family ~ /^ccache-/) {
-              sub(/-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]*Z$/, "", family)
-            } else if (family ~ /-fetchcontent-/) {
-              sub(/-fetchcontent-.*$/, "-fetchcontent", family)
-            } else if (family ~ /-cmake-checks-/) {
-              # <OS>-cmake-checks-<preset>-<hash>-v<N> (.github/actions/cmake-check-cache)
-              sub(/-[0-9a-f]+-v[0-9]+$/, "", family)
-            } else if (family ~ /-tidy-results-/) {
-              # <OS>-tidy-results-<run id>-<attempt> (.github/actions/tidy-result-cache, #1785)
-              sub(/-[0-9]+-[0-9]+$/, "", family)
-            } else {
-              next
-            }
-            if (family == $2) next  # not a timestamped/hashed key after all: leave it alone
-            print family "\t" $3 "\t" $1 "\t" $4 "\t" $2
-          }' caches.tsv | LC_ALL=C sort -t$'\t' -k1,1 -k2,2r > families.tsv
-
-          # Everything after the first (newest) row of each family is superseded.
-          awk -F'\t' '$1 == previous { print } { previous = $1 }' families.tsv > stale.tsv
+          # family <TAB> created_at <TAB> id <TAB> bytes <TAB> key for every superseded entry, newest
+          # first within a family. The script (tested by tests/tools/test_cache_prune_stale.py) says
+          # what a family is; it keeps each architecture's entries apart (#2528).
+          python3 -I tools/cache-prune-stale.py < caches.tsv > stale.tsv
 
           count=$(wc -l < stale.tsv)
           bytes=$(awk -F'\t' '{ total += $4 } END { printf "%.0f", total }' stale.tsv)
