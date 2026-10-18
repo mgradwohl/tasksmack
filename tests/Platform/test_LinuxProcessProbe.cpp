@@ -1865,6 +1865,40 @@ TEST(LinuxProcessProbeTest, ListableFdsWhoseLinksCantBeReadReportNetworkUnavaila
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+// #2398: the socket dump sees only this process's network namespace, so a process in another one (a
+// container's) has unknown network traffic, not a confident 0.
+TEST(LinuxProcessProbeTest, AProcessInAnotherNetworkNamespaceHasNoNetworkCounters)
+{
+    ScopedTempDir proc("ts_test_proc_netns");
+    for (const char* pid : {"4242", "4243"})
+    {
+        writeFile(proc.path / pid / "stat",
+                  std::string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                     "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        std::filesystem::create_directories(proc.path / pid / "fd");
+        std::filesystem::create_directories(proc.path / pid / "ns");
+    }
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    std::filesystem::create_directories(proc.path / "self" / "ns");
+    std::filesystem::create_symlink("net:[4026531840]", proc.path / "self" / "ns" / "net");
+    std::filesystem::create_symlink("net:[4026532999]", proc.path / "4242" / "ns" / "net"); // a container's
+    std::filesystem::create_symlink("net:[4026531840]", proc.path / "4243" / "ns" / "net"); // ours
+    std::filesystem::create_symlink("socket:[11]", proc.path / "4242" / "fd" / "3");
+    std::filesystem::create_symlink("socket:[12]", proc.path / "4243" / "fd" / "3");
+
+    LinuxProcessProbe probe(proc.path);
+    if (!probe.capabilities().hasNetworkCounters)
+    {
+        GTEST_SKIP() << "no netlink socket stats here";
+    }
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 2U);
+    for (const auto& process : processes)
+    {
+        EXPECT_EQ(process.networkCountersAvailable, process.pid == 4243) << process.pid;
+    }
+}
+
 TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
 {
     // #1099: the probe reports each socket's own cumulative counters, attributed through the

@@ -223,6 +223,9 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
       m_BootTimeEpoch(readBootTime(m_ProcRoot)),
       m_CmdlineCacheTtl(Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS)
 {
+    // This process's network namespace ("net:[4026531840]"), which the socket dump sees (#2398)
+    std::error_code nsEc;
+    m_OwnNetNamespace = std::filesystem::read_symlink(m_ProcRoot / "self/ns/net", nsEc).string();
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
     m_InodeMapTtl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
@@ -398,6 +401,12 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         if (!rebuildInodeMap)
         {
             countProcessFds(pidDirFd.get(), counters, /*readEveryLink=*/false, [](std::uint64_t /*inode*/) {});
+        }
+        // The socket dump sees only TaskSmack's network namespace: a process in another one (a container's)
+        // has traffic it can't attribute, so unknown, not 0 B/s (#2398)
+        if (m_HasNetworkCounters && inAnotherNetworkNamespace(pidDirFd.get()))
+        {
+            counters.networkCountersAvailable = false;
         }
 
         // Only attempt I/O counters if we know they're readable
@@ -1001,6 +1010,21 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
     }
 
     counters.ioCountersAvailable = hasRead && hasWrite;
+}
+
+bool LinuxProcessProbe::inAnotherNetworkNamespace(int pidDirFd) const
+{
+    if (m_OwnNetNamespace.empty())
+    {
+        return false; // ours unknown (a fixture tree without it): nothing to compare
+    }
+    std::array<char, 64> target{};
+    const auto length = ::readlinkat(pidDirFd, "ns/net", target.data(), target.size());
+    if (length <= 0 || static_cast<std::size_t>(length) >= target.size())
+    {
+        return false; // its link unreadable: judged by its fds alone, as before
+    }
+    return std::string_view(target.data(), static_cast<std::size_t>(length)) != m_OwnNetNamespace;
 }
 
 template<typename OnSocket>

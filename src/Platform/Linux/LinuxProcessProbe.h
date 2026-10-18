@@ -163,6 +163,7 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::mutex m_SocketStatsMutex;
     std::shared_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
+    std::string m_OwnNetNamespace; // "net:[...]" of this process; empty when unreadable (#2398)
 
     // Inode-to-PID cache: refreshed on a TTL basis to avoid scanning
     // /proc/[pid]/fd/* every enumerate(). The claim timestamp is set under the
@@ -260,6 +261,9 @@ class LinuxProcessProbe : public IProcessProbe
     /// passed to `onSocket`: the inode-to-PID map from the same walk (#1426).
     template<typename OnSocket>
     static void countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket);
+    /// Whether the process whose /proc/[pid] directory @p pidDirFd is open on is in another network
+    /// namespace than this one; false when either link can't be read (#2398).
+    [[nodiscard]] bool inAnotherNetworkNamespace(int pidDirFd) const;
 
     /// Check if we can read I/O counters using the injected proc root
     [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
