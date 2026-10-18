@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
@@ -482,6 +483,52 @@ TEST(DetachedSpawnTest, RefusesAnEmptyOrRelativeArgv)
     ASSERT_FALSE(relative.has_value());
     EXPECT_EQ(relative.error().stage, SpawnFailure::Stage::Setup);
     EXPECT_EQ(relative.error().error, EINVAL);
+}
+
+// #2461: as a RunAs, the program gets exactly the environment given, and runs as that user. Switching to
+// oneself is all a test that isn't root may do; becoming another user needs root.
+TEST(DetachedSpawnTest, AsARunAsTheProgramGetsOnlyItsEnvironment)
+{
+    const ScopedTempDir dir("tasksmack_detached_runas");
+    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - setenv() from <stdlib.h>; no other thread reads it here
+    ASSERT_EQ(::setenv("TASKSMACK_RUNAS_LEAK", "1", 1), 0); // TaskSmack's own: must not reach the program
+    const std::filesystem::path out = dir.path / "env.txt";
+    const std::array<std::string, 3> argv{
+        "/bin/sh", "-c", std::format("{{ env; id -u; id -g; }} > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.string())};
+    const RunAs self{.uid = ::getuid(), .gid = ::getgid(), .environment = {"ONLY=this", "PATH=/usr/bin:/bin"}};
+    const auto result = spawnDetached(argv, self);
+    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - unsetenv() from <stdlib.h>
+    ::unsetenv("TASKSMACK_RUNAS_LEAK");
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), argv[0]);
+
+    const std::string recorded = waitForFile(out).value_or("");
+    const std::vector<std::string> got = lines(recorded);
+    EXPECT_NE(std::ranges::find(got, "ONLY=this"), got.end()) << recorded;
+    EXPECT_EQ(recorded.find("TASKSMACK_RUNAS_LEAK"), std::string::npos) << recorded;
+    EXPECT_EQ(recorded.find("HOME="), std::string::npos) << recorded;
+    ASSERT_GE(got.size(), 2U);
+    EXPECT_EQ(got[got.size() - 2], std::to_string(::getuid()));
+    EXPECT_EQ(got.back(), std::to_string(::getgid()));
+}
+
+TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can become any user";
+    }
+    const ScopedTempDir dir("tasksmack_detached_runas_refused");
+    const std::filesystem::path marker = dir.path / "ran";
+    const std::array<std::string, 3> argv{"/bin/sh", "-c", std::format("touch '{}'", marker.string())};
+    const RunAs other{.uid = ::getuid() + 1, .gid = ::getgid(), .environment = {}};
+    const auto result = spawnDetached(argv, other);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().stage, SpawnFailure::Stage::SwitchUser);
+    EXPECT_EQ(result.error().error, EPERM);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(std::filesystem::exists(marker));
+    EXPECT_EQ(spawnFailureMessage(result.error(), "/usr/bin/xdg-open"),
+              "Could not start /usr/bin/xdg-open as the user TaskSmack was started for: " + std::system_category().message(EPERM));
 }
 
 TEST(DetachedSpawnTest, FailureMessagesNameTheProgramAndTheCause)

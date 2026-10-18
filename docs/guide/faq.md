@@ -26,6 +26,8 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 sudo ./TaskSmack
 ```
 
+Run this way, links, "Open folder" and "Open config file" still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
+
 **Fix (option 2 — grant capabilities):**
 
 ```bash

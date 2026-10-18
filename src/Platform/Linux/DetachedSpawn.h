@@ -7,6 +7,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - pollfd and nfds_t come from <sys/poll.h>, pid_t from <sys/types.h>
 #include <sys/poll.h>
@@ -21,14 +22,24 @@ struct SpawnFailure
 {
     enum class Stage : std::uint8_t
     {
-        Setup, ///< A bad argv, no pipe or /dev/null descriptor, or setsid() failed in the intermediate child.
-        Fork,  ///< fork() failed (in TaskSmack or in the intermediate child), or (ETIMEDOUT) the
-               ///< intermediate child did not exit within the time limit and was killed.
-        Exec,  ///< execve() of argv[0] failed in the detached child.
+        Setup,      ///< A bad argv, no pipe or /dev/null descriptor, or setsid() failed in the intermediate child.
+        Fork,       ///< fork() failed (in TaskSmack or in the intermediate child), or (ETIMEDOUT) the
+                    ///< intermediate child did not exit within the time limit and was killed.
+        Exec,       ///< execve() of argv[0] failed in the detached child.
+        SwitchUser, ///< With RunAs, becoming that user failed in the detached child (setgroups/setgid/setuid).
     };
 
     Stage stage = Stage::Setup;
     int error = 0; ///< errno.
+};
+
+/// Whom the program runs as, and with what environment, when not as TaskSmack (#2461): a TaskSmack run
+/// as root for another user opens links and folders as that user, in their session.
+struct RunAs
+{
+    uid_t uid = 0;
+    gid_t gid = 0;                        ///< Also its only supplementary group: the user's others aren't looked up.
+    std::vector<std::string> environment; ///< "NAME=value" entries: the program's whole environment.
 };
 
 /// A user-facing message for @p failure starting @p program ("Could not start /usr/bin/xterm: ...").
@@ -61,6 +72,10 @@ struct SpawnFailure
 /// reaped, and the call fails with ETIMEDOUT.
 [[nodiscard]] std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> argv);
 
+/// spawnDetached() as @p runAs: the detached child sets its groups, group and user to @p runAs's just
+/// before execve(), with @p runAs's environment, and fails with Stage::SwitchUser if it can't (#2461).
+[[nodiscard]] std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> argv, const RunAs& runAs);
+
 namespace Detail
 {
 
@@ -74,8 +89,9 @@ struct SpawnHooks
     void (*beforeFork)() = nullptr;              ///< Called just before fork(), after all setup
 };
 
-/// spawnDetached() with @p hooks.
-[[nodiscard]] std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> argv, const SpawnHooks& hooks);
+/// spawnDetached() with @p hooks, as @p runAs when not null.
+[[nodiscard]] std::expected<void, SpawnFailure>
+spawnDetached(std::span<const std::string> argv, const SpawnHooks& hooks, const RunAs* runAs = nullptr);
 
 } // namespace Detail
 

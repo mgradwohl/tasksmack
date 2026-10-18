@@ -528,6 +528,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
+    Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp

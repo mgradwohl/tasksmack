@@ -25,6 +25,7 @@
 // NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, rlimit, wait macros
 #include <dirent.h>
 #include <fcntl.h>
+#include <grp.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides sigaction(), csignal does not
 #include <signal.h>
 #include <sys/poll.h>
@@ -113,6 +114,9 @@ struct ChildPlan
     const struct sigaction* defaultAction = nullptr;
     // NOLINTNEXTLINE(misc-include-cleaner) - sigset_t is provided by <signal.h>
     const sigset_t* emptyMask = nullptr;
+    bool switchUser = false; ///< RunAs given: become uid/gid before execve() (#2461).
+    uid_t uid = 0;
+    gid_t gid = 0;
 };
 
 /// @p name (a /proc/self/fd entry, NUL-terminated) as a descriptor, or -1 for "." and "..".
@@ -232,6 +236,20 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
     }
     markInheritedFdsCloseOnExec(plan);
 
+    if (plan.switchUser)
+    {
+        // Groups first, while still allowed to; then the group, then the user, after which none of it can be
+        // undone. Only root may set the supplementary groups: one switching to itself (the tests) keeps its own.
+        errno = 0; // an identity check that fails sets none
+        // NOLINTNEXTLINE(misc-include-cleaner) - setgroups() is declared in <grp.h>
+        if ((::geteuid() == 0 && ::setgroups(1, &plan.gid) != 0) || ::setgid(plan.gid) != 0 || ::setuid(plan.uid) != 0 ||
+            ::getuid() != plan.uid || ::geteuid() != plan.uid || ::getegid() != plan.gid)
+        {
+            writeReport(plan.reportFd, SpawnFailure::Stage::SwitchUser, errno != 0 ? errno : EPERM);
+            ::_exit(127);
+        }
+    }
+
     ::execve(plan.path, plan.argv, plan.envp);
     writeReport(plan.reportFd, SpawnFailure::Stage::Exec, errno);
     ::_exit(127);
@@ -326,6 +344,8 @@ std::string spawnFailureMessage(const SpawnFailure& failure, const std::string& 
         return std::format("Could not start {}: {}", program, reason);
     case SpawnFailure::Stage::Fork:
         return std::format("Could not start a process for {}: {}", program, reason);
+    case SpawnFailure::Stage::SwitchUser:
+        return std::format("Could not start {} as the user TaskSmack was started for: {}", program, reason);
     case SpawnFailure::Stage::Setup:
         break;
     }
@@ -337,7 +357,12 @@ std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> arg
     return Detail::spawnDetached(argv, Detail::SpawnHooks{});
 }
 
-std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::string> argv, const SpawnHooks& hooks)
+std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> argv, const RunAs& runAs)
+{
+    return Detail::spawnDetached(argv, Detail::SpawnHooks{}, &runAs);
+}
+
+std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::string> argv, const SpawnHooks& hooks, const RunAs* runAs)
 {
     if (argv.empty() || !argv.front().starts_with('/'))
     {
@@ -354,6 +379,17 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         argPointers.push_back(const_cast<char*>(arg.c_str()));
     }
     argPointers.push_back(nullptr);
+    std::vector<char*> envPointers;
+    if (runAs != nullptr)
+    {
+        envPointers.reserve(runAs->environment.size() + 1);
+        for (const std::string& entry : runAs->environment)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) - execve's envp type predates const
+            envPointers.push_back(const_cast<char*>(entry.c_str()));
+        }
+        envPointers.push_back(nullptr);
+    }
 
     // Opened first, then each moved above STDERR_FILENO: with 0-2 closed, /dev/null would be 0 and
     // the pipe 1 and 2, and the child's dup2() onto 0-2 would replace the report pipe with /dev/null.
@@ -388,7 +424,7 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     const ChildPlan plan{
         .path = argPointers.front(),
         .argv = argPointers.data(),
-        .envp = environ,
+        .envp = runAs != nullptr ? envPointers.data() : environ,
         .devNull = devNull.get(),
         .reportFd = reportWrite.get(),
         .useCloseRange = hooks.useCloseRange,
@@ -396,6 +432,9 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         .fdLimit = descriptorLimit(),
         .defaultAction = &defaultAction,
         .emptyMask = &emptyMask,
+        .switchUser = runAs != nullptr,
+        .uid = runAs != nullptr ? runAs->uid : 0,
+        .gid = runAs != nullptr ? runAs->gid : 0,
     };
 
     const auto setsidFn = hooks.setsid != nullptr ? hooks.setsid : &::setsid;

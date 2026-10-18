@@ -12,6 +12,7 @@
 
 #ifdef __linux__
 #include "Platform/Linux/DetachedSpawn.h"
+#include "Platform/Linux/SessionUser.h"
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <array>
@@ -86,7 +87,11 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
         return false;
     }
     const std::array<std::string, 2> argv{*xdgOpen, targetStr};
-    if (const auto spawned = Platform::DetachedSpawn::spawnDetached(argv); !spawned.has_value())
+    // Run as root for another user (sudo, pkexec): opened as that user, in their session (#2461).
+    const std::optional<Platform::DetachedSpawn::RunAs> user = Platform::SessionUser::invokingUserSession();
+    const auto spawned =
+        user.has_value() ? Platform::DetachedSpawn::spawnDetached(argv, *user) : Platform::DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
     {
         spdlog::warn("{}", Platform::DetachedSpawn::spawnFailureMessage(spawned.error(), *xdgOpen));
         return false;
