@@ -7,11 +7,17 @@
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Platform/ConfigDirectory.h"
 #include "Platform/Linux/LinuxPathProvider.h"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
+
+#include <pwd.h>
+#include <unistd.h>
 
 namespace Platform
 {
@@ -211,11 +217,10 @@ TEST(LinuxPathProviderTest, MultipleCallsReturnSamePaths)
     EXPECT_EQ(config1, config2);
 }
 
-TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVarsEmpty)
+TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToThePasswdHome_WhenBothEnvVarsEmpty)
 {
-    // When XDG_CONFIG_HOME and HOME are both set to empty strings, getUserConfigDir()
-    // falls back to std::filesystem::current_path() as a last resort.
-    // This test covers the fallback branch (lines ~75-85 in LinuxPathProvider.cpp).
+    // When XDG_CONFIG_HOME and HOME are both set to empty strings, getUserConfigDir() uses the passwd
+    // entry's home, as UserConfig does for config.toml (#2438) -- not the working directory.
 
     // Track both the original value AND whether the var was set at all.
     // getenv() returns non-null for an empty value, so a bool is needed to
@@ -251,12 +256,46 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
         ASSERT_EQ(0, unsetenv("HOME"));
     }
 
-    // The fallback returns current_path() which is non-empty in normal test environments.
-    // Compare against the expected current_path() to confirm the right branch was taken.
-    std::error_code ec;
-    const auto expectedDir = std::filesystem::current_path(ec);
-    ASSERT_FALSE(ec) << "std::filesystem::current_path() failed: " << ec.message();
-    EXPECT_EQ(dir, expectedDir);
+    struct passwd entry = {};
+    struct passwd* result = nullptr;
+    std::array<char, 1024> buffer{};
+    ASSERT_EQ(::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &result), 0);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(dir, std::filesystem::path(result->pw_dir) / ".config" / "tasksmack");
+}
+
+// #2438: the user themes' directory is config.toml's, by the same rules: a relative XDG_CONFIG_HOME is
+// ignored, as the XDG spec says, for ~/.config/tasksmack.
+TEST(LinuxPathProviderTest, GetUserConfigDirIgnoresARelativeXdgConfigHomeAsUserConfigDoes)
+{
+    const char* rawXdg = std::getenv("XDG_CONFIG_HOME");
+    const char* rawHome = std::getenv("HOME");
+    const std::optional<std::string> origXdg = rawXdg != nullptr ? std::optional<std::string>(rawXdg) : std::nullopt;
+    const std::optional<std::string> origHome = rawHome != nullptr ? std::optional<std::string>(rawHome) : std::nullopt;
+
+    ASSERT_EQ(0, setenv("HOME", "/home/someone", 1));
+    ASSERT_EQ(0, setenv("XDG_CONFIG_HOME", "relative/cfg", 1));
+    const LinuxPathProvider provider;
+    const auto relative = provider.getUserConfigDir();
+    const ConfigDirectory::ConfigDirectoryChoice userConfigs =
+        ConfigDirectory::configDirectoryFrom(std::string("relative/cfg"), std::string("/home/someone"), nullptr, "/cwd");
+
+    const auto restore = [](const char* name, const std::optional<std::string>& value)
+    {
+        if (value.has_value())
+        {
+            (void) setenv(name, value->c_str(), 1);
+        }
+        else
+        {
+            (void) unsetenv(name);
+        }
+    };
+    restore("XDG_CONFIG_HOME", origXdg);
+    restore("HOME", origHome);
+
+    EXPECT_EQ(relative, std::filesystem::path("/home/someone/.config/tasksmack"));
+    EXPECT_EQ(relative, userConfigs.directory) << "the directory UserConfig's rules give";
 }
 
 } // namespace

@@ -1,9 +1,16 @@
 #include "LinuxPathProvider.h"
 
-// NOLINTNEXTLINE(misc-include-cleaner) - cstdlib provides secure_getenv when _GNU_SOURCE is defined
+#include "Platform/ConfigDirectory.h"
+
+#include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
+#include <string>
 #include <system_error>
+
+#include <pwd.h>
+#include <unistd.h>
 
 namespace Platform
 {
@@ -11,18 +18,28 @@ namespace Platform
 namespace
 {
 
-/// Secure environment variable lookup for setuid/setgid programs.
-/// secure_getenv ignores environment variables in setuid programs for security.
-/// Falls back to getenv with NOLINT if secure_getenv is unavailable.
-[[nodiscard]] const char* getEnvSafe(const char* name)
+/// An environment variable's value; nullopt when unset or empty.
+[[nodiscard]] std::optional<std::string> readEnv(const char* name)
 {
-#if defined(__GLIBC__) && defined(_GNU_SOURCE)
-    // NOLINTNEXTLINE(misc-include-cleaner) - secure_getenv from cstdlib with _GNU_SOURCE, include-cleaner false positive
-    return secure_getenv(name);
-#else
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - fallback when secure_getenv unavailable
-    return std::getenv(name);
-#endif
+    const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe) - read at startup, before any thread
+    if (value == nullptr || value[0] == '\0')
+    {
+        return std::nullopt;
+    }
+    return std::string(value);
+}
+
+/// This user's home directory from the passwd entry, for when $HOME is unset.
+[[nodiscard]] std::optional<std::filesystem::path> passwdHome()
+{
+    struct passwd entry = {};
+    struct passwd* result = nullptr;
+    std::array<char, 1024> buffer{};
+    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &result) == 0 && result != nullptr)
+    {
+        return std::filesystem::path(result->pw_dir);
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -53,36 +70,19 @@ std::filesystem::path LinuxPathProvider::getExecutableDir() const
 
 std::filesystem::path LinuxPathProvider::getUserConfigDir() const
 {
-    // Try XDG_CONFIG_HOME first
-    if (const char* xdg = getEnvSafe("XDG_CONFIG_HOME"))
-    {
-        if (xdg[0] != '\0')
-        {
-            return std::filesystem::path(xdg) / "tasksmack";
-        }
-    }
-
-    // Fall back to ~/.config/tasksmack
-    if (const char* home = getEnvSafe("HOME"))
-    {
-        if (home[0] != '\0')
-        {
-            return std::filesystem::path(home) / ".config" / "tasksmack";
-        }
-    }
-
-    // Last resort: current directory.
-    // Use the error_code overload so we never throw.
-    // If current_path() also fails, returns an empty path ({}) as a last-resort
-    // sentinel. PathService's normalization step handles this degenerate case and
-    // logs a warning so the condition is visible at runtime.
+    // The same directory as config.toml (UserConfig), by the same rules (#2438): $XDG_CONFIG_HOME/tasksmack
+    // unless it's relative or climbs with "..", else ~/.config/tasksmack from $HOME or the passwd entry.
+    // Plain getenv, as UserConfig reads it: with file capabilities (setcap, as the elevation notice
+    // suggests) secure_getenv hid both variables and sent the themes to the working directory. The
+    // working directory is still the last resort, and an empty path if even that fails (PathService
+    // logs it).
     std::error_code cwdEc;
-    auto cwd = std::filesystem::current_path(cwdEc);
-    if (!cwdEc)
+    std::filesystem::path cwd = std::filesystem::current_path(cwdEc);
+    if (cwdEc)
     {
-        return cwd;
+        cwd.clear();
     }
-    return {};
+    return ConfigDirectory::configDirectoryFrom(readEnv("XDG_CONFIG_HOME"), readEnv("HOME"), passwdHome, cwd).directory;
 }
 
 } // namespace Platform
