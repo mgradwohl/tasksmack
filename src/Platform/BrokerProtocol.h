@@ -729,7 +729,96 @@ template<typename Message>
     return writer.frame(kind, requestId);
 }
 
+namespace Detail
+{
+
+/// A Signal request's payload: the target, then the signal, refused when past the last Signal.
+[[nodiscard]] inline SignalRequest decodeSignalRequest(Reader& reader)
+{
+    const ProcessTarget target = reader.target();
+    const std::uint8_t value = reader.u8();
+    Signal signal = Signal::Terminate;
+    if (value <= static_cast<std::uint8_t>(Signal::Resume))
+    {
+        signal = static_cast<Signal>(value); // cast only once it is known to be in range
+    }
+    else
+    {
+        reader.fail();
+    }
+    return SignalRequest{.target = target, .signal = signal};
+}
+
+/// A SetPriority request's payload: the target, then the nice value.
+[[nodiscard]] inline PriorityRequest decodePriorityRequest(Reader& reader)
+{
+    const ProcessTarget target = reader.target();
+    return PriorityRequest{.target = target, .nice = reader.i32()};
+}
+
+/// A SetIoPriority request's payload: the target, the class (refused when past Idle), then the level.
+[[nodiscard]] inline IoPriorityRequest decodeIoPriorityRequest(Reader& reader)
+{
+    const ProcessTarget target = reader.target();
+    const std::uint8_t value = reader.u8();
+    IoPriorityClass ioClass = IoPriorityClass::BestEffort;
+    if (value <= static_cast<std::uint8_t>(IoPriorityClass::Idle))
+    {
+        ioClass = static_cast<IoPriorityClass>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    const std::int32_t level = reader.i32();
+    return IoPriorityRequest{.target = target, .ioClass = ioClass, .level = level};
+}
+
+/// A SetAffinity request's payload: the target, a word count (refused past MAX_CPUS worth), then the mask words.
+[[nodiscard]] inline AffinityRequest decodeAffinityRequest(Reader& reader)
+{
+    const ProcessTarget target = reader.target();
+    const std::uint32_t count = reader.u32();
+    CpuAffinity cpus;
+    if (count > CpuAffinity::MAX_CPUS / CpuAffinity::BITS_PER_WORD)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t word = 0; reader.ok() && word < count; ++word)
+    {
+        const std::uint64_t bits = reader.u64();
+        for (std::size_t bit = 0; bit < CpuAffinity::BITS_PER_WORD; ++bit)
+        {
+            if (((bits >> bit) & 1U) != 0)
+            {
+                cpus.set((static_cast<std::size_t>(word) * CpuAffinity::BITS_PER_WORD) + bit);
+            }
+        }
+    }
+    return AffinityRequest{.target = target, .cpus = std::move(cpus)};
+}
+
+/// A ReadFirmwareFile request's payload: the file, refused when past BoardSerial.
+[[nodiscard]] inline FirmwareFileRequest decodeFirmwareFileRequest(Reader& reader)
+{
+    const std::uint8_t file = reader.u8();
+    FirmwareFileRequest firmware;
+    if (file <= static_cast<std::uint8_t>(FirmwareFile::BoardSerial))
+    {
+        firmware.file = static_cast<FirmwareFile>(file);
+    }
+    else
+    {
+        reader.fail();
+    }
+    return firmware;
+}
+
+} // namespace Detail
+
 /// The request in @p bytes (one whole frame), or why it was refused.
+/// Each kind's payload is read by its Detail::decode*Request (or inline when it is one field); finish then
+/// refuses the message if a read failed or bytes are left over.
 [[nodiscard]] inline std::expected<Decoded<Request>, std::string> decodeRequest(std::span<const std::uint8_t> bytes)
 {
     const auto frame = Detail::readFrame(bytes);
@@ -738,109 +827,33 @@ template<typename Message>
         return std::unexpected(frame.error());
     }
     Detail::Reader reader(frame->payload);
+    const std::uint32_t id = frame->requestId;
     switch (frame->kind)
     {
     case MessageKind::Hello:
-        return Detail::finish<Request>(reader, frame->requestId, Hello{.version = reader.u16()});
+        return Detail::finish<Request>(reader, id, Hello{.version = reader.u16()});
     case MessageKind::Signal:
-    {
-        const ProcessTarget target = reader.target();
-        const std::uint8_t value = reader.u8();
-        Signal signal = Signal::Terminate;
-        if (value <= static_cast<std::uint8_t>(Signal::Resume))
-        {
-            signal = static_cast<Signal>(value); // cast only once it is known to be in range
-        }
-        else
-        {
-            reader.fail();
-        }
-        return Detail::finish<Request>(reader, frame->requestId, SignalRequest{.target = target, .signal = signal});
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodeSignalRequest(reader));
     case MessageKind::SetPriority:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, PriorityRequest{.target = target, .nice = reader.i32()});
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodePriorityRequest(reader));
     case MessageKind::SetIoPriority:
-    {
-        const ProcessTarget target = reader.target();
-        const std::uint8_t value = reader.u8();
-        IoPriorityClass ioClass = IoPriorityClass::BestEffort;
-        if (value <= static_cast<std::uint8_t>(IoPriorityClass::Idle))
-        {
-            ioClass = static_cast<IoPriorityClass>(value);
-        }
-        else
-        {
-            reader.fail();
-        }
-        const std::int32_t level = reader.i32();
-        return Detail::finish<Request>(reader, frame->requestId, IoPriorityRequest{.target = target, .ioClass = ioClass, .level = level});
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodeIoPriorityRequest(reader));
     case MessageKind::SetAffinity:
-    {
-        const ProcessTarget target = reader.target();
-        const std::uint32_t count = reader.u32();
-        CpuAffinity cpus;
-        if (count > CpuAffinity::MAX_CPUS / CpuAffinity::BITS_PER_WORD)
-        {
-            reader.fail();
-        }
-        for (std::uint32_t word = 0; reader.ok() && word < count; ++word)
-        {
-            const std::uint64_t bits = reader.u64();
-            for (std::size_t bit = 0; bit < CpuAffinity::BITS_PER_WORD; ++bit)
-            {
-                if (((bits >> bit) & 1U) != 0)
-                {
-                    cpus.set((static_cast<std::size_t>(word) * CpuAffinity::BITS_PER_WORD) + bit);
-                }
-            }
-        }
-        return Detail::finish<Request>(reader, frame->requestId, AffinityRequest{.target = target, .cpus = std::move(cpus)});
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodeAffinityRequest(reader));
     case MessageKind::ReadEnvironment:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, EnvironmentRequest{.target = target});
-    }
+        return Detail::finish<Request>(reader, id, EnvironmentRequest{.target = reader.target()});
     case MessageKind::ReadModules:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, ModulesRequest{.target = target});
-    }
+        return Detail::finish<Request>(reader, id, ModulesRequest{.target = reader.target()});
     case MessageKind::ReadOpenFiles:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, OpenFilesRequest{.target = target});
-    }
+        return Detail::finish<Request>(reader, id, OpenFilesRequest{.target = reader.target()});
     case MessageKind::ReadConnections:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, ConnectionsRequest{.target = target});
-    }
+        return Detail::finish<Request>(reader, id, ConnectionsRequest{.target = reader.target()});
     case MessageKind::ReadMemoryRollup:
-    {
-        const ProcessTarget target = reader.target();
-        return Detail::finish<Request>(reader, frame->requestId, MemoryRollupRequest{.target = target});
-    }
+        return Detail::finish<Request>(reader, id, MemoryRollupRequest{.target = reader.target()});
     case MessageKind::ReadFirmwareFile:
-    {
-        const std::uint8_t file = reader.u8();
-        FirmwareFileRequest firmware;
-        if (file <= static_cast<std::uint8_t>(FirmwareFile::BoardSerial))
-        {
-            firmware.file = static_cast<FirmwareFile>(file);
-        }
-        else
-        {
-            reader.fail();
-        }
-        return Detail::finish<Request>(reader, frame->requestId, firmware);
-    }
+        return Detail::finish<Request>(reader, id, Detail::decodeFirmwareFileRequest(reader));
     case MessageKind::ReadCrashes:
-        return Detail::finish<Request>(reader, frame->requestId, CrashesRequest{});
+        return Detail::finish<Request>(reader, id, CrashesRequest{});
     case MessageKind::HelloReply:
     case MessageKind::ActionResult:
     case MessageKind::EnvironmentResult:
@@ -1036,7 +1049,317 @@ template<typename Message>
     return writer.frame(kind, requestId);
 }
 
+namespace Detail
+{
+
+/// A HelloReply's payload: the helper's version, then whether it accepted ours.
+[[nodiscard]] inline HelloReply decodeHelloReply(Reader& reader)
+{
+    const std::uint16_t version = reader.u16();
+    return HelloReply{.version = version, .accepted = reader.flag()};
+}
+
+/// An ActionResult's payload: the success flag, the error message, then the success note.
+[[nodiscard]] inline ActionResult decodeActionResult(Reader& reader)
+{
+    const bool success = reader.flag();
+    std::string errorMessage = reader.text();
+    std::string successNote = reader.text();
+    return ActionResult{.success = success, .errorMessage = std::move(errorMessage), .successNote = std::move(successNote)};
+}
+
+/// An EnvironmentResult's payload: the status (refused past Failed), truncated, a count (refused past
+/// MAX_ENVIRONMENT_VARIABLES), then each name and value.
+[[nodiscard]] inline EnvironmentReply decodeEnvironmentReply(Reader& reader)
+{
+    const std::uint8_t value = reader.u8();
+    EnvironmentReply reply;
+    if (value <= static_cast<std::uint8_t>(EnvironmentReadStatus::Failed))
+    {
+        reply.result.status = static_cast<EnvironmentReadStatus>(value); // cast only once it is known to be in range
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_ENVIRONMENT_VARIABLES)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        std::string name = reader.text();
+        std::string text = reader.text();
+        reply.result.variables.push_back({.name = std::move(name), .value = std::move(text)});
+    }
+    return reply;
+}
+
+/// A ModulesResult's payload: the status (refused past Failed), detail, truncated, a count (refused past
+/// MAX_MODULES), then each module's path, base, size, optional version and deleted flag.
+[[nodiscard]] inline ModulesReply decodeModulesReply(Reader& reader)
+{
+    ModulesReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(ModulesReadStatus::Failed))
+    {
+        reply.result.status = static_cast<ModulesReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    reply.result.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_MODULES)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        ProcessModule module;
+        module.path = reader.text();
+        module.baseAddress = reader.u64();
+        module.sizeBytes = reader.u64();
+        if (reader.flag())
+        {
+            ModuleVersion version;
+            version.major = reader.u16();
+            version.minor = reader.u16();
+            version.build = reader.u16();
+            version.revision = reader.u16();
+            module.version = version;
+        }
+        module.deleted = reader.flag();
+        reply.result.modules.push_back(std::move(module));
+    }
+    return reply;
+}
+
+/// One OpenFilesResult entry: descriptor, kind (refused past Other), path, flags (always sent, kept only when
+/// flagged present), then the deleted flag.
+[[nodiscard]] inline OpenFile decodeOpenFile(Reader& reader)
+{
+    OpenFile file;
+    file.descriptor = reader.u64();
+    const std::uint8_t kind = reader.u8();
+    if (kind <= static_cast<std::uint8_t>(OpenFileKind::Other))
+    {
+        file.kind = static_cast<OpenFileKind>(kind);
+    }
+    else
+    {
+        reader.fail();
+    }
+    file.path = reader.text();
+    const bool hasFlags = reader.flag();
+    const std::uint32_t flags = reader.u32();
+    if (hasFlags)
+    {
+        file.flags = flags;
+    }
+    file.deleted = reader.flag();
+    return file;
+}
+
+/// An OpenFilesResult's payload: the status (refused past Failed), detail, three flags, a count (refused past
+/// MAX_OPEN_FILES), then each entry as decodeOpenFile reads it.
+[[nodiscard]] inline OpenFilesReply decodeOpenFilesReply(Reader& reader)
+{
+    OpenFilesReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(OpenFilesReadStatus::Failed))
+    {
+        reply.result.status = static_cast<OpenFilesReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    reply.result.truncated = reader.flag();
+    reply.result.namesIncomplete = reader.flag();
+    reply.result.hexDescriptors = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_OPEN_FILES)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        reply.result.files.push_back(decodeOpenFile(reader));
+    }
+    return reply;
+}
+
+/// A ConnectionsResult's payload: the status (refused past Failed), detail, a count (refused past
+/// MAX_CONNECTIONS), then each socket's protocol and family, two endpoints and state, each enum range-checked.
+[[nodiscard]] inline ConnectionsReply decodeConnectionsReply(Reader& reader)
+{
+    ConnectionsReply reply;
+    const std::uint8_t value = reader.u8();
+    if (value <= static_cast<std::uint8_t>(ConnectionsReadStatus::Failed))
+    {
+        reply.result.status = static_cast<ConnectionsReadStatus>(value);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.result.detail = reader.text();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_CONNECTIONS)
+    {
+        reader.fail();
+    }
+    const auto endpoint = [&reader]
+    {
+        ConnectionEndpoint end;
+        for (std::uint8_t& byte : end.address)
+        {
+            byte = reader.u8();
+        }
+        end.port = reader.u16();
+        return end;
+    };
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        ProcessConnection connection;
+        const std::uint8_t protocol = reader.u8();
+        const std::uint8_t family = reader.u8();
+        if (protocol > static_cast<std::uint8_t>(ConnectionProtocol::Udp) || family > static_cast<std::uint8_t>(ConnectionFamily::IPv6))
+        {
+            reader.fail();
+            break;
+        }
+        connection.protocol = static_cast<ConnectionProtocol>(protocol);
+        connection.family = static_cast<ConnectionFamily>(family);
+        connection.local = endpoint();
+        connection.remote = endpoint();
+        const std::uint8_t state = reader.u8();
+        if (state > static_cast<std::uint8_t>(ConnectionState::Closing))
+        {
+            reader.fail();
+            break;
+        }
+        connection.state = static_cast<ConnectionState>(state);
+        reply.result.connections.push_back(connection);
+    }
+    return reply;
+}
+
+/// A MemoryRollupResult's payload: the tag (0 for figures, else 1 + the failure, refused past PermissionDenied),
+/// then the three figures, which are always sent.
+[[nodiscard]] inline MemoryRollupReply decodeMemoryRollupReply(Reader& reader)
+{
+    const std::uint8_t tag = reader.u8();
+    MemoryRollup figures;
+    figures.pssBytes = reader.u64();
+    figures.ussBytes = reader.u64();
+    figures.swapPssBytes = reader.u64();
+    MemoryRollupReply reply;
+    if (tag == 0)
+    {
+        reply.result = figures;
+    }
+    else if (tag - 1U <= static_cast<unsigned>(MemoryRollupFailure::PermissionDenied))
+    {
+        reply.result = std::unexpected(static_cast<MemoryRollupFailure>(tag - 1U));
+    }
+    else
+    {
+        reader.fail();
+    }
+    return reply;
+}
+
+/// A FirmwareFileResult's payload: the status (refused past Unreadable), then the bytes (capped at
+/// MAX_FIRMWARE_FILE_BYTES).
+[[nodiscard]] inline FirmwareFileReply decodeFirmwareFileReply(Reader& reader)
+{
+    const std::uint8_t status = reader.u8();
+    FirmwareFileReply reply;
+    if (status <= static_cast<std::uint8_t>(FirmwareFileStatus::Unreadable))
+    {
+        reply.status = static_cast<FirmwareFileStatus>(status);
+    }
+    else
+    {
+        reader.fail();
+    }
+    reply.bytes = reader.blob(MAX_FIRMWARE_FILE_BYTES);
+    return reply;
+}
+
+/// One CrashesResult event: time, application, pid and uid (each always sent, kept only when flagged present),
+/// core size, core kept, signal, then executable.
+[[nodiscard]] inline CrashEvent decodeCrashEvent(Reader& reader)
+{
+    CrashEvent event;
+    event.unixSeconds = reader.u64();
+    event.application = reader.text();
+    const bool hasPid = reader.flag();
+    const std::uint32_t pid = reader.u32();
+    if (hasPid)
+    {
+        event.pid = pid;
+    }
+    const bool hasUid = reader.flag();
+    const std::uint32_t uid = reader.u32();
+    if (hasUid)
+    {
+        event.uid = uid;
+    }
+    event.coreBytes = reader.u64();
+    event.coreKept = reader.flag();
+    event.signal = reader.text();
+    event.executable = reader.text();
+    return event;
+}
+
+/// A CrashesResult's payload: the availability flags and reasons (the OS family refused past Linux), a count
+/// (refused past CRASH_LIST_MAX), then each event as decodeCrashEvent reads it.
+[[nodiscard]] inline CrashesReply decodeCrashesReply(Reader& reader)
+{
+    CrashesReply reply;
+    CrashesInfo& info = reply.info;
+    info.available = reader.flag();
+    const std::uint8_t family = reader.u8();
+    if (family <= static_cast<std::uint8_t>(OsFamily::Linux))
+    {
+        info.family = static_cast<OsFamily>(family);
+    }
+    else
+    {
+        reader.fail();
+    }
+    info.listed = reader.flag();
+    info.accessDenied = reader.flag();
+    info.unavailableReason = reader.text();
+    info.capped = reader.flag();
+    info.journalRead = reader.flag();
+    info.journalUnavailableReason = reader.text();
+    info.otherUsersHidden = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > CRASH_LIST_MAX)
+    {
+        reader.fail();
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        info.events.push_back(decodeCrashEvent(reader));
+    }
+    return reply;
+}
+
+} // namespace Detail
+
 /// The response in @p bytes (one whole frame), or why it couldn't be read.
+/// Each kind's payload is read by its Detail::decode* function (or inline when it is one field); finish then
+/// refuses the message if a read failed or bytes are left over.
 [[nodiscard]] inline std::expected<Decoded<Response>, std::string> decodeResponse(std::span<const std::uint8_t> bytes)
 {
     const auto frame = Detail::readFrame(bytes);
@@ -1045,277 +1368,29 @@ template<typename Message>
         return std::unexpected(frame.error());
     }
     Detail::Reader reader(frame->payload);
+    const std::uint32_t id = frame->requestId;
     switch (frame->kind)
     {
     case MessageKind::HelloReply:
-    {
-        const std::uint16_t version = reader.u16();
-        return Detail::finish<Response>(reader, frame->requestId, HelloReply{.version = version, .accepted = reader.flag()});
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeHelloReply(reader));
     case MessageKind::ActionResult:
-    {
-        const bool success = reader.flag();
-        std::string errorMessage = reader.text();
-        std::string successNote = reader.text();
-        return Detail::finish<Response>(
-            reader,
-            frame->requestId,
-            ActionResult{.success = success, .errorMessage = std::move(errorMessage), .successNote = std::move(successNote)});
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeActionResult(reader));
     case MessageKind::Error:
-        return Detail::finish<Response>(reader, frame->requestId, ErrorReply{.message = reader.text()});
+        return Detail::finish<Response>(reader, id, ErrorReply{.message = reader.text()});
     case MessageKind::EnvironmentResult:
-    {
-        const std::uint8_t value = reader.u8();
-        EnvironmentReply reply;
-        if (value <= static_cast<std::uint8_t>(EnvironmentReadStatus::Failed))
-        {
-            reply.result.status = static_cast<EnvironmentReadStatus>(value); // cast only once it is known to be in range
-        }
-        else
-        {
-            reader.fail();
-        }
-        reply.result.truncated = reader.flag();
-        const std::uint32_t count = reader.u32();
-        if (count > MAX_ENVIRONMENT_VARIABLES)
-        {
-            reader.fail();
-        }
-        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
-        {
-            std::string name = reader.text();
-            std::string text = reader.text();
-            reply.result.variables.push_back({.name = std::move(name), .value = std::move(text)});
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeEnvironmentReply(reader));
     case MessageKind::ModulesResult:
-    {
-        ModulesReply reply;
-        const std::uint8_t value = reader.u8();
-        if (value <= static_cast<std::uint8_t>(ModulesReadStatus::Failed))
-        {
-            reply.result.status = static_cast<ModulesReadStatus>(value);
-        }
-        else
-        {
-            reader.fail();
-        }
-        reply.result.detail = reader.text();
-        reply.result.truncated = reader.flag();
-        const std::uint32_t count = reader.u32();
-        if (count > MAX_MODULES)
-        {
-            reader.fail();
-        }
-        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
-        {
-            ProcessModule module;
-            module.path = reader.text();
-            module.baseAddress = reader.u64();
-            module.sizeBytes = reader.u64();
-            if (reader.flag())
-            {
-                ModuleVersion version;
-                version.major = reader.u16();
-                version.minor = reader.u16();
-                version.build = reader.u16();
-                version.revision = reader.u16();
-                module.version = version;
-            }
-            module.deleted = reader.flag();
-            reply.result.modules.push_back(std::move(module));
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeModulesReply(reader));
     case MessageKind::OpenFilesResult:
-    {
-        OpenFilesReply reply;
-        const std::uint8_t value = reader.u8();
-        if (value <= static_cast<std::uint8_t>(OpenFilesReadStatus::Failed))
-        {
-            reply.result.status = static_cast<OpenFilesReadStatus>(value);
-        }
-        else
-        {
-            reader.fail();
-        }
-        reply.result.detail = reader.text();
-        reply.result.truncated = reader.flag();
-        reply.result.namesIncomplete = reader.flag();
-        reply.result.hexDescriptors = reader.flag();
-        const std::uint32_t count = reader.u32();
-        if (count > MAX_OPEN_FILES)
-        {
-            reader.fail();
-        }
-        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
-        {
-            OpenFile file;
-            file.descriptor = reader.u64();
-            const std::uint8_t kind = reader.u8();
-            if (kind <= static_cast<std::uint8_t>(OpenFileKind::Other))
-            {
-                file.kind = static_cast<OpenFileKind>(kind);
-            }
-            else
-            {
-                reader.fail();
-            }
-            file.path = reader.text();
-            const bool hasFlags = reader.flag();
-            const std::uint32_t flags = reader.u32();
-            if (hasFlags)
-            {
-                file.flags = flags;
-            }
-            file.deleted = reader.flag();
-            reply.result.files.push_back(std::move(file));
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeOpenFilesReply(reader));
     case MessageKind::ConnectionsResult:
-    {
-        ConnectionsReply reply;
-        const std::uint8_t value = reader.u8();
-        if (value <= static_cast<std::uint8_t>(ConnectionsReadStatus::Failed))
-        {
-            reply.result.status = static_cast<ConnectionsReadStatus>(value);
-        }
-        else
-        {
-            reader.fail();
-        }
-        reply.result.detail = reader.text();
-        const std::uint32_t count = reader.u32();
-        if (count > MAX_CONNECTIONS)
-        {
-            reader.fail();
-        }
-        const auto endpoint = [&reader]
-        {
-            ConnectionEndpoint end;
-            for (std::uint8_t& byte : end.address)
-            {
-                byte = reader.u8();
-            }
-            end.port = reader.u16();
-            return end;
-        };
-        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
-        {
-            ProcessConnection connection;
-            const std::uint8_t protocol = reader.u8();
-            const std::uint8_t family = reader.u8();
-            if (protocol > static_cast<std::uint8_t>(ConnectionProtocol::Udp) || family > static_cast<std::uint8_t>(ConnectionFamily::IPv6))
-            {
-                reader.fail();
-                break;
-            }
-            connection.protocol = static_cast<ConnectionProtocol>(protocol);
-            connection.family = static_cast<ConnectionFamily>(family);
-            connection.local = endpoint();
-            connection.remote = endpoint();
-            const std::uint8_t state = reader.u8();
-            if (state > static_cast<std::uint8_t>(ConnectionState::Closing))
-            {
-                reader.fail();
-                break;
-            }
-            connection.state = static_cast<ConnectionState>(state);
-            reply.result.connections.push_back(connection);
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeConnectionsReply(reader));
     case MessageKind::MemoryRollupResult:
-    {
-        const std::uint8_t tag = reader.u8();
-        MemoryRollup figures;
-        figures.pssBytes = reader.u64();
-        figures.ussBytes = reader.u64();
-        figures.swapPssBytes = reader.u64();
-        MemoryRollupReply reply;
-        if (tag == 0)
-        {
-            reply.result = figures;
-        }
-        else if (tag - 1U <= static_cast<unsigned>(MemoryRollupFailure::PermissionDenied))
-        {
-            reply.result = std::unexpected(static_cast<MemoryRollupFailure>(tag - 1U));
-        }
-        else
-        {
-            reader.fail();
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeMemoryRollupReply(reader));
     case MessageKind::FirmwareFileResult:
-    {
-        const std::uint8_t status = reader.u8();
-        FirmwareFileReply reply;
-        if (status <= static_cast<std::uint8_t>(FirmwareFileStatus::Unreadable))
-        {
-            reply.status = static_cast<FirmwareFileStatus>(status);
-        }
-        else
-        {
-            reader.fail();
-        }
-        reply.bytes = reader.blob(MAX_FIRMWARE_FILE_BYTES);
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeFirmwareFileReply(reader));
     case MessageKind::CrashesResult:
-    {
-        CrashesReply reply;
-        CrashesInfo& info = reply.info;
-        info.available = reader.flag();
-        const std::uint8_t family = reader.u8();
-        if (family <= static_cast<std::uint8_t>(OsFamily::Linux))
-        {
-            info.family = static_cast<OsFamily>(family);
-        }
-        else
-        {
-            reader.fail();
-        }
-        info.listed = reader.flag();
-        info.accessDenied = reader.flag();
-        info.unavailableReason = reader.text();
-        info.capped = reader.flag();
-        info.journalRead = reader.flag();
-        info.journalUnavailableReason = reader.text();
-        info.otherUsersHidden = reader.flag();
-        const std::uint32_t count = reader.u32();
-        if (count > CRASH_LIST_MAX)
-        {
-            reader.fail();
-        }
-        for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
-        {
-            CrashEvent event;
-            event.unixSeconds = reader.u64();
-            event.application = reader.text();
-            const bool hasPid = reader.flag();
-            const std::uint32_t pid = reader.u32();
-            if (hasPid)
-            {
-                event.pid = pid;
-            }
-            const bool hasUid = reader.flag();
-            const std::uint32_t uid = reader.u32();
-            if (hasUid)
-            {
-                event.uid = uid;
-            }
-            event.coreBytes = reader.u64();
-            event.coreKept = reader.flag();
-            event.signal = reader.text();
-            event.executable = reader.text();
-            info.events.push_back(std::move(event));
-        }
-        return Detail::finish<Response>(reader, frame->requestId, std::move(reply));
-    }
+        return Detail::finish<Response>(reader, id, Detail::decodeCrashesReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
