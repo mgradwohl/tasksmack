@@ -319,9 +319,17 @@ using JournalReader = std::function<JournalRead(std::uint64_t sinceUsec, std::si
 /// is looked at (#2382), so an entry can't have its size read from anywhere else.
 [[nodiscard]] inline bool isCoredumpDirFile(std::string_view coreFile)
 {
-    const std::filesystem::path path = std::filesystem::path(coreFile).lexically_normal();
-    const std::filesystem::path dir = std::filesystem::path("/") / COREDUMP_DIR;
-    return path.is_absolute() && path.parent_path() == dir && !path.filename().empty();
+    // A POSIX path as the journal holds it, compared as text (std::filesystem::path would judge it by the
+    // host's rules: on Windows, where the fixture tests also run, "/var/..." isn't absolute). One file
+    // name after the directory, with no '/' in it, so no ".." can climb out.
+    constexpr std::string_view DIR_PREFIX = "/var/lib/systemd/coredump/";
+    static_assert(DIR_PREFIX.substr(1, DIR_PREFIX.size() - 2) == COREDUMP_DIR);
+    if (!coreFile.starts_with(DIR_PREFIX))
+    {
+        return false;
+    }
+    const std::string_view name = coreFile.substr(DIR_PREFIX.size());
+    return !name.empty() && name != "." && name != ".." && !name.contains('/');
 }
 
 [[nodiscard]] inline std::optional<CrashEvent> crashFromJournal(const JournalFields& fields, std::string& coreFile)

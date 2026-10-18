@@ -639,6 +639,8 @@ TEST(CoredumpJournalTrustTest, OnlyCoreFilesInTheCoredumpDirectoryAreLookedAt)
     EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/sub/core.x"));
     EXPECT_FALSE(isCoredumpDirFile("var/lib/systemd/coredump/core.x"));
     EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/"));
+    EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/.."));
+    EXPECT_FALSE(isCoredumpDirFile("C:/var/lib/systemd/coredump/core.x"));
 }
 
 } // namespace
