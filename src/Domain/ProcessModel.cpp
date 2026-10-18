@@ -1218,6 +1218,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.container = current.container;           // Pass through container from platform probe
     snapshot.services = current.services;             // and its services (#1886)
     snapshot.processType = current.processType;       // Pass through process type from platform probe
+    snapshot.architecture = current.architecture;     // and the architecture it runs as (#2394)
     snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;

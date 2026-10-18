@@ -55,7 +55,7 @@ namespace Platform
 /// (WindowsProcessProbe::systemFunctions()), fakes in tests, so the EStats network counters,
 /// processor-group affinity and per-process detail reads, and their failures, can be tested
 /// without elevation, a multi-group machine or a process that refuses them. Grouped by area.
-/// Every member must be set, except the two noted as nullable.
+/// Every member must be set, except those noted as nullable.
 struct WindowsProcessProbeFunctions
 {
     /// iphlpapi.dll's TCP EStats exports. Any may be null: without the IPv4 pair network counters
@@ -93,6 +93,9 @@ struct WindowsProcessProbeFunctions
         /// The detail caches' clock (steady_clock::now()), so tests can hold time still or move it on
         /// rather than depend on how fast they run (#2054).
         std::chrono::steady_clock::time_point (*steadyNow)() = nullptr;
+        /// The machine Windows runs as (Windows::nativeMachine()), read once at construction, against which
+        /// a process's architecture is emulated or not (#2394). Nullable: every process's is then named alone.
+        std::uint16_t (*nativeMachine)() = nullptr;
     } system;
 
     struct Token
@@ -119,6 +122,9 @@ struct WindowsProcessProbeFunctions
         HANDLE(WINAPI* openThread)(DWORD, BOOL, DWORD) = nullptr;
         DWORD(WINAPI* getProcessIdOfThread)(HANDLE) = nullptr;
         BOOL(WINAPI* getThreadGroupAffinity)(HANDLE, PGROUP_AFFINITY) = nullptr;
+        /// The machine a process runs as (Windows::processMachine(): ProcessMachineTypeInfo, else
+        /// IsWow64Process2), read once per process for its architecture (#2394). Nullable: not read.
+        std::uint16_t (*processMachine)(HANDLE) = nullptr;
     } process;
 };
 
@@ -168,6 +174,7 @@ class WindowsProcessProbe : public IProcessProbe
 
     WindowsProcessProbeFunctions m_Fns; // Every Win32/NT call below goes through these (#1718)
     bool m_IsElevated = false;          // Process token elevation, queried once at construction (constant for the process lifetime)
+    std::uint16_t m_NativeMachine = 0;  // The machine Windows runs as (IMAGE_FILE_MACHINE_*), read once at construction (#2394)
     // The network flags can flip after construction when the first real sample proves EStats
     // unusable (#1161). readSocketTraffic()'s const EStats walk writes them and capabilities() may read
     // them from another thread, hence mutable atomics.
@@ -221,6 +228,8 @@ class WindowsProcessProbe : public IProcessProbe
         std::string status;
         std::string publisher;
         std::string processType;
+        std::string architecture;                   // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
+        bool architectureRead = false;              // Whether architecture above was read (with the first handle opened)
         std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)

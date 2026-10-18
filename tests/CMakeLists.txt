@@ -290,6 +290,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnAvailability.cpp
     App/test_ProcessStateColor.cpp
     App/test_ProcessTypeColor.cpp
+    App/test_ProcessArchitectureNote.cpp
     App/test_ProcessCellWidths.cpp
     App/test_ProcessFilterCache.cpp
     App/test_ProcessDisplayFreeze.cpp
@@ -303,6 +304,8 @@ set(COMMON_TEST_SOURCES
     App/test_BatteryDetails.cpp
     Platform/test_CgroupContainer.cpp
     Platform/test_CgroupService.cpp
+    Platform/test_ElfArchitecture.cpp
+    Platform/test_ProcessArchitecture.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
@@ -441,6 +444,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
     Platform/WindowsMath/test_WindowsAffinityMath.cpp
     Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
+    Platform/WindowsMath/test_WindowsProcessMachineMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES

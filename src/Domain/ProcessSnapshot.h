@@ -162,6 +162,7 @@ struct ProcessSnapshot
     std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
     std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
+    std::string architecture; // Architecture it runs as: "x64", "ARM64", "x64 (emulated)", "x86 (WOW64)" (#2394; empty if unread)
 
     // The services the process runs, by name (#1880): Windows, those the service list gives its PID (in
     // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on

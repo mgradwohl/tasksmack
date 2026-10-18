@@ -11,6 +11,7 @@
 // process is dumped live, as before, and the result says why.
 
 #include "Platform/IProcessActions.h"
+#include "WindowsProcessMachine.h" // processMachine(), ProcessMachineFn: moved out for the probe's Architecture column (#2394)
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -49,15 +50,6 @@ using PssCaptureSnapshotFn = DWORD(WINAPI*)(HANDLE process, PSS_CAPTURE_FLAGS fl
 /// services), whose memory no program may read. False when that can't be read.
 [[nodiscard]] bool isProtectedProcess(DWORD pid);
 
-/// The machine (an IMAGE_FILE_MACHINE_* value) process @p process runs as, as DumpMath::processMachine()
-/// reads it: from GetProcessInformation(ProcessMachineTypeInfo), else IsWow64Process2(). 0
-/// (IMAGE_FILE_MACHINE_UNKNOWN) when neither can be read.
-/// @param process  An open handle with PROCESS_QUERY_LIMITED_INFORMATION.
-[[nodiscard]] std::uint16_t processMachine(HANDLE process);
-
-/// processMachine()'s signature: DumpSource holds it so a test can make a process another architecture.
-using ProcessMachineFn = std::uint16_t (*)(HANDLE process);
-
 /// How writeProcessDump() reads the process.
 struct DumpSource
 {
@@ -67,7 +59,7 @@ struct DumpSource
     /// Why there is no snapshot to take, when captureSnapshot is null (DumpMath::snapshotFailureReason()).
     std::string liveReason;
     /// Reads the machine the process runs as, to refuse one of another architecture (#2152); null:
-    /// processMachine().
+    /// processMachine() (WindowsProcessMachine.h).
     ProcessMachineFn processMachine = nullptr;
 };
 

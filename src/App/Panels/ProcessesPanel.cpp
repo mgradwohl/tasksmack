@@ -648,6 +648,24 @@ void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, co
     }
 }
 
+/// The architecture the process runs as (#2394), left-aligned; the unavailable dash where this system
+/// cannot read architectures, or could not read this process's (another user's process, a kernel thread).
+void architectureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.architectureSupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+    }
+    else if (!proc.architecture.empty())
+    {
+        renderLeftAlignedText(proc.architecture, fmt.architectureWidth);
+    }
+    else
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+    }
+}
+
 /// One CELL_RENDERERS entry: the column it draws (checked against its index
 /// below) and its renderer, or nullptr for a column renderProcessRow() draws.
 struct ProcessCellEntry
@@ -679,6 +697,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Status,
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::status, &RowFormatCache::statusWidth, &RowFormatCache::statusSupported>},
     {.column = ProcessColumn::Type, .render = &typeCell},
+    {.column = ProcessColumn::Architecture, .render = &architectureCell},
     // Resources
     {.column = ProcessColumn::CpuPercent, .render = &rightAlignedCell<&RowFormatCache::cpuPercent>},
     {.column = ProcessColumn::MemPercent, .render = &rightAlignedCell<&RowFormatCache::memPercent>},

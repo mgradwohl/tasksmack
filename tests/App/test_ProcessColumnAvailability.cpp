@@ -34,6 +34,7 @@ using ProcessColumnAvailability::unavailableValuesNote;
     caps.hasStatus = true;
     caps.hasPublisher = true;
     caps.hasProcessType = true;
+    caps.hasArchitecture = true; // #2394
     caps.hasGdiObjects = true;
     caps.hasSharedMemory = false;
     caps.hasPrivateBytes = false; // Private bytes are the commit size, Virtual (#1879)
@@ -85,6 +86,22 @@ TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
     EXPECT_TRUE(rowFormatOptions(caps).hasSwapBytes);
     EXPECT_FALSE(getColumnInfo(ProcessColumn::Private).defaultVisible);
     EXPECT_FALSE(getColumnInfo(ProcessColumn::Swap).defaultVisible);
+}
+
+TEST(ProcessColumnAvailabilityTest, ArchitectureFollowsItsCapabilityAndIsHiddenByDefault)
+{
+    // #2394: both probes read it; one that doesn't shows dashes and the header's note.
+    Platform::ProcessCapabilities caps;
+    EXPECT_FALSE(isSupported(ProcessColumn::Architecture, caps));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Architecture, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_FALSE(rowFormatOptions(caps).hasArchitecture);
+    caps.hasArchitecture = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Architecture, caps));
+    EXPECT_TRUE(rowFormatOptions(caps).hasArchitecture);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultVisible(ProcessColumn::Architecture, caps));
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Architecture).name, "Architecture");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::Architecture).configKey, "architecture");
+    EXPECT_EQ(columnAlignment(ProcessColumn::Architecture), ColumnAlign::Left);
 }
 
 TEST(ProcessColumnAvailabilityTest, ServicesFollowTheirCapability)
@@ -185,6 +202,7 @@ TEST(ProcessColumnAvailabilityTest, UnsupportedNoteWinsOverThePerProcessNote)
     caps.hasPowerUsage = false;
     caps.hasStatus = true;
     caps.hasContainer = true;
+    caps.hasArchitecture = true; // #2394
     caps.hasSharedMemory = true;
     return caps;
 }
@@ -583,6 +601,7 @@ TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
     EXPECT_TRUE(options.hasStatus);
     EXPECT_TRUE(options.hasPublisher);
     EXPECT_TRUE(options.hasProcessType);
+    EXPECT_TRUE(options.hasArchitecture);
     EXPECT_FALSE(rowFormatOptions(linuxWithoutRaplCapabilities()).hasPublisher);
     EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities()).hasContainer);
 

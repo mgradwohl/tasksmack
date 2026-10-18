@@ -167,6 +167,7 @@ struct RowFormatOptions
     bool hasContainer = true;
     bool hasServices = true; ///< The Services column (#1880): ProcessCapabilities::hasServices
     bool hasProcessType = true;
+    bool hasArchitecture = true; // #2394
 };
 
 /// The first line of a Services cell's tooltip (#1880), above the names one per line: "1 service",
@@ -351,6 +352,7 @@ struct RowFormatCache
     LazyTextWidth containerWidth;
     LazyTextWidth servicesWidth; // of the snapshot's services text
     LazyTextWidth processTypeWidth;
+    LazyTextWidth architectureWidth; // #2394
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
     // where it cannot, the cell is the unavailable dash rather than blank. Copied from the
@@ -360,9 +362,10 @@ struct RowFormatCache
     bool containerSupported = true;
     bool servicesSupported = true;
     bool processTypeSupported = true;
-    bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
-    bool npuSupported = true;   // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
-    bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
+    bool architectureSupported = true; // #2394
+    bool gpuSupported = true;          // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
+    bool npuSupported = true;          // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
+    bool gpuReadFailed = false;        // Supported, but this generation's per-process GPU read failed (#1210)
     // Why this row's GPU figures are not readings although the system has them -- a failed read, or a
     // process the last GPU read did not see -- or null when they are (#1210).
     const char* gpuUnreadReason = nullptr;
@@ -387,6 +390,7 @@ struct RowFormatCache
     fmt.containerSupported = options.hasContainer;
     fmt.servicesSupported = options.hasServices;
     fmt.processTypeSupported = options.hasProcessType;
+    fmt.architectureSupported = options.hasArchitecture;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;

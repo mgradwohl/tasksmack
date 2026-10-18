@@ -7,7 +7,10 @@
 
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessMachine.h"
+#include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 #include "Platform/Windows/WindowsTcpRows.h"
@@ -21,7 +24,9 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <iostream>
 #include <latch>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -1414,6 +1419,100 @@ TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)
     {
         EXPECT_NE(socket.key, 0U);
     }
+}
+
+// =============================================================================
+// Architecture (#2394)
+// =============================================================================
+
+/// The architecture every process the probe reads runs as, counted ("ARM64: 120, x64 (emulated): 3"),
+/// for the test's log and its XML report: what a runner's processes really show.
+[[nodiscard]] std::string architectureSummary(const std::vector<ProcessCounters>& processes)
+{
+    std::map<std::string, int> counts;
+    for (const ProcessCounters& process : processes)
+    {
+        ++counts[process.architecture.empty() ? std::string("(unread)") : process.architecture];
+    }
+    std::string summary;
+    for (const auto& [architecture, count] : counts)
+    {
+        summary += (summary.empty() ? "" : ", ") + architecture + ": " + std::to_string(count);
+    }
+    return summary;
+}
+
+TEST(WindowsProcessProbeTest, OurProcessRunsAsTheArchitectureItWasBuiltFor)
+{
+    WindowsProcessProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasArchitecture);
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto ours = std::ranges::find(processes, static_cast<std::int32_t>(GetCurrentProcessId()), &ProcessCounters::pid);
+    ASSERT_NE(ours, processes.end());
+
+#if defined(_M_ARM64) || defined(__aarch64__)
+    constexpr std::uint16_t BUILT_FOR = MachineMath::MACHINE_ARM64;
+#else
+    constexpr std::uint16_t BUILT_FOR = MachineMath::MACHINE_AMD64;
+#endif
+    const std::uint16_t native = Windows::nativeMachine();
+    EXPECT_NE(native, MachineMath::MACHINE_UNKNOWN);
+    EXPECT_EQ(Windows::processMachine(GetCurrentProcess()), BUILT_FOR);
+    EXPECT_EQ(ours->architecture, MachineMath::windowsArchitectureLabel(BUILT_FOR, native));
+    if (native == BUILT_FOR)
+    {
+        EXPECT_EQ(ours->architecture, (BUILT_FOR == MachineMath::MACHINE_ARM64) ? "ARM64" : "x64");
+    }
+    else
+    {
+        EXPECT_EQ(ours->architecture, "x64 (emulated)"); // The x64 build on Windows on ARM
+    }
+
+    const std::string summary = architectureSummary(processes);
+    std::cout << "This process: " << ours->architecture << "\nEvery process: " << summary << '\n';
+    ::testing::Test::RecordProperty("own_architecture", ours->architecture);
+    ::testing::Test::RecordProperty("architectures", summary);
+}
+
+TEST(WindowsProcessProbeTest, AThirtyTwoBitProcessIsWow64OnX64AndEmulatedOnArm64)
+{
+    // A 32-bit x86 ping from SysWOW64, which holds x86 programs on x64 and ARM64 Windows alike.
+    std::wstring wow64Folder(MAX_PATH, L'\0');
+    const UINT length = GetSystemWow64DirectoryW(wow64Folder.data(), static_cast<UINT>(wow64Folder.size()));
+    if (length == 0 || length >= wow64Folder.size())
+    {
+        GTEST_SKIP() << "This Windows has no WOW64";
+    }
+    wow64Folder.resize(length);
+    std::wstring commandLine = L"\"" + wow64Folder + L"\\PING.EXE\" -n 30 127.0.0.1";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child) == 0)
+    {
+        GTEST_SKIP() << "No 32-bit ping to start (error " << GetLastError() << ")";
+    }
+    const Windows::UniqueHandle childProcess(child.hProcess);
+    const Windows::UniqueHandle childThread(child.hThread);
+
+    WindowsProcessProbe probe;
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    TerminateProcess(childProcess.get(), 0); // Only the child this test started
+    WaitForSingleObject(childProcess.get(), 5000);
+
+    const auto ping = std::ranges::find(processes, static_cast<std::int32_t>(child.dwProcessId), &ProcessCounters::pid);
+    ASSERT_NE(ping, processes.end());
+    const std::uint16_t native = Windows::nativeMachine();
+    if (native == MachineMath::MACHINE_AMD64)
+    {
+        EXPECT_EQ(ping->architecture, "x86 (WOW64)");
+    }
+    else if (native == MachineMath::MACHINE_ARM64)
+    {
+        EXPECT_EQ(ping->architecture, "x86 (emulated)");
+    }
+    std::cout << "32-bit ping: " << ping->architecture << '\n';
+    ::testing::Test::RecordProperty("wow64_ping_architecture", ping->architecture);
 }
 
 } // namespace

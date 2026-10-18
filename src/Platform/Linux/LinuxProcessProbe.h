@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
 #include "Platform/ProcessTypes.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -117,6 +118,13 @@ class LinuxProcessProbe : public IProcessProbe
         m_CmdlineCacheTtl = ttl;
     }
 
+    /// Test seam: the host machine processes' architectures are compared against (#2394), normally
+    /// uname()'s. Not thread-safe; call before sampling starts.
+    void setHostMachineForTesting(ProcessArchitecture::Machine host)
+    {
+        m_HostMachine = host;
+    }
+
     /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
     /// change /proc/stat before totalCpuTime() is called and check the total was taken with the
     /// processes' stat reads (#1119). Not thread-safe against a concurrent enumerate(); set it before
@@ -218,6 +226,31 @@ class LinuxProcessProbe : public IProcessProbe
     CmdlineCache m_CmdlineCache;
     // Defaults to Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS. See setCmdlineCacheTtlForTesting().
     std::chrono::milliseconds m_CmdlineCacheTtl{};
+
+    // The machine this kernel runs (uname), which a process's architecture is compared against (#2394).
+    ProcessArchitecture::Machine m_HostMachine = ProcessArchitecture::Machine::Unknown;
+
+    // Architectures by PID (#2394), read once per process from the ELF header of /proc/[pid]/exe: an entry is
+    // used only for the process it was read from (the same start time and comm, as the command-line cache's;
+    // an exec changes the comm). Taken and put back by each enumerate() as m_CmdlineCache is, so it holds at
+    // most one entry per live process. Guarded by m_ArchitectureCacheMutex.
+    struct ArchitectureCacheEntry
+    {
+        std::uint64_t startTimeTicks = 0;
+        std::string comm;
+        std::string architecture; // ElfArchitecture::linuxArchitectureLabel(); empty if unreadable
+    };
+    using ArchitectureCache = std::unordered_map<std::int32_t, ArchitectureCacheEntry>;
+    std::mutex m_ArchitectureCacheMutex;
+    ArchitectureCache m_ArchitectureCache;
+
+    /// Set the architecture from previous's entry for this process, else from its executable (through
+    /// pidDirFd); the process's entry moves to seen. Call before the command line renames the process.
+    void readProcessArchitecture(int pidDirFd, ProcessCounters& counters, ArchitectureCache& previous, ArchitectureCache& seen) const;
+
+    /// The architecture of the executable /proc/[pid]/exe (through pidDirFd) names, on a host machine:
+    /// its ELF header's first bytes, and its path for an emulator's name. Empty if it can't be read.
+    [[nodiscard]] static std::string readExecutableArchitecture(int pidDirFd, ProcessArchitecture::Machine host);
 
     /// Parse the stat file in the /proc/[pid] directory `pidDirFd` is open on, for process `pid`.
     [[nodiscard]] bool parseProcessStat(int pidDirFd, int32_t pid, ProcessCounters& counters) const;

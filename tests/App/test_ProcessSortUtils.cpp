@@ -72,6 +72,7 @@ using Domain::ProcessSnapshot;
     snap.publisher = s;
     snap.container = s;
     snap.processType = s;
+    snap.architecture = s; // #2394
 
     // Same size (1) for both, so the generic per-column loop below exercises the
     // "compare first engine name" branch, not the "compare engine count" branch -

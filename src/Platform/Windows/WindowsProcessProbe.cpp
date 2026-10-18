@@ -36,6 +36,8 @@
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
+#include "WindowsProcessMachine.h"
+#include "WindowsProcessMachineMath.h"
 #include "WindowsTcpRows.h"
 
 #include <algorithm>
@@ -782,6 +784,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .getLogicalProcessorInformationEx = &GetLogicalProcessorInformationEx,
                 .windowsBuildNumber = &windowsBuildNumber,
                 .steadyNow = &steadyNow,
+                .nativeMachine = &Windows::nativeMachine,
             },
         .token =
             {
@@ -803,6 +806,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .openThread = &OpenThread,
                 .getProcessIdOfThread = &GetProcessIdOfThread,
                 .getThreadGroupAffinity = &GetThreadGroupAffinity,
+                .processMachine = &Windows::processMachine,
             },
     };
 }
@@ -813,6 +817,7 @@ WindowsProcessProbe::WindowsProcessProbe() : WindowsProcessProbe(systemFunctions
 WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& functions)
     : m_Fns(functions),
       m_IsElevated(isCurrentProcessElevated(functions.token)),
+      m_NativeMachine((functions.system.nativeMachine != nullptr) ? functions.system.nativeMachine() : MachineMath::MACHINE_UNKNOWN),
       m_ProcessorGroups(readProcessorGroupMaximums(functions.system)),
       m_ThreadsMaySpanGroups(threadsMaySpanGroups(functions.system.windowsBuildNumber()))
 {
@@ -1061,6 +1066,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.status = cache.status;
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
+        counters.architecture = cache.architecture;
         counters.gdiObjectCount = cache.gdiObjectCount;
         counters.cpuAffinity = cache.cpuAffinity;
         counters.nice = cache.nice;
@@ -1106,6 +1112,14 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         }
         fallBackToName();
         return false;
+    }
+
+    if (!cache.architectureRead && m_Fns.process.processMachine != nullptr)
+    {
+        // The architecture a process runs as never changes (#2394): read once, with the first handle that opens.
+        cache.architecture = MachineMath::windowsArchitectureLabel(m_Fns.process.processMachine(hProcess.get()), m_NativeMachine);
+        cache.architectureRead = true;
+        counters.architecture = cache.architecture;
     }
 
     if (plan.priority)
@@ -1290,12 +1304,13 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // time) used to stand in for it, which read ~2 W regardless of load and depended only on
         // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
         .hasPowerUsage = false,
-        .hasStatus = true,      // Extended basic information (Suspended) and power throttling (Efficiency Mode)
-        .hasPublisher = true,   // From GetFileVersionInfo on process image path
-        .hasContainer = false,  // cgroup containers are Linux's
-        .hasServices = false,   // Matched by PID from the service list, by Domain::ProcessModel (#1880)
-        .hasProcessType = true, // Classified from path + GetGuiResources
-        .hasGdiObjects = true,  // From GetGuiResources(GR_GDIOBJECTS)
+        .hasStatus = true,       // Extended basic information (Suspended) and power throttling (Efficiency Mode)
+        .hasPublisher = true,    // From GetFileVersionInfo on process image path
+        .hasContainer = false,   // cgroup containers are Linux's
+        .hasServices = false,    // Matched by PID from the service list, by Domain::ProcessModel (#1880)
+        .hasProcessType = true,  // Classified from path + GetGuiResources
+        .hasArchitecture = true, // ProcessMachineTypeInfo, else IsWow64Process2 (#2394)
+        .hasGdiObjects = true,   // From GetGuiResources(GR_GDIOBJECTS)
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true
         // together with hasNetworkCounters: a non-elevated process never uses EStats.
         .hasReducedPrivileges = denial.reducedPrivileges,

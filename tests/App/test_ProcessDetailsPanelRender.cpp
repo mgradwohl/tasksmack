@@ -220,12 +220,15 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     snapshot->publisher = "Example Corp";
     snapshot->processType = "Background Process";
     snapshot->container = "docker:1a2b3c4d5e6f";
-    snapshot->services = "nginx.service"; // #1886
+    snapshot->services = "nginx.service";      // #1886
+    snapshot->architecture = "x64 (emulated)"; // #2394: the Runtime card's eighth row, with Type and Container
     sample.snapshot = std::move(snapshot);
     const std::vector samples{sample};
     panel->updateWithSamples(samples, 1.0F);
     static_cast<void>(renderAndCapture(*panel));
     const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Architecture")) << text;
+    EXPECT_TRUE(text.contains("x64 (emulated)")) << text;
     EXPECT_TRUE(text.contains("Publisher")) << text;
     EXPECT_TRUE(text.contains("Example Corp")) << text;
     EXPECT_TRUE(text.contains("Background Process")) << text;

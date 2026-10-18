@@ -4,6 +4,8 @@
 // architecture can dump the process's (#2152), and what each failure says. Win32 error codes come in as plain integers and are compared
 // against this header's own constants, so it reaches no Windows header and its tests build and run on every platform (#1133).
 
+#include "WindowsProcessMachineMath.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <format>
@@ -210,32 +212,16 @@ struct DumpTime
     return std::format("the snapshot failed with error {}", error);
 }
 
-/// The IMAGE_FILE_MACHINE_* values (winnt.h) a dump's architecture check tells apart, as plain values.
-inline constexpr std::uint16_t MACHINE_UNKNOWN = 0x0000;
-inline constexpr std::uint16_t MACHINE_I386 = 0x014C;
-inline constexpr std::uint16_t MACHINE_ARMNT = 0x01C4; ///< 32-bit ARM (Thumb-2)
-inline constexpr std::uint16_t MACHINE_AMD64 = 0x8664;
-inline constexpr std::uint16_t MACHINE_ARM64 = 0xAA64;
-inline constexpr std::uint16_t MACHINE_ARM64EC = 0xA641;
-inline constexpr std::uint16_t MACHINE_ARM64X = 0xA64E;
-
-/// The machine a process's code runs as, from what Windows says about it (#2152):
-/// @p machineTypeInfo  GetProcessInformation(ProcessMachineTypeInfo)'s ProcessMachine (Windows 11 and
-///                     later; MACHINE_UNKNOWN where it can't be read). The only one of the three that
-///                     tells an x64 process emulated on ARM64 (AMD64) from a native ARM64 one.
-/// @p wow64Machine     IsWow64Process2()'s process machine: the 32-bit guest (I386, ARMNT) of a WOW64
-///                     process, else MACHINE_UNKNOWN -- an emulated x64 process is not a WOW64 one.
-/// @p nativeMachine    IsWow64Process2()'s native machine: the machine Windows itself runs as.
-/// MACHINE_UNKNOWN when none of them was read.
-[[nodiscard]] constexpr std::uint16_t
-processMachine(std::uint16_t machineTypeInfo, std::uint16_t wow64Machine, std::uint16_t nativeMachine) noexcept
-{
-    if (machineTypeInfo != MACHINE_UNKNOWN)
-    {
-        return machineTypeInfo;
-    }
-    return (wow64Machine != MACHINE_UNKNOWN) ? wow64Machine : nativeMachine;
-}
+// The IMAGE_FILE_MACHINE_* values a dump's architecture check tells apart, and the machine a process
+// runs as, shared with the process probe's Architecture column (#2394).
+using MachineMath::MACHINE_AMD64;
+using MachineMath::MACHINE_ARM64;
+using MachineMath::MACHINE_ARM64EC;
+using MachineMath::MACHINE_ARM64X;
+using MachineMath::MACHINE_ARMNT;
+using MachineMath::MACHINE_I386;
+using MachineMath::MACHINE_UNKNOWN;
+using MachineMath::processMachine;
 
 /// A machine's name in the messages: "x86", "x64", "ARM64", "ARM64EC" or "ARM32"; empty when unknown.
 [[nodiscard]] constexpr std::string_view machineName(std::uint16_t machine) noexcept

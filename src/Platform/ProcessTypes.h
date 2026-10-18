@@ -105,6 +105,12 @@ struct ProcessCounters
     // Values: "App", "Background Process", "Windows Process" (empty if not available)
     std::string processType;
 
+    // The architecture the process runs as (#2394), as ProcessArchitecture::architectureLabel() words it:
+    // "x64", "ARM64", "ARM64EC", "x64 (emulated)", "x86 (WOW64)" (empty if it couldn't be read). Windows:
+    // GetProcessInformation(ProcessMachineTypeInfo), else IsWow64Process2(); Linux: the ELF header of
+    // /proc/[pid]/exe. Read once per process, since it never changes.
+    std::string architecture;
+
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
@@ -200,6 +206,7 @@ struct ProcessCapabilities
                                         // unit from its cgroups (ProcessCounters::services, #1886); Windows, set by
                                         // Domain::ProcessModel once a service list with PIDs is attached (#1880)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
+    bool hasArchitecture = false;       // Whether ProcessCounters::architecture is filled (#2394)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data, or act
                                         // on other users' processes (not necessarily curable by elevation: sudo

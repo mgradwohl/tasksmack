@@ -8,9 +8,11 @@
 #include "CgroupFreezeStatus.h"
 #include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
+#include "ElfArchitecture.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
 #include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -54,6 +56,7 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 namespace Platform
@@ -241,6 +244,12 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
         spdlog::warn("Failed to read boot time from {}", (m_ProcRoot / "stat").string());
     }
 
+    // The machine this kernel runs, for the Architecture column (#2394): a process of another is emulated.
+    if (utsname host{}; ::uname(&host) == 0)
+    {
+        m_HostMachine = ElfArchitecture::machineFromName(static_cast<const char*>(host.machine));
+    }
+
     // How /proc is mounted, for the hidepid bit of capabilities().missingPrivileges (#2303).
     if (const std::vector<char> mountinfo = readProcFileFull((m_ProcRoot / "self" / "mountinfo").c_str()); !mountinfo.empty())
     {
@@ -338,6 +347,15 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     CmdlineCache seenCmdlines;
     seenCmdlines.reserve(previousCmdlines.size());
 
+    // Likewise this pass's architectures (#2394), each read once per process.
+    ArchitectureCache previousArchitectures;
+    {
+        const std::scoped_lock lock(m_ArchitectureCacheMutex);
+        previousArchitectures = std::exchange(m_ArchitectureCache, {});
+    }
+    ArchitectureCache seenArchitectures;
+    seenArchitectures.reserve(previousArchitectures.size());
+
     // Freeze states and containers by /proc/[pid]/cgroup contents, for this pass only (see readCgroupFacts()).
     FactsByCgroup factsByCgroup;
 
@@ -391,6 +409,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
         parseProcessStatm(pidDirFd.get(), counters);
         parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
+        readProcessArchitecture(pidDirFd.get(), counters, previousArchitectures, seenArchitectures); // While the name is comm
         readProcessCommand(pidDirFd.get(), counters, previousCmdlines, seenCmdlines, now);
 
         // Count open file descriptors (may fail for some processes due to permissions). A pass that
@@ -424,6 +443,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     {
         const std::scoped_lock lock(m_CmdlineCacheMutex);
         m_CmdlineCache = std::move(seenCmdlines);
+    }
+    {
+        const std::scoped_lock lock(m_ArchitectureCacheMutex);
+        m_ArchitectureCache = std::move(seenArchitectures);
     }
 
     // The system total that the processes' CPU deltas are divided by, taken now -- right after
@@ -496,6 +519,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasStatus = true,                              // From cgroup freezer state
                                .hasContainer = true,                           // From /proc/[pid]/cgroup paths
                                .hasServices = true,                            // The systemd service, from the same paths (#1886)
+                               .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
                                .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
                                .networkCountersBlocked = false,                // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true,                        // From /proc/[pid]/statm
@@ -841,6 +865,69 @@ void LinuxProcessProbe::readProcessCommand(
     {
         seen.insert_or_assign(counters.pid, std::move(entry));
     }
+}
+
+void LinuxProcessProbe::readProcessArchitecture(int pidDirFd,
+                                                ProcessCounters& counters,
+                                                ArchitectureCache& previous,
+                                                ArchitectureCache& seen) const
+{
+    // An executable's architecture is fixed, so it is read once per process: the same start time (not a
+    // later process that reused the PID) and the same comm (not replaced by an exec of another program).
+    auto node = previous.extract(counters.pid);
+    if (!node.empty() && node.mapped().startTimeTicks == counters.startTimeTicks && node.mapped().comm == counters.name)
+    {
+        counters.architecture = node.mapped().architecture;
+        seen.insert(std::move(node));
+        return;
+    }
+    // Unreadable is cached too: another user's exe stays unreadable while the process lives.
+    counters.architecture = readExecutableArchitecture(pidDirFd, m_HostMachine);
+    ArchitectureCacheEntry entry{.startTimeTicks = counters.startTimeTicks, .comm = counters.name, .architecture = counters.architecture};
+    if (!node.empty())
+    {
+        node.mapped() = std::move(entry); // Reuse the stale entry's node: no allocation
+        seen.insert(std::move(node));
+    }
+    else
+    {
+        seen.insert_or_assign(counters.pid, std::move(entry));
+    }
+}
+
+std::string LinuxProcessProbe::readExecutableArchitecture(int pidDirFd, ProcessArchitecture::Machine host)
+{
+    // Opening exe needs the same access as reading the link (ptrace read access): another user's process,
+    // without CAP_SYS_PTRACE, and a kernel thread, which has none, are unknown. Non-blocking, and only the
+    // header's first bytes are read.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const FdGuard exe(::openat(pidDirFd, "exe", O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK));
+    if (exe.get() == -1)
+    {
+        return {};
+    }
+    std::array<std::uint8_t, ElfArchitecture::ELF_HEADER_PREFIX_BYTES> header{};
+    std::size_t got = 0;
+    while (got < header.size())
+    {
+        const auto n = ::read(exe.get(), header.data() + got, header.size() - got); // Just opened: from offset 0
+        if (n < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (n <= 0)
+        {
+            break;
+        }
+        got += static_cast<std::size_t>(n);
+    }
+    // The exe's path, for an emulator's name (qemu-user through binfmt_misc). A fixture's exe is a plain
+    // file, not a link: no path, so no emulator.
+    std::array<char, 4096> path{};
+    const auto pathLength = ::readlinkat(pidDirFd, "exe", path.data(), path.size());
+    const std::string_view exePath =
+        (pathLength > 0) ? std::string_view(path.data(), static_cast<std::size_t>(pathLength)) : std::string_view{};
+    return ElfArchitecture::linuxArchitectureLabel(std::span<const std::uint8_t>(header.data(), got), exePath, host);
 }
 
 std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)

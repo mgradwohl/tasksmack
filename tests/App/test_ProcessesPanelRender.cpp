@@ -1217,8 +1217,12 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
 TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
 {
     ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
-    for (const ProcessColumn col :
-         {ProcessColumn::Publisher, ProcessColumn::Type, ProcessColumn::Container, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
+    for (const ProcessColumn col : {ProcessColumn::Publisher,
+                                    ProcessColumn::Type,
+                                    ProcessColumn::Architecture,
+                                    ProcessColumn::Container,
+                                    ProcessColumn::GpuEngine,
+                                    ProcessColumn::GpuDevice})
     {
         columns.setVisible(col, true);
     }
@@ -1260,6 +1264,40 @@ TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
     EXPECT_TRUE(text.contains("Background Process")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker isn't classified:\n" << text;
     panel->onDetach();
+}
+
+// #2394: the Architecture column shows the architecture each process runs as, and the dash for one whose
+// architecture couldn't be read.
+TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitectureOrTheDash)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, true);
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            Platform::ProcessCounters emulated =
+                TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            emulated.architecture = "x64 (emulated)";
+            probe->withProcess(std::move(emulated))
+                .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasArchitecture = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{},
+        [] { return false; });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Architecture")) << text;
+    EXPECT_TRUE(text.contains("x64 (emulated)")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker's isn't read:\n" << text;
+    panel->onDetach();
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Architecture, false);
 }
 
 // #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns

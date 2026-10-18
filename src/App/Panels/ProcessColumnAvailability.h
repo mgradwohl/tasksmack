@@ -158,6 +158,8 @@ gpuSupport(bool hasGpuModel, KnownUnsupported known, bool hasAccelerator = true,
         return caps.hasServices;
     case ProcessColumn::Type:
         return caps.hasProcessType;
+    case ProcessColumn::Architecture:
+        return caps.hasArchitecture;
     default:
         return true;
     }
@@ -278,6 +280,7 @@ enum class TextCell : std::uint8_t
     options.hasContainer = caps.hasContainer;
     options.hasServices = caps.hasServices;
     options.hasProcessType = caps.hasProcessType;
+    options.hasArchitecture = caps.hasArchitecture;
     return options;
 }
 

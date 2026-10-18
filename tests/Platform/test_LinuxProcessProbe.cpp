@@ -21,10 +21,12 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/Linux/ElfArchitecture.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcFdScan.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
@@ -51,9 +53,11 @@
 #include <format>
 #include <fstream>
 #include <initializer_list>
+#include <iostream>
 #include <iterator>
 #include <latch>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1438,6 +1442,101 @@ TEST(LinuxProcessProbeTest, ServicesAreTheSystemdServiceFromTheCgroup)
     EXPECT_TRUE(probe.capabilities().hasServices);
 }
 
+/// The first bytes of an ELF header (#2394): the magic, @p elfClass (1: 32-bit, 2: 64-bit), little-endian,
+/// and e_machine @p machine (an EM_* value). The probe reads no more than these.
+[[nodiscard]] std::string elfHeader(std::uint16_t machine, char elfClass = 2)
+{
+    std::string header(Platform::ElfArchitecture::ELF_HEADER_PREFIX_BYTES, '\0');
+    header[0] = '\x7F';
+    header[1] = 'E';
+    header[2] = 'L';
+    header[3] = 'F';
+    header[4] = elfClass;
+    header[5] = 1; // ELFDATA2LSB
+    header[18] = static_cast<char>(machine & 0xFFU);
+    header[19] = static_cast<char>(machine >> 8U);
+    return header;
+}
+
+TEST(LinuxProcessProbeTest, TheArchitectureIsTheExecutablesElfMachineReadOncePerProcess)
+{
+    ScopedTempDir proc("ts_test_proc_architecture");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    // A plain file, not the kernel's link: read for its header, with no path to name an emulator.
+    writeFile(proc.path / "4242" / "exe", elfHeader(62)); // EM_X86_64
+    LinuxProcessProbe probe(proc.path);
+    probe.setHostMachineForTesting(ProcessArchitecture::Machine::Arm64);
+    EXPECT_TRUE(probe.capabilities().hasArchitecture);
+    const auto architecture = [&probe]
+    {
+        const auto processes = probe.enumerate();
+        EXPECT_EQ(processes.size(), 1U);
+        return processes.empty() ? std::string("<missing>") : processes[0].architecture;
+    };
+    EXPECT_EQ(architecture(), "x64 (emulated)");
+
+    // The same process (start time and comm): not read again.
+    writeFile(proc.path / "4242" / "exe", elfHeader(183)); // EM_AARCH64
+    EXPECT_EQ(architecture(), "x64 (emulated)");
+
+    // A new process with the PID (another start time) is read.
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 99999 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    EXPECT_EQ(architecture(), "ARM64");
+}
+
+TEST(LinuxProcessProbeTest, AThirtyTwoBitOrUnreadableExecutable)
+{
+    const auto architectureOf = [](std::string_view name, const std::optional<std::string>& exe)
+    {
+        ScopedTempDir proc(std::string("ts_test_proc_arch_") + std::string(name));
+        writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+        if (exe.has_value())
+        {
+            writeFile(proc.path / "4242" / "exe", *exe);
+        }
+        LinuxProcessProbe probe(proc.path);
+        probe.setHostMachineForTesting(ProcessArchitecture::Machine::X64);
+        const auto processes = probe.enumerate();
+        return processes.empty() ? std::string("<missing>") : processes[0].architecture;
+    };
+    EXPECT_EQ(architectureOf("x86", elfHeader(3, 1)), "x86 (32-bit)"); // EM_386, ELFCLASS32
+    EXPECT_EQ(architectureOf("x64", elfHeader(62)), "x64");
+    EXPECT_TRUE(architectureOf("none", std::nullopt).empty());                 // A kernel thread has no exe
+    EXPECT_TRUE(architectureOf("script", std::string("#!/bin/sh\n")).empty()); // Not ELF
+    EXPECT_TRUE(architectureOf("short",
+                               std::string("\x7F"
+                                           "ELF"))
+                    .empty()); // Cut short
+}
+
+TEST(LinuxProcessProbeTest, OurProcessRunsAsTheArchitectureItWasBuiltFor)
+{
+    LinuxProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ours = std::ranges::find(processes, static_cast<std::int32_t>(::getpid()), &ProcessCounters::pid);
+    ASSERT_NE(ours, processes.end());
+#if defined(__x86_64__)
+    EXPECT_EQ(ours->architecture, "x64");
+#elif defined(__aarch64__)
+    EXPECT_EQ(ours->architecture, "ARM64");
+#endif
+    // What this machine's processes show, for the log and the XML report.
+    std::map<std::string, int> counts;
+    for (const ProcessCounters& process : processes)
+    {
+        ++counts[process.architecture.empty() ? std::string("(unread)") : process.architecture];
+    }
+    std::string summary;
+    for (const auto& [architecture, count] : counts)
+    {
+        summary += (summary.empty() ? "" : ", ") + architecture + ": " + std::to_string(count);
+    }
+    std::cout << "This process: " << ours->architecture << "\nEvery process: " << summary << '\n';
+    ::testing::Test::RecordProperty("own_architecture", ours->architecture);
+    ::testing::Test::RecordProperty("architectures", summary);
+}
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
     // A readable CapEff decides for root too, so these hold whatever the test runs as.

@@ -554,13 +554,16 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
     EXPECT_TRUE(all.publisherSupported);
     EXPECT_TRUE(all.containerSupported);
     EXPECT_TRUE(all.processTypeSupported);
+    EXPECT_TRUE(all.architectureSupported);
     EXPECT_TRUE(all.gpuSupported);
 
     ProcessRowFormat::RowFormatOptions linuxLike;
     linuxLike.hasPublisher = false;
     linuxLike.hasProcessType = false;
     linuxLike.hasPerProcessGpu = false;
+    linuxLike.hasArchitecture = false; // A probe that reads none (#2394)
     const RowFormatCache some = buildRowFormatCache(makeSnapshot(), linuxLike);
+    EXPECT_FALSE(some.architectureSupported);
     EXPECT_TRUE(some.statusSupported);
     EXPECT_FALSE(some.publisherSupported);
     EXPECT_FALSE(some.processTypeSupported);
@@ -764,7 +767,8 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
                               &fresh.gpuEnginesWidth,
                               &fresh.gpuDevicesWidth,
                               &fresh.publisherWidth,
-                              &fresh.processTypeWidth})
+                              &fresh.processTypeWidth,
+                              &fresh.architectureWidth})
     {
         EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
     }

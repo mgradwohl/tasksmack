@@ -3592,6 +3592,23 @@ TEST(ProcessModelTest, WhenProbeReturnsProcessType_ThenSnapshotContainsProcessTy
     EXPECT_EQ(snaps[0].processType, "App");
 }
 
+TEST(ProcessModelTest, TheArchitectureIsPassedThroughToTheSnapshot)
+{
+    // #2394: the probe words it; Domain carries it to the snapshot as it is.
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.architecture = "x86 (WOW64)";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].architecture, "x86 (WOW64)");
+}
+
 TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
 {
     auto probe = std::make_unique<MockProcessProbe>();

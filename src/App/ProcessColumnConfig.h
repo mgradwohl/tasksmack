@@ -29,8 +29,9 @@ enum class ProcessColumn : std::uint8_t
                // State - what is it doing?
     State,
     Status,
-    Type, // Process type: App / Background Process / Windows Process (Windows-only)
-          // Resource usage - how much is it consuming?
+    Type,         // Process type: App / Background Process / Windows Process (Windows-only)
+    Architecture, // The architecture it runs as: x64, ARM64, "x64 (emulated)", "x86 (WOW64)" (#2394)
+                  // Resource usage - how much is it consuming?
     CpuPercent,
     MemPercent,
     Resident,
@@ -87,6 +88,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::State,
             ProcessColumn::Status,
             ProcessColumn::Type,
+            ProcessColumn::Architecture,
             // Resources
             ProcessColumn::CpuPercent,
             ProcessColumn::MemPercent,
@@ -179,6 +181,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Type (Windows-only)
         {.name="Type", .menuName="Type", .configKey="type", .defaultWidth=120.0F, .defaultVisible=false, .canHide=true, .description="Process type: App (has UI), Background Process, or Windows Process (Windows only)"},
+        // Architecture (#2394)
+        {.name="Architecture", .menuName="Architecture", .configKey="architecture", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="The architecture the process runs as: x64, x86, ARM64, ARM64EC or ARM32. (emulated) marks code translated to this machine's own as it runs (x64 on ARM64), which costs performance; (WOW64) on Windows and (32-bit) on Linux mark a 32-bit program its 64-bit OS runs natively"},
 
         // === Resources ===
         // CPU%
@@ -284,6 +288,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Services:
     case ProcessColumn::Status:
     case ProcessColumn::Type:
+    case ProcessColumn::Architecture:
     case ProcessColumn::GpuEngine:
     case ProcessColumn::GpuDevice:
     case ProcessColumn::NpuEngine:

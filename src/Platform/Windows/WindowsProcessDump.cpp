@@ -5,6 +5,7 @@
 #include "WindowsHandles.h"
 #include "WindowsProcAddress.h"
 #include "WindowsProcessDumpMath.h"
+#include "WindowsProcessMachine.h"
 
 #include <spdlog/spdlog.h>
 
@@ -233,26 +234,6 @@ bool isProtectedProcess(DWORD pid)
         return false;
     }
     return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
-}
-
-std::uint16_t processMachine(HANDLE process)
-{
-    // ProcessMachineTypeInfo (Windows 11 and later) tells an emulated x64 process from a native ARM64
-    // one; IsWow64Process2() can't (it says neither is WOW64), so it is only the fallback, for Windows 10.
-    // Zero-filled for GetProcessInformation() to fill in; MACHINE_ATTRIBUTES has no zero enumerator, but
-    // "no attributes" is what Windows itself writes there.
-    PROCESS_MACHINE_INFORMATION info{}; // NOLINT(bugprone-invalid-enum-default-initialization)
-    const std::uint16_t machineTypeInfo = (GetProcessInformation(process, ProcessMachineTypeInfo, &info, sizeof(info)) != 0)
-                                            ? info.ProcessMachine
-                                            : DumpMath::MACHINE_UNKNOWN;
-    USHORT wow64Machine = IMAGE_FILE_MACHINE_UNKNOWN;
-    USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
-    if (machineTypeInfo == DumpMath::MACHINE_UNKNOWN && IsWow64Process2(process, &wow64Machine, &nativeMachine) == 0)
-    {
-        wow64Machine = IMAGE_FILE_MACHINE_UNKNOWN;
-        nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
-    }
-    return DumpMath::processMachine(machineTypeInfo, wow64Machine, nativeMachine);
 }
 
 ProcessDumpResult writeProcessDump(

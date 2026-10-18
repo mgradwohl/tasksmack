@@ -262,6 +262,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsDebugPrivilege.cpp
     src/Platform/Windows/WindowsElevation.cpp
     src/Platform/Windows/WindowsProcessDump.cpp
+    src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
@@ -374,6 +375,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/ProcessArchitecture.h
     src/Platform/CurrentProcess.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
@@ -412,6 +414,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessSecurityReader.h
         src/Platform/Linux/ProcStatusSecurityParser.h
         src/Platform/Linux/CgroupContainer.h
+        src/Platform/Linux/ElfArchitecture.h
         src/Platform/Linux/ProcMapsParser.h
         src/Platform/Linux/LinuxProcessOpenFilesReader.h
         src/Platform/Linux/ProcFdParser.h
@@ -447,6 +450,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsProcessDumpMath.h
+        src/Platform/Windows/WindowsProcessMachine.h
+        src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessIconSource.h

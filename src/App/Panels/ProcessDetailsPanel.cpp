@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
+#include "App/Panels/ProcessArchitectureNote.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/SelectOverride.h"
@@ -597,6 +598,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Container",
             "Affinity",
             "Services",
+            "Architecture",
         });
 
         // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
@@ -630,8 +632,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view label;
         std::string_view value;
         ImVec4 color;
+        // Shown on hovering the value; else a clipped value's own text. The initializer keeps the rows that
+        // leave it out free of -Wmissing-designated-field-initializers.
+        std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most eight rows a table (Publisher, Affinity, Services, Type and Container are optional), held in place.
+    // At most eight rows a table (Publisher, Affinity, Services, Type, Container and Architecture are optional), held in place.
     struct InfoRows
     {
         std::array<InfoRow, 8> rows{};
@@ -666,8 +671,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
                 ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
                 rightAlignedText(row.value, row.color);
+                if (!row.tooltip.empty())
+                {
+                    ImGui::SetItemTooltip("%.*s", static_cast<int>(row.tooltip.size()), row.tooltip.data());
+                }
                 // A value wider than its column (a long affinity list, #1878) is clipped: its tooltip has it all.
-                if (ImGui::CalcTextSize(row.value.data(), row.value.data() + row.value.size()).x > ImGui::GetColumnWidth())
+                else if (ImGui::CalcTextSize(row.value.data(), row.value.data() + row.value.size()).x > ImGui::GetColumnWidth())
                 {
                     ImGui::SetItemTooltip("%.*s", static_cast<int>(row.value.size()), row.value.data());
                 }
@@ -764,6 +773,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.container.empty())
     {
         runtimeRows.add({.label = "Container", .value = proc.container, .color = theme.scheme().textMuted});
+    }
+    if (!proc.architecture.empty())
+    {
+        // The Processes table's Architecture column (#2394), with what emulation costs on hover.
+        runtimeRows.add({.label = "Architecture",
+                         .value = proc.architecture,
+                         .color = theme.scheme().textPrimary,
+                         .tooltip = ProcessArchitectureNote::architectureNote(proc.architecture)});
     }
     // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
     // the two, so their edges line up -- or as tall as Actions or Priority beside them, if taller.

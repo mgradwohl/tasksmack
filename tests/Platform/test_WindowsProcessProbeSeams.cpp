@@ -11,6 +11,7 @@
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 
@@ -145,6 +146,10 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     std::map<DWORD, GROUP_AFFINITY> threadAffinities; // By thread ID, read back in ID order
     std::size_t nextThread = 0;
     DWORD threadOwnerPid = PID;
+    // Architecture (#2394): IMAGE_FILE_MACHINE_* values
+    std::uint16_t processMachine = MachineMath::MACHINE_AMD64;
+    std::uint16_t nativeMachine = MachineMath::MACHINE_AMD64;
+    int processMachineCalls = 0;
     // EStats
     bool estatsExported = true;
     bool ipv6Exported = true;
@@ -515,6 +520,17 @@ DWORD WINAPI fakeGetProcessIdOfThread(HANDLE /*thread*/)
     return fake().threadOwnerPid;
 }
 
+std::uint16_t fakeProcessMachine(HANDLE /*process*/)
+{
+    ++fake().processMachineCalls;
+    return fake().processMachine;
+}
+
+std::uint16_t fakeNativeMachine()
+{
+    return fake().nativeMachine;
+}
+
 /// The fakes read threads in snapshot order, so the next unread thread's affinity is reported.
 BOOL WINAPI fakeGetThreadGroupAffinity(HANDLE /*thread*/, PGROUP_AFFINITY affinity)
 {
@@ -651,6 +667,7 @@ WindowsProcessProbeFunctions fakeFunctions()
                 .getLogicalProcessorInformationEx = &fakeGetLogicalProcessorInformationEx,
                 .windowsBuildNumber = &fakeWindowsBuildNumber,
                 .steadyNow = &fakeSteadyNow,
+                .nativeMachine = &fakeNativeMachine,
             },
         .token =
             {
@@ -672,6 +689,7 @@ WindowsProcessProbeFunctions fakeFunctions()
                 .openThread = &fakeOpenThread,
                 .getProcessIdOfThread = &fakeGetProcessIdOfThread,
                 .getThreadGroupAffinity = &fakeGetThreadGroupAffinity,
+                .processMachine = &fakeProcessMachine,
             },
     };
 }
@@ -950,6 +968,73 @@ TEST_F(WindowsProcessProbeSeamTest, TheSameProcessIsReadAgainOnceItsTtlsRunOut)
     fake().now += std::chrono::hours(1);
     EXPECT_EQ(find(probe.enumerate()).user, "bob");
     EXPECT_EQ(fake().openProcessCalls, 2);
+}
+
+// --- Architecture (#2394) ------------------------------------------------------------------------
+
+TEST_F(WindowsProcessProbeSeamTest, TheArchitectureIsReadOnceAProcessAndAReusedPidReadsItAgain)
+{
+    fake().processMachine = MachineMath::MACHINE_AMD64;
+    fake().nativeMachine = MachineMath::MACHINE_ARM64;
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).architecture, "x64 (emulated)");
+
+    // Past every TTL: the other details are read again, the architecture never is.
+    fake().processMachine = MachineMath::MACHINE_ARM64;
+    fake().user = L"bob";
+    fake().now += std::chrono::hours(1);
+    const ProcessCounters again = find(probe.enumerate());
+    EXPECT_EQ(again.user, "bob");
+    EXPECT_EQ(again.architecture, "x64 (emulated)");
+    EXPECT_EQ(fake().processMachineCalls, 1);
+
+    fake().processes.front().createTime += 1; // The PID now belongs to a new process
+    EXPECT_EQ(find(probe.enumerate()).architecture, "ARM64");
+    EXPECT_EQ(fake().processMachineCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, TheArchitectureIsComparedWithTheMachineWindowsRunsAs)
+{
+    const auto architecture = [](std::uint16_t process, std::uint16_t native)
+    {
+        fake().processMachine = process;
+        fake().nativeMachine = native;
+        return sampleOne().architecture;
+    };
+    EXPECT_EQ(architecture(MachineMath::MACHINE_AMD64, MachineMath::MACHINE_AMD64), "x64");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_I386, MachineMath::MACHINE_AMD64), "x86 (WOW64)");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_ARM64, MachineMath::MACHINE_ARM64), "ARM64");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_ARM64EC, MachineMath::MACHINE_ARM64), "ARM64EC");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_AMD64, MachineMath::MACHINE_ARM64), "x64 (emulated)");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_I386, MachineMath::MACHINE_ARM64), "x86 (emulated)");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_ARMNT, MachineMath::MACHINE_ARM64), "ARM32 (WOW64)");
+    EXPECT_EQ(architecture(MachineMath::MACHINE_AMD64, MachineMath::MACHINE_UNKNOWN), "x64"); // Native unread
+    EXPECT_TRUE(architecture(MachineMath::MACHINE_UNKNOWN, MachineMath::MACHINE_AMD64).empty());
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnUnopenableProcessHasNoArchitectureUntilItOpens)
+{
+    fake().failOpenProcess = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_TRUE(find(probe.enumerate()).architecture.empty());
+    EXPECT_EQ(fake().processMachineCalls, 0);
+
+    fake().failOpenProcess = false;
+    fake().now += std::chrono::hours(1); // The next handle opens with the details' TTL
+    EXPECT_EQ(find(probe.enumerate()).architecture, "x64");
+    EXPECT_EQ(fake().processMachineCalls, 1);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, WithoutTheMachineReadsTheArchitectureIsUnreadOrNamedAlone)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.process.processMachine = nullptr;
+    EXPECT_TRUE(find(WindowsProcessProbe(functions).enumerate()).architecture.empty());
+
+    functions = fakeFunctions();
+    functions.system.nativeMachine = nullptr;
+    fake().processMachine = MachineMath::MACHINE_I386;
+    EXPECT_EQ(find(WindowsProcessProbe(functions).enumerate()).architecture, "x86");
 }
 
 TEST_F(WindowsProcessProbeSeamTest, AFailedSnapshotEnumeratesNothing)

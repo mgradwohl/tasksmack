@@ -146,6 +146,8 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compareServicesText(a.services, b.services, ascending);
     case ProcessColumn::Type:
         return compare(a.processType, b.processType);
+    case ProcessColumn::Architecture:
+        return compare(a.architecture, b.architecture);
     case ProcessColumn::GdiObjects:
         return compare(a.gdiObjectCount, b.gdiObjectCount);
     default:
