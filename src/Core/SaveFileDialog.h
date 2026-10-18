@@ -35,6 +35,7 @@ using SaveFileCallback = std::function<void(SaveFileResult)>;
 /// @p filters and starting at @p defaultLocation (a folder, or a folder and file name). Returns at once;
 /// @p callback gets the result later, maybe on another thread, exactly once. Call from the main thread.
 /// Should @p callback throw, the exception is caught and logged, never left to unwind into SDL (#2162).
+/// Should building the result fail (out of memory), @p callback still gets one, with a non-empty error (#2415).
 void showSaveFileDialog(SDL_Window* window, std::vector<FileFilter> filters, const std::string& defaultLocation, SaveFileCallback callback);
 
 /// Shows the folder-picking dialog (SDL_ShowOpenFolderDialog; on Linux, the desktop portal's chooser),

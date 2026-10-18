@@ -27,35 +27,59 @@ struct DialogRequest
     SaveFileCallback callback;
 };
 
-/// Logs that the dialog's callback threw, best-effort: logging allocates too, and nothing may leave
+/// The error the callback gets when building its result throws (#2415). Short enough to fit every
+/// standard library's small-string buffer, so assigning it allocates nothing even while allocation fails.
+constexpr const char* RESULT_FAILED_ERROR = "out of memory";
+
+/// Logs that part of onDialogClosed() threw, best-effort: logging allocates too, and nothing may leave
 /// onDialogClosed() (as guardLayerCall does).
-void logCallbackFailure(const char* what) noexcept
+void logDialogFailure(const char* what, const char* reason) noexcept
 {
     try
     {
-        spdlog::error("File dialog callback threw: {}", what);
+        spdlog::error("File dialog {}: {}", what, reason);
     }
     catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here, must not throw
     {}
 }
 
+/// Turns SDL's arguments into the caller's result. Copying the path or SDL's error allocates, so this
+/// can throw std::bad_alloc.
+[[nodiscard]] SaveFileResult makeResult(const char* const* fileList, int filter)
+{
+    SaveFileResult result;
+    if (fileList == nullptr)
+    {
+        result.error = SDL_GetError();
+    }
+    else if (fileList[0] != nullptr) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic): SDL's null-terminated list
+    {
+        result.path = fileList[0]; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+        result.filter = filter;
+    }
+    return result;
+}
+
 /// SDL's C callback, maybe on SDL's dialog thread (the portal or zenity thread on Linux). Nothing may
 /// unwind out of it into SDL's C frames (#2162): building the result allocates and the caller's callback
-/// can throw, so both are caught and logged here. The request is freed either way.
+/// can throw, so both are caught and logged here. The request is freed either way. Should building the
+/// result fail, the callback still runs, once, with RESULT_FAILED_ERROR: callers clear their busy state
+/// only there, so skipping it would leave Save or Dump stuck (#2415).
 void SDLCALL onDialogClosed(void* userdata, const char* const* fileList, int filter) noexcept
 {
     const std::unique_ptr<DialogRequest> request(static_cast<DialogRequest*>(userdata));
     try
     {
         SaveFileResult result;
-        if (fileList == nullptr)
+        try
         {
-            result.error = SDL_GetError();
+            result = makeResult(fileList, filter);
         }
-        else if (fileList[0] != nullptr) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic): SDL's null-terminated list
+        catch (const std::exception& e)
         {
-            result.path = fileList[0]; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-            result.filter = filter;
+            // result is still default-constructed: the assignment above never ran.
+            logDialogFailure("result could not be built", e.what());
+            result.error = RESULT_FAILED_ERROR;
         }
         if (request->callback)
         {
@@ -64,11 +88,11 @@ void SDLCALL onDialogClosed(void* userdata, const char* const* fileList, int fil
     }
     catch (const std::exception& e)
     {
-        logCallbackFailure(e.what());
+        logDialogFailure("callback threw", e.what());
     }
     catch (...)
     {
-        logCallbackFailure("unknown exception");
+        logDialogFailure("callback threw", "unknown exception");
     }
 }
 
