@@ -243,7 +243,7 @@ TEST_F(WindowsBatteryInfoTest, NoBatteryOrAFailedCallFindsNothingAndClosesWhatIt
 
 TEST_F(WindowsBatteryInfoTest, ProbeCapabilitiesFollowWhatTheBatteryReported)
 {
-    const PowerCapabilities normal = WindowsPowerProbe(fakes()).capabilities();
+    const PowerCapabilities normal = WindowsPowerProbe(fakes(), &fakeGetSystemPowerStatus).capabilities();
     EXPECT_TRUE(normal.hasDesignCapacity);
     EXPECT_TRUE(normal.hasHealthPercent);
     EXPECT_TRUE(normal.hasCycleCount);
@@ -252,7 +252,7 @@ TEST_F(WindowsBatteryInfoTest, ProbeCapabilitiesFollowWhatTheBatteryReported)
 
     fake().capabilities = BATTERY_SYSTEM_BATTERY | BATTERY_CAPACITY_RELATIVE;
     fake().cycles = 0; // The driver's "no cycle counter"
-    const PowerCapabilities relative = WindowsPowerProbe(fakes()).capabilities();
+    const PowerCapabilities relative = WindowsPowerProbe(fakes(), &fakeGetSystemPowerStatus).capabilities();
     EXPECT_FALSE(relative.hasDesignCapacity);
     EXPECT_FALSE(relative.hasHealthPercent);
     EXPECT_FALSE(relative.hasCycleCount);
@@ -260,7 +260,7 @@ TEST_F(WindowsBatteryInfoTest, ProbeCapabilitiesFollowWhatTheBatteryReported)
 
     fake() = FakeBattery{};
     fake().failInformation = true;
-    const PowerCapabilities failed = WindowsPowerProbe(fakes()).capabilities();
+    const PowerCapabilities failed = WindowsPowerProbe(fakes(), &fakeGetSystemPowerStatus).capabilities();
     EXPECT_FALSE(failed.hasDesignCapacity || failed.hasHealthPercent || failed.hasCycleCount || failed.hasTechnology);
 }
 
