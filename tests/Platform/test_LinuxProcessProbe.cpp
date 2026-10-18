@@ -1106,6 +1106,16 @@ TEST(LinuxProcessProbeTest, UserIsTheEffectiveUid)
     };
     EXPECT_EQ(userOf(4242), "root");
     EXPECT_EQ(userOf(4343), "root");
+
+    // #2475: who started it, when that isn't who it runs as; nobody otherwise.
+    const auto realUserOf = [&processes](std::int32_t pid) -> std::string
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string{"<missing>"} : it->realUser;
+    };
+    EXPECT_FALSE(realUserOf(4242).empty());
+    EXPECT_NE(realUserOf(4242), "root");
+    EXPECT_EQ(realUserOf(4343), "");
 }
 
 TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)

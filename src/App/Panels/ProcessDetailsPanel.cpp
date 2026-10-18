@@ -750,6 +750,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "User",
                       .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
                       .color = theme.scheme().textPrimary});
+    if (!proc.realUser.empty())
+    {
+        // A setuid program run by another user: User is who it runs as, this who started it (#2475).
+        identityRows.add({.label = "Started by", .value = proc.realUser, .color = theme.scheme().textPrimary});
+    }
     identityRows.add({.label = "Started", .value = text.started, .color = theme.scheme().textMuted});
     if (!proc.publisher.empty())
     {

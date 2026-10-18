@@ -1213,6 +1213,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.parentPid = current.parentPid;
     // name and command are set by computeSnapshotsLocked(), from the process's SingleLineMemos.
     snapshot.user = current.user;
+    snapshot.realUser = current.realUser;
     snapshot.displayState = translateState(current.state);
     snapshot.status = current.status;                 // Pass through status from platform probe
     snapshot.publisher = current.publisher;           // Pass through publisher from platform probe

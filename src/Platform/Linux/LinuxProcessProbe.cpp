@@ -759,7 +759,13 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
             {
                 ptr = ProcParsing::skipSpaces(realEnd.ptr, lineEnd);
                 uid_t effectiveUid = 0;
-                counters.user = getUsername(std::from_chars(ptr, lineEnd, effectiveUid).ec == std::errc{} ? effectiveUid : realUid);
+                const bool haveEffective = std::from_chars(ptr, lineEnd, effectiveUid).ec == std::errc{};
+                counters.user = getUsername(haveEffective ? effectiveUid : realUid);
+                // Who started it, for Process Details, when that isn't who it runs as (#2475)
+                if (haveEffective && effectiveUid != realUid)
+                {
+                    counters.realUser = getUsername(realUid);
+                }
             }
         }
         else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))

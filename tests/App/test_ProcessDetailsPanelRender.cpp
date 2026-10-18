@@ -158,6 +158,29 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
     ImPlotContext* m_ImPlot = nullptr;
 };
 
+// #2475: a setuid program run by another user says who started it beside who it runs as; others don't.
+TEST_F(ProcessDetailsPanelRenderTest, ASetuidProcessSaysWhoStartedIt)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector plain{sampleAt(0.0, 10.0)};
+    panel->updateWithSamples(plain, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Started by"));
+
+    Domain::ProcessSample setuid = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*setuid.snapshot);
+    snapshot->user = "root";
+    snapshot->realUser = "alice";
+    setuid.snapshot = snapshot;
+    const std::vector samples{setuid};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Started by")) << text;
+    EXPECT_TRUE(text.contains("alice")) << text;
+}
+
 TEST_F(ProcessDetailsPanelRenderTest, NothingSelectedSaysSo)
 {
     const auto panel = activePanel();

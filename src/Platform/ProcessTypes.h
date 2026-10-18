@@ -33,6 +33,7 @@ struct ProcessCounters
     std::string name;
     std::string command;   // Full command line
     std::string user;      // Username (owner) of the process
+    std::string realUser;  // Who started it, when not `user`: a setuid program's caller (Linux, #2475); else empty
     char state = '?';      // Raw state character from OS (e.g., 'R', 'S', 'Z')
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)

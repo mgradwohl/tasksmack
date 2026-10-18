@@ -155,6 +155,7 @@ struct ProcessSnapshot
     std::string name;
     std::string command;      // Full command line
     std::string user;         // Username (owner) of the process
+    std::string realUser;     // Who started it, when not `user` (a setuid program's caller, #2475); else empty
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
     std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
