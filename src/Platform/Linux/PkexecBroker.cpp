@@ -38,6 +38,7 @@ constexpr useconds_t REAP_STEP_MICROSECONDS = 20'000;
 /// roundTrip()'s errors while the launcher may still be running (the prompt still up): it isn't waited for.
 constexpr const char* HELPER_TIMED_OUT = "the helper didn't answer in time";
 constexpr const char* CANCELLED = "cancelled";
+constexpr const char* ALREADY_ASKING = "already asking for an administrator's password";
 
 } // namespace
 
@@ -88,6 +89,31 @@ bool PkexecBroker::connected() const noexcept
 
 std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_token& stopToken, std::chrono::milliseconds timeout)
 {
+    if (m_Connected.load())
+    {
+        return {};
+    }
+    // One password prompt at a time (#2391): a second request while one is up says so at once, rather
+    // than queue behind the lock -- deaf to its stop token -- and raise another prompt the moment the
+    // first is answered or dismissed.
+    if (m_Connecting.exchange(true))
+    {
+        return std::unexpected(std::string(ALREADY_ASKING));
+    }
+    struct ConnectingGuard
+    {
+        std::atomic<bool>& connecting;
+        explicit ConnectingGuard(std::atomic<bool>& flag) noexcept : connecting(flag)
+        {}
+        ConnectingGuard(const ConnectingGuard&) = delete;
+        ConnectingGuard& operator=(const ConnectingGuard&) = delete;
+        ConnectingGuard(ConnectingGuard&&) = delete;
+        ConnectingGuard& operator=(ConnectingGuard&&) = delete;
+        ~ConnectingGuard()
+        {
+            connecting = false;
+        }
+    } const guard(m_Connecting);
     const std::scoped_lock lock(m_Mutex);
     if (m_Connected.load())
     {

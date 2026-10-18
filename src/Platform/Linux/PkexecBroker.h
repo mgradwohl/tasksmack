@@ -85,6 +85,7 @@ class PkexecBroker final : public IPrivilegedBroker
     pid_t m_Child = -1;
     std::vector<pid_t> m_Abandoned; // Launchers closed while still running, reaped once they exit (#2333)
     std::uint32_t m_NextRequestId = 1;
+    std::atomic<bool> m_Connecting{false};        // a connect is asking for the password (#2391)
     mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has hung up
 };
 

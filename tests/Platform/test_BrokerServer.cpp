@@ -995,6 +995,25 @@ TEST(PkexecBrokerTest, AStartGivenUpOnEndsTheLauncher)
     EXPECT_EQ(errno, ECHILD);
 }
 
+// #2391: a second start while the first is still prompting says so at once, rather than wait out (and
+// then repeat) the prompt.
+TEST(PkexecBrokerTest, ASecondStartWhileOneIsPromptingSaysSo)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "exec sleep 30", "sh"}); // "prompting" until ended
+    std::stop_source stop;
+    auto first = std::async(std::launch::async, [&] { return broker.connectWithin(stop.get_token(), std::chrono::seconds{20}); });
+    std::this_thread::sleep_for(std::chrono::milliseconds{300}); // the first is now waiting for its answer
+    const auto started = std::chrono::steady_clock::now();
+    const auto second = broker.connectWithin(std::stop_token{}, std::chrono::seconds{20});
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{2});
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error(), "already asking for an administrator's password");
+    stop.request_stop();
+    const auto cancelled = first.get();
+    ASSERT_FALSE(cancelled.has_value());
+    EXPECT_EQ(cancelled.error(), "cancelled");
+}
+
 // NOLINTEND(misc-include-cleaner)
 
 #endif // TASKSMACK_HELPER_PATH
