@@ -198,6 +198,40 @@ TEST(ProcPrivilegesTest, MissingPrivilegesHasABitForEachPermission)
 
 // #1327 review: the privilege notice fired for every non-root process, including one granted the
 // capabilities docs/guide/faq.md recommends. CapEff (hex) in /proc/self/status decides instead.
+// #2400 (#2479): a user in more groups than a fixed buffer holds (more than 256, common under LDAP/SSSD)
+// still has every group read: the list is sized by asking first.
+TEST(ProcPrivilegesTest, EverySupplementaryGroupIsReadHoweverMany)
+{
+    constexpr int GROUPS = 300;
+    const auto fakeGetgroups = [](int size, gid_t* list) -> int
+    {
+        if (size == 0)
+        {
+            return GROUPS;
+        }
+        if (size < GROUPS)
+        {
+            errno = EINVAL;
+            return -1;
+        }
+        for (int i = 0; i < GROUPS; ++i)
+        {
+            list[i] = static_cast<gid_t>(1000 + i); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - getgroups' C array
+        }
+        return GROUPS;
+    };
+    const std::vector<gid_t> groups = ProcPrivileges::supplementaryGroups(fakeGetgroups);
+    ASSERT_EQ(groups.size(), static_cast<std::size_t>(GROUPS));
+    EXPECT_NE(std::ranges::find(groups, static_cast<gid_t>(1299)), groups.end()) << "the last group, past any fixed buffer";
+
+    const auto unreadable = [](int /*size*/, gid_t* /*list*/) -> int
+    {
+        errno = EPERM;
+        return -1;
+    };
+    EXPECT_TRUE(ProcPrivileges::supplementaryGroups(unreadable).empty());
+}
+
 TEST(ProcPrivilegesTest, ParsesCapEffFromStatus)
 {
     constexpr std::string_view STATUS = "Name:\tTaskSmack\nCapInh:\t0000000000000000\nCapPrm:\t0000000000080004\n"

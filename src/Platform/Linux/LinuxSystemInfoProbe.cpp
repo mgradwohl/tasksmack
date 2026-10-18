@@ -14,6 +14,7 @@
 #include "LinuxSensors.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "ProcPrivileges.h"
 #include "SystemdBus.h"
 #include "SystemdJournal.h"
 #include "UserNameLookup.h"
@@ -257,9 +258,7 @@ namespace
     {
         return true;
     }
-    std::vector<gid_t> groups(static_cast<std::size_t>(std::max(::getgroups(0, nullptr), 0)));
-    const int count = groups.empty() ? 0 : ::getgroups(static_cast<int>(groups.size()), groups.data());
-    groups.resize(static_cast<std::size_t>(std::max(count, 0)));
+    std::vector<gid_t> groups = ProcPrivileges::supplementaryGroups(::getgroups);
     groups.push_back(::getegid());
     for (const char* name : {"systemd-journal", "adm", "wheel"})
     {
