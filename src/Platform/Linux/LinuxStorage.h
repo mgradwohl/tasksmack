@@ -379,6 +379,23 @@ readPartitions(const std::filesystem::path& root, const std::filesystem::path& b
     return disks;
 }
 
+/// The block device behind @p entry as "major:minor". btrfs and bcachefs mounts name an anonymous
+/// device in mountinfo ("0:26", the file system's, not the partition's, #2432), so for those the source
+/// ("/dev/nvme0n1p3", or a /dev/mapper link to dm-0) is looked up under @p root's /sys/class/block;
+/// @p entry.device itself for every other mount, or when the source isn't a device that can be found.
+[[nodiscard]] inline std::string blockDeviceOf(const std::filesystem::path& root, const MountEntry& entry)
+{
+    if (!entry.device.starts_with("0:") || !entry.source.starts_with("/dev/"))
+    {
+        return entry.device;
+    }
+    const std::filesystem::path source(entry.source);
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::canonical(root / source.relative_path(), ec);
+    const std::string device = LinuxOsInfo::readLine(root / "sys/class/block" / (ec ? source.filename() : resolved.filename()) / "dev");
+    return device.empty() ? entry.device : device;
+}
+
 /// Sets each partition's mountPoint from @p mounts (the volumes selectVolumes() chose), matching the
 /// partition's major:minor under @p root's /sys/block to the mount's.
 inline void assignMountPoints(const std::filesystem::path& root, std::vector<PhysicalDisk>& disks, const std::vector<MountEntry>& mounts)
@@ -428,7 +445,11 @@ readStorageFacts(const std::filesystem::path& root, StorageInfo& info, VolumeSiz
         return;
     }
     info.volumesRead = true;
-    const std::vector<MountEntry> mounts = selectVolumes(parseMountInfo(mountInfo));
+    std::vector<MountEntry> mounts = selectVolumes(parseMountInfo(mountInfo));
+    for (MountEntry& entry : mounts)
+    {
+        entry.device = blockDeviceOf(root, entry); // for the partition match and the udev label alike
+    }
     assignMountPoints(root, info.disks, mounts);
     for (const MountEntry& entry : mounts)
     {

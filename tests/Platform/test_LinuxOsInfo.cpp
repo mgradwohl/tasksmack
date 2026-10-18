@@ -758,6 +758,51 @@ TEST(LinuxStorageTest, ReadsPartitionsUnderARoot)
     EXPECT_EQ(LinuxStorage::partitionStyle("atari"), PartitionStyle::Unknown);
 }
 
+// #2432: a btrfs mount names the file system's anonymous device in mountinfo ("0:26"), not the
+// partition's, so the partition and the udev label are found through the mount's source instead, and
+// through a /dev/mapper link for one inside LUKS.
+TEST(LinuxStorageTest, ABtrfsMountIsMatchedToItsPartitionThroughItsSource)
+{
+    const FixtureRoot root;
+    root.write("proc/self/mountinfo",
+               "29 1 0:26 /root / rw,relatime shared:1 - btrfs /dev/nvme0n1p3 rw,subvol=/root\n"
+               "31 29 0:26 /home /home rw,relatime shared:2 - btrfs /dev/nvme0n1p3 rw,subvol=/home\n"
+               "40 29 0:41 / /data rw,relatime shared:3 - btrfs /dev/mapper/luks-data rw\n"
+               "45 29 0:50 / /tank rw shared:4 - zfs tank rw\n");
+    root.write("sys/block/nvme0n1/size", "1953525168\n");
+    root.write("sys/block/nvme0n1/dev", "259:0\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/partition", "3\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/start", "2048\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/size", "1953523120\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/dev", "259:3\n");
+    root.write("sys/class/block/nvme0n1p3/dev", "259:3\n");
+    root.write("run/udev/data/b259:3", "E:ID_FS_LABEL=fedora\n");
+#ifndef _WIN32 // a symlink needs privileges on Windows
+    root.write("dev/dm-0", "");
+    std::filesystem::create_directories(root.path() / "dev/mapper");
+    std::filesystem::create_symlink("../dm-0", root.path() / "dev/mapper/luks-data");
+    root.write("sys/class/block/dm-0/dev", "253:0\n");
+    root.write("run/udev/data/b253:0", "E:ID_FS_LABEL=data\n");
+#endif
+
+    StorageInfo info;
+    LinuxStorage::readStorageFacts(root.path(), info, nullptr);
+    ASSERT_EQ(info.disks.size(), 1U);
+    ASSERT_EQ(info.disks[0].partitions.size(), 1U);
+    EXPECT_EQ(info.disks[0].partitions[0].mountPoint, "/") << "the first of its subvolumes' mounts";
+
+    const auto labelOf = [&info](std::string_view mountPoint)
+    {
+        const auto it = std::ranges::find(info.volumes, mountPoint, &Volume::mountPoint);
+        return it == info.volumes.end() ? std::string("<missing>") : it->label;
+    };
+    EXPECT_EQ(labelOf("/"), "fedora");
+#ifndef _WIN32
+    EXPECT_EQ(labelOf("/data"), "data") << "through the /dev/mapper link";
+#endif
+    EXPECT_EQ(labelOf("/tank"), "") << "a ZFS dataset isn't a device: no label, as before";
+}
+
 TEST(LinuxStorageTest, NothingReadableLeavesEverythingUnknown)
 {
     const FixtureRoot root;
