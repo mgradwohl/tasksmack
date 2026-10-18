@@ -118,43 +118,12 @@ constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
 }
 #endif
 
-/// The whole of the file @p name in the directory @p dirFd, or the errno of the open or read that
-/// failed. Read to EOF in chunks: a /proc/net table is served a page at a time.
-[[nodiscard]] std::expected<std::string, int> readWholeFileAt(int dirFd, const char* name)
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-    const FdGuard fd(::openat(dirFd, name, O_RDONLY | O_CLOEXEC));
-    if (fd.get() < 0)
-    {
-        return std::unexpected(errno);
-    }
-    std::string contents;
-    std::array<char, 8192> chunk{};
-    for (;;)
-    {
-        const auto n = ::read(fd.get(), chunk.data(), chunk.size());
-        if (n == 0)
-        {
-            return contents;
-        }
-        if (n < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue; // interrupted by a signal: retry
-            }
-            return std::unexpected(errno);
-        }
-        contents.append(chunk.data(), static_cast<std::size_t>(n));
-    }
-}
-
 /// Every socket of @p table from the process's own /proc/[pid]/net file, appended to @p sockets.
 /// Returns 0 when the table was read whole or is absent (ENOENT: its family is disabled, e.g. no
 /// IPv6 -- complete, with no sockets); otherwise the errno of the open or read that failed.
 [[nodiscard]] int readProcNetTable(int pidDirFd, const SocketTable& table, std::vector<InetSockets::RawInetSocket>& sockets)
 {
-    const std::expected<std::string, int> contents = readWholeFileAt(pidDirFd, table.procFile);
+    const std::expected<std::string, int> contents = ProcParsing::readWholeFileAt(pidDirFd, table.procFile);
     if (!contents.has_value())
     {
         return contents.error() == ENOENT ? 0 : contents.error();
