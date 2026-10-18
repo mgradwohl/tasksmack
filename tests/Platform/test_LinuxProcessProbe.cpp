@@ -1073,6 +1073,34 @@ TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
     EXPECT_EQ(peakOf(4444), 100U * page);
 }
 
+TEST(LinuxProcessProbeTest, UserIsTheEffectiveUid)
+{
+    // #2401: a setuid-root program run by another user runs as root, as ps and top show it -- the second
+    // field of Uid:, not the first (the real UID).
+    ScopedTempDir proc("ts_test_proc_effective_uid");
+    const auto writeProcess = [&proc](int pid, std::string_view status)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+    };
+    writeProcess(4242, "Name:\tpasswd\nUid:\t65534\t0\t0\t0\n");
+    // A line cut short after the real UID still names that user.
+    writeProcess(4343, "Name:\tapp\nUid:\t0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto userOf = [&processes](std::int32_t pid) -> std::string
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string{"<missing>"} : it->user;
+    };
+    EXPECT_EQ(userOf(4242), "root");
+    EXPECT_EQ(userOf(4343), "root");
+}
+
 TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)
 {
     // #1885: the Private and Swap columns, from the status file enumerate() already reads.

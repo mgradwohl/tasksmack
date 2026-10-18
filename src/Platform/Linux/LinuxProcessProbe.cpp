@@ -41,7 +41,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -252,11 +251,11 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
     if (m_ProcMount.has_value() && m_ProcMount->gid.has_value())
     {
         const auto gid = static_cast<gid_t>(*m_ProcMount->gid);
-        std::array<gid_t, 256> groups{};
-        const int count = ::getgroups(static_cast<int>(groups.size()), groups.data());
-        m_InProcMountGroup =
-            ::getegid() == gid || (count > 0 && std::ranges::find(std::span(groups.data(), static_cast<std::size_t>(count)), gid) !=
-                                                    std::span(groups.data(), static_cast<std::size_t>(count)).end());
+        // Sized by asking first: a fixed buffer fails with EINVAL for a user in more groups (#2400)
+        std::vector<gid_t> groups(static_cast<std::size_t>(std::max(::getgroups(0, nullptr), 0)));
+        const int count = groups.empty() ? 0 : ::getgroups(static_cast<int>(groups.size()), groups.data());
+        groups.resize(static_cast<std::size_t>(std::max(count, 0)));
+        m_InProcMountGroup = ::getegid() == gid || std::ranges::find(groups, gid) != groups.end();
     }
 
     // Detect and initialize power monitoring if available
@@ -728,12 +727,15 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
         if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
             haveUid = true;
-            // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
+            // "Uid: real effective saved fs": the effective UID is the user the process runs as, which
+            // ps and top show (a setuid program run by alice is root's) (#2401)
             const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
-            if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
+            if (const auto realEnd = std::from_chars(ptr, lineEnd, realUid); realEnd.ec == std::errc{})
             {
-                counters.user = getUsername(realUid);
+                ptr = ProcParsing::skipSpaces(realEnd.ptr, lineEnd);
+                uid_t effectiveUid = 0;
+                counters.user = getUsername(std::from_chars(ptr, lineEnd, effectiveUid).ec == std::errc{} ? effectiveUid : realUid);
             }
         }
         else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))
