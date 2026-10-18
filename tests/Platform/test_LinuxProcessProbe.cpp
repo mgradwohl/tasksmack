@@ -1181,6 +1181,21 @@ TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
     EXPECT_FALSE(probe.readMemoryRollup(0, 0).has_value());
 }
 
+// #2417: an smaps_rollup that isn't a rollup (or was cut short) gives no figures rather than wrong ones.
+TEST(LinuxProcessProbeTest, AnSmapsRollupThatDoesntParseIsUnavailable)
+{
+    ScopedTempDir proc("ts_test_proc_smaps_garbled");
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4242" / "smaps_rollup", "Rss: 4096 kB\nPss: 2500 kB\n"); // no Private lines
+    const LinuxProcessProbe probe(proc.path);
+    const MemoryRollupRead garbled = probe.readMemoryRollup(4242, 12345);
+    ASSERT_FALSE(garbled.has_value());
+    EXPECT_EQ(garbled.error(), MemoryRollupFailure::Unavailable);
+}
+
 // #2309: an smaps_rollup the kernel won't open for this user (another user's process) is a refusal,
 // told apart from one that is just absent.
 TEST(LinuxProcessProbeTest, ARefusedSmapsRollupIsPermissionDenied)

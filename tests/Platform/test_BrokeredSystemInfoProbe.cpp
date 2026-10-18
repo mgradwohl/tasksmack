@@ -32,6 +32,9 @@ class StubSystemInfoProbe final : public ISystemInfoProbe
     FirmwareInfo firmware;
     MemoryModulesInfo memory;
     CrashesInfo crashes;
+    /// How many of the reads the decorator only passes on were made, and the last Wi-Fi flag asked for.
+    int passedOn = 0;
+    bool lastIncludeWifiDetails = false;
 
     [[nodiscard]] SystemInfoCapabilities capabilities() const override
     {
@@ -39,6 +42,7 @@ class StubSystemInfoProbe final : public ISystemInfoProbe
     }
     [[nodiscard]] OsInfo readOs() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] FirmwareInfo readFirmware() override
@@ -51,42 +55,52 @@ class StubSystemInfoProbe final : public ISystemInfoProbe
     }
     [[nodiscard]] CommitPagingInfo readCommitPaging() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] StorageInfo readStorage() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] GraphicsInfo readGraphics() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] SensorsInfo readSensors() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] DevicesInfo readDevices() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] DriversInfo readDrivers() override
     {
+        ++passedOn;
         return {};
     }
     [[nodiscard]] CrashesInfo readCrashes() override
     {
         return crashes;
     }
-    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool /*includeWifiDetails*/) override
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) override
     {
+        ++passedOn;
+        lastIncludeWifiDetails = includeWifiDetails;
         return {};
     }
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override
     {
+        ++passedOn;
         return {};
     }
 };
@@ -288,6 +302,51 @@ TEST(BrokeredSystemInfoProbeTest, ADismissedPromptAuthorizesNothing)
     f.broker->setConnectFailure("the password prompt was dismissed");
     EXPECT_FALSE(f.probe->authorize(std::stop_token{}));
     EXPECT_TRUE(f.probe->readFirmware().identifiersNeedAdmin);
+}
+
+// #2417: what the decorator only passes on, and a helper that answers wrongly.
+TEST(BrokeredSystemInfoProbeTest, TheFactoryDecoratesAndTheOtherReadsAreTheInnerProbes)
+{
+    auto owned = std::make_unique<StubSystemInfoProbe>();
+    const StubSystemInfoProbe* const inner = owned.get();
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    const std::unique_ptr<ISystemInfoProbe> probe = withPrivilegedBroker(std::move(owned), broker);
+    ASSERT_NE(probe, nullptr);
+
+    const SystemInfoCapabilities capabilities = probe->capabilities();
+    EXPECT_TRUE(capabilities.hasOs); // the inner probe's
+    EXPECT_TRUE(capabilities.canReadAuthorized);
+    EXPECT_TRUE(probe->canReadAuthorized());
+
+    [[maybe_unused]] const OsInfo os = probe->readOs();
+    [[maybe_unused]] const CommitPagingInfo paging = probe->readCommitPaging();
+    [[maybe_unused]] const StorageInfo storage = probe->readStorage();
+    [[maybe_unused]] const GraphicsInfo graphics = probe->readGraphics();
+    [[maybe_unused]] const PlatformSecurityInfo security = probe->readPlatformSecurity();
+    [[maybe_unused]] const SensorsInfo sensors = probe->readSensors();
+    [[maybe_unused]] const DevicesInfo devices = probe->readDevices();
+    [[maybe_unused]] const DriversInfo drivers = probe->readDrivers();
+    [[maybe_unused]] const NetworkAdaptersInfo adapters = probe->readNetworkAdapters(/*includeWifiDetails=*/true);
+    [[maybe_unused]] const BootPerformanceInfo boot = probe->readBootPerformance();
+    EXPECT_EQ(inner->passedOn, 10);
+    EXPECT_TRUE(inner->lastIncludeWifiDetails);
+    EXPECT_FALSE(probe->readPublicIp().read); // the inner probe's default: no lookup
+    EXPECT_TRUE(broker->requests().empty()) << "none of these needs the helper";
+}
+
+TEST(BrokeredSystemInfoProbeTest, AHelperThatAnswersWronglyLeavesTheFactsMarked)
+{
+    const Fixture f(/*connected=*/true);
+    f.broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "A malformed message"}}; });
+    const FirmwareInfo firmware = f.probe->readFirmware();
+    EXPECT_TRUE(firmware.identifiersNeedAdmin);
+    EXPECT_TRUE(firmware.smbiosVersionNeedsAdmin);
+    EXPECT_TRUE(firmware.systemSerial.empty());
+    EXPECT_TRUE(f.probe->readMemoryModules().tableNeedsAdmin);
+
+    f.inner->crashes.available = true;
+    f.inner->crashes.otherUsersHidden = true;
+    EXPECT_TRUE(f.probe->readCrashes().otherUsersHidden) << "the in-process read stands";
 }
 
 TEST(BrokeredSystemInfoProbeTest, WithoutABrokerTheProbeIsUndecorated)

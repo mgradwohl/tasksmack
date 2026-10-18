@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -466,6 +467,76 @@ TEST(LinuxCpuDetailsTest, Arm64BigLittleListsEachCoreTypeOnceAndUnknownCodesByNu
                                          "processor\t: 5\nCPU implementer\t: 0x41\nCPU part\t: 0xfff\n";
     EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo(CPUINFO),
               "ARM Cortex-A55 + ARM Cortex-A76 + Qualcomm part 0x001 + Arm implementer 0x99 part 0xabc + ARM part 0xfff");
+}
+
+/// The model cpuModelFromCpuInfo() builds for one core with these implementer and part lines.
+[[nodiscard]] std::string armModel(std::string_view implementer, std::string_view part)
+{
+    return LinuxCpuDetails::cpuModelFromCpuInfo(std::format("processor\t: 0\nCPU implementer\t: {}\nCPU part\t: {}\n", implementer, part));
+}
+
+TEST(LinuxCpuDetailsTest, EveryKnownArmImplementerIsNamed)
+{
+    struct Case
+    {
+        std::string_view code;
+        std::string_view vendor;
+    };
+    constexpr auto CASES = std::to_array<Case>({
+        {.code = "0x41", .vendor = "ARM"},
+        {.code = "0x42", .vendor = "Broadcom"},
+        {.code = "0x43", .vendor = "Cavium"},
+        {.code = "0x46", .vendor = "Fujitsu"},
+        {.code = "0x48", .vendor = "HiSilicon"},
+        {.code = "0x4e", .vendor = "NVIDIA"},
+        {.code = "0x50", .vendor = "APM"},
+        {.code = "0x51", .vendor = "Qualcomm"},
+        {.code = "0x53", .vendor = "Samsung"},
+        {.code = "0x61", .vendor = "Apple"},
+        {.code = "0x6d", .vendor = "Microsoft"},
+        {.code = "0xc0", .vendor = "Ampere"},
+    });
+    for (const Case& c : CASES)
+    {
+        // A part code no table names, so only the vendor is looked up (Arm Ltd's own part 0xfff included).
+        EXPECT_EQ(armModel(c.code, "0xfff"), std::format("{} part 0xfff", c.vendor)) << c.code;
+    }
+}
+
+TEST(LinuxCpuDetailsTest, EveryKnownArmLtdCoreIsNamed)
+{
+    struct Case
+    {
+        std::string_view code;
+        std::string_view core;
+    };
+    constexpr auto CASES = std::to_array<Case>({
+        {.code = "0xd03", .core = "Cortex-A53"},  {.code = "0xd05", .core = "Cortex-A55"},  {.code = "0xd07", .core = "Cortex-A57"},
+        {.code = "0xd08", .core = "Cortex-A72"},  {.code = "0xd0a", .core = "Cortex-A75"},  {.code = "0xd0b", .core = "Cortex-A76"},
+        {.code = "0xd0c", .core = "Neoverse-N1"}, {.code = "0xd0d", .core = "Cortex-A77"},  {.code = "0xd40", .core = "Neoverse-V1"},
+        {.code = "0xd41", .core = "Cortex-A78"},  {.code = "0xd44", .core = "Cortex-X1"},   {.code = "0xd46", .core = "Cortex-A510"},
+        {.code = "0xd47", .core = "Cortex-A710"}, {.code = "0xd48", .core = "Cortex-X2"},   {.code = "0xd49", .core = "Neoverse-N2"},
+        {.code = "0xd4f", .core = "Neoverse-V2"}, {.code = "0xd80", .core = "Cortex-A520"}, {.code = "0xd81", .core = "Cortex-A720"},
+        {.code = "0xd82", .core = "Cortex-X4"},   {.code = "0xd84", .core = "Neoverse-V3"}, {.code = "0xd8e", .core = "Neoverse-N3"},
+    });
+    for (const Case& c : CASES)
+    {
+        EXPECT_EQ(armModel("0x41", c.code), std::format("ARM {}", c.core)) << c.code;
+    }
+    // The part table is Arm Ltd's: another vendor's same code is shown by number.
+    EXPECT_EQ(armModel("0x51", "0xd49"), "Qualcomm part 0xd49");
+}
+
+TEST(LinuxCpuDetailsTest, AnUnreadableArmCodeNamesNoCore)
+{
+    // A part that isn't hex is skipped; the Hardware line is the fallback.
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nCPU implementer\t: 0x41\nCPU part\t: zz\nHardware\t: SoC\n"), "SoC");
+    // An implementer that isn't hex (or is empty) leaves no implementer, so the part line is ignored.
+    EXPECT_EQ(armModel("0xqq", "0xd49"), "");
+    EXPECT_EQ(armModel("0x", "0xd49"), "");
+    EXPECT_EQ(armModel("0x41", "0xd49 trailing"), "");
+    // An upper-case prefix reads the same.
+    EXPECT_EQ(armModel("0X41", "0XD49"), "ARM Neoverse-N2");
 }
 
 TEST(LinuxCpuDetailsTest, CpuModelFallsBackToHardwareThenEmpty)

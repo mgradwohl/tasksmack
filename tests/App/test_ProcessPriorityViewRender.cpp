@@ -205,6 +205,30 @@ TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(view.niceValue(), 0);
 }
 
+// #2308, measured by #2417: a refusal an administrator could redo is drawn with its error line and an
+// "Authenticate and retry" button under it (the last item drawn), and pressing it retries as one.
+TEST_F(ProcessPriorityViewRenderTest, ARefusalShowsAuthenticateAndRetryWhichRetriesAsAnAdministrator)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(5, TARGET_A);
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true);
+    ASSERT_EQ(view.error(), "Permission denied");
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    const ImVec2 retry = renderAndFindApply(view, mock, 0, TARGET_A); // now the retry button
+    click(retry, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetPriority);
+    EXPECT_TRUE(view.error().empty());
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
 // The maintainer's #1511 check: Apply was an em floor wide, wider than the class combo beside it and
 // a large muted bar while disabled. It is as wide as its label, as Terminate and Kill are (#1537).
 TEST_F(ProcessPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)

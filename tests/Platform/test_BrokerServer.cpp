@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <future>
 #include <iterator>
@@ -33,6 +34,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <variant>
@@ -228,6 +230,26 @@ TEST(FirmwareFileReadTest, EachFileIsReadFromItsOnePath)
     {
         EXPECT_EQ(Linux::readFirmwareFileAt(root, Broker::FirmwareFile::BoardSerial).status, Broker::FirmwareFileStatus::Unreadable);
     }
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
+// #2417: the entry point's path too, and a file past the protocol's cap is refused rather than cut.
+TEST(FirmwareFileReadTest, TheEntryPointIsReadAndAnOversizedFileIsUnreadable)
+{
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / ("tasksmack_fw_big_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(root / "sys/firmware/dmi/tables");
+    std::ofstream(root / "sys/firmware/dmi/tables/smbios_entry_point", std::ios::binary) << std::string("_SM3_", 5);
+    std::ofstream(root / "sys/firmware/dmi/tables/DMI", std::ios::binary) << std::string(Broker::MAX_FIRMWARE_FILE_BYTES + 1, 'x');
+
+    const Broker::FirmwareFileReply entry = Linux::readFirmwareFileAt(root, Broker::FirmwareFile::SmbiosEntryPoint);
+    EXPECT_EQ(entry.status, Broker::FirmwareFileStatus::Ok);
+    EXPECT_EQ(std::string(entry.bytes.begin(), entry.bytes.end()), "_SM3_");
+    EXPECT_EQ(Linux::firmwareFilePath(root, Broker::FirmwareFile::SmbiosEntryPoint), root / "sys/firmware/dmi/tables/smbios_entry_point");
+
+    const Broker::FirmwareFileReply table = Linux::readFirmwareFileAt(root, Broker::FirmwareFile::SmbiosTable);
+    EXPECT_EQ(table.status, Broker::FirmwareFileStatus::Unreadable);
+    EXPECT_TRUE(table.bytes.empty());
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 }
@@ -542,6 +564,189 @@ TEST(BrokerServeTest, AStoppedSessionEnds)
     std::stop_source stop;
     stop.request_stop();
     EXPECT_EQ(BrokerServer::serve(pair.server(), actions, std::chrono::seconds{10}, stop.get_token()), BrokerServer::SessionEnd::Stopped);
+}
+
+// --- #2417: what the helper does when a read throws, a client breaks off, or a frame overruns ----------
+
+/// Readers whose every read throws, for handleRequest()'s no-throw promise.
+class ThrowingEnvironmentReader final : public TestMocks::MockProcessEnvironmentReader
+{
+  public:
+    [[nodiscard]] EnvironmentReadResult readEnvironment(const ProcessTarget& /*target*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+};
+
+class ThrowingModulesReader final : public TestMocks::MockProcessModulesReader
+{
+  public:
+    [[nodiscard]] ModulesReadResult readModules(const ProcessTarget& /*target*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+};
+
+class ThrowingOpenFilesReader final : public TestMocks::MockProcessOpenFilesReader
+{
+  public:
+    [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& /*target*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+};
+
+class ThrowingConnectionsReader final : public TestMocks::MockProcessConnectionsReader
+{
+  public:
+    [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& /*target*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+};
+
+/// Actions that throw something that isn't a std::exception.
+class ThrowingNonStandardActions final : public TestMocks::MockProcessActions
+{
+  public:
+    [[nodiscard]] ProcessActionResult kill(const ProcessTarget& /*target*/) override
+    {
+        throw 42; // not a std::exception: what the catch-all is for
+    }
+};
+
+TEST(BrokerServerTest, AReadThatThrowsIsAFailedReadNotAnEndedHelper)
+{
+    TestMocks::MockProcessActions actions;
+    ThrowingEnvironmentReader environment;
+    ThrowingModulesReader modules;
+    ThrowingOpenFilesReader openFiles;
+    ThrowingConnectionsReader connections;
+    BrokerServer::Readers readers{.environment = &environment, .modules = &modules, .openFiles = &openFiles, .connections = &connections};
+    readers.memoryRollup = [](std::int32_t /*pid*/, std::uint64_t /*start*/) -> MemoryRollupRead
+    {
+        throw std::runtime_error("boom");
+    };
+    readers.firmwareFile = [](Broker::FirmwareFile /*file*/) -> Broker::FirmwareFileReply
+    {
+        throw std::runtime_error("boom");
+    };
+    readers.crashes = []() -> CrashesInfo
+    {
+        throw std::runtime_error("boom");
+    };
+
+    const Broker::Response env = BrokerServer::handleRequest(Broker::EnvironmentRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(env));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(env).result.status, EnvironmentReadStatus::Failed);
+
+    const Broker::Response mods = BrokerServer::handleRequest(Broker::ModulesRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(mods));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(mods).result.status, ModulesReadStatus::Failed);
+
+    const Broker::Response files = BrokerServer::handleRequest(Broker::OpenFilesRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(files));
+    EXPECT_EQ(std::get<Broker::OpenFilesReply>(files).result.status, OpenFilesReadStatus::Failed);
+
+    const Broker::Response sockets = BrokerServer::handleRequest(Broker::ConnectionsRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(sockets));
+    EXPECT_EQ(std::get<Broker::ConnectionsReply>(sockets).result.status, ConnectionsReadStatus::Failed);
+
+    const Broker::Response rollup = BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(rollup));
+    const MemoryRollupRead& read = std::get<Broker::MemoryRollupReply>(rollup).result;
+    ASSERT_FALSE(read.has_value());
+    EXPECT_EQ(read.error(), MemoryRollupFailure::Unavailable);
+
+    const Broker::Response firmware =
+        BrokerServer::handleRequest(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(firmware));
+    EXPECT_EQ(std::get<Broker::FirmwareFileReply>(firmware).status, Broker::FirmwareFileStatus::Unreadable);
+
+    const Broker::Response crashes = BrokerServer::handleRequest(Broker::CrashesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(crashes));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(crashes).message, "The crash read failed");
+}
+
+TEST(BrokerServerTest, AnOpenFilesRequestWithoutAReaderIsRefused)
+{
+    TestMocks::MockProcessActions actions;
+    const Broker::Response response = BrokerServer::handleRequest(Broker::OpenFilesRequest{.target = TARGET}, actions);
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(response));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(response).message, "This helper doesn't list open files");
+}
+
+TEST(BrokerServerTest, AnActionThatThrowsANonStandardExceptionIsAFailedResult)
+{
+    ThrowingNonStandardActions actions;
+    const Broker::ActionResult result =
+        actionResult(BrokerServer::handleRequest(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}, actions));
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "The action failed");
+}
+
+TEST(BrokerServeTest, ANoIdleTimeEndsTheSessionAtOnce)
+{
+    const SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    EXPECT_EQ(BrokerServer::serve(pair.server(), actions, std::chrono::milliseconds{0}, std::stop_token{}), BrokerServer::SessionEnd::Idle);
+}
+
+TEST(BrokerServeTest, AFrameCutShortEndsTheSessionAsBroken)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    std::vector<std::uint8_t> first(BrokerSocket::MAX_PACKET_BYTES, 0);
+    first[2] = 0x10; // says 1 MiB follows
+    ASSERT_EQ(::send(pair.client(), first.data(), first.size(), 0), static_cast<ssize_t>(first.size()));
+    pair.closeClient();
+    TestMocks::MockProcessActions actions;
+    EXPECT_EQ(BrokerServer::serve(pair.server(), actions, std::chrono::seconds{10}, std::stop_token{}), BrokerServer::SessionEnd::Broken);
+}
+
+TEST(BrokerServeTest, AClientGoneBeforeItsReplyEndsTheSessionAsBroken)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    std::string error;
+    ASSERT_TRUE(BrokerSocket::sendFrame(pair.client(), Broker::encodeRequest(1, Broker::Hello{}), error)) << error;
+    pair.closeClient(); // the request is still there to read; the reply has nobody to go to
+    TestMocks::MockProcessActions actions;
+    EXPECT_EQ(BrokerServer::serve(pair.server(), actions, std::chrono::seconds{10}, std::stop_token{}), BrokerServer::SessionEnd::Broken);
+}
+
+TEST(BrokerSocketTest, AFrameTooLargeOrForAGonePeerIsNotSent)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    std::string error;
+    const std::vector<std::uint8_t> huge(Broker::MAX_MESSAGE_BYTES + 1, 0);
+    EXPECT_FALSE(BrokerSocket::sendFrame(pair.client(), huge, error));
+    EXPECT_EQ(error, "a frame larger than the protocol allows");
+
+    pair.closeServer();
+    error.clear();
+    EXPECT_FALSE(BrokerSocket::sendFrame(pair.client(), Broker::encodeRequest(1, Broker::Hello{}), error));
+    EXPECT_FALSE(error.empty()); // EPIPE's message, never a SIGPIPE
+}
+
+TEST(BrokerSocketTest, APacketPastTheFramesLengthIsAFailure)
+{
+    const SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    // A full first packet whose length prefix says only 10 bytes more follow, then 20.
+    std::vector<std::uint8_t> first(BrokerSocket::MAX_PACKET_BYTES, 0);
+    const std::size_t declared = BrokerSocket::MAX_PACKET_BYTES + 10 - 4;
+    first[0] = static_cast<std::uint8_t>(declared & 0xFFU);
+    first[1] = static_cast<std::uint8_t>((declared >> 8U) & 0xFFU);
+    first[2] = static_cast<std::uint8_t>((declared >> 16U) & 0xFFU);
+    ASSERT_EQ(::send(pair.server(), first.data(), first.size(), 0), static_cast<ssize_t>(first.size()));
+    const std::vector<std::uint8_t> second(20, 0);
+    ASSERT_EQ(::send(pair.server(), second.data(), second.size(), 0), static_cast<ssize_t>(second.size()));
+    const auto received = BrokerSocket::receiveFrame(pair.client(), REPLY_TIMEOUT, std::stop_token{});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerSocket::ReceiveEnd::Failed);
 }
 
 TEST(BrokerSocketTest, PeerCredentialsAreThisProcess)
@@ -1012,6 +1217,155 @@ TEST(PkexecBrokerTest, ASecondStartWhileOneIsPromptingSaysSo)
     const auto cancelled = first.get();
     ASSERT_FALSE(cancelled.has_value());
     EXPECT_EQ(cancelled.error(), "cancelled");
+}
+
+// --- #2417: a launcher that plays the helper, to answer the handshake and calls wrongly ----------------
+
+/// A launcher (sh) that plays the helper: for each of @p replies it takes one request off its socket (its
+/// stdin) and answers with that frame, then runs @p then. The helper's path and --broker, which
+/// PkexecBroker appends, are the script's unused $1 and $2. A script that ends with `exec cat` keeps the
+/// socket open until the broker closes it, and then exits, so the broker reaps it.
+[[nodiscard]] std::vector<std::string> scriptedHelper(const std::vector<std::vector<std::uint8_t>>& replies, std::string_view then)
+{
+    std::string script;
+    for (const std::vector<std::uint8_t>& reply : replies)
+    {
+        // One read takes one whole SEQPACKET packet: the request, whatever its size.
+        script += "head -c 1 >/dev/null; printf '";
+        for (const std::uint8_t byte : reply)
+        {
+            script += std::format("\\{:03o}", byte);
+        }
+        script += "' >&0; ";
+    }
+    script += then;
+    return {"sh", "-c", script, "sh"};
+}
+
+/// The frame of a handshake reply to the broker's first request (its ids start at 1).
+[[nodiscard]] std::vector<std::uint8_t> helloReply(std::uint16_t version = Broker::PROTOCOL_VERSION, std::uint32_t id = 1)
+{
+    return Broker::encodeResponse(id, Broker::HelloReply{.version = version, .accepted = version == Broker::PROTOCOL_VERSION});
+}
+
+/// No child of this process is left for anything that waits for any child (DetachedSpawnTest, #2333).
+void expectNoChildLeft()
+{
+    errno = 0;
+    EXPECT_EQ(::waitpid(-1, nullptr, WNOHANG), -1);
+    EXPECT_EQ(errno, ECHILD);
+}
+
+TEST(PkexecBrokerTest, AHelperOfAnotherVersionIsRefused)
+{
+    {
+        const auto otherVersion = static_cast<std::uint16_t>(Broker::PROTOCOL_VERSION + 1);
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply(otherVersion)}, "exec cat >/dev/null"));
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(),
+                  std::format("the helper speaks protocol version {}, TaskSmack {}", otherVersion, Broker::PROTOCOL_VERSION));
+        EXPECT_FALSE(broker.connected());
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, AHandshakeAnsweredWithSomethingElseIsRefused)
+{
+    {
+        const std::vector<std::uint8_t> notHello =
+            Broker::encodeResponse(1, Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}});
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({notHello}, "exec cat >/dev/null"));
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper didn't answer the handshake");
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, AnAnswerToAnotherRequestOrThatDoesntDecodeIsRefused)
+{
+    {
+        // The launcher keeps running, so there is no exit status to report instead (it is waited for
+        // about a second first).
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply(Broker::PROTOCOL_VERSION, 2)}, "exec cat >/dev/null"));
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper answered another request");
+    }
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({std::vector<std::uint8_t>{1, 2, 3}}, "exec cat >/dev/null"));
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper's answer didn't decode: A frame shorter than its header");
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, ALauncherThatEndsSaysHow)
+{
+    struct Case
+    {
+        std::string_view script;
+        std::string_view reason;
+    };
+    const std::array cases{Case{.script = "exit 3", .reason = "the helper exited with status 3"},
+                           Case{.script = "exit 127", .reason = "not authorised, or pkexec isn't available"},
+                           Case{.script = "kill -KILL $$", .reason = "the helper was ended by a signal"}};
+    for (const Case& c : cases)
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", std::string(c.script), "sh"});
+        const auto connected = broker.connect(std::stop_token{});
+        ASSERT_FALSE(connected.has_value()) << c.script;
+        EXPECT_EQ(connected.error(), c.reason) << c.script;
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, AHelperThatExitsMidCallEndsTheSession)
+{
+    {
+        // Answers the handshake, takes the next request, and exits without answering it.
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply()}, "head -c 1 >/dev/null"));
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+        const auto response = broker.call(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}, std::stop_token{});
+        ASSERT_FALSE(response.has_value());
+        EXPECT_EQ(response.error(), "the helper exited");
+        EXPECT_FALSE(broker.connected()) << "a channel that failed once isn't used again";
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, ACallIfIdleNeedsAHelperAndAFailedOneEndsTheSession)
+{
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply()}, "head -c 1 >/dev/null"));
+        const auto unconnected = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::seconds{2});
+        ASSERT_FALSE(unconnected.has_value());
+        EXPECT_EQ(unconnected.error(), "not connected");
+
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+        const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, std::chrono::seconds{10});
+        ASSERT_FALSE(response.has_value());
+        EXPECT_EQ(response.error(), "the helper exited");
+        EXPECT_FALSE(broker.connected());
+    }
+    expectNoChildLeft();
+}
+
+TEST(PkexecBrokerTest, AStoppedCallIsCancelledAndEndsTheSession)
+{
+    {
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, scriptedHelper({helloReply()}, "exec cat >/dev/null"));
+        ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+        std::stop_source stop;
+        stop.request_stop();
+        const auto response = broker.call(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}, stop.get_token());
+        ASSERT_FALSE(response.has_value());
+        EXPECT_EQ(response.error(), "cancelled");
+        EXPECT_FALSE(broker.connected());
+    }
+    expectNoChildLeft();
 }
 
 // NOLINTEND(misc-include-cleaner)

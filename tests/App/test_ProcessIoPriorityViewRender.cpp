@@ -17,8 +17,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <optional>
+#include <string>
 
 namespace App
 {
@@ -218,6 +220,46 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(view.ioPriorityView().error(), "Permission denied");
     EXPECT_EQ(view.ioPriorityView().shownIoPriority(), BEST_EFFORT_4);
     EXPECT_TRUE(view.error().empty()); // The nice control's error line is its own
+}
+
+// #2308, measured by #2417: a refusal an administrator could redo is drawn with its error line and an
+// "Authenticate and retry" button under it (the last item drawn), and pressing it retries as one.
+TEST_F(ProcessIoPriorityViewRenderTest, ARefusalShowsAuthenticateAndRetryWhichRetriesAsAnAdministrator)
+{
+    constexpr Platform::ProcessActionCapabilities AUTHORIZABLE{
+        .canSetPriority = true, .canSetIoPriority = true, .canAuthorizeInteractively = true};
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(AUTHORIZABLE);
+    mock.setIoPriorityReadResult(BEST_EFFORT_4);
+    mock.setIoPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
+    view.ioPriorityView().editIoPriority(IDLE, TARGET_A);
+    click(apply, [&] { view.render(&mock, AUTHORIZABLE, NICE, TARGET_A); });
+    view.update(/*wait=*/true);
+    ASSERT_EQ(view.ioPriorityView().error(), "Permission denied");
+    ASSERT_TRUE(view.ioPriorityView().offersAuthenticateAndRetry());
+
+    const ImVec2 retry = renderAndFindIoApply(view, mock, TARGET_A); // now the retry button
+    click(retry, [&] { view.render(&mock, AUTHORIZABLE, NICE, TARGET_A); });
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetIoPriority);
+    EXPECT_EQ(mock.lastAuthorizedAction().ioClass, IoPriorityClass::Idle);
+    EXPECT_TRUE(view.ioPriorityView().error().empty());
+}
+
+// The error line of a read that failed (not an apply) is drawn muted, under the control.
+TEST_F(ProcessIoPriorityViewRenderTest, AFailedReadShowsItsMessage)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(std::unexpected(std::string("Couldn't read the I/O priority")));
+    ProcessPriorityView view;
+    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    EXPECT_EQ(view.ioPriorityView().readError(), "Couldn't read the I/O priority");
+    EXPECT_FALSE(view.ioPriorityView().currentIoPriority().has_value());
+    EXPECT_GE(mock.getIoPriorityCount(), 1);
 }
 
 // As wide as its label, as the nice control's Apply and Terminate and Kill are (#1537): its old em

@@ -13,10 +13,17 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -333,6 +340,608 @@ TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), MemoryRollupFailure::PermissionDenied);
     EXPECT_EQ(broker->connectCount(), 0);
+}
+
+// --- Every action, and every call the decorators only pass on (#2417) --------------------------------
+
+TEST(BrokeredProcessActionsTest, EverySignalRefusedInProcessIsRetriedAsItsOwnRequest)
+{
+    Fixture f(/*connected=*/true);
+    const ProcessActionResult denied = ProcessActionResult::denied("Permission denied");
+    f.inner->setTerminateResult(denied);
+    f.inner->setStopResult(denied);
+    f.inner->setResumeResult(denied);
+    f.inner->setIoPriorityResult(denied);
+
+    EXPECT_TRUE(f.actions->terminate(TARGET).success);
+    EXPECT_TRUE(f.actions->stop(TARGET).success);
+    EXPECT_TRUE(f.actions->resume(TARGET).success);
+    EXPECT_TRUE(f.actions->setIoPriority(TARGET, IoPriorityClass::Idle, 7).success);
+    EXPECT_EQ(f.inner->terminateCount(), 1);
+    EXPECT_EQ(f.inner->stopCount(), 1);
+    EXPECT_EQ(f.inner->resumeCount(), 1);
+    EXPECT_EQ(f.inner->setIoPriorityCount(), 1);
+
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 4U);
+    EXPECT_EQ(requests[0], (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate}}));
+    EXPECT_EQ(requests[1], (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}}));
+    EXPECT_EQ(requests[2], (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}}));
+    EXPECT_EQ(requests[3], (Broker::Request{Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 7}}));
+}
+
+TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelper)
+{
+    const Fixture f(/*connected=*/true);
+    const CpuAffinity cpus = CpuAffinity::fromMask(0b101);
+    EXPECT_TRUE(f.actions->setAffinity(TARGET, cpus).success);
+    EXPECT_EQ(f.inner->setAffinityCount(), 1);
+    EXPECT_EQ(f.inner->lastAffinity(), cpus);
+    EXPECT_TRUE(f.broker->requests().empty());
+}
+
+TEST(BrokeredProcessActionsTest, AnUnknownActionKindAsksForTheGentlestSignal)
+{
+    // Every Kind maps to its own request; one outside the enum (a corrupt value) falls back to Terminate
+    // rather than to anything more drastic.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    const AuthorizedAction corrupt{.kind = static_cast<AuthorizedAction::Kind>(0xEE), .target = TARGET};
+    EXPECT_EQ(brokerRequestFor(corrupt), (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate}}));
+}
+
+TEST(BrokeredProcessActionsTest, WithoutAHelperRunAuthorizedRefusesAndNothingIsRetried)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessActions>();
+    TestMocks::MockProcessActions* const inner = owned.get();
+    inner->setKillResult(ProcessActionResult::denied("Permission denied"));
+    BrokeredProcessActions actions(std::move(owned), nullptr);
+
+    EXPECT_FALSE(actions.actionCapabilities().canAuthorizeInteractively);
+    const ProcessActionResult killed = actions.kill(TARGET);
+    EXPECT_TRUE(killed.permissionDenied); // returned as it is: no helper to retry through
+    const ProcessActionResult authorized =
+        actions.runAuthorized({.kind = AuthorizedAction::Kind::Kill, .target = TARGET}, std::stop_token{});
+    EXPECT_FALSE(authorized.success);
+    EXPECT_EQ(authorized.errorMessage, "Acting as an administrator isn't available");
+    EXPECT_EQ(inner->runAuthorizedCount(), 0); // the decorator's own refusal, not the inner one's
+}
+
+TEST(BrokeredProcessActionsTest, TraceDumpAndFolderCallsAreTheInProcessOnes)
+{
+    Fixture f(/*connected=*/true);
+    f.inner->setSyscallTraceResult(ProcessActionResult::error("strace is not installed"));
+    f.inner->setDumpResult(ProcessDump{.file = "/tmp/x.core", .sizeBytes = 42, .note = {}, .fromSnapshot = false, .liveReason = {}});
+    f.inner->setDumpSpace({.freeBytes = 1000U, .processBytes = 10U});
+    f.inner->setFolderChoice(std::optional<std::filesystem::path>{"/tmp"});
+
+    EXPECT_EQ(f.actions->launchSyscallTrace(TARGET).errorMessage, "strace is not installed");
+    EXPECT_EQ(f.inner->syscallTraceCount(), 1);
+
+    const ProcessDumpResult dump = f.actions->createDump(TARGET, "/tmp", std::stop_token{});
+    ASSERT_TRUE(dump.has_value());
+    EXPECT_EQ(dump->sizeBytes, 42U);
+    EXPECT_EQ(f.inner->lastDumpDirectory(), std::filesystem::path("/tmp"));
+
+    const DumpSpace space = f.actions->dumpSpace(TARGET, "/var");
+    EXPECT_EQ(space.freeBytes, std::optional<std::uint64_t>{1000U});
+    EXPECT_EQ(f.inner->lastSpaceDirectory(), std::filesystem::path("/var"));
+
+    int owner = 0;
+    const FolderChoice choice = f.actions->chooseDumpFolder("/home", &owner);
+    ASSERT_TRUE(choice.has_value());
+    EXPECT_EQ(choice->value_or(std::filesystem::path{}), std::filesystem::path("/tmp"));
+    EXPECT_EQ(f.inner->lastFolderInitial(), std::filesystem::path("/home"));
+    EXPECT_EQ(f.inner->lastFolderOwner(), &owner);
+
+    EXPECT_TRUE(f.broker->requests().empty()); // none of these goes through the helper
+}
+
+/// Process actions that implement only what IProcessActions requires, so every optional call takes the
+/// interface's default.
+class RequiredOnlyActions final : public IProcessActions
+{
+  public:
+    [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override
+    {
+        return {};
+    }
+    [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& /*target*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] ProcessActionResult kill(const ProcessTarget& /*target*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] ProcessActionResult stop(const ProcessTarget& /*target*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] ProcessActionResult resume(const ProcessTarget& /*target*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& /*target*/, std::int32_t /*nice*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] ProcessActionResult
+    setIoPriority(const ProcessTarget& /*target*/, IoPriorityClass /*ioClass*/, std::int32_t /*level*/) override
+    {
+        return ProcessActionResult::ok();
+    }
+    [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& /*target*/) override
+    {
+        return std::unexpected(std::string("not read"));
+    }
+};
+
+TEST(BrokeredProcessActionsTest, OverActionsWithOnlyTheDefaultsTheDefaultsShowThrough)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    BrokeredProcessActions actions(std::make_unique<RequiredOnlyActions>(), broker);
+
+    const ProcessActionResult affinity = actions.setAffinity(TARGET, CpuAffinity::fromMask(1));
+    EXPECT_FALSE(affinity.success);
+    EXPECT_EQ(affinity.errorMessage, "Setting CPU affinity isn't available on this system");
+    EXPECT_FALSE(affinity.permissionDenied);
+
+    const ProcessDumpResult dump = actions.createDump(TARGET, "/tmp", std::stop_token{});
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_EQ(dump.error(), DUMP_UNSUPPORTED_MESSAGE);
+
+    const DumpSpace space = actions.dumpSpace(TARGET, "/tmp");
+    EXPECT_FALSE(space.freeBytes.has_value());
+    EXPECT_FALSE(space.processBytes.has_value());
+
+    const FolderChoice choice = actions.chooseDumpFolder("/tmp", nullptr);
+    ASSERT_FALSE(choice.has_value());
+    EXPECT_EQ(choice.error(), FOLDER_CHOICE_UNSUPPORTED_MESSAGE);
+
+    const CpuAffinityLayout layout = actions.affinityLayout();
+    EXPECT_TRUE(layout.groupSizes.empty());
+
+    RequiredOnlyActions plain;
+    const ProcessActionResult authorized = plain.runAuthorized({.kind = AuthorizedAction::Kind::Kill, .target = TARGET}, std::stop_token{});
+    EXPECT_FALSE(authorized.success);
+    EXPECT_EQ(authorized.errorMessage, "Acting as an administrator isn't available");
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+// --- The readers' factories, and their helper failures (#2417) ---------------------------------------
+
+/// A broker whose every call fails with @p reason, as a broken channel does.
+[[nodiscard]] std::shared_ptr<Mocks::FakeBroker> failingBroker(std::string reason)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([reason = std::move(reason)](const Broker::Request&)
+                      { return std::expected<Broker::Response, std::string>{std::unexpect, reason}; });
+    return broker;
+}
+
+/// A broker that answers every call with an ActionResult, the wrong kind for any read.
+[[nodiscard]] std::shared_ptr<Mocks::FakeBroker> confusedBroker()
+{
+    return std::make_shared<Mocks::FakeBroker>(true); // FakeBroker's default answer is an ActionResult
+}
+
+TEST(BrokeredEnvironmentReaderTest, TheFactoryWrapsOnlyAReaderThatCanRead)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader>{}, broker), nullptr);
+
+    auto unable = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+    unable->setHasEnvironment(false);
+    const IProcessEnvironmentReader* const rawUnable = unable.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader>(std::move(unable)), broker).get(), rawUnable);
+
+    auto able = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+    const IProcessEnvironmentReader* const rawAble = able.get();
+    const std::unique_ptr<IProcessEnvironmentReader> wrapped =
+        withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader>(std::move(able)), broker);
+    EXPECT_NE(wrapped.get(), rawAble);
+    EXPECT_TRUE(wrapped->hasEnvironment());
+    EXPECT_TRUE(wrapped->canReadAuthorized());
+}
+
+TEST(BrokeredEnvironmentReaderTest, WithoutABrokerReadAuthorizedIsAnOrdinaryRead)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+    TestMocks::MockProcessEnvironmentReader* const inner = owned.get();
+    inner->setResult({.status = EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    BrokeredEnvironmentReader reader(std::move(owned), nullptr);
+    EXPECT_FALSE(reader.canReadAuthorized());
+    EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->readCount(), 1);
+}
+
+TEST(BrokeredEnvironmentReaderTest, AHelperThatCantAnswerFailsTheRead)
+{
+    const auto readThrough = [](std::shared_ptr<Mocks::FakeBroker> broker)
+    {
+        auto owned = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+        owned->setResult({.status = EnvironmentReadStatus::PermissionDenied, .variables = {}});
+        BrokeredEnvironmentReader reader(std::move(owned), std::move(broker));
+        return reader.readEnvironment(TARGET).status;
+    };
+    EXPECT_EQ(readThrough(failingBroker("the channel broke")), EnvironmentReadStatus::Failed);
+    EXPECT_EQ(readThrough(confusedBroker()), EnvironmentReadStatus::Failed);
+}
+
+TEST(BrokeredModulesReaderTest, TheFactoryWrapsOnlyAReaderThatCanRead)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessModulesReader>{}, broker), nullptr);
+    auto unsupported = std::make_unique<UnsupportedProcessModulesReader>();
+    const IProcessModulesReader* const rawUnsupported = unsupported.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessModulesReader>(std::move(unsupported)), broker).get(), rawUnsupported);
+
+    const std::unique_ptr<IProcessModulesReader> wrapped =
+        withPrivilegedBroker(std::unique_ptr<IProcessModulesReader>(std::make_unique<TestMocks::MockProcessModulesReader>()), broker);
+    EXPECT_TRUE(wrapped->hasModules());
+    EXPECT_TRUE(wrapped->canReadAuthorized());
+}
+
+TEST(BrokeredModulesReaderTest, WithoutABrokerOrAPromptTheRefusalStands)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessModulesReader>();
+    TestMocks::MockProcessModulesReader* const inner = owned.get();
+    inner->setResult({.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    BrokeredModulesReader alone(std::move(owned), nullptr);
+    EXPECT_FALSE(alone.canReadAuthorized());
+    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->readCount(), 1); // an ordinary read
+
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    broker->setConnectFailure("the password prompt was dismissed");
+    BrokeredModulesReader dismissed(std::make_unique<TestMocks::MockProcessModulesReader>(), broker);
+    EXPECT_EQ(dismissed.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::PermissionDenied);
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+TEST(BrokeredModulesReaderTest, AHelperThatCantAnswerSaysWhy)
+{
+    auto refused = std::make_unique<TestMocks::MockProcessModulesReader>();
+    refused->setResult({.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    BrokeredModulesReader broken(std::move(refused), failingBroker("the channel broke"));
+    const ModulesReadResult failed = broken.readModules(TARGET);
+    EXPECT_EQ(failed.status, ModulesReadStatus::Failed);
+    EXPECT_EQ(failed.detail, "The administrator helper couldn't be asked: the channel broke");
+
+    auto refusedAgain = std::make_unique<TestMocks::MockProcessModulesReader>();
+    refusedAgain->setResult({.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    BrokeredModulesReader confused(std::move(refusedAgain), confusedBroker());
+    const ModulesReadResult unexpected = confused.readModules(TARGET);
+    EXPECT_EQ(unexpected.status, ModulesReadStatus::Failed);
+    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
+}
+
+TEST(BrokeredOpenFilesReaderTest, TheFactoryWrapsOnlyAReaderThatCanRead)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader>{}, broker), nullptr);
+    auto unsupported = std::make_unique<UnsupportedProcessOpenFilesReader>();
+    const IProcessOpenFilesReader* const rawUnsupported = unsupported.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader>(std::move(unsupported)), broker).get(), rawUnsupported);
+
+    const std::unique_ptr<IProcessOpenFilesReader> wrapped =
+        withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader>(std::make_unique<TestMocks::MockProcessOpenFilesReader>()), broker);
+    EXPECT_TRUE(wrapped->hasOpenFiles());
+    EXPECT_TRUE(wrapped->canReadAuthorized());
+    EXPECT_EQ(wrapped->handlesScanned(), 0U); // the inner reader's count, which the mock leaves at the default
+}
+
+TEST(BrokeredOpenFilesReaderTest, AnInProcessReadAndAReadWithoutABrokerNeverReachTheHelper)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    auto ok = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    OpenFilesReadResult read;
+    read.status = OpenFilesReadStatus::Ok;
+    ok->setResult(read);
+    BrokeredOpenFilesReader reader(std::move(ok), broker);
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Ok);
+    EXPECT_TRUE(broker->requests().empty());
+
+    auto refused = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    const TestMocks::MockProcessOpenFilesReader* const inner = refused.get();
+    OpenFilesReadResult denied;
+    denied.status = OpenFilesReadStatus::PermissionDenied;
+    refused->setResult(denied);
+    BrokeredOpenFilesReader alone(std::move(refused), nullptr);
+    EXPECT_FALSE(alone.canReadAuthorized());
+    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, OpenFilesReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->readCount(), 1);
+}
+
+TEST(BrokeredOpenFilesReaderTest, AHelperThatCantAnswerSaysWhy)
+{
+    OpenFilesReadResult denied;
+    denied.status = OpenFilesReadStatus::PermissionDenied;
+
+    auto refused = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    refused->setResult(denied);
+    BrokeredOpenFilesReader broken(std::move(refused), failingBroker("timed out"));
+    const OpenFilesReadResult failed = broken.readOpenFiles(TARGET);
+    EXPECT_EQ(failed.status, OpenFilesReadStatus::Failed);
+    EXPECT_EQ(failed.detail, "The administrator helper couldn't be asked: timed out");
+
+    auto refusedAgain = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    refusedAgain->setResult(denied);
+    BrokeredOpenFilesReader confused(std::move(refusedAgain), confusedBroker());
+    const OpenFilesReadResult unexpected = confused.readOpenFiles(TARGET);
+    EXPECT_EQ(unexpected.status, OpenFilesReadStatus::Failed);
+    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
+}
+
+TEST(BrokeredConnectionsReaderTest, TheFactoryWrapsOnlyAReaderThatCanRead)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader>{}, broker), nullptr);
+    auto unsupported = std::make_unique<UnsupportedProcessConnectionsReader>();
+    const IProcessConnectionsReader* const rawUnsupported = unsupported.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader>(std::move(unsupported)), broker).get(), rawUnsupported);
+
+    const std::unique_ptr<IProcessConnectionsReader> wrapped = withPrivilegedBroker(
+        std::unique_ptr<IProcessConnectionsReader>(std::make_unique<TestMocks::MockProcessConnectionsReader>()), broker);
+    EXPECT_TRUE(wrapped->hasConnections());
+    EXPECT_TRUE(wrapped->canReadAuthorized());
+}
+
+TEST(BrokeredConnectionsReaderTest, WithoutABrokerOrAPromptTheRefusalStands)
+{
+    auto owned = std::make_unique<TestMocks::MockProcessConnectionsReader>();
+    TestMocks::MockProcessConnectionsReader* const inner = owned.get();
+    inner->setResult({.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
+    BrokeredConnectionsReader alone(std::move(owned), nullptr);
+    EXPECT_FALSE(alone.canReadAuthorized());
+    EXPECT_EQ(alone.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::PermissionDenied);
+    EXPECT_EQ(inner->readCount(), 1);
+
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    broker->setConnectFailure("the password prompt was dismissed");
+    BrokeredConnectionsReader dismissed(std::make_unique<TestMocks::MockProcessConnectionsReader>(), broker);
+    EXPECT_EQ(dismissed.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::PermissionDenied);
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+TEST(BrokeredConnectionsReaderTest, AHelperThatCantAnswerSaysWhy)
+{
+    const ConnectionsReadResult denied{.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}};
+
+    auto refused = std::make_unique<TestMocks::MockProcessConnectionsReader>();
+    refused->setResult(denied);
+    BrokeredConnectionsReader broken(std::move(refused), failingBroker("the channel broke"));
+    const ConnectionsReadResult failed = broken.readConnections(TARGET);
+    EXPECT_EQ(failed.status, ConnectionsReadStatus::Failed);
+    EXPECT_EQ(failed.detail, "The administrator helper couldn't be asked: the channel broke");
+
+    auto refusedAgain = std::make_unique<TestMocks::MockProcessConnectionsReader>();
+    refusedAgain->setResult(denied);
+    BrokeredConnectionsReader confused(std::move(refusedAgain), confusedBroker());
+    const ConnectionsReadResult unexpected = confused.readConnections(TARGET);
+    EXPECT_EQ(unexpected.status, ConnectionsReadStatus::Failed);
+    EXPECT_EQ(unexpected.detail, "The administrator helper gave an unexpected answer");
+}
+
+/// Readers that implement only what their interfaces require, so readAuthorized(), canReadAuthorized()
+/// and handlesScanned() take the interfaces' defaults.
+class RequiredOnlyEnvironmentReader final : public IProcessEnvironmentReader
+{
+  public:
+    [[nodiscard]] bool hasEnvironment() const override
+    {
+        return true;
+    }
+    [[nodiscard]] EnvironmentReadResult readEnvironment(const ProcessTarget& /*target*/) override
+    {
+        ++reads;
+        return {.status = EnvironmentReadStatus::PermissionDenied, .variables = {}};
+    }
+    int reads = 0;
+};
+
+class RequiredOnlyModulesReader final : public IProcessModulesReader
+{
+  public:
+    [[nodiscard]] bool hasModules() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ModulesReadResult readModules(const ProcessTarget& /*target*/) override
+    {
+        ++reads;
+        return {.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}};
+    }
+    int reads = 0;
+};
+
+class RequiredOnlyOpenFilesReader final : public IProcessOpenFilesReader
+{
+  public:
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return true;
+    }
+    [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& /*target*/) override
+    {
+        ++reads;
+        OpenFilesReadResult result;
+        result.status = OpenFilesReadStatus::PermissionDenied;
+        return result;
+    }
+    int reads = 0;
+};
+
+class RequiredOnlyConnectionsReader final : public IProcessConnectionsReader
+{
+  public:
+    [[nodiscard]] bool hasConnections() const override
+    {
+        return true;
+    }
+    [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& /*target*/) override
+    {
+        ++reads;
+        return {.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}};
+    }
+    int reads = 0;
+};
+
+TEST(ProcessReaderDefaultsTest, AReaderWithoutAnAuthorizedPathOffersNoneAndReadsAsUsual)
+{
+    RequiredOnlyEnvironmentReader environment;
+    EXPECT_FALSE(environment.canReadAuthorized());
+    EXPECT_EQ(environment.readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::PermissionDenied);
+    EXPECT_EQ(environment.reads, 1);
+
+    RequiredOnlyModulesReader modules;
+    EXPECT_FALSE(modules.canReadAuthorized());
+    EXPECT_EQ(modules.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::PermissionDenied);
+    EXPECT_EQ(modules.reads, 1);
+
+    RequiredOnlyOpenFilesReader files;
+    EXPECT_FALSE(files.canReadAuthorized());
+    EXPECT_EQ(files.readAuthorized(TARGET, std::stop_token{}).status, OpenFilesReadStatus::PermissionDenied);
+    EXPECT_EQ(files.reads, 1);
+    EXPECT_EQ(files.handlesScanned(), 0U);
+
+    RequiredOnlyConnectionsReader connections;
+    EXPECT_FALSE(connections.canReadAuthorized());
+    EXPECT_EQ(connections.readAuthorized(TARGET, std::stop_token{}).status, ConnectionsReadStatus::PermissionDenied);
+    EXPECT_EQ(connections.reads, 1);
+}
+
+TEST(ProcessReaderDefaultsTest, TheUnsupportedReadersReadNothing)
+{
+    UnsupportedProcessModulesReader modules;
+    EXPECT_FALSE(modules.hasModules());
+    EXPECT_EQ(modules.readModules(TARGET).status, ModulesReadStatus::Unsupported);
+
+    UnsupportedProcessOpenFilesReader files;
+    EXPECT_FALSE(files.hasOpenFiles());
+    EXPECT_TRUE(files.readOpenFiles(TARGET).files.empty());
+
+    UnsupportedProcessConnectionsReader connections;
+    EXPECT_FALSE(connections.hasConnections());
+    EXPECT_EQ(connections.readConnections(TARGET).status, ConnectionsReadStatus::Unsupported);
+}
+
+// --- BrokeredProcessProbe's pass-through calls (#2417) --------------------------------------------------
+
+/// A probe that answers each call with a figure of its own and records the settings it is given, so the
+/// decorator is seen to pass each one on.
+class RecordingProbe final : public IProcessProbe
+{
+  public:
+    [[nodiscard]] std::vector<ProcessCounters> enumerate() override
+    {
+        ProcessCounters counters;
+        counters.pid = 77;
+        return {counters};
+    }
+    [[nodiscard]] ProcessCapabilities capabilities() const override
+    {
+        ProcessCapabilities caps;
+        caps.hasMemoryRollup = true;
+        return caps;
+    }
+    [[nodiscard]] std::uint64_t totalCpuTime() const override
+    {
+        return 1234;
+    }
+    [[nodiscard]] long ticksPerSecond() const override
+    {
+        return 250;
+    }
+    [[nodiscard]] std::uint64_t systemTotalMemory() const override
+    {
+        return 8192;
+    }
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override
+    {
+        return PackageEnergyReading{.energyUj = 55U, .maxRangeUj = 100U, .busyCpuTicks = std::nullopt};
+    }
+    [[nodiscard]] SocketTrafficReading readSocketTraffic() const override
+    {
+        return {.sockets = {}, .sampleTimeNs = 999};
+    }
+    [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t /*pid*/, std::uint64_t /*startTimeTicks*/) const override
+    {
+        return std::unexpected(rollupFailure);
+    }
+    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override
+    {
+        *lastTtl = ttlMs;
+    }
+    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& /*collector*/) override
+    {
+        ++*collectorSets;
+    }
+
+    MemoryRollupFailure rollupFailure = MemoryRollupFailure::PermissionDenied;
+    // Shared, so the test still sees them once the decorator owns the probe.
+    std::shared_ptr<std::chrono::milliseconds> lastTtl = std::make_shared<std::chrono::milliseconds>(0);
+    std::shared_ptr<int> collectorSets = std::make_shared<int>(0);
+};
+
+TEST(BrokeredProcessProbeTest, EveryOtherCallIsTheInnerProbes)
+{
+    auto owned = std::make_unique<RecordingProbe>();
+    const std::shared_ptr<std::chrono::milliseconds> lastTtl = owned->lastTtl;
+    const std::shared_ptr<int> collectorSets = owned->collectorSets;
+    const std::unique_ptr<IProcessProbe> probe = withPrivilegedBroker(std::move(owned), std::make_shared<Mocks::FakeBroker>(true));
+
+    const std::vector<ProcessCounters> counters = probe->enumerate();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters.front().pid, 77);
+    EXPECT_TRUE(probe->capabilities().hasMemoryRollup);
+    EXPECT_EQ(probe->totalCpuTime(), 1234U);
+    EXPECT_EQ(probe->ticksPerSecond(), 250);
+    EXPECT_EQ(probe->systemTotalMemory(), 8192U);
+    const std::optional<PackageEnergyReading> energy = probe->readPackageEnergy();
+    ASSERT_TRUE(energy.has_value());
+    EXPECT_EQ(energy.value_or(PackageEnergyReading{}).energyUj, std::optional<std::uint64_t>{55U});
+    EXPECT_EQ(probe->readSocketTraffic().sampleTimeNs, 999U);
+
+    probe->setSocketStatsCacheTtl(std::chrono::milliseconds{750});
+    EXPECT_EQ(*lastTtl, std::chrono::milliseconds{750});
+    probe->setUdpTrafficCollector(nullptr);
+    EXPECT_EQ(*collectorSets, 1);
+}
+
+TEST(BrokeredProcessProbeTest, OnlyAPermissionRefusalGoesToTheHelperAndAFailedCallLeavesIt)
+{
+    auto unavailable = std::make_unique<RecordingProbe>();
+    unavailable->rollupFailure = MemoryRollupFailure::Unavailable;
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    const BrokeredProcessProbe gone(std::move(unavailable), broker);
+    const MemoryRollupRead absent = gone.readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
+    ASSERT_FALSE(absent.has_value());
+    EXPECT_EQ(absent.error(), MemoryRollupFailure::Unavailable);
+    EXPECT_TRUE(broker->requests().empty()); // the helper can't read a process that isn't there
+
+    const auto expectRefusalStands = [](const std::shared_ptr<Mocks::FakeBroker>& helper)
+    {
+        const BrokeredProcessProbe refused(std::make_unique<RecordingProbe>(), helper);
+        const MemoryRollupRead read = refused.readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);
+        ASSERT_FALSE(read.has_value());
+        EXPECT_EQ(read.error(), MemoryRollupFailure::PermissionDenied); // the refusal stands
+        EXPECT_EQ(helper->idleCallCount(), 1);
+    };
+    expectRefusalStands(failingBroker("busy"));
+    expectRefusalStands(confusedBroker());
+}
+
+TEST(BrokeredProcessProbeTest, TheFactoryWrapsOnlyAProbeThatReadsMemoryRollups)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>{}, broker), nullptr);
+    auto plain = std::make_unique<TestMocks::MockProcessProbe>(); // hasMemoryRollup is off by default
+    const IProcessProbe* const raw = plain.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>(std::move(plain)), broker).get(), raw);
+    auto alone = std::make_unique<RecordingProbe>();
+    const IProcessProbe* const rawAlone = alone.get();
+    EXPECT_EQ(withPrivilegedBroker(std::unique_ptr<IProcessProbe>(std::move(alone)), nullptr).get(), rawAlone);
 }
 
 } // namespace

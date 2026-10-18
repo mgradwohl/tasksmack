@@ -369,6 +369,143 @@ TEST(BrokerProtocolTest, CrashesRoundTrip)
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
+// #2417: the decoders' refusals of a well-framed message that is the wrong way round or out of range.
+TEST(BrokerProtocolTest, NoResponseDecodesAsARequestAndNoRequestAsAResponse)
+{
+    const std::vector<Response> responses = {
+        HelloReply{.version = PROTOCOL_VERSION, .accepted = true},
+        ActionResult{.success = true, .errorMessage = {}, .successNote = {}},
+        ErrorReply{.message = "no"},
+        EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}},
+        ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}},
+        OpenFilesReply{},
+        ConnectionsReply{.result = {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}},
+        MemoryRollupReply{},
+        FirmwareFileReply{.status = FirmwareFileStatus::Ok, .bytes = {}},
+        CrashesReply{},
+    };
+    for (const Response& response : responses)
+    {
+        const auto decoded = decodeRequest(encodeResponse(3, response));
+        ASSERT_FALSE(decoded.has_value()) << response.index();
+        EXPECT_EQ(decoded.error(), "Not a request this helper does");
+    }
+
+    const std::vector<Request> requests = {
+        Hello{},
+        SignalRequest{.target = TARGET, .signal = Signal::Kill},
+        PriorityRequest{.target = TARGET, .nice = 5},
+        IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
+        AffinityRequest{.target = TARGET, .cpus = CpuAffinity::fromMask(1)},
+        EnvironmentRequest{.target = TARGET},
+        ModulesRequest{.target = TARGET},
+        OpenFilesRequest{.target = TARGET},
+        ConnectionsRequest{.target = TARGET},
+        MemoryRollupRequest{.target = TARGET},
+        FirmwareFileRequest{.file = FirmwareFile::ProductUuid},
+        CrashesRequest{},
+    };
+    for (const Request& request : requests)
+    {
+        const auto decoded = decodeResponse(encodeRequest(3, request));
+        ASSERT_FALSE(decoded.has_value()) << request.index();
+        EXPECT_EQ(decoded.error(), "Not a response");
+    }
+}
+
+TEST(BrokerProtocolTest, AResponseFrameThatIsntOneIsRefusedWithTheFramesReason)
+{
+    const std::vector<std::uint8_t> shortFrame(3, 0);
+    const auto tooShort = decodeResponse(shortFrame);
+    ASSERT_FALSE(tooShort.has_value());
+    EXPECT_EQ(tooShort.error(), "A frame shorter than its header");
+
+    const std::vector<std::uint8_t> huge(MAX_MESSAGE_BYTES + 1, 0);
+    const auto tooLong = decodeRequest(huge);
+    ASSERT_FALSE(tooLong.has_value());
+    EXPECT_EQ(tooLong.error(), "A frame larger than the protocol allows");
+}
+
+TEST(BrokerProtocolTest, ReplyListsWithABadStatusOrTooManyEntriesAreRefused)
+{
+    constexpr std::size_t PAYLOAD = 4 + HEADER_BYTES;
+    const auto refused = [](std::vector<std::uint8_t> bytes, std::size_t at, std::uint8_t value)
+    {
+        bytes[at] = value;
+        return !decodeResponse(bytes).has_value();
+    };
+
+    // Modules: status, detail (4), count (4).
+    const std::vector<std::uint8_t> modules =
+        encodeResponse(1, ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}});
+    ASSERT_TRUE(decodeResponse(modules).has_value());
+    EXPECT_TRUE(refused(modules, PAYLOAD, 0xEE));
+    EXPECT_TRUE(refused(modules, PAYLOAD + 1 + 4 + 3, 0x7F));
+
+    // Open files: status, detail (4), three flags, count (4).
+    OpenFilesReadResult files;
+    files.status = OpenFilesReadStatus::Ok;
+    const std::vector<std::uint8_t> openFiles = encodeResponse(1, OpenFilesReply{.result = files});
+    ASSERT_TRUE(decodeResponse(openFiles).has_value());
+    EXPECT_TRUE(refused(openFiles, PAYLOAD, 0xEE));
+    EXPECT_TRUE(refused(openFiles, PAYLOAD + 1 + 4 + 3 + 3, 0x7F));
+
+    // Connections: status, detail (4), count (4), then per socket protocol, family, two endpoints
+    // (16-byte address and port each) and the state.
+    ConnectionsReadResult sockets{.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
+    ProcessConnection tcp;
+    tcp.protocol = ConnectionProtocol::Tcp;
+    tcp.state = ConnectionState::Listen;
+    sockets.connections.push_back(tcp);
+    const std::vector<std::uint8_t> connections = encodeResponse(1, ConnectionsReply{.result = sockets});
+    ASSERT_TRUE(decodeResponse(connections).has_value());
+    EXPECT_TRUE(refused(connections, PAYLOAD, 0xEE));
+    EXPECT_TRUE(refused(connections, PAYLOAD + 1 + 4 + 3, 0x7F));
+    EXPECT_TRUE(refused(connections, PAYLOAD + 1 + 4 + 4 + 1 + 1 + 18 + 18, 0xEE)); // no such state
+
+    // Crashes: available, family, listed, accessDenied, reason (4), capped, journalRead,
+    // journal reason (4), otherUsersHidden, count (4).
+    const std::vector<std::uint8_t> crashes = encodeResponse(1, CrashesReply{});
+    ASSERT_TRUE(decodeResponse(crashes).has_value());
+    EXPECT_TRUE(refused(crashes, PAYLOAD + 1 + 1 + 1 + 1 + 4 + 1 + 1 + 4 + 1 + 3, 0x7F));
+}
+
+TEST(BrokerProtocolTest, RepliesCompareByEveryFigure)
+{
+    const EnvironmentReply home{.result = {.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}}};
+    EnvironmentReply otherValue = home;
+    otherValue.result.variables[0].value = "/home/u";
+    EnvironmentReply otherName = home;
+    otherName.result.variables[0].name = "PATH";
+    EnvironmentReply otherStatus = home;
+    otherStatus.result.status = EnvironmentReadStatus::Failed;
+    EnvironmentReply fewer = home;
+    fewer.result.variables.clear();
+    EXPECT_EQ(home, home);
+    EXPECT_FALSE(home == otherValue);
+    EXPECT_FALSE(home == otherName);
+    EXPECT_FALSE(home == otherStatus);
+    EXPECT_FALSE(home == fewer);
+
+    const MemoryRollupReply figures{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 3}};
+    const MemoryRollupReply refusedRollup{.result = std::unexpected(MemoryRollupFailure::PermissionDenied)};
+    const MemoryRollupReply absent{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+    EXPECT_FALSE(figures == refusedRollup);
+    EXPECT_FALSE(refusedRollup == absent);
+    EXPECT_FALSE(figures == (MemoryRollupReply{.result = MemoryRollup{.pssBytes = 1, .ussBytes = 2, .swapPssBytes = 4}}));
+}
+
+TEST(BrokerProtocolTest, TheWriterCountsWhatItHasWritten)
+{
+    Detail::Writer writer;
+    EXPECT_EQ(writer.size(), 0U);
+    writer.u8(1);
+    writer.u32(2);
+    writer.text("abc");
+    EXPECT_EQ(writer.size(), 1U + 4U + 4U + 3U);
+    EXPECT_EQ(writer.frame(MessageKind::Error, 1).size(), 4U + HEADER_BYTES + writer.size());
+}
+
 TEST(BrokerProtocolTest, AFirmwareFileIsCappedAtItsLimit)
 {
     const std::vector<std::uint8_t> big(MAX_FIRMWARE_FILE_BYTES + 10, 0xAB);
