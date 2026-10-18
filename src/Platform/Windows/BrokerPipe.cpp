@@ -185,7 +185,7 @@ std::expected<std::wstring, std::string> makePipeName()
     return name;
 }
 
-std::expected<std::wstring, std::string> userSidOfToken(HANDLE token)
+std::expected<Sid, std::string> userSidOfToken(HANDLE token)
 {
     DWORD size = 0;
     static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &size));
@@ -200,16 +200,19 @@ std::expected<std::wstring, std::string> userSidOfToken(HANDLE token)
     }
     const auto* const user = reinterpret_cast<const TOKEN_USER*>(
         buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - TokenUser's buffer is a TOKEN_USER
-    LPWSTR text = nullptr;
-    if (ConvertSidToStringSidW(user->User.Sid, &text) == FALSE)
+    if (IsValidSid(user->User.Sid) == FALSE)
     {
-        return std::unexpected(std::format("couldn't format the user's SID: {}", lastErrorText(GetLastError())));
+        return std::unexpected(std::string("the token's user isn't a valid SID"));
     }
-    const std::unique_ptr<wchar_t, LocalFreeDeleter> owned(text);
-    return std::wstring(owned.get());
+    Sid sid(GetLengthSid(user->User.Sid));
+    if (CopySid(static_cast<DWORD>(sid.size()), sid.data(), user->User.Sid) == FALSE)
+    {
+        return std::unexpected(std::format("couldn't copy the user's SID: {}", lastErrorText(GetLastError())));
+    }
+    return sid;
 }
 
-std::expected<std::wstring, std::string> userSidOfProcess(HANDLE process)
+std::expected<Sid, std::string> userSidOfProcess(HANDLE process)
 {
     UniqueHandle token;
     if (OpenProcessToken(process, TOKEN_QUERY, token.put()) == FALSE)
@@ -219,24 +222,76 @@ std::expected<std::wstring, std::string> userSidOfProcess(HANDLE process)
     return userSidOfToken(token.get());
 }
 
-std::expected<std::wstring, std::string> pipeSecurityDescriptor(std::wstring_view userSid)
+std::expected<void, std::string> checkUserSid(const Sid& sid)
 {
-    constexpr std::wstring_view SID_PREFIX = L"S-1-";
-    const bool plainSid =
-        userSid.size() > SID_PREFIX.size() && userSid.starts_with(SID_PREFIX) &&
-        std::ranges::all_of(userSid.substr(SID_PREFIX.size()), [](wchar_t c) { return (c >= L'0' && c <= L'9') || c == L'-'; });
-    if (!plainSid)
+    // Its length first, from its own header, so nothing below reads past the bytes: revision, count of
+    // subauthorities, a six-byte authority, then four bytes per subauthority.
+    constexpr std::size_t HEADER_BYTES = 8;
+    if (sid.size() < HEADER_BYTES)
     {
         return std::unexpected(std::string("not a SID"));
     }
-    // D:P - a protected DACL (nothing inherited), one allow ACE: CLIENT_ACCESS for the user.
-    // S:(ML;;NWNRNX;;;ME) - a medium label: no read, write or execute up from below medium.
-    return std::format(L"D:P(A;;0x{:08X};;;{})S:(ML;;NWNRNX;;;ME)", CLIENT_ACCESS, userSid);
+    const auto count = std::to_integer<std::uint8_t>(sid[1]);
+    if (sid.size() != GetSidLengthRequired(count))
+    {
+        return std::unexpected(std::string("not a SID"));
+    }
+    Sid bytes = sid; // the SID calls take a PSID, not a pointer to const; they only read it
+    const PSID view = bytes.data();
+    if (IsValidSid(view) == FALSE)
+    {
+        return std::unexpected(std::string("not a SID"));
+    }
+    const std::span<const BYTE, 6> authority(GetSidIdentifierAuthority(view)->Value);
+    const auto authorityIs = [&authority](BYTE last)
+    {
+        return std::ranges::equal(authority, std::array<BYTE, 6>{0, 0, 0, 0, 0, last});
+    };
+    const auto subAuthority = [view](DWORD index)
+    {
+        return *GetSidSubAuthority(view, index);
+    };
+    // S-1-5-21-a-b-c-RID: a local or domain account. Its domain's groups have RIDs too (Domain Users is
+    // 513), all below 1000 but for those an administrator makes; accounts are the built-in
+    // Administrator (500) or 1000 and up.
+    constexpr BYTE NT_AUTHORITY = 5;
+    constexpr DWORD ADMINISTRATOR_RID = 500;
+    constexpr DWORD FIRST_ACCOUNT_RID = 1000;
+    const bool account = authorityIs(NT_AUTHORITY) && count == 5 && subAuthority(0) == SECURITY_NT_NON_UNIQUE &&
+                         (subAuthority(4) == ADMINISTRATOR_RID || subAuthority(4) >= FIRST_ACCOUNT_RID);
+    // S-1-12-1-a-b-c-d: a Microsoft Entra ID account.
+    constexpr BYTE ENTRA_AUTHORITY = 12;
+    const bool entraAccount = authorityIs(ENTRA_AUTHORITY) && count == 5 && subAuthority(0) == 1;
+    if (!account && !entraAccount)
+    {
+        return std::unexpected(std::string("not one user account's SID"));
+    }
+    return {};
 }
 
-std::expected<UniqueHandle, std::string> createServerPipe(const std::wstring& name, std::wstring_view allowedUserSid)
+std::expected<std::wstring, std::string> pipeSecurityDescriptor(const Sid& userSid)
 {
-    const auto sddl = pipeSecurityDescriptor(allowedUserSid);
+    if (auto checked = checkUserSid(userSid); !checked.has_value())
+    {
+        return std::unexpected(std::move(checked.error()));
+    }
+    Sid bytes = userSid;
+    LPWSTR text = nullptr;
+    if (ConvertSidToStringSidW(bytes.data(), &text) == FALSE)
+    {
+        return std::unexpected(std::format("couldn't format the user's SID: {}", lastErrorText(GetLastError())));
+    }
+    const std::unique_ptr<wchar_t, LocalFreeDeleter> owned(text);
+    // D:P - a protected DACL (nothing inherited) that allows:
+    //   - CLIENT_ACCESS for the user;
+    //   - READ_CONTROL alone for OWNER RIGHTS (OW), which replaces the owner's implicit READ_CONTROL and
+    //     WRITE_DAC, so no owner can rewrite the DACL.
+    // S:(ML;;NWNRNX;;;ME) - a medium label: no read, write or execute up from below medium.
+    return std::format(L"D:P(A;;0x{:08X};;;{})(A;;RC;;;OW)S:(ML;;NWNRNX;;;ME)", CLIENT_ACCESS, std::wstring_view(owned.get()));
+}
+std::expected<UniqueHandle, std::string> createServerPipe(const std::wstring& name, const Sid& allowedUser)
+{
+    const auto sddl = pipeSecurityDescriptor(allowedUser);
     if (!sddl.has_value())
     {
         return std::unexpected(sddl.error());

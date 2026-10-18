@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <functional>
 #include <future>
 #include <memory>
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -52,13 +54,28 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
     return name.value_or(L"");
 }
 
-[[nodiscard]] std::wstring mySid()
+[[nodiscard]] BrokerPipe::Sid mySid()
 {
     UniqueHandle token;
     EXPECT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
     auto sid = BrokerPipe::userSidOfToken(token.get());
     EXPECT_TRUE(sid.has_value());
-    return sid.value_or(L"");
+    return sid.value_or(BrokerPipe::Sid{});
+}
+
+/// The SID @p text names, or nothing when it doesn't name one.
+[[nodiscard]] BrokerPipe::Sid sidFromText(const std::wstring& text)
+{
+    PSID sid = nullptr;
+    if (ConvertStringSidToSidW(text.c_str(), &sid) == FALSE)
+    {
+        return {};
+    }
+    const auto* const first = static_cast<const std::byte*>(sid);
+    BrokerPipe::Sid bytes(first,
+                          first + GetLengthSid(sid)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the SID's own length
+    LocalFree(sid);
+    return bytes;
 }
 
 [[nodiscard]] UniqueHandle ownProcess()
@@ -74,6 +91,10 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
 
 [[nodiscard]] std::wstring sidText(PSID sid)
 {
+    if (sid == nullptr)
+    {
+        return {};
+    }
     LPWSTR text = nullptr;
     if (ConvertSidToStringSidW(sid, &text) == FALSE)
     {
@@ -82,6 +103,11 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
     std::wstring result(text);
     LocalFree(text);
     return result;
+}
+
+[[nodiscard]] std::wstring sidText(BrokerPipe::Sid sid)
+{
+    return sidText(sid.empty() ? nullptr : static_cast<PSID>(sid.data()));
 }
 
 [[nodiscard]] std::chrono::milliseconds since(std::chrono::steady_clock::time_point start)
@@ -159,21 +185,49 @@ TEST(BrokerPipeTest, PipeNamesAreRandomAndLocal)
 
 TEST(BrokerPipeTest, TheSecurityDescriptorLetsInOnlyTheUserWithAMediumLabel)
 {
-    const auto sddl = BrokerPipe::pipeSecurityDescriptor(L"S-1-5-21-1-2-3-1001");
-    ASSERT_TRUE(sddl.has_value());
-    EXPECT_EQ(*sddl, L"D:P(A;;0x00100083;;;S-1-5-21-1-2-3-1001)S:(ML;;NWNRNX;;;ME)");
+    const auto sddl = BrokerPipe::pipeSecurityDescriptor(sidFromText(L"S-1-5-21-1-2-3-1001"));
+    ASSERT_TRUE(sddl.has_value()) << sddl.error();
+    EXPECT_EQ(*sddl, L"D:P(A;;0x00100083;;;S-1-5-21-1-2-3-1001)(A;;RC;;;OW)S:(ML;;NWNRNX;;;ME)");
     EXPECT_EQ(BrokerPipe::CLIENT_ACCESS & FILE_CREATE_PIPE_INSTANCE, 0U);
 }
 
-TEST(BrokerPipeTest, OnlyAPlainSidIsLetIntoTheSecurityDescriptor)
+TEST(BrokerPipeTest, UserAccountSidsAreLetIn)
 {
-    for (const std::wstring_view notASid : {L"", L"WD", L"BA", L"S-1-", L"s-1-5-18", L"S-1-5-18)(A;;GA;;;WD", L"S-1-5-18 "})
+    for (const std::wstring text : {L"S-1-5-21-1-2-3-500", L"S-1-5-21-1-2-3-1001", L"S-1-12-1-1-2-3-4"})
     {
-        EXPECT_FALSE(BrokerPipe::pipeSecurityDescriptor(notASid).has_value());
+        EXPECT_TRUE(BrokerPipe::checkUserSid(sidFromText(text)).has_value()) << std::string(text.begin(), text.end());
     }
+    EXPECT_TRUE(BrokerPipe::checkUserSid(mySid()).has_value()) << "this test's own user";
 }
 
-TEST(BrokerPipeTest, ThePipeHasOneAllowAceForTheUserAndAMediumLabel)
+TEST(BrokerPipeTest, GroupsWellKnownSidsAndJunkAreNotLetIn)
+{
+    // Everyone, Authenticated Users, INTERACTIVE, Users, Administrators, LocalSystem, Domain Users, a
+    // low integrity level, and SIDs cut short or malformed.
+    for (const std::wstring text : {L"S-1-1-0",
+                                    L"S-1-5-11",
+                                    L"S-1-5-4",
+                                    L"S-1-5-32-545",
+                                    L"S-1-5-32-544",
+                                    L"S-1-5-18",
+                                    L"S-1-5-21-1-2-3-513",
+                                    L"S-1-16-4096",
+                                    L"S-1-5-21-1-2-1001",
+                                    L"S-1-5-",
+                                    L"S-1-",
+                                    L"WD"})
+    {
+        const BrokerPipe::Sid sid = sidFromText(text);
+        EXPECT_FALSE(BrokerPipe::checkUserSid(sid).has_value()) << std::string(text.begin(), text.end());
+        EXPECT_FALSE(BrokerPipe::pipeSecurityDescriptor(sid).has_value()) << std::string(text.begin(), text.end());
+    }
+    BrokerPipe::Sid truncated = sidFromText(L"S-1-5-21-1-2-3-1001");
+    truncated.pop_back();
+    EXPECT_FALSE(BrokerPipe::checkUserSid(truncated).has_value());
+    EXPECT_FALSE(BrokerPipe::checkUserSid({}).has_value());
+}
+
+TEST(BrokerPipeTest, ThePipeLetsInOnlyTheUserTakesTheOwnersRightsAndHasAMediumLabel)
 {
     const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
@@ -197,14 +251,22 @@ TEST(BrokerPipeTest, ThePipeHasOneAllowAceForTheUserAndAMediumLabel)
     ASSERT_NE(GetSecurityDescriptorControl(descriptor, &control, &revision), FALSE);
     EXPECT_NE(control & SE_DACL_PROTECTED, 0) << "nothing inherited into the DACL";
 
+    // Two allow ACEs: the user's client rights, and READ_CONTROL alone for OWNER RIGHTS, which takes the
+    // owner's implicit WRITE_DAC away.
     ASSERT_NE(dacl, nullptr);
-    ASSERT_EQ(dacl->AceCount, 1);
+    ASSERT_EQ(dacl->AceCount, 2);
     void* ace = nullptr;
     ASSERT_NE(GetAce(dacl, 0, &ace), FALSE);
     auto* const allow = static_cast<ACCESS_ALLOWED_ACE*>(ace);
     EXPECT_EQ(allow->Header.AceType, ACCESS_ALLOWED_ACE_TYPE);
     EXPECT_EQ(allow->Mask, BrokerPipe::CLIENT_ACCESS);
-    EXPECT_EQ(sidText(&allow->SidStart), mySid());
+    EXPECT_EQ(sidText(&allow->SidStart), sidText(mySid()));
+    void* ownerAce = nullptr;
+    ASSERT_NE(GetAce(dacl, 1, &ownerAce), FALSE);
+    auto* const owner = static_cast<ACCESS_ALLOWED_ACE*>(ownerAce);
+    EXPECT_EQ(owner->Header.AceType, ACCESS_ALLOWED_ACE_TYPE);
+    EXPECT_EQ(owner->Mask, static_cast<ACCESS_MASK>(READ_CONTROL));
+    EXPECT_EQ(sidText(&owner->SidStart), L"S-1-3-4"); // OWNER RIGHTS
 
     ASSERT_NE(sacl, nullptr);
     ASSERT_EQ(sacl->AceCount, 1);
@@ -220,12 +282,8 @@ TEST(BrokerPipeTest, ThePipeHasOneAllowAceForTheUserAndAMediumLabel)
 
 TEST(BrokerPipeTest, APipeForAnotherUserCantBeOpened)
 {
-    if (mySid() == L"S-1-5-18")
-    {
-        GTEST_SKIP() << "running as LocalSystem, the other user this test needs";
-    }
     const std::wstring name = freshName();
-    const auto server = BrokerPipe::createServerPipe(name, L"S-1-5-18"); // only LocalSystem may open it
+    const auto server = BrokerPipe::createServerPipe(name, sidFromText(L"S-1-5-21-1-2-3-1001")); // nobody's account
     ASSERT_TRUE(server.has_value()) << server.error();
     const UniqueHandle process = ownProcess();
     const auto start = std::chrono::steady_clock::now();
@@ -234,6 +292,96 @@ TEST(BrokerPipeTest, APipeForAnotherUserCantBeOpened)
     EXPECT_LT(since(start), WAIT) << "refused at once, not waited out";
 }
 
+TEST(BrokerPipeTest, ALowIntegrityClientIsRefused)
+{
+    const std::wstring name = freshName();
+    const auto server = BrokerPipe::createServerPipe(name, mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+
+    // This user, at low integrity: a copy of this process's token, lowered and impersonated on a thread of
+    // its own. Only the label can refuse it, since the DACL lets this user in. The error is the reason to
+    // skip; the value is what the connect said.
+    auto outcome = std::async(
+        std::launch::async,
+        [&name]() -> std::expected<std::string, std::string>
+        {
+            UniqueHandle token;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, token.put()) == FALSE)
+            {
+                return std::unexpected(std::string("can't open this process's token"));
+            }
+            UniqueHandle low;
+            if (DuplicateTokenEx(token.get(),
+                                 TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_ADJUST_DEFAULT,
+                                 nullptr,
+                                 SecurityImpersonation,
+                                 TokenImpersonation,
+                                 low.put()) == FALSE)
+            {
+                return std::unexpected(std::string("can't copy this process's token"));
+            }
+            BrokerPipe::Sid lowSid = sidFromText(L"S-1-16-4096");
+            TOKEN_MANDATORY_LABEL label{};
+            label.Label.Attributes = SE_GROUP_INTEGRITY;
+            label.Label.Sid = lowSid.data();
+            if (lowSid.empty() ||
+                SetTokenInformation(low.get(), TokenIntegrityLevel, &label, static_cast<DWORD>(sizeof(label) + lowSid.size())) == FALSE)
+            {
+                return std::unexpected(std::string("can't lower the token's integrity level"));
+            }
+            const UniqueHandle process = ownProcess();
+            if (SetThreadToken(nullptr, low.get()) == FALSE)
+            {
+                return std::unexpected(std::string("can't impersonate the low-integrity token"));
+            }
+            const auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+            RevertToSelf();
+            return client.has_value() ? std::string("opened") : client.error();
+        });
+    const auto connected = outcome.get();
+    if (!connected.has_value())
+    {
+        GTEST_SKIP() << "no low-integrity token here: " << connected.error();
+    }
+    EXPECT_NE(*connected, "opened");
+    EXPECT_TRUE(connected->contains(std::system_category().message(ERROR_ACCESS_DENIED))) << *connected;
+}
+
+TEST(BrokerPipeTest, TheServerCanIdentifyTheClientButNotActAsIt)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    // A pipe's server may impersonate its client once it has read from it.
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(BrokerPipe::receiveFrame(pair.server.get(), WAIT, {}).has_value());
+
+    // On a thread of its own, so a failure can't leave the test's thread impersonating.
+    auto level =
+        std::async(std::launch::async,
+                   [pipe = pair.server.get()]() -> std::expected<SECURITY_IMPERSONATION_LEVEL, std::string>
+                   {
+                       if (ImpersonateNamedPipeClient(pipe) == FALSE)
+                       {
+                           return std::unexpected(std::format("ImpersonateNamedPipeClient failed: {}", GetLastError()));
+                       }
+                       UniqueHandle token;
+                       SECURITY_IMPERSONATION_LEVEL impersonation = SecurityAnonymous;
+                       DWORD size = 0;
+                       const bool read =
+                           OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, token.put()) != FALSE &&
+                           GetTokenInformation(token.get(), TokenImpersonationLevel, &impersonation, sizeof(impersonation), &size) != FALSE;
+                       const DWORD error = GetLastError();
+                       RevertToSelf();
+                       if (!read)
+                       {
+                           return std::unexpected(std::format("reading the client's token failed: {}", error));
+                       }
+                       return impersonation;
+                   });
+    const auto impersonation = level.get();
+    ASSERT_TRUE(impersonation.has_value()) << impersonation.error();
+    EXPECT_EQ(*impersonation, SecurityIdentification) << "the client opens the pipe at SECURITY_IDENTIFICATION";
+}
 TEST(BrokerPipeTest, ASecondPipeOfTheSameNameIsRefused)
 {
     const std::wstring name = freshName();
@@ -835,17 +983,19 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
     EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
 }
 
-/// A handler whose first PSS/USS read takes @p delay, and whose other requests are answered at once.
-[[nodiscard]] BrokerPipeServer::RequestHandler slowFirstRead(std::chrono::milliseconds delay)
+/// A handler whose first PSS/USS read waits until the test sets @p release (or WAIT passes), and whose
+/// other requests are answered at once: a read that is slow for as long as the test needs, not for a
+/// guessed time.
+[[nodiscard]] BrokerPipeServer::RequestHandler firstReadWaitsFor(const std::shared_ptr<std::promise<void>>& release)
 {
     auto reads = std::make_shared<std::atomic<int>>(0);
-    return [reads, delay](const Broker::Request& request) -> Broker::Response
+    return [reads, released = release->get_future().share()](const Broker::Request& request) -> Broker::Response
     {
         if (std::holds_alternative<Broker::MemoryRollupRequest>(request))
         {
             if (++*reads == 1)
             {
-                std::this_thread::sleep_for(delay);
+                static_cast<void>(released.wait_for(WAIT));
             }
             return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
         }
@@ -855,7 +1005,8 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
 
 TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDropped)
 {
-    InProcessHelper helper(serving(slowFirstRead(500ms), WAIT));
+    auto release = std::make_shared<std::promise<void>>();
+    InProcessHelper helper(serving(firstReadWaitsFor(release), WAIT));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
 
@@ -864,7 +1015,8 @@ TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDrop
     EXPECT_EQ(slow.error(), "the helper didn't answer in time");
     EXPECT_TRUE(broker.connected()) << "a slow read is skipped, not the session (#2406)";
 
-    // The next call waits past the late reply, drops it, and gets its own.
+    // The read finishes only now; the next call waits past its late reply, drops it, and gets its own.
+    release->set_value();
     const auto next = broker.call(killRequest(), {});
     ASSERT_TRUE(next.has_value()) << next.error();
     EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(*next));
@@ -873,24 +1025,27 @@ TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDrop
 
 TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
 {
-    InProcessHelper helper(serving(slowFirstRead(300ms), WAIT));
+    auto release = std::make_shared<std::promise<void>>();
+    InProcessHelper helper(serving(firstReadWaitsFor(release), WAIT));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
     ASSERT_FALSE(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 50ms).has_value());
+    EXPECT_EQ(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 50ms).error_or(""), "busy")
+        << "the late reply isn't in yet, so this read is skipped";
 
     // Busy until the late reply is in; then that is taken and this read asked.
+    release->set_value();
     const auto start = std::chrono::steady_clock::now();
     std::expected<Broker::Response, std::string> read = std::unexpected(std::string("busy"));
     while (!read.has_value() && read.error() == "busy" && since(start) < WAIT)
     {
-        std::this_thread::sleep_for(25ms);
+        std::this_thread::sleep_for(10ms);
         read = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, WAIT);
     }
     ASSERT_TRUE(read.has_value()) << read.error();
     EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*read));
     EXPECT_TRUE(broker.connected());
 }
-
 TEST(PipeBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)
 {
     auto entered = std::make_shared<std::promise<void>>();
@@ -982,7 +1137,8 @@ TEST(PipeBrokerTest, ACallIfIdleWhoseReplyIsCutOffByTheTimeoutEndsTheSession)
     InProcessHelper helper(cutsOffItsReply(false));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
-    const auto response = broker.callIfIdle(killRequest(), 200ms);
+    // Long enough for the half reply to come on any runner: the timeout then ends the read mid-frame.
+    const auto response = broker.callIfIdle(killRequest(), 2s);
     ASSERT_FALSE(response.has_value());
     EXPECT_EQ(response.error(), "the helper's pipe failed") << "mid-frame is a failure, not a skipped read (#2451)";
     EXPECT_FALSE(broker.connected());

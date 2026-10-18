@@ -7,8 +7,9 @@
 //     already holds fails rather than being shared, and nobody can add a second instance to it;
 //   - for local clients only (PIPE_REJECT_REMOTE_CLIENTS);
 //   - with a protected DACL that lets in only TaskSmack's user SID, with just the rights a client needs
-//     to read and write (not FILE_CREATE_PIPE_INSTANCE), and a medium mandatory label, so a medium
-//     TaskSmack can open an elevated helper's pipe and nothing below medium can.
+//     to read and write (not FILE_CREATE_PIPE_INSTANCE), takes the owner's implicit WRITE_DAC away, and a
+//     medium mandatory label, so a medium TaskSmack can open an elevated helper's pipe and nothing below
+//     medium can. The client opens it at SECURITY_IDENTIFICATION, so the helper can't act as it.
 // Then each side checks that the other end is the process it expects: TaskSmack that the server is the
 // helper it started (GetNamedPipeServerProcessId), the helper that the client is the TaskSmack that
 // started it (GetNamedPipeClientProcessId). Each holds a handle to that process meanwhile, so its PID
@@ -33,13 +34,13 @@
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace Platform::Windows::BrokerPipe
@@ -57,22 +58,36 @@ inline constexpr DWORD CLIENT_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_R
 /// cryptographic random number generator. The error says why there are no random bits.
 [[nodiscard]] std::expected<std::wstring, std::string> makePipeName();
 
-/// The user SID ("S-1-5-21-...") of @p token, opened with TOKEN_QUERY.
-[[nodiscard]] std::expected<std::wstring, std::string> userSidOfToken(HANDLE token);
+/// A SID, as its bytes: the user one of a token, copied out of its TOKEN_USER. Never a string, so no
+/// text a caller passes along can name whom the pipe lets in.
+using Sid = std::vector<std::byte>;
+
+/// The user SID of @p token, opened with TOKEN_QUERY: its TOKEN_USER, never one of its groups.
+[[nodiscard]] std::expected<Sid, std::string> userSidOfToken(HANDLE token);
 
 /// The user SID of @p process, opened with PROCESS_QUERY_LIMITED_INFORMATION: whom the helper lets in,
 /// read from the TaskSmack that started it, which needn't be the helper's own user (#2181).
-[[nodiscard]] std::expected<std::wstring, std::string> userSidOfProcess(HANDLE process);
+[[nodiscard]] std::expected<Sid, std::string> userSidOfProcess(HANDLE process);
 
-/// The pipe's security descriptor in SDDL: a protected DACL with one ACE, CLIENT_ACCESS for
-/// @p userSid, and a medium no-read-up, no-write-up label. Refuses anything that isn't a plain SID
-/// string ("S-1-" and digits and dashes), so no SDDL alias such as "WD" (Everyone) or ACE text can
-/// get in.
-[[nodiscard]] std::expected<std::wstring, std::string> pipeSecurityDescriptor(std::wstring_view userSid);
+/// Whether @p sid names one user account: a local or domain account (S-1-5-21-a-b-c-RID, the RID 500,
+/// the built-in Administrator, or 1000 and up) or a Microsoft Entra ID one (S-1-12-1-...). Refuses
+/// every well-known and built-in SID and group, Everyone (S-1-1-0), Authenticated Users (S-1-5-11),
+/// INTERACTIVE (S-1-5-4), Users (S-1-5-32-545) and LocalSystem among them, and the domain's own
+/// groups below RID 1000 (Domain Users, 513, and the like).
+[[nodiscard]] std::expected<void, std::string> checkUserSid(const Sid& sid);
 
-/// The server's end of a new pipe called @p name (\\.\pipe\...), which only @p allowedUserSid may
-/// open, as described above. Fails when a pipe of that name already exists.
-[[nodiscard]] std::expected<UniqueHandle, std::string> createServerPipe(const std::wstring& name, std::wstring_view allowedUserSid);
+/// The pipe's security descriptor in SDDL, for a @p userSid that checkUserSid() accepts:
+///   - a protected DACL, with CLIENT_ACCESS for @p userSid and only READ_CONTROL for OWNER RIGHTS, so
+///     the pipe's owner has no implicit WRITE_DAC to rewrite it with, whoever that owner is;
+///   - a medium no-read-up, no-write-up, no-execute-up label.
+/// The SID's text is Windows' own formatting of its bytes, so nothing but digits and dashes reaches
+/// the SDDL.
+[[nodiscard]] std::expected<std::wstring, std::string> pipeSecurityDescriptor(const Sid& userSid);
+
+/// The server's end of a new pipe called @p name (\\.\pipe\...), which only @p allowedUser may open,
+/// as described above. Fails when a pipe of that name already exists, or @p allowedUser isn't one
+/// user account's SID.
+[[nodiscard]] std::expected<UniqueHandle, std::string> createServerPipe(const std::wstring& name, const Sid& allowedUser);
 
 /// Whether the client on @p pipe is process @p expectedPid.
 [[nodiscard]] std::expected<void, std::string> checkClientProcess(HANDLE pipe, DWORD expectedPid);
