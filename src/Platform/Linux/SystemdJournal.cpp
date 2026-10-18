@@ -7,6 +7,8 @@
 #include <string>
 
 #ifdef TASKSMACK_HAS_SDBUS
+#include "Platform/Linux/UserNameLookup.h"
+
 #include <array>
 #include <cstring>
 #include <optional>
@@ -14,6 +16,7 @@
 #include <utility>
 
 #include <pwd.h>
+#include <sys/types.h>
 #include <systemd/sd-journal.h>
 #endif
 
@@ -91,11 +94,12 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
         return read;
     }
     read.opened = true;
-    // The user systemd-coredump drops to, when it has one
+    // The user systemd-coredump drops to, when it has one. getpwnam_r(): System Information's read and
+    // the crash history's worker can both be here at once (#2416).
     std::optional<std::uint32_t> coredumpUid;
-    if (const passwd* user = ::getpwnam("systemd-coredump"); user != nullptr) // NOLINT(concurrency-mt-unsafe) - one worker thread
+    if (const std::optional<uid_t> uid = lookUpUserId("systemd-coredump", ::getpwnam_r); uid.has_value())
     {
-        coredumpUid = static_cast<std::uint32_t>(user->pw_uid);
+        coredumpUid = static_cast<std::uint32_t>(*uid);
     }
     while (read.entries.size() < maxEntries && sd_journal_previous(handle) > 0)
     {

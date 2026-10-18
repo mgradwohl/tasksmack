@@ -102,7 +102,16 @@ std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Syntheti
         return nullptr;
     }
     // Its own probe: the System tab's model keeps its probe to itself, under its read lock.
-    return Platform::makeSystemInfoProbe();
+    return crashHistoryProbe(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
+}
+
+std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
+                                                              std::shared_ptr<Platform::IPrivilegedBroker> broker)
+{
+    // Every user's crashes once the helper runs, as System Information reads them: both publish to the
+    // one crash history, so an unbrokered read here would take the other users' crashes away again
+    // (#2416). readCrashes() uses only a helper already running; it never asks for the password.
+    return Platform::withPrivilegedBroker(std::move(probe), std::move(broker));
 }
 
 } // namespace App

@@ -9,8 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -19,6 +21,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
+#include <vector>
 
 namespace Platform
 {
@@ -103,6 +107,45 @@ TEST(LinuxSystemInfoProbeTest, ReadsEverySectionOnThisMachine)
     const BootPerformanceInfo boot = probe.readBootPerformance();
     EXPECT_TRUE(boot.available);
     EXPECT_TRUE(boot.timingsRead || !boot.unavailableReason.empty());
+}
+
+// #2416: System Information's read and the crash history's worker read the crashes at once, each on its
+// own probe; the user and group lookups behind the read are reentrant, so neither sees the other's entry.
+// Run under TSan by the tsan preset. A bounded number of reads, no busy loop.
+TEST(LinuxSystemInfoProbeTest, TwoProbesReadTheCrashesOnTwoThreadsAtOnce)
+{
+    constexpr int READS = 4;
+    LinuxSystemInfoProbe first;
+    LinuxSystemInfoProbe second;
+    const CrashesInfo expected = first.readCrashes();
+
+    std::array<std::vector<CrashesInfo>, 2> results;
+    {
+        const std::array<LinuxSystemInfoProbe*, 2> probes{&first, &second};
+        std::array<std::jthread, 2> readers;
+        for (std::size_t i = 0; i < readers.size(); ++i)
+        {
+            readers.at(i) = std::jthread(
+                [&probe = *probes.at(i), &out = results.at(i)]
+                {
+                    for (int read = 0; read < READS; ++read)
+                    {
+                        out.push_back(probe.readCrashes());
+                    }
+                });
+        }
+    } // joined
+
+    for (const std::vector<CrashesInfo>& reads : results)
+    {
+        ASSERT_EQ(reads.size(), static_cast<std::size_t>(READS));
+        for (const CrashesInfo& crashes : reads)
+        {
+            EXPECT_TRUE(crashes.available);
+            EXPECT_EQ(crashes.journalRead, expected.journalRead);
+            EXPECT_EQ(crashes.otherUsersHidden, expected.otherUsersHidden) << "the group lookups agree on every thread";
+        }
+    }
 }
 
 TEST(LinuxSystemInfoProbeTest, AFixtureRootIsReadFromItsOwnFiles)

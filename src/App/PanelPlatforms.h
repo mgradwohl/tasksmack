@@ -15,6 +15,7 @@
 #include "Panels/ServicesPanel.h"
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <memory>
@@ -48,5 +49,11 @@ class Scenario;
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);
+
+/// The crash history's probe over the platform's @p probe: through @p broker, the helper System
+/// Information's probe shares, so both read every user's crashes once it runs (#2416). makeCrashHistoryProbe()'s
+/// seam, for tests.
+[[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
+                                                                            std::shared_ptr<Platform::IPrivilegedBroker> broker);
 
 } // namespace App

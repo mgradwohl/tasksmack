@@ -25,6 +25,7 @@
 // NOLINTNEXTLINE(misc-include-cleaner) - cstdlib provides secure_getenv when _GNU_SOURCE is defined
 #include <cstdlib>
 #include <ctime>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -262,8 +263,9 @@ namespace
     groups.push_back(::getegid());
     for (const char* name : {"systemd-journal", "adm", "wheel"})
     {
-        const group* entry = ::getgrnam(name); // NOLINT(concurrency-mt-unsafe) - on the page's one read thread
-        if (entry != nullptr && std::ranges::find(groups, entry->gr_gid) != groups.end())
+        // getgrnam_r(): the crash history's worker reads the crashes too, on its own probe (#2416)
+        const std::optional<gid_t> gid = lookUpGroupId(name, ::getgrnam_r);
+        if (gid.has_value() && std::ranges::find(groups, *gid) != groups.end())
         {
             return true;
         }

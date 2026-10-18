@@ -352,6 +352,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_Factory.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
+    App/test_PanelPlatforms.cpp  # the crash history reads through the helper (#2416)
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
     App/test_ShellLayerRender.cpp
