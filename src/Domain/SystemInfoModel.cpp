@@ -10,13 +10,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <format>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace Domain
@@ -136,11 +139,69 @@ void appendSensorHistory(SensorHistory& history, double value, double nowSeconds
     history.values.erase(history.values.begin(), history.values.begin() + count);
 }
 
+namespace
+{
+
+/// @p name without the " #2" that made it unique on the page (LinuxSensors), so a device that only
+/// changed its place among its namesakes keeps its range and history (#2495).
+[[nodiscard]] std::string_view sensorDriverName(std::string_view name)
+{
+    const std::size_t hash = name.rfind(" #");
+    if (hash == std::string_view::npos || hash + 2 == name.size())
+    {
+        return name;
+    }
+    const std::string_view number = name.substr(hash + 2);
+    return std::ranges::all_of(number, [](char c) { return c >= '0' && c <= '9'; }) ? name.substr(0, hash) : name;
+}
+
+} // namespace
+
+void SystemInfoModel::forgetSensorDevice(std::string_view deviceKey)
+{
+    const std::string prefix = std::format("{}\x1F", deviceKey); // sensorKey()'s device part
+    const auto inDevice = [&prefix](const auto& entry)
+    {
+        return entry.first.starts_with(prefix);
+    };
+    std::erase_if(m_SensorRanges, inDevice);
+    std::erase_if(m_SensorHistories, inDevice);
+}
+
 void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
 {
+    if (sensors.listed)
+    {
+        // A device gone from a full list takes its ranges and histories with it, so one the kernel later
+        // gives its hwmon number starts fresh, and the maps don't keep every device ever seen (#2495).
+        for (auto known = m_SensorDeviceNames.begin(); known != m_SensorDeviceNames.end();)
+        {
+            const std::string_view deviceKey = known->first;
+            if (std::ranges::any_of(sensors.devices,
+                                    [deviceKey](const Platform::SensorDevice& device) { return sensorDeviceKey(device) == deviceKey; }))
+            {
+                ++known;
+                continue;
+            }
+            forgetSensorDevice(deviceKey);
+            known = m_SensorDeviceNames.erase(known);
+        }
+    }
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     for (const Platform::SensorDevice& device : sensors.devices)
     {
+        // A key that now names another driver is another device, swapped in between two reads (#2495).
+        const std::string_view deviceKey = sensorDeviceKey(device);
+        const std::string_view driverName = sensorDriverName(device.name);
+        if (const auto known = m_SensorDeviceNames.find(deviceKey); known == m_SensorDeviceNames.end())
+        {
+            m_SensorDeviceNames.emplace(deviceKey, driverName);
+        }
+        else if (known->second != driverName)
+        {
+            forgetSensorDevice(deviceKey);
+            known->second = driverName;
+        }
         for (const Platform::SensorReading& reading : device.readings)
         {
             const std::string key = sensorKey(device, reading);

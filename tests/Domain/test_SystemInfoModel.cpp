@@ -662,6 +662,103 @@ TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
     EXPECT_EQ(latest->sensorHistories.at(ampsKey).values, (std::vector<float>{2.0F, 2.5F, 3.0F}));
 }
 
+/// A full sensors read of @p devices (#2495).
+[[nodiscard]] Platform::SensorsInfo scriptedSensors(std::vector<Platform::SensorDevice> devices)
+{
+    Platform::SensorsInfo info;
+    info.available = true;
+    info.listed = true;
+    info.devices = std::move(devices);
+    return info;
+}
+
+/// A device @p id named @p name with one temperature "temp1" reading @p value (#2495).
+[[nodiscard]] Platform::SensorDevice scriptedChip(std::string name, std::string id, double value)
+{
+    return {.name = std::move(name),
+            .id = std::move(id),
+            .readings = {scriptedReading(Platform::SensorKind::Temperature, "Composite", "temp1", value)}};
+}
+
+// #2495: the kernel hands a freed hwmon number to the next device plugged in. The new device's sensor
+// starts with its own range and history, not the unplugged one's, even with no read in between.
+TEST(SystemInfoModelTest, ADeviceTakingAnotherOnesHwmonNumberStartsFresh)
+{
+    int reads = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->scriptSensors({
+        scriptedSensors({scriptedChip("coretemp", "hwmon2", 50.0), scriptedChip("nvme", "hwmon5", 40.0)}),
+        scriptedSensors({scriptedChip("coretemp", "hwmon2", 52.0), scriptedChip("nvme", "hwmon5", 55.0)}),
+        // The NVMe enclosure unplugged and a Wi-Fi dongle plugged in, between two reads.
+        scriptedSensors({scriptedChip("coretemp", "hwmon2", 51.0), scriptedChip("mt7921_phy0", "hwmon5", 30.0)}),
+    });
+    SystemInfoModel model(std::move(probe));
+
+    model.read();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
+    model.readSensors();
+    const auto before = model.snapshot();
+    const std::string coretemp = sensorKey(before->sensors.devices[0], before->sensors.devices[0].readings[0]);
+    const std::string hwmon5 = sensorKey(before->sensors.devices[1], before->sensors.devices[1].readings[0]);
+    EXPECT_EQ(before->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 55.0, .samples = 2}));
+    EXPECT_EQ(before->sensorHistories.at(hwmon5).values, (std::vector<float>{40.0F, 55.0F}));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    model.readSensors();
+    const auto after = model.snapshot();
+    ASSERT_EQ(after->sensors.devices[1].name, "mt7921_phy0");
+    EXPECT_EQ(sensorKey(after->sensors.devices[1], after->sensors.devices[1].readings[0]), hwmon5) << "the same key";
+    EXPECT_EQ(after->sensorRanges.at(hwmon5), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
+    EXPECT_EQ(after->sensorHistories.at(hwmon5).values, std::vector<float>{30.0F});
+    // The device that stayed keeps its own.
+    EXPECT_EQ(after->sensorRanges.at(coretemp), (SensorRange{.min = 50.0, .max = 52.0, .samples = 3}));
+    EXPECT_EQ(after->sensorHistories.at(coretemp).values, (std::vector<float>{50.0F, 52.0F, 51.0F}));
+}
+
+// #2495: a device gone from a full sensors list takes its range and history with it, so the maps don't
+// keep every device ever seen; a read that couldn't list the devices drops nothing, and a device that
+// only gained or lost the " #2" of its name among namesakes keeps its own.
+TEST(SystemInfoModelTest, ADeviceGoneFromTheSensorsListIsForgotten)
+{
+    Platform::SensorsInfo unlisted;
+    unlisted.available = true;
+    unlisted.listed = false;
+    int reads = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->scriptSensors({
+        scriptedSensors({scriptedChip("nvme", "hwmon3", 35.0), scriptedChip("nvme #2", "hwmon5", 40.0)}),
+        unlisted,
+        scriptedSensors({scriptedChip("nvme", "hwmon5", 45.0)}), // hwmon3 unplugged: hwmon5 is "nvme" now
+        scriptedSensors({scriptedChip("nvme", "hwmon3", 60.0), scriptedChip("nvme #2", "hwmon5", 42.0)}),
+    });
+    SystemInfoModel model(std::move(probe));
+
+    model.read();
+    const auto first = model.snapshot();
+    const std::string hwmon3 = sensorKey(first->sensors.devices[0], first->sensors.devices[0].readings[0]);
+    const std::string hwmon5 = sensorKey(first->sensors.devices[1], first->sensors.devices[1].readings[0]);
+    ASSERT_EQ(first->sensorRanges.size(), 2U);
+
+    model.readSensors(); // couldn't list the devices
+    EXPECT_EQ(model.snapshot()->sensorRanges.size(), 2U);
+    EXPECT_EQ(model.snapshot()->sensorHistories.size(), 2U);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
+    model.readSensors();
+    const auto unplugged = model.snapshot();
+    EXPECT_FALSE(unplugged->sensorRanges.contains(hwmon3));
+    EXPECT_FALSE(unplugged->sensorHistories.contains(hwmon3));
+    EXPECT_EQ(unplugged->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 2}));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    model.readSensors();
+    const auto replugged = model.snapshot();
+    EXPECT_EQ(replugged->sensorRanges.at(hwmon3), (SensorRange{.min = 60.0, .max = 60.0, .samples = 1}));
+    EXPECT_EQ(replugged->sensorHistories.at(hwmon3).values, std::vector<float>{60.0F});
+    EXPECT_EQ(replugged->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 3}));
+    EXPECT_EQ(replugged->sensorHistories.at(hwmon5).values, (std::vector<float>{40.0F, 45.0F, 42.0F}));
+}
+
 // #2340: a source without ids still keeps a voltage and a current that share a label apart.
 TEST(SystemInfoModelTest, SensorKeyWithoutIdsStillTellsKindsApart)
 {
