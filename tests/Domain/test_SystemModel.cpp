@@ -1205,12 +1205,14 @@ TEST(SystemModelTest, ZeroTotalCpuDeltaHandled)
     Domain::SystemModel model(std::move(probe));
     model.refresh();
 
-    // Same counters (no delta) - shouldn't crash
+    // Same counters (no delta), as from a stalled or failing probe - shouldn't crash
     model.refresh();
 
-    auto snap = model.snapshot();
-    // CPU should be 0 when no delta
-    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 0.0);
+    // No CPU time passed: no reading, a gap, not 0% busy (#2534)
+    const auto snap = model.snapshot();
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.totalPercent)) << snap.cpuTotal.totalPercent;
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.userPercent));
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.idlePercent));
 }
 
 TEST(SystemModelTest, RegressedCpuFieldDoesNotUnderflowIntoPinned100Percent)
