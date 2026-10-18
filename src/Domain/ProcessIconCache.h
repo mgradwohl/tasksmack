@@ -155,6 +155,9 @@ class ProcessIconCache
     {
         int sizePx = 0;
         std::shared_ptr<const ProcessIconImage> icon; ///< nullptr while queued, and for a process without one
+        /// The name it was looked up under: a process that execs keeps its PID and start time but not its
+        /// name, and its icon is the new program's (#2496).
+        std::string name;
     };
 
     /// lookup() and lookupFile(): the entry of @p key in the processes or the files map.

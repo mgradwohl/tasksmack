@@ -205,6 +205,23 @@ TEST_F(ProcessIconCacheTest, AByNameSourceKeepsEachNamesIconForOneExecutable)
     EXPECT_EQ(m_State->iconReads.load(), 2);
 }
 
+// #2496: a process that execs keeps its PID and start time, but its icon is the new program's: first seen as
+// its launcher script ("sh", no icon), it's looked up again once it's firefox.
+TEST_F(ProcessIconCacheTest, AProcessThatExecsAnotherProgramGetsThatProgramsIcon)
+{
+    m_State->iconSides["?firefox"] = SIZE; // by name, as when its executable can't be read
+    const auto cache = makeCache();
+
+    static_cast<void>(cache->lookup(1, 10, "sh", SIZE));
+    static_cast<void>(cache->loadPending());
+    EXPECT_EQ(cache->lookup(1, 10, "sh", SIZE), nullptr);
+
+    static_cast<void>(cache->lookup(1, 10, "firefox", SIZE)); // the same process, after exec
+    static_cast<void>(cache->loadPending());
+    EXPECT_NE(cache->lookup(1, 10, "firefox", SIZE), nullptr);
+    EXPECT_EQ(m_State->iconReads.load(), 2);
+}
+
 TEST_F(ProcessIconCacheTest, WithoutAPathTheIconIsLookedUpByName)
 {
     m_State->iconSides["?firefox"] = SIZE; // Unreadable /proc/[pid]/exe: the desktop entry by name

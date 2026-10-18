@@ -166,12 +166,13 @@ ProcessIconCache::lookupEntry(bool file, std::uint64_t key, std::int32_t pid, st
     {
         const std::scoped_lock lock(m_Mutex);
         LruMap<std::uint64_t, ProcessEntry>& map = entries(file);
-        if (const ProcessEntry* entry = map.find(key); entry != nullptr && entry->sizePx == sizePx)
+        if (const ProcessEntry* entry = map.find(key); entry != nullptr && entry->sizePx == sizePx && entry->name == name)
         {
             return entry->icon; // nullptr while queued, or when the process (or file) has no icon
         }
-        // First seen, or seen at another size (the display scale changed): queue a load.
-        map.put(key, ProcessEntry{.sizePx = sizePx, .icon = nullptr});
+        // First seen, seen at another size (the display scale changed), or under another name (it exec'd
+        // another program, #2496): queue a load.
+        map.put(key, ProcessEntry{.sizePx = sizePx, .icon = nullptr, .name = std::string(name)});
         if (m_Queue.size() >= m_Config.maxQueued)
         {
             // The oldest request is the row least likely to still be on screen: forget it, so a later
@@ -264,7 +265,7 @@ void ProcessIconCache::load(const Request& request)
             {
                 std::shared_ptr<const ProcessIconImage> shared = *icon;
                 if (ProcessEntry* entry = entries(request.file).find(request.uniqueKey);
-                    entry != nullptr && entry->sizePx == request.sizePx)
+                    entry != nullptr && entry->sizePx == request.sizePx && entry->name == request.name)
                 {
                     entry->icon = std::move(shared);
                 }
@@ -298,7 +299,9 @@ void ProcessIconCache::load(const Request& request)
         {
             m_Misses.put(key, true);
         }
-        if (ProcessEntry* entry = entries(request.file).find(request.uniqueKey); entry != nullptr && entry->sizePx == request.sizePx)
+        // Not if it has since been asked for under another name: that load is queued and answers it.
+        if (ProcessEntry* entry = entries(request.file).find(request.uniqueKey);
+            entry != nullptr && entry->sizePx == request.sizePx && entry->name == request.name)
         {
             entry->icon = std::move(image);
         }
