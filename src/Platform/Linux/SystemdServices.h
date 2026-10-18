@@ -43,6 +43,9 @@ struct Listing
     std::vector<Unit> units;                                    ///< The loaded services
     std::vector<std::pair<std::string, std::string>> unitFiles; ///< Every installed service file: name, state ("enabled"...)
     std::map<std::string, std::uint32_t> mainPids;              ///< A running service's main process, by unit name
+    /// A loaded template instance's own unit file state, by unit name (#2425): ListUnitFiles lists only
+    /// the template, and an instance can be enabled or not on its own (getty@tty2 under an enabled getty@).
+    std::map<std::string, std::string> instanceFileStates;
 };
 
 inline constexpr std::string_view SERVICE_SUFFIX = ".service";
@@ -119,8 +122,16 @@ inline constexpr std::string_view SERVICE_SUFFIX = ".service";
     {
         fileStates.emplace(name, state);
     }
-    const auto startTypeOf = [&fileStates](const std::string& name)
+    const auto startTypeOf = [&fileStates, &listing](const std::string& name)
     {
+        // An instance's own state first (#2425), then its file's, then its template's.
+        if (const auto own = listing.instanceFileStates.find(name); own != listing.instanceFileStates.end())
+        {
+            if (const ServiceStartType type = startTypeFrom(own->second); type != ServiceStartType::Unknown)
+            {
+                return type;
+            }
+        }
         auto it = fileStates.find(name);
         if (it == fileStates.end())
         {

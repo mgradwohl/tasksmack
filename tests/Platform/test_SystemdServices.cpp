@@ -154,6 +154,38 @@ TEST(SystemdServicesTest, LoadedServicesAndInstalledOnesBecomeTheList)
     EXPECT_EQ(find(services, "getty@.service"), nullptr);
 }
 
+// #2425: an instance can be enabled or not on its own; its own unit file state beats its template's.
+TEST(SystemdServicesTest, AnInstancesOwnStartTypeBeatsItsTemplates)
+{
+    SystemdServices::Listing listing;
+    listing.units = {
+        {.name = "getty@tty2.service",
+         .description = "Getty on tty2",
+         .activeState = "active",
+         .subState = "running",
+         .objectPath = "/u/1"},
+        {.name = "wg-quick@wg0.service", .description = "WireGuard", .activeState = "active", .subState = "exited", .objectPath = "/u/2"},
+        {.name = "getty@tty1.service",
+         .description = "Getty on tty1",
+         .activeState = "active",
+         .subState = "running",
+         .objectPath = "/u/3"},
+    };
+    listing.unitFiles = {{"getty@.service", "enabled"}, {"wg-quick@.service", "disabled"}};
+    listing.instanceFileStates = {{"getty@tty2.service", "disabled"}, {"wg-quick@wg0.service", "enabled"}, {"getty@tty1.service", ""}};
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(listing);
+    const ServiceInfo* tty2 = find(services, "getty@tty2.service");
+    ASSERT_NE(tty2, nullptr);
+    EXPECT_EQ(tty2->startType, ServiceStartType::Manual) << "disabled itself, though its template is enabled";
+    const ServiceInfo* wg0 = find(services, "wg-quick@wg0.service");
+    ASSERT_NE(wg0, nullptr);
+    EXPECT_EQ(wg0->startType, ServiceStartType::Automatic) << "enabled itself, though its template isn't";
+    const ServiceInfo* tty1 = find(services, "getty@tty1.service");
+    ASSERT_NE(tty1, nullptr);
+    EXPECT_EQ(tty1->startType, ServiceStartType::Automatic) << "its own state unknown: the template's";
+}
+
 /// A root with or without /run/systemd/system, as a system booted with systemd has it.
 [[nodiscard]] std::filesystem::path systemdRoot(const ScopedTempDir& dir, bool running)
 {

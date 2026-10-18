@@ -263,6 +263,29 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
             cache->readAt = now;
         }
     }
+    // Each loaded template instance's own enablement (#2425): ListUnitFiles has only its template's, which
+    // an instance needn't share. One property per instance, and there are few.
+    for (const SystemdServices::Unit& unit : read.listing.units)
+    {
+        if (unit.objectPath.empty() || SystemdServices::templateOf(unit.name) == unit.name)
+        {
+            continue;
+        }
+        BusError error;
+        char* state = nullptr;
+        const int result = sd_bus_get_property_string(
+            bus.get(), SYSTEMD, unit.objectPath.c_str(), "org.freedesktop.systemd1.Unit", "UnitFileState", error.get(), &state);
+        std::string text = result >= 0 && state != nullptr ? std::string(state) : std::string{};
+        std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
+        if (result < 0 && timedOut(error.raw(), result))
+        {
+            break; // systemd isn't answering: the template's state for the rest, as before
+        }
+        if (!text.empty())
+        {
+            read.listing.instanceFileStates.emplace(unit.name, std::move(text));
+        }
+    }
     // Each running service's main process: one property per service, so only for those that have one.
     for (const SystemdServices::Unit& unit : read.listing.units)
     {

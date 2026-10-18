@@ -821,6 +821,9 @@ class SystemdBusFakeServicesTest : public SystemdBusFakeTest
         // try_emplace: a test may have set its own first.
         m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{161});
         m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{208});
+        // The instance disabled itself under an enabled template (#2425); cron's own state is never asked.
+        m_Bus.properties()[GETTY_PATH]["org.freedesktop.systemd1.Unit"].try_emplace("UnitFileState", std::string("disabled"));
+        m_Bus.properties()[CRON_PATH]["org.freedesktop.systemd1.Unit"].try_emplace("UnitFileState", std::string("masked"));
         ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     }
 
@@ -914,6 +917,9 @@ TEST_F(SystemdBusFakeServicesTest, TheServicesTheirFilesAndTheRunningOnesMainPid
     EXPECT_EQ(read.listing.mainPids.size(), 2U);
     EXPECT_EQ(read.listing.mainPids.at("cron.service"), 161U);
     EXPECT_EQ(read.listing.mainPids.at("getty@tty1.service"), 208U);
+    // Only the instance is asked its own unit file state (#2425).
+    const std::map<std::string, std::string> instanceStates{{"getty@tty1.service", "disabled"}};
+    EXPECT_EQ(read.listing.instanceFileStates, instanceStates);
 }
 
 TEST_F(SystemdBusFakeTest, WithoutSystemdOnTheBusTheServicesSaySo)
