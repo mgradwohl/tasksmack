@@ -190,6 +190,7 @@ class ProcessEnvironmentView
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
+        m_Truncated = false;
         m_Rows.clear();
         m_Revealed.clear();
         m_Filter.clear();
@@ -204,6 +205,7 @@ class ProcessEnvironmentView
     {
         m_HasRead = true;
         m_Status = result.status;
+        m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
         for (Platform::EnvironmentVariable& variable : result.variables)
@@ -342,6 +344,7 @@ class ProcessEnvironmentView
     bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
     bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
+    bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
     std::string m_Filter;

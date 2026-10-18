@@ -17,6 +17,7 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace Platform::BrokerServer
 {
@@ -258,8 +259,16 @@ serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, c
                 }
             }
         }
+        std::vector<std::uint8_t> reply = Broker::encodeResponse(requestId, response);
+        if (reply.size() > Broker::MAX_MESSAGE_BYTES)
+        {
+            // A reply too large for a frame fails that one read, not the session: sendFrame() would
+            // refuse it, and ending the session over it costs every other section its authorization
+            // (#2403). The list replies stop short of the limit themselves; this catches the rest.
+            reply = Broker::encodeResponse(requestId, Broker::ErrorReply{.message = "The helper's answer was too large to send"});
+        }
         std::string error;
-        if (!BrokerSocket::sendFrame(fd, Broker::encodeResponse(requestId, response), error))
+        if (!BrokerSocket::sendFrame(fd, reply, error))
         {
             return SessionEnd::Broken;
         }

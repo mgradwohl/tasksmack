@@ -214,8 +214,13 @@ TEST(BrokerProtocolTest, AnEnvironmentReplyOutOfRangeIsRefused)
 
     std::vector<std::uint8_t> count =
         encodeResponse(1, Response{EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}}});
-    count[4 + HEADER_BYTES + 4] = 0x7F; // claims far more variables than the protocol allows, and than follow
+    count[4 + HEADER_BYTES + 1 + 1 + 3] = 0x7F; // claims far more variables than the protocol allows, and than follow
     EXPECT_FALSE(decodeResponse(count).has_value());
+
+    std::vector<std::uint8_t> truncated =
+        encodeResponse(1, Response{EnvironmentReply{.result = {.status = EnvironmentReadStatus::Ok, .variables = {}}}});
+    truncated[4 + HEADER_BYTES + 1] = 2; // a flag is 0 or 1
+    EXPECT_FALSE(decodeResponse(truncated).has_value());
 }
 
 TEST(BrokerProtocolTest, ModulesAndOpenFilesRoundTrip)
@@ -261,6 +266,76 @@ TEST(BrokerProtocolTest, OpenFilesPastOneFrameAreCutAndSaySo)
     EXPECT_TRUE(result.truncated);
     EXPECT_LT(result.files.size(), 200U);
     EXPECT_GT(result.files.size(), 100U);
+}
+
+// #2403: a process mapping tens of thousands of distinct files (Elasticsearch, Kafka) or carrying a huge
+// environment made a reply past MAX_MESSAGE_BYTES, which the helper couldn't send, so it ended the session.
+// The lists stop short of one frame, as Open files' does, and say they were cut.
+TEST(BrokerProtocolTest, ModulesPastOneFrameAreCutAndSaySo)
+{
+    ModulesReadResult modules{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    const std::string path(200, 'm'); // 65536 of them: about 15 MiB on the wire uncut
+    modules.modules.assign(MAX_MODULES,
+                           {.path = path, .baseAddress = 0x7f0000, .sizeBytes = 0x1000, .version = std::nullopt, .deleted = false});
+    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{ModulesReply{.result = modules}});
+    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
+    const auto decoded = decodeResponse(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    const ModulesReadResult& result = std::get<ModulesReply>(decoded->message).result;
+    EXPECT_EQ(result.status, ModulesReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    EXPECT_LT(result.modules.size(), MAX_MODULES);
+    EXPECT_GT(result.modules.size(), MAX_MODULES / 2); // cut at the frame, not far short of it
+    EXPECT_EQ(result.modules.front().path, path);
+    EXPECT_EQ(result.modules.back().path, path);
+}
+
+TEST(BrokerProtocolTest, EnvironmentPastOneFrameIsCutAndSaysSo)
+{
+    EnvironmentReadResult environment{.status = EnvironmentReadStatus::Ok, .variables = {}};
+    const std::string text(200, 'e'); // 65536 names and values: about 26 MiB on the wire uncut
+    environment.variables.assign(MAX_ENVIRONMENT_VARIABLES, {.name = text, .value = text});
+    const std::vector<std::uint8_t> bytes = encodeResponse(1, Response{EnvironmentReply{.result = environment}});
+    EXPECT_LE(bytes.size(), MAX_MESSAGE_BYTES);
+    const auto decoded = decodeResponse(bytes);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error();
+    const EnvironmentReadResult& result = std::get<EnvironmentReply>(decoded->message).result;
+    EXPECT_EQ(result.status, EnvironmentReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    EXPECT_LT(result.variables.size(), MAX_ENVIRONMENT_VARIABLES);
+    EXPECT_GT(result.variables.size(), MAX_ENVIRONMENT_VARIABLES / 4);
+    EXPECT_EQ(result.variables.back().value, text);
+}
+
+TEST(BrokerProtocolTest, ListsPastTheirCountCapSayTheyWereCut)
+{
+    ModulesReadResult modules{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    modules.modules.resize(MAX_MODULES + 1);
+    const Response moduleReply = roundTrip(ModulesReply{.result = modules});
+    EXPECT_TRUE(std::get<ModulesReply>(moduleReply).result.truncated);
+    EXPECT_EQ(std::get<ModulesReply>(moduleReply).result.modules.size(), MAX_MODULES);
+
+    EnvironmentReadResult environment{.status = EnvironmentReadStatus::Ok, .variables = {}};
+    environment.variables.resize(MAX_ENVIRONMENT_VARIABLES + 1);
+    const Response environmentReply = roundTrip(EnvironmentReply{.result = environment});
+    EXPECT_TRUE(std::get<EnvironmentReply>(environmentReply).result.truncated);
+    EXPECT_EQ(std::get<EnvironmentReply>(environmentReply).result.variables.size(), MAX_ENVIRONMENT_VARIABLES);
+}
+
+TEST(BrokerProtocolTest, AWholeListIsNotCutAndACutReadStaysCut)
+{
+    ModulesReadResult modules{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    modules.modules.push_back({.path = "/usr/lib/libc.so.6", .baseAddress = 1, .sizeBytes = 2, .version = std::nullopt, .deleted = false});
+    EXPECT_FALSE(std::get<ModulesReply>(roundTrip(ModulesReply{.result = modules})).result.truncated);
+    modules.truncated = true; // the reader itself kept only the first
+    const Response cutModules = ModulesReply{.result = modules};
+    EXPECT_EQ(roundTrip(cutModules), cutModules);
+
+    EnvironmentReadResult environment{.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}};
+    EXPECT_FALSE(std::get<EnvironmentReply>(roundTrip(EnvironmentReply{.result = environment})).result.truncated);
+    environment.truncated = true;
+    const Response cutEnvironment = EnvironmentReply{.result = environment};
+    EXPECT_EQ(roundTrip(cutEnvironment), cutEnvironment);
 }
 
 TEST(BrokerProtocolTest, AnOpenFileOfNoKnownKindIsRefused)
@@ -435,12 +510,13 @@ TEST(BrokerProtocolTest, ReplyListsWithABadStatusOrTooManyEntriesAreRefused)
         return !decodeResponse(bytes).has_value();
     };
 
-    // Modules: status, detail (4), count (4).
+    // Modules: status, detail (4), truncated, count (4).
     const std::vector<std::uint8_t> modules =
         encodeResponse(1, ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}});
     ASSERT_TRUE(decodeResponse(modules).has_value());
     EXPECT_TRUE(refused(modules, PAYLOAD, 0xEE));
-    EXPECT_TRUE(refused(modules, PAYLOAD + 1 + 4 + 3, 0x7F));
+    EXPECT_TRUE(refused(modules, PAYLOAD + 1 + 4, 2)); // a flag is 0 or 1
+    EXPECT_TRUE(refused(modules, PAYLOAD + 1 + 4 + 1 + 3, 0x7F));
 
     // Open files: status, detail (4), three flags, count (4).
     OpenFilesReadResult files;
@@ -481,6 +557,13 @@ TEST(BrokerProtocolTest, RepliesCompareByEveryFigure)
     otherStatus.result.status = EnvironmentReadStatus::Failed;
     EnvironmentReply fewer = home;
     fewer.result.variables.clear();
+    EnvironmentReply cut = home;
+    cut.result.truncated = true;
+    EXPECT_FALSE(home == cut);
+    const ModulesReply wholeModules;
+    ModulesReply cutModules;
+    cutModules.result.truncated = true;
+    EXPECT_FALSE(wholeModules == cutModules);
     EXPECT_EQ(home, home);
     EXPECT_FALSE(home == otherValue);
     EXPECT_FALSE(home == otherName);

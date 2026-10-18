@@ -261,6 +261,21 @@ TEST_F(ProcessModulesViewRenderTest, PopulatedShowsTheCountColumnsAndRows)
     EXPECT_TRUE(renderAndCapture(view, true).contains("No modules match the filter"));
 }
 
+// #2403: a list the administrator helper cut to fit its reply says so, and a whole one doesn't.
+TEST_F(ProcessModulesViewRenderTest, ACutListSaysSo)
+{
+    ProcessModulesView view;
+    Platform::ModulesReadResult result = sampleModules();
+    view.applyResult(result);
+    EXPECT_FALSE(renderAndCapture(view, true).contains("Showing the first"));
+    result.truncated = true;
+    view.applyResult(result);
+    EXPECT_TRUE(renderAndCapture(view, true).contains("Showing the first 3 modules"));
+    view.onSelectionChanged();
+    view.applyResult(sampleModules());
+    EXPECT_FALSE(renderAndCapture(view, true).contains("Showing the first"));
+}
+
 // #2309: a refused read offers "Authenticate to read", which reads as the administrator.
 TEST(ProcessModulesViewTest, ARefusedReadOffersAuthenticateToRead)
 {

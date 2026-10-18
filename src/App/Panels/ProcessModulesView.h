@@ -154,6 +154,7 @@ class ProcessModulesView
         m_HasRead = false;
         m_Status = Platform::ModulesReadStatus::Ok;
         m_Detail.clear();
+        m_Truncated = false;
         m_Rows.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
@@ -165,6 +166,7 @@ class ProcessModulesView
         m_HasRead = true;
         m_Status = result.status;
         m_Detail = result.detail;
+        m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.modules.size());
         for (const Platform::ProcessModule& module : result.modules)
@@ -311,6 +313,7 @@ class ProcessModulesView
     bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::ModulesReadStatus m_Status = Platform::ModulesReadStatus::Ok;
     std::string m_Detail;
+    bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
     Detail::ModulesColumn m_SortColumn = Detail::ModulesColumn::Name;
     bool m_SortAscending = true;

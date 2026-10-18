@@ -37,6 +37,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -507,6 +508,76 @@ TEST(BrokerServeTest, AReplyLargerThanTheSocketBufferReachesTheClient)
     ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(reply.message));
     EXPECT_EQ(std::get<Broker::FirmwareFileReply>(reply.message).bytes.size(), 900'000U);
     pair.closeClient();
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+// #2403: a Modules read of a process mapping tens of thousands of distinct files made a reply past one
+// frame; the helper couldn't send it and ended the session, so the authorization was lost for every other
+// section and each retry asked for the password again. Now the list is cut to fit and the session goes on.
+TEST(BrokerServeTest, AModulesListPastOneFrameIsCutAndTheSessionGoesOn)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    TestMocks::MockProcessModulesReader modules;
+    ModulesReadResult many{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    many.modules.assign(Broker::MAX_MODULES,
+                        {.path = std::string(200, 'm'), .baseAddress = 1, .sizeBytes = 2, .version = std::nullopt, .deleted = false});
+    modules.setResult(std::move(many));
+    const BrokerServer::Readers readers{.environment = nullptr, .modules = &modules, .openFiles = nullptr, .connections = nullptr};
+    auto session =
+        std::async(std::launch::async,
+                   [&] { return BrokerServer::serve(pair.server(), actions, std::chrono::seconds{30}, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+
+    const auto reply = roundTrip(pair.client(), 2, Broker::ModulesRequest{.target = TARGET});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(reply.message));
+    const ModulesReadResult& result = std::get<Broker::ModulesReply>(reply.message).result;
+    EXPECT_TRUE(result.truncated);
+    EXPECT_FALSE(result.modules.empty());
+
+    // The same session answers the next request: the helper is still there.
+    const auto kill = roundTrip(pair.client(), 3, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill});
+    EXPECT_TRUE(actionResult(kill.message).success);
+    pair.closeClient();
+    ASSERT_EQ(session.wait_for(REPLY_TIMEOUT), std::future_status::ready);
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+// #2403, defence in depth: any other reply too large for a frame fails that one request with an
+// ErrorReply instead of ending the session. Crash events of the longest strings are such a reply.
+TEST(BrokerServeTest, AReplyTooLargeForAFrameIsAnErrorAndTheSessionGoesOn)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.crashes = []
+    {
+        CrashesInfo info;
+        info.available = true;
+        info.listed = true;
+        const std::string longest(Broker::MAX_STRING_BYTES, 'c'); // 200 events of two: about 26 MiB
+        CrashEvent event;
+        event.unixSeconds = 1;
+        event.application = longest;
+        event.executable = longest;
+        info.events.assign(CRASH_LIST_MAX, event);
+        return info;
+    };
+    auto session =
+        std::async(std::launch::async,
+                   [&] { return BrokerServer::serve(pair.server(), actions, std::chrono::seconds{30}, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+
+    const auto reply = roundTrip(pair.client(), 2, Broker::CrashesRequest{});
+    EXPECT_EQ(reply.requestId, 2U);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(reply.message));
+
+    const auto kill = roundTrip(pair.client(), 3, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill});
+    EXPECT_TRUE(actionResult(kill.message).success);
+    pair.closeClient();
+    ASSERT_EQ(session.wait_for(REPLY_TIMEOUT), std::future_status::ready);
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
 }
 

@@ -293,6 +293,18 @@ TEST_F(ProcessEnvironmentViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEm
     EXPECT_TRUE(renderAndCapture(empty, true).contains("No environment variables"));
 }
 
+// #2403: an environment the administrator helper cut to fit its reply says so, and a whole one doesn't.
+TEST_F(ProcessEnvironmentViewRenderTest, ACutEnvironmentSaysSo)
+{
+    ProcessEnvironmentView view;
+    view.applyResult({.status = Platform::EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}});
+    EXPECT_FALSE(renderAndCapture(view, true).contains("Showing the first"));
+    Platform::EnvironmentReadResult cut{.status = Platform::EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}}};
+    cut.truncated = true;
+    view.applyResult(std::move(cut));
+    EXPECT_TRUE(renderAndCapture(view, true).contains("Showing the first 1 variables"));
+}
+
 TEST_F(ProcessEnvironmentViewRenderTest, LongEnvironmentGetsAFilterAndEveryRowIsReachable)
 {
     std::vector<Platform::EnvironmentVariable> variables;

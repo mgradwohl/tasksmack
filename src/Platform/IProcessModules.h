@@ -62,6 +62,9 @@ struct ModulesReadResult
     std::vector<ProcessModule> modules;
     /// For Failed, what failed, if known (the OS's error message); else empty.
     std::string detail;
+    /// The process had more than were passed on (the administrator helper's reply holds one frame,
+    /// #2403); `modules` holds the first.
+    bool truncated = false;
 };
 
 /// Lists one process's loaded modules on request.

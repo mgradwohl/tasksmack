@@ -42,6 +42,9 @@ struct EnvironmentReadResult
 {
     EnvironmentReadStatus status = EnvironmentReadStatus::Unsupported;
     std::vector<EnvironmentVariable> variables;
+    /// The process had more than were passed on (the administrator helper's reply holds one frame,
+    /// #2403); `variables` holds the first.
+    bool truncated = false;
 };
 
 /// Reads one process's environment variables on request.

@@ -31,6 +31,7 @@
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -44,12 +45,16 @@
 namespace Platform::Broker
 {
 
-inline constexpr std::uint16_t PROTOCOL_VERSION = 1;
+/// Bumped on every change to a message's fields: the helper and TaskSmack ship together, and a Hello of
+/// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
+/// their list was cut to fit a frame (#2403).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 2;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
-/// The most environment variables an EnvironmentReply carries; a read with more keeps the first.
+/// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
+/// fit when they are long: every list reply stops short of MAX_MESSAGE_BYTES and says it was cut (#2403).
 inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
 /// The most modules a ModulesReply carries; a read with more keeps the first.
 inline constexpr std::size_t MAX_MODULES = std::size_t{1} << 16U;
@@ -151,7 +156,8 @@ struct EnvironmentReply
 
     friend bool operator==(const EnvironmentReply& left, const EnvironmentReply& right)
     {
-        if (left.result.status != right.result.status || left.result.variables.size() != right.result.variables.size())
+        if (left.result.status != right.result.status || left.result.truncated != right.result.truncated ||
+            left.result.variables.size() != right.result.variables.size())
         {
             return false;
         }
@@ -187,7 +193,7 @@ struct ModulesReply
                    a.deleted == b.deleted;
         };
         return left.result.status == right.result.status && left.result.detail == right.result.detail &&
-               std::ranges::equal(left.result.modules, right.result.modules, same);
+               left.result.truncated == right.result.truncated && std::ranges::equal(left.result.modules, right.result.modules, same);
     }
 };
 
@@ -462,6 +468,42 @@ class Writer
   private:
     std::vector<std::uint8_t> m_Bytes;
 };
+
+/// The bytes a reply's list may take: a frame's whole, less its length, header and the reply's fixed
+/// fields (@p fixedBytes, at their largest).
+[[nodiscard]] constexpr std::size_t listRoom(std::size_t fixedBytes) noexcept
+{
+    return MAX_MESSAGE_BYTES - (4 + HEADER_BYTES) - fixedBytes;
+}
+
+/// How many of the first entries of @p entries, at most @p cap, fit in @p room bytes, an entry taking
+/// @p bytesOf(entry). A list reply sends that many and says it was cut when it is fewer than all, so a
+/// process with tens of thousands of long paths gets a shorter list, not a frame the protocol refuses and
+/// a helper that ends the session over it (#2403).
+template<typename Entry, typename BytesOf>
+[[nodiscard]] std::size_t entriesThatFit(std::span<const Entry> entries, std::size_t cap, std::size_t room, BytesOf bytesOf)
+{
+    const std::size_t limit = std::min(entries.size(), cap);
+    std::size_t count = 0;
+    std::size_t used = 0;
+    while (count < limit)
+    {
+        const std::size_t entry = bytesOf(entries[count]);
+        if (entry > room - used)
+        {
+            break;
+        }
+        used += entry;
+        ++count;
+    }
+    return count;
+}
+
+/// The bytes Writer::text() writes for @p value: its length and at most MAX_STRING_BYTES of it.
+[[nodiscard]] constexpr std::size_t textBytes(std::string_view value) noexcept
+{
+    return 4 + std::min(value.size(), MAX_STRING_BYTES);
+}
 
 /// Bounds-checked reads; the first one past the end fails the reader, and every later one too.
 class Reader
@@ -839,21 +881,36 @@ template<typename Message>
     else if (const auto* environment = std::get_if<EnvironmentReply>(&response))
     {
         kind = MessageKind::EnvironmentResult;
+        const std::vector<EnvironmentVariable>& variables = environment->result.variables;
+        constexpr std::size_t ROOM = Detail::listRoom(1 + 1 + 4); // status, truncated, count
+        const std::size_t count = Detail::entriesThatFit(std::span(variables),
+                                                         MAX_ENVIRONMENT_VARIABLES,
+                                                         ROOM,
+                                                         [](const EnvironmentVariable& variable)
+                                                         { return Detail::textBytes(variable.name) + Detail::textBytes(variable.value); });
         writer.u8(static_cast<std::uint8_t>(environment->result.status));
-        const std::size_t count = std::min(environment->result.variables.size(), MAX_ENVIRONMENT_VARIABLES);
+        writer.u8((environment->result.truncated || count < variables.size()) ? 1 : 0);
         writer.u32(static_cast<std::uint32_t>(count));
         for (std::size_t i = 0; i < count; ++i)
         {
-            writer.text(environment->result.variables[i].name);
-            writer.text(environment->result.variables[i].value);
+            writer.text(variables[i].name);
+            writer.text(variables[i].value);
         }
     }
     else if (const auto* modules = std::get_if<ModulesReply>(&response))
     {
         kind = MessageKind::ModulesResult;
+        // Status, detail, truncated, count; an entry: path, base, size, version flag and version, deleted.
+        constexpr std::size_t ROOM = Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
+        const std::size_t count =
+            Detail::entriesThatFit(std::span(modules->result.modules),
+                                   MAX_MODULES,
+                                   ROOM,
+                                   [](const ProcessModule& module) -> std::size_t
+                                   { return Detail::textBytes(module.path) + 8 + 8 + 1 + (module.version.has_value() ? 8 : 0) + 1; });
         writer.u8(static_cast<std::uint8_t>(modules->result.status));
         writer.text(modules->result.detail);
-        const std::size_t count = std::min(modules->result.modules.size(), MAX_MODULES);
+        writer.u8((modules->result.truncated || count < modules->result.modules.size()) ? 1 : 0);
         writer.u32(static_cast<std::uint32_t>(count));
         for (std::size_t i = 0; i < count; ++i)
         {
@@ -877,21 +934,13 @@ template<typename Message>
         kind = MessageKind::OpenFilesResult;
         // As many files as fit in one frame: thousands of long paths could pass MAX_MESSAGE_BYTES, so the
         // list stops short of it and says it was cut, as a read past MAX_OPEN_FILES does.
-        const std::size_t limit = std::min(files->result.files.size(), MAX_OPEN_FILES);
-        std::size_t count = 0;
-        std::size_t bytes = 0;
-        constexpr std::size_t FIXED_BYTES = 8 + 1 + 4 + 1 + 4 + 1; // descriptor, kind, path size, flag, flags, deleted
-        constexpr std::size_t ROOM = MAX_MESSAGE_BYTES - (4 + HEADER_BYTES) - (1 + 4 + MAX_STRING_BYTES + 3 + 4);
-        while (count < limit)
-        {
-            const std::size_t entry = FIXED_BYTES + std::min(files->result.files[count].path.size(), MAX_STRING_BYTES);
-            if (bytes + entry > ROOM)
-            {
-                break;
-            }
-            bytes += entry;
-            ++count;
-        }
+        // Status, detail, three flags, count; an entry: descriptor, kind, path, flag, flags, deleted.
+        constexpr std::size_t ROOM = Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 3 + 4);
+        const std::size_t count =
+            Detail::entriesThatFit(std::span(files->result.files),
+                                   MAX_OPEN_FILES,
+                                   ROOM,
+                                   [](const OpenFile& file) { return 8 + 1 + Detail::textBytes(file.path) + 1 + 4 + 1; });
         writer.u8(static_cast<std::uint8_t>(files->result.status));
         writer.text(files->result.detail);
         writer.u8((files->result.truncated || count < files->result.files.size()) ? 1 : 0);
@@ -912,6 +961,10 @@ template<typename Message>
     else if (const auto* connections = std::get_if<ConnectionsReply>(&response))
     {
         kind = MessageKind::ConnectionsResult;
+        // Every socket takes the same bytes (protocol, family, two endpoints, state), so MAX_CONNECTIONS of
+        // them always fit a frame: the count is the only cap this list needs (#2403).
+        constexpr std::size_t ENDPOINT_BYTES = std::tuple_size_v<decltype(ConnectionEndpoint::address)> + 2;
+        static_assert(MAX_CONNECTIONS * (1 + 1 + ENDPOINT_BYTES + ENDPOINT_BYTES + 1) <= Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 4));
         writer.u8(static_cast<std::uint8_t>(connections->result.status));
         writer.text(connections->result.detail);
         const std::size_t count = std::min(connections->result.connections.size(), MAX_CONNECTIONS);
@@ -1023,6 +1076,7 @@ template<typename Message>
         {
             reader.fail();
         }
+        reply.result.truncated = reader.flag();
         const std::uint32_t count = reader.u32();
         if (count > MAX_ENVIRONMENT_VARIABLES)
         {
@@ -1049,6 +1103,7 @@ template<typename Message>
             reader.fail();
         }
         reply.result.detail = reader.text();
+        reply.result.truncated = reader.flag();
         const std::uint32_t count = reader.u32();
         if (count > MAX_MODULES)
         {

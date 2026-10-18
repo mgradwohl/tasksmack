@@ -112,6 +112,12 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
         }
         return;
     }
+    if (m_Truncated)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        ImGui::TextWrapped("Showing the first %zu variables", m_Rows.size());
+        ImGui::PopStyleColor();
+    }
     if (m_Rows.empty())
     {
         ImGui::TextColored(scheme.textMuted, "No environment variables");

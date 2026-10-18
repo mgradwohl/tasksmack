@@ -69,6 +69,12 @@ void ProcessModulesView::render(bool hasModules)
         }
         return;
     }
+    if (m_Truncated)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        ImGui::TextWrapped("Showing the first %zu modules", m_Rows.size());
+        ImGui::PopStyleColor();
+    }
     if (m_Rows.empty())
     {
         ImGui::TextColored(scheme.textMuted, "No modules loaded");
