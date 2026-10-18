@@ -179,7 +179,8 @@ inline constexpr std::uint16_t EM_LOONGARCH = 258;
     constexpr std::string_view QEMU = "qemu-";
     if (exePath.starts_with(QEMU))
     {
-        arch = exePath.substr(QEMU.size());
+        arch = exePath;
+        arch.remove_prefix(QEMU.size());
         if (arch.starts_with("system-"))
         {
             return ProcessArchitecture::Machine::Unknown;
@@ -192,7 +193,7 @@ inline constexpr std::uint16_t EM_LOONGARCH = 258;
     }
     else if (const std::size_t binfmt = exePath.find("-binfmt"); binfmt != std::string_view::npos)
     {
-        arch = exePath.substr(0, binfmt);
+        arch = std::string_view(exePath.data(), binfmt);
     }
     return machineFromName(arch);
 }
