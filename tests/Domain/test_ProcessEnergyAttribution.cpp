@@ -2,6 +2,7 @@
 /// @brief Tests for Domain::ProcessEnergy, per-interval RAPL energy attribution (#1093)
 
 #include "Domain/ProcessEnergyAttribution.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -162,6 +163,35 @@ TEST(ProcessEnergyTest, WorkByProcessesThatExitedIsNotChargedToSurvivors)
 
     EXPECT_EQ(second[0].energyMicrojoules, 100U);
     EXPECT_EQ(second[1].energyMicrojoules, 100U);
+}
+
+// #2444: a multi-socket machine's packages each have a counter; the interval's energy is all of theirs,
+// each counter's wrap handled on its own.
+TEST(ProcessEnergyTest, EveryPackagesEnergyIsSharedOutEachWithItsOwnWrap)
+{
+    using Platform::EnergyCounterReading;
+    Attributor attributor;
+    std::vector<Platform::ProcessCounters> first{process(1, 100), process(2, 100)};
+    const std::vector<EnergyCounterReading> otherFirst{{.energyUj = 9'800, .maxRangeUj = 10'000}};
+    attributor.attribute(first, 1'000, 0, std::nullopt, otherFirst);
+
+    // Package 0 used 600, package 1 300 (wrapped: 9'800 -> 10'000 -> 0 -> 100).
+    std::vector<Platform::ProcessCounters> second{process(1, 200), process(2, 300)};
+    const std::vector<EnergyCounterReading> otherSecond{{.energyUj = 100, .maxRangeUj = 10'000}};
+    attributor.attribute(second, 1'600, 0, std::nullopt, otherSecond);
+    EXPECT_EQ(second[0].energyMicrojoules, 300U); // a third of 900
+    EXPECT_EQ(second[1].energyMicrojoules, 600U);
+
+    // A package that disappears (or appears) restarts the baseline instead of crediting a partial sum.
+    std::vector<Platform::ProcessCounters> third{process(1, 300), process(2, 400)};
+    attributor.attribute(third, 2'000, 0);
+    EXPECT_EQ(third[0].energyMicrojoules, 300U);
+    EXPECT_EQ(third[1].energyMicrojoules, 600U);
+
+    std::vector<Platform::ProcessCounters> fourth{process(1, 400), process(2, 500)};
+    attributor.attribute(fourth, 2'200, 0);
+    EXPECT_EQ(fourth[0].energyMicrojoules, 400U);
+    EXPECT_EQ(fourth[1].energyMicrojoules, 700U);
 }
 
 TEST(ProcessEnergyTest, ReusedPidIsANewProcess)

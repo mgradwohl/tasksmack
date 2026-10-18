@@ -159,6 +159,13 @@ class LinuxProcessProbe : public IProcessProbe
     bool m_InProcMountGroup = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
+    /// A multi-socket machine's other package counters (package-1 and up), read with the first (#2444).
+    struct OtherPackageCounter
+    {
+        std::string path;
+        std::uint64_t maxRangeUj = 0;
+    };
+    std::vector<OtherPackageCounter> m_OtherPackages;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
@@ -344,8 +351,16 @@ class LinuxProcessProbe : public IProcessProbe
     /// energy_uj is root-only on current kernels, #1103), and its wrap point.
     [[nodiscard]] bool detectPowerCap();
 
+    /// Beside a first counter at <zones>/intel-rapl:0, the other readable top-level zones there that are
+    /// CPU packages (their name "package-N"; not psys, the whole platform, which would count twice), in
+    /// zone order (#2444).
+    void detectOtherPackages(const std::filesystem::path& firstZone);
+
     /// Read the package energy counter in microjoules, or nullopt if it can't be read.
     [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
+
+    /// A RAPL counter file (energy_uj, max_energy_range_uj) as a number, or nullopt.
+    [[nodiscard]] static std::optional<uint64_t> readEnergyFile(const std::string& path);
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

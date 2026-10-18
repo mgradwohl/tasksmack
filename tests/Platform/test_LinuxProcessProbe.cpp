@@ -1386,6 +1386,46 @@ TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
     EXPECT_EQ(*reading->busyCpuTicks, 150U);
 }
 
+// #2444: a multi-socket machine's other packages are read with the first, since the busy ticks are every
+// package's CPUs'; psys (the whole platform) and a package's subzones are not, as they'd count twice.
+TEST(LinuxProcessProbeTest, EveryCpuPackagesCounterIsRead)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_sockets");
+    ScopedTempDir powercap("ts_test_powercap_sockets");
+    const std::filesystem::path zones = powercap.path / "intel-rapl";
+    writeFile(zones / "intel-rapl:0" / "name", "package-0\n");
+    writeFile(zones / "intel-rapl:0" / "energy_uj", "1000\n");
+    writeFile(zones / "intel-rapl:0" / "max_energy_range_uj", "262143328850\n");
+    writeFile(zones / "intel-rapl:0" / "intel-rapl:0:0" / "name", "core\n");
+    writeFile(zones / "intel-rapl:0" / "intel-rapl:0:0" / "energy_uj", "500\n");
+    writeFile(zones / "intel-rapl:2" / "name", "package-2\n"); // listed in zone order, whatever the directory's
+    writeFile(zones / "intel-rapl:2" / "energy_uj", "3000\n");
+    writeFile(zones / "intel-rapl:1" / "name", "package-1\n");
+    writeFile(zones / "intel-rapl:1" / "energy_uj", "2000\n");
+    writeFile(zones / "intel-rapl:1" / "max_energy_range_uj", "65532610987\n");
+    writeFile(zones / "intel-rapl:3" / "name", "psys\n");
+    writeFile(zones / "intel-rapl:3" / "energy_uj", "9000\n");
+    writeFile(zones / "intel-rapl:0:1" / "name", "uncore\n");
+    writeFile(zones / "intel-rapl:0:1" / "energy_uj", "700\n");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\n");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    ASSERT_TRUE(probe.capabilities().hasPowerUsage);
+    const PackageEnergyReading reading = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_EQ(reading.energyUj, 1000U);
+    ASSERT_EQ(reading.otherPackages.size(), 2U);
+    EXPECT_EQ(reading.otherPackages[0].energyUj, 2000U);
+    EXPECT_EQ(reading.otherPackages[0].maxRangeUj, 65532610987U);
+    EXPECT_EQ(reading.otherPackages[1].energyUj, 3000U);
+    EXPECT_EQ(reading.otherPackages[1].maxRangeUj, 0U);
+
+    // One package unread: the sample is unread, not one package's energy shared out over all of them.
+    writeFile(zones / "intel-rapl:2" / "energy_uj", "");
+    const PackageEnergyReading partial = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_FALSE(partial.energyUj.has_value());
+    EXPECT_TRUE(partial.otherPackages.empty());
+}
+
 TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
 {
     if (::geteuid() == 0)

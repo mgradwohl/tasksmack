@@ -4,13 +4,13 @@
 // keeps state between samples: probes read raw counters only (IProcessProbe::readPackageEnergy),
 // and ProcessModel calls this under its sampling lock, so samples are applied in order.
 //
-// RAPL reports one package-wide energy counter. Each interval's energy is shared out by each
-// process's share of the CPU time used in that interval, and credited to a per-process running
-// total. ProcessModel turns that total into watts with its usual counter-rate maths. Sharing the
-// lifetime counter by lifetime CPU share instead charged idle long-lived processes for current
-// package power, spiked every survivor whenever a busy process exited, and zeroed everything when
-// the counter wrapped.
+// RAPL reports one energy counter per CPU package; a multi-socket machine's are added up (#2444). Each interval's energy is shared out by
+// each process's share of the CPU time used in that interval, and credited to a per-process running total. ProcessModel turns that total
+// into watts with its usual counter-rate maths. Sharing the lifetime counter by lifetime CPU share instead charged idle long-lived
+// processes for current package power, spiked every survivor whenever a busy process exited, and zeroed everything when the counter
+// wrapped.
 
+#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
@@ -61,14 +61,25 @@ class Attributor
     /// PackageEnergyReading). When known for both samples, the interval's share denominator is the
     /// larger of its delta and the processes' summed deltas, so work by processes that exited
     /// between samples (in the energy, but in no process's delta) isn't charged to the survivors.
+    ///
+    /// `otherPackages` are a multi-socket machine's other package counters, read with the first (#2444):
+    /// their energy is added, each with its own wrap. Should the number of packages change, the interval
+    /// is credited nothing and the new set becomes the baseline.
     void attribute(std::span<Platform::ProcessCounters> processes,
                    std::optional<std::uint64_t> systemEnergyUj,
                    std::uint64_t maxRangeUj,
-                   std::optional<std::uint64_t> busyCpuTicks = std::nullopt)
+                   std::optional<std::uint64_t> busyCpuTicks = std::nullopt,
+                   std::span<const Platform::EnergyCounterReading> otherPackages = {})
     {
-        const std::uint64_t intervalEnergyUj = (systemEnergyUj.has_value() && m_PreviousSystemEnergyUj.has_value())
-                                                 ? energyDeltaUj(*m_PreviousSystemEnergyUj, *systemEnergyUj, maxRangeUj)
-                                                 : 0;
+        std::uint64_t intervalEnergyUj = 0;
+        if (systemEnergyUj.has_value() && m_PreviousSystemEnergyUj.has_value() && otherPackages.size() == m_PreviousOtherUj.size())
+        {
+            intervalEnergyUj = energyDeltaUj(*m_PreviousSystemEnergyUj, *systemEnergyUj, maxRangeUj);
+            for (std::size_t i = 0; i < otherPackages.size(); ++i)
+            {
+                intervalEnergyUj += energyDeltaUj(m_PreviousOtherUj[i], otherPackages[i].energyUj, otherPackages[i].maxRangeUj);
+            }
+        }
 
         m_CpuDeltas.assign(processes.size(), 0);
         std::uint64_t totalCpuDelta = 0;
@@ -115,6 +126,14 @@ class Attributor
         m_State = std::move(next);
 
         m_PreviousSystemEnergyUj = systemEnergyUj; // nullopt after a failed read: see above
+        m_PreviousOtherUj.clear();
+        if (systemEnergyUj.has_value())
+        {
+            for (const Platform::EnergyCounterReading& package : otherPackages)
+            {
+                m_PreviousOtherUj.push_back(package.energyUj);
+            }
+        }
     }
 
   private:
@@ -147,6 +166,7 @@ class Attributor
     }
 
     std::optional<std::uint64_t> m_PreviousSystemEnergyUj;
+    std::vector<std::uint64_t> m_PreviousOtherUj; // the other packages' counters at the previous call (#2444)
     std::optional<std::uint64_t> m_PreviousBusyCpuTicks;
     std::unordered_map<Key, State, KeyHash> m_State;
     std::vector<std::uint64_t> m_CpuDeltas; // reused scratch

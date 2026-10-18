@@ -13,6 +13,13 @@
 namespace Platform
 {
 
+/// One more CPU package's raw energy counter, read with the first (#2444).
+struct EnergyCounterReading
+{
+    std::uint64_t energyUj = 0;
+    std::uint64_t maxRangeUj = 0; ///< where the counter wraps back to 0; 0 when unknown
+};
+
 /// A raw package energy counter (RAPL on Linux) for Domain to share out between processes per
 /// interval (#1093).
 struct PackageEnergyReading
@@ -24,6 +31,9 @@ struct PackageEnergyReading
     /// still present, it includes processes that ran and exited between samples, so their share
     /// of the energy isn't charged to the survivors. nullopt when unavailable.
     std::optional<std::uint64_t> busyCpuTicks;
+    /// A multi-socket machine's other packages (package-1 and up), whose energy adds to the first's: the
+    /// CPU time shared out is every package's (#2444). Empty with one package, or when energyUj is nullopt.
+    std::vector<EnergyCounterReading> otherPackages;
 };
 
 /// One process's proportional and unique memory (#1885): costly to read (Linux walks every mapping for

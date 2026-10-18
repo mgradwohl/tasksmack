@@ -1383,29 +1383,74 @@ bool LinuxProcessProbe::detectPowerCap()
         }
     }
 
-    for (const auto& path : candidates)
+    const auto found = std::ranges::find_if(candidates, isReadable);
+    if (found == candidates.end())
     {
-        if (!isReadable(path))
+        return false;
+    }
+    const std::filesystem::path& path = *found;
+    m_PowerCapPath = path.string();
+
+    // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
+    m_PowerCapMaxRangeUj = readEnergyFile((path.parent_path() / "max_energy_range_uj").string()).value_or(0);
+    if (path.parent_path().filename() == "intel-rapl:0")
+    {
+        detectOtherPackages(path.parent_path());
+    }
+    return true;
+}
+
+void LinuxProcessProbe::detectOtherPackages(const std::filesystem::path& firstZone)
+{
+    // Only "intel-rapl:N" itself: "intel-rapl:N:M" are a package's subzones (cores, uncore, DRAM),
+    // already in its energy. AMD's RAPL zones are named the same.
+    std::vector<std::pair<unsigned, OtherPackageCounter>> found;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(firstZone.parent_path(), ec), end; !ec && it != end; it.increment(ec))
+    {
+        const std::string name = it->path().filename().string();
+        constexpr std::string_view PREFIX = "intel-rapl:";
+        unsigned index = 0;
+        const char* const first = name.data() + std::min(PREFIX.size(), name.size());
+        const char* const last = name.data() + name.size();
+        if (!name.starts_with(PREFIX) || first == last || std::from_chars(first, last, index, 10).ptr != last || index == 0)
         {
             continue;
         }
-        m_PowerCapPath = path.string();
-
-        // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
-        std::array<char, 32> buf{};
-        const std::string rangePath = (path.parent_path() / "max_energy_range_uj").string();
-        if (const std::size_t len = readProcFile(rangePath.c_str(), buf.data(), buf.size()); len > 0)
+        std::array<char, 64> zoneName{};
+        const std::string namePath = (it->path() / "name").string();
+        const std::size_t len = readProcFile(namePath.c_str(), zoneName.data(), zoneName.size());
+        const std::string energyPath = (it->path() / "energy_uj").string();
+        if (!std::string_view(zoneName.data(), len).starts_with("package-") || !readEnergyFile(energyPath).has_value())
         {
-            const char* p = buf.data();
-            if (!parseNum(p, buf.data() + len, m_PowerCapMaxRangeUj))
-            {
-                m_PowerCapMaxRangeUj = 0;
-            }
+            continue;
         }
-        return true;
+        found.emplace_back(index,
+                           OtherPackageCounter{.path = energyPath,
+                                               .maxRangeUj = readEnergyFile((it->path() / "max_energy_range_uj").string()).value_or(0)});
     }
+    std::ranges::sort(found, {}, &std::pair<unsigned, OtherPackageCounter>::first);
+    for (auto& [index, counter] : found)
+    {
+        m_OtherPackages.push_back(std::move(counter));
+    }
+}
 
-    return false;
+std::optional<uint64_t> LinuxProcessProbe::readEnergyFile(const std::string& path)
+{
+    std::array<char, 32> buf{};
+    const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+    if (len == 0)
+    {
+        return std::nullopt;
+    }
+    const char* p = buf.data();
+    uint64_t value = 0;
+    if (!parseNum(p, buf.data() + len, value))
+    {
+        return std::nullopt;
+    }
+    return value;
 }
 
 std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
@@ -1414,22 +1459,7 @@ std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
     {
         return std::nullopt;
     }
-
-    std::array<char, 32> buf{};
-    const std::size_t len = readProcFile(m_PowerCapPath.c_str(), buf.data(), buf.size());
-    if (len == 0)
-    {
-        return std::nullopt;
-    }
-
-    const char* p = buf.data();
-    uint64_t energyUj = 0;
-    if (!parseNum(p, buf.data() + len, energyUj))
-    {
-        return std::nullopt;
-    }
-
-    return energyUj; // Already in microjoules
+    return readEnergyFile(m_PowerCapPath); // Already in microjoules
 }
 
 MemoryRollupRead LinuxProcessProbe::readMemoryRollup(const std::int32_t pid, const std::uint64_t startTimeTicks) const
@@ -1445,9 +1475,24 @@ std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
     }
     // Raw read only: ProcessModel shares it out between processes per interval (#1093).
     const auto cpuTimes = readCpuTimes();
-    return PackageEnergyReading{.energyUj = readSystemEnergy(),
-                                .maxRangeUj = m_PowerCapMaxRangeUj,
-                                .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt};
+    PackageEnergyReading reading{.energyUj = readSystemEnergy(),
+                                 .maxRangeUj = m_PowerCapMaxRangeUj,
+                                 .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt,
+                                 .otherPackages = {}};
+    // Every package's energy, as the busy ticks are every package's CPUs' (#2444). One that can't be read
+    // makes the sample unread, rather than one package's energy shared out over all of them.
+    for (const OtherPackageCounter& package : m_OtherPackages)
+    {
+        const std::optional<uint64_t> energyUj = reading.energyUj.has_value() ? readEnergyFile(package.path) : std::nullopt;
+        if (!energyUj.has_value())
+        {
+            reading.energyUj = std::nullopt;
+            reading.otherPackages.clear();
+            break;
+        }
+        reading.otherPackages.push_back({.energyUj = *energyUj, .maxRangeUj = package.maxRangeUj});
+    }
+    return reading;
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS

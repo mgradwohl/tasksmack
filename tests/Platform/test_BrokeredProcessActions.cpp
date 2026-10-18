@@ -859,7 +859,7 @@ class RecordingProbe final : public IProcessProbe
     }
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override
     {
-        return PackageEnergyReading{.energyUj = 55U, .maxRangeUj = 100U, .busyCpuTicks = std::nullopt};
+        return PackageEnergyReading{.energyUj = 55U, .maxRangeUj = 100U, .busyCpuTicks = std::nullopt, .otherPackages = {}};
     }
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override
     {
