@@ -47,7 +47,7 @@ namespace App::ElevationNoticeText
     };
     if ((missing & Missing::PROCESSES_HIDDEN) != 0)
     {
-        text += "\n\n/proc is mounted with hidepid, so other users' processes aren't listed at all. "
+        text += "\n\n/proc is mounted with hidepid, so other users' processes can't be read and aren't listed. "
                 "Membership of the mount's gid= group shows them too.";
         need("CAP_SYS_PTRACE");
     }

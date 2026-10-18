@@ -163,7 +163,7 @@ inline constexpr std::uint8_t READ_OTHERS = 1U << 0U;
 inline constexpr std::uint8_t SIGNAL_OTHERS = 1U << 1U;
 /// Raising priority, the Realtime I/O class, other users' priority and affinity: CAP_SYS_NICE.
 inline constexpr std::uint8_t RAISE_PRIORITY = 1U << 2U;
-/// /proc is mounted with hidepid, so other users' processes aren't listed at all.
+/// /proc is mounted with hidepid, so other users' processes can't be read and aren't listed.
 inline constexpr std::uint8_t PROCESSES_HIDDEN = 1U << 3U;
 } // namespace MissingPrivilege
 

@@ -96,8 +96,8 @@ inline constexpr unsigned CAP_SYS_NICE_BIT = 23;       // ioprio_set(IOPRIO_CLAS
 /// How /proc is mounted, as far as other users' processes go (#2303): its hidepid= level and gid=.
 struct ProcMount
 {
-    /// hidepid: 0 (off), 1 (noaccess: listed, details refused), 2 (invisible: not listed) or
-    /// 4 (ptraceable: only processes the caller may ptrace are listed).
+    /// hidepid: 0 (off), 1 (noaccess: listed, but their directories refused, so no row can be read),
+    /// 2 (invisible: not listed) or 4 (ptraceable: only processes the caller may ptrace are listed).
     int hidepid = 0;
     /// gid=: members of this group see every process anyway. nullopt when not set.
     std::optional<std::uint32_t> gid;
@@ -202,7 +202,9 @@ struct ProcMount
 /// is in the mount's gid= group.
 /// - READ_OTHERS: hasReducedPrivileges() (CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH or CAP_DAC_OVERRIDE).
 /// - SIGNAL_OTHERS: no CAP_KILL. RAISE_PRIORITY: no CAP_SYS_NICE.
-/// - PROCESSES_HIDDEN: hidepid=invisible or ptraceable, outside its group and without CAP_SYS_PTRACE.
+/// - PROCESSES_HIDDEN: hidepid set at all (noaccess, invisible or ptraceable), outside its group and
+///   without CAP_SYS_PTRACE. noaccess lists the PIDs but refuses opening their directories, so
+///   TaskSmack can't show those processes either (#2399).
 /// With the capabilities unknown, root is taken to have them all and anyone else none of them.
 [[nodiscard]] constexpr std::uint8_t
 missingPrivileges(bool isRoot, std::optional<std::uint64_t> capEff, std::optional<ProcMount> procMount, bool inProcMountGroup) noexcept
@@ -225,7 +227,7 @@ missingPrivileges(bool isRoot, std::optional<std::uint64_t> capEff, std::optiona
     {
         missing |= Missing::RAISE_PRIORITY;
     }
-    if (procMount.has_value() && (procMount->hidepid == 2 || procMount->hidepid == 4) && !inProcMountGroup && !has(CAP_SYS_PTRACE_BIT))
+    if (procMount.has_value() && procMount->hidepid != 0 && !inProcMountGroup && !has(CAP_SYS_PTRACE_BIT))
     {
         missing |= Missing::PROCESSES_HIDDEN;
     }

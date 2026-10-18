@@ -184,9 +184,12 @@ TEST(ProcPrivilegesTest, MissingPrivilegesHasABitForEachPermission)
               Missing::PROCESSES_HIDDEN);
     EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, invisible, true) & Missing::PROCESSES_HIDDEN, 0);
     EXPECT_EQ(ProcPrivileges::missingPrivileges(false, ALL, invisible, false), 0);
-    // hidepid=noaccess still lists them: only the read bit applies.
+    // hidepid=noaccess lists them but refuses opening their directories, so they can't be shown either
+    // (#2399): hidden too, except from its gid= group and CAP_SYS_PTRACE.
     const ProcPrivileges::ProcMount noaccess{.hidepid = 1, .gid = std::nullopt};
-    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, false), Missing::READ_OTHERS);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, false), Missing::READ_OTHERS | Missing::PROCESSES_HIDDEN);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, true) & Missing::PROCESSES_HIDDEN, 0);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, ALL, noaccess, false), 0);
 }
 
 // #1327 review: the privilege notice fired for every non-root process, including one granted the
