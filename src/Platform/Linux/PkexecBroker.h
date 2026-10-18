@@ -79,6 +79,8 @@ class PkexecBroker final : public IPrivilegedBroker
     [[nodiscard]] std::expected<void, std::string> settleUnansweredLocked(std::chrono::milliseconds timeout);
     /// Under m_Mutex: closes the socket and reaps the launcher if it has exited.
     void closeLocked();
+    /// Under m_Mutex, once the helper has hung up: closes the socket and reaps the launcher if it has exited.
+    void releaseExitedLocked() const noexcept;
     /// Under m_Mutex: reaps the launchers in m_Abandoned that have exited.
     void reapAbandonedLocked();
     /// Why the launcher exited, once it has: pkexec's 126 (dismissed) and 127 (not authorised) in words.
@@ -87,8 +89,9 @@ class PkexecBroker final : public IPrivilegedBroker
     std::string m_HelperPath;
     std::vector<std::string> m_Launcher;
     mutable std::mutex m_Mutex;
-    int m_Fd = -1;
-    pid_t m_Child = -1;
+    // Mutable: connected() lets go of a helper that has exited (#2449).
+    mutable int m_Fd = -1;
+    mutable pid_t m_Child = -1;
     std::vector<pid_t> m_Abandoned; // Launchers closed while still running, reaped once they exit (#2333)
     std::uint32_t m_NextRequestId = 1;
     std::uint32_t m_Unanswered = 0;               // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)

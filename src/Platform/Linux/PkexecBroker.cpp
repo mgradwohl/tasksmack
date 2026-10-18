@@ -72,6 +72,11 @@ bool PkexecBroker::connected() const noexcept
 {
     if (!m_Connected.load())
     {
+        const std::unique_lock lock(m_Mutex, std::try_to_lock);
+        if (lock.owns_lock() && m_Fd < 0)
+        {
+            releaseExitedLocked(); // a helper seen hanging up that was still exiting then
+        }
         return false;
     }
     // The helper also ends on its own (its idle exit, a crash), and then its end of the socket hangs up
@@ -82,10 +87,26 @@ bool PkexecBroker::connected() const noexcept
         pollfd peer{.fd = m_Fd, .events = POLLRDHUP, .revents = 0};
         if (::poll(&peer, 1, 0) > 0 && (peer.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0)
         {
-            m_Connected = false; // the next connect() closes the socket and reaps the launcher
+            m_Connected = false;
+            releaseExitedLocked();
         }
     }
     return m_Connected.load();
+}
+
+void PkexecBroker::releaseExitedLocked() const noexcept
+{
+    // Not left to the next connect(), which may never come: until then the helper would stay this
+    // process's zombie, and its socket open (#2449).
+    if (m_Fd >= 0)
+    {
+        ::close(m_Fd);
+        m_Fd = -1;
+    }
+    if (m_Child > 0 && ::waitpid(m_Child, nullptr, WNOHANG) != 0)
+    {
+        m_Child = -1; // one still exiting is reaped by the next connected(), connect() or close
+    }
 }
 
 std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_token& stopToken, std::chrono::milliseconds timeout)

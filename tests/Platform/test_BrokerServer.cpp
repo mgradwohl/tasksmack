@@ -1162,6 +1162,30 @@ TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
     EXPECT_TRUE(reply.has_value());
 }
 
+// #2449: a helper that ended on its own is reaped once connected() sees it gone, not left this process's
+// zombie until the next connect(), which may never come.
+TEST(PkexecBrokerTest, AHelperThatExitsIsReapedWithoutAnotherConnect)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const pid_t helper = helperChild();
+    ASSERT_GT(helper, 0);
+    ASSERT_EQ(::kill(helper, SIGKILL), 0);
+    bool reaped = false;
+    for (int attempt = 0; attempt < 200 && !reaped; ++attempt) // up to 2 s
+    {
+        static_cast<void>(broker.connected());
+        // A zombie still takes signal 0; only a reaped process is gone (ESRCH).
+        reaped = ::kill(helper, 0) == -1 && errno == ESRCH;
+        if (!reaped)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+    EXPECT_TRUE(reaped);
+    EXPECT_FALSE(broker.connected());
+}
+
 TEST(PkexecBrokerTest, ADismissedPromptIsReportedAsSuch)
 {
     // A launcher that exits as pkexec does when the prompt is dismissed (126).
