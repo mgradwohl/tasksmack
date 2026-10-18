@@ -110,10 +110,12 @@ get_cmake_version() {
     fi
 }
 
-# Get ccache version
+# Get ccache version: two or three components (4.14, 4.9.1). ccache is optional, so output that
+# does not parse, or a failing ccache, prints nothing rather than fail the pipeline, which under
+# set -euo pipefail would end the whole check before the summary (#2350).
 get_ccache_version() {
     if command -v ccache &>/dev/null; then
-        ccache --version 2>/dev/null | grep -oE 'ccache version [0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+        { ccache --version 2>/dev/null || true; } | grep -oE 'ccache version [0-9]+\.[0-9]+(\.[0-9]+)?' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true
     else
         echo ""
     fi
@@ -392,14 +394,15 @@ main() {
     # ccache (recommended, not required: CONTRIBUTING.md lists it as "recommended for faster rebuilds",
     # cmake/CompilerOptions.cmake only warns when neither ccache nor sccache is found, and
     # check-prereqs.ps1 warns too, #2270). Missing or too old is a warning; all_ok is left alone.
-    local ccache_ver
-    ccache_ver="$(get_ccache_version)"
-    if [[ -z "${ccache_ver}" ]]; then
+    local ccache_ver ccache_path
+    ccache_ver="$(get_ccache_version)" || ccache_ver=""
+    ccache_path="$(command -v ccache 2>/dev/null || true)"
+    if [[ -z "${ccache_path}" ]]; then
         echo -e "${YELLOW}ccache${NC}: not found (recommended for faster rebuilds)"
         echo -e "  ${CYAN}Hint${NC}: sudo apt install ccache"
+    elif [[ -z "${ccache_ver}" ]]; then
+        echo -e "${YELLOW}ccache${NC}: version not recognized (${ccache_path}) - ${MIN_CCACHE_VERSION}+ recommended"
     else
-        local ccache_path
-        ccache_path="$(command -v ccache 2>/dev/null || true)"
         if version_at_least "${MIN_CCACHE_VERSION}" "${ccache_ver}"; then
             echo -e "${GREEN}ccache${NC}: ${ccache_ver} (${ccache_path})"
         else
