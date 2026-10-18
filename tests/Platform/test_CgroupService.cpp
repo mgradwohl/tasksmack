@@ -18,11 +18,24 @@ TEST(CgroupServiceTest, AServiceIsTheDeepestUnitInTheV2Path)
 {
     EXPECT_EQ(serviceFromCgroups("0::/system.slice/sshd.service\n"), "sshd.service");
     EXPECT_EQ(serviceFromCgroups("0::/system.slice/system-getty.slice/getty@tty1.service\n"), "getty@tty1.service");
-    // A user service, under the user's own manager.
-    EXPECT_EQ(serviceFromCgroups("0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service\n"), "pipewire.service");
+    // A user service, by the user manager the system runs it under (#2458): the Services tab lists the system
+    // manager's units, where pipewire.service is none, and the session bus's dbus.service isn't the system's.
+    EXPECT_EQ(serviceFromCgroups("0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service\n"), "user@1000.service");
+    EXPECT_EQ(serviceFromCgroups("0::/user.slice/user-1000.slice/user@1000.service/session.slice/dbus.service\n"), "user@1000.service");
     // A service that puts its processes in sub-cgroups of its own (Docker's daemon, systemd's delegation).
     EXPECT_EQ(serviceFromCgroups("0::/system.slice/docker.service/payload\n"), "docker.service");
     EXPECT_EQ(serviceFromCgroups("0::/system.slice/sshd.service"), "sshd.service") << "no trailing newline";
+}
+
+// #2458: a container's own units are never matched to the host's same-named ones.
+TEST(CgroupServiceTest, AContainersUnitsAreNamedByTheHostUnitThatRunsTheContainer)
+{
+    // A systemd-nspawn guest: its processes belong to the host's systemd-nspawn@deb.service.
+    EXPECT_EQ(serviceFromCgroups("0::/machine.slice/systemd-nspawn@deb.service/payload/system.slice/ssh.service\n"),
+              "systemd-nspawn@deb.service");
+    // Systemd inside a Docker or Podman container: its scope is no service on the host.
+    EXPECT_EQ(serviceFromCgroups("0::/system.slice/docker-0123abcd.scope/system.slice/systemd-journald.service\n"), "");
+    EXPECT_EQ(serviceFromCgroups("0::/machine.slice/libpod-0123abcd.scope/container/system.slice/sshd.service\n"), "");
 }
 
 TEST(CgroupServiceTest, ScopesTheRootAndHiddenPathsAreNoService)
