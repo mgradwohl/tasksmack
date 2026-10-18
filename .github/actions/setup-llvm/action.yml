@@ -112,7 +112,9 @@ runs:
         Acquire::http::Timeout "15";
         Acquire::https::Timeout "15";
         APT_CONFIG
-        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+        # x64 only: arm64 packages live on ports.ubuntu.com, not archive.ubuntu.com, so the
+        # ubuntu-24.04-arm image's mirror list is left as it is (#2214).
+        if [[ -f /etc/apt/apt-mirrors.txt && "$(dpkg --print-architecture)" == 'amd64' ]]; then
           echo 'https://archive.ubuntu.com/ubuntu/' |
             sudo tee /etc/apt/apt-mirrors.txt >/dev/null
         fi

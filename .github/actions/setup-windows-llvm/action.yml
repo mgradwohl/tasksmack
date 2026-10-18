@@ -1,5 +1,8 @@
 name: 'Setup Windows LLVM'
-description: 'Restore LLVM from the Actions cache (Chocolatey install with retry on a miss), verify the runner image Ninja, and add LLVM to PATH. ccache comes from hendrikmuhs/ccache-action.'
+description: >-
+  Restore LLVM from the Actions cache (on a miss: a Chocolatey install with retry on x64, or the
+  SHA-256-pinned native woa64 installer from LLVM's GitHub release on ARM64), verify the runner
+  image Ninja, and add LLVM to PATH. ccache comes from hendrikmuhs/ccache-action.
 inputs:
   llvm-version:
     description: 'Full LLVM semver version to install (e.g. 22.1.7)'
@@ -61,7 +64,7 @@ runs:
       run: '& "$env:GITHUB_ACTION_PATH\use-cached-llvm.ps1"'
 
     - name: Install LLVM
-      if: steps.llvm-cache.outputs.cache-matched-key == ''
+      if: steps.llvm-cache.outputs.cache-matched-key == '' && runner.arch == 'X64'
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
@@ -83,11 +86,48 @@ runs:
           exit 1
         }
 
+    # ARM64 (windows-11-arm, #2214): Chocolatey's llvm package only installs the x64 win64.exe,
+    # which would run emulated and target x64 by default, and the image's own LLVM is 20. So the
+    # native woa64 installer comes from LLVM's GitHub release, pinned by version and SHA-256 (the
+    # release asset's digest: gh release view llvmorg-<ver> -R llvm/llvm-project --json assets).
+    # Its default target is aarch64-pc-windows-msvc, so the presets need no --target. To update,
+    # bump both values together; a different llvm-version on ARM64 fails here rather than
+    # installing an unpinned file.
+    - name: Install LLVM (ARM64)
+      if: steps.llvm-cache.outputs.cache-matched-key == '' && runner.arch == 'ARM64'
+      shell: pwsh
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+        WOA64_VERSION: '22.1.7'
+        WOA64_SHA256: 58a24275fdf10297a6cd794ec6a0ffd752dcf900ef33afdc9b7e91ff9041b65e
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:LLVM_VERSION -ne $env:WOA64_VERSION) {
+          Write-Host "::error title=LLVM ARM64 pin::llvm-version $env:LLVM_VERSION has no pinned woa64 installer (pinned: $env:WOA64_VERSION). Update WOA64_VERSION and WOA64_SHA256 in .github/actions/setup-windows-llvm/action.yml."
+          exit 1
+        }
+        $installer = Join-Path $env:RUNNER_TEMP "LLVM-$env:WOA64_VERSION-woa64.exe"
+        $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:WOA64_VERSION/LLVM-$env:WOA64_VERSION-woa64.exe"
+        Invoke-WebRequest -Uri $url -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 10
+        $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $env:WOA64_SHA256) {
+          Write-Host "::error title=LLVM ARM64 installer SHA-256 mismatch::expected $env:WOA64_SHA256, got $actual"
+          exit 1
+        }
+        # NSIS: /S is silent, /D (last, unquoted even with spaces) the install directory the presets
+        # expect. Over the image's LLVM 20 it behaves as Chocolatey's /S install does on x64.
+        $proc = Start-Process -FilePath $installer -ArgumentList '/S /D=C:\Program Files\LLVM' -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+          Write-Host "::error title=LLVM install failed::LLVM-$env:WOA64_VERSION-woa64.exe exited with $($proc.ExitCode)"
+          exit 1
+        }
+        Remove-Item -LiteralPath $installer -Force
+
     - name: Verify LLVM
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
-        LLVM_SOURCE: ${{ steps.llvm-cache.outputs.cache-matched-key != '' && format('cache {0}', steps.llvm-cache.outputs.cache-matched-key) || 'chocolatey' }}
+        LLVM_SOURCE: ${{ steps.llvm-cache.outputs.cache-matched-key != '' && format('cache {0}', steps.llvm-cache.outputs.cache-matched-key) || (runner.arch == 'ARM64' && 'woa64 installer' || 'chocolatey') }}
       run: |
         $clang = 'C:\Program Files\LLVM\bin\clang.exe'
         if (-not (Test-Path -LiteralPath $clang)) {
@@ -100,6 +140,15 @@ runs:
           exit 1
         }
         Write-Host "$versionLine (from $env:LLVM_SOURCE)"
+        # A native toolchain for this runner: an x64 clang on an ARM64 runner would run emulated and
+        # build x64 binaries (#2214).
+        $expectedTarget = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $target = (& $clang -print-target-triple).Trim()
+        if ($target -ne $expectedTarget) {
+          Write-Host "::error title=LLVM target mismatch::clang's default target is $target, expected $expectedTarget on this $env:RUNNER_ARCH runner"
+          exit 1
+        }
+        Write-Host "clang default target $target"
         # ccache's default compiler check compares the compiler's size and mtime, so a cached tree
         # must keep the installer's timestamps or every Windows ccache entry misses. Logged so the
         # two install paths can be compared.

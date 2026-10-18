@@ -439,5 +439,41 @@ TEST(LinuxCpuDetailsTest, ZeroSizedAndUnreadableCacheEntriesAreSkipped)
     EXPECT_EQ(read[0].bytes, MIB);
 }
 
+TEST(LinuxCpuDetailsTest, CpuModelIsTheX86ModelName)
+{
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nvendor_id\t: GenuineIntel\n"
+                                                   "model name\t: Intel(R) Core(TM) i7-1185G7 @ 3.00GHz  \n\n"
+                                                   "processor\t: 1\nmodel name\t: ignored\n"),
+              "Intel(R) Core(TM) i7-1185G7 @ 3.00GHz");
+}
+
+TEST(LinuxCpuDetailsTest, Arm64CpuModelComesFromTheImplementerAndPart)
+{
+    // #2214: arm64 /proc/cpuinfo has no "model name" (this is an Azure Cobalt 100, Neoverse N2).
+    constexpr std::string_view CPUINFO = "processor\t: 0\nBogoMIPS\t: 2000.00\nCPU implementer\t: 0x41\n"
+                                         "CPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0xd49\nCPU revision\t: 0\n\n"
+                                         "processor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd49\n";
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo(CPUINFO), "ARM Neoverse-N2");
+}
+
+TEST(LinuxCpuDetailsTest, Arm64BigLittleListsEachCoreTypeOnceAndUnknownCodesByNumber)
+{
+    constexpr std::string_view CPUINFO = "processor\t: 0\nCPU implementer\t: 0x41\nCPU part\t: 0xd05\n\n"
+                                         "processor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd05\n\n"
+                                         "processor\t: 2\nCPU implementer\t: 0x41\nCPU part\t: 0xd0b\n\n"
+                                         "processor\t: 3\nCPU implementer\t: 0x51\nCPU part\t: 0x001\n\n"
+                                         "processor\t: 4\nCPU implementer\t: 0x99\nCPU part\t: 0xabc\n\n"
+                                         "processor\t: 5\nCPU implementer\t: 0x41\nCPU part\t: 0xfff\n";
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo(CPUINFO),
+              "ARM Cortex-A55 + ARM Cortex-A76 + Qualcomm part 0x001 + Arm implementer 0x99 part 0xabc + ARM part 0xfff");
+}
+
+TEST(LinuxCpuDetailsTest, CpuModelFallsBackToHardwareThenEmpty)
+{
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nHardware\t: BCM2835\n"), "BCM2835");
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nCPU part\t: 0xd49\nmodel name\t:   \n"), "");
+    EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo(""), "");
+}
+
 } // namespace
 } // namespace Platform

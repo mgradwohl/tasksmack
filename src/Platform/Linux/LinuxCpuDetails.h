@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -467,6 +468,180 @@ read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysf
 
     details.baseSpeedMHz = readBaseSpeedMHz(cpuSysfsRoot);
     return details;
+}
+
+namespace Detail
+{
+
+/// A "0x41"-style hex value from /proc/cpuinfo, or nullopt.
+[[nodiscard]] inline std::optional<std::uint32_t> parseHex(std::string_view text) noexcept
+{
+    text = Platform::trimAscii(text);
+    if (text.starts_with("0x") || text.starts_with("0X"))
+    {
+        text.remove_prefix(2);
+    }
+    std::uint32_t value = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value, 16);
+    if (text.empty() || ec != std::errc{} || ptr != text.data() + text.size())
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// The vendor behind an Arm "CPU implementer" code (the MIDR implementer field), or empty.
+[[nodiscard]] inline std::string_view armImplementerName(std::uint32_t implementer) noexcept
+{
+    switch (implementer)
+    {
+    case 0x41:
+        return "ARM";
+    case 0x42:
+        return "Broadcom";
+    case 0x43:
+        return "Cavium";
+    case 0x46:
+        return "Fujitsu";
+    case 0x48:
+        return "HiSilicon";
+    case 0x4e:
+        return "NVIDIA";
+    case 0x50:
+        return "APM";
+    case 0x51:
+        return "Qualcomm";
+    case 0x53:
+        return "Samsung";
+    case 0x61:
+        return "Apple";
+    case 0x6d:
+        return "Microsoft";
+    case 0xc0:
+        return "Ampere";
+    default:
+        return {};
+    }
+}
+
+/// The core behind an Arm Ltd (implementer 0x41) "CPU part" code, or empty. The common server and
+/// recent client cores only; any other part is shown by its code.
+[[nodiscard]] inline std::string_view armLtdPartName(std::uint32_t part) noexcept
+{
+    switch (part)
+    {
+    case 0xd03:
+        return "Cortex-A53";
+    case 0xd05:
+        return "Cortex-A55";
+    case 0xd07:
+        return "Cortex-A57";
+    case 0xd08:
+        return "Cortex-A72";
+    case 0xd0a:
+        return "Cortex-A75";
+    case 0xd0b:
+        return "Cortex-A76";
+    case 0xd0c:
+        return "Neoverse-N1";
+    case 0xd0d:
+        return "Cortex-A77";
+    case 0xd40:
+        return "Neoverse-V1";
+    case 0xd41:
+        return "Cortex-A78";
+    case 0xd44:
+        return "Cortex-X1";
+    case 0xd46:
+        return "Cortex-A510";
+    case 0xd47:
+        return "Cortex-A710";
+    case 0xd48:
+        return "Cortex-X2";
+    case 0xd49:
+        return "Neoverse-N2";
+    case 0xd4f:
+        return "Neoverse-V2";
+    case 0xd80:
+        return "Cortex-A520";
+    case 0xd81:
+        return "Cortex-A720";
+    case 0xd82:
+        return "Cortex-X4";
+    case 0xd84:
+        return "Neoverse-V3";
+    case 0xd8e:
+        return "Neoverse-N3";
+    default:
+        return {};
+    }
+}
+
+} // namespace Detail
+
+/// The CPU model name from /proc/cpuinfo's text, or empty if it names none. x86 lists a
+/// "model name"; arm64 has none (#2214), so the model is built from the "CPU implementer" and
+/// "CPU part" codes instead ("ARM Neoverse-N2", "Qualcomm part 0x001"), each distinct core type
+/// once in order of appearance, joined with " + " on a big.LITTLE system. Failing those, the
+/// "Hardware" line some Arm kernels add.
+[[nodiscard]] inline std::string cpuModelFromCpuInfo(std::string_view text)
+{
+    std::optional<std::uint32_t> implementer;
+    std::vector<std::string> cores;
+    std::string hardware;
+    while (!text.empty())
+    {
+        const auto newline = text.find('\n');
+        const std::string_view line = text.substr(0, newline);
+        text = (newline == std::string_view::npos) ? std::string_view{} : text.substr(newline + 1);
+
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = Platform::trimAscii(line.substr(0, colon));
+        const std::string_view value = Platform::trimAscii(line.substr(colon + 1));
+        if (key == "model name" && !value.empty())
+        {
+            return std::string(value);
+        }
+        if (key == "CPU implementer")
+        {
+            implementer = Detail::parseHex(value);
+        }
+        else if (key == "CPU part" && implementer.has_value())
+        {
+            const auto part = Detail::parseHex(value);
+            if (!part.has_value())
+            {
+                continue;
+            }
+            const std::string_view vendor = Detail::armImplementerName(*implementer);
+            const std::string_view partName = (*implementer == 0x41) ? Detail::armLtdPartName(*part) : std::string_view{};
+            std::string core = vendor.empty() ? std::format("Arm implementer {:#04x}", *implementer) : std::string(vendor);
+            core += partName.empty() ? std::format(" part {:#05x}", *part) : std::format(" {}", partName);
+            if (std::ranges::find(cores, core) == cores.end())
+            {
+                cores.push_back(std::move(core));
+            }
+        }
+        else if (key == "Hardware" && hardware.empty())
+        {
+            hardware = value;
+        }
+    }
+    if (!cores.empty())
+    {
+        std::string joined = cores.front();
+        for (std::size_t i = 1; i < cores.size(); ++i)
+        {
+            joined += " + ";
+            joined += cores[i];
+        }
+        return joined;
+    }
+    return hardware;
 }
 
 } // namespace Platform::LinuxCpuDetails
