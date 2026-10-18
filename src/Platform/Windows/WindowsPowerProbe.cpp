@@ -36,41 +36,25 @@ WindowsPowerProbe::WindowsPowerProbe() : WindowsPowerProbe(Windows::BatteryDevic
 WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi, GetSystemPowerStatusFn getSystemPowerStatus)
     : m_BatteryApi(batteryApi), m_GetSystemPowerStatus(getSystemPowerStatus)
 {
-    // Probe capabilities at construction time
     SYSTEM_POWER_STATUS sps{};
-    if (m_GetSystemPowerStatus(&sps) != 0)
-    {
-        // Check if there's a battery. Must agree with parsePowerStatus()'s handling of
-        // BATTERY_FLAG_UNKNOWN (0xFF): that sentinel reports BatteryState::Unknown from read(),
-        // not NotPresent, so hasBattery must not be false for it either - otherwise callers
-        // would see hasBattery == false alongside a non-NotPresent state, which violates the
-        // power-probe contract.
-        m_Capabilities.hasBattery = hasBatteryFromFlag(sps.BatteryFlag);
-        m_Capabilities.hasChargePercent = m_Capabilities.hasBattery && (sps.BatteryLifePercent <= 100);
-        m_Capabilities.hasTimeEstimates = m_Capabilities.hasBattery && (sps.BatteryLifeTime != 0xFFFFFFFF);
-
-        // GetSystemPowerStatus has no live capacity, rate or voltage
-        m_Capabilities.hasChargeCapacity = false;
-        m_Capabilities.hasPowerRate = false;
-        m_Capabilities.hasVoltage = false;
-    }
-    else
+    const bool statusRead = m_GetSystemPowerStatus(&sps) != 0;
+    if (!statusRead)
     {
         spdlog::warn("WindowsPowerProbe: GetSystemPowerStatus failed");
-        m_Capabilities.hasBattery = false;
     }
 
-    // The battery device's static facts (#1523). Each is reported only when the battery gave it:
-    // relative-unit capacities are not Wh, and a cycle count of 0 is the driver's "no counter".
+    // The battery device's static facts (#1523); read() reads them again when they may have changed
     refreshBatteryInfo(sps.ACLineStatus == 1);
-    const Windows::BatteryInfo& info = m_BatteryInfo;
-    m_Capabilities.hasDesignCapacity = info.found && info.designWh > 0.0 && info.fullChargeWh > 0.0;
-    m_Capabilities.hasHealthPercent = info.found && info.healthPercent >= 0;
-    m_Capabilities.hasCycleCount = info.found && info.cycleCount > 0;
-    m_Capabilities.hasTechnology = info.found && !info.technology.empty();
+    if (statusRead)
+    {
+        updateCapabilities(sps);
+    }
+    // Otherwise no battery is reported until a read() succeeds
 
-    spdlog::debug(
-        "WindowsPowerProbe: hasBattery={} batteryInfo={} relative={}", m_Capabilities.hasBattery, info.found, info.relativeCapacity);
+    spdlog::debug("WindowsPowerProbe: hasBattery={} batteryInfo={} relative={}",
+                  m_Capabilities.hasBattery,
+                  m_BatteryInfo.found,
+                  m_BatteryInfo.relativeCapacity);
 }
 
 PowerCounters WindowsPowerProbe::read()
@@ -78,6 +62,7 @@ PowerCounters WindowsPowerProbe::read()
     SYSTEM_POWER_STATUS sps{};
     if (m_GetSystemPowerStatus(&sps) == 0)
     {
+        // The capabilities are kept: a failed call says nothing about the battery
         spdlog::warn("WindowsPowerProbe: GetSystemPowerStatus failed");
         PowerCounters counters;
         counters.state = BatteryState::Unknown;
@@ -85,15 +70,25 @@ PowerCounters WindowsPowerProbe::read()
     }
 
     PowerCounters counters = parsePowerStatus(sps.ACLineStatus, sps.BatteryFlag, sps.BatteryLifePercent, sps.BatteryLifeTime);
+    if (counters.state != BatteryState::NotPresent)
+    {
+        // A battery absent until now (inserted after start, #2413) is read at once, not at the next
+        // periodic refresh
+        const bool batteryAppeared = !m_Capabilities.hasBattery;
+        if (batteryAppeared || counters.isOnAc != m_BatteryInfoOnAc ||
+            std::chrono::steady_clock::now() - m_BatteryInfoReadAt >= BATTERY_INFO_REFRESH)
+        {
+            refreshBatteryInfo(counters.isOnAc);
+        }
+    }
+    // The capabilities follow every read, as LinuxPowerProbe's do (#2380, #2413): a battery inserted
+    // or removed, or details the battery device first answered after start
+    updateCapabilities(sps);
     if (counters.state == BatteryState::NotPresent)
     {
         return counters;
     }
 
-    if (counters.isOnAc != m_BatteryInfoOnAc || std::chrono::steady_clock::now() - m_BatteryInfoReadAt >= BATTERY_INFO_REFRESH)
-    {
-        refreshBatteryInfo(counters.isOnAc);
-    }
     const Windows::BatteryInfo& info = m_BatteryInfo;
     counters.chargeDesignWh = info.designWh;
     counters.chargeFullWh = info.fullChargeWh;
@@ -115,6 +110,20 @@ void WindowsPowerProbe::refreshBatteryInfo(bool isOnAc)
     m_BatteryInfo = Windows::readBatteryInfo(m_BatteryApi);
     m_BatteryInfoReadAt = std::chrono::steady_clock::now();
     m_BatteryInfoOnAc = isOnAc;
+}
+
+void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)
+{
+    const Windows::BatteryInfo& info = m_BatteryInfo;
+    m_Capabilities = powerCapabilitiesFrom(status.BatteryFlag,
+                                           status.BatteryLifePercent,
+                                           status.BatteryLifeTime,
+                                           BatteryDetailsReported{.found = info.found,
+                                                                  .designWh = info.designWh,
+                                                                  .fullChargeWh = info.fullChargeWh,
+                                                                  .healthPercent = info.healthPercent,
+                                                                  .cycleCount = info.cycleCount,
+                                                                  .hasTechnology = !info.technology.empty()});
 }
 
 } // namespace Platform

@@ -21,8 +21,9 @@ namespace Platform
 /// Windows implementation of IPowerProbe.
 /// Reads the live charge state from GetSystemPowerStatus, and the battery's static facts (design
 /// and full-charge capacity, cycle count, chemistry, manufacturer, model) from the battery device
-/// (WindowsBatteryInfo.h, #1523): at construction, then again only when the power source changes
-/// or every few minutes, never per sample.
+/// (WindowsBatteryInfo.h, #1523): at construction, then again only when a battery appears, the power
+/// source changes or every few minutes, never per sample. The capabilities are recomputed on every
+/// read(), so a battery inserted or removed after start, or details first answered late, show (#2413).
 class WindowsPowerProbe : public IPowerProbe
 {
   public:
@@ -45,6 +46,8 @@ class WindowsPowerProbe : public IPowerProbe
 
   private:
     void refreshBatteryInfo(bool isOnAc);
+    /// m_Capabilities from this power status and m_BatteryInfo; read() calls it every sample (#2413).
+    void updateCapabilities(const SYSTEM_POWER_STATUS& status);
 
     PowerCapabilities m_Capabilities;
     Windows::BatteryDeviceFunctions m_BatteryApi;

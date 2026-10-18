@@ -59,6 +59,54 @@ TEST(HasBatteryFromFlagTest, UnknownFlagReportsTrueNotFalse)
     EXPECT_TRUE(hasBatteryFromFlag(UNKNOWN_FLAG));
 }
 
+// =============================================================================
+// powerCapabilitiesFrom: recomputed on every read (#2413)
+// =============================================================================
+
+constexpr BatteryDetailsReported FULL_DETAILS{
+    .found = true, .designWh = 52.6, .fullChargeWh = 47.34, .healthPercent = 90, .cycleCount = 123, .hasTechnology = true};
+
+TEST(PowerCapabilitiesFromTest, ABatteryWithItsDetailsOffersEachOne)
+{
+    const PowerCapabilities caps = powerCapabilitiesFrom(DISCHARGING_FLAG, 80, 3'600, FULL_DETAILS);
+    EXPECT_TRUE(caps.hasBattery);
+    EXPECT_TRUE(caps.hasChargePercent);
+    EXPECT_TRUE(caps.hasTimeEstimates);
+    EXPECT_TRUE(caps.hasDesignCapacity);
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_TRUE(caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
+    // GetSystemPowerStatus has no live capacity, rate or voltage
+    EXPECT_FALSE(caps.hasChargeCapacity || caps.hasPowerRate || caps.hasVoltage);
+}
+
+TEST(PowerCapabilitiesFromTest, NoBatteryOffersNothingWhateverTheDeviceLastSaid)
+{
+    // NotPresent is no battery (#2408), even with details left from a battery since removed
+    const PowerCapabilities caps = powerCapabilitiesFrom(NO_BATTERY_FLAG, 255, UNKNOWN_LIFE_TIME, FULL_DETAILS);
+    EXPECT_FALSE(caps.hasBattery);
+    EXPECT_FALSE(caps.hasChargePercent || caps.hasTimeEstimates);
+    EXPECT_FALSE(caps.hasDesignCapacity || caps.hasHealthPercent || caps.hasCycleCount || caps.hasTechnology);
+}
+
+TEST(PowerCapabilitiesFromTest, DetailsTheDeviceDidNotGiveAreNotOffered)
+{
+    const PowerCapabilities unanswered = powerCapabilitiesFrom(CHARGING_FLAG, 255, UNKNOWN_LIFE_TIME, BatteryDetailsReported{});
+    EXPECT_TRUE(unanswered.hasBattery);
+    EXPECT_FALSE(unanswered.hasChargePercent || unanswered.hasTimeEstimates);
+    EXPECT_FALSE(unanswered.hasDesignCapacity || unanswered.hasHealthPercent || unanswered.hasCycleCount || unanswered.hasTechnology);
+
+    BatteryDetailsReported relative = FULL_DETAILS; // Relative units, no cycle counter
+    relative.designWh = 0.0;
+    relative.fullChargeWh = 0.0;
+    relative.healthPercent = -1;
+    relative.cycleCount = 0;
+    const PowerCapabilities caps = powerCapabilitiesFrom(UNKNOWN_FLAG, 50, UNKNOWN_LIFE_TIME, relative);
+    EXPECT_TRUE(caps.hasBattery); // BATTERY_FLAG_UNKNOWN is not "no battery"
+    EXPECT_FALSE(caps.hasDesignCapacity || caps.hasHealthPercent || caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
+}
+
 TEST(ParsePowerStatusTest, NoBatteryReportsNotPresentAndOnAc)
 {
     const auto counters = parsePowerStatus(0, NO_BATTERY_FLAG, 0, UNKNOWN_LIFE_TIME);

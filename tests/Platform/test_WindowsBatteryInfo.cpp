@@ -1,7 +1,8 @@
 /// @file test_WindowsBatteryInfo.cpp
 /// @brief Platform::Windows::readBatteryInfo() (#1523) and WindowsPowerProbe's battery details,
 /// against fake battery device calls: a normal battery, two batteries summed (#2151),
-/// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once.
+/// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once;
+/// and the probe's capabilities following a battery inserted, removed or answering late (#2413).
 
 #include "Platform/PowerTypes.h"
 #include "Platform/Windows/WindowsBatteryInfo.h"
@@ -337,6 +338,59 @@ TEST_F(WindowsBatteryInfoTest, ProbeWithNoBatteryReadsNoDeviceFacts)
     EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0);
     EXPECT_TRUE(counters.manufacturer.empty());
     EXPECT_EQ(fake().informationQueries, afterConstruction);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeOffersABatteryInsertedAfterStart)
+{
+    // #2413: started with the battery out, then the battery is inserted
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_NO_BATTERY;
+    fake().paths.clear();
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    EXPECT_FALSE(probe.capabilities().hasDesignCapacity);
+
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    fake().batteryLifePercent = 40;
+    fake().paths = FakeBattery{}.paths;
+    const PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6) << "the new battery is read at once, not in five minutes";
+    const PowerCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasBattery);
+    EXPECT_TRUE(caps.hasChargePercent);
+    EXPECT_TRUE(caps.hasDesignCapacity);
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_TRUE(caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
+
+    // And removed again: no battery and none of its details, though the device last answered
+    fake().batteryFlag = BATTERY_FLAG_NO_BATTERY;
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+    const PowerCapabilities removed = probe.capabilities();
+    EXPECT_FALSE(removed.hasBattery);
+    EXPECT_FALSE(removed.hasChargePercent || removed.hasTimeEstimates);
+    EXPECT_FALSE(removed.hasDesignCapacity || removed.hasHealthPercent || removed.hasCycleCount || removed.hasTechnology);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeOffersDetailsTheBatteryFirstAnsweredLate)
+{
+    // #2413: the battery driver doesn't answer yet at start (right after resume, say)
+    fake().failInformation = true;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    EXPECT_TRUE(probe.capabilities().hasBattery);
+    EXPECT_FALSE(probe.capabilities().hasDesignCapacity);
+
+    // It answers by the next re-read (here a change of power source; the periodic one works alike)
+    fake().failInformation = false;
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    (void) probe.read();
+    const PowerCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasDesignCapacity) << "not 'Not reported' for the whole session";
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_TRUE(caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
 }
 
 TEST_F(WindowsBatteryInfoTest, FailedPowerStatusIsNoBatteryAndAnUnknownState)

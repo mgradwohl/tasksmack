@@ -116,6 +116,46 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
     return counters;
 }
 
+/// What the battery device reported (WindowsBatteryInfo.h's BatteryInfo), as
+/// powerCapabilitiesFrom() takes it, so that stays includable without windows.h.
+struct BatteryDetailsReported
+{
+    bool found = false; ///< A battery answered IOCTL_BATTERY_QUERY_INFORMATION
+    double designWh = 0.0;
+    double fullChargeWh = 0.0;
+    int healthPercent = -1;
+    std::uint64_t cycleCount = 0; ///< 0 is the driver's "no cycle counter"
+    bool hasTechnology = false;
+};
+
+/// WindowsPowerProbe's capabilities from one GetSystemPowerStatus snapshot and the battery device's
+/// latest answer. Recomputed on every read (#2413), so a battery inserted after start, or details the
+/// device first answered late, are offered. With no battery (hasBatteryFromFlag() false, the
+/// NotPresent state, #2408) nothing is offered, whatever the device last said. GetSystemPowerStatus
+/// has no live capacity, rate or voltage, and each device fact is offered only when the battery gave
+/// it: relative-unit capacities are not Wh, and a cycle count of 0 is the driver's "no counter".
+[[nodiscard]] inline PowerCapabilities powerCapabilitiesFrom(std::uint8_t batteryFlag,
+                                                             std::uint8_t batteryLifePercent,
+                                                             std::uint32_t batteryLifeTimeSec,
+                                                             const BatteryDetailsReported& details) noexcept
+{
+    constexpr std::uint32_t BATTERY_LIFE_TIME_UNKNOWN = 0xFFFFFFFFU;
+
+    PowerCapabilities caps;
+    caps.hasBattery = hasBatteryFromFlag(batteryFlag);
+    if (!caps.hasBattery)
+    {
+        return caps;
+    }
+    caps.hasChargePercent = batteryLifePercent <= 100;
+    caps.hasTimeEstimates = batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN;
+    caps.hasDesignCapacity = details.found && details.designWh > 0.0 && details.fullChargeWh > 0.0;
+    caps.hasHealthPercent = details.found && details.healthPercent >= 0;
+    caps.hasCycleCount = details.found && details.cycleCount > 0;
+    caps.hasTechnology = details.found && details.hasTechnology;
+    return caps;
+}
+
 // ---- Battery details (#1523): IOCTL_BATTERY_QUERY_INFORMATION's BATTERY_INFORMATION fields ----
 
 /// BATTERY_CAPACITY_RELATIVE (poclass.h): the capacities are relative units, not mWh.
