@@ -64,13 +64,20 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         m_Authorizations = authorizations;
     }
 
-    bool authorize(const std::stop_token& /*stopToken*/) override
+    bool authorize(const std::stop_token& stopToken) override
     {
+        m_AuthorizeSawStop = stopToken.stop_requested();
         if (m_Authorizations != nullptr)
         {
             ++*m_Authorizations;
         }
         return m_Authorizations != nullptr;
+    }
+
+    /// Whether the last authorize() was handed a stopped token (#2381).
+    [[nodiscard]] bool authorizeSawStop() const noexcept
+    {
+        return m_AuthorizeSawStop;
     }
 
     /// Reports a public IP lookup (#1518), counting its calls in @p reads.
@@ -252,6 +259,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     std::vector<Platform::SensorsInfo> m_ScriptedSensors;
     int* m_PublicIpReads = nullptr;
     int* m_Authorizations = nullptr;
+    bool m_AuthorizeSawStop = false;
 };
 
 /// The key of the coretemp sensor FakeSystemInfoProbe reads by default.
@@ -383,6 +391,23 @@ TEST(SystemInfoModelTest, AuthorizationIsAskedOnceBeforeTheNextRead)
     EXPECT_EQ(reads, 2) << "the read goes on after the prompt";
     model.read();
     EXPECT_EQ(authorizations, 1) << "the helper stays authorized by itself";
+}
+
+// #2381: the read's stop token reaches the prompt, so closing the page doesn't wait the prompt out.
+TEST(SystemInfoModelTest, TheReadsStopTokenReachesAuthorize)
+{
+    int reads = 0;
+    int authorizations = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->offerAuthorization(&authorizations);
+    const FakeSystemInfoProbe* fake = probe.get();
+    SystemInfoModel model(std::move(probe));
+    std::stop_source stop;
+    stop.request_stop();
+    model.requestAuthorization();
+    EXPECT_FALSE(model.tryRead(stop.get_token()).has_value());
+    EXPECT_EQ(authorizations, 1);
+    EXPECT_TRUE(fake->authorizeSawStop());
 }
 
 TEST(SystemInfoModelTest, AuthorizationIsNeverAskedOfAProbeWithoutIt)

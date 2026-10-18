@@ -32,7 +32,7 @@ SystemInfoModel::SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> pro
     m_Capabilities = m_Probe->capabilities();
 }
 
-void SystemInfoModel::read()
+void SystemInfoModel::read(const std::stop_token& stopToken)
 {
     const std::scoped_lock lock(m_ReadMutex);
 
@@ -46,7 +46,7 @@ void SystemInfoModel::read()
     if (m_AuthorizationRequested.exchange(false, std::memory_order_relaxed) && m_Capabilities.canReadAuthorized)
     {
         // The password prompt, on this (the read's) thread; a dismissed prompt just leaves the facts marked
-        static_cast<void>(m_Probe->authorize(std::stop_token{}));
+        static_cast<void>(m_Probe->authorize(stopToken));
     }
     if (m_Capabilities.hasOs)
     {
@@ -174,9 +174,9 @@ std::optional<std::string> SystemInfoModel::tryReadSensors()
     return tryReading([this] { readSensors(); });
 }
 
-std::optional<std::string> SystemInfoModel::tryRead()
+std::optional<std::string> SystemInfoModel::tryRead(const std::stop_token& stopToken)
 {
-    return tryReading([this] { read(); });
+    return tryReading([this, &stopToken] { read(stopToken); });
 }
 
 } // namespace Domain

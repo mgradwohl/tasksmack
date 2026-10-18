@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -95,7 +96,8 @@ void SystemInfoPanel::onAttach()
 
 void SystemInfoPanel::onDetach()
 {
-    finishRead(true); // the one place a read is waited for
+    m_Pending.requestStop(); // a password prompt still up is given up on, not waited out (#2381)
+    finishRead(true);        // the one place a read is waited for
     m_Snapshot.reset();
     m_Model.reset();
 }
@@ -122,8 +124,8 @@ void SystemInfoPanel::startRead(bool sensorsOnly)
         return;
     }
     // A failed read comes back as its message, copied on the worker (SystemInfoModel::tryRead()).
-    if (const auto failed =
-            m_Pending.start([model = m_Model, sensorsOnly] { return sensorsOnly ? model->tryReadSensors() : model->tryRead(); }))
+    if (const auto failed = m_Pending.start([model = m_Model, sensorsOnly](const std::stop_token& stop)
+                                            { return sensorsOnly ? model->tryReadSensors() : model->tryRead(stop); }))
     {
         spdlog::warn("System Information: couldn't start a read: {}", failed->value_or(std::string()));
         return;

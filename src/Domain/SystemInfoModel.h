@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -104,15 +105,15 @@ class SystemInfoModel
     explicit SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> probe, std::shared_ptr<CrashHistory> crashHistory = nullptr);
 
     /// Reads every section and publishes the result. Thread-safe; reads are serialised. Called off the
-    /// UI thread.
-    void read();
+    /// UI thread. @p stopToken cancels a password prompt requestAuthorization() asked for (#2381).
+    void read(const std::stop_token& stopToken = {});
 
     /// read(), for a worker thread: a read that throws is caught here, on the thread that threw it, and
     /// only its message is returned (a copy), so no exception object reaches another thread through a
     /// future (#1685, #1706). @return nullopt when the read succeeded; else the exception's what(), or
     /// "unknown error" for a throw that isn't a std::exception. Only building that message (bad_alloc)
     /// can still escape.
-    [[nodiscard]] std::optional<std::string> tryRead();
+    [[nodiscard]] std::optional<std::string> tryRead(const std::stop_token& stopToken = {});
     /// Reads the sensors again and publishes them with every other fact of the newest read unchanged,
     /// "read at" included, adding to each sensor's range (#1522). Does nothing before the first read() or
     /// when the probe reads nothing. Thread-safe; serialised with read(). Called off the UI thread.
