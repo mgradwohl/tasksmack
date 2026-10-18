@@ -80,6 +80,13 @@ class ProcessActionRun
         return m_Worker.busy();
     }
 
+    /// Asks the running action to stop, through its stop token: a password prompt's wait gives up (#2388).
+    /// Call it before waiting with update(true) where the wait mustn't last as long as the prompt.
+    void requestStop() noexcept
+    {
+        m_Worker.requestStop();
+    }
+
     /// What the result line shows while busy(): "Terminating bash (PID 1234)...".
     [[nodiscard]] const std::string& pendingText() const noexcept
     {

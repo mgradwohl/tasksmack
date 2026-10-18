@@ -7,10 +7,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <future>
 #include <latch>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -81,6 +83,31 @@ TEST(ProcessActionRunTest, WorkThatThrowsFinishesAsAFailedResult)
     ASSERT_TRUE(finished.has_value());
     EXPECT_FALSE(finished->success);
     EXPECT_EQ(finished->errorMessage, "the platform call failed");
+}
+
+// #2388: an action waiting on its stop token (a password prompt) gives up when asked, so a wait for it
+// at detach doesn't last as long as the prompt.
+TEST(ProcessActionRunTest, RequestStopEndsAnActionThatWatchesItsToken)
+{
+    ProcessActionRun run;
+    std::optional<Platform::ProcessActionResult> finished;
+    ASSERT_TRUE(run.start(
+        "Waiting for authorization...",
+        [](const std::stop_token& stop)
+        {
+            while (!stop.stop_requested())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            return Platform::ProcessActionResult::error("cancelled");
+        },
+        [&finished](const Platform::ProcessActionResult& result) { finished = result; }));
+    EXPECT_TRUE(run.busy());
+    run.requestStop();
+    EXPECT_TRUE(run.update(/*wait=*/true));
+    ASSERT_TRUE(finished.has_value());
+    EXPECT_EQ(finished->errorMessage, "cancelled");
+    EXPECT_FALSE(run.busy());
 }
 
 TEST(ProcessActionRunTest, DestroyingItWaitsForTheActionInFlight)

@@ -1064,7 +1064,9 @@ void ProcessesPanel::onDetach()
     m_DumpView.shutdown();
     // So is a batch still running (#2142): stopped before its next process.
     m_BatchRun.shutdown();
-    // And a single-process action (#2305): one platform call, waited for while its actions are here.
+    // And a single-process action (#2305): one platform call, waited for while its actions are here --
+    // asked to stop first, so a password prompt still up is given up on, not waited out (#2388).
+    m_RowActionRun.requestStop();
     m_RowActionRun.update(/*wait=*/true);
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492).
