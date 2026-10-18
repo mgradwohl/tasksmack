@@ -9,7 +9,7 @@ on:
     # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
     # dispatch, so one failed dispatch would stay its latest main run and keep the issue red forever.
     # CI's nightly schedule runs the same full clang-tidy and is watched as CI.
-    workflows: [CI, CodeQL Security Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit]
+    workflows: [CI, CodeQL Security Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit, ARM64]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -52,6 +52,7 @@ jobs:
             heavy-checks.yml|Heavy Checks
             osv-scanner.yml|OSV Dependency Scan
             pre-commit.yml|Pre-commit
+            arm64.yml|ARM64
           # Jobs that only some runs of one event execute (#2313): workflow file|display name|event|job id.
           # CI's unity build runs only on the Sunday schedule, so the weekday nightly that follows a red
           # Sunday skips it and passes; these are judged by the latest run that actually ran the job.
