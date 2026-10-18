@@ -21,3 +21,10 @@ race:pthread_barrier_wait
 # a race (#2042). TSan matches "race:" against each frame's function, file and module name, so this
 # hides only reports with a libgallium frame on the stack; TaskSmack has no code in that module.
 race:libgallium
+
+# libsystemd is not instrumented either. When two threads read the journal at once (the crash
+# history's concurrent-read test, #2416), its first-use setup of a module-global random seed writes
+# through the getrandom interceptor on both threads, which TSan reports as a race on a libsystemd
+# global. sd_journal handles are per-probe; the shared state is libsystemd's own. This hides only
+# reports with a libsystemd frame on the stack; TaskSmack has no code in that module.
+race:libsystemd
