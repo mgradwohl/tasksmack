@@ -2752,6 +2752,28 @@ TEST(SystemModelTest, BatteryChargeHistoryHoldsTheChargeAndNaNForAnUnreadCharge)
     EXPECT_TRUE(std::isnan(chargeHist[1]));
 }
 
+TEST(SystemModelTest, ABatteryInsertedAfterStartIsShown)
+{
+    // #2380: a machine started with no pack gains its battery once one is inserted.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({});
+    Platform::PowerCounters counters;
+    counters.chargePercent = 60;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    EXPECT_FALSE(model.snapshot().power.hasBattery);
+
+    rawPowerProbe->setCapabilities({.hasBattery = true, .hasChargePercent = true});
+    model.refresh();
+    EXPECT_TRUE(model.snapshot().power.hasBattery);
+    EXPECT_EQ(model.snapshot().power.chargePercent, 60);
+}
+
 // =============================================================================
 // Power Status (computePowerStatus via refresh)
 // =============================================================================

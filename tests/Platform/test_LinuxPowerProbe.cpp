@@ -798,6 +798,39 @@ TEST_F(LinuxPowerProbeMultiPackTest, AbsentAndRemovedPacksAreLeftOut)
     EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
 }
 
+TEST_F(LinuxPowerProbeMultiPackTest, APackInsertedLaterIsCombined)
+{
+    // #2380: the ACPI driver adds BATn only while the pack is in, so the list is re-read on each read.
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000"});
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_EQ(probe.read().chargePercent, 50);
+    EXPECT_FALSE(probe.capabilities().hasCycleCount);
+
+    makePack("BAT1", {.capacity = "90", .energyNow = "54000000", .energyFull = "60000000", .energyDesign = "60000000", .cycles = "12"});
+    EXPECT_EQ(probe.read().chargePercent, 80);
+    EXPECT_TRUE(probe.capabilities().hasCycleCount) << "what the new pack offers";
+
+    std::filesystem::remove_all(m_SysRoot / "BAT1");
+    EXPECT_EQ(probe.read().chargePercent, 50);
+    EXPECT_FALSE(probe.capabilities().hasCycleCount);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, ABatteryAppearsWhenTheFirstPackIsInserted)
+{
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+
+    makePack("BAT0", {.status = "Charging", .capacity = "30"});
+    EXPECT_EQ(probe.read().state, BatteryState::Charging);
+    EXPECT_TRUE(probe.capabilities().hasBattery);
+    EXPECT_TRUE(probe.capabilities().hasChargePercent);
+
+    std::filesystem::remove_all(m_SysRoot / "BAT0");
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+}
+
 TEST_F(LinuxPowerProbeMultiPackTest, OtherSystemBatteriesAreNotPacks)
 {
     makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .energyDesign = "20000000"});
@@ -1040,10 +1073,13 @@ TEST_F(LinuxPowerProbeUnitTest, UnlistableRootFindsNoBattery)
     std::filesystem::permissions(m_SysRoot, std::filesystem::perms::none);
 
     LinuxPowerProbe probe(m_SysRoot.string());
-
-    std::filesystem::permissions(m_SysRoot, std::filesystem::perms::owner_all);
     EXPECT_FALSE(probe.capabilities().hasBattery);
     EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+
+    // Listable again: the next read finds the pack (#2380)
+    std::filesystem::permissions(m_SysRoot, std::filesystem::perms::owner_all);
+    EXPECT_NE(probe.read().state, BatteryState::NotPresent);
+    EXPECT_TRUE(probe.capabilities().hasBattery);
 }
 
 // #1891: charging power derived from current_now and voltage_now is negative, as power_now's is.

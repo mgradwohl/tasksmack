@@ -437,7 +437,11 @@ void SystemModel::refresh()
     std::optional<PowerStatus> powerStatus;
     if (m_PowerProbe)
     {
-        powerStatus = computePowerStatus(m_PowerProbe->read());
+        const Platform::PowerCounters power = m_PowerProbe->read();
+        // A battery inserted or removed since the last read changes what the probe offers (#2380). Read
+        // and used on this thread only.
+        m_PowerCapabilities = m_PowerProbe->capabilities();
+        powerStatus = computePowerStatus(power);
     }
 
     updateFromCountersLocked(counters, nowSeconds, powerStatus);

@@ -87,79 +87,56 @@ namespace
 LinuxPowerProbe::LinuxPowerProbe(std::string powerSupplyRoot) : m_PowerSupplyRoot(std::move(powerSupplyRoot))
 {
     discoverBatteries();
-    spdlog::debug("LinuxPowerProbe: found {} batteries", m_BatteryPaths.size());
 }
 
 void LinuxPowerProbe::discoverBatteries()
 {
     namespace Fs = std::filesystem;
 
+    // Every system-scoped battery: the primary ones (BAT*, CMB* on ThinkPads) and the others (rarer:
+    // a UPS's, a tablet dock's). A peripheral's (scope "Device": a mouse, a pen) is never the system's.
+    std::vector<std::string> primaryBatteries;
+    std::vector<std::string> otherBatteries;
     std::error_code ec;
-    if (!Fs::exists(m_PowerSupplyRoot, ec) || !Fs::is_directory(m_PowerSupplyRoot, ec))
+    for (Fs::directory_iterator it(m_PowerSupplyRoot, ec), end; !ec && it != end; it.increment(ec))
     {
-        spdlog::debug("LinuxPowerProbe: {} not found or not a directory", m_PowerSupplyRoot);
-        m_Capabilities.hasBattery = false;
-        return;
-    }
-
-    // Collect all battery paths, then sort to prefer real batteries over peripherals
-    std::vector<std::string> primaryBatteries;    // BAT*, CMB*, etc.
-    std::vector<std::string> peripheralBatteries; // hidpp_battery_*, wacom_*, etc.
-
-    for (const auto& entry : Fs::directory_iterator(m_PowerSupplyRoot, ec))
-    {
-        if (!entry.is_directory(ec))
+        const auto devicePath = it->path().string();
+        std::error_code typeEc;
+        if (!it->is_directory(typeEc) || isPeripheralSupply(devicePath) || readFirstLine(devicePath + "/type") != "Battery")
         {
             continue;
         }
-
-        const auto devicePath = entry.path().string();
-        if (isPeripheralSupply(devicePath))
-        {
-            spdlog::debug("LinuxPowerProbe: ignoring peripheral power supply at {}", devicePath);
-            continue;
-        }
-        const std::string type = readFirstLine(devicePath + "/type");
-        if (type == "Battery")
-        {
-            const auto deviceName = entry.path().filename().string();
-            // Primary system batteries typically start with BAT, CMB (ThinkPad), or similar
-            if (deviceName.starts_with("BAT") || deviceName.starts_with("CMB"))
-            {
-                primaryBatteries.push_back(devicePath);
-                spdlog::debug("LinuxPowerProbe: discovered primary battery at {}", devicePath);
-            }
-            else
-            {
-                peripheralBatteries.push_back(devicePath);
-                spdlog::debug("LinuxPowerProbe: discovered peripheral battery at {}", devicePath);
-            }
-        }
+        const auto deviceName = it->path().filename().string();
+        (deviceName.starts_with("BAT") || deviceName.starts_with("CMB") ? primaryBatteries : otherBatteries).push_back(devicePath);
     }
 
     // Every primary battery is one of the system's packs, combined on each read (#2319), in name order
     // so which pack is "first" doesn't depend on directory order. Without one, the first other
     // system-scoped battery stands in for the system's, as before.
     std::ranges::sort(primaryBatteries);
-    std::ranges::sort(peripheralBatteries);
-    m_BatteryPaths = std::move(primaryBatteries);
-    if (m_BatteryPaths.empty() && !peripheralBatteries.empty())
+    std::ranges::sort(otherBatteries);
+    std::vector<std::string> batteryPaths = std::move(primaryBatteries);
+    if (batteryPaths.empty() && !otherBatteries.empty())
     {
-        m_BatteryPaths.push_back(peripheralBatteries.front());
+        batteryPaths.push_back(otherBatteries.front());
     }
 
-    if (ec)
+    // Listed again on every read, as the ACPI driver adds a pack's device only while it is in (#2380);
+    // the capabilities follow when the set changes.
+    if (m_Discovered && batteryPaths == m_BatteryPaths)
     {
-        spdlog::warn("LinuxPowerProbe: error iterating {}: {}", m_PowerSupplyRoot, ec.message());
+        return;
     }
-
-    // Set capabilities based on discovery
+    m_Discovered = true;
+    m_BatteryPaths = std::move(batteryPaths);
+    m_Capabilities = PowerCapabilities{};
     m_Capabilities.hasBattery = !m_BatteryPaths.empty();
     for (const auto& batteryPath : m_BatteryPaths)
     {
         addPackCapabilities(batteryPath);
     }
     m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
+    spdlog::debug("LinuxPowerProbe: {} system batteries under {}", m_BatteryPaths.size(), m_PowerSupplyRoot);
 }
 
 /// What any of the packs offers is what the combined battery offers (#2319)
@@ -188,6 +165,7 @@ void LinuxPowerProbe::addPackCapabilities(const std::string& batteryPath)
 
 PowerCounters LinuxPowerProbe::read()
 {
+    discoverBatteries(); // a pack inserted or removed since the last read (#2380)
     std::vector<PackReading> packs;
     packs.reserve(m_BatteryPaths.size());
     for (const auto& batteryPath : m_BatteryPaths)

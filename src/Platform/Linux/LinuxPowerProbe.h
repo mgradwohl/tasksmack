@@ -67,6 +67,7 @@ class LinuxPowerProbe : public IPowerProbe
     std::vector<std::string> m_BatteryPaths; // The system's packs, by name, like "/sys/class/power_supply/BAT0"
     std::string m_PowerSupplyRoot;           // Root sysfs path (injectable for testing)
     PowerCapabilities m_Capabilities;
+    bool m_Discovered = false; // discoverBatteries() has run once
 };
 
 } // namespace Platform
