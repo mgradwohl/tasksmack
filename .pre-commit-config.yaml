@@ -35,8 +35,9 @@ repos:
         name: Remove UTF-8 byte-order marks
         exclude: '^CHANGELOG\.md$|^tests/fuzz/corpus/'
 
-  # UTF-8 decode check (#1648): every staged text file must decode as strict UTF-8; failures are
-  # reported as file:line. pre-commit-hooks has no such hook, so it's a local script. `types: [text]`
+  # UTF-8 decode check (#1648): every staged text file must decode as strict UTF-8 and hold no
+  # double-encoded (mojibake) text, which is still valid UTF-8 (#2529); failures are reported as
+  # file:line. pre-commit-hooks has no such hook, so it's a local script. `types: [text]`
   # leaves out binary assets (the same set .gitattributes marks binary); fuzz corpora are raw bytes.
   - repo: local
     hooks:

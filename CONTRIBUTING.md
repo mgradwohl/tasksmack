@@ -228,8 +228,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-added-large-files**: Prevent large files (>500KB)
 - **check-merge-conflict**: Detect merge conflict markers
 - **fix-byte-order-marker**: Remove UTF-8 byte-order marks
-- **check-utf8**: Fail on text files that aren't valid UTF-8 (`tools/check-utf8.py`) -- see
-  [Text encoding and locale](#text-encoding-and-locale)
+- **check-utf8**: Fail on text files that aren't valid UTF-8, or that hold double-encoded text, such as an
+  em dash read as Windows-1252 and saved again as U+00E2 U+20AC U+201D (#2529) (`tools/check-utf8.py`)
+  -- see [Text encoding and locale](#text-encoding-and-locale)
 - **check-guidance-sync**: Fail when the AI-agent guidance drifts (`tools/check-guidance-sync.py`): the
   `.claude/skills/tasksmack-review/SKILL.md` body must match `.github/skills/code-review/SKILL.md`
   (frontmatter ignored), and `CLAUDE.md` must import [AGENTS.md](AGENTS.md) with an `@AGENTS.md` line
