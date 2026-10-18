@@ -29,9 +29,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <latch>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -3805,53 +3807,84 @@ TEST(ProcessModelTest, ConcurrentRefreshAndReadDoesNotCrash)
 // sampler keeps appending, compacting into new blocks and evicting the oldest samples. A view's
 // samples never change after it was taken (a race here is what TSan builds would report), and the
 // five series of a generation are always aligned.
+//
+// No deadline or sleeps (#2397, as #2207 and #1797): the refreshes start once the reader has read, and
+// each one waits until the reader has seen the generation it published, so the reader sees every
+// generation however a loaded machine schedules the two threads. Between generations the reader keeps
+// re-reading the one it holds while the next refresh appends.
 TEST(ProcessModelTest, SystemHistoryViewsStayUnchangedWhileTheSamplerAppends)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "proc1", 'R', 100, 100, 1000, 1024, 0)});
     probe->setTotalCpuTime(100000);
-    Domain::ProcessModel model(std::move(probe));
+    ManualClock clock; // advanced only by this thread, the one calling refresh()
+    Domain::ProcessModel model(std::move(probe), clock.now());
     // The smallest window, so the histories reach their capacity and evict while the test runs.
     model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
 
-    std::atomic<bool> keepRunning{true};
-    std::thread writer(
-        [&]
+    // Three windows' worth of samples at the fastest cadence: the histories fill, compact into new
+    // blocks and evict their oldest samples.
+    constexpr auto REFRESH_INTERVAL = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    constexpr int REFRESHES = 3 * Domain::Sampling::HISTORY_SECONDS_MIN * (1000 / Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+
+    std::atomic<std::uint64_t> seenVersion{0};
+    std::latch firstRead{1};
+    Domain::ProcessSystemHistories held; // kept across generations, re-read on every pass
+    int generations = 0;
+
+    auto reader = std::jthread(
+        [&](const std::stop_token& st)
         {
-            while (keepRunning)
+            std::vector<double> heldTimestamps;
+            bool firstReadDone = false;
+            while (!st.stop_requested())
             {
-                model.refresh();
+                Domain::ProcessSystemHistories latest;
+                const bool newer = model.tryCopySystemHistoriesIfNewer(seenVersion.load(), latest);
+                if (!firstReadDone)
+                {
+                    firstReadDone = true;
+                    firstRead.count_down();
+                }
+
+                // The generation held from before still reads exactly as it did when it was taken.
+                EXPECT_TRUE(std::ranges::equal(held.timestamps, heldTimestamps));
+                if (!newer)
+                {
+                    continue;
+                }
+
+                ++generations;
+                EXPECT_EQ(latest.power.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.pageFaults.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.threadCount.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.handleCount.size(), latest.timestamps.size());
+                EXPECT_TRUE(std::ranges::is_sorted(latest.timestamps));
+
+                held = std::move(latest);
+                heldTimestamps.assign(held.timestamps.begin(), held.timestamps.end());
+                seenVersion.store(held.version);
+                seenVersion.notify_all();
             }
         });
 
-    Domain::ProcessSystemHistories held; // kept across generations, re-read after each new one
-    std::vector<double> heldTimestamps;
-    std::uint64_t version = 0;
-    int generations = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
-    while (std::chrono::steady_clock::now() < deadline)
+    firstRead.wait();
+    for (int i = 0; i < REFRESHES; ++i)
     {
-        Domain::ProcessSystemHistories latest;
-        if (!model.tryCopySystemHistoriesIfNewer(version, latest))
-        {
-            continue;
-        }
-        version = latest.version;
-        ++generations;
-        EXPECT_EQ(latest.power.size(), latest.timestamps.size());
-        EXPECT_EQ(latest.pageFaults.size(), latest.timestamps.size());
-        EXPECT_EQ(latest.threadCount.size(), latest.timestamps.size());
-        EXPECT_EQ(latest.handleCount.size(), latest.timestamps.size());
-        EXPECT_TRUE(std::ranges::is_sorted(latest.timestamps));
-
-        // The generation held from before still reads exactly as it did when it was taken.
-        EXPECT_TRUE(std::ranges::equal(held.timestamps, heldTimestamps));
-        held = std::move(latest);
-        heldTimestamps.assign(held.timestamps.begin(), held.timestamps.end());
+        // The reader has seen the latest generation, so this changes once it has seen the next one.
+        const std::uint64_t before = seenVersion.load();
+        model.refresh();
+        clock.advance(REFRESH_INTERVAL);
+        seenVersion.wait(before);
     }
-    keepRunning = false;
-    writer.join();
-    EXPECT_GT(generations, 0);
+
+    reader.request_stop();
+    reader.join();
+
+    EXPECT_EQ(generations, REFRESHES);
+    // The window evicted: the last generation holds about one window of samples, not every refresh's.
+    EXPECT_LT(held.timestamps.size(), static_cast<std::size_t>(REFRESHES / 2));
+    EXPECT_FALSE(held.timestamps.empty());
 }
 
 // =============================================================================
