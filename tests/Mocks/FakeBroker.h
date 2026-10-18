@@ -8,6 +8,7 @@
 #include "Platform/IPrivilegedBroker.h"
 
 #include <atomic>
+#include <chrono>
 #include <expected>
 #include <functional>
 #include <mutex>
@@ -63,6 +64,24 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return {};
     }
 
+    /// callIfIdle() as call(), counted: the sampler's reads must use it (#2369).
+    [[nodiscard]] std::expected<Platform::Broker::Response, std::string> callIfIdle(const Platform::Broker::Request& request,
+                                                                                    std::chrono::milliseconds /*timeout*/) override
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            ++m_IdleCallCount;
+        }
+        return call(request, std::stop_token{});
+    }
+
+    /// How many of the calls were callIfIdle().
+    [[nodiscard]] int idleCallCount() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_IdleCallCount;
+    }
+
     /// How many times connect() was called.
     [[nodiscard]] int connectCount() const
     {
@@ -99,6 +118,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     std::vector<Platform::Broker::Request> m_Requests;
     std::string m_ConnectFailure;
     int m_ConnectCount = 0;
+    int m_IdleCallCount = 0;
     std::atomic<bool> m_Connected{true};
 };
 

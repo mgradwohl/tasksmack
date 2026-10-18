@@ -483,8 +483,11 @@ MemoryRollupRead BrokeredProcessProbe::readMemoryRollup(std::int32_t pid, std::u
     {
         return read;
     }
+    // On the sampler's thread: never behind another call, and briefly, so the Processes table never stalls
+    // on the helper (#2369). A skipped read just shows the refusal until the next refresh.
+    constexpr std::chrono::milliseconds ROLLUP_TIMEOUT{1000};
     const std::expected<Broker::Response, std::string> response =
-        m_Broker->call(Broker::MemoryRollupRequest{.target = {.pid = pid, .startTimeTicks = startTimeTicks}}, std::stop_token{});
+        m_Broker->callIfIdle(Broker::MemoryRollupRequest{.target = {.pid = pid, .startTimeTicks = startTimeTicks}}, ROLLUP_TIMEOUT);
     if (response.has_value())
     {
         if (const auto* reply = std::get_if<Broker::MemoryRollupReply>(&*response))

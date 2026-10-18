@@ -62,6 +62,8 @@ class PkexecBroker final : public IPrivilegedBroker
     void disconnect();
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
+                                                                          std::chrono::milliseconds timeout) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                     const std::stop_token& stopToken) override;
 

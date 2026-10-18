@@ -169,6 +169,25 @@ std::expected<Broker::Response, std::string> PkexecBroker::call(const Broker::Re
     return response;
 }
 
+std::expected<Broker::Response, std::string> PkexecBroker::callIfIdle(const Broker::Request& request, std::chrono::milliseconds timeout)
+{
+    const std::unique_lock lock(m_Mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+        return std::unexpected(std::string("busy")); // another call holds the helper: never queue behind it
+    }
+    if (!m_Connected.load())
+    {
+        return std::unexpected(std::string("not connected"));
+    }
+    auto response = roundTrip(request, timeout, std::stop_token{});
+    if (!response.has_value())
+    {
+        closeLocked(); // as call(): a channel that failed once isn't trusted again
+    }
+    return response;
+}
+
 std::expected<Broker::Response, std::string>
 PkexecBroker::roundTrip(const Broker::Request& request, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
 {

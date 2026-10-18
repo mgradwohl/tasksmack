@@ -474,6 +474,33 @@ TEST(BrokerServeTest, AReplyLargerThanTheSocketBufferReachesTheClient)
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
 }
 
+// #2369: the sampler's PSS/USS reads of a watched process come every refresh by themselves; they must not
+// keep the helper running past its idle timeout.
+TEST(BrokerServeTest, PssAndUssReadsDontPutOffTheIdleExit)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.memoryRollup = [](std::int32_t, std::uint64_t) -> MemoryRollupRead
+    {
+        return MemoryRollup{};
+    };
+    constexpr std::chrono::milliseconds IDLE{1000};
+    auto session =
+        std::async(std::launch::async, [&] { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    for (std::uint32_t id = 2; id <= 3; ++id) // at about 400 and 800 ms
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{400});
+        EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(
+            roundTrip(pair.client(), id, Broker::MemoryRollupRequest{.target = TARGET}).message));
+    }
+    // Idle a second after the Hello, not after the last read (which would be about 1.8 s)
+    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{700}), std::future_status::ready);
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
+}
+
 TEST(BrokerServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
 {
     SocketPair pair;
@@ -828,6 +855,17 @@ TEST(PkexecBrokerTest, TheHelperAnswersACrashesRequest)
     ASSERT_TRUE(response.has_value()) << response.error();
     ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(*response));
     EXPECT_TRUE(std::get<Broker::CrashesReply>(*response).info.available);
+}
+
+TEST(PkexecBrokerTest, ACallIfIdleIsAnswered)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = child.target()}, std::chrono::seconds{2});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*response));
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)

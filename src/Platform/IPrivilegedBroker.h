@@ -9,6 +9,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 
+#include <chrono>
 #include <expected>
 #include <stop_token>
 #include <string>
@@ -43,6 +44,16 @@ class IPrivilegedBroker
     /// UI thread. The error is why there is no response (not connected, broken channel, timed out).
     [[nodiscard]] virtual std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                             const std::stop_token& stopToken) = 0;
+
+    /// call() for a thread that must not stall, such as the process sampler's PSS/USS read (#2369): never
+    /// waits for another call to finish (the error is "busy" instead), and waits at most @p timeout for
+    /// its own response. Transports without contention keep this default, which is call().
+    [[nodiscard]] virtual std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
+                                                                                  std::chrono::milliseconds timeout)
+    {
+        static_cast<void>(timeout);
+        return call(request, std::stop_token{});
+    }
 };
 
 /// A process action's result from a broker call: its ActionResult, or a failure saying why there was
