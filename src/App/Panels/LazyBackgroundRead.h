@@ -68,10 +68,12 @@ template<typename Result> class LazyBackgroundRead
         return m_RequestPending || (m_Pending.busy() && m_PendingGeneration == m_Generation);
     }
 
-    /// A different process was selected: a read in flight is dropped when it arrives, and the next
-    /// one is due as soon as the section is drawn open again.
+    /// A different process was selected: a read in flight is asked to stop (a password prompt for the
+    /// previous process goes away, #2404) and dropped when it arrives, and the next one is due as soon
+    /// as the section is drawn open again and that read has been taken in.
     void reset() noexcept
     {
+        m_Pending.requestStop(); // no effect on a read that ignores its stop token
         ++m_Generation;
         m_HasRequested = false;
         m_RequestPending = false;
@@ -115,9 +117,14 @@ template<typename Result> class LazyBackgroundRead
         {
             if (!shownOpen)
             {
-                // Closed: a request not started yet is withdrawn, and a read in flight is dropped when it arrives.
+                // Closed: a request not started yet is withdrawn, and a read in flight is asked to stop
+                // (its password prompt goes away, #2404) and dropped when it arrives.
                 m_RequestPending = false;
-                m_Generation += m_Pending.busy() ? 1U : 0U;
+                if (m_Pending.busy())
+                {
+                    m_Pending.requestStop();
+                    ++m_Generation;
+                }
                 return false;
             }
             return !m_Pending.busy() && std::exchange(m_RequestPending, false);
@@ -138,7 +145,8 @@ template<typename Result> class LazyBackgroundRead
         m_SecondsSinceRequest = 0.0F;
         m_PendingGeneration = m_Generation;
         m_PendingTarget = target;
-        // A read that takes the stop token (a password prompt's wait, #2309) is stopped by the destructor.
+        // A read that takes the stop token (a password prompt's wait, #2309) is stopped by reset(), by closing
+        // an on-demand section (#2404) and by the destructor.
         return m_Pending.start(
             [read = std::move(read), target](const std::stop_token& stopToken) mutable
             {

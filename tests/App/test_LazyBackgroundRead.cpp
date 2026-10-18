@@ -2,18 +2,21 @@
 /// @brief App::Detail::LazyBackgroundRead, the lazy worker read shared by Process Details' Connections,
 /// Modules and Open files sections: due only while drawn open and at the refresh interval (or, on
 /// demand, once per request), one read at a time, a read for a previous selection, another target or a
-/// closed on-demand section dropped, and a read that throws (a std::exception or anything else) turned
-/// into the Failed result on the worker.
+/// closed on-demand section dropped (and, for a selection change or a close, stopped: #2404), and a
+/// read that throws (a std::exception or anything else) turned into the Failed result on the worker.
 
 #include "App/Panels/LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <future>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace App::Detail
@@ -162,6 +165,53 @@ TEST(LazyBackgroundReadTest, OnDemandClosingMidReadDropsIt)
     EXPECT_FALSE(read.due(0.0F)); // not drawn open: closed
     EXPECT_FALSE(read.requestOutstanding());
     EXPECT_FALSE(read.takeFinished(TARGET, true).has_value());
+}
+
+// #2404: a selection change stops the read in flight (a password prompt's wait polls its stop token),
+// so the new process's read is due as soon as the stopped one is taken in, not after the prompt.
+TEST(LazyBackgroundReadTest, ResetStopsTheReadInFlight)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET,
+                                 [](const Platform::ProcessTarget&, const std::stop_token& stop)
+                                 {
+                                     while (!stop.stop_requested())
+                                     {
+                                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                                     }
+                                     return FakeResult{.value = 5, .error = {}};
+                                 }));
+    read.reset();
+    EXPECT_FALSE(read.takeFinished(TARGET, true).has_value()); // returns: the read was stopped, and is dropped
+    EXPECT_FALSE(read.inFlight());
+    read.markDrawnOpen();
+    EXPECT_TRUE(read.due(0.0F));
+}
+
+// #2404: closing an on-demand section stops its read in flight too.
+TEST(LazyBackgroundReadTest, OnDemandClosingStopsTheReadInFlight)
+{
+    Read read(Read::ON_DEMAND, "ts-test-read", &failed);
+    read.request();
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET,
+                                 [](const Platform::ProcessTarget&, const std::stop_token& stop)
+                                 {
+                                     while (!stop.stop_requested())
+                                     {
+                                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                                     }
+                                     return FakeResult{.value = 6, .error = {}};
+                                 }));
+    EXPECT_FALSE(read.due(0.0F)); // not drawn open: closed
+    EXPECT_FALSE(read.takeFinished(TARGET, true).has_value());
+    EXPECT_FALSE(read.inFlight());
+    read.request();
+    read.markDrawnOpen();
+    EXPECT_TRUE(read.due(0.0F));
 }
 
 } // namespace
