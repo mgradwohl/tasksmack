@@ -193,7 +193,8 @@ inline constexpr std::uint16_t EM_LOONGARCH = 258;
     }
     else if (const std::size_t binfmt = exePath.find("-binfmt"); binfmt != std::string_view::npos)
     {
-        arch = std::string_view(exePath.data(), binfmt);
+        arch = exePath;
+        arch.remove_suffix(exePath.size() - binfmt);
     }
     return machineFromName(arch);
 }

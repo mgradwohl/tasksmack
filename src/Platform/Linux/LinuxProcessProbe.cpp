@@ -927,7 +927,7 @@ std::string LinuxProcessProbe::readExecutableArchitecture(int pidDirFd, ProcessA
     const auto pathLength = ::readlinkat(pidDirFd, "exe", path.data(), path.size());
     const std::string_view exePath =
         (pathLength > 0) ? std::string_view(path.data(), static_cast<std::size_t>(pathLength)) : std::string_view{};
-    return ElfArchitecture::linuxArchitectureLabel(std::span<const std::uint8_t>(header.data(), got), exePath, host);
+    return ElfArchitecture::linuxArchitectureLabel({header.data(), got}, exePath, host);
 }
 
 std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)
