@@ -2,6 +2,7 @@
 
 #include "BrokerSocket.h"
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -53,17 +54,6 @@ namespace
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
     return {.success = false, .errorMessage = "Not an action", .successNote = {}};
-}
-
-/// Whether @p request puts off the idle exit: only what the user does, the Hello (which an
-/// Authenticate and retry or Authenticate to read connects with) and an action. Every read kind can
-/// come on its own: Process Details re-reads Environment, Modules, Open files and Connections through
-/// a connected helper on its refresh timer, and the sampler reads PSS/USS every refresh (#2369, #2405).
-[[nodiscard]] bool putsOffTheIdleExit(const Broker::Request& request) noexcept
-{
-    return std::holds_alternative<Broker::Hello>(request) || std::holds_alternative<Broker::SignalRequest>(request) ||
-           std::holds_alternative<Broker::PriorityRequest>(request) || std::holds_alternative<Broker::IoPriorityRequest>(request) ||
-           std::holds_alternative<Broker::AffinityRequest>(request);
 }
 
 } // namespace
@@ -239,7 +229,7 @@ serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, c
         else
         {
             requestId = decoded->requestId;
-            if (putsOffTheIdleExit(decoded->message))
+            if (Broker::putsOffTheIdleExit(decoded->message))
             {
                 lastActivity = std::chrono::steady_clock::now();
             }

@@ -261,6 +261,10 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
     src/Platform/Windows/WindowsElevation.cpp
+    # The privileged broker's named-pipe transport (#2311): the pipe, the helper's serve loop, the client
+    src/Platform/Windows/BrokerPipe.cpp
+    src/Platform/Windows/BrokerPipeServer.cpp
+    src/Platform/Windows/PipeBroker.cpp
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
@@ -354,6 +358,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessProbe.h
     src/Platform/BrokerProtocol.h
     src/Platform/IPrivilegedBroker.h
+    src/Platform/BrokerSessionRules.h
     src/Platform/IProcessActions.h
     src/Platform/IProcessEnvironment.h
     src/Platform/IProcessIconSource.h
@@ -447,6 +452,9 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
+        src/Platform/Windows/BrokerPipe.h
+        src/Platform/Windows/BrokerPipeServer.h
+        src/Platform/Windows/PipeBroker.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsProcessDumpMath.h
@@ -593,6 +601,7 @@ function(tasksmack_apply_windows_platform target)
         wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
         crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
         advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
+        bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
     )
 endfunction()
 

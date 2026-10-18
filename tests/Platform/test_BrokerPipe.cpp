@@ -1,0 +1,1004 @@
+// Tests for the Windows transport of the privileged broker (#2311): the named pipe's security (its
+// DACL, label, single instance and the PID checks each side makes), BrokerProtocol frames over it, the
+// helper's serve loop, and PipeBroker, the client, against a helper served in this process over a real
+// pipe with a fresh random name per test. Every wait is bounded.
+
+#include "Platform/BrokerProtocol.h"
+#include "Platform/IPrivilegedBroker.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/Windows/BrokerPipe.h"
+#include "Platform/Windows/BrokerPipeServer.h"
+#include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WindowsHandles.h"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <functional>
+#include <future>
+#include <memory>
+#include <span>
+#include <stdexcept>
+#include <stop_token>
+#include <string>
+#include <thread>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include <aclapi.h>
+#include <sddl.h>
+
+namespace Platform::Windows
+{
+namespace
+{
+
+using namespace std::chrono_literals;
+
+/// The bound on anything that should happen at once: a test that waits this long has failed.
+constexpr std::chrono::milliseconds WAIT{5'000};
+constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
+
+[[nodiscard]] std::wstring freshName()
+{
+    auto name = BrokerPipe::makePipeName();
+    EXPECT_TRUE(name.has_value());
+    return name.value_or(L"");
+}
+
+[[nodiscard]] std::wstring mySid()
+{
+    UniqueHandle token;
+    EXPECT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()), FALSE);
+    auto sid = BrokerPipe::userSidOfToken(token.get());
+    EXPECT_TRUE(sid.has_value());
+    return sid.value_or(L"");
+}
+
+[[nodiscard]] UniqueHandle ownProcess()
+{
+    return UniqueHandle(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId()));
+}
+
+/// A PID that isn't this process's.
+[[nodiscard]] DWORD notMyPid()
+{
+    return GetCurrentProcessId() + 4;
+}
+
+[[nodiscard]] std::wstring sidText(PSID sid)
+{
+    LPWSTR text = nullptr;
+    if (ConvertSidToStringSidW(sid, &text) == FALSE)
+    {
+        return {};
+    }
+    std::wstring result(text);
+    LocalFree(text);
+    return result;
+}
+
+[[nodiscard]] std::chrono::milliseconds since(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+}
+
+/// A server and a client end, connected and each checked against this process.
+struct PipePair
+{
+    UniqueHandle server;
+    UniqueHandle client;
+};
+
+[[nodiscard]] PipePair connectedPair()
+{
+    const std::wstring name = freshName();
+    auto server = BrokerPipe::createServerPipe(name, mySid());
+    if (!server.has_value())
+    {
+        ADD_FAILURE() << server.error();
+        return {};
+    }
+    auto accepted =
+        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), WAIT, {}); });
+    const UniqueHandle process = ownProcess();
+    auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+    const auto acceptedClient = accepted.get();
+    EXPECT_TRUE(acceptedClient.has_value()) << acceptedClient.error_or("");
+    if (!client.has_value())
+    {
+        ADD_FAILURE() << client.error();
+        return {};
+    }
+    return {.server = std::move(*server), .client = std::move(*client)};
+}
+
+[[nodiscard]] bool send(HANDLE pipe, std::span<const std::uint8_t> bytes)
+{
+    std::string error;
+    const bool sent = BrokerPipe::sendFrame(pipe, bytes, WAIT, {}, error);
+    EXPECT_TRUE(sent) << error;
+    return sent;
+}
+
+/// Four bytes declaring a frame of @p length, little-endian.
+[[nodiscard]] std::vector<std::uint8_t> lengthPrefix(std::uint32_t length)
+{
+    return {static_cast<std::uint8_t>(length),
+            static_cast<std::uint8_t>(length >> 8U),
+            static_cast<std::uint8_t>(length >> 16U),
+            static_cast<std::uint8_t>(length >> 24U)};
+}
+
+[[nodiscard]] std::expected<Broker::Decoded<Broker::Response>, std::string> receiveResponse(HANDLE pipe)
+{
+    const auto frame = BrokerPipe::receiveFrame(pipe, WAIT, {});
+    if (!frame.has_value())
+    {
+        return std::unexpected(std::string("no frame"));
+    }
+    return Broker::decodeResponse(*frame);
+}
+
+// --- The pipe's name and security ---------------------------------------------------------------------
+
+TEST(BrokerPipeTest, PipeNamesAreRandomAndLocal)
+{
+    const std::wstring first = freshName();
+    const std::wstring second = freshName();
+    EXPECT_NE(first, second);
+    EXPECT_TRUE(first.starts_with(L"\\\\.\\pipe\\TaskSmack.Broker."));
+    EXPECT_EQ(first.size(), std::wstring_view(L"\\\\.\\pipe\\TaskSmack.Broker.").size() + 32);
+}
+
+TEST(BrokerPipeTest, TheSecurityDescriptorLetsInOnlyTheUserWithAMediumLabel)
+{
+    const auto sddl = BrokerPipe::pipeSecurityDescriptor(L"S-1-5-21-1-2-3-1001");
+    ASSERT_TRUE(sddl.has_value());
+    EXPECT_EQ(*sddl, L"D:P(A;;0x00100083;;;S-1-5-21-1-2-3-1001)S:(ML;;NWNRNX;;;ME)");
+    EXPECT_EQ(BrokerPipe::CLIENT_ACCESS & FILE_CREATE_PIPE_INSTANCE, 0U);
+}
+
+TEST(BrokerPipeTest, OnlyAPlainSidIsLetIntoTheSecurityDescriptor)
+{
+    for (const std::wstring_view notASid : {L"", L"WD", L"BA", L"S-1-", L"s-1-5-18", L"S-1-5-18)(A;;GA;;;WD", L"S-1-5-18 "})
+    {
+        EXPECT_FALSE(BrokerPipe::pipeSecurityDescriptor(notASid).has_value());
+    }
+}
+
+TEST(BrokerPipeTest, ThePipeHasOneAllowAceForTheUserAndAMediumLabel)
+{
+    const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+
+    PACL dacl = nullptr;
+    PACL sacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    ASSERT_EQ(GetSecurityInfo(server->get(),
+                              SE_KERNEL_OBJECT,
+                              DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+                              nullptr,
+                              nullptr,
+                              &dacl,
+                              &sacl,
+                              &descriptor),
+              static_cast<DWORD>(ERROR_SUCCESS));
+    const std::unique_ptr<void, decltype(&LocalFree)> owned(descriptor, &LocalFree);
+
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    ASSERT_NE(GetSecurityDescriptorControl(descriptor, &control, &revision), FALSE);
+    EXPECT_NE(control & SE_DACL_PROTECTED, 0) << "nothing inherited into the DACL";
+
+    ASSERT_NE(dacl, nullptr);
+    ASSERT_EQ(dacl->AceCount, 1);
+    void* ace = nullptr;
+    ASSERT_NE(GetAce(dacl, 0, &ace), FALSE);
+    auto* const allow = static_cast<ACCESS_ALLOWED_ACE*>(ace);
+    EXPECT_EQ(allow->Header.AceType, ACCESS_ALLOWED_ACE_TYPE);
+    EXPECT_EQ(allow->Mask, BrokerPipe::CLIENT_ACCESS);
+    EXPECT_EQ(sidText(&allow->SidStart), mySid());
+
+    ASSERT_NE(sacl, nullptr);
+    ASSERT_EQ(sacl->AceCount, 1);
+    void* labelAce = nullptr;
+    ASSERT_NE(GetAce(sacl, 0, &labelAce), FALSE);
+    auto* const label = static_cast<SYSTEM_MANDATORY_LABEL_ACE*>(labelAce);
+    EXPECT_EQ(label->Header.AceType, SYSTEM_MANDATORY_LABEL_ACE_TYPE);
+    EXPECT_EQ(label->Mask,
+              static_cast<ACCESS_MASK>(SYSTEM_MANDATORY_LABEL_NO_WRITE_UP | SYSTEM_MANDATORY_LABEL_NO_READ_UP |
+                                       SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP));
+    EXPECT_EQ(sidText(&label->SidStart), L"S-1-16-8192"); // medium integrity
+}
+
+TEST(BrokerPipeTest, APipeForAnotherUserCantBeOpened)
+{
+    if (mySid() == L"S-1-5-18")
+    {
+        GTEST_SKIP() << "running as LocalSystem, the other user this test needs";
+    }
+    const std::wstring name = freshName();
+    const auto server = BrokerPipe::createServerPipe(name, L"S-1-5-18"); // only LocalSystem may open it
+    ASSERT_TRUE(server.has_value()) << server.error();
+    const UniqueHandle process = ownProcess();
+    const auto start = std::chrono::steady_clock::now();
+    const auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+    EXPECT_FALSE(client.has_value());
+    EXPECT_LT(since(start), WAIT) << "refused at once, not waited out";
+}
+
+TEST(BrokerPipeTest, ASecondPipeOfTheSameNameIsRefused)
+{
+    const std::wstring name = freshName();
+    const auto first = BrokerPipe::createServerPipe(name, mySid());
+    ASSERT_TRUE(first.has_value()) << first.error();
+    EXPECT_FALSE(BrokerPipe::createServerPipe(name, mySid()).has_value()) << "a squatter's pipe is never shared";
+}
+
+TEST(BrokerPipeTest, ASecondClientIsRefused)
+{
+    const std::wstring name = freshName();
+    const auto server = BrokerPipe::createServerPipe(name, mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+    auto accepted =
+        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), WAIT, {}); });
+    const UniqueHandle process = ownProcess();
+    const auto first = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+    ASSERT_TRUE(first.has_value()) << first.error();
+    ASSERT_TRUE(accepted.get().has_value());
+
+    const auto second = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error(), "another process opened the helper's pipe first");
+}
+
+TEST(BrokerPipeTest, EachSideChecksTheOthersProcess)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    EXPECT_TRUE(BrokerPipe::checkServerProcess(pair.client.get(), GetCurrentProcessId()).has_value());
+    EXPECT_TRUE(BrokerPipe::checkClientProcess(pair.server.get(), GetCurrentProcessId()).has_value());
+    EXPECT_FALSE(BrokerPipe::checkServerProcess(pair.client.get(), notMyPid()).has_value());
+    EXPECT_FALSE(BrokerPipe::checkClientProcess(pair.server.get(), notMyPid()).has_value());
+}
+
+TEST(BrokerPipeTest, APipeServedByAnotherProcessIsRefused)
+{
+    const std::wstring name = freshName();
+    const auto server = BrokerPipe::createServerPipe(name, mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+    auto accepted =
+        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), 1s, {}); });
+    const UniqueHandle process = ownProcess();
+    const auto client = BrokerPipe::connectToServer(name, notMyPid(), process.get(), WAIT, {});
+    ASSERT_FALSE(client.has_value());
+    EXPECT_TRUE(client.error().contains("not the helper")) << client.error();
+    [[maybe_unused]] const auto served = accepted.get(); // whatever the server made of a client that gave up on it
+}
+
+TEST(BrokerPipeTest, AClientThatIsntTheExpectedProcessIsDisconnected)
+{
+    const std::wstring name = freshName();
+    const auto server = BrokerPipe::createServerPipe(name, mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+    auto accepted = std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, notMyPid(), WAIT, {}); });
+    const UniqueHandle process = ownProcess();
+    const auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
+    const auto acceptedClient = accepted.get();
+    ASSERT_FALSE(acceptedClient.has_value());
+    EXPECT_TRUE(acceptedClient.error().contains("not TaskSmack")) << acceptedClient.error();
+    if (client.has_value())
+    {
+        const auto frame = BrokerPipe::receiveFrame(client->get(), WAIT, {});
+        ASSERT_FALSE(frame.has_value());
+        EXPECT_NE(frame.error(), BrokerPipe::ReceiveEnd::TimedOut) << "the refused client is cut off, not left waiting";
+    }
+}
+
+TEST(BrokerPipeTest, NoClientWithinTheTimeoutIsGivenUpOn)
+{
+    const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
+    ASSERT_TRUE(server.has_value()) << server.error();
+    const auto start = std::chrono::steady_clock::now();
+    const auto accepted = BrokerPipe::acceptClient(server->get(), GetCurrentProcessId(), 100ms, {});
+    ASSERT_FALSE(accepted.has_value());
+    EXPECT_EQ(accepted.error(), "TaskSmack didn't open the pipe in time");
+    EXPECT_LT(since(start), WAIT);
+}
+
+TEST(BrokerPipeTest, AHelperThatNeverMakesItsPipeIsGivenUpOn)
+{
+    const UniqueHandle process = ownProcess();
+    const auto start = std::chrono::steady_clock::now();
+    const auto client = BrokerPipe::connectToServer(freshName(), GetCurrentProcessId(), process.get(), 100ms, {});
+    ASSERT_FALSE(client.has_value());
+    EXPECT_EQ(client.error(), "the helper didn't open its pipe in time");
+    EXPECT_LT(since(start), WAIT);
+}
+
+TEST(BrokerPipeTest, AHelperThatExitsBeforeMakingItsPipeIsNotWaitedFor)
+{
+    // A signalled event stands in for the helper's process handle once it has exited.
+    const UniqueHandle exited(CreateEventW(nullptr, TRUE, TRUE, nullptr));
+    ASSERT_TRUE(exited);
+    const auto start = std::chrono::steady_clock::now();
+    const auto client = BrokerPipe::connectToServer(freshName(), GetCurrentProcessId(), exited.get(), WAIT, {});
+    ASSERT_FALSE(client.has_value());
+    EXPECT_EQ(client.error(), "the helper exited before it opened its pipe");
+    EXPECT_LT(since(start), WAIT);
+}
+
+// --- Frames ------------------------------------------------------------------------------------------
+
+TEST(BrokerPipeTest, FramesGoBothWays)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const std::vector<std::uint8_t> request = Broker::encodeRequest(7, Broker::Hello{});
+    ASSERT_TRUE(send(pair.client.get(), request));
+    const auto received = BrokerPipe::receiveFrame(pair.server.get(), WAIT, {});
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(*received, request);
+
+    const std::vector<std::uint8_t> response = Broker::encodeResponse(7, Broker::HelloReply{.accepted = true});
+    ASSERT_TRUE(send(pair.server.get(), response));
+    const auto answered = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    ASSERT_TRUE(answered.has_value());
+    EXPECT_EQ(*answered, response);
+}
+
+TEST(BrokerPipeTest, AFrameLargerThanThePipesBufferArrivesWhole)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    constexpr std::size_t BODY = std::size_t{1} << 20U;
+    std::vector<std::uint8_t> frame = lengthPrefix(static_cast<std::uint32_t>(BODY));
+    for (std::size_t i = 0; i < BODY; ++i)
+    {
+        frame.push_back(static_cast<std::uint8_t>(i * 31U));
+    }
+    auto sent = std::async(std::launch::async,
+                           [&]
+                           {
+                               std::string error;
+                               return BrokerPipe::sendFrame(pair.server.get(), frame, WAIT, {}, error);
+                           });
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    EXPECT_TRUE(sent.get());
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(*received, frame);
+}
+
+TEST(BrokerPipeTest, AFrameDeclaredTooLargeIsRefusedBeforeItIsRead)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    ASSERT_TRUE(send(pair.client.get(), lengthPrefix(static_cast<std::uint32_t>(Broker::MAX_MESSAGE_BYTES))));
+    const auto start = std::chrono::steady_clock::now();
+    const auto received = BrokerPipe::receiveFrame(pair.server.get(), WAIT, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed);
+    EXPECT_LT(since(start), WAIT) << "refused on its length, not waited for";
+}
+
+TEST(BrokerPipeTest, AFrameTooLargeOrForAGonePeerIsNotSent)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::string error;
+    const std::vector<std::uint8_t> tooLarge(Broker::MAX_MESSAGE_BYTES + 1);
+    EXPECT_FALSE(BrokerPipe::sendFrame(pair.client.get(), tooLarge, WAIT, {}, error));
+    EXPECT_EQ(error, "a frame larger than the protocol allows");
+
+    pair.server.reset();
+    EXPECT_FALSE(BrokerPipe::sendFrame(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{}), WAIT, {}, error));
+}
+
+TEST(BrokerPipeTest, AFrameCutShortByAClosedPipeIsAFailure)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::vector<std::uint8_t> partial = lengthPrefix(100);
+    partial.resize(partial.size() + 10);
+    ASSERT_TRUE(send(pair.server.get(), partial));
+    pair.server.reset();
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed) << "cut off partway, not a clean close";
+}
+
+TEST(BrokerPipeTest, AFrameCutShortByTheTimeoutIsAFailure)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::vector<std::uint8_t> partial = lengthPrefix(100);
+    partial.resize(partial.size() + 10);
+    ASSERT_TRUE(send(pair.server.get(), partial));
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), 200ms, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed) << "mid-frame, so not a timeout the session survives";
+}
+
+TEST(BrokerPipeTest, ALengthCutShortIsAFailure)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const std::vector<std::uint8_t> twoBytes{1, 0};
+    ASSERT_TRUE(send(pair.server.get(), twoBytes));
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), 200ms, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed);
+}
+
+TEST(BrokerPipeTest, NothingWithinTheTimeoutIsATimeout)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const auto start = std::chrono::steady_clock::now();
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), 100ms, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::TimedOut);
+    EXPECT_GE(since(start), 90ms);
+    EXPECT_LT(since(start), WAIT);
+    EXPECT_EQ(BrokerPipe::bytesWaiting(pair.client.get()), DWORD{0}) << "the pipe is still open and in step";
+}
+
+TEST(BrokerPipeTest, AStoppedReceiveSaysSo)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::stop_source stop;
+    stop.request_stop();
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, stop.get_token());
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Stopped);
+}
+
+TEST(BrokerPipeTest, AClosedPipeIsTheEndOfTheSession)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    pair.client.reset();
+    const auto received = BrokerPipe::receiveFrame(pair.server.get(), WAIT, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Closed);
+    EXPECT_FALSE(BrokerPipe::bytesWaiting(pair.server.get()).has_value());
+}
+
+// --- The helper's serve loop -------------------------------------------------------------------------
+
+/// Answers every action with success, and counts what reached it.
+struct CountingHandler
+{
+    std::shared_ptr<std::atomic<int>> calls = std::make_shared<std::atomic<int>>(0);
+
+    [[nodiscard]] BrokerPipeServer::RequestHandler handler() const
+    {
+        return [calls = calls](const Broker::Request& request) -> Broker::Response
+        {
+            ++*calls;
+            if (std::holds_alternative<Broker::SignalRequest>(request))
+            {
+                return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+            }
+            return Broker::ErrorReply{.message = "not in this test"};
+        };
+    }
+};
+
+/// serve() on pair.server, on its own thread.
+[[nodiscard]] std::future<BrokerPipeServer::SessionEnd>
+serveAsync(HANDLE pipe, BrokerPipeServer::RequestHandler handler, std::chrono::milliseconds idleTimeout, std::stop_token stopToken = {})
+{
+    return std::async(std::launch::async,
+                      [pipe, handler = std::move(handler), idleTimeout, stopToken = std::move(stopToken)]
+                      { return BrokerPipeServer::serve(pipe, handler, idleTimeout, stopToken); });
+}
+
+TEST(BrokerPipeServeTest, AnswersRequestsAfterTheHelloAndEndsWhenTheClientCloses)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const CountingHandler counting;
+    auto served = serveAsync(pair.server.get(), counting.handler(), WAIT);
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    const auto hello = receiveResponse(pair.client.get());
+    ASSERT_TRUE(hello.has_value());
+    EXPECT_EQ(hello->requestId, 1U);
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello->message));
+    EXPECT_TRUE(std::get<Broker::HelloReply>(hello->message).accepted);
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill})));
+    const auto action = receiveResponse(pair.client.get());
+    ASSERT_TRUE(action.has_value());
+    EXPECT_EQ(action->requestId, 2U);
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(action->message));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(action->message).success);
+    EXPECT_EQ(counting.calls->load(), 1) << "the Hello is the transport's, not the handler's";
+
+    pair.client.reset();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerPipeServeTest, AnActionBeforeTheHelloIsRefusedAndEndsTheSession)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const CountingHandler counting;
+    auto served = serveAsync(pair.server.get(), counting.handler(), WAIT);
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill})));
+    const auto refused = receiveResponse(pair.client.get());
+    ASSERT_TRUE(refused.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(refused->message));
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::HandshakeFailed);
+    EXPECT_EQ(counting.calls->load(), 0);
+}
+
+TEST(BrokerPipeServeTest, AHelloOfAnotherVersionEndsTheSession)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{.version = Broker::PROTOCOL_VERSION + 1})));
+    const auto reply = receiveResponse(pair.client.get());
+    ASSERT_TRUE(reply.has_value());
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(reply->message));
+    EXPECT_FALSE(std::get<Broker::HelloReply>(reply->message).accepted);
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::HandshakeFailed);
+}
+
+TEST(BrokerPipeServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    std::vector<std::uint8_t> garbage = lengthPrefix(3);
+    garbage.insert(garbage.end(), {0xFF, 0xFF, 0xFF});
+    ASSERT_TRUE(send(pair.client.get(), garbage));
+    const auto error = receiveResponse(pair.client.get());
+    ASSERT_TRUE(error.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(error->message));
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill})));
+    const auto action = receiveResponse(pair.client.get());
+    ASSERT_TRUE(action.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(action->message));
+
+    pair.client.reset();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerPipeServeTest, AFrameDeclaredTooLargeEndsTheSessionAsBroken)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    ASSERT_TRUE(send(pair.client.get(), lengthPrefix(0xFFFF'FFF0U)));
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Broken);
+}
+
+TEST(BrokerPipeServeTest, AHandlerThatThrowsGetsAnErrorReplyAndTheSessionGoesOn)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), [](const Broker::Request&) -> Broker::Response { throw std::runtime_error("boom"); }, WAIT);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill})));
+    const auto reply = receiveResponse(pair.client.get());
+    ASSERT_TRUE(reply.has_value());
+    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(reply->message));
+    EXPECT_EQ(std::get<Broker::ErrorReply>(reply->message).message, "boom");
+
+    pair.client.reset();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerPipeServeTest, ReadsDontPutOffTheIdleExit)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    constexpr auto IDLE = 400ms;
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), IDLE);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    // PSS/USS reads every 50 ms, as the sampler's might come: the session still ends IDLE after the Hello.
+    const auto start = std::chrono::steady_clock::now();
+    std::uint32_t id = 2;
+    while (served.wait_for(50ms) != std::future_status::ready && since(start) < WAIT)
+    {
+        std::string error;
+        if (!BrokerPipe::sendFrame(
+                pair.client.get(), Broker::encodeRequest(id++, Broker::MemoryRollupRequest{.target = TARGET}), WAIT, {}, error))
+        {
+            break;
+        }
+        if (!BrokerPipe::receiveFrame(pair.client.get(), WAIT, {}).has_value())
+        {
+            break;
+        }
+    }
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
+    EXPECT_LT(since(start), WAIT);
+}
+
+TEST(BrokerPipeServeTest, AnIdleSessionEnds)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), 100ms);
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
+}
+
+TEST(BrokerPipeServeTest, AStoppedSessionEnds)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    std::stop_source stop;
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT, stop.get_token());
+    stop.request_stop();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Stopped);
+}
+
+// --- PipeBroker, the client ----------------------------------------------------------------------------
+
+/// A helper served on a thread of this process: the launcher makes the pipe it is given, as
+/// TaskSmackHelper.exe will, accepts this process as its client, and runs @p body on the pipe.
+class InProcessHelper
+{
+  public:
+    using Body = std::function<void(HANDLE pipe, const std::stop_token& stopToken)>;
+
+    explicit InProcessHelper(Body body) : m_Body(std::move(body))
+    {}
+
+    [[nodiscard]] PipeBroker::Launcher launcher()
+    {
+        return [this](const std::wstring& pipeName, const std::stop_token& /*stopToken*/) -> std::expected<UniqueHandle, std::string>
+        {
+            // NOLINTNEXTLINE(bugprone-exception-escape) - a test's helper thread: what escapes it ends the run, as a failed test should
+            m_Thread = std::jthread([this, pipeName](const std::stop_token& stopToken) { run(pipeName, stopToken); });
+            return ownProcess();
+        };
+    }
+
+    /// Whether the helper's session ended (its pipe closed) within WAIT.
+    [[nodiscard]] bool ended()
+    {
+        return m_EndedFuture.wait_for(WAIT) == std::future_status::ready;
+    }
+
+  private:
+    void run(const std::wstring& pipeName, const std::stop_token& stopToken)
+    {
+        try
+        {
+            const auto pipe = BrokerPipe::createServerPipe(pipeName, mySid());
+            if (pipe.has_value() && BrokerPipe::acceptClient(pipe->get(), GetCurrentProcessId(), WAIT, stopToken).has_value())
+            {
+                m_Body(pipe->get(), stopToken);
+            }
+        } // the pipe closes here, as the helper's does when it exits
+        catch (...)
+        {
+            ADD_FAILURE() << "the in-process helper threw";
+        }
+        m_Ended.set_value();
+    }
+
+    Body m_Body;
+    std::promise<void> m_Ended;
+    std::future<void> m_EndedFuture = m_Ended.get_future();
+    std::jthread m_Thread; // last: joined first, while the rest is alive
+};
+
+/// A helper that serves with @p handler and @p idleTimeout, and records how the session ended.
+struct Serving
+{
+    BrokerPipeServer::RequestHandler handler;
+    std::chrono::milliseconds idleTimeout{};
+    std::shared_ptr<std::atomic<int>> end;
+
+    void operator()(HANDLE pipe, const std::stop_token& stopToken) const
+    {
+        *end = static_cast<int>(BrokerPipeServer::serve(pipe, handler, idleTimeout, stopToken));
+    }
+};
+
+[[nodiscard]] InProcessHelper::Body serving(BrokerPipeServer::RequestHandler handler,
+                                            std::chrono::milliseconds idleTimeout,
+                                            std::shared_ptr<std::atomic<int>> end = std::make_shared<std::atomic<int>>(-1))
+{
+    return Serving{.handler = std::move(handler), .idleTimeout = idleTimeout, .end = std::move(end)};
+}
+
+[[nodiscard]] Broker::Request killRequest()
+{
+    return Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill};
+}
+
+TEST(PipeBrokerTest, ConnectsToTheHelperAndCallsThroughIt)
+{
+    InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT));
+    PipeBroker broker(helper.launcher());
+    const auto connected = broker.connectWithin({}, WAIT);
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_TRUE(broker.connected());
+    EXPECT_TRUE(broker.connectWithin({}, WAIT).has_value()) << "connected already: no second helper";
+
+    const ProcessActionResult result = actionResultOf(broker.call(killRequest(), {}));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    const auto idle = broker.callIfIdle(killRequest(), WAIT);
+    ASSERT_TRUE(idle.has_value()) << idle.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(*idle));
+}
+
+TEST(PipeBrokerTest, ACallWithoutAHelperSaysSo)
+{
+    PipeBroker broker([](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string>
+                      { return std::unexpected(std::string("unused")); });
+    EXPECT_FALSE(broker.connected());
+    EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
+    EXPECT_EQ(broker.callIfIdle(killRequest(), 100ms).error_or(""), "not connected");
+}
+
+TEST(PipeBrokerTest, ALauncherThatFailsSaysWhy)
+{
+    PipeBroker broker([](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string>
+                      { return std::unexpected(std::string("the prompt was dismissed")); });
+    const auto connected = broker.connectWithin({}, WAIT);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "the prompt was dismissed");
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PipeBrokerTest, AHelperThatNeverMakesItsPipeIsGivenUpOn)
+{
+    PipeBroker broker([](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string> { return ownProcess(); });
+    const auto start = std::chrono::steady_clock::now();
+    const auto connected = broker.connectWithin({}, 200ms);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "the helper didn't open its pipe in time");
+    EXPECT_LT(since(start), WAIT);
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PipeBrokerTest, AHelperOfAnotherVersionIsRefused)
+{
+    InProcessHelper helper(
+        [](HANDLE pipe, const std::stop_token&)
+        {
+            const auto hello = BrokerPipe::receiveFrame(pipe, WAIT, {});
+            const auto decoded = hello.has_value() ? Broker::decodeRequest(*hello) : std::unexpected(std::string("none"));
+            if (decoded.has_value())
+            {
+                static_cast<void>(
+                    send(pipe,
+                         Broker::encodeResponse(decoded->requestId,
+                                                Broker::HelloReply{.version = Broker::PROTOCOL_VERSION + 1, .accepted = false})));
+            }
+        });
+    PipeBroker broker(helper.launcher());
+    const auto connected = broker.connectWithin({}, WAIT);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_TRUE(connected.error().contains("protocol version")) << connected.error();
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PipeBrokerTest, DisconnectEndsTheHelpersSession)
+{
+    auto end = std::make_shared<std::atomic<int>>(-1);
+    InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT, end));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+    broker.disconnect();
+    EXPECT_FALSE(broker.connected());
+    ASSERT_TRUE(helper.ended());
+    EXPECT_EQ(end->load(), static_cast<int>(BrokerPipeServer::SessionEnd::ClientClosed));
+}
+
+TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
+{
+    auto end = std::make_shared<std::atomic<int>>(-1);
+    InProcessHelper helper(serving(CountingHandler{}.handler(), 200ms, end));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+    ASSERT_TRUE(helper.ended());
+    EXPECT_EQ(end->load(), static_cast<int>(BrokerPipeServer::SessionEnd::Idle));
+    EXPECT_FALSE(broker.connected());
+    EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
+}
+
+/// A handler whose first PSS/USS read takes @p delay, and whose other requests are answered at once.
+[[nodiscard]] BrokerPipeServer::RequestHandler slowFirstRead(std::chrono::milliseconds delay)
+{
+    auto reads = std::make_shared<std::atomic<int>>(0);
+    return [reads, delay](const Broker::Request& request) -> Broker::Response
+    {
+        if (std::holds_alternative<Broker::MemoryRollupRequest>(request))
+        {
+            if (++*reads == 1)
+            {
+                std::this_thread::sleep_for(delay);
+            }
+            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+        }
+        return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+    };
+}
+
+TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDropped)
+{
+    InProcessHelper helper(serving(slowFirstRead(500ms), WAIT));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+
+    const auto slow = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 100ms);
+    ASSERT_FALSE(slow.has_value());
+    EXPECT_EQ(slow.error(), "the helper didn't answer in time");
+    EXPECT_TRUE(broker.connected()) << "a slow read is skipped, not the session (#2406)";
+
+    // The next call waits past the late reply, drops it, and gets its own.
+    const auto next = broker.call(killRequest(), {});
+    ASSERT_TRUE(next.has_value()) << next.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(*next));
+    EXPECT_TRUE(broker.connected());
+}
+
+TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
+{
+    InProcessHelper helper(serving(slowFirstRead(300ms), WAIT));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+    ASSERT_FALSE(broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, 50ms).has_value());
+
+    // Busy until the late reply is in; then that is taken and this read asked.
+    const auto start = std::chrono::steady_clock::now();
+    std::expected<Broker::Response, std::string> read = std::unexpected(std::string("busy"));
+    while (!read.has_value() && read.error() == "busy" && since(start) < WAIT)
+    {
+        std::this_thread::sleep_for(25ms);
+        read = broker.callIfIdle(Broker::MemoryRollupRequest{.target = TARGET}, WAIT);
+    }
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*read));
+    EXPECT_TRUE(broker.connected());
+}
+
+TEST(PipeBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)
+{
+    auto entered = std::make_shared<std::promise<void>>();
+    auto release = std::make_shared<std::promise<void>>();
+    InProcessHelper helper(serving(
+        [entered, release, releaseFuture = release->get_future().share()](const Broker::Request&) -> Broker::Response
+        {
+            entered->set_value();
+            static_cast<void>(releaseFuture.wait_for(WAIT));
+            return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+        },
+        WAIT));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+
+    auto waiting = std::async(std::launch::async, [&broker] { return broker.call(killRequest(), {}); });
+    ASSERT_EQ(entered->get_future().wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(broker.callIfIdle(killRequest(), 100ms).error_or(""), "busy");
+    release->set_value();
+    EXPECT_TRUE(waiting.get().has_value());
+}
+
+TEST(PipeBrokerTest, AStoppedCallIsCancelledAndEndsTheSession)
+{
+    auto release = std::make_shared<std::promise<void>>();
+    InProcessHelper helper(serving(
+        [releaseFuture = release->get_future().share()](const Broker::Request&) -> Broker::Response
+        {
+            static_cast<void>(releaseFuture.wait_for(WAIT));
+            return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+        },
+        WAIT));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+
+    std::stop_source stop;
+    auto stopper = std::async(std::launch::async,
+                              [&stop]
+                              {
+                                  std::this_thread::sleep_for(100ms);
+                                  stop.request_stop();
+                              });
+    const auto start = std::chrono::steady_clock::now();
+    const auto response = broker.call(killRequest(), stop.get_token());
+    stopper.get();
+    release->set_value();
+    ASSERT_FALSE(response.has_value());
+    EXPECT_EQ(response.error(), "cancelled");
+    EXPECT_LT(since(start), WAIT);
+    EXPECT_FALSE(broker.connected());
+}
+
+/// A helper that answers the Hello, then sends half of the reply to the next request and @p thenClose
+/// or keeps the pipe open, silent, until stopped.
+[[nodiscard]] InProcessHelper::Body cutsOffItsReply(bool thenClose)
+{
+    return [thenClose](HANDLE pipe, const std::stop_token& stopToken)
+    {
+        for (int frame = 0; frame < 2; ++frame)
+        {
+            const auto received = BrokerPipe::receiveFrame(pipe, WAIT, stopToken);
+            const auto decoded = received.has_value() ? Broker::decodeRequest(*received) : std::unexpected(std::string("none"));
+            if (!decoded.has_value())
+            {
+                return;
+            }
+            if (frame == 0)
+            {
+                static_cast<void>(send(pipe, Broker::encodeResponse(decoded->requestId, Broker::HelloReply{.accepted = true})));
+                continue;
+            }
+            const std::vector<std::uint8_t> reply =
+                Broker::encodeResponse(decoded->requestId, Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}});
+            static_cast<void>(send(pipe, std::span(reply).first(reply.size() / 2)));
+        }
+        if (!thenClose)
+        {
+            // Silent, mid-frame, until the client gives up (its pipe closes) or the test ends.
+            while (!stopToken.stop_requested() && BrokerPipe::bytesWaiting(pipe).has_value())
+            {
+                std::this_thread::sleep_for(20ms);
+            }
+        }
+    };
+}
+
+TEST(PipeBrokerTest, ACallIfIdleWhoseReplyIsCutOffByTheTimeoutEndsTheSession)
+{
+    InProcessHelper helper(cutsOffItsReply(false));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+    const auto response = broker.callIfIdle(killRequest(), 200ms);
+    ASSERT_FALSE(response.has_value());
+    EXPECT_EQ(response.error(), "the helper's pipe failed") << "mid-frame is a failure, not a skipped read (#2451)";
+    EXPECT_FALSE(broker.connected());
+    EXPECT_TRUE(helper.ended());
+}
+
+TEST(PipeBrokerTest, ACallWhoseReplyIsCutOffByTheHelperExitingEndsTheSession)
+{
+    InProcessHelper helper(cutsOffItsReply(true));
+    PipeBroker broker(helper.launcher());
+    ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
+    const auto response = broker.call(killRequest(), {});
+    ASSERT_FALSE(response.has_value());
+    EXPECT_EQ(response.error(), "the helper's pipe failed");
+    EXPECT_FALSE(broker.connected());
+}
+
+} // namespace
+} // namespace Platform::Windows
