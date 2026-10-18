@@ -829,6 +829,29 @@ TEST_F(LinuxPowerProbeMultiPackTest, AbsentAndRemovedPacksAreLeftOut)
     EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
 }
 
+TEST_F(LinuxPowerProbeMultiPackTest, OnlyAnEmptyBayIsNoBattery)
+{
+    // #2408: the driver lists BAT0 with `present` 0. No pack is in, so there is no battery.
+    makePack("BAT0", {.status = "Unknown", .capacity = "0"});
+    const auto bat0 = m_SysRoot / "BAT0";
+    writeFile(bat0 / "present", "0");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+
+    writeFile(bat0 / "status", "Discharging");
+    writeFile(bat0 / "capacity", "70");
+    writeFile(bat0 / "present", "1"); // Inserted into the bay the driver kept listing
+    EXPECT_EQ(probe.read().chargePercent, 70);
+    EXPECT_TRUE(probe.capabilities().hasBattery);
+
+    writeFile(bat0 / "present", "0"); // And taken out again
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+}
+
 TEST_F(LinuxPowerProbeMultiPackTest, APackInsertedLaterIsCombined)
 {
     // #2380: the ACPI driver adds BATn only while the pack is in, so the list is re-read on each read.

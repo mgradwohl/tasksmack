@@ -2774,6 +2774,36 @@ TEST(SystemModelTest, ABatteryInsertedAfterStartIsShown)
     EXPECT_EQ(model.snapshot().power.chargePercent, 60);
 }
 
+TEST(SystemModelTest, ABatteryWhoseReadingIsNotPresentIsNoBattery)
+{
+    // #2408: the probe offers a battery (an empty bay the driver lists, a battery removed after
+    // start) while its reading says none is in. That is a battery-less machine, not one at -1%.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({.hasBattery = true, .hasChargePercent = true});
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Discharging;
+    counters.chargePercent = 60;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    ASSERT_TRUE(model.snapshot().power.hasBattery);
+
+    counters = {};
+    counters.state = Platform::BatteryState::NotPresent;
+    counters.isOnAc = true;
+    rawPowerProbe->setCounters(counters);
+    model.refresh();
+
+    const auto power = model.snapshot().power;
+    EXPECT_FALSE(power.hasBattery);
+    EXPECT_TRUE(power.isOnAc) << "the adapter's state is still reported";
+    EXPECT_FALSE(power.isDischarging);
+}
+
 // =============================================================================
 // Power Status (computePowerStatus via refresh)
 // =============================================================================

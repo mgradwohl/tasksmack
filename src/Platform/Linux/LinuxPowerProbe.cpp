@@ -130,7 +130,8 @@ void LinuxPowerProbe::discoverBatteries()
     m_Discovered = true;
     m_BatteryPaths = std::move(batteryPaths);
     m_Capabilities = PowerCapabilities{};
-    m_Capabilities.hasBattery = !m_BatteryPaths.empty();
+    // Only a pack that is in: a bay the driver lists with `present` 0 is no battery (#2408)
+    m_Capabilities.hasBattery = std::ranges::any_of(m_BatteryPaths, isPackPresent);
     for (const auto& batteryPath : m_BatteryPaths)
     {
         addPackCapabilities(batteryPath);
@@ -176,6 +177,9 @@ PowerCounters LinuxPowerProbe::read()
         }
     }
 
+    // A pack can be inserted into or taken from a bay the driver keeps listing, which leaves the
+    // set of paths, and so discovery, unchanged (#2408)
+    m_Capabilities.hasBattery = !packs.empty();
     if (packs.empty())
     {
         PowerCounters counters;
@@ -197,12 +201,17 @@ PowerCapabilities LinuxPowerProbe::capabilities() const
     return m_Capabilities;
 }
 
+bool LinuxPowerProbe::isPackPresent(const std::string& batteryPath)
+{
+    return readSysfsFile(batteryPath + "/type") == "Battery" && readSysfsInt(batteryPath + "/present", 1) != 0;
+}
+
 std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std::string& batteryPath)
 {
     namespace Fs = std::filesystem;
 
     // Removed since discovery (hot-swapped out, or the driver unbound), or present but empty (#2319)
-    if (readSysfsFile(batteryPath + "/type") != "Battery" || readSysfsInt(batteryPath + "/present", 1) == 0)
+    if (!isPackPresent(batteryPath))
     {
         return std::nullopt;
     }

@@ -937,7 +937,9 @@ void SystemMetricsPanel::renderOverview()
                 // The battery's status -- on AC, charging, time left -- is its strip entry's text
                 // ("Battery: <plug> <battery> 94% (not charging)"), on the heading's line like every
                 // chart's value strip; it was a separate right-aligned status there.
-                bars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedPower.batteryChargePercent),
+                // A dash, not a stale or 0% figure, while the battery reports no charge (#2408)
+                bars.push_back({.valueText = snap.power.chargePercent < 0 ? std::string(Detail::NO_CHARGE_TEXT)
+                                                                          : UI::Format::formatPercent(m_SmoothedPower.batteryChargePercent),
                                 .label = batteryLabel,
                                 .tooltipText = UI::Widgets::tooltipRowText(batteryLabel, Detail::batteryHeaderStatus(snap.power)),
                                 // Scaled to the battery axis's top, headroom included, so the bar meets the line.

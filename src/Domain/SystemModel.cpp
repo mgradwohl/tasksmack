@@ -981,7 +981,9 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
 {
     PowerStatus status;
 
-    status.hasBattery = m_PowerCapabilities.hasBattery;
+    // A probe can offer a battery whose reading says none is in: an empty bay the driver still lists,
+    // or a battery removed after start. That reads as no battery, not as one at -1% (#2408).
+    status.hasBattery = m_PowerCapabilities.hasBattery && counters.state != Platform::BatteryState::NotPresent;
     // Before the no-battery return: on a battery-less machine isOnAc is still the adapter's report
     // (#1109), which consumers need.
     status.isOnAc = counters.isOnAc;

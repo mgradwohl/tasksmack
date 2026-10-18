@@ -52,6 +52,8 @@ class LinuxPowerProbe : public IPowerProbe
 
     void discoverBatteries();
     void addPackCapabilities(const std::string& batteryPath);
+    /// Whether the pack at batteryPath is still a battery and is in (`present` is not 0)
+    [[nodiscard]] static bool isPackPresent(const std::string& batteryPath);
     /// The pack at batteryPath, or nullopt when it is absent (`present` is 0) or has gone
     [[nodiscard]] static std::optional<PackReading> readPack(const std::string& batteryPath);
     /// The packs as one system battery; see the definition for the policy

@@ -9,9 +9,19 @@
 #include <cstdint>
 #include <format>
 #include <string>
+#include <string_view>
 
 namespace App::Detail
 {
+
+/// Shown in place of a charge the battery didn't report (chargePercent < 0), never "-1%" (#2408)
+inline constexpr std::string_view NO_CHARGE_TEXT = "â";
+
+/// The charge as "NN%", or a dash when the battery didn't report one.
+[[nodiscard]] inline std::string formatChargePercent(int chargePercent)
+{
+    return chargePercent < 0 ? std::string(NO_CHARGE_TEXT) : std::format("{}%", chargePercent);
+}
 
 /// The battery icon for a charge level.
 [[nodiscard]] inline const char* batteryIcon(int chargePercent)
@@ -54,11 +64,12 @@ namespace App::Detail
 [[nodiscard]] inline std::string batteryHeaderStatus(const Domain::PowerStatus& power)
 {
     const int charge = power.chargePercent;
+    const std::string percent = formatChargePercent(charge);
     const std::string plug = power.isOnAc ? std::string(ICON_FA_PLUG) + " " : std::string();
 
     if (power.isCharging)
     {
-        return std::format("{} {} {}%{}", ICON_FA_BOLT, batteryIcon(charge), charge, formatBatteryDuration(power.timeToFullSec, "to full"));
+        return std::format("{} {} {}{}", ICON_FA_BOLT, batteryIcon(charge), percent, formatBatteryDuration(power.timeToFullSec, "to full"));
     }
     if (power.isFull)
     {
@@ -67,13 +78,13 @@ namespace App::Detail
     if (power.isNotCharging)
     {
         // Plugged in but held below full, often by a charge threshold: its real charge, not "100%" (#1158).
-        return std::format("{}{} {}% (not charging)", plug, batteryIcon(charge), charge);
+        return std::format("{}{} {} (not charging)", plug, batteryIcon(charge), percent);
     }
     if (power.isDischarging && !power.isOnAc)
     {
-        return std::format("{} {}%{}", batteryIcon(charge), charge, formatBatteryDuration(power.timeToEmptySec, "left"));
+        return std::format("{} {}{}", batteryIcon(charge), percent, formatBatteryDuration(power.timeToEmptySec, "left"));
     }
-    return std::format("{}{} {}%", plug, batteryIcon(charge), charge);
+    return std::format("{}{} {}", plug, batteryIcon(charge), percent);
 }
 
 } // namespace App::Detail

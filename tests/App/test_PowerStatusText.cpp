@@ -70,5 +70,22 @@ TEST(PowerStatusTextTest, ChargingShowsTimeToFull)
     EXPECT_NE(text.find("50% (0:30 to full)"), std::string::npos) << text;
 }
 
+TEST(PowerStatusTextTest, AnUnreportedChargeIsADashNotMinusOne)
+{
+    // #2408: chargePercent -1 is "no reading", shown as a dash in every state
+    for (const auto setState : {+[](Domain::PowerStatus&) {},
+                                +[](Domain::PowerStatus& p) { p.isCharging = true; },
+                                +[](Domain::PowerStatus& p) { p.isNotCharging = true; },
+                                +[](Domain::PowerStatus& p) { p.isDischarging = true; }})
+    {
+        auto power = battery(-1, false);
+        setState(power);
+        const std::string text = batteryHeaderStatus(power);
+        EXPECT_EQ(text.find("-1"), std::string::npos) << text;
+        EXPECT_NE(text.find(NO_CHARGE_TEXT), std::string::npos) << text;
+    }
+    EXPECT_EQ(formatChargePercent(42), "42%");
+}
+
 } // namespace
 } // namespace App::Detail
