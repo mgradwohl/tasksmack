@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace Domain
@@ -136,6 +137,24 @@ void appendSensorHistory(SensorHistory& history, double value, double nowSeconds
     history.values.erase(history.values.begin(), history.values.begin() + count);
 }
 
+namespace
+{
+
+/// @p deviceName without the " #2" a second chip of one name is given (#2340), which moves to another
+/// chip as chips come and go: what tells one device from another under the same id is the chip itself.
+[[nodiscard]] std::string chipName(std::string_view deviceName)
+{
+    const std::size_t hash = deviceName.rfind(" #");
+    if (hash != std::string_view::npos && hash + 2 < deviceName.size() &&
+        std::ranges::all_of(deviceName.substr(hash + 2), [](char c) { return c >= '0' && c <= '9'; }))
+    {
+        deviceName = deviceName.substr(0, hash);
+    }
+    return std::string(deviceName);
+}
+
+} // namespace
+
 void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
 {
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -144,6 +163,13 @@ void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
         for (const Platform::SensorReading& reading : device.readings)
         {
             const std::string key = sensorKey(device, reading);
+            const std::string chip = chipName(device.name);
+            if (auto [recorded, added] = m_SensorDeviceNames.try_emplace(key, chip); !added && recorded->second != chip)
+            {
+                recorded->second = chip; // another device under the same number (#2495)
+                m_SensorRanges.erase(key);
+                m_SensorHistories.erase(key);
+            }
             SensorRange& range = m_SensorRanges[key];
             range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
             range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);

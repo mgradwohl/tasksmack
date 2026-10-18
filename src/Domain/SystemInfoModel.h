@@ -185,6 +185,9 @@ class SystemInfoModel
     std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
     std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex
     std::map<std::string, SensorHistory> m_SensorHistories; // guarded by m_ReadMutex
+    // The device name each key was recorded for: a hwmon number freed by an unplugged device is reused for
+    // the next one, whose readings start a range and history of their own (#2495). Guarded by m_ReadMutex.
+    std::map<std::string, std::string> m_SensorDeviceNames;
 
     /// Adds @p sensors' readings to m_SensorRanges and m_SensorHistories. Under m_ReadMutex.
     void addToSensorRanges(const Platform::SensorsInfo& sensors);

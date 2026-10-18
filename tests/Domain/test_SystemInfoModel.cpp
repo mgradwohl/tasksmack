@@ -586,6 +586,39 @@ TEST(SystemInfoModelTest, BothKindsOfReadAppendToEachSensorsHistory)
 // #2340: two sensors that share a label (two "acpitz" thermal zones; a voltage and a current both
 // "VDD_IN") keep their own range and history, through a read that reorders the channels and one that
 // drops one of them.
+// #2495: the kernel reuses a freed hwmon number for the next device, which starts a range and history of its
+// own; a chip that only gains or loses its " #2" keeps its.
+TEST(SystemInfoModelTest, ADeviceTakingAnUnpluggedOnesNumberStartsItsOwnRange)
+{
+    using Platform::SensorKind;
+    const auto chip = [](const char* name, double value)
+    {
+        Platform::SensorsInfo info;
+        info.available = true;
+        info.listed = true;
+        info.devices.push_back(
+            {.name = name, .id = "hwmon5", .readings = {scriptedReading(SensorKind::Temperature, "temp1", "temp1_input", value)}});
+        return info;
+    };
+    int reads = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->scriptSensors({chip("nvme", 40.0), chip("nvme", 55.0), chip("nvme #2", 50.0), chip("mt7921_phy0", 30.0)});
+    SystemInfoModel model(std::move(probe));
+    model.read();
+    model.readSensors();
+    model.readSensors();
+    const std::string key = std::string("hwmon5") + '\x1F' + "temp1_input";
+    const auto renamed = model.snapshot();
+    ASSERT_TRUE(renamed->sensorRanges.contains(key));
+    EXPECT_EQ(renamed->sensorRanges.at(key), (SensorRange{.min = 40.0, .max = 55.0, .samples = 3})) << "only its #2 changed";
+
+    model.readSensors();
+    const auto replaced = model.snapshot();
+    EXPECT_EQ(replaced->sensorRanges.at(key), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
+    ASSERT_TRUE(replaced->sensorHistories.contains(key));
+    EXPECT_EQ(replaced->sensorHistories.at(key).values.size(), 1U);
+}
+
 TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
 {
     using Platform::SensorKind;
