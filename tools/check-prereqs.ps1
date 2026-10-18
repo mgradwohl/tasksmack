@@ -154,11 +154,11 @@ function Get-CMakeVersion {
     return $null
 }
 
-# Get ccache version
+# Get ccache version: two or three components (4.14, 4.9.1; #2350)
 function Get-CcacheVersion {
     try {
         $output = (& ccache --version 2>&1) | Out-String
-        if ($output -match 'ccache version (\d+\.\d+\.\d+)') {
+        if ($output -match 'ccache version (\d+\.\d+(?:\.\d+)?)') {
             return [Version]$Matches[1]
         }
     }
