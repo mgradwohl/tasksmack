@@ -119,6 +119,7 @@ ProcessIconCache::ProcessIconCache(std::unique_ptr<Platform::IProcessIconSource>
     : m_Source(std::move(source)),
       m_Config(config),
       m_FoldCase(m_Source != nullptr && m_Source->caseInsensitivePaths()),
+      m_KeyByName(m_Source != nullptr && m_Source->findsIconsByName()),
       m_Processes(config.maxProcesses),
       m_Files(config.maxFiles),
       m_Icons(config.maxIcons),
@@ -229,8 +230,21 @@ void ProcessIconCache::workerLoop(const std::stop_token& stopToken)
 std::string ProcessIconCache::iconKey(std::string_view executablePath, std::string_view name, int sizePx) const
 {
     // Without a path (unreadable) the source can only go by name, so the key is the name, marked so
-    // it can't collide with a path.
-    std::string key = executablePath.empty() ? std::format("{}|?{}", sizePx, name) : std::format("{}|{}", sizePx, executablePath);
+    // it can't collide with a path. A source that also goes by name with one keys by both (#2462): every
+    // python3 process shares its executable, and each script's icon is its own.
+    std::string key;
+    if (executablePath.empty())
+    {
+        key = std::format("{}|?{}", sizePx, name);
+    }
+    else if (m_KeyByName)
+    {
+        key = std::format("{}|{}|{}", sizePx, executablePath, name);
+    }
+    else
+    {
+        key = std::format("{}|{}", sizePx, executablePath);
+    }
     if (m_FoldCase)
     {
         std::ranges::transform(key, key.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });

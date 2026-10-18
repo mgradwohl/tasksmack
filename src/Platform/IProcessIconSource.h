@@ -48,6 +48,14 @@ class IProcessIconSource
     /// Whether two paths that differ only in letter case name the same file (Windows), so a cache
     /// keyed by path can fold case.
     [[nodiscard]] virtual bool caseInsensitivePaths() const noexcept = 0;
+
+    /// Whether loadIcon() may answer by @p processName even with a path (Linux: an interpreter's or Wine's
+    /// processes share one executable, and their desktop entries match their names), so a cache must key
+    /// by both (#2462). False: the icon depends on the path alone.
+    [[nodiscard]] virtual bool findsIconsByName() const noexcept
+    {
+        return false;
+    }
 };
 
 /// A source with no icons: synthetic runs, and a platform without an implementation. Every process

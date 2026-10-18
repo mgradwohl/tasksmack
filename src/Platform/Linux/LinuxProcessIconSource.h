@@ -41,6 +41,11 @@ class LinuxProcessIconSource final : public IProcessIconSource
     {
         return false;
     }
+    /// A python3's or wine64-preloader's icon is its script's or program's, by the process name (#2462).
+    [[nodiscard]] bool findsIconsByName() const noexcept override
+    {
+        return true;
+    }
 
     /// The pixels of the PNG at @p path as straight RGBA; nullopt when it can't be decoded or is
     /// larger than MAX_DECODED_SIDE_PX on a side.

@@ -175,6 +175,7 @@ class ProcessIconCache
     std::unique_ptr<Platform::IProcessIconSource> m_Source;
     ProcessIconCacheConfig m_Config;
     bool m_FoldCase = false;
+    bool m_KeyByName = false; // the source's findsIconsByName() (#2462)
 
     mutable std::mutex m_Mutex;
     std::condition_variable_any m_Wake;

@@ -37,6 +37,7 @@ struct FakeIconSourceState
     std::atomic<int> iconReads{0};
     std::vector<int> requestedSizes;
     bool caseInsensitive = false;
+    bool byName = false; ///< Answers by name when the path has no icon, as Linux's desktop entries do
     bool throwOnLoad = false;
 };
 
@@ -63,7 +64,11 @@ class FakeIconSource final : public Platform::IProcessIconSource
             throw std::runtime_error("unreadable");
         }
         const std::string key = executablePath.empty() ? "?" + std::string(processName) : std::string(executablePath);
-        const auto it = m_State->iconSides.find(key);
+        auto it = m_State->iconSides.find(key);
+        if (it == m_State->iconSides.end() && m_State->byName)
+        {
+            it = m_State->iconSides.find("?" + std::string(processName));
+        }
         if (it == m_State->iconSides.end())
         {
             return std::nullopt;
@@ -77,6 +82,11 @@ class FakeIconSource final : public Platform::IProcessIconSource
     [[nodiscard]] bool caseInsensitivePaths() const noexcept override
     {
         return m_State->caseInsensitive;
+    }
+
+    [[nodiscard]] bool findsIconsByName() const noexcept override
+    {
+        return m_State->byName;
     }
 
   private:
@@ -168,6 +178,31 @@ TEST_F(ProcessIconCacheTest, AnExecutableWithoutAnIconIsRememberedAndNotReadAgai
     static_cast<void>(cache->loadPending());
     EXPECT_EQ(m_State->iconReads.load(), 1);
     EXPECT_EQ(m_State->pathReads.load(), 2);
+}
+
+// #2462: Linux finds a script's icon by its process name, so processes sharing an interpreter don't share
+// one icon (or one miss) by their executable.
+TEST_F(ProcessIconCacheTest, AByNameSourceKeepsEachNamesIconForOneExecutable)
+{
+    m_State->byName = true;
+    m_State->paths[10] = "/usr/bin/python3.12";
+    m_State->paths[11] = "/usr/bin/python3.12";
+    m_State->paths[12] = "/usr/bin/python3.12";
+    m_State->iconSides["?meld"] = SIZE;
+    const auto cache = makeCache();
+
+    static_cast<void>(cache->lookup(1, 10, "meld", SIZE));
+    static_cast<void>(cache->lookup(2, 11, "backup-script", SIZE));
+    static_cast<void>(cache->loadPending());
+    EXPECT_NE(cache->lookup(1, 10, "meld", SIZE), nullptr);
+    EXPECT_EQ(cache->lookup(2, 11, "backup-script", SIZE), nullptr) << "not Meld's icon";
+    EXPECT_EQ(m_State->iconReads.load(), 2);
+
+    // Another Meld: the same path and name, so its icon is not read again.
+    static_cast<void>(cache->lookup(3, 12, "meld", SIZE));
+    static_cast<void>(cache->loadPending());
+    EXPECT_NE(cache->lookup(3, 12, "meld", SIZE), nullptr);
+    EXPECT_EQ(m_State->iconReads.load(), 2);
 }
 
 TEST_F(ProcessIconCacheTest, WithoutAPathTheIconIsLookedUpByName)
