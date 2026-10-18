@@ -991,6 +991,27 @@ TEST(LinuxSensorsTest, ReadsChipsAndThermalZonesUnderARoot)
     EXPECT_EQ(info.devices[5].readings[0].label, "x86_pkg_temp");
 }
 
+// #2445: a zone's hwmon chip is named after its type with '-' made '_' (thermal_hwmon.c), so a Raspberry
+// Pi's cpu-thermal zone is the cpu_thermal chip, not a second reading.
+TEST(LinuxSensorsTest, AZoneWhoseTypeHasADashIsNotListedAgainBesideItsHwmonChip)
+{
+    const FixtureRoot root;
+    root.write("sys/class/hwmon/hwmon0/name", "cpu_thermal\n");
+    root.write("sys/class/hwmon/hwmon0/temp1_input", "48686\n");
+    root.write("sys/class/thermal/thermal_zone0/type", "cpu-thermal\n");
+    root.write("sys/class/thermal/thermal_zone0/temp", "48686\n");
+    root.write("sys/class/thermal/thermal_zone1/type", "soc-dram\n"); // no chip of its own
+    root.write("sys/class/thermal/thermal_zone1/temp", "41000\n");
+
+    SensorsInfo info;
+    LinuxSensors::readSensorFacts(root.path(), info);
+    ASSERT_EQ(info.devices.size(), 2U);
+    EXPECT_EQ(info.devices[0].name, "cpu_thermal");
+    EXPECT_EQ(info.devices[1].name, "Thermal zones");
+    ASSERT_EQ(info.devices[1].readings.size(), 1U);
+    EXPECT_EQ(info.devices[1].readings[0].label, "soc-dram");
+}
+
 // #2340: channels that share a label (two zones of one type; a voltage and a current both "VDD_IN") each
 // carry their own identity, and a chip is identified by its hwmon directory, not its "#2" name.
 TEST(LinuxSensorsTest, RepeatedLabelsKeepTheirOwnIdentity)

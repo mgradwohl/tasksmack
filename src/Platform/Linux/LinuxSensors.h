@@ -169,7 +169,8 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
 
 /// The thermal zones' temperatures, labelled by zone type ("x86_pkg_temp", "acpitz") and identified by
 /// zone ("thermal_zone1"), since several zones can share a type (#2340), leaving out any type in
-/// @p hwmonNames: those zones also register a hwmon chip of the same name, already listed.
+/// @p hwmonNames: those zones also register a hwmon chip, already listed, named after the type with each
+/// '-' made '_' (the kernel's thermal_hwmon.c; a hwmon name can't hold '-'), so cpu-thermal's is cpu_thermal (#2445).
 [[nodiscard]] inline std::vector<SensorReading> readThermalZones(const std::filesystem::path& root, const std::set<std::string>& hwmonNames)
 {
     std::vector<std::pair<unsigned, SensorReading>> zones;
@@ -188,7 +189,9 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
         }
         const std::string type = LinuxOsInfo::readLine(entries->path() / "type");
         const std::optional<std::int64_t> milli = parseSysfsInteger(LinuxOsInfo::readFile(entries->path() / "temp"));
-        if (type.empty() || !milli.has_value() || hwmonNames.contains(type))
+        std::string hwmonName = type;
+        std::ranges::replace(hwmonName, '-', '_');
+        if (type.empty() || !milli.has_value() || hwmonNames.contains(hwmonName))
         {
             continue;
         }
