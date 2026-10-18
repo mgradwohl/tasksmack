@@ -49,9 +49,9 @@ struct BatteryInfo
 {
     bool found = false;            ///< A battery answered IOCTL_BATTERY_QUERY_INFORMATION
     bool relativeCapacity = false; ///< BATTERY_CAPACITY_RELATIVE on every battery: no mWh, so not reported
-    double designWh = 0.0;         ///< Summed over the batteries
-    double fullChargeWh = 0.0;     ///< Summed over the batteries
-    int healthPercent = -1;        ///< From the sums
+    double designWh = 0.0;         ///< Summed over the batteries that report both capacities (#2409)
+    double fullChargeWh = 0.0;     ///< Summed over the same batteries as designWh
+    int healthPercent = -1;        ///< From the two sums
     std::uint64_t cycleCount = 0;  ///< The most-cycled battery's; 0: not reported (the driver's "no cycle counter")
     std::string technology;        ///< Chemistry as text ("Li-ion")
     std::string manufacturer;

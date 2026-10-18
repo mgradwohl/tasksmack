@@ -1,14 +1,15 @@
 #pragma once
 
+#include "Platform/BatteryCapacity.h"
 #include "Platform/PowerTypes.h"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform
 {
@@ -157,17 +158,11 @@ inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
     return known ? static_cast<double>(capacity) / 1000.0 : 0.0;
 }
 
-/// PowerCounters::healthPercent: full-charge over design capacity, rounded and capped at 100 (a new
-/// battery can hold a little more than its design). -1 unless both are known (capacityWh() > 0).
+/// PowerCounters::healthPercent of one battery: batteryHealthPercent() (BatteryCapacity.h) of its
+/// capacities, so -1 unless both are known (capacityWh() > 0).
 [[nodiscard]] inline int healthPercentFromCapacity(std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities) noexcept
 {
-    const double design = capacityWh(designed, capabilities);
-    const double full = capacityWh(fullCharged, capabilities);
-    if (design <= 0.0 || full <= 0.0)
-    {
-        return -1;
-    }
-    return static_cast<int>(std::lround(std::min(full / design, 1.0) * 100.0));
+    return batteryHealthPercent(capacityWh(fullCharged, capabilities), capacityWh(designed, capabilities));
 }
 
 /// One battery's BATTERY_INFORMATION capacity fields, as combineBatteryCapacities() takes them.
@@ -190,16 +185,16 @@ struct BatteryCapacityTotals
 };
 
 /// The batteries' capacities combined (#2151), so they describe the same packs as
-/// GetSystemPowerStatus's charge percent, which covers every battery. Design and full-charge Wh are
-/// the sums of the known mWh figures; relative-unit packs are skipped. Health is the summed
-/// full-charge over the summed design of the packs that report both (rounded, capped at 100; -1
-/// when none does). The cycle count is the most-cycled pack's.
-[[nodiscard]] inline BatteryCapacityTotals combineBatteryCapacities(std::span<const BatteryCapacityReading> batteries) noexcept
+/// GetSystemPowerStatus's charge percent, which covers every battery, by the rule Linux uses too
+/// (combinePackCapacities(), #2409): design and full-charge Wh are the sums over the packs that report
+/// both as known mWh, and health comes from those sums. Relative-unit packs are skipped. The cycle
+/// count is the most-cycled pack's.
+[[nodiscard]] inline BatteryCapacityTotals combineBatteryCapacities(std::span<const BatteryCapacityReading> batteries)
 {
     BatteryCapacityTotals totals;
     totals.relativeCapacity = !batteries.empty();
-    double pairedDesignWh = 0.0;
-    double pairedFullWh = 0.0;
+    std::vector<PackCapacity> capacities;
+    capacities.reserve(batteries.size());
     for (const BatteryCapacityReading& battery : batteries)
     {
         totals.cycleCount = std::max(totals.cycleCount, battery.cycleCount);
@@ -208,20 +203,13 @@ struct BatteryCapacityTotals
             continue;
         }
         totals.relativeCapacity = false;
-        const double design = capacityWh(battery.designed, battery.capabilities);
-        const double full = capacityWh(battery.fullCharged, battery.capabilities);
-        totals.designWh += design;
-        totals.fullChargeWh += full;
-        if (design > 0.0 && full > 0.0)
-        {
-            pairedDesignWh += design;
-            pairedFullWh += full;
-        }
+        capacities.push_back(PackCapacity{.fullCharge = capacityWh(battery.fullCharged, battery.capabilities),
+                                          .design = capacityWh(battery.designed, battery.capabilities)});
     }
-    if (pairedDesignWh > 0.0)
-    {
-        totals.healthPercent = static_cast<int>(std::lround(std::min(pairedFullWh / pairedDesignWh, 1.0) * 100.0));
-    }
+    const CombinedCapacity combined = combinePackCapacities(capacities);
+    totals.designWh = combined.design;
+    totals.fullChargeWh = combined.fullCharge;
+    totals.healthPercent = combined.healthPercent;
     return totals;
 }
 

@@ -46,7 +46,7 @@ class LinuxPowerProbe : public IPowerProbe
         double now = 0.0; // In unit
         double full = 0.0;
         double design = 0.0;
-        double healthFull = 0.0; // The raw full/design pair health comes from, either unit
+        double healthFull = 0.0; // The raw full/design pair, for a lone pack whose capacities have no unit
         double healthDesign = 0.0;
     };
 

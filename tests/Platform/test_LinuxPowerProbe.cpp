@@ -12,6 +12,7 @@
 
 #include "Platform/Linux/LinuxPowerProbe.h"
 #include "Platform/PowerTypes.h"
+#include "Platform/Windows/WindowsPowerProbeMath.h"
 
 #include <array>
 #include <atomic>
@@ -389,9 +390,9 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_ConvertedViaVoltage)
     // chargeFullWh = (4000000 * 11000000) / 1e12 = 44 Wh
     EXPECT_NEAR(counters.chargeFullWh, 44.0, 0.01);
 
-    // healthPercent = (4.0 / 4.5) * 100 ≈ 88 (#2341)
+    // healthPercent = (4.0 / 4.5) * 100 = 88.9, rounded as on Windows (#2341, #2409)
     EXPECT_TRUE(caps.hasHealthPercent);
-    EXPECT_EQ(counters.healthPercent, 88);
+    EXPECT_EQ(counters.healthPercent, 89);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_HealthNeedsNoVoltage)
@@ -408,7 +409,7 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_HealthNeedsNoVoltage)
     EXPECT_TRUE(probe.capabilities().hasHealthPercent);
     auto counters = probe.read();
     EXPECT_DOUBLE_EQ(counters.chargeFullWh, 0.0); // No voltage, no Wh figures
-    EXPECT_EQ(counters.healthPercent, 88);
+    EXPECT_EQ(counters.healthPercent, 89);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_ZeroDesignCapacity_HealthStaysUnavailable)
@@ -435,6 +436,36 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_NoDesignCapacity_NoHealthCapability)
 
     EXPECT_FALSE(probe.capabilities().hasHealthPercent);
     EXPECT_EQ(probe.read().healthPercent, -1);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, Battery_FullAboveDesign_HealthIsCappedAt100)
+{
+    // A new pack can hold a little more than its design: 100%, not 104%, as on Windows (#2409)
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "energy_now", "30000000");
+    writeFile(batPath / "energy_full", "52000000");
+    writeFile(batPath / "energy_full_design", "50000000");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_EQ(probe.read().healthPercent, 100);
+}
+
+TEST_F(LinuxPowerProbeUnitTest, Battery_ZeroFullCapacity_HealthIsUnknownNotZero)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "energy_now", "30000000");
+    writeFile(batPath / "energy_full", "0");
+    writeFile(batPath / "energy_full_design", "50000000");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.healthPercent, -1);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0); // No design shown without the full charge it pairs with
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 0.0);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_ZeroVoltage_NoConversion)
@@ -671,7 +702,7 @@ TEST_F(LinuxPowerProbeMultiPackTest, UnequalPacksAreEnergyWeighted)
     EXPECT_DOUBLE_EQ(counters.chargeFullWh, 80.0);
     EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 85.0);
     EXPECT_DOUBLE_EQ(counters.powerNowW, 10.0);
-    EXPECT_EQ(counters.healthPercent, 94); // 80 / 85, truncated
+    EXPECT_EQ(counters.healthPercent, 94); // 80 / 85 = 94.1, rounded
     EXPECT_NEAR(static_cast<double>(counters.timeToEmptySec), 6.4 * 3600.0, 1.0);
 }
 
@@ -741,8 +772,93 @@ TEST_F(LinuxPowerProbeMultiPackTest, MixedUnitsLeaveCombinedFiguresUnavailable)
 
     EXPECT_EQ(counters.chargePercent, -1);
     EXPECT_DOUBLE_EQ(counters.chargeNowWh, 0.0);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 0.0);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0);
     EXPECT_EQ(counters.healthPercent, -1);
     EXPECT_DOUBLE_EQ(counters.powerNowW, 5.0);
+    EXPECT_EQ(counters.timeToEmptySec, 0ULL);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, APackWithoutADesignCapacityIsLeftOutOfTheCapacityRows)
+{
+    // #2409: BAT0 has no energy_full_design. Design, full charge and health all describe BAT1 alone,
+    // not Design 75 Wh against Full charge 80 Wh; the charge still counts both packs.
+    makePack("BAT0", {.capacity = "50", .energyNow = "10000000", .energyFull = "20000000"});
+    makePack("BAT1", {.capacity = "90", .energyNow = "54000000", .energyFull = "60000000", .energyDesign = "75000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 75.0);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 60.0);
+    EXPECT_EQ(counters.healthPercent, 80);
+    EXPECT_EQ(counters.chargePercent, 80); // 64 of 80 Wh
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 64.0);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, APackWithoutAFullCapacityDoesntInflateTheCharge)
+{
+    // #2409: BAT0's energy_full reads 0. sum(now) / sum(full) would be 50 / 50, shown as 100%.
+    makePack("BAT0", {.capacity = "60", .energyNow = "30000000", .energyFull = "0", .energyDesign = "40000000", .power = "5000000"});
+    makePack("BAT1", {.capacity = "40", .energyNow = "20000000", .energyFull = "50000000", .energyDesign = "50000000", .power = "5000000"});
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto counters = probe.read();
+
+    EXPECT_EQ(counters.chargePercent, -1);
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 0.0);
+    EXPECT_EQ(counters.timeToEmptySec, 0ULL);
+    // The capacity rows describe BAT1, the one pack that reports both
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 50.0);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
+    EXPECT_EQ(counters.healthPercent, 100);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, CapacityRowsAgreeWithWindows)
+{
+    // The same three packs as Windows reads them (BATTERY_INFORMATION, mWh) and as Linux does (sysfs,
+    // µWh): a paired pack, one with no design and one with no full charge (#2409)
+    makePack("BAT0", {.energyNow = "20000000", .energyFull = "45000000", .energyDesign = "50000000"});
+    makePack("BAT1", {.energyNow = "10000000", .energyFull = "20000000", .energyDesign = "0"});
+    makePack("BAT2", {.energyNow = "10000000", .energyFull = "0", .energyDesign = "30000000"});
+    const std::array<BatteryCapacityReading, 3> windowsPacks{{
+        {.designed = 50'000U, .fullCharged = 45'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 20'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 30'000U, .fullCharged = 0U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto onLinux = probe.read();
+    const BatteryCapacityTotals onWindows = combineBatteryCapacities(windowsPacks);
+
+    EXPECT_DOUBLE_EQ(onLinux.chargeDesignWh, onWindows.designWh);
+    EXPECT_DOUBLE_EQ(onLinux.chargeFullWh, onWindows.fullChargeWh);
+    EXPECT_EQ(onLinux.healthPercent, onWindows.healthPercent);
+    EXPECT_DOUBLE_EQ(onLinux.chargeDesignWh, 50.0);
+    EXPECT_DOUBLE_EQ(onLinux.chargeFullWh, 45.0);
+    EXPECT_EQ(onLinux.healthPercent, 90);
+}
+
+TEST_F(LinuxPowerProbeMultiPackTest, ChargeCapacityRowsAgreeWithWindowsToo)
+{
+    // Charge-based packs with a voltage are combined in Wh by the same rule: 4.0 of 4.5 Ah and a
+    // pack with no design, at 10 V, against the same packs in mWh on Windows
+    makePack("BAT0", {.chargeNow = "2000000", .chargeFull = "4000000", .chargeDesign = "4500000", .voltage = "10000000"});
+    makePack("BAT1", {.chargeNow = "1000000", .chargeFull = "2000000", .chargeDesign = "0", .voltage = "10000000"});
+    const std::array<BatteryCapacityReading, 2> windowsPacks{{
+        {.designed = 45'000U, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 20'000U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const auto onLinux = probe.read();
+    const BatteryCapacityTotals onWindows = combineBatteryCapacities(windowsPacks);
+
+    EXPECT_NEAR(onLinux.chargeDesignWh, onWindows.designWh, 1e-9);
+    EXPECT_NEAR(onLinux.chargeFullWh, onWindows.fullChargeWh, 1e-9);
+    EXPECT_EQ(onLinux.healthPercent, onWindows.healthPercent);
+    EXPECT_EQ(onLinux.healthPercent, 89);
+    EXPECT_EQ(onLinux.chargePercent, 50); // 30 of 60 Wh: both packs report a full charge
 }
 
 TEST_F(LinuxPowerProbeMultiPackTest, PercentagesWithoutCapacitiesAreNotAveraged)

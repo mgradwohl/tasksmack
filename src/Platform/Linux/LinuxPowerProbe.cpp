@@ -4,6 +4,7 @@
 
 #include "LinuxPowerProbe.h"
 
+#include "Platform/BatteryCapacity.h"
 #include "Platform/PowerTypes.h"
 
 #include <spdlog/spdlog.h>
@@ -293,12 +294,16 @@ std::optional<LinuxPowerProbe::PackReading> LinuxPowerProbe::readPack(const std:
 ///   sign of the summed power (#2383). Otherwise Full if every pack whose state is known is, else Not
 ///   charging if any is held, else Unknown.
 /// - Charge: the energy-weighted percentage, sum(now) / sum(full), when every pack gives its
-///   capacities in the same unit; one pack's own `capacity`; otherwise unavailable rather than an
-///   unweighted average.
-/// - Wh figures: the sums, when every pack has them; otherwise unavailable (0).
+///   capacities in the same unit and every pack reports a full capacity (#2409); one pack's own
+///   `capacity`; otherwise unavailable rather than an unweighted average or one inflated by a pack
+///   whose charge counts but whose capacity doesn't. The charge-now Wh and the time estimates follow
+///   the same rule.
+/// - Design, full charge and health: combinePackCapacities() (Platform/BatteryCapacity.h), the rule
+///   Windows uses too (#2409), under the same unit rule: the sums over the packs that report both,
+///   and health from those sums, rounded and capped at 100. The Wh figures need Wh; health also
+///   comes from charge without a voltage (#2341), and a lone pack whose capacities read in neither
+///   unit falls back to its raw full/design pair.
 /// - Power: the sum of the packs' signed rates.
-/// - Health: sum(full) / sum(design) over the packs that report both, under the same unit rule
-///   (one pack: its own raw pair).
 /// - Cycle count: the most-cycled pack's. Voltage, technology, model and manufacturer: the first
 ///   pack's (by name), as a combined value would mean nothing.
 PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& packs)
@@ -356,21 +361,18 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
     const CapacityUnit unit = first.unit;
     const bool sharedUnit =
         unit != CapacityUnit::None && std::ranges::all_of(packs, [unit](const PackReading& p) { return p.unit == unit; });
+    // The charge figures count a pack's charge only with its capacity (#2409)
+    const bool chargeCounted =
+        sharedUnit && (packs.size() == 1 || std::ranges::all_of(packs, [](const PackReading& p) { return p.full > 0.0; }));
     double now = 0.0;
     double full = 0.0;
-    double design = 0.0;
-    double pairedFull = 0.0; // Packs that report both full and design capacity, for health
-    double pairedDesign = 0.0;
+    std::vector<PackCapacity> capacities;
+    capacities.reserve(packs.size());
     for (const PackReading& pack : packs)
     {
         now += pack.now;
         full += pack.full;
-        design += pack.design;
-        if (pack.full > 0.0 && pack.design > 0.0)
-        {
-            pairedFull += pack.full;
-            pairedDesign += pack.design;
-        }
+        capacities.push_back(PackCapacity{.fullCharge = pack.full, .design = pack.design});
         counters.powerNowW += pack.counters.powerNowW;
         counters.cycleCount = std::max(counters.cycleCount, pack.counters.cycleCount);
     }
@@ -379,39 +381,41 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
     {
         counters.chargePercent = first.counters.chargePercent;
     }
-    else if (sharedUnit && full > 0.0)
+    else if (chargeCounted && full > 0.0)
     {
         counters.chargePercent = static_cast<int>(std::lround(std::clamp(now / full, 0.0, 1.0) * 100.0));
     }
 
-    if (sharedUnit && unit == CapacityUnit::WattHours)
+    if (sharedUnit)
     {
-        counters.chargeNowWh = now;
-        counters.chargeFullWh = full;
-        counters.chargeDesignWh = design;
-    }
-
-    // Health, truncated as a single pack's always was
-    if (packs.size() == 1)
-    {
-        if (first.healthDesign > 0.0)
+        const CombinedCapacity combined = combinePackCapacities(capacities);
+        counters.healthPercent = combined.healthPercent;
+        if (unit == CapacityUnit::WattHours)
         {
-            counters.healthPercent = static_cast<int>((first.healthFull * 100.0) / first.healthDesign);
+            counters.chargeFullWh = combined.fullCharge;
+            counters.chargeDesignWh = combined.design;
         }
     }
-    else if (sharedUnit && pairedDesign > 0.0)
+    else if (packs.size() == 1)
     {
-        counters.healthPercent = static_cast<int>((pairedFull * 100.0) / pairedDesign);
+        counters.healthPercent = batteryHealthPercent(first.healthFull, first.healthDesign);
+    }
+
+    const bool wattHours = chargeCounted && unit == CapacityUnit::WattHours;
+    if (wattHours)
+    {
+        counters.chargeNowWh = now;
     }
 
     // Time remaining from the combined figures (rough)
-    if (counters.powerNowW > 0.1 && counters.chargeNowWh > 0)
+    if (wattHours && counters.powerNowW > 0.1 && now > 0.0)
     {
-        counters.timeToEmptySec = static_cast<std::uint64_t>((counters.chargeNowWh / counters.powerNowW) * 3600.0);
+        counters.timeToEmptySec = static_cast<std::uint64_t>((now / counters.powerNowW) * 3600.0);
     }
-    else if (counters.powerNowW < -0.1 && counters.chargeFullWh > counters.chargeNowWh)
+    else if (wattHours && counters.powerNowW < -0.1 && full > now)
     {
-        const auto remaining = counters.chargeFullWh - counters.chargeNowWh;
+        // Every pack's full capacity, as the charge counts every pack: not the capacity rows' figure
+        const auto remaining = full - now;
         counters.timeToFullSec = static_cast<std::uint64_t>((remaining / -counters.powerNowW) * 3600.0);
     }
     return counters;

@@ -172,6 +172,7 @@ TEST(BatteryCapacityTest, MilliwattHoursAreWattHoursUnlessUnknownOrRelative)
 TEST(BatteryCapacityTest, HealthIsFullOverDesignRoundedAndCapped)
 {
     EXPECT_EQ(healthPercentFromCapacity(50'000U, 45'000U, 0U), 90);
+    EXPECT_EQ(healthPercentFromCapacity(4'500U, 4'000U, 0U), 89);    // 88.9, rounded as on Linux (#2409)
     EXPECT_EQ(healthPercentFromCapacity(50'000U, 52'000U, 0U), 100); // Above design: capped
     EXPECT_EQ(healthPercentFromCapacity(0U, 45'000U, 0U), -1);       // No design: unknown, no division
     EXPECT_EQ(healthPercentFromCapacity(50'000U, 0U, 0U), -1);
@@ -202,10 +203,37 @@ TEST(BatteryCapacityTest, RelativeAndUnknownCapacitiesAreLeftOutOfTheTotals)
     }};
     const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
     EXPECT_FALSE(totals.relativeCapacity);
-    EXPECT_DOUBLE_EQ(totals.designWh, 80.0);
+    // Design, full charge and health all describe the one pack that reports both (#2409), not
+    // Design 80 Wh and Wear 43.8% next to Health 90%
+    EXPECT_DOUBLE_EQ(totals.designWh, 50.0);
     EXPECT_DOUBLE_EQ(totals.fullChargeWh, 45.0);
-    EXPECT_EQ(totals.healthPercent, 90); // Only the pack that reports both capacities
+    EXPECT_EQ(totals.healthPercent, 90);
     EXPECT_EQ(totals.cycleCount, 12U);
+}
+
+TEST(BatteryCapacityTest, APackWithoutADesignCapacityIsLeftOutOfEveryRow)
+{
+    // #2409: the second pack's full charge would otherwise be weighed against the first's design
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = 50'000U, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_DOUBLE_EQ(totals.designWh, 50.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 40.0);
+    EXPECT_EQ(totals.healthPercent, 80);
+}
+
+TEST(BatteryCapacityTest, WithoutAnyDesignCapacityOnlyTheFullChargeIsReported)
+{
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = BATTERY_CAPACITY_UNKNOWN_VALUE, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 70.0);
+    EXPECT_EQ(totals.healthPercent, -1);
 }
 
 TEST(BatteryCapacityTest, NoBatteriesOrOnlyRelativeOnesReportNoCapacity)

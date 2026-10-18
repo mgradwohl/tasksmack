@@ -330,6 +330,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
+    Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokeredProcessActions.cpp
     Platform/test_BrokeredSystemInfoProbe.cpp
