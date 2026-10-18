@@ -114,7 +114,8 @@ inline constexpr std::string_view SERVICE_SUFFIX = ".service";
 }
 
 /// The services in @p listing, sorted by name: every loaded service with its state, enablement and main
-/// process, then every installed service file not loaded, as Stopped.
+/// process, then every installed service file not loaded, as Stopped. Alias files aren't services of
+/// their own: the unit they name is listed under its real name.
 [[nodiscard]] inline std::vector<ServiceInfo> services(const Listing& listing)
 {
     std::map<std::string, std::string, std::less<>> fileStates;
@@ -161,7 +162,9 @@ inline constexpr std::string_view SERVICE_SUFFIX = ".service";
     }
     for (const auto& [name, state] : listing.unitFiles)
     {
-        if (!isService(name) || listed.contains(name))
+        // An alias (syslog.service -> rsyslog.service) is another name for a unit listed under its own:
+        // ListUnits never reports alias names, so it would show as a second, always-Stopped row (#2424).
+        if (!isService(name) || state == "alias" || listed.contains(name))
         {
             continue;
         }

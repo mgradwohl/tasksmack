@@ -186,6 +186,31 @@ TEST(SystemdServicesTest, AnInstancesOwnStartTypeBeatsItsTemplates)
     EXPECT_EQ(tty1->startType, ServiceStartType::Automatic) << "its own state unknown: the template's";
 }
 
+// #2424: ListUnitFiles includes alias symlinks; ListUnits reports only each unit's real name. An alias
+// is the same unit, so no row of its own (it would always read Stopped beside the running real one).
+TEST(SystemdServicesTest, AnAliasIsNotAServiceOfItsOwn)
+{
+    SystemdServices::Listing listing;
+    listing.units = {
+        {.name = "rsyslog.service",
+         .description = "System Logging Service",
+         .activeState = "active",
+         .subState = "running",
+         .objectPath = "/u/1"},
+    };
+    listing.unitFiles = {
+        {"rsyslog.service", "enabled"},
+        {"syslog.service", "alias"},
+        {"dbus-org.freedesktop.login1.service", "alias"}, // its unit not loaded either: still no row
+    };
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(listing);
+    ASSERT_EQ(services.size(), 1U);
+    EXPECT_EQ(services.front().name, "rsyslog.service");
+    EXPECT_EQ(services.front().state, ServiceState::Running);
+    EXPECT_EQ(find(services, "syslog.service"), nullptr);
+}
+
 /// A root with or without /run/systemd/system, as a system booted with systemd has it.
 [[nodiscard]] std::filesystem::path systemdRoot(const ScopedTempDir& dir, bool running)
 {
