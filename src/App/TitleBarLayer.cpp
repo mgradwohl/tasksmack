@@ -141,7 +141,10 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
+    // The window's own answer, not SDL_WINDOW_MAXIMIZED: a client-side maximize (X11 without EWMH
+    // maximize, #1339) never sets that flag, and its edges would stay resize handles nobody serves (#2497).
+    // SDL calls this from its event pump, on the main thread on X11.
+    const bool isMaximized = Core::Application::get().getWindow().isMaximized();
 
     // The actual decision tree lives in computeWindowHitTest() (TitleBarGeometry.h), pure and
     // header-only so its ordering -- buttons must be excluded before any resize-border check,
