@@ -9,9 +9,11 @@
 #ifdef TASKSMACK_HAS_SDBUS
 #include <array>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <utility>
 
+#include <pwd.h>
 #include <systemd/sd-journal.h>
 #endif
 
@@ -89,6 +91,12 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
         return read;
     }
     read.opened = true;
+    // The user systemd-coredump drops to, when it has one
+    std::optional<std::uint32_t> coredumpUid;
+    if (const passwd* user = ::getpwnam("systemd-coredump"); user != nullptr) // NOLINT(concurrency-mt-unsafe) - one worker thread
+    {
+        coredumpUid = static_cast<std::uint32_t>(user->pw_uid);
+    }
     while (read.entries.size() < maxEntries && sd_journal_previous(handle) > 0)
     {
         std::uint64_t usec = 0;
@@ -112,6 +120,25 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
             {
                 fields.emplace_back(field, std::string(entry.substr(name.size() + 1)));
             }
+        }
+        // The fields journald set from the sender, which no client can forge (#2382)
+        for (const char* trusted : {"_EXE", "_UID"})
+        {
+            const void* data = nullptr;
+            std::size_t length = 0;
+            const std::string_view name(trusted);
+            if (sd_journal_get_data(handle, trusted, &data, &length) >= 0 && data != nullptr)
+            {
+                const std::string_view entry(static_cast<const char*>(data), length);
+                if (entry.size() > name.size() && entry[name.size()] == '=')
+                {
+                    fields.emplace_back(trusted, std::string(entry.substr(name.size() + 1)));
+                }
+            }
+        }
+        if (!LinuxCoredumps::isTrustedCoredumpEntry(fields, coredumpUid))
+        {
+            continue; // logged with systemd-coredump's message ID by someone else
         }
         read.entries.push_back(std::move(fields));
     }

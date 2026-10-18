@@ -599,5 +599,47 @@ TEST_F(CoredumpsFixture, TheJournalIsCappedAtTheNewest)
     EXPECT_EQ(info.events[0].application, "app0");
 }
 
+// #2382: an entry with systemd-coredump's message ID counts only when systemd-coredump wrote it.
+TEST(CoredumpJournalTrustTest, OnlySystemdCoredumpsOwnEntriesAreTrusted)
+{
+    using LinuxCoredumps::isTrustedCoredumpEntry;
+    const auto entry = [](std::string_view exe, std::string_view sender, std::string_view crashed)
+    {
+        LinuxCoredumps::JournalFields fields{{"COMM", "sshd"}, {"UID", std::string(crashed)}};
+        if (!exe.empty())
+        {
+            fields.emplace_back("_EXE", std::string(exe));
+        }
+        if (!sender.empty())
+        {
+            fields.emplace_back("_UID", std::string(sender));
+        }
+        return fields;
+    };
+    const std::optional<std::uint32_t> coredumpUser = 977;
+    EXPECT_TRUE(isTrustedCoredumpEntry(entry("/usr/lib/systemd/systemd-coredump", "0", "0"), coredumpUser));
+    EXPECT_TRUE(isTrustedCoredumpEntry(entry("/lib/systemd/systemd-coredump", "977", "0"), coredumpUser));
+    EXPECT_TRUE(isTrustedCoredumpEntry(entry("/usr/lib/systemd/systemd-coredump", "1000", "1000"), coredumpUser))
+        << "dropped to the crashed user, or a user reporting their own crash";
+
+    EXPECT_FALSE(isTrustedCoredumpEntry(entry("/usr/bin/logger", "1000", "0"), coredumpUser)) << "logged by someone else";
+    EXPECT_FALSE(isTrustedCoredumpEntry(entry("", "0", "0"), coredumpUser)) << "no sender executable";
+    EXPECT_FALSE(isTrustedCoredumpEntry(entry("/usr/lib/systemd/systemd-coredump", "1000", "0"), coredumpUser))
+        << "a user's report can't claim another user's crash";
+    EXPECT_FALSE(isTrustedCoredumpEntry(entry("/usr/lib/systemd/systemd-coredump", "", "0"), coredumpUser));
+    EXPECT_FALSE(isTrustedCoredumpEntry(entry("/tmp/systemd-coredump-not", "0", "0"), coredumpUser));
+}
+
+TEST(CoredumpJournalTrustTest, OnlyCoreFilesInTheCoredumpDirectoryAreLookedAt)
+{
+    using LinuxCoredumps::isCoredumpDirFile;
+    EXPECT_TRUE(isCoredumpDirFile("/var/lib/systemd/coredump/core.python3.1000.boot.4242.1791613600123456.zst"));
+    EXPECT_FALSE(isCoredumpDirFile("/root/secret"));
+    EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/../../../../etc/shadow"));
+    EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/sub/core.x"));
+    EXPECT_FALSE(isCoredumpDirFile("var/lib/systemd/coredump/core.x"));
+    EXPECT_FALSE(isCoredumpDirFile("/var/lib/systemd/coredump/"));
+}
+
 } // namespace
 } // namespace Platform
