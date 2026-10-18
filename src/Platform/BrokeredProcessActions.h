@@ -6,7 +6,8 @@
 // permission (ProcessActionResult::permissionDenied) goes further:
 //
 // - while the helper is running (the user authenticated a few minutes ago), the action is retried through
-//   it at once, with no prompt;
+//   it at once, with no prompt; if the helper can't be asked after all (it exited or timed out), the
+//   refusal is returned as below (#2414);
 // - otherwise the refusal is returned as it is, and the UI offers "Authenticate and retry"
 //   (actionCapabilities().canAuthorizeInteractively), which calls runAuthorized(): that asks for the
 //   password, starts the helper, and sends the action through it.

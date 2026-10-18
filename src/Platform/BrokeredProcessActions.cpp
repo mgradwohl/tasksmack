@@ -81,7 +81,15 @@ ProcessActionResult BrokeredProcessActions::retried(ProcessActionResult result, 
     {
         return result;
     }
-    return actionResultOf(m_Broker->call(brokerRequestFor(action), std::stop_token{}));
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(brokerRequestFor(action), std::stop_token{});
+    if (!response.has_value())
+    {
+        // The helper exited, timed out or broke between connected() and the call (#2414). The refusal
+        // stands, so the UI still offers Authenticate and retry, which starts a fresh helper.
+        result.errorMessage += " (the administrator helper couldn't be asked: " + response.error() + ")";
+        return result;
+    }
+    return actionResultOf(response);
 }
 
 ProcessActionResult BrokeredProcessActions::terminate(const ProcessTarget& target)

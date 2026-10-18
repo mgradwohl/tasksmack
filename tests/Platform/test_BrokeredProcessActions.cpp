@@ -132,6 +132,21 @@ TEST(BrokeredProcessActionsTest, TheHelpersRefusalIsNotOfferedAgain)
     EXPECT_FALSE(result.permissionDenied); // an administrator was refused too: not curable
 }
 
+TEST(BrokeredProcessActionsTest, AHelperThatCantBeAskedLeavesTheRefusalToOfferAgain)
+{
+    // connected() said yes, but the helper idle-exited or timed out before answering (#2414).
+    Fixture f(/*connected=*/true);
+    f.inner->setTerminateResult(ProcessActionResult::denied("Permission denied"));
+    f.broker->setAnswer([](const Broker::Request&) -> std::expected<Broker::Response, std::string>
+                        { return std::unexpected(std::string("the helper exited")); });
+    const ProcessActionResult result = f.actions->terminate(TARGET);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.permissionDenied); // a fresh helper could still do it: Authenticate and retry
+    EXPECT_EQ(result.errorMessage, "Permission denied (the administrator helper couldn't be asked: the helper exited)");
+    EXPECT_EQ(f.broker->requests().size(), 1U);
+    EXPECT_EQ(f.broker->connectCount(), 0); // never prompts by itself
+}
+
 TEST(BrokeredProcessActionsTest, EachActionMapsToItsRequest)
 {
     const CpuAffinity cpus = CpuAffinity::fromMask(0b11);
