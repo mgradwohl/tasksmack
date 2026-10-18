@@ -11,8 +11,18 @@ name: Cache Prune
 # workflow_run always runs this file from the default branch, with this file's permissions.
 on:
   workflow_run:
-    # The workflows that save caches on main.
-    workflows: [CI, Sanitizers, Heavy Checks]
+    # Every workflow that can save a cache on main (a push, the nightly schedule, or a manual run off
+    # main), so the newest entry of each family is kept whichever workflow finishes last (#2410).
+    # tools/check-cache-prune-triggers.py (a pre-commit hook) fails if one is missing.
+    workflows:
+      - CI
+      - Sanitizers
+      - Heavy Checks
+      - ARM64
+      - CodeQL Security Analysis
+      - Static Analysis
+      - Manual Build
+      - Release
     types: [completed]
     branches: [main]
   workflow_dispatch:

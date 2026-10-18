@@ -233,6 +233,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-guidance-sync**: Fail when the AI-agent guidance drifts (`tools/check-guidance-sync.py`): the
   `.claude/skills/tasksmack-review/SKILL.md` body must match `.github/skills/code-review/SKILL.md`
   (frontmatter ignored), and `CLAUDE.md` must import [AGENTS.md](AGENTS.md) with an `@AGENTS.md` line
+- **check-cache-prune-triggers**: Fail when a workflow that saves Actions caches (ccache, `actions/cache`, a
+  repo cache action's `mode: save`, `setup-windows-llvm`, or a reusable workflow that does) is missing from
+  `cache-prune.yml`'s `workflow_run` list (`tools/check-cache-prune-triggers.py`, #2410)
 - **shellcheck**: Lint shell scripts
 - **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
   shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
@@ -2453,7 +2456,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
-- **`cache-prune.yml`**: After each CI, Sanitizers and Heavy Checks run on `main`, deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
+- **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` (CI -- which includes the nightly full `clang-tidy` --, CodeQL, Sanitizers, Heavy Checks, OSV, Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
