@@ -941,6 +941,22 @@ TEST(PkexecBrokerTest, AHelperThatNeverAnswersTimesOut)
     EXPECT_EQ(errno, ECHILD);
 }
 
+// #2370: a launcher still prompting when the broker stops waiting is ended, not left with its prompt up.
+TEST(PkexecBrokerTest, AStartGivenUpOnEndsTheLauncher)
+{
+    {
+        // A launcher that would sit "prompting" for half a minute, ignoring its closed socket
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "exec sleep 30", "sh"});
+        const auto connected = broker.connectWithin(std::stop_token{}, std::chrono::milliseconds{200});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper didn't answer in time");
+    }
+    // Reaped by the broker's destructor, which waits about a second: only because it was ended
+    errno = 0;
+    EXPECT_EQ(::waitpid(-1, nullptr, WNOHANG), -1);
+    EXPECT_EQ(errno, ECHILD);
+}
+
 // NOLINTEND(misc-include-cleaner)
 
 #endif // TASKSMACK_HELPER_PATH
