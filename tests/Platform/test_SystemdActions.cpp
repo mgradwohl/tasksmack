@@ -22,6 +22,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef TASKSMACK_HAS_SDBUS
@@ -707,6 +708,71 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileWaitingEndsTheWait)
     canceller.join();
     EXPECT_TRUE(result.cancelled);
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"})); // the request already sent stands
+}
+
+// #2472: LinuxServiceActions' "Authenticate and retry" sends each step allowing polkit to prompt, a restart as
+// a stop then a start.
+TEST_F(SystemdActionsFakeTest, AnAuthorizedActionLetsEachOfItsStepsPrompt)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    for (const char* method : {"StartUnit", "StopUnit"})
+    {
+        const std::string state = std::string_view(method) == "StartUnit" ? "active" : "inactive";
+        m_Bus.addRawMethod(SYSTEMD_PATH,
+                           MANAGER,
+                           method,
+                           // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                           [this, method, state](sd_bus_message* call) -> int
+                           {
+                               record(std::string(method) +
+                                      (sd_bus_message_get_allow_interactive_authorization(call) > 0 ? " prompt" : ""));
+                               m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = state;
+                               return sd_bus_reply_method_return(call, "o", JOB_PATH);
+                           });
+    }
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const TestSupport::ScopedTempDir root("ts_service_actions_authorized");
+    std::filesystem::create_directories(root.path / "run" / "systemd" / "system");
+    LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
+    const std::stop_source stop;
+
+    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Start, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
+    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Restart, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
+    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Stop, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit prompt", "StopUnit prompt", "StartUnit prompt", "StopUnit prompt"}));
+}
+
+// #2472: TaskSmack closing between a restart's stop and its start skips the start, plain or authorized.
+TEST_F(SystemdActionsFakeTest, AStopRequestAfterARestartsStopSkipsItsStart)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    std::stop_source stop;
+    m_Bus.addRawMethod(SYSTEMD_PATH,
+                       MANAGER,
+                       "StopUnit",
+                       // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                       [this, &stop](sd_bus_message* call) -> int
+                       {
+                           record("StopUnit");
+                           m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+                           stop.request_stop(); // TaskSmack closing while the stop is answered
+                           return sd_bus_reply_method_return(call, "o", JOB_PATH);
+                       });
+    serveJob("StartUnit", "active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const TestSupport::ScopedTempDir root("ts_service_actions_restart_stop");
+    std::filesystem::create_directories(root.path / "run" / "systemd" / "system");
+    LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
+
+    const ServiceActionResult plain = actions.restart("cron.service", stop.get_token());
+    EXPECT_TRUE(plain.cancelled) << plain.message;
+
+    stop = std::stop_source{};
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    const ServiceActionResult authorized =
+        actions.runAuthorized(ServiceAction::Restart, "cron.service", ServiceStartType::Unknown, stop.get_token());
+    EXPECT_TRUE(authorized.cancelled) << authorized.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StopUnit", "StopUnit"})) << "no start after either";
 }
 
 TEST_F(SystemdActionsFakeTest, ALoadUnitAnswerThatIsntAnObjectPathFailsTheAction)
