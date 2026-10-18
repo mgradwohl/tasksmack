@@ -76,6 +76,14 @@ constexpr std::array<std::string_view, 16> CRITICAL_UNITS{
     "systemd-udevd.service",
 };
 
+/// Template units every instance of which is critical (#2471): a user's systemd manager (user@1000.service), which
+/// runs all their user services and, on GNOME, the Shell, so stopping it ends their session; and their runtime
+/// directory. Process Details' "Show in Services" leads to user@<uid>.service from any user service's process (#2463).
+constexpr std::array<std::string_view, 2> CRITICAL_UNIT_TEMPLATES{
+    "user@",
+    "user-runtime-dir@",
+};
+
 /// What a critical service is critical to, in the confirm's warning.
 #ifdef _WIN32
 constexpr std::string_view SYSTEM_NAME = "Windows";
@@ -135,7 +143,9 @@ bool isCriticalService(std::string_view name, std::string_view serviceType)
 {
     return serviceType == "Driver" ||
            std::ranges::any_of(CRITICAL_SERVICES, [name](std::string_view critical) { return equalsIgnoringCase(name, critical); }) ||
-           std::ranges::find(CRITICAL_UNITS, name) != CRITICAL_UNITS.end();
+           std::ranges::find(CRITICAL_UNITS, name) != CRITICAL_UNITS.end() ||
+           (name.ends_with(".service") &&
+            std::ranges::any_of(CRITICAL_UNIT_TEMPLATES, [name](std::string_view prefix) { return name.starts_with(prefix); }));
 }
 
 bool isApplicable(ServiceActionKind kind, Platform::ServiceState state, const Platform::ServiceActionCapabilities& caps)

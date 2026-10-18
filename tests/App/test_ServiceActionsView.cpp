@@ -215,6 +215,13 @@ TEST(ServiceActionsDetailTest, CriticalServicesAreKnown)
     EXPECT_TRUE(SvcDetail::isCriticalService("NetworkManager.service", ""));
     EXPECT_FALSE(SvcDetail::isCriticalService("networkmanager.service", ""));
     EXPECT_FALSE(SvcDetail::isCriticalService("cups.service", ""));
+    // #2471: a user's manager, whatever the uid, which "Show in Services" leads to from their user services.
+    EXPECT_TRUE(SvcDetail::isCriticalService("user@1000.service", ""));
+    EXPECT_TRUE(SvcDetail::isCriticalService("user@0.service", ""));
+    EXPECT_TRUE(SvcDetail::isCriticalService("user-runtime-dir@1000.service", ""));
+    EXPECT_FALSE(SvcDetail::isCriticalService("userdata.service", ""));
+    EXPECT_FALSE(SvcDetail::isCriticalService("users.service", ""));
+    EXPECT_FALSE(SvcDetail::isCriticalService("user@1000.socket", "")) << "only the service";
 }
 
 TEST(ServiceActionsDetailTest, ActionsApplyPerState)
