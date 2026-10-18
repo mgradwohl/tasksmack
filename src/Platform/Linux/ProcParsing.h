@@ -180,12 +180,16 @@ inline bool parseDouble(const char*& p, const char* end, double& out) noexcept
     return true;
 }
 
+/// PF_KTHREAD in StatFields::flags: a kernel thread, which ignores every signal (#2447).
+inline constexpr std::uint32_t PF_KTHREAD_FLAG = 0x00200000U;
+
 /// The fields TaskSmack reads from a /proc/[pid]/stat line, by their proc(5) field numbers.
 struct StatFields
 {
     std::string_view comm;          ///< (2) without its parentheses; a view into the parsed line
     char state = '?';               ///< (3)
     std::int32_t parentPid = 0;     ///< (4)
+    std::uint32_t flags = 0;        ///< (9) the kernel's PF_* flags
     std::uint64_t minorFaults = 0;  ///< (10) minflt
     std::uint64_t majorFaults = 0;  ///< (12) majflt
     std::uint64_t userTime = 0;     ///< (14) utime, clock ticks
@@ -258,12 +262,11 @@ enum class StatParseExtent : std::uint8_t
         return false;
     }
 
-    // Fields 5-9, 11, 13, 16-18 and 21 are read only to step over them.
+    // Fields 5-8, 11, 13, 16-18 and 21 are read only to step over them.
     std::int32_t pgrp = 0;
     std::int32_t session = 0;
     std::int32_t ttyNr = 0;
     std::int32_t tpgid = 0;
-    std::uint32_t flags = 0;
     std::uint64_t cminflt = 0;
     std::uint64_t cmajflt = 0;
     std::int64_t cutime = 0;
@@ -274,7 +277,7 @@ enum class StatParseExtent : std::uint8_t
     // clang-format off
     if (!parseStatNum(p, end, out.parentPid)   || !parseStatNum(p, end, pgrp)            ||
         !parseStatNum(p, end, session)         || !parseStatNum(p, end, ttyNr)           ||
-        !parseStatNum(p, end, tpgid)           || !parseStatNum(p, end, flags)           ||
+        !parseStatNum(p, end, tpgid)           || !parseStatNum(p, end, out.flags)       ||
         !parseStatNum(p, end, out.minorFaults) || !parseStatNum(p, end, cminflt)         ||
         !parseStatNum(p, end, out.majorFaults) || !parseStatNum(p, end, cmajflt)         ||
         !parseStatNum(p, end, out.userTime)    || !parseStatNum(p, end, out.systemTime)  ||

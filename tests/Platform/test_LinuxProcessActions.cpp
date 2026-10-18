@@ -648,28 +648,88 @@ TEST(LinuxProcessActionsTest, GetIoPriorityReadsAnotherUsersLiveProcess)
     ASSERT_TRUE(current.has_value()) << current.error();
 }
 
+/// A process found under /proc for which @p wanted(stat fields, its status's real UID) holds -- other
+/// than this one -- as a target, or nullopt (hidepid, a container showing none).
+template<typename Wanted> [[nodiscard]] std::optional<ProcessTarget> findProcess(Wanted wanted)
+{
+    for (const auto& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos || std::stoi(name) == getpid())
+        {
+            continue;
+        }
+        std::ifstream statFile(entry.path() / "stat");
+        const std::string stat((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+        std::ifstream statusFile(entry.path() / "status");
+        std::string line;
+        long uid = -1;
+        while (std::getline(statusFile, line))
+        {
+            if (line.starts_with("Uid:"))
+            {
+                uid = std::stol(line.substr(4));
+                break;
+            }
+        }
+        const std::optional<ProcParsing::StatFields> fields = ProcParsing::parseStatFields(stat);
+        if (fields.has_value() && fields->startTime != 0 && wanted(*fields, uid))
+        {
+            return ProcessTarget{.pid = std::stoi(name), .startTimeTicks = fields->startTime};
+        }
+    }
+    return std::nullopt;
+}
+
 TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
 {
-    // PID 1 belongs to root: a confirmed identity, then EPERM from the signal itself, reported in
-    // words rather than as errno text (#1548). SIGCONT ("resume") so that even a misdetected run
-    // could do no harm: resuming a running process changes nothing.
+    // A root process (not init or a kernel thread, which no signal reaches, #2447): a confirmed identity,
+    // then EPERM from the signal itself, reported in words rather than as errno text (#1548). SIGCONT
+    // ("resume") so that even a misdetected run could do no harm: resuming a running process changes nothing.
     if (geteuid() == 0)
     {
-        GTEST_SKIP() << "running as root: PID 1 is not another user's process";
+        GTEST_SKIP() << "running as root: no process is another user's";
     }
-    std::ifstream stat("/proc/1/stat");
-    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
-    const std::uint64_t startTicks = ProcParsing::parseStatStartTime(line).value_or(0);
-    if (startTicks == 0)
+    const std::optional<ProcessTarget> rootProcess =
+        findProcess([](const ProcParsing::StatFields& fields, long uid)
+                    { return uid == 0 && (fields.flags & ProcParsing::PF_KTHREAD_FLAG) == 0 && fields.parentPid != 0; });
+    if (!rootProcess.has_value())
     {
-        GTEST_SKIP() << "PID 1's start time is not readable here (hidepid)";
+        GTEST_SKIP() << "no root process is visible here (hidepid, a container)";
     }
 
     LinuxProcessActions actions;
-    const ProcessActionResult result = actions.resume({.pid = 1, .startTimeTicks = startTicks});
+    const ProcessActionResult result = actions.resume(*rootProcess);
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
     EXPECT_TRUE(result.permissionDenied); // what an administrator could do: BrokeredProcessActions retries it (#2308)
+}
+
+// #2447: as root the kernel accepts a signal to init or a kernel thread and drops it, so TaskSmack would
+// say it worked. Refused instead, before the signal, as an error no password helps with.
+TEST(LinuxProcessActionsTest, InitAndKernelThreadsAreNotSignalled)
+{
+    LinuxProcessActions actions;
+    std::ifstream stat("/proc/1/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    if (const std::uint64_t startTicks = ProcParsing::parseStatStartTime(line).value_or(0); startTicks != 0)
+    {
+        const ProcessActionResult init = actions.resume({.pid = 1, .startTimeTicks = startTicks});
+        EXPECT_FALSE(init.success);
+        EXPECT_FALSE(init.permissionDenied);
+        EXPECT_TRUE(init.errorMessage.contains("init")) << init.errorMessage;
+    }
+
+    const std::optional<ProcessTarget> kernelThread =
+        findProcess([](const ProcParsing::StatFields& fields, long /*uid*/) { return (fields.flags & ProcParsing::PF_KTHREAD_FLAG) != 0; });
+    if (!kernelThread.has_value())
+    {
+        GTEST_SKIP() << "no kernel thread is visible here (a container)";
+    }
+    const ProcessActionResult result = actions.resume(*kernelThread);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied) << "no password helps";
+    EXPECT_TRUE(result.errorMessage.contains("kernel thread")) << result.errorMessage;
 }
 
 TEST(LinuxProcessActionsTest, OtherFailuresAreNotPermissionRefusals)

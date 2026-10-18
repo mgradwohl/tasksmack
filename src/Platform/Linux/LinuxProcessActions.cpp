@@ -66,8 +66,15 @@ namespace
 
 using Posix::FdGuard;
 
-/// Start time of whatever process holds `pid` right now, or nullopt if there is none.
-[[nodiscard]] std::optional<std::uint64_t> readStartTicks(std::int32_t pid)
+/// What the actions need of whatever process holds `pid` right now: its start time and kernel flags.
+struct StatIdentity
+{
+    std::uint64_t startTime = 0;
+    std::uint32_t flags = 0;
+};
+
+/// StatIdentity of whatever process holds `pid` right now, or nullopt if there is none.
+[[nodiscard]] std::optional<StatIdentity> readStatIdentity(std::int32_t pid)
 {
     const std::string statPath = "/proc/" + std::to_string(pid) + "/stat";
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
@@ -84,7 +91,38 @@ using Posix::FdGuard;
     {
         return std::nullopt;
     }
-    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), static_cast<std::size_t>(len)));
+    const std::optional<ProcParsing::StatFields> fields =
+        ProcParsing::parseStatFields(std::string_view(buf.data(), static_cast<std::size_t>(len)));
+    if (!fields.has_value())
+    {
+        return std::nullopt;
+    }
+    return StatIdentity{.startTime = fields->startTime, .flags = fields->flags};
+}
+
+/// Start time of whatever process holds `pid` right now, or nullopt if there is none.
+[[nodiscard]] std::optional<std::uint64_t> readStartTicks(std::int32_t pid)
+{
+    const std::optional<StatIdentity> stat = readStatIdentity(pid);
+    return stat.has_value() ? std::optional<std::uint64_t>(stat->startTime) : std::nullopt;
+}
+
+/// Why a signal to `pid` would do nothing, or nullopt. As root (the helper, #2308) the kernel accepts a
+/// signal to a kernel thread or to init and drops it, so TaskSmack would report an action that never
+/// happened (#2447): kernel threads ignore signals, and init drops SIGKILL and SIGSTOP and anything it
+/// has no handler for (systemd re-executes itself on SIGTERM). An error, not a refusal: no password helps.
+[[nodiscard]] std::optional<std::string> signalWouldDoNothing(std::int32_t pid)
+{
+    if (pid == 1)
+    {
+        return std::string("PID 1 is init, which TaskSmack doesn't end, suspend or resume");
+    }
+    const std::optional<StatIdentity> stat = readStatIdentity(pid);
+    if (stat.has_value() && (stat->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
+    {
+        return std::format("PID {} is a kernel thread, which can't be ended, suspended or resumed", pid);
+    }
+    return std::nullopt;
 }
 
 /// Confirm the process holding the target's PID now is the one the target names.
@@ -999,6 +1037,11 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
     {
         spdlog::warn("Not sending {} to PID {}: {}", signalName, target.pid, identity.errorMessage);
         return identity;
+    }
+    if (const std::optional<std::string> nothing = signalWouldDoNothing(target.pid); nothing.has_value())
+    {
+        spdlog::info("Not sending {}: {}", signalName, *nothing);
+        return ProcessActionResult::error(*nothing);
     }
 
     const int sendResult = sendThroughPidfd(m_Syscalls, pidfd, signal);
