@@ -527,6 +527,9 @@ struct CrashesInfo
     bool capped = false;                  ///< More than CRASH_LIST_MAX matched; the newest are kept.
     bool journalRead = false;             ///< Linux: systemd-coredump's journal entries were read too (#1674)
     std::string journalUnavailableReason; ///< Linux: why not, when a journal read was tried and failed
+    /// Linux: other users' journal entries are hidden from this user (not root, nor in the systemd-journal,
+    /// adm or wheel group), so only its own crashes have their details (#2310)
+    bool otherUsersHidden = false;
     std::vector<CrashEvent> events;
 };
 

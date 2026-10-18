@@ -754,6 +754,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/DetachedSpawn.cpp
+        src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
     tasksmack_apply_linux_toolchain(tasksmack-helper)
@@ -761,6 +762,9 @@ if(UNIX AND NOT APPLE)
     tasksmack_apply_text_encoding(tasksmack-helper)
     target_include_directories(tasksmack-helper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
     target_link_libraries(tasksmack-helper PRIVATE spdlog::spdlog_header_only)
+    if(TARGET tasksmack_sdbus)
+        target_link_libraries(tasksmack-helper PRIVATE tasksmack_sdbus) # sd-journal, when libsystemd is installed
+    endif()
     # Beside TaskSmack in the build tree, where the tests find it.
     set_target_properties(tasksmack-helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()

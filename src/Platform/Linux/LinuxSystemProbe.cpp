@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -106,28 +105,11 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_Hostname = "unknown";
     }
 
-    // Read CPU model from /proc/cpuinfo (cached)
-    std::ifstream cpuInfo(m_ProcRoot / "cpuinfo");
-    if (cpuInfo.is_open())
+    // Read CPU model from /proc/cpuinfo (cached): "model name", or on arm64, which has none, the
+    // implementer and part codes (#2214).
+    if (const auto cpuInfo = LinuxCpuDetails::Detail::readFile(m_ProcRoot / "cpuinfo"); cpuInfo.has_value())
     {
-        std::string line;
-        while (std::getline(cpuInfo, line))
-        {
-            if (line.starts_with("model name"))
-            {
-                auto pos = line.find(':');
-                if (pos != std::string::npos)
-                {
-                    m_CpuModel = line.substr(pos + 1);
-                    // Trim leading whitespace
-                    while (!m_CpuModel.empty() && m_CpuModel[0] == ' ')
-                    {
-                        m_CpuModel.erase(0, 1);
-                    }
-                }
-                break;
-            }
-        }
+        m_CpuModel = LinuxCpuDetails::cpuModelFromCpuInfo(*cpuInfo);
     }
     if (m_CpuModel.empty())
     {

@@ -82,6 +82,9 @@ if(WIN32)
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
         set_tests_properties(BenchScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
+        add_test(NAME CheckPrereqsScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -93,13 +96,13 @@ if(WIN32)
         # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
         # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            PROPERTIES RESOURCE_LOCK pwsh-script-tests)
-        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript PROPERTIES TIMEOUT 120)
+            CheckPrereqsScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript and BenchScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript and CheckPrereqsScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
 endif()
 
@@ -134,6 +137,15 @@ if(TASKSMACK_BASH)
     add_test(NAME SetupDevShScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_setup_dev_sh.py)
     set_tests_properties(SetupDevShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
+# tools/check-prereqs.sh reads a two-component ccache version, and an unreadable or missing ccache
+# (optional) never ends the check before its summary (#2350). The checker is Linux-only, so the
+# test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME CheckPrereqsShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_prereqs_sh.py)
+    set_tests_properties(CheckPrereqsShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is

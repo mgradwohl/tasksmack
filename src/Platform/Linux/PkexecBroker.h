@@ -62,6 +62,8 @@ class PkexecBroker final : public IPrivilegedBroker
     void disconnect();
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
+                                                                          std::chrono::milliseconds timeout) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                     const std::stop_token& stopToken) override;
 
@@ -83,7 +85,7 @@ class PkexecBroker final : public IPrivilegedBroker
     pid_t m_Child = -1;
     std::vector<pid_t> m_Abandoned; // Launchers closed while still running, reaped once they exit (#2333)
     std::uint32_t m_NextRequestId = 1;
-    std::atomic<bool> m_Connected{false};
+    mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has hung up
 };
 
 } // namespace Platform

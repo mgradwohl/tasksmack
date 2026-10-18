@@ -156,6 +156,21 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
             return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
         }
     }
+    if (std::holds_alternative<Broker::CrashesRequest>(request))
+    {
+        if (!readers.crashes)
+        {
+            return Broker::ErrorReply{.message = "This helper doesn't read crashes"};
+        }
+        try
+        {
+            return Broker::CrashesReply{.info = readers.crashes()};
+        }
+        catch (...)
+        {
+            return Broker::ErrorReply{.message = "The crash read failed"};
+        }
+    }
     try
     {
         return act(request, actions);
@@ -174,9 +189,18 @@ SessionEnd
 serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers)
 {
     bool greeted = false;
+    // The idle timeout runs from the last request the user made. The process sampler's PSS/USS reads of
+    // a watched process come every refresh on their own, so they don't keep the helper alive (#2369).
+    auto lastActivity = std::chrono::steady_clock::now();
     while (true)
     {
-        const auto frame = BrokerSocket::receiveFrame(fd, idleTimeout, stopToken);
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (std::chrono::steady_clock::now() - lastActivity));
+        if (left.count() <= 0)
+        {
+            return SessionEnd::Idle;
+        }
+        const auto frame = BrokerSocket::receiveFrame(fd, left, stopToken);
         if (!frame.has_value())
         {
             switch (frame.error())
@@ -203,6 +227,10 @@ serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, c
         else
         {
             requestId = decoded->requestId;
+            if (!std::holds_alternative<Broker::MemoryRollupRequest>(decoded->message))
+            {
+                lastActivity = std::chrono::steady_clock::now();
+            }
             const bool hello = std::holds_alternative<Broker::Hello>(decoded->message);
             if (!greeted && !hello)
             {

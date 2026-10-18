@@ -60,8 +60,9 @@ jobs:
     name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
     runs-on: ${{ inputs.os }}
     # clang-tidy runs after the tests in the same job; a full-tree run (a CMake, tidy-config or
-    # workflow change) adds up to ~15 min on a cold result cache.
-    timeout-minutes: ${{ inputs.clang_tidy && 55 || 35 }}
+    # workflow change) adds up to ~15 min on a cold result cache. The ARM64 runners (arm64.yml,
+    # #2214) get 60: their builds start from a cold ccache until main has saved one.
+    timeout-minutes: ${{ inputs.clang_tidy && 55 || (endsWith(inputs.os, '-arm') && 60 || 35) }}
     permissions:
       contents: read
       checks: write
@@ -143,8 +144,9 @@ jobs:
           # 4.9.1 lacks the --evict-older-than that evict-old-files uses (4.11+), and 'detect' on
           # Windows would pick up Strawberry Perl's bundled 4.9.1 from the image PATH (#1406).
           install: binary
-          # Include the LLVM version so caches from different toolchains don't mix.
-          key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
+          # Include the LLVM version so caches from different toolchains don't mix, and the
+          # architecture on a non-x64 runner (#2214; x64 keeps its existing key).
+          key: ${{ runner.os }}-${{ runner.arch != 'X64' && format('{0}-', runner.arch) || '' }}${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
           # Windows debug outgrew 500M: full on every run, with 70-120 cleanups and ~60% hits on
           # main. Its working set without ThinLTO is ~0.35 GB compressed (a cold build on top of
           # the restored cache), so 750M also holds the stale entries a flag change leaves behind
@@ -194,7 +196,8 @@ jobs:
         with:
           mode: restore
           preset: win-${{ inputs.build_type }}
-          toolchain: llvm-${{ inputs.llvm-semver-version }}
+          # Check results differ by target architecture (#2214); x64 keeps its existing key.
+          toolchain: llvm-${{ inputs.llvm-semver-version }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}
 
       # Without a build (the nightly clang-tidy-only run) there is no ccache; keep CMake from
       # finding the stale one Strawberry Perl puts on the image PATH. The launcher isn't part of
@@ -215,15 +218,16 @@ jobs:
         with:
           mode: save
           preset: win-${{ inputs.build_type }}
-          toolchain: llvm-${{ inputs.llvm-semver-version }}
+          toolchain: llvm-${{ inputs.llvm-semver-version }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}
           build-dir: build/win-${{ inputs.build_type }}
           cache-hit: ${{ steps.cmake-checks.outputs.cache-hit }}
 
       # One saver per OS so parallel jobs don't race to reserve the same key. Windows saves from
       # the debug build here; Linux saves from the benchmark-enabled build further down, so the
-      # saved sources include Google Benchmark too.
+      # saved sources include Google Benchmark too. The sources don't depend on the architecture,
+      # so the ARM64 jobs (arm64.yml, #2214) restore the same entry and leave saving to x64.
       - name: Save FetchContent dependencies (Windows)
-        if: runner.os == 'Windows' && inputs.build_type == 'debug'
+        if: runner.os == 'Windows' && inputs.build_type == 'debug' && runner.arch == 'X64'
         uses: ./.github/actions/fetchcontent-cache
         with:
           mode: save

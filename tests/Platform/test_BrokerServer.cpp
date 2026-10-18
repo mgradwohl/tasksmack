@@ -11,6 +11,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -32,6 +34,7 @@
 #include <stop_token>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -227,6 +230,23 @@ TEST(FirmwareFileReadTest, EachFileIsReadFromItsOnePath)
     }
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
+}
+
+TEST(BrokerServerTest, ACrashesRequestIsReadThroughItsFunction)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.crashes = []
+    {
+        CrashesInfo info;
+        info.available = true;
+        info.listed = true;
+        return info;
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::CrashesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(response));
+    EXPECT_TRUE(std::get<Broker::CrashesReply>(response).info.listed);
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::CrashesRequest{}, actions)));
 }
 
 TEST(BrokerServerTest, AMemoryRollupRequestIsReadThroughItsFunction)
@@ -452,6 +472,33 @@ TEST(BrokerServeTest, AReplyLargerThanTheSocketBufferReachesTheClient)
     EXPECT_EQ(std::get<Broker::FirmwareFileReply>(reply.message).bytes.size(), 900'000U);
     pair.closeClient();
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+// #2369: the sampler's PSS/USS reads of a watched process come every refresh by themselves; they must not
+// keep the helper running past its idle timeout.
+TEST(BrokerServeTest, PssAndUssReadsDontPutOffTheIdleExit)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    readers.memoryRollup = [](std::int32_t, std::uint64_t) -> MemoryRollupRead
+    {
+        return MemoryRollup{};
+    };
+    constexpr std::chrono::milliseconds IDLE{1000};
+    auto session =
+        std::async(std::launch::async, [&] { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers); });
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    for (std::uint32_t id = 2; id <= 3; ++id) // at about 400 and 800 ms
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{400});
+        EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(
+            roundTrip(pair.client(), id, Broker::MemoryRollupRequest{.target = TARGET}).message));
+    }
+    // Idle a second after the Hello, not after the last read (which would be about 1.8 s)
+    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{700}), std::future_status::ready);
+    EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
 }
 
 TEST(BrokerServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
@@ -800,6 +847,27 @@ TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
     ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(*response));
 }
 
+TEST(PkexecBrokerTest, TheHelperAnswersACrashesRequest)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::CrashesRequest{}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(*response));
+    EXPECT_TRUE(std::get<Broker::CrashesReply>(*response).info.available);
+}
+
+TEST(PkexecBrokerTest, ACallIfIdleIsAnswered)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = child.target()}, std::chrono::seconds{2});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*response));
+}
+
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
 {
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
@@ -820,6 +888,59 @@ TEST(PkexecBrokerTest, DisconnectEndsTheSessionAndConnectStartsAnother)
     const auto hello = broker.call(Broker::Hello{}, std::stop_token{});
     ASSERT_TRUE(hello.has_value());
     EXPECT_TRUE(std::holds_alternative<Broker::HelloReply>(*hello));
+}
+
+/// This process's child running tasksmack-helper, or -1: the helper PkexecBroker started with no launcher.
+[[nodiscard]] pid_t helperChild()
+{
+    for (const auto& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos)
+        {
+            continue;
+        }
+        std::ifstream statFile(entry.path() / "stat");
+        const std::string stat((std::istreambuf_iterator<char>(statFile)), std::istreambuf_iterator<char>());
+        const std::size_t close = stat.rfind(')');
+        if (close == std::string::npos || !stat.contains("(tasksmack-help"))
+        {
+            continue;
+        }
+        int ppid = 0;
+        char state = 0;
+        if (std::sscanf(stat.c_str() + close + 1, " %c %d", &state, &ppid) == 2 && ppid == ::getpid() && state != 'Z')
+        {
+            return static_cast<pid_t>(std::stoi(name));
+        }
+    }
+    return -1;
+}
+
+// #2368: the helper also ends on its own (its idle exit, a crash); connected() must then say so, so a
+// refused action is offered "Authenticate and retry" rather than sent to a socket nobody reads.
+TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    ASSERT_TRUE(broker.connected());
+    const pid_t helper = helperChild();
+    ASSERT_GT(helper, 0);
+    ASSERT_EQ(::kill(helper, SIGKILL), 0);
+    bool gone = false;
+    for (int attempt = 0; attempt < 200 && !gone; ++attempt) // up to 2 s for the kernel to close its end
+    {
+        gone = !broker.connected();
+        if (!gone)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+    EXPECT_TRUE(gone);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value()) << "a fresh helper starts";
+    EXPECT_TRUE(broker.connected());
+    const auto reply = broker.call(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::ProductUuid}, std::stop_token{});
+    EXPECT_TRUE(reply.has_value());
 }
 
 TEST(PkexecBrokerTest, ADismissedPromptIsReportedAsSuch)
@@ -853,6 +974,22 @@ TEST(PkexecBrokerTest, AHelperThatNeverAnswersTimesOut)
         EXPECT_EQ(connected.error(), "the helper didn't answer in time");
     }
     // The broker gone, so is its launcher: nothing of it is left for this process to wait for.
+    errno = 0;
+    EXPECT_EQ(::waitpid(-1, nullptr, WNOHANG), -1);
+    EXPECT_EQ(errno, ECHILD);
+}
+
+// #2370: a launcher still prompting when the broker stops waiting is ended, not left with its prompt up.
+TEST(PkexecBrokerTest, AStartGivenUpOnEndsTheLauncher)
+{
+    {
+        // A launcher that would sit "prompting" for half a minute, ignoring its closed socket
+        PkexecBroker broker(TASKSMACK_HELPER_PATH, {"sh", "-c", "exec sleep 30", "sh"});
+        const auto connected = broker.connectWithin(std::stop_token{}, std::chrono::milliseconds{200});
+        ASSERT_FALSE(connected.has_value());
+        EXPECT_EQ(connected.error(), "the helper didn't answer in time");
+    }
+    // Reaped by the broker's destructor, which waits about a second: only because it was ended
     errno = 0;
     EXPECT_EQ(::waitpid(-1, nullptr, WNOHANG), -1);
     EXPECT_EQ(errno, ECHILD);

@@ -31,6 +31,7 @@ class StubSystemInfoProbe final : public ISystemInfoProbe
   public:
     FirmwareInfo firmware;
     MemoryModulesInfo memory;
+    CrashesInfo crashes;
 
     [[nodiscard]] SystemInfoCapabilities capabilities() const override
     {
@@ -78,7 +79,7 @@ class StubSystemInfoProbe final : public ISystemInfoProbe
     }
     [[nodiscard]] CrashesInfo readCrashes() override
     {
-        return {};
+        return crashes;
     }
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool /*includeWifiDetails*/) override
     {
@@ -227,6 +228,46 @@ TEST(BrokeredSystemInfoProbeTest, FactsTheInProcessReadHasAreNotFetched)
     EXPECT_EQ(f.probe->readFirmware().systemSerial, "MINE");
     static_cast<void>(f.probe->readMemoryModules());
     EXPECT_TRUE(f.broker->requests().empty());
+}
+
+TEST(BrokeredSystemInfoProbeTest, EveryUsersCrashesComeFromARunningHelper)
+{
+    Fixture f(/*connected=*/true);
+    f.inner->crashes.available = true;
+    f.inner->crashes.journalRead = true;
+    f.inner->crashes.otherUsersHidden = true;
+    f.broker->setAnswer(
+        [](const Broker::Request& request) -> std::expected<Broker::Response, std::string>
+        {
+            if (!std::holds_alternative<Broker::CrashesRequest>(request))
+            {
+                return std::unexpected(std::string("unexpected request"));
+            }
+            Broker::CrashesReply reply;
+            reply.info.available = true;
+            reply.info.listed = true;
+            CrashEvent event;
+            event.application = "postgres";
+            reply.info.events.push_back(event);
+            return reply;
+        });
+    const CrashesInfo crashes = f.probe->readCrashes();
+    EXPECT_FALSE(crashes.otherUsersHidden);
+    ASSERT_EQ(crashes.events.size(), 1U);
+    EXPECT_EQ(crashes.events.front().application, "postgres");
+}
+
+TEST(BrokeredSystemInfoProbeTest, CrashesAreTheInnerReadsWhenNothingIsHidden)
+{
+    Fixture f(/*connected=*/true);
+    f.inner->crashes.available = true;
+    f.inner->crashes.listed = true;
+    EXPECT_TRUE(f.probe->readCrashes().listed);
+    EXPECT_TRUE(f.broker->requests().empty());
+
+    f.inner->crashes.otherUsersHidden = true;
+    f.broker->setConnected(false);
+    EXPECT_TRUE(f.probe->readCrashes().otherUsersHidden) << "no helper running: the hidden ones stay hidden";
 }
 
 TEST(BrokeredSystemInfoProbeTest, AuthorizeStartsTheHelper)

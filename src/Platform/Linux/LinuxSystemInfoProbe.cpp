@@ -18,6 +18,7 @@
 #include "SystemdJournal.h"
 #include "UserNameLookup.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -29,11 +30,13 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <grp.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <pwd.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <sys/types.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -242,6 +245,34 @@ DriversInfo LinuxSystemInfoProbe::readDrivers()
     return info;
 }
 
+namespace
+{
+
+/// Whether this process can read every user's journal entries: root, or a member of a group the journal
+/// files grant read access to (#2310). Otherwise sd-journal returns only this user's own entries.
+[[nodiscard]] bool readsEveryJournal()
+{
+    if (::geteuid() == 0)
+    {
+        return true;
+    }
+    std::vector<gid_t> groups(static_cast<std::size_t>(std::max(::getgroups(0, nullptr), 0)));
+    const int count = groups.empty() ? 0 : ::getgroups(static_cast<int>(groups.size()), groups.data());
+    groups.resize(static_cast<std::size_t>(std::max(count, 0)));
+    groups.push_back(::getegid());
+    for (const char* name : {"systemd-journal", "adm", "wheel"})
+    {
+        const group* entry = ::getgrnam(name); // NOLINT(concurrency-mt-unsafe) - on the page's one read thread
+        if (entry != nullptr && std::ranges::find(groups, entry->gr_gid) != groups.end())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 CrashesInfo LinuxSystemInfoProbe::readCrashes()
 {
     CrashesInfo info;
@@ -252,6 +283,7 @@ CrashesInfo LinuxSystemInfoProbe::readCrashes()
                                    now > 0 ? static_cast<std::uint64_t>(now) : 0,
                                    info,
                                    m_Root == "/" ? SystemdJournal::makeCoredumpJournalReader() : LinuxCoredumps::JournalReader{});
+    info.otherUsersHidden = m_Root == "/" && info.journalRead && !readsEveryJournal();
     return info;
 }
 

@@ -15,6 +15,8 @@
 #include <variant>
 #include <vector>
 
+#include <poll.h>
+#include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -66,6 +68,21 @@ PkexecBroker::~PkexecBroker()
 
 bool PkexecBroker::connected() const noexcept
 {
+    if (!m_Connected.load())
+    {
+        return false;
+    }
+    // The helper also ends on its own (its idle exit, a crash), and then its end of the socket hangs up
+    // (#2368). Looked at when no call holds the lock; a call in progress finds out for itself.
+    const std::unique_lock lock(m_Mutex, std::try_to_lock);
+    if (lock.owns_lock() && m_Fd >= 0)
+    {
+        pollfd peer{.fd = m_Fd, .events = POLLRDHUP, .revents = 0};
+        if (::poll(&peer, 1, 0) > 0 && (peer.revents & (POLLHUP | POLLRDHUP | POLLERR)) != 0)
+        {
+            m_Connected = false; // the next connect() closes the socket and reaps the launcher
+        }
+    }
     return m_Connected.load();
 }
 
@@ -116,6 +133,13 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
         // prompting (a timeout, a stop) isn't waited for.
         const bool mayStillRun = reply.error() == HELPER_TIMED_OUT || reply.error() == CANCELLED;
         const std::string reason = mayStillRun ? std::string{} : launcherExitReason();
+        if (mayStillRun && m_Child > 0)
+        {
+            // Its password prompt would stay up, and answered, start a helper with nobody to serve (#2370).
+            // pkexec's real user is ours, so this may signal it; a helper it already started as root
+            // refuses, and exits by itself once its socket is closed below.
+            static_cast<void>(::kill(m_Child, SIGTERM));
+        }
         closeLocked();
         return std::unexpected(reason.empty() ? reply.error() : reason);
     }
@@ -149,6 +173,25 @@ std::expected<Broker::Response, std::string> PkexecBroker::call(const Broker::Re
     if (!response.has_value())
     {
         closeLocked(); // a channel that failed once isn't trusted again; connect() starts a fresh helper
+    }
+    return response;
+}
+
+std::expected<Broker::Response, std::string> PkexecBroker::callIfIdle(const Broker::Request& request, std::chrono::milliseconds timeout)
+{
+    const std::unique_lock lock(m_Mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+        return std::unexpected(std::string("busy")); // another call holds the helper: never queue behind it
+    }
+    if (!m_Connected.load())
+    {
+        return std::unexpected(std::string("not connected"));
+    }
+    auto response = roundTrip(request, timeout, std::stop_token{});
+    if (!response.has_value())
+    {
+        closeLocked(); // as call(): a channel that failed once isn't trusted again
     }
     return response;
 }

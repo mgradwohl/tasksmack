@@ -326,6 +326,7 @@ TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
     EXPECT_EQ(other.value_or(MemoryRollup{}).pssBytes, 7U);
     ASSERT_EQ(broker->requests().size(), 1U);
     EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::MemoryRollupRequest{.target = TARGET}}));
+    EXPECT_EQ(broker->idleCallCount(), 1) << "the sampler's read never queues behind another call (#2369)";
 
     broker->setConnected(false); // no helper running: the refusal stands, and nothing prompts
     const MemoryRollupRead refused = probe->readMemoryRollup(TARGET.pid, TARGET.startTimeTicks);

@@ -147,7 +147,21 @@ DriversInfo BrokeredSystemInfoProbe::readDrivers()
 
 CrashesInfo BrokeredSystemInfoProbe::readCrashes()
 {
-    return m_Inner->readCrashes();
+    CrashesInfo info = m_Inner->readCrashes();
+    if (!info.otherUsersHidden || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return info;
+    }
+    // Every user's crashes, as the helper reads them as root
+    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::CrashesRequest{}, std::stop_token{});
+    if (response.has_value())
+    {
+        if (const auto* reply = std::get_if<Broker::CrashesReply>(&*response))
+        {
+            return reply->info;
+        }
+    }
+    return info;
 }
 
 NetworkAdaptersInfo BrokeredSystemInfoProbe::readNetworkAdapters(bool includeWifiDetails)
