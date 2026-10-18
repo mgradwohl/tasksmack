@@ -104,13 +104,13 @@ std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader()
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
-    // XDG autostart (~/.config/autostart, /etc/xdg/autostart) is the Linux lane's follow-up to #801.
+    // XDG autostart (~/.config/autostart, /etc/xdg/autostart) isn't supported on Linux yet.
     return std::make_unique<UnsupportedStartupProbe>();
 }
 
 std::unique_ptr<IStartupActions> makeStartupActions()
 {
-    // Toggling XDG autostart entries (Hidden=true) is the Linux lane's follow-up to #801.
+    // Toggling XDG autostart entries (Hidden=true) isn't supported on Linux yet.
     return std::make_unique<UnsupportedStartupActions>();
 }
 

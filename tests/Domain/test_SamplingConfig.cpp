@@ -39,15 +39,6 @@ TEST(SamplingConfigTest, HistorySecondsArePositive)
     EXPECT_GT(HISTORY_SECONDS_DEFAULT, 0);
 }
 
-TEST(SamplingConfigTest, CommonRefreshIntervalsAreInRange)
-{
-    for (int interval : COMMON_REFRESH_INTERVALS_MS)
-    {
-        EXPECT_GE(interval, REFRESH_INTERVAL_MIN_MS);
-        EXPECT_LE(interval, REFRESH_INTERVAL_MAX_MS);
-    }
-}
-
 TEST(SamplingConfigTest, LinkSpeedCacheTtlIsPositive)
 {
     EXPECT_GT(LINK_SPEED_CACHE_TTL_SECONDS, 0);

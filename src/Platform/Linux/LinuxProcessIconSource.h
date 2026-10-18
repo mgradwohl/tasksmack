@@ -26,9 +26,6 @@ class LinuxProcessIconSource final : public IProcessIconSource
     /// installed while TaskSmack runs is found.
     static constexpr std::chrono::minutes INDEX_LIFETIME{10};
 
-    /// The largest PNG decoded, per side; a larger one is skipped rather than held in memory.
-    static constexpr int MAX_DECODED_SIDE_PX = MAX_ICON_IMAGE_SIDE_PX;
-
     /// The XDG directories from the environment ($HOME, $XDG_DATA_HOME, $XDG_DATA_DIRS).
     LinuxProcessIconSource();
 
@@ -48,7 +45,7 @@ class LinuxProcessIconSource final : public IProcessIconSource
     }
 
     /// The pixels of the PNG at @p path as straight RGBA; nullopt when it can't be decoded or is
-    /// larger than MAX_DECODED_SIDE_PX on a side.
+    /// larger than MAX_ICON_IMAGE_SIDE_PX on a side.
     [[nodiscard]] static std::optional<IconPixels> decodePng(const std::filesystem::path& path);
 
   private:

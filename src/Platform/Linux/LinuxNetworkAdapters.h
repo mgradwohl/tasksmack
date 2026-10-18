@@ -5,8 +5,8 @@
 // signal level from /proc/net/wireless, the default gateways from /proc/net/route and
 // /proc/net/ipv6_route, and the DNS servers from systemd-resolved's upstream resolv.conf or
 // /etc/resolv.conf. The addresses come from getifaddrs(), which the probe passes in, so this header
-// stays standard-library only and its parsing and fixture tests build and run everywhere. No D-Bus:
-// per-link DNS, DHCP leases and the Wi-Fi network name are a follow-up.
+// stays standard-library only and its parsing and fixture tests build and run everywhere. Per-link DNS,
+// DHCP leases and the Wi-Fi network name come over D-Bus, through the readers below (#1518).
 
 #include "LinuxOsInfo.h"
 #include "Platform/ISystemInfoProbe.h"

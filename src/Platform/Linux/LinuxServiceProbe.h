@@ -1,7 +1,7 @@
 #pragma once
 
 // The Services tab on Linux (#2006): systemd's services over D-Bus (SystemdBus::readServices()), as
-// SystemdServices maps them. Read-only; starting, stopping and enabling them is a follow-up. The read is
+// SystemdServices maps them; LinuxServiceActions starts, stops and enables them. The read is
 // injectable, and so is the root it checks for a running systemd under, so the tests need neither.
 
 #include "Platform/IServiceProbe.h"

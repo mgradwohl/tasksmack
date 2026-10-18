@@ -18,8 +18,8 @@
 // length, a known kind, every enum in range, every count within its cap, nothing left over. Anything
 // else is refused as malformed. There is no "run a command" and no path operation, and every process
 // request names its target by PID *and* start time (ProcessTarget), so the helper re-verifies the
-// process and a reused PID can't redirect a request. This slice has the handshake and the process
-// actions (#2308); the reads (#2309) and System Information (#2310) add their kinds in their phases.
+// process and a reused PID can't redirect a request. Its kinds: the handshake, the process actions
+// (#2308), Process Details' reads (#2309) and System Information's root-only facts (#2310).
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
