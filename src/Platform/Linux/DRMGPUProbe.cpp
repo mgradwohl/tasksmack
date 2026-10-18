@@ -1,6 +1,7 @@
 #include "DRMGPUProbe.h"
 
 #include "AmdApu.h"
+#include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "PosixGuards.h"
@@ -58,10 +59,8 @@ constexpr uint32_t PCI_CLASS_VGA_COMPATIBLE = 0x030000U;     // VGA compatible c
 constexpr uint32_t PCI_CLASS_3D_CONTROLLER = 0x030200U;      // 3D controller (compute-only, no display)
 constexpr uint32_t PCI_CLASS_DISPLAY_CONTROLLER = 0x038000U; // Display controller (non-VGA)
 
-// PCI vendor IDs
-constexpr uint32_t PCI_VENDOR_INTEL = 0x8086U;
-constexpr uint32_t PCI_VENDOR_NVIDIA = 0x10DEU;
-constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
+using PciDisplayDevices::PCI_VENDOR_AMD;
+using PciDisplayDevices::PCI_VENDOR_INTEL;
 
 /// A directory's entries, in iteration order; empty (not a throw) if it can't be listed (#1165).
 [[nodiscard]] std::vector<Fs::path> listDirectory(const Fs::path& dir)
@@ -550,18 +549,8 @@ std::string DRMGPUProbe::clockPath(const DRMCard& card)
 
 std::string DRMGPUProbe::getVendorName(const std::string& vendorId)
 {
-    const uint32_t id = parseHexUint32(vendorId);
-    switch (id)
-    {
-    case PCI_VENDOR_INTEL:
-        return "Intel";
-    case PCI_VENDOR_NVIDIA:
-        return "NVIDIA";
-    case PCI_VENDOR_AMD:
-        return "AMD";
-    default:
-        return "Unknown";
-    }
+    const std::string_view name = PciDisplayDevices::vendorName(parseHexUint32(vendorId));
+    return name.empty() ? std::string("Unknown") : std::string(name);
 }
 
 uint32_t DRMGPUProbe::parseHexUint32(const std::string& hexStr)

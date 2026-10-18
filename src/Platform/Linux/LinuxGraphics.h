@@ -14,6 +14,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/Linux/LinuxStorage.h"
+#include "Platform/Linux/PciDisplayDevices.h"
 
 #include <algorithm>
 #include <charconv>
@@ -65,17 +66,7 @@ namespace Platform::LinuxGraphics
 /// The vendor's name for a PCI vendor id, or empty.
 [[nodiscard]] inline std::string_view vendorName(std::uint32_t vendorId)
 {
-    switch (vendorId)
-    {
-    case 0x10DE:
-        return "NVIDIA";
-    case 0x1002:
-        return "AMD";
-    case 0x8086:
-        return "Intel";
-    default:
-        return {};
-    }
+    return PciDisplayDevices::vendorName(vendorId);
 }
 
 /// The "Model:" line of /proc/driver/nvidia/gpus/<slot>/information; empty when absent.
