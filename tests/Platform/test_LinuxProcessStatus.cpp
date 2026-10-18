@@ -282,6 +282,39 @@ TEST(UserNameLookupTest, LargeEntryIsRetriedWithABiggerBuffer)
     EXPECT_EQ(calls, 3U); // 1 KiB, 2 KiB, then 4 KiB
 }
 
+// #2499: several fields read from one entry (SessionUser's account) get the same growing buffer.
+TEST(UserNameLookupTest, AWholeEntryIsReadWithAGrowingBuffer)
+{
+    constexpr std::size_t NEEDED = 16384;
+    std::size_t calls = 0;
+    const auto fakeGetpwuidR = [&calls](uid_t uid, passwd* entry, char* buffer, std::size_t size, passwd** result) -> int
+    {
+        ++calls;
+        *result = nullptr;
+        if (size < NEEDED)
+        {
+            return ERANGE;
+        }
+        constexpr std::string_view VALUE = "/home/ldap-user";
+        std::ranges::copy(VALUE, buffer);
+        buffer[VALUE.size()] = '\0'; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - getpwuid_r's C buffer
+        entry->pw_dir = buffer;
+        entry->pw_gid = 4321;
+        entry->pw_uid = uid;
+        *result = entry;
+        return 0;
+    };
+    const std::optional<std::pair<std::string, gid_t>> read =
+        UserNameLookupDetail::lookUpEntry<passwd>(uid_t{1000},
+                                                  fakeGetpwuidR,
+                                                  [](const passwd& entry) -> std::optional<std::pair<std::string, gid_t>>
+                                                  { return std::pair{std::string(entry.pw_dir), entry.pw_gid}; });
+    ASSERT_TRUE(read.has_value());
+    EXPECT_EQ(read.value_or(std::pair<std::string, gid_t>{}).first, "/home/ldap-user");
+    EXPECT_EQ(read.value_or(std::pair<std::string, gid_t>{}).second, 4321U);
+    EXPECT_EQ(calls, 5U); // 1, 2, 4, 8, then 16 KiB: past SessionUser's old fixed 4 KiB
+}
+
 TEST(UserNameLookupTest, UnknownUidIsNullopt)
 {
     const auto noSuchUser = [](uid_t, passwd*, char*, std::size_t, passwd** result) -> int

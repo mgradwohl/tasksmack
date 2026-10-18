@@ -7,6 +7,7 @@
 // lookup and the file checks are passed in, so it is tested without being root.
 
 #include "DetachedSpawn.h"
+#include "UserNameLookup.h"
 
 #include <array>
 #include <charconv>
@@ -125,17 +126,20 @@ invokingUserSession(uid_t effectiveUid,
         },
         [](uid_t uid) -> std::optional<Account>
         {
-            passwd entry{};
-            passwd* found = nullptr;
-            std::array<char, 4096> buffer{};
-            if (::getpwuid_r(uid, &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr || entry.pw_dir == nullptr)
-            {
-                return std::nullopt;
-            }
-            return Account{.gid = entry.pw_gid,
-                           .name = entry.pw_name != nullptr ? entry.pw_name : "",
-                           .home = entry.pw_dir,
-                           .shell = entry.pw_shell != nullptr ? entry.pw_shell : ""};
+            // The buffer grows for a large LDAP/SSSD entry, rather than opening links as root (#2499).
+            return UserNameLookupDetail::lookUpEntry<passwd>(uid,
+                                                             ::getpwuid_r,
+                                                             [](const passwd& entry) -> std::optional<Account>
+                                                             {
+                                                                 if (entry.pw_dir == nullptr)
+                                                                 {
+                                                                     return std::nullopt;
+                                                                 }
+                                                                 return Account{.gid = entry.pw_gid,
+                                                                                .name = entry.pw_name != nullptr ? entry.pw_name : "",
+                                                                                .home = entry.pw_dir,
+                                                                                .shell = entry.pw_shell != nullptr ? entry.pw_shell : ""};
+                                                             });
         },
         [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
 }

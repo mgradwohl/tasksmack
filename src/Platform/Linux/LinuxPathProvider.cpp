@@ -1,8 +1,8 @@
 #include "LinuxPathProvider.h"
 
 #include "Platform/ConfigDirectory.h"
+#include "UserNameLookup.h"
 
-#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -29,17 +29,11 @@ namespace
     return std::string(value);
 }
 
-/// This user's home directory from the passwd entry, for when $HOME is unset.
+/// This user's home directory from the passwd entry, for when $HOME is unset; its buffer grows for a large
+/// LDAP/SSSD entry (#2498).
 [[nodiscard]] std::optional<std::filesystem::path> passwdHome()
 {
-    struct passwd entry = {};
-    struct passwd* result = nullptr;
-    std::array<char, 1024> buffer{};
-    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &result) == 0 && result != nullptr)
-    {
-        return std::filesystem::path(result->pw_dir);
-    }
-    return std::nullopt;
+    return lookUpHomeDirectory(::getuid(), ::getpwuid_r).transform([](const std::string& home) { return std::filesystem::path(home); });
 }
 
 } // namespace
