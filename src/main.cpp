@@ -236,6 +236,10 @@ auto runApp() -> int
         spdlog::warn(
             "Can't take the single-instance lock {}: {}; starting anyway", Core::pathToUtf8(instanceLockPath), instanceLock.error());
     }
+    else if (!instanceLock.error().empty())
+    {
+        spdlog::warn("Single-instance lock {}: {}", Core::pathToUtf8(instanceLockPath), instanceLock.error()); // #2437
+    }
 
     userConfig.load();
     const auto& settings = userConfig.settings();

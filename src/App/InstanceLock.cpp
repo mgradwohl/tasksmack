@@ -1,8 +1,13 @@
 #include "InstanceLock.h"
 
+#include "App/NewFileOwner.h"
+
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -20,15 +25,42 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
 namespace App
 {
 
-InstanceLock::InstanceLock(const std::filesystem::path& lockPath)
+InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing& testing)
 {
     std::error_code ec;
+#ifndef _WIN32
+    // Root with the user's config directory (sudo -E): what's created here goes to the user (#2437),
+    // as UserConfig::save() does for config.toml (#2121). Worked out before anything is created.
+    const std::optional<NewFileOwner::FileOwner> owner =
+        NewFileOwner::ownerForNewFiles(lockPath.has_parent_path() ? lockPath.parent_path() : lockPath,
+                                       testing.effectiveUid.has_value() ? static_cast<uid_t>(*testing.effectiveUid) : ::geteuid());
+    std::string handOverError;
+    const auto handOverFailed = [&handOverError](const std::filesystem::path& path, int error)
+    {
+        if (handOverError.empty())
+        {
+            handOverError = "couldn't give " + path.string() + " to its user: " + std::system_category().message(error);
+        }
+    };
+    std::vector<std::filesystem::path> created; // outermost first
+    if (lockPath.has_parent_path())
+    {
+        for (std::filesystem::path at = lockPath.parent_path(); !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec);
+             at = at.parent_path())
+        {
+            created.insert(created.begin(), at);
+        }
+    }
+#else
+    (void) testing;
+#endif
     if (lockPath.has_parent_path())
     {
         std::filesystem::create_directories(lockPath.parent_path(), ec);
@@ -38,6 +70,18 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath)
             return;
         }
     }
+#ifndef _WIN32
+    if (owner.has_value())
+    {
+        for (const std::filesystem::path& dir : created)
+        {
+            if (testing.failChown || !NewFileOwner::chownCreatedDirectory(dir, *owner))
+            {
+                handOverFailed(dir, testing.failChown ? EPERM : errno);
+            }
+        }
+    }
+#endif
 
 #ifdef _WIN32
     // Shared access, so a backup tool or indexer opening the file can't make TaskSmack think it is
@@ -101,8 +145,15 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath)
         }
         return;
     }
+    // The lock file too, whether this run made it or an older one left it root's: the user's next run
+    // opens it read-write (#2437).
+    if (owner.has_value() && (testing.failChown || ::fchown(fd, owner->uid, owner->gid) != 0))
+    {
+        handOverFailed(lockPath, testing.failChown ? EPERM : errno);
+    }
     m_Fd = fd;
     m_Status = Status::Acquired;
+    m_Error = std::move(handOverError);
 #endif
 }
 

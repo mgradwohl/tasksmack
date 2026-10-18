@@ -28,6 +28,13 @@ namespace App
     return configDir / "tasksmack.lock";
 }
 
+/// InstanceLock's test seams for handing what it creates to the config's user (#2437).
+struct InstanceLockTesting
+{
+    std::optional<std::uint32_t> effectiveUid; ///< Instead of geteuid(): 0 acts as root
+    bool failChown = false;                    ///< Make handing a created file or directory over fail
+};
+
 class InstanceLock
 {
   public:
@@ -38,9 +45,12 @@ class InstanceLock
         Unavailable,           ///< The lock file couldn't be created or locked (see error())
     };
 
+    using Testing = InstanceLockTesting;
+
     /// Tries to take the lock on @p lockPath without waiting, creating the file (and its
-    /// directory) if needed.
-    explicit InstanceLock(const std::filesystem::path& lockPath);
+    /// directory) if needed. Running as root with another user's config directory (sudo -E), what it
+    /// creates is given to that user (#2437), or the user's next normal run couldn't open the lock.
+    explicit InstanceLock(const std::filesystem::path& lockPath, const Testing& testing = {});
     ~InstanceLock();
 
     InstanceLock(const InstanceLock&) = delete;
@@ -53,7 +63,9 @@ class InstanceLock
         return m_Status;
     }
 
-    /// Why the lock is Unavailable; empty otherwise.
+    /// Why the lock is Unavailable; or, Acquired, why something it created couldn't be given to the
+    /// config's user (#2437): this run holds the lock, but the user's next one won't be able to. Empty
+    /// otherwise.
     [[nodiscard]] const std::string& error() const noexcept
     {
         return m_Error;

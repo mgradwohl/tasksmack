@@ -12,6 +12,7 @@
 #include <system_error>
 
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -144,6 +145,44 @@ TEST_F(InstanceLockTest, CreatesAMissingConfigDirectory)
     EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
     EXPECT_TRUE(std::filesystem::exists(nested));
 }
+
+#ifndef _WIN32
+// #2437: root with the user's config directory (sudo -E) gives the directories it makes and the lock file
+// to the owner of their nearest existing ancestor -- here this test's own user, so the handover works
+// without root -- or the user's next normal run couldn't open the lock.
+TEST_F(InstanceLockTest, AsRootWhatItCreatesGoesToTheConfigsUser)
+{
+    const auto nested = m_Dir / "made" / "tasksmack" / "tasksmack.lock";
+    const InstanceLock lock(nested, InstanceLock::Testing{.effectiveUid = 0});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(lock.error(), "");
+    struct stat home = {};
+    struct stat made = {};
+    struct stat file = {};
+    ASSERT_EQ(::stat(m_Dir.c_str(), &home), 0);
+    ASSERT_EQ(::stat((m_Dir / "made").c_str(), &made), 0);
+    ASSERT_EQ(::stat(nested.c_str(), &file), 0);
+    EXPECT_EQ(made.st_uid, home.st_uid);
+    EXPECT_EQ(file.st_uid, home.st_uid);
+}
+
+// #2437: a handover that fails still takes the lock for this run, and says why the next run may not.
+TEST_F(InstanceLockTest, AsRootAFailedHandOverStillLocksAndSaysWhy)
+{
+    const auto nested = m_Dir / "made" / "tasksmack.lock";
+    const InstanceLock lock(nested, InstanceLock::Testing{.effectiveUid = 0, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().starts_with("couldn't give " + (m_Dir / "made").string())) << lock.error();
+}
+
+// Not root: nothing is handed over, and nothing to report.
+TEST_F(InstanceLockTest, NotRootNothingIsHandedOver)
+{
+    const InstanceLock lock(m_Dir / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 1000, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(lock.error(), "");
+}
+#endif
 
 TEST_F(InstanceLockTest, UnusableLockPathIsUnavailableNotAlreadyRunning)
 {

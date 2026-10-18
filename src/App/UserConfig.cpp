@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/NewFileOwner.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
@@ -589,11 +590,7 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
 /// mode chmod would then change (#1222 review).
 /// The original config's owner, so the replacement keeps it: in a setgid directory the staging file
 /// would otherwise take the directory's group, whose members could then read it (#1222 review).
-struct FileOwner
-{
-    uid_t uid;
-    gid_t gid;
-};
+using NewFileOwner::FileOwner;
 
 /// @p fails(step): whether a test made that step fail (UserConfig::failSaveStepForTesting(); sets errno).
 [[nodiscard]] bool writeAllAndClose(int fd,
@@ -651,48 +648,8 @@ struct FileOwner
     return ok;
 }
 
-/// Who should own config files and directories TaskSmack creates (#2121). Running as root with another
-/// user's HOME (sudo -E, as the elevation notice suggests), a new config.toml -- and any directory made
-/// for it -- would be root's and 0600, so the user's next normal run could neither read nor save it.
-/// Then they go to the owner of the nearest existing ancestor of @p dir (the user's ~/.config or home);
-/// otherwise nullopt (not root, or root in root's own home): created as the process, as usual.
-[[nodiscard]] std::optional<FileOwner> ownerForNewFiles(const std::filesystem::path& dir, uid_t effectiveUid)
-{
-    if (effectiveUid != 0)
-    {
-        return std::nullopt;
-    }
-    std::filesystem::path at = dir;
-    struct stat existing = {};
-    while (::stat(at.c_str(), &existing) != 0)
-    {
-        if (at == at.parent_path())
-        {
-            return std::nullopt;
-        }
-        at = at.parent_path();
-    }
-    if (existing.st_uid == 0)
-    {
-        return std::nullopt;
-    }
-    return FileOwner{.uid = existing.st_uid, .gid = existing.st_gid};
-}
-
-/// Gives the directory @p dir, which save() just created, to @p owner: through a descriptor opened with
-/// O_NOFOLLOW, so a symlink swapped in for it can't make root hand some other directory over.
-[[nodiscard]] bool chownCreatedDirectory(const std::filesystem::path& dir, const FileOwner& owner)
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0)
-    {
-        return false;
-    }
-    const bool ok = ::fchown(fd, owner.uid, owner.gid) == 0;
-    ::close(fd);
-    return ok;
-}
+using NewFileOwner::chownCreatedDirectory;
+using NewFileOwner::ownerForNewFiles;
 
 } // namespace
 #endif
