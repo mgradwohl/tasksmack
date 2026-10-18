@@ -128,6 +128,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(InstallLocalShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/setup-dev.sh stops before rewriting a Windows .venv in a checkout shared with WSL (#2351).
+# Sourced with a stub python3.14, so it installs nothing and runs under Git for Windows' bash too.
+if(TASKSMACK_BASH)
+    add_test(NAME SetupDevShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_setup_dev_sh.py)
+    set_tests_properties(SetupDevShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript

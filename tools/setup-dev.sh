@@ -87,10 +87,49 @@ run_cmd() {
     fi
 }
 
+# The project-local Python environment. Linux venvs keep the interpreter in bin/; the Windows ones
+# setup-dev.ps1 creates keep it in Scripts/. Both read the same pyvenv.cfg, so `python -m venv` over
+# a Windows venv in a checkout shared with WSL rewrites its home/executable to Linux paths and
+# breaks Scripts/python.exe (#2351).
+PYTHON_ENV="${REPO_ROOT}/.venv"
+
+# Stop, before anything is installed, when $1 is a Windows venv (Scripts/python.exe, no
+# bin/python): setup-dev.ps1's check for a Linux venv (#2252), reversed. Under --dry-run, only warn.
+check_venv() {
+    local env_dir="$1"
+    if [[ -f "$env_dir/Scripts/python.exe" && ! -e "$env_dir/bin/python" && ! -L "$env_dir/bin/python" ]]; then
+        # Recreating it in place would break it for Windows, so leave the choice to the developer.
+        if $DRY_RUN; then
+            echo "WARNING: $env_dir exists but has no bin/python (a Windows venv from setup-dev.ps1?); a real run would stop here." >&2
+            return 0
+        fi
+        echo "Error: $env_dir exists but has no bin/python (a Windows venv from setup-dev.ps1?). Remove or rename it, then rerun this script." >&2
+        exit 1
+    fi
+}
+
+# Create $1 with Python $PYTHON_VERSION, or refresh the Linux venv already there.
+create_venv() {
+    local env_dir="$1"
+    check_venv "$env_dir"
+    if [[ -e "$env_dir/bin/python" || -L "$env_dir/bin/python" ]]; then
+        echo "  Using existing virtual environment: $env_dir"
+    fi
+    run_cmd "python${PYTHON_VERSION}" -m venv "$env_dir"
+}
+
+# Sourced (tests/tools/test_setup_dev_sh.py): define the functions only
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 echo "=== TaskSmack Dev Setup ==="
 echo "LLVM version: $LLVM_VERSION"
 if $DRY_RUN; then echo "(dry-run mode — nothing will be installed)"; fi
 echo ""
+
+# Before the apt steps, so a Windows .venv stops the run before anything is installed
+check_venv "$PYTHON_ENV"
 
 # ── Step 1: Signed package repositories ───────────────────────────────────────
 echo "==> Configuring signed package repositories..."
@@ -195,8 +234,7 @@ fi
 echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
 run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libsystemd-dev pkg-config
 
-PYTHON_ENV="${REPO_ROOT}/.venv"
-run_cmd "python${PYTHON_VERSION}" -m venv "$PYTHON_ENV"
+create_venv "$PYTHON_ENV"
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.txt"
 
