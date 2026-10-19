@@ -1,8 +1,10 @@
 // Tests for TaskSmackHelper.exe (#2517): its command line, the parent checks (the parent's handle, start
-// time and user), the watch that ends a session when TaskSmack exits, the whole session run in this
-// process, and the executable itself, started directly as this user, never elevated: no UAC prompt is
-// ever raised. The processes the tests act on are their own suspended children, which never run.
-// Every wait is bounded.
+// time and user, and that it is the TaskSmack beside the helper that started it, #2549), the watch that
+// ends a session when TaskSmack exits, the whole session run in this process, and the executable itself,
+// started directly as this user, never elevated: no UAC prompt is ever raised. Where "runas" would make
+// the helper TaskSmack's child, the tests make it so with PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, as
+// AppInfo does, or have a stand-in TaskSmack.exe start it (HelperTestParent.cpp). The processes the tests
+// act on are their own suspended children, which never run. Every wait is bounded.
 
 #include "Mocks/MockProbes.h"
 #include "Platform/BrokerProtocol.h"
@@ -15,21 +17,26 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <future>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -76,6 +83,31 @@ constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOU
 [[nodiscard]] BrokerHelper::Arguments argumentsForThisProcess(std::wstring pipeName)
 {
     return {.pipeName = std::move(pipeName), .parentPid = GetCurrentProcessId(), .parentStartTicks = startTicksOf(GetCurrentProcess())};
+}
+
+/// @p process's image, as a Win32 path.
+[[nodiscard]] std::wstring imageOf(HANDLE process)
+{
+    std::array<wchar_t, 32'768> path{};
+    auto size = static_cast<DWORD>(path.size());
+    EXPECT_NE(QueryFullProcessImageNameW(process, 0, path.data(), &size), FALSE);
+    return {path.data(), size};
+}
+
+/// Now, in a FILETIME's ticks: later than any process the tests name started. The precise clock, which
+/// process creation times are read from: the coarse one can lag a child created a moment ago.
+[[nodiscard]] std::uint64_t nowTicks()
+{
+    FILETIME now{};
+    GetSystemTimePreciseAsFileTime(&now);
+    return (static_cast<std::uint64_t>(now.dwHighDateTime) << 32U) | now.dwLowDateTime;
+}
+
+/// What an in-process helper "started" by @p parent knows of itself: @p parent's image is its
+/// TaskSmack, @p parent created it, and it started now. run() then takes @p parent as TaskSmack.
+[[nodiscard]] BrokerHelper::Self selfStartedBy(HANDLE parent)
+{
+    return {.taskSmackPath = imageOf(parent), .creatorPid = GetProcessId(parent), .startTicks = nowTicks()};
 }
 
 [[nodiscard]] std::chrono::milliseconds since(std::chrono::steady_clock::time_point start)
@@ -286,6 +318,136 @@ TEST(BrokerHelperTest, AParentThatHasExitedIsRefused)
     }
 }
 
+// --- That the parent is the TaskSmack that started the helper (#2548 review, finding 3) -------------
+
+TEST(BrokerHelperTest, BesidePathNamesTheFileInTheSameFolder)
+{
+    EXPECT_EQ(BrokerHelper::besidePath(L"C:\\Program Files\\TaskSmack\\TaskSmack.exe", L"TaskSmackHelper.exe"),
+              L"C:\\Program Files\\TaskSmack\\TaskSmackHelper.exe");
+    EXPECT_EQ(BrokerHelper::besidePath(L"C:\\TaskSmack.exe", L"TaskSmackHelper.exe"), L"C:\\TaskSmackHelper.exe");
+    EXPECT_EQ(BrokerHelper::besidePath(L"TaskSmack.exe", L"TaskSmackHelper.exe"), L"") << "relative: the current directory's";
+    EXPECT_EQ(BrokerHelper::besidePath(L"Tools\\TaskSmack.exe", L"TaskSmackHelper.exe"), L"");
+    EXPECT_EQ(BrokerHelper::besidePath(L"C:TaskSmack.exe", L"TaskSmackHelper.exe"), L"") << "the drive's current directory";
+    EXPECT_EQ(BrokerHelper::besidePath(L"C:\\", L"TaskSmackHelper.exe"), L"");
+    EXPECT_EQ(BrokerHelper::besidePath(L"", L"TaskSmackHelper.exe"), L"");
+}
+
+TEST(BrokerHelperTest, SameFileComparesWhatPathsNameNotHowTheyAreSpelled)
+{
+    const std::wstring own = imageOf(GetCurrentProcess());
+    const std::filesystem::path path(own);
+    EXPECT_TRUE(BrokerHelper::sameFile(own, own));
+    std::wstring upper = own;
+    std::ranges::transform(upper, upper.begin(), [](wchar_t c) { return static_cast<wchar_t>(towupper(c)); });
+    EXPECT_TRUE(BrokerHelper::sameFile(own, upper)) << "case";
+    EXPECT_TRUE(BrokerHelper::sameFile(own, (path.parent_path() / L"." / path.filename()).wstring()));
+    EXPECT_TRUE(BrokerHelper::sameFile(own, (path.parent_path() / L"NoSuchFolder" / L".." / path.filename()).wstring()));
+    std::array<wchar_t, 32'768> shortPath{};
+    const DWORD shortLength = GetShortPathNameW(own.c_str(), shortPath.data(), static_cast<DWORD>(shortPath.size()));
+    if (shortLength > 0 && shortLength < shortPath.size())
+    {
+        EXPECT_TRUE(BrokerHelper::sameFile(own, std::wstring(shortPath.data(), shortLength))) << "an 8.3 name, if the volume has them";
+    }
+
+    EXPECT_FALSE(BrokerHelper::sameFile(own, imageOf(SuspendedChild().process()))) << "another executable";
+    EXPECT_FALSE(BrokerHelper::sameFile(own, (path.parent_path() / L"TaskSmack.exe.missing").wstring()));
+    EXPECT_FALSE(BrokerHelper::sameFile(own, L""));
+}
+
+TEST(BrokerHelperTest, TheTaskSmackThatStartedTheHelperIsItsParent)
+{
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::openParent(arguments.parentPid, arguments.parentStartTicks);
+    ASSERT_TRUE(parent.has_value()) << parent.error();
+    const auto checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, selfStartedBy(GetCurrentProcess()));
+    EXPECT_TRUE(checked.has_value()) << checked.error();
+}
+
+TEST(BrokerHelperTest, AParentThatDidntStartTheHelperIsRefused)
+{
+    // Another program starting the helper through the UAC prompt and naming a TaskSmack: the helper's
+    // creator isn't the process named.
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::openParent(arguments.parentPid, arguments.parentStartTicks);
+    ASSERT_TRUE(parent.has_value()) << parent.error();
+    const SuspendedChild other;
+    ASSERT_TRUE(other.process() != nullptr);
+    BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
+    self.creatorPid = other.pid();
+    const auto checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("started the helper")) << checked.error();
+}
+
+TEST(BrokerHelperTest, AParentThatStartedAfterTheHelperIsRefused)
+{
+    // Its creator exited, and its PID went to a later process: that one can't have started the helper.
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::openParent(arguments.parentPid, arguments.parentStartTicks);
+    ASSERT_TRUE(parent.has_value()) << parent.error();
+    BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
+    self.startTicks = arguments.parentStartTicks - 1;
+    const auto checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("started after")) << checked.error();
+}
+
+TEST(BrokerHelperTest, AParentRunningAnotherExecutableIsRefused)
+{
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::openParent(arguments.parentPid, arguments.parentStartTicks);
+    ASSERT_TRUE(parent.has_value()) << parent.error();
+    const std::filesystem::path own(imageOf(GetCurrentProcess()));
+    const SuspendedChild cmd;
+    ASSERT_TRUE(cmd.process() != nullptr);
+    for (const std::wstring& taskSmack : {imageOf(cmd.process()),
+                                          (own.parent_path() / L"TaskSmack.exe").wstring(), // the TaskSmack beside this, which isn't it
+                                          std::wstring()})
+    {
+        BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
+        self.taskSmackPath = taskSmack;
+        const auto checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
+        ASSERT_FALSE(checked.has_value());
+        EXPECT_TRUE(checked.error().contains("isn't the TaskSmack.exe beside the helper")) << checked.error();
+    }
+}
+
+TEST(BrokerHelperTest, ASessionForAParentThatIsntTaskSmackNeverMakesItsPipe)
+{
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
+    {
+        return Broker::ErrorReply{};
+    };
+    const SuspendedChild cmd;
+    ASSERT_TRUE(cmd.process() != nullptr);
+    BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
+    self.taskSmackPath = imageOf(cmd.process());
+    EXPECT_EQ(BrokerHelper::run(arguments, self, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
+    self = selfStartedBy(cmd.process());
+    self.taskSmackPath = imageOf(GetCurrentProcess());
+    EXPECT_EQ(BrokerHelper::run(arguments, self, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
+    const UniqueHandle own = ownProcess();
+    EXPECT_FALSE(BrokerPipe::connectToServer(arguments.pipeName, GetCurrentProcessId(), own.get(), 100ms, {}).has_value());
+}
+
+TEST(BrokerHelperTest, TheHelpersOwnIdentityIsReadFromItsProcess)
+{
+    const auto self = BrokerHelper::readSelf();
+    ASSERT_TRUE(self.has_value()) << self.error();
+    EXPECT_EQ(self->taskSmackPath, BrokerHelper::besidePath(imageOf(GetCurrentProcess()), L"TaskSmack.exe"));
+    EXPECT_NE(self->creatorPid, 0U);
+    EXPECT_NE(self->creatorPid, GetCurrentProcessId());
+    EXPECT_EQ(self->startTicks, startTicksOf(GetCurrentProcess()));
+}
+
+TEST(BrokerHelperTest, ExitStatusesAreSaidInWords)
+{
+    EXPECT_TRUE(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::NoParent)).contains("didn't accept TaskSmack"));
+    EXPECT_TRUE(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::Usage)).contains("command line"));
+    EXPECT_EQ(BrokerHelper::exitMeaning(77), "the helper exited with status 77");
+}
+
 // --- The watch on the parent ------------------------------------------------------------------------
 
 TEST(BrokerHelperTest, TheWatchStopsWhenTheProcessEnds)
@@ -423,7 +585,8 @@ TEST(BrokerHelperTest, ASessionServesTheParentAndEndsWhenItClosesThePipe)
     };
     const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
     auto session = std::async(std::launch::async,
-                              [&arguments, &handler] { return BrokerHelper::run(arguments, handler, WAIT, WAIT, std::stop_token{}); });
+                              [&arguments, &handler, self = selfStartedBy(GetCurrentProcess())]
+                              { return BrokerHelper::run(arguments, self, handler, WAIT, WAIT, std::stop_token{}); });
 
     const UniqueHandle self = ownProcess();
     auto client = BrokerPipe::connectToServer(arguments.pipeName, GetCurrentProcessId(), self.get(), WAIT, {});
@@ -453,7 +616,7 @@ TEST(BrokerHelperTest, ASessionForAParentOfAnotherStartTimeNeverMakesItsPipe)
     {
         return Broker::ErrorReply{};
     };
-    EXPECT_EQ(BrokerHelper::run(arguments, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
+    EXPECT_EQ(BrokerHelper::run(arguments, selfStartedBy(GetCurrentProcess()), handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
     const UniqueHandle self = ownProcess();
     EXPECT_FALSE(BrokerPipe::connectToServer(arguments.pipeName, GetCurrentProcessId(), self.get(), 100ms, {}).has_value());
 }
@@ -470,7 +633,8 @@ TEST(BrokerHelperTest, ASessionWhoseParentExitsBeforeConnectingEnds)
         return Broker::ErrorReply{};
     };
     auto session = std::async(std::launch::async,
-                              [&arguments, &handler] { return BrokerHelper::run(arguments, handler, WAIT, 60s, std::stop_token{}); });
+                              [&arguments, &handler, self = selfStartedBy(child.process())]
+                              { return BrokerHelper::run(arguments, self, handler, WAIT, 60s, std::stop_token{}); });
     // Once the pipe is there, the parent goes.
     ASSERT_TRUE(pipeExists(arguments.pipeName));
     ASSERT_NE(TerminateProcess(child.process(), 1), FALSE);
@@ -490,7 +654,8 @@ TEST(BrokerHelperTest, ASessionRefusesAClientThatIsntTheParent)
         return Broker::ErrorReply{};
     };
     auto session = std::async(std::launch::async,
-                              [&arguments, &handler] { return BrokerHelper::run(arguments, handler, WAIT, WAIT, std::stop_token{}); });
+                              [&arguments, &handler, self = selfStartedBy(child.process())]
+                              { return BrokerHelper::run(arguments, self, handler, WAIT, WAIT, std::stop_token{}); });
     // This process opens the pipe, which was made for its child: it is refused and cut off.
     const UniqueHandle self = ownProcess();
     const auto client = BrokerPipe::connectToServer(arguments.pipeName, GetCurrentProcessId(), self.get(), WAIT, {});
@@ -570,9 +735,9 @@ TEST(BrokerHelperTest, AStoppedSessionEnds)
         return Broker::ErrorReply{};
     };
     std::stop_source stop;
-    auto session =
-        std::async(std::launch::async,
-                   [&arguments, &handler, token = stop.get_token()] { return BrokerHelper::run(arguments, handler, 60s, 60s, token); });
+    auto session = std::async(std::launch::async,
+                              [&arguments, &handler, token = stop.get_token(), self = selfStartedBy(GetCurrentProcess())]
+                              { return BrokerHelper::run(arguments, self, handler, 60s, 60s, token); });
     stop.request_stop();
     ASSERT_EQ(session.wait_for(WAIT), std::future_status::ready);
     const BrokerHelper::Exit exit = session.get();
@@ -581,30 +746,132 @@ TEST(BrokerHelperTest, AStoppedSessionEnds)
 
 // --- TaskSmackHelper.exe, run directly as this user -------------------------------------------------
 
-#ifdef TASKSMACK_WINDOWS_HELPER_PATH
+#if defined(TASKSMACK_WINDOWS_HELPER_PATH) && defined(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH)
 
-/// TaskSmackHelper.exe started with @p parameters, not elevated; terminated (if still running) and
-/// closed on scope exit.
-class HelperProcess
+/// A folder of its own under %TEMP%, laid out as an install is: a copy of TaskSmackHelper.exe, and a copy
+/// of TaskSmackHelperTestParent.exe (HelperTestParent.cpp) as the TaskSmack.exe beside it. Removed on
+/// scope exit.
+class InstallFolder
 {
   public:
-    explicit HelperProcess(const std::wstring& parameters)
+    InstallFolder()
     {
-        const std::filesystem::path exe(TASKSMACK_WINDOWS_HELPER_PATH);
-        std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + parameters;
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
-        PROCESS_INFORMATION info{};
-        if (CreateProcessW(exe.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info) ==
-            FALSE)
+        const std::wstring name = freshName();
+        m_Path = std::filesystem::temp_directory_path() / (L"TaskSmackHelperTest." + name.substr(name.rfind(L'.') + 1));
+        std::error_code error;
+        std::filesystem::create_directories(m_Path, error);
+        EXPECT_FALSE(error) << error.message();
+        std::filesystem::copy_file(TASKSMACK_WINDOWS_HELPER_PATH, helper(), error);
+        EXPECT_FALSE(error) << error.message();
+        std::filesystem::copy_file(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH, taskSmack(), error);
+        EXPECT_FALSE(error) << error.message();
+    }
+    ~InstallFolder()
+    {
+        // What ran from here has exited (a test's processes are declared after this), but Windows may
+        // hold an image a moment longer.
+        try
         {
-            ADD_FAILURE() << "couldn't start TaskSmackHelper.exe: " << GetLastError();
+            constexpr int ATTEMPTS = 50;
+            std::error_code error;
+            for (int attempt = 0; attempt < ATTEMPTS && std::filesystem::exists(m_Path, error); ++attempt)
+            {
+                std::filesystem::remove_all(m_Path, error);
+                if (error)
+                {
+                    std::this_thread::sleep_for(20ms);
+                }
+            }
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - out of memory: the folder is left in %TEMP%
+        {}
+    }
+    InstallFolder(const InstallFolder&) = delete;
+    InstallFolder& operator=(const InstallFolder&) = delete;
+    InstallFolder(InstallFolder&&) = delete;
+    InstallFolder& operator=(InstallFolder&&) = delete;
+
+    [[nodiscard]] std::filesystem::path helper() const
+    {
+        return m_Path / L"TaskSmackHelper.exe";
+    }
+    [[nodiscard]] std::filesystem::path taskSmack() const
+    {
+        return m_Path / L"TaskSmack.exe";
+    }
+    /// Why the TaskSmack.exe run from here failed, in its words.
+    [[nodiscard]] std::string log() const
+    {
+        std::ifstream in(m_Path / L"HelperTestParent.log");
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+/// @p exe started with @p parameters, as this user, never elevated: suspended if asked, and as
+/// @p parent's child if one is given (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, which is how AppInfo makes
+/// a "runas" process its caller's child). Terminated, if still running, and closed on scope exit.
+struct StartOptions
+{
+    HANDLE parent = nullptr; ///< the process to make the parent, or none: this one
+    bool suspended = false;
+};
+
+class Started
+{
+  public:
+    Started(const std::filesystem::path& exe, const std::wstring& parameters, StartOptions options = {})
+    {
+        std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + parameters;
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        DWORD flags = CREATE_NO_WINDOW | (options.suspended ? CREATE_SUSPENDED : 0U);
+        std::vector<std::byte> attributes;
+        if (options.parent != nullptr)
+        {
+            SIZE_T size = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+            attributes.resize(size);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the opaque list lives in a byte buffer of the size asked for
+            startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+            if (InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &size) == FALSE)
+            {
+                ADD_FAILURE() << "couldn't make an attribute list: " << GetLastError();
+                return;
+            }
+            if (UpdateProcThreadAttribute(startup.lpAttributeList,
+                                          0,
+                                          PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                                          static_cast<PVOID>(&options.parent),
+                                          sizeof(options.parent),
+                                          nullptr,
+                                          nullptr) == FALSE)
+            {
+                ADD_FAILURE() << "couldn't name the parent: " << GetLastError();
+                DeleteProcThreadAttributeList(startup.lpAttributeList);
+                return;
+            }
+            flags |= EXTENDED_STARTUPINFO_PRESENT;
+        }
+        PROCESS_INFORMATION info{};
+        const BOOL created =
+            CreateProcessW(exe.c_str(), commandLine.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &startup.StartupInfo, &info);
+        const DWORD error = GetLastError();
+        if (startup.lpAttributeList != nullptr)
+        {
+            DeleteProcThreadAttributeList(startup.lpAttributeList);
+        }
+        if (created == FALSE)
+        {
+            ADD_FAILURE() << "couldn't start " << exe.string() << ": " << error;
             return;
         }
         m_Process.reset(info.hProcess);
-        CloseHandle(info.hThread);
+        m_Thread.reset(info.hThread);
     }
-    ~HelperProcess()
+    ~Started()
     {
         if (m_Process && WaitForSingleObject(m_Process.get(), 0) == WAIT_TIMEOUT)
         {
@@ -612,20 +879,27 @@ class HelperProcess
             WaitForSingleObject(m_Process.get(), static_cast<DWORD>(WAIT.count()));
         }
     }
-    HelperProcess(const HelperProcess&) = delete;
-    HelperProcess& operator=(const HelperProcess&) = delete;
-    HelperProcess(HelperProcess&&) = delete;
-    HelperProcess& operator=(HelperProcess&&) = delete;
+    Started(const Started&) = delete;
+    Started& operator=(const Started&) = delete;
+    Started(Started&&) = delete;
+    Started& operator=(Started&&) = delete;
 
     [[nodiscard]] HANDLE process() const noexcept
     {
         return m_Process.get();
     }
 
-    /// Its exit status once it has exited within WAIT; nullopt if it is still running.
-    [[nodiscard]] std::optional<DWORD> exitCode() const
+    /// The arguments that name it as the helper's parent, with a fresh pipe name.
+    [[nodiscard]] BrokerHelper::Arguments asParent() const
     {
-        if (!m_Process || WaitForSingleObject(m_Process.get(), static_cast<DWORD>(WAIT.count())) != WAIT_OBJECT_0)
+        return {.pipeName = freshName(), .parentPid = GetProcessId(m_Process.get()), .parentStartTicks = startTicksOf(m_Process.get())};
+    }
+
+    /// Its exit status once it has exited within @p timeout; nullopt if it is still running. A freshly
+    /// copied image may be scanned before it runs, so the default is the startup bound.
+    [[nodiscard]] std::optional<DWORD> exitCode(std::chrono::milliseconds timeout = STARTUP_WAIT) const
+    {
+        if (!m_Process || WaitForSingleObject(m_Process.get(), static_cast<DWORD>(timeout.count())) != WAIT_OBJECT_0)
         {
             return std::nullopt;
         }
@@ -636,105 +910,113 @@ class HelperProcess
 
   private:
     UniqueHandle m_Process;
+    UniqueHandle m_Thread;
 };
 
-[[nodiscard]] UniqueHandle connectTo(const HelperProcess& helper, const std::wstring& pipeName)
+[[nodiscard]] std::optional<DWORD> exitStatus(BrokerHelper::Exit exit)
 {
-    auto pipe = BrokerPipe::connectToServer(pipeName, GetProcessId(helper.process()), helper.process(), STARTUP_WAIT, {});
-    if (!pipe.has_value())
-    {
-        ADD_FAILURE() << pipe.error();
-        return {};
-    }
-    return std::move(*pipe);
+    return static_cast<DWORD>(exit);
 }
 
-TEST(TaskSmackHelperTest, KillsAProcessForItsParentAndExitsWhenThePipeCloses)
+// The whole way, as TaskSmack will go: TaskSmack.exe starts the helper beside it through HelperLauncher
+// (CreateProcessW standing in for "runas"), connects a PipeBroker, and has the helper end a process.
+TEST(TaskSmackHelperTest, ServesTheTaskSmackBesideItThatStartedIt)
 {
-    const SuspendedChild child;
-    ASSERT_TRUE(child.process() != nullptr);
-    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
-    const HelperProcess helper(BrokerHelper::commandLine(arguments));
-    ASSERT_TRUE(helper.process() != nullptr);
-    UniqueHandle pipe = connectTo(helper, arguments.pipeName);
-    ASSERT_TRUE(pipe);
-
-    const auto hello = roundTrip(pipe.get(), 1, Broker::Hello{});
-    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
-    EXPECT_TRUE(std::get<Broker::HelloReply>(hello.message).accepted);
-
-    // The helper re-checks the target's start time: one off is refused, and the process is untouched.
-    ProcessTarget wrong = child.target();
-    ++wrong.startTimeTicks;
-    const auto refused = roundTrip(pipe.get(), 2, Broker::SignalRequest{.target = wrong, .signal = Broker::Signal::Kill});
-    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(refused.message));
-    EXPECT_FALSE(std::get<Broker::ActionResult>(refused.message).success);
-    EXPECT_FALSE(child.exited(0ms));
-
-    const auto ended = roundTrip(pipe.get(), 3, Broker::SignalRequest{.target = child.target(), .signal = Broker::Signal::Kill});
-    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(ended.message));
-    EXPECT_TRUE(std::get<Broker::ActionResult>(ended.message).success) << std::get<Broker::ActionResult>(ended.message).errorMessage;
-    EXPECT_TRUE(child.exited());
-
-    // Reads it has no reader for are refused, not guessed at.
-    const auto environment = roundTrip(pipe.get(), 4, Broker::EnvironmentRequest{.target = child.target()});
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(environment.message));
-    const auto firmware = roundTrip(pipe.get(), 5, Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable});
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(firmware.message));
-
-    pipe.reset();
-    EXPECT_EQ(helper.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::Done));
+    const InstallFolder installed;
+    const SuspendedChild victim;
+    ASSERT_TRUE(victim.process() != nullptr);
+    const ProcessTarget target = victim.target();
+    const Started taskSmack(installed.taskSmack(), std::format(L"kill {} {}", target.pid, target.startTimeTicks));
+    ASSERT_TRUE(taskSmack.process() != nullptr);
+    EXPECT_EQ(taskSmack.exitCode(2 * STARTUP_WAIT), std::optional<DWORD>(0)) << installed.log();
+    EXPECT_TRUE(victim.exited());
 }
 
 TEST(TaskSmackHelperTest, AnswersGarbageWithAnErrorAndEnds)
 {
-    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
-    const HelperProcess helper(BrokerHelper::commandLine(arguments));
-    ASSERT_TRUE(helper.process() != nullptr);
-    const UniqueHandle pipe = connectTo(helper, arguments.pipeName);
-    ASSERT_TRUE(pipe);
-    const std::vector<std::uint8_t> garbage{4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
-    std::string error;
-    ASSERT_TRUE(BrokerPipe::sendFrame(pipe.get(), garbage, WAIT, {}, error)) << error;
-    const auto frame = BrokerPipe::receiveFrame(pipe.get(), WAIT, {});
-    ASSERT_TRUE(frame.has_value());
-    const auto reply = Broker::decodeResponse(*frame);
-    ASSERT_TRUE(reply.has_value());
-    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(reply->message));
-    EXPECT_EQ(helper.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::Failed));
+    const InstallFolder installed;
+    const Started taskSmack(installed.taskSmack(), L"garbage");
+    ASSERT_TRUE(taskSmack.process() != nullptr);
+    EXPECT_EQ(taskSmack.exitCode(2 * STARTUP_WAIT), std::optional<DWORD>(0)) << installed.log();
 }
 
 TEST(TaskSmackHelperTest, RefusesACommandLineTaskSmackDoesntMake)
 {
-    const HelperProcess none(L"");
-    EXPECT_EQ(none.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::Usage));
-    const HelperProcess otherPipe(std::format(L"--broker \\\\.\\pipe\\Other {} 1", GetCurrentProcessId()));
-    EXPECT_EQ(otherPipe.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::Usage));
+    const Started none(TASKSMACK_WINDOWS_HELPER_PATH, L"");
+    EXPECT_EQ(none.exitCode(), exitStatus(BrokerHelper::Exit::Usage));
+    const Started otherPipe(TASKSMACK_WINDOWS_HELPER_PATH, std::format(L"--broker \\\\.\\pipe\\Other {} 1", GetCurrentProcessId()));
+    EXPECT_EQ(otherPipe.exitCode(), exitStatus(BrokerHelper::Exit::Usage));
 }
 
 TEST(TaskSmackHelperTest, RefusesAParentOfAnotherStartTime)
 {
     BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
     ++arguments.parentStartTicks;
-    const HelperProcess helper(BrokerHelper::commandLine(arguments));
-    EXPECT_EQ(helper.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::NoParent));
+    const Started helper(TASKSMACK_WINDOWS_HELPER_PATH, BrokerHelper::commandLine(arguments));
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
+}
+
+// #2548 review, finding 3: a program that starts the signed helper through its UAC prompt itself gets no
+// broker, whether it names itself or a real TaskSmack.
+
+TEST(TaskSmackHelperTest, RefusesAProgramThatStartsItAndNamesItself)
+{
+    // This test is that program: it is the helper's parent, but not the TaskSmack.exe beside it.
+    const InstallFolder installed;
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const Started helper(installed.helper(), BrokerHelper::commandLine(arguments));
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
+}
+
+TEST(TaskSmackHelperTest, RefusesAProgramThatStartsItAndNamesATaskSmack)
+{
+    // The TaskSmack named is the one beside the helper, but this test, not it, started the helper.
+    const InstallFolder installed;
+    const Started taskSmack(installed.taskSmack(), L"", {.suspended = true});
+    ASSERT_TRUE(taskSmack.process() != nullptr);
+    const Started helper(installed.helper(), BrokerHelper::commandLine(taskSmack.asParent()));
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
+}
+
+TEST(TaskSmackHelperTest, RefusesAnotherProgramAsItsParent)
+{
+    // Made cmd.exe's child, as "runas" from cmd.exe would make it, and naming it.
+    const InstallFolder installed;
+    const SuspendedChild cmd;
+    ASSERT_TRUE(cmd.process() != nullptr);
+    const ProcessTarget named = cmd.target();
+    const BrokerHelper::Arguments arguments{
+        .pipeName = freshName(), .parentPid = static_cast<DWORD>(named.pid), .parentStartTicks = named.startTimeTicks};
+    const Started helper(installed.helper(), BrokerHelper::commandLine(arguments), {.parent = cmd.process()});
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
+}
+
+TEST(TaskSmackHelperTest, RefusesATaskSmackFromAnotherFolder)
+{
+    // Named TaskSmack.exe, and its parent, but not the one beside this helper (the build's).
+    const InstallFolder installed;
+    const Started taskSmack(installed.taskSmack(), L"", {.suspended = true});
+    ASSERT_TRUE(taskSmack.process() != nullptr);
+    const Started helper(TASKSMACK_WINDOWS_HELPER_PATH, BrokerHelper::commandLine(taskSmack.asParent()), {.parent = taskSmack.process()});
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
 }
 
 TEST(TaskSmackHelperTest, ExitsWhenItsParentDoes)
 {
-    const SuspendedChild parent;
-    ASSERT_TRUE(parent.process() != nullptr);
-    const ProcessTarget target = parent.target();
-    const BrokerHelper::Arguments arguments{
-        .pipeName = freshName(), .parentPid = static_cast<DWORD>(target.pid), .parentStartTicks = target.startTimeTicks};
-    const HelperProcess helper(BrokerHelper::commandLine(arguments));
+    // Made the child of the TaskSmack beside it, as AppInfo makes a "runas" process its caller's: the
+    // checks pass and it makes its pipe. That TaskSmack (suspended, it never opens the pipe) then exits.
+    const InstallFolder installed;
+    const Started taskSmack(installed.taskSmack(), L"", {.suspended = true});
+    ASSERT_TRUE(taskSmack.process() != nullptr);
+    const BrokerHelper::Arguments arguments = taskSmack.asParent();
+    const Started helper(installed.helper(), BrokerHelper::commandLine(arguments), {.parent = taskSmack.process()});
     ASSERT_TRUE(helper.process() != nullptr);
-    ASSERT_TRUE(pipeExists(arguments.pipeName)); // it holds its parent by then
-    ASSERT_NE(TerminateProcess(parent.process(), 1), FALSE);
-    EXPECT_EQ(helper.exitCode(), static_cast<DWORD>(BrokerHelper::Exit::NoClient)) << "well within its 30 s accept timeout";
+    ASSERT_TRUE(pipeExists(arguments.pipeName)) << "it took the TaskSmack beside it, its parent, as its parent";
+    ASSERT_NE(TerminateProcess(taskSmack.process(), 1), FALSE);
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoClient)) << "well within its 30 s accept timeout";
 }
 
-#endif // TASKSMACK_WINDOWS_HELPER_PATH
+#endif // TASKSMACK_WINDOWS_HELPER_PATH && TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH
 
 } // namespace
 } // namespace Platform::Windows

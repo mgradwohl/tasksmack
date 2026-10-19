@@ -1175,5 +1175,162 @@ TEST(PipeBrokerTest, ACallWhoseReplyIsCutOffByTheHelperExitingEndsTheSession)
     EXPECT_FALSE(broker.connected());
 }
 
+// --- A UAC prompt left up (#2549; finding 3 of #2520's review) -------------------------------------------
+
+/// A launcher whose first run blocks, as ShellExecuteExW("runas") does while its UAC prompt is up, until
+/// the test answers it (or WAIT passes), and whose later runs say "asked again" at once. Its state is
+/// shared, since the launch thread may outlive the test's broker; answered on scope exit at the latest.
+class PromptUp
+{
+  public:
+    PromptUp() = default;
+    ~PromptUp()
+    {
+        try
+        {
+            answer();
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - answered already: the launcher has returned
+        {}
+    }
+    PromptUp(const PromptUp&) = delete;
+    PromptUp& operator=(const PromptUp&) = delete;
+    PromptUp(PromptUp&&) = delete;
+    PromptUp& operator=(PromptUp&&) = delete;
+
+    [[nodiscard]] PipeBroker::Launcher launcher() const
+    {
+        return [state = m_State](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string>
+        {
+            if (state->runs.fetch_add(1) > 0)
+            {
+                return std::unexpected(std::string("asked again"));
+            }
+            state->shown.set_value();
+            static_cast<void>(state->answered.wait_for(WAIT));
+            state->returned.set_value();
+            return std::unexpected(std::string("the UAC prompt was dismissed"));
+        };
+    }
+
+    /// Whether the prompt is up, within WAIT.
+    [[nodiscard]] bool shown() const
+    {
+        return m_State->shownFuture.wait_for(WAIT) == std::future_status::ready;
+    }
+
+    /// Answers the prompt; the launcher returns.
+    void answer()
+    {
+        if (!m_Answered)
+        {
+            m_Answered = true;
+            m_State->answer.set_value();
+        }
+    }
+
+    /// Whether the launcher has returned, within WAIT.
+    [[nodiscard]] bool returned() const
+    {
+        return m_State->returnedFuture.wait_for(WAIT) == std::future_status::ready;
+    }
+
+  private:
+    struct State
+    {
+        std::atomic<int> runs{0};
+        std::promise<void> shown;
+        std::future<void> shownFuture = shown.get_future();
+        std::promise<void> answer;
+        std::shared_future<void> answered = answer.get_future().share();
+        std::promise<void> returned;
+        std::future<void> returnedFuture = returned.get_future();
+    };
+    std::shared_ptr<State> m_State = std::make_shared<State>();
+    bool m_Answered = false;
+};
+
+/// How long a call made while a prompt is up may take: it doesn't wait for the prompt at all.
+constexpr std::chrono::milliseconds AT_ONCE{2'000};
+
+TEST(PipeBrokerTest, CallsDontWaitForAPromptThatIsUp)
+{
+    PromptUp prompt;
+    PipeBroker broker(prompt.launcher());
+    auto connecting = std::async(std::launch::async, [&broker] { return broker.connectWithin({}, 60s); });
+    ASSERT_TRUE(prompt.shown());
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_EQ(broker.call(killRequest(), {}).error_or(""), "not connected");
+    EXPECT_LT(since(start), AT_ONCE);
+    start = std::chrono::steady_clock::now();
+    EXPECT_EQ(broker.callIfIdle(killRequest(), WAIT).error_or(""), "busy") << "as PkexecBroker's is while it connects";
+    EXPECT_LT(since(start), AT_ONCE);
+    start = std::chrono::steady_clock::now();
+    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), "already starting the administrator helper") << "never a second prompt";
+    EXPECT_FALSE(broker.connected());
+    EXPECT_LT(since(start), AT_ONCE);
+
+    prompt.answer();
+    ASSERT_EQ(connecting.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(connecting.get().error_or(""), "the UAC prompt was dismissed") << "a refusal, which the UI offers to retry";
+    EXPECT_EQ(broker.callIfIdle(killRequest(), WAIT).error_or(""), "not connected");
+}
+
+TEST(PipeBrokerTest, AStoppedConnectGivesUpOnThePromptAndAsksAgainOnceItIsAnswered)
+{
+    PromptUp prompt;
+    PipeBroker broker(prompt.launcher());
+    std::stop_source stop;
+    auto connecting = std::async(std::launch::async, [&broker, token = stop.get_token()] { return broker.connectWithin(token, 60s); });
+    ASSERT_TRUE(prompt.shown());
+    const auto start = std::chrono::steady_clock::now();
+    stop.request_stop();
+    ASSERT_EQ(connecting.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(connecting.get().error_or(""), "cancelled");
+    EXPECT_LT(since(start), AT_ONCE);
+
+    // Windows can't take the prompt down: until it is answered, a second connect doesn't raise another.
+    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), "already starting the administrator helper");
+    prompt.answer();
+    ASSERT_TRUE(prompt.returned());
+    std::expected<void, std::string> again = std::unexpected(std::string("already starting the administrator helper"));
+    const auto retried = std::chrono::steady_clock::now();
+    while (!again.has_value() && again.error() == "already starting the administrator helper" && since(retried) < WAIT)
+    {
+        std::this_thread::sleep_for(10ms); // the launch's result follows its return at once
+        again = broker.connectWithin({}, WAIT);
+    }
+    EXPECT_EQ(again.error_or(""), "asked again");
+}
+
+TEST(PipeBrokerTest, APromptLeftUnansweredTimesOut)
+{
+    const PromptUp prompt; // answered on scope exit
+    PipeBroker broker(prompt.launcher());
+    const auto start = std::chrono::steady_clock::now();
+    const auto connected = broker.connectWithin({}, 200ms);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), "the administrator's consent wasn't given in time");
+    EXPECT_LT(since(start), WAIT);
+    EXPECT_FALSE(broker.connected());
+}
+
+TEST(PipeBrokerTest, TheDestructorDoesntWaitForAPrompt)
+{
+    PromptUp prompt;
+    auto broker = std::make_unique<PipeBroker>(prompt.launcher());
+    auto connecting = std::async(std::launch::async, [raw = broker.get()] { return raw->connectWithin({}, 60s); });
+    ASSERT_TRUE(prompt.shown());
+    const auto start = std::chrono::steady_clock::now();
+    broker.reset();
+    EXPECT_LT(since(start), AT_ONCE) << "the prompt is still up";
+    ASSERT_EQ(connecting.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(connecting.get().error_or(""), "cancelled");
+    // The launch thread outlives the broker; answered, it returns and lets go of what it shares.
+    prompt.answer();
+    EXPECT_TRUE(prompt.returned());
+}
+
 } // namespace
 } // namespace Platform::Windows

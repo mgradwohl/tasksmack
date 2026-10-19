@@ -493,6 +493,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
+    Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessIconSource.cpp
@@ -875,10 +876,32 @@ if(TARGET tasksmack-helper)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_HELPER_PATH="$<TARGET_FILE:tasksmack-helper>")
 endif()
 
-# test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517).
+# test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517). The helper
+# serves only the TaskSmack.exe beside it that started it (#2549), so the tests copy the helper and
+# TaskSmackHelperTestParent.exe, as TaskSmack.exe, into a folder of their own, and that starts the helper
+# through HelperLauncher with CreateProcessW in place of "runas": nothing is elevated, no prompt raised.
 if(TARGET TaskSmackHelper)
-    add_dependencies(TaskSmackTests TaskSmackHelper)
-    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>")
+    add_executable(TaskSmackHelperTestParent
+        Platform/HelperTestParent.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/HelperLauncher.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PipeBroker.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerHelper.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
+    )
+    target_compile_features(TaskSmackHelperTestParent PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackHelperTestParent)
+    tasksmack_apply_text_encoding(TaskSmackHelperTestParent)
+    tasksmack_apply_windows_platform(TaskSmackHelperTestParent)
+    target_include_directories(TaskSmackHelperTestParent PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)
+    target_link_libraries(TaskSmackHelperTestParent PRIVATE spdlog::spdlog_header_only)
+
+    add_dependencies(TaskSmackTests TaskSmackHelper TaskSmackHelperTestParent)
+    target_compile_definitions(TaskSmackTests PRIVATE
+        TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>"
+        TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH="$<TARGET_FILE:TaskSmackHelperTestParent>"
+    )
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
