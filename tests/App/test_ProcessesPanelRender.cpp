@@ -1030,8 +1030,8 @@ TEST_F(ProcessesPanelRenderTest, TheColumnsMenuShowsAHiddenColumn)
 }
 
 // #1799: the Columns menu lists NPU %, NPU Memory and NPU Engine, all off by default. Shown with no
-// NPU to read -- this panel has no GPU model, as Linux has no NPU data yet (#1827) -- the column's
-// cells are the unavailable dash, as the GPU columns' are without per-process data.
+// NPU to read -- this panel has no GPU model -- the column's cells are the unavailable dash, as the
+// GPU columns' are without per-process data.
 TEST_F(ProcessesPanelRenderTest, TheColumnsMenuListsTheNpuColumnsOffByDefault)
 {
     const auto panel = attachedPanel();

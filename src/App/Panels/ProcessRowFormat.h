@@ -477,8 +477,8 @@ struct RowFormatCache
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     fmt.gpuEngines = joinEngines(proc.gpuEngines);
     // The NPU columns (#1799) as the GPU ones: their figures are read with the GPU's, so a failed or
-    // missing GPU read leaves them unread too. Without an NPU or compute accelerator -- every Linux
-    // system until #1827 -- they are not available on this system.
+    // missing GPU read leaves them unread too. Without an NPU or compute accelerator they are not
+    // available on this system.
     if (!(fmt.npuSupported && options.hasPerProcessNpuUtilization))
     {
         fmt.npuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);

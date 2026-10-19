@@ -107,7 +107,8 @@ class ServiceActionsView
         return m_Capabilities;
     }
 
-    /// Whether the platform has any action: false hides the bar and the menu (Linux for now).
+    /// Whether the platform has any action: false hides the bar and the menu (a platform or service
+    /// manager with no actions).
     [[nodiscard]] bool supported() const noexcept;
 
     /// Asks to confirm @p request, or runs it straight away when it needs no confirm. Ignored while

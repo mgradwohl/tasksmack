@@ -169,7 +169,7 @@ class ProcessDetailsPanel : public Panel
 
     /// Whether the machine has an NPU or compute accelerator: the NPU tab is shown beside the GPU tab
     /// only then, on the machine view's NPU tab's condition (GpuSection::showAcceleratorTab(), #1869).
-    /// Set each frame by ShellLayer; false (the default) hides it, as on Linux until #1827.
+    /// Set each frame by ShellLayer; false (the default) hides it.
     void setHasAccelerator(bool hasAccelerator) noexcept
     {
         m_HasAccelerator = hasAccelerator;

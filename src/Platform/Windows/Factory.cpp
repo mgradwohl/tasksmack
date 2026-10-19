@@ -73,8 +73,8 @@ std::unique_ptr<IProcessIconSource> makeProcessIconSource()
 
 std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
 {
-    // Reading another process's environment on Windows needs ReadProcessMemory on its PEB: out of
-    // scope for now (#179), so the Environment section is hidden.
+    // Windows has no environment reader yet: reading another process's environment needs
+    // ReadProcessMemory on its PEB (#2569). Until then the Environment section is hidden.
     return std::make_unique<UnsupportedProcessEnvironmentReader>();
 }
 

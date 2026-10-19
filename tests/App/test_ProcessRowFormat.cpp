@@ -493,9 +493,9 @@ TEST(ProcessRowFormatTest, NpuCellsFormatTheProcessesNpuFigures)
     EXPECT_TRUE(idle.npuEngines.empty());
 }
 
-// #1799: without an NPU or compute accelerator (Linux until #1827) the NPU cells are "not available
-// on this system", as the GPU ones are without per-process data; with one, a GPU read that failed or
-// hasn't happened yet leaves them unread, since they are read with the GPU fields.
+// #1799: without an NPU or compute accelerator the NPU cells are "not available on this system", as
+// the GPU ones are without per-process data; with one, a GPU read that failed or hasn't happened yet
+// leaves them unread, since they are read with the GPU fields.
 TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
 {
     ProcessSnapshot snap = makeSnapshot();

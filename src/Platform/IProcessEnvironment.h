@@ -91,7 +91,7 @@ class IProcessEnvironmentReader
 };
 
 /// The reader for a platform (or run) that cannot read another process's environment.
-/// Windows would need ReadProcessMemory on the target's PEB, which is out of scope (#179).
+/// Windows has none yet: it would need ReadProcessMemory on the target's PEB (#2569).
 class UnsupportedProcessEnvironmentReader final : public IProcessEnvironmentReader
 {
   public:

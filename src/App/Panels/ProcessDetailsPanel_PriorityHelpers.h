@@ -1,8 +1,8 @@
 #pragma once
 
-// This header exposes priority slider helper functions for testing and
-// internal use. These were extracted from ProcessDetailsPanel::renderActions()
-// to improve testability and code organization.
+// The priority sliders' pure helpers, testable without a frame: their em-based geometry, the
+// nice-value colours and positions, the Windows priority classes and their stops, and the discrete
+// slider's stop maths.
 
 #include "Domain/PriorityConfig.h"
 #include "UI/ColorContrast.h"

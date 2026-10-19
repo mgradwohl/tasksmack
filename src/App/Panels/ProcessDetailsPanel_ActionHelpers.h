@@ -1,10 +1,8 @@
 #pragma once
 
-// This header exposes process-action dispatch helper functions for testing and
-// internal use. These were extracted from ProcessDetailsPanel::dispatchConfirmedAction()
-// (and the private ProcessAction enum/actionVerb() it depended on) to give the
-// mocked-IProcessActions integration tests requested in #415 a testable, pure entry
-// point instead of poking at ProcessDetailsPanel's private members.
+// The process actions' pure helpers: the ProcessAction enum, its verbs and labels, the confirm
+// dialog's title and body, and the dispatch to IProcessActions and its result message, so the
+// mocked-IProcessActions tests (#415) reach them without ProcessDetailsPanel's private members.
 
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"

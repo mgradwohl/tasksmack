@@ -1,8 +1,8 @@
 #pragma once
 
-// The Services tab's table (#800, phase 1: read-only). Split from ServicesPanel, which owns the model
-// and its sampler, so the drawing runs headless in TaskSmackTests without a Platform probe. The pure
-// helpers (labels, colours, row order) make no ImGui calls.
+// The Services tab's table (#800), with ServiceActionsView's bar and row menus. Split from
+// ServicesPanel, which owns the model and its sampler, so the drawing runs headless in TaskSmackTests
+// without a Platform probe. The pure helpers (labels, colours, row order) make no ImGui calls.
 
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"

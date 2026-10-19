@@ -34,7 +34,7 @@ void ProcessConnectionsView::render(bool hasConnections)
 {
     if (!hasConnections)
     {
-        return; // Windows (for now) and synthetic runs: no section at all
+        return; // Synthetic runs, or a reader without connections: no section at all
     }
     // Collapsed by default: nothing is read until it is opened.
     if (!ImGui::CollapsingHeader(ICON_FA_NETWORK_WIRED "  Connections###ProcessConnections"))

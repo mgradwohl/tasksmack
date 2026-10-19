@@ -113,8 +113,8 @@ class ProcessConnectionsView
     };
 
     /// Draws the section: a collapsing "Connections" header and, while it is open, the last read's
-    /// count and table, or its status line. Draws nothing at all when @p hasConnections is false (the
-    /// platform cannot list a process's sockets: Windows for now, synthetic runs).
+    /// count and table, or its status line. Draws nothing at all when @p hasConnections is false (a
+    /// reader that cannot list a process's sockets, as in synthetic runs).
     void render(bool hasConnections);
 
     /// The panel's per-frame update. Never blocks: it first takes in a read that has finished on its
