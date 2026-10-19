@@ -2,49 +2,18 @@
 
 // The privileged helper's side of the broker (#2307): reads BrokerProtocol requests from its client
 // over a BrokerSocket and answers each through LinuxProcessActions, which (running as root) re-verifies
-// every target by PID and start time before it acts. handleRequest() is the pure mapping, unit-tested
-// with a mock; serve() is the loop tasksmack-helper runs.
+// every target by PID and start time before it acts. handleRequest() (Platform/BrokerRequestMapping.h,
+// shared with the Windows helper) is the pure mapping; serve() is the loop tasksmack-helper runs.
 
-#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerRequestMapping.h"
 #include "Platform/IProcessActions.h"
-#include "Platform/IProcessConnections.h"
-#include "Platform/IProcessEnvironment.h"
-#include "Platform/IProcessModules.h"
-#include "Platform/IProcessOpenFiles.h"
-#include "Platform/IProcessProbe.h"
-#include "Platform/ISystemInfoProbe.h"
 
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <stop_token>
 
 namespace Platform::BrokerServer
 {
-
-/// The answer to @p request through @p actions: a HelloReply to the handshake, an ActionResult to a
-/// process action. Never throws past it: an exception from @p actions is a failed ActionResult.
-/// The readers the helper answers Process Details' reads through (#2309); a read without its reader is
-/// an ErrorReply.
-struct Readers
-{
-    IProcessEnvironmentReader* environment = nullptr;
-    IProcessModulesReader* modules = nullptr;
-    IProcessOpenFilesReader* openFiles = nullptr;
-    IProcessConnectionsReader* connections = nullptr;
-    /// PSS and USS: process ID and start time to the read's result.
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};
-    /// System Information's root-only firmware files (#2310)
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};
-    /// System Information's Recent crashes, every user's (#2310)
-    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
-    std::function<CrashesInfo()> crashes{};
-};
-
-/// A read request goes to its reader in @p readers.
-[[nodiscard]] Broker::Response handleRequest(const Broker::Request& request, IProcessActions& actions, const Readers& readers = {});
 
 /// How a session ended, for the helper's exit status and the tests.
 enum class SessionEnd : std::uint8_t

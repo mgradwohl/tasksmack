@@ -9,6 +9,7 @@
 // TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly as the tests do, its own.
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerRequestMapping.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
