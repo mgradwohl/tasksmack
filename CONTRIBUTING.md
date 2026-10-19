@@ -2338,7 +2338,9 @@ What a package contains, and what it depends on (#1398):
   (`cmake --install` always installs it, in the `windows_helper` component). The `.zip` and the NSIS
   installer carry it only with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`, which is for
   Authenticode-signed builds (#2302). Packaging then runs `cmake/VerifyWindowsSignatures.cmake` first,
-  which refuses unless `TaskSmack.exe` and the helper both have valid signatures from the same signer.
+  which refuses unless `TaskSmack.exe` and the helper both have valid, timestamped signatures with one
+  certificate whose common name is `TASKSMACK_EXPECTED_SIGNER` (default `SignPath Foundation`, #2302's
+  choice).
   Off (the default), unsigned dev and dry-run builds package as before, without the helper. Sign both
   executables in `build/<preset>/bin` after building and before `cpack`. The helper serves only an
   install its user can't change (`BrokerHelper::checkUnchangeableBy`), so it works from the NSIS

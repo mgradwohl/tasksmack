@@ -28,6 +28,9 @@ option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned tar
 # isn't validly signed by one signer (cmake/VerifyWindowsSignatures.cmake). Off, the packages are as
 # before and TaskSmack offers no "Retry as administrator"; `cmake --install` installs it either way.
 option(TASKSMACK_PACKAGE_WINDOWS_HELPER "Windows: package TaskSmackHelper.exe (Authenticode-signed builds only)" OFF)
+# The publisher the gate requires: the signer certificate's common name, as UAC shows it (#2302 chose
+# SignPath Foundation; docs/code-signing-policy.md).
+set(TASKSMACK_EXPECTED_SIGNER "SignPath Foundation" CACHE STRING "Windows: the common name TaskSmackHelper.exe's signer must have to be packaged")
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations

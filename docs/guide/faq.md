@@ -60,20 +60,23 @@ If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptrace
 
 TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
 ending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
-administrator** beside its error. Process Details' **Modules**, **Open files** and **Connections**
-sections offer **Read as administrator** when such a process refuses to be read. Either button starts
-`TaskSmackHelper.exe`, TaskSmack's administrator helper, through Windows' own UAC prompt, in front of
-TaskSmack's window:
+administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
+**Open files** and **Connections** sections also offer **Read as administrator** when such a process
+refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
+through Windows' own UAC prompt, in front of TaskSmack's window:
 
 - **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
   refused actions and reads are retried through the helper without asking again. The helper exits when
   TaskSmack does, or after 5 minutes without an action. Suspend, resume and I/O priority, which Windows
   doesn't support, don't keep it running.
-- **If your account is a standard user,** the prompt asks for an administrator's name and password, and
-  the helper then runs as that administrator. It does one action and exits, so the next one asks again.
-  It reads only your own processes: another account's Modules, Open files or Connections say "The
-  administrator helper was approved for another account, so it reads only your own processes". If no
-  action comes within a minute, it exits.
+- **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
+  an administrator's name and password, and the helper then runs as that administrator. It does that one
+  action and exits, so the next one asks again. It wouldn't read another account's process for you,
+  which is why no **Read as administrator** is offered. If a process's sections do ask it, they say "The
+  administrator helper was approved for another account, so it reads only your own processes".
+- **With Windows 11's Administrator Protection on,** every elevation runs as a separate,
+  system-managed administrator account, never as you. So even an administrator gets the standard user's
+  session: one action per prompt, and reads of your own processes only.
 
 Nothing else runs with elevated rights. The helper never ends a critical system process (one whose end
 would stop Windows), and it acts only on the process you chose, checked by its start time as well as
