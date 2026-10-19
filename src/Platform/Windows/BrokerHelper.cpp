@@ -173,13 +173,36 @@ Exit run(const Arguments& arguments,
         {
             return Exit::NoParent;
         }
-        const ProcessWatch watch(parent->get(), stopToken);
-        const auto pipe = BrokerPipe::createServerPipe(arguments.pipeName, *user);
+        return serveParent(parent->get(), *user, arguments.pipeName, handler, idleTimeout, acceptTimeout, stopToken);
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - an allocation failure or the like: TaskSmack sees the pipe close
+    {}
+    return Exit::Failed;
+}
+
+Exit serveParent(HANDLE parent,
+                 const BrokerPipe::Sid& user,
+                 const std::wstring& pipeName,
+                 const BrokerPipeServer::RequestHandler& handler,
+                 std::chrono::milliseconds idleTimeout,
+                 std::chrono::milliseconds acceptTimeout,
+                 const std::stop_token& stopToken)
+{
+    try
+    {
+        // A parent running as a service, LocalSystem or a group isn't one user's TaskSmack: refused as
+        // the parent it is, before any pipe is made, not reported as a client that never came.
+        if (!BrokerPipe::checkUserSid(user).has_value())
+        {
+            return Exit::NoParent;
+        }
+        const ProcessWatch watch(parent, stopToken);
+        const auto pipe = BrokerPipe::createServerPipe(pipeName, user);
         if (!pipe.has_value())
         {
             return Exit::NoClient;
         }
-        if (!BrokerPipe::acceptClient(pipe->get(), parent->get(), acceptTimeout, watch.token()).has_value())
+        if (!BrokerPipe::acceptClient(pipe->get(), parent, acceptTimeout, watch.token()).has_value())
         {
             return Exit::NoClient;
         }

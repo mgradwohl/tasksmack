@@ -30,6 +30,7 @@
 #include <windows.h>
 // clang-format on
 
+#include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -102,7 +103,7 @@ enum class Exit : std::uint8_t
     Done = 0,     ///< The session ended: the client closed the pipe, it was idle, or TaskSmack exited
     Failed = 1,   ///< The session broke, its handshake failed, or something unexpected went wrong
     Usage = 2,    ///< The command line isn't one TaskSmack makes
-    NoParent = 3, ///< The process named isn't there, or isn't the one that started at the time given
+    NoParent = 3, ///< The process named isn't there, isn't the one that started at the time given, or isn't one user's
     NoClient = 4, ///< The pipe couldn't be made, or its parent didn't open it in time (or something else did)
 };
 
@@ -114,6 +115,17 @@ enum class Exit : std::uint8_t
                        std::chrono::milliseconds idleTimeout,
                        std::chrono::milliseconds acceptTimeout,
                        const std::stop_token& stopToken);
+
+/// run() once the parent is open and its user read: refuses a @p user that checkUserSid() doesn't take
+/// (a service's, LocalSystem's, a group) as NoParent, then makes pipe @p pipeName for that user, accepts
+/// @p parent as its client and serves it. @p parent must stay open until this returns.
+[[nodiscard]] Exit serveParent(HANDLE parent,
+                               const BrokerPipe::Sid& user,
+                               const std::wstring& pipeName,
+                               const BrokerPipeServer::RequestHandler& handler,
+                               std::chrono::milliseconds idleTimeout,
+                               std::chrono::milliseconds acceptTimeout,
+                               const std::stop_token& stopToken);
 
 } // namespace Platform::Windows::BrokerHelper
 

@@ -17,6 +17,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -34,6 +35,8 @@
 #include <variant>
 #include <vector>
 
+#include <sddl.h>
+
 namespace Platform::Windows
 {
 namespace
@@ -43,6 +46,9 @@ using namespace std::chrono_literals;
 
 /// The bound on anything that should happen at once: a test that waits this long has failed.
 constexpr std::chrono::milliseconds WAIT{10'000};
+/// How long a test gives a freshly started TaskSmackHelper.exe to make its pipe: a cold runner's
+/// antivirus may scan the new image first. ACCEPT_TIMEOUT, as the helper gives TaskSmack.
+constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOUT};
 
 [[nodiscard]] std::wstring freshName()
 {
@@ -77,10 +83,10 @@ constexpr std::chrono::milliseconds WAIT{10'000};
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
 }
 
-/// Waits up to WAIT for pipe @p name to exist: the helper has opened its parent by then.
+/// Waits up to STARTUP_WAIT for pipe @p name to exist: the helper has opened its parent by then.
 [[nodiscard]] bool pipeExists(const std::wstring& name)
 {
-    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    const auto deadline = std::chrono::steady_clock::now() + STARTUP_WAIT;
     while (std::chrono::steady_clock::now() < deadline)
     {
         if (WaitNamedPipeW(name.c_str(), NMPWAIT_USE_DEFAULT_WAIT) != FALSE || GetLastError() != ERROR_FILE_NOT_FOUND)
@@ -498,6 +504,64 @@ TEST(BrokerHelperTest, ASessionRefusesAClientThatIsntTheParent)
     }
 }
 
+// #2548 review, finding 5: a parent whose token user isn't one user account (a service, LocalSystem,
+// a group) is refused as the parent it is, before any pipe is made.
+TEST(BrokerHelperTest, AParentRunningAsAServiceOrSystemIsRefusedAsAParent)
+{
+    const UniqueHandle self = ownProcess();
+    const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
+    {
+        return Broker::ErrorReply{};
+    };
+    for (const wchar_t* text : {L"S-1-5-18", L"S-1-5-19", L"S-1-5-20", L"S-1-1-0", L"S-1-5-32-544"})
+    {
+        PSID sid = nullptr;
+        ASSERT_NE(ConvertStringSidToSidW(text, &sid), FALSE);
+        const auto* const first = static_cast<const std::byte*>(sid);
+        const BrokerPipe::Sid bytes(
+            first, first + GetLengthSid(sid)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the SID's own length
+        LocalFree(sid);
+        const std::wstring name = freshName();
+        EXPECT_EQ(BrokerHelper::serveParent(self.get(), bytes, name, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
+        EXPECT_FALSE(BrokerPipe::connectToServer(name, GetCurrentProcessId(), self.get(), 100ms, {}).has_value()) << "no pipe was made";
+    }
+}
+
+// #2548 review, finding 6: a session already being served ends when its parent dies, even though the
+// pipe's client end stays open (a handle duplicated elsewhere, a pipe that outlives its opener).
+TEST(BrokerHelperTest, AServedSessionEndsWhenTheParentDiesWithThePipeStillOpen)
+{
+    const SuspendedChild parent;
+    ASSERT_TRUE(parent.process() != nullptr);
+    const std::wstring name = freshName();
+    const auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
+    ASSERT_TRUE(sid.has_value()) << sid.error();
+    auto server = BrokerPipe::createServerPipe(name, *sid);
+    ASSERT_TRUE(server.has_value()) << server.error();
+    const UniqueHandle self = ownProcess();
+    auto accepted = std::async(std::launch::async,
+                               [pipe = server->get(), process = self.get()] { return BrokerPipe::acceptClient(pipe, process, WAIT, {}); });
+    auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), self.get(), WAIT, {});
+    ASSERT_TRUE(client.has_value()) << client.error();
+    ASSERT_TRUE(accepted.get().has_value());
+
+    const BrokerHelper::ProcessWatch watch(parent.process(), {});
+    const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
+    {
+        return Broker::ErrorReply{};
+    };
+    auto session =
+        std::async(std::launch::async,
+                   [pipe = server->get(), &handler, token = watch.token()] { return BrokerPipeServer::serve(pipe, handler, 60s, token); });
+    const auto hello = roundTrip(client->get(), 1, Broker::Hello{});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+
+    ASSERT_NE(TerminateProcess(parent.process(), 1), FALSE);
+    ASSERT_EQ(session.wait_for(WAIT), std::future_status::ready) << "a minute's idle timeout: only the parent's exit ends it this soon";
+    EXPECT_EQ(session.get(), BrokerPipeServer::SessionEnd::Stopped);
+    EXPECT_TRUE(client->valid()) << "the client end was open throughout";
+}
+
 TEST(BrokerHelperTest, AStoppedSessionEnds)
 {
     const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
@@ -576,7 +640,7 @@ class HelperProcess
 
 [[nodiscard]] UniqueHandle connectTo(const HelperProcess& helper, const std::wstring& pipeName)
 {
-    auto pipe = BrokerPipe::connectToServer(pipeName, GetProcessId(helper.process()), helper.process(), WAIT, {});
+    auto pipe = BrokerPipe::connectToServer(pipeName, GetProcessId(helper.process()), helper.process(), STARTUP_WAIT, {});
     if (!pipe.has_value())
     {
         ADD_FAILURE() << pipe.error();
