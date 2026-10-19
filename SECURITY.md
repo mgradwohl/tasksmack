@@ -26,18 +26,27 @@ If you discover a security vulnerability in this project, please report it respo
 - **Initial assessment:** Within 1 week
 - **Resolution:** Depends on severity and complexity
 
-## Security Best Practices
+## Scope
 
-This project follows security best practices:
+Reports about TaskSmack itself are in scope, and in particular about its privileged helpers: on Linux,
+`tasksmack-helper` (started through `pkexec` for a polkit action, installed by the `.deb`), and on Windows,
+`TaskSmackHelper.exe` (started elevated through UAC). Each helper serves only the TaskSmack that started it
+and answers a fixed set of requests.
 
-- **Sanitizers:** ASan, UBSan, and TSan presets for catching memory and threading bugs
-- **Static Analysis:** clang-tidy integration for catching potential issues at compile time
-- **Hardening:** Debug builds use `-ftrivial-auto-var-init=pattern` to catch uninitialized variable bugs
-- **Dependencies:** Managed via CMake FetchContent with pinned versions
-- **CI/CD:** Automated testing on every push and pull request
+## Security Practices
+
+- **Sanitizers:** ASan, UBSan and TSan run in CI on Linux; an MSan preset is also available.
+- **Static analysis:** clang-tidy (warnings fail the build), CodeQL, OSV-Scanner, dependency review and
+  OpenSSF Scorecard.
+- **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the helper's request protocol.
+- **Hardening:** release builds use `-fstack-protector-strong` everywhere, plus `_FORTIFY_SOURCE=2` and PIE on
+  Linux; the Windows helper links with Control Flow Guard and CET shadow-stack compatibility. Debug builds use
+  `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
+- **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
+- **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.
+- **Releases:** every release asset is signed with Sigstore; see
+  [Verifying a Release](docs/guide/user-guide.md#verifying-a-release).
 
 ## Dependencies
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dependencies.
-
-We recommend regularly updating dependencies and running security scans on production builds.
+See [CONTRIBUTING.md](CONTRIBUTING.md#keeping-dependencies-current) for how dependencies are pinned and updated.
