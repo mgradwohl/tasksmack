@@ -1953,9 +1953,6 @@ plotStyledLine(const char* label, const double* xData, const double* yData, int 
 // tooltip and table beside it: "1.5 GB", "45.0 W", "42%", localized (#1202).
 // ============================================================================
 
-/// Minimum character width for Y-axis labels to ensure all charts align
-inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
-
 namespace Detail
 {
 /// Copy `str` into ImPlot's label buffer; 0 and an empty label if it does not fit. The buffer is

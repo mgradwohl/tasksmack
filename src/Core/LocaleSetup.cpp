@@ -37,7 +37,8 @@ namespace Core::LocaleSetup
 namespace
 {
 
-/// The locale storage behind userLocale(): written once by initialize(), before any other thread.
+/// The user's locale, with a UTF-8 codeset, for display: written once by initialize(), before any
+/// other thread. The classic locale until then.
 std::locale& userLocaleStorage()
 {
     static std::locale locale = std::locale::classic();
@@ -436,11 +437,6 @@ const Summary& initialize(const NumericFacets numerics)
     summary.globalLocaleName = std::locale().name();
     summary.userLocaleName = userLocaleStorage().name();
     return summary;
-}
-
-const std::locale& userLocale() noexcept
-{
-    return userLocaleStorage();
 }
 
 const NumberPunctuation& userNumberPunctuation() noexcept
