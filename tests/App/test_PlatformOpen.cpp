@@ -3,6 +3,7 @@
 /// byte for byte, from a detached grandchild. A fake xdg-open first on PATH records what it was given.
 
 #include "App/PlatformOpen.h"
+#include "Platform/Linux/DetachedSpawn.h"
 
 #include <gtest/gtest.h>
 
@@ -39,8 +40,9 @@ class PlatformOpenTest : public ::testing::Test
         const std::filesystem::path script = m_Dir / "xdg-open";
         {
             std::ofstream out(script);
-            out << "#!/bin/sh\nprintf '%s' \"$1\" > '" << (m_Dir / "opened.tmp").string() << "'\nmv '" << (m_Dir / "opened.tmp").string()
-                << "' '" << (m_Dir / "opened.txt").string() << "'\n";
+            // Its environment too, before it says it ran: whose session it was started in (#2461).
+            out << "#!/bin/sh\nenv > '" << (m_Dir / "env.txt").string() << "'\nprintf '%s' \"$1\" > '" << (m_Dir / "opened.tmp").string()
+                << "'\nmv '" << (m_Dir / "opened.tmp").string() << "' '" << (m_Dir / "opened.txt").string() << "'\n";
         }
         std::filesystem::permissions(script, std::filesystem::perms::owner_all);
 
@@ -101,6 +103,24 @@ TEST_F(PlatformOpenTest, APathIsHandedOverByteForByte)
     const std::filesystem::path path = m_Dir / "R\xC3\xA9sum\xC3\xA9 notes.txt";
     EXPECT_TRUE(openWithSystemHandler(path));
     EXPECT_EQ(opened(), path.string());
+}
+
+// #2461 (#2479): run as root for another user, xdg-open starts in that user's session -- with the
+// environment invokingUserSession() gives -- not TaskSmack's.
+TEST_F(PlatformOpenTest, XdgOpenStartsInTheSessionUsersEnvironment)
+{
+    const std::string path = m_Dir.string() + ":/usr/bin:/bin";
+    const Detail::SessionLookup session = [&path]
+    {
+        return std::optional<Platform::DetachedSpawn::RunAs>{Platform::DetachedSpawn::RunAs{
+            .uid = ::getuid(), .gid = ::getgid(), .environment = {"PATH=" + path, "TASKSMACK_SESSION_MARK=the-users-session"}}};
+    };
+    EXPECT_TRUE(Detail::openWithSystemHandler(std::string_view{"https://example.invalid/"}, session));
+    ASSERT_EQ(opened(), "https://example.invalid/");
+    std::ifstream in(m_Dir / "env.txt");
+    const std::string environment((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_TRUE(environment.contains("TASKSMACK_SESSION_MARK=the-users-session")) << environment;
+    EXPECT_FALSE(environment.contains("HOME=")) << "only the session's own variables";
 }
 
 TEST_F(PlatformOpenTest, NoXdgOpenIsAFailure)

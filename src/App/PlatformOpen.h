@@ -4,6 +4,13 @@
 #include <string>
 #include <string_view>
 
+#ifdef __linux__
+#include "Platform/Linux/DetachedSpawn.h"
+
+#include <functional>
+#include <optional>
+#endif
+
 namespace App::PlatformOpen
 {
 
@@ -36,5 +43,16 @@ using NativeTarget = std::string;
 /// avoiding any ANSI/UTF-8 encoding issues with non-ASCII paths.
 /// Returns true on success, false on failure (with a logged warning).
 [[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path);
+
+#ifdef __linux__
+namespace Detail
+{
+/// Who to open as: SessionUser::invokingUserSession() in the app, a stand-in in tests (#2461).
+using SessionLookup = std::function<std::optional<Platform::DetachedSpawn::RunAs>()>;
+
+/// openWithSystemHandler() for a UTF-8 target, opening as @p session's user when it names one.
+[[nodiscard]] bool openWithSystemHandler(std::string_view target, const SessionLookup& session);
+} // namespace Detail
+#endif
 
 } // namespace App::PlatformOpen

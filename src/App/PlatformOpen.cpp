@@ -48,6 +48,38 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
     return path.native();
 }
 
+#ifdef __linux__
+bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup& session)
+{
+    // Linux: xdg-open, found on PATH as execvp would and started through Platform's DetachedSpawn (#2138):
+    // double fork and setsid, every inherited descriptor close-on-exec (TaskSmack's sampler threads keep
+    // /proc and /sys files open, and drivers their device nodes), stdio on /dev/null, signals reset, and
+    // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
+    const std::string targetStr = nativeTargetFromUtf8(target);
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on the UI thread; nothing sets it
+    const std::optional<std::string> xdgOpen =
+        Platform::SyscallTrace::findExecutable("xdg-open",
+                                               pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
+                                               [](const std::string& path) { return ::access(path.c_str(), X_OK) == 0; });
+    if (!xdgOpen.has_value())
+    {
+        spdlog::warn("Can't open {}: xdg-open isn't installed", targetStr);
+        return false;
+    }
+    const std::array<std::string, 2> argv{*xdgOpen, targetStr};
+    // Run as root for another user (sudo, pkexec): opened as that user, in their session (#2461).
+    const std::optional<Platform::DetachedSpawn::RunAs> user = session();
+    const auto spawned =
+        user.has_value() ? Platform::DetachedSpawn::spawnDetached(argv, *user) : Platform::DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
+    {
+        spdlog::warn("{}", Platform::DetachedSpawn::spawnFailureMessage(spawned.error(), *xdgOpen));
+        return false;
+    }
+    return true;
+}
+#endif
+
 [[nodiscard]] bool openWithSystemHandler(std::string_view target)
 {
 #ifdef _WIN32
@@ -71,32 +103,7 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
     return true;
     // LCOV_EXCL_STOP
 #elif defined(__linux__)
-    // Linux: xdg-open, found on PATH as execvp would and started through Platform's DetachedSpawn (#2138):
-    // double fork and setsid, every inherited descriptor close-on-exec (TaskSmack's sampler threads keep
-    // /proc and /sys files open, and drivers their device nodes), stdio on /dev/null, signals reset, and
-    // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
-    const std::string targetStr = nativeTargetFromUtf8(target);
-    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on the UI thread; nothing sets it
-    const std::optional<std::string> xdgOpen =
-        Platform::SyscallTrace::findExecutable("xdg-open",
-                                               pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
-                                               [](const std::string& path) { return ::access(path.c_str(), X_OK) == 0; });
-    if (!xdgOpen.has_value())
-    {
-        spdlog::warn("Can't open {}: xdg-open isn't installed", targetStr);
-        return false;
-    }
-    const std::array<std::string, 2> argv{*xdgOpen, targetStr};
-    // Run as root for another user (sudo, pkexec): opened as that user, in their session (#2461).
-    const std::optional<Platform::DetachedSpawn::RunAs> user = Platform::SessionUser::invokingUserSession();
-    const auto spawned =
-        user.has_value() ? Platform::DetachedSpawn::spawnDetached(argv, *user) : Platform::DetachedSpawn::spawnDetached(argv);
-    if (!spawned.has_value())
-    {
-        spdlog::warn("{}", Platform::DetachedSpawn::spawnFailureMessage(spawned.error(), *xdgOpen));
-        return false;
-    }
-    return true;
+    return Detail::openWithSystemHandler(target, [] { return Platform::SessionUser::invokingUserSession(); });
 #else
     spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});
     return false;
