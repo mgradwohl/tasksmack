@@ -2694,16 +2694,17 @@ environments with no warning. Bump these by hand when there's an actual reason t
 ### Cutting a Release
 
 Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is what triggers both an official TaskSmack
-release (`release.yml`: validates the tag, builds and signs Linux/Windows packages, and publishes
-a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
+release (`release.yml`: validates the tag, builds and signs Linux/Windows packages for x64 and
+ARM64, and publishes a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
 it has no `workflow_dispatch` trigger).
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
 tag run, but skips `validate`'s tag, main-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
-would-be release assets as a `release-assets-dry-run` workflow artifact instead. No tag is pushed,
-so `changelog.yml` doesn't run. Rehearse the whole pipeline before tagging with:
+would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
+tests and validates the ARM64 packages as well as the x64 ones. No tag is pushed, so
+`changelog.yml` doesn't run. Rehearse the whole pipeline before tagging with:
 
 ```bash
 gh workflow run release.yml --ref main -f dry_run=true
@@ -2730,7 +2731,7 @@ git push origin v1.0.0
 That single push runs two independent workflows:
 
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
-  and packages both platforms, validates the packaged artifacts (see [Release Artifact
+  and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
   Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
   GitHub Release: it creates the release as a **draft**, uploads every asset and `.bundle`,
   checks the draft's assets match `dist/` by name and size, and only then publishes it
@@ -2747,20 +2748,36 @@ That single push runs two independent workflows:
 
 Each GitHub release (triggered by a `v*.*.*` tag) includes:
 
-- Linux packages: `.tar.gz` and `.deb`
-- Windows packages: `.zip`
+- Linux x64 packages: `TaskSmack-<version>-Linux.tar.gz` and `TaskSmack-<version>-Linux.deb`
+- Linux aarch64 packages: `TaskSmack-<version>-linux-aarch64.tar.gz` and
+  `TaskSmack-<version>-linux-aarch64.deb` (from v0.9.0)
+- Windows x64 package: `TaskSmack-<version>-win64.zip`
+- Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
+  ARM64EC)
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
+
+The x64 names are the ones earlier releases used, so existing download links keep working; only the
+ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/Packaging.cmake`
+from the compiler's target). Each package's build, test, reproducibility check and validation runs
+natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
+`windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
+`windows-packages-arm64`). `create-release` checks that `dist/` holds exactly these six packages
+before signing anything, so a missing or renamed package fails the release.
 
 ### Release Artifact Validation
 
 `validate-linux-package` and `validate-windows-package` run after each platform's build job and
-before `create-release`, so a failure here blocks signing and publishing. Linux installs the
+before `create-release`, once per architecture, so a failure here blocks signing and publishing.
+Each first checks the package is for its architecture: the `.deb`'s `Architecture` field
+(`amd64`/`arm64`), and `TaskSmack.exe`'s COFF machine (`0x8664`/`0xAA64`), since an x64 exe would
+still run, emulated, on the ARM64 runner. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
 `Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
 no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout) and
-launches the executable directly on the runner's desktop session. Beyond the process staying up
+launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
+llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Beyond the process staying up
 for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
@@ -2786,12 +2803,14 @@ also triggers this release workflow. Tagging before the version bump lands fails
 immediately.
 
 Each platform build job's "Record toolchain versions" step logs the runner image
-(`ubuntu-24.04`/`windows-2025`), full compiler/linker versions (`clang --version`, `ld.lld
+(`ubuntu-24.04`/`ubuntu-24.04-arm`/`windows-2025`/`windows-11-arm`), full compiler/linker versions (`clang --version`, `ld.lld
 --version`), CMake, Ninja, and Python versions to that job's log. Linux additionally pins and
 asserts an exact `apt.llvm.org` package version for `clang-22` (`LLVM_LINUX_EXACT_VERSION` in
 `release.yml`) rather than accepting whatever the apt repository currently serves for the major
-version — see the comment above that variable for the deliberate-upgrade procedure. Windows
-already pins an exact LLVM semver via `LLVM_SEMVER_VERSION`.
+version — see the comment above that variable for the deliberate-upgrade procedure; the arm64
+runner installs the same package version from apt.llvm.org's `binary-arm64`. Windows already pins
+an exact LLVM semver via `LLVM_SEMVER_VERSION`: Chocolatey's installer on x64, and on ARM64 the
+native `woa64` installer pinned by SHA-256 in `.github/actions/setup-windows-llvm`.
 
 ### Release Reproducibility
 
@@ -2804,8 +2823,9 @@ so two independent builds of the same tag produce byte-identical archives. Local
 builds have no reproducibility requirement.
 
 `release.yml`'s `verify-reproducibility` (Linux) and `verify-reproducibility-windows` jobs each
-rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH` and compare
-package digests against the corresponding `build-linux`/`build-windows` artifact -- a missing
+rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH`, once per
+architecture on that architecture's runner, and compare package digests against the corresponding
+`build-linux`/`build-windows` leg's artifact -- a missing
 matching artifact counts as a failure, not a skip. Both are advisory only (`continue-on-error:
 true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning for
 investigation rather than blocking the release, since reproducibility here covers CMake's own

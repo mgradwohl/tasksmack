@@ -23,11 +23,20 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` (from v0.9.0, no Visual C++ Redistributable needed) |
 
+Each package comes in two architectures. Pick the one that matches your computer:
+
+| Architecture | Linux | Windows |
+|--------------|-------|---------|
+| x64 (Intel, AMD) | `TaskSmack-<version>-Linux.deb`, `TaskSmack-<version>-Linux.tar.gz` | `TaskSmack-<version>-win64.zip` |
+| ARM64 (from v0.9.0) | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.zip` |
+
+On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → System → About** shows "x64-based processor" or "ARM-based processor". On Windows on Arm, OpenGL comes from Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" (in the Microsoft Store), which many such PCs come with; without it TaskSmack stops at startup with a message naming the OpenGL version it found (see [Graphics](#graphics)).
+
 On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
 ### Verifying a Release
 
-Every file on a release (the `.deb`, `.tar.gz`, `.zip`, and the SBOM) is signed with
+Every file on a release (each architecture's `.deb`, `.tar.gz` and `.zip`, and the SBOM) is signed with
 [Sigstore](https://www.sigstore.dev/) via keyless OIDC signing in the `release` GitHub Actions
 workflow. Each asset has a matching `<filename>.bundle` alongside it on the same release —
 download both, then verify with [cosign](https://github.com/sigstore/cosign):
@@ -59,7 +68,7 @@ TaskSmack draws its window with OpenGL 3.3 or newer, which every current GPU dri
 
 ### CPU Compatibility
 
-The packages on the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) are built with the `release` / `win-release` preset, which uses default compiler optimizations and runs on any x86-64 CPU — no AVX2 or other extended instruction set is required.
+The packages on the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) are built with the `release` / `win-release` preset, which uses default compiler optimizations: the x64 packages run on any x86-64 CPU — no AVX2 or other extended instruction set is required — and the ARM64 packages on any 64-bit Arm CPU.
 
 Building from source lets you target other microarchitectures instead:
 

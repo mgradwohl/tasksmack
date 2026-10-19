@@ -30,6 +30,30 @@ endif()
 configure_file(${CMAKE_SOURCE_DIR}/cmake/CPackProjectConfig.cmake.in ${CMAKE_BINARY_DIR}/CPackProjectConfig.cmake @ONLY)
 set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CPackProjectConfig.cmake")
 
+# Package file names (#2214): x64 keeps CPack's default system name (win64 / Linux), so the
+# release asset names existing download links point at don't change; an ARM64 build is named
+# windows-arm64 / linux-aarch64, so its .zip, .tar.gz and .deb can sit beside the x64 ones on one
+# release. Decided from what the compiler targets rather than CMAKE_SYSTEM_PROCESSOR, which on
+# Windows comes from the environment of the CMake process (AMD64 when an x64 CMake runs emulated on
+# an ARM64 machine). Compiled only, never linked, so the release link flags play no part.
+block(SCOPE_FOR VARIABLES PROPAGATE TASKSMACK_PACKAGE_TARGETS_ARM64)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    check_cxx_source_compiles(
+        "#if !defined(__aarch64__) && !defined(_M_ARM64)
+#error not ARM64
+#endif
+int main() { return 0; }"
+        TASKSMACK_PACKAGE_TARGETS_ARM64)
+endblock()
+if(TASKSMACK_PACKAGE_TARGETS_ARM64)
+    if(WIN32)
+        set(CPACK_SYSTEM_NAME "windows-arm64")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(CPACK_SYSTEM_NAME "linux-aarch64")
+    endif()
+endif()
+
 # Output directory for packages
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/dist")
 

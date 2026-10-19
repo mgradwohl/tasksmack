@@ -153,11 +153,28 @@ jobs:
           fi
           echo "Tag version matches PROJECT_VERSION: $PROJECT_VERSION"
 
+  # Every build, reproducibility and validation job runs once per architecture (#2214): x64, and
+  # ARM64 natively on GitHub's arm64 runners (ubuntu-24.04-arm, windows-11-arm), as arm64.yml does
+  # in CI. Each build leg uploads <os>-packages-<arch>, and create-release takes all four. x64 keeps
+  # its asset names; ARM64's carry -linux-aarch64 / -windows-arm64 (CPACK_SYSTEM_NAME, set in
+  # cmake/Packaging.cmake). The ARM64 legs get 60 minutes: their 4-vCPU runners start from a cold
+  # ccache unless a run off main has saved one.
   build-linux:
-    name: Build Linux Packages
+    name: Build Linux Packages (${{ matrix.arch }})
     needs: [validate]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      # One architecture failing must not cancel the other's build: its log is still worth having.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            timeout: 30
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            timeout: 60
     permissions:
       contents: read
     steps:
@@ -185,7 +202,9 @@ jobs:
           # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
           # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
           install: binary
-          key: linux-release-package-llvm${{ env.LLVM_VERSION }}
+          # x64 keeps its existing key; another architecture's carries the architecture after the
+          # prefix, so cache-prune keeps each architecture's newest entry (#2528).
+          key: linux-release-package-${{ matrix.arch != 'x64' && format('{0}-', matrix.arch) || '' }}llvm${{ env.LLVM_VERSION }}
           max-size: 500M
           # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
           # be restored by that same tag, so tag runs only restore.
@@ -219,15 +238,26 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: linux-packages
+          name: linux-packages-${{ matrix.arch }}
           path: dist/*
           retention-days: 90
 
   verify-reproducibility:
-    name: Verify Linux Build Reproducibility
+    name: Verify Linux Build Reproducibility (${{ matrix.arch }})
     needs: [validate, build-linux]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    # Each architecture rebuilds on its own runner type and compares with its own build-linux leg.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            timeout: 30
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            timeout: 60
     # Advisory only: rebuilds the same tag from a clean workspace and compares
     # digests against build-linux's packages. Surfaces regressions in the
     # reproducible-build policy (see CONTRIBUTING.md's Release Reproducibility
@@ -236,7 +266,7 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
-      actions: read  # Required to download the linux-packages artifact from this run
+      actions: read  # Required to download the linux-packages-<arch> artifact from this run
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -270,7 +300,7 @@ jobs:
       - name: Download build-linux's packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: linux-packages
+          name: linux-packages-${{ matrix.arch }}
           path: original-dist/
 
       - name: Compare digests
@@ -307,10 +337,22 @@ jobs:
           fi
 
   build-windows:
-    name: Build Windows Packages
+    name: Build Windows Packages (${{ matrix.arch }})
     needs: [validate]
-    runs-on: windows-2025
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    # windows-11-arm: setup-windows-llvm installs the pinned native woa64 LLVM (plain ARM64, not
+    # ARM64EC), and setup-mesa-llvmpipe fetches mmozeiko/build-mesa's ARM64 llvmpipe for the tests.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            timeout: 30
+          - arch: arm64
+            runner: windows-11-arm
+            timeout: 60
     permissions:
       contents: read
     steps:
@@ -340,7 +382,8 @@ jobs:
           # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
           # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
           install: binary
-          key: windows-release-package-llvm${{ env.LLVM_SEMVER_VERSION }}
+          # x64 keeps its existing key; see build-linux's.
+          key: windows-release-package-${{ matrix.arch != 'x64' && format('{0}-', matrix.arch) || '' }}llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
           # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
           # be restored by that same tag, so tag runs only restore.
@@ -375,8 +418,9 @@ jobs:
       # that ships (#2256). Mesa's llvmpipe goes only beside the test executables in
       # build/win-release/tests: the Package step installs TaskSmack.exe and explicit files from
       # cmake/InstallRules.cmake, never the tests directory, so the DLLs stay out of the zip.
-      # Same action and pin as reusable-build-test.yml (#2134); validate-windows-package's smoke
-      # check fetches the same pinned archive inline because that job has no checkout.
+      # Same action and pins as reusable-build-test.yml (#2134); validate-windows-package's smoke
+      # check fetches the same pinned archives inline because that job has no checkout. On ARM64 the
+      # action takes mmozeiko/build-mesa's ARM64 llvmpipe (#2214), test-only like the x64 one.
       - name: Software OpenGL for the display tests
         uses: ./.github/actions/setup-mesa-llvmpipe
         with:
@@ -391,6 +435,8 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-release -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
 
+      # Authenticode signing (#2302) goes here, between Test and Package, on both architectures:
+      # the x64 and ARM64 zips (and the NSIS installers #2302 adds) both ship TaskSmack.exe.
       - name: Package
         shell: pwsh
         run: |
@@ -400,21 +446,31 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: windows-packages
+          name: windows-packages-${{ matrix.arch }}
           path: dist/*
           retention-days: 90
 
   verify-reproducibility-windows:
-    name: Verify Windows Build Reproducibility
+    name: Verify Windows Build Reproducibility (${{ matrix.arch }})
     needs: [validate, build-windows]
-    runs-on: windows-2025
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            timeout: 30
+          - arch: arm64
+            runner: windows-11-arm
+            timeout: 60
     # Advisory only -- see verify-reproducibility (Linux)'s comment; not part of
     # create-release's `needs`.
     continue-on-error: true
     permissions:
       contents: read
-      actions: read  # Required to download the windows-packages artifact from this run
+      actions: read  # Required to download the windows-packages-<arch> artifact from this run
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -456,7 +512,7 @@ jobs:
       - name: Download build-windows's packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: windows-packages
+          name: windows-packages-${{ matrix.arch }}
           path: original-dist/
 
       - name: Compare digests
@@ -491,10 +547,21 @@ jobs:
           }
 
   validate-linux-package:
-    name: Validate Linux Release Artifacts
+    name: Validate Linux Release Artifacts (${{ matrix.arch }})
     needs: [build-linux]
-    runs-on: ubuntu-24.04
+    # The arm64 runner pulls the arm64 ubuntu:24.04 image, so each .deb installs natively.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            deb-arch: amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            deb-arch: arm64
     # A bare, no-dev-tools container so installing the .deb exercises exactly
     # the runtime Depends declared in cmake/Packaging.cmake, rather than
     # reusing the build-linux runner where libc++/mesa dev packages already
@@ -509,13 +576,32 @@ jobs:
         shell: bash
     permissions:
       contents: read
-      actions: read  # Required to download the linux-packages artifact from this run
+      actions: read  # Required to download the linux-packages-<arch> artifact from this run
     steps:
       - name: Download Linux packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: linux-packages
+          name: linux-packages-${{ matrix.arch }}
           path: dist/
+
+      - name: Verify the .deb's architecture
+        # CPackDeb takes Architecture from the build runner's dpkg, so a leg that built for the
+        # other architecture fails here rather than on a user's machine.
+        env:
+          EXPECTED_DEB_ARCH: ${{ matrix.deb-arch }}
+        run: |
+          shopt -s nullglob
+          debs=(dist/*.deb)
+          if [[ ${#debs[@]} -ne 1 ]]; then
+            echo "Expected exactly one .deb in dist/, found ${#debs[@]}." >&2
+            exit 1
+          fi
+          arch=$(dpkg-deb -f "${debs[0]}" Architecture)
+          if [[ "$arch" != "$EXPECTED_DEB_ARCH" ]]; then
+            echo "${debs[0]} is for '$arch', expected '$EXPECTED_DEB_ARCH'." >&2
+            exit 1
+          fi
+          echo "${debs[0]}: Architecture $arch"
 
       - name: Verify .deb contains only the app's files
         # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
@@ -627,18 +713,29 @@ jobs:
         run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run.log
 
   validate-windows-package:
-    name: Validate Windows Release Artifacts
+    name: Validate Windows Release Artifacts (${{ matrix.arch }})
     needs: [build-windows]
-    runs-on: windows-2025
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # pe-machine: the COFF Machine field TaskSmack.exe must carry (IMAGE_FILE_MACHINE_*).
+          - arch: x64
+            runner: windows-2025
+            pe-machine: '0x8664'
+          - arch: arm64
+            runner: windows-11-arm
+            pe-machine: '0xAA64'
     permissions:
       contents: read
-      actions: read  # Required to download the windows-packages artifact from this run
+      actions: read  # Required to download the windows-packages-<arch> artifact from this run
     steps:
       - name: Download Windows packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: windows-packages
+          name: windows-packages-${{ matrix.arch }}
           path: dist/
 
       - name: Extract and verify .zip layout
@@ -663,6 +760,27 @@ jobs:
           Write-Host "Found executable: $exe"
           "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the executable's architecture
+        # The COFF header's Machine field, read from the PE file: 0x8664 is x64 and 0xAA64 ARM64
+        # (an ARM64EC image says 0x8664, so it fails the ARM64 leg too). An x64 exe would still run
+        # on the ARM64 runner, emulated, and pass the smoke check below.
+        shell: pwsh
+        env:
+          EXPECTED_MACHINE: ${{ matrix.pe-machine }}
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes($env:TASKSMACK_EXE)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          if ([System.Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4) -ne "PE`0`0") {
+            Write-Error "$env:TASKSMACK_EXE has no PE signature at offset $peOffset."
+            exit 1
+          }
+          $machine = '0x{0:X4}' -f [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne $env:EXPECTED_MACHINE) {
+            Write-Error "TaskSmack.exe has COFF machine $machine, expected $env:EXPECTED_MACHINE."
+            exit 1
+          }
+          Write-Host "TaskSmack.exe COFF machine: $machine"
 
       - name: Verify .zip contains no development files
         # Same reason as validate-linux-package's content check: a bundled dependency's own
@@ -719,32 +837,51 @@ jobs:
         # alive, so a liveness check alone passes without anything having rendered. Mesa's llvmpipe
         # is a software OpenGL 4.6 driver: placed beside the exe in a temporary copy of the package
         # (never in dist/ or the published zip), it lets the real startup path run to the first frame.
-        # Pinned: mesa-dist-win 26.2.4, release-msvc build, from the project's GitHub release, with
-        # the archive's SHA-256 checked before anything in it is used. To update, take the new
-        # release's mesa3d-<ver>-release-msvc.7z asset and its digest (gh release view -R
-        # pal1000/mesa-dist-win <ver> --json assets). Inline rather than the setup-mesa-llvmpipe
-        # action because this job checks nothing out; keep the pin in step with that action's.
+        # Pinned per architecture, with the archive's SHA-256 checked before anything in it is used:
+        #  - x64: mesa-dist-win 26.2.4, release-msvc build. To update, take the new release's
+        #    mesa3d-<ver>-release-msvc.7z asset and its digest (gh release view -R
+        #    pal1000/mesa-dist-win <ver> --json assets).
+        #  - ARM64: mmozeiko/build-mesa 26.2.5's mesa-llvmpipe-arm64-<ver>.7z (#2214), whose
+        #    opengl32.dll has the Gallium driver linked in. To update, take the new release's asset
+        #    digest (gh release view -R mmozeiko/build-mesa <ver> --json assets).
+        # Inline rather than the setup-mesa-llvmpipe action because this job checks nothing out;
+        # keep both pins in step with that action's.
         shell: pwsh
         env:
-          MESA_VERSION: "26.2.4"
-          MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z
-          MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
+          MESA_ARCH: ${{ runner.arch }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:MESA_ARCH -eq 'X64') {
+            $version = '26.2.4'
+            $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$version/mesa3d-$version-release-msvc.7z"
+            $sha256 = '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695'
+            $members = @('x64/opengl32.dll', 'x64/libgallium_wgl.dll')
+          } elseif ($env:MESA_ARCH -eq 'ARM64') {
+            $version = '26.2.5'
+            $url = "https://github.com/mmozeiko/build-mesa/releases/download/$version/mesa-llvmpipe-arm64-$version.7z"
+            $sha256 = 'e7df75398d50e07a68bbffa5cff2ece4c85e5f8ef8bda497f560dd04fe60cbbd'
+            $members = @('opengl32.dll')
+          } else {
+            Write-Error "No pinned Mesa llvmpipe build for runner architecture $env:MESA_ARCH"
+            exit 1
+          }
           $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
-          $archive = Join-Path $mesaRoot "mesa3d-$env:MESA_VERSION-release-msvc.7z"
-          $dllDir = Join-Path $mesaRoot 'x64'
-          New-Item -ItemType Directory -Force -Path $mesaRoot | Out-Null
-          Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+          $archive = Join-Path $mesaRoot ([System.IO.Path]::GetFileName($url))
+          # As in the action: the x64 archive keeps its DLLs under x64/, the ARM64 one at its top
+          # level, so that one is extracted into arm64/.
+          $dllDir = Join-Path $mesaRoot $env:MESA_ARCH.ToLowerInvariant()
+          $extractRoot = if ($env:MESA_ARCH -eq 'X64') { $mesaRoot } else { $dllDir }
+          New-Item -ItemType Directory -Force -Path $mesaRoot, $extractRoot | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
           $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:MESA_SHA256) {
-            Write-Error "Mesa archive SHA-256 mismatch: expected $env:MESA_SHA256, got $actual"
+          if ($actual -ne $sha256) {
+            Write-Error "Mesa archive SHA-256 mismatch: expected $sha256, got $actual"
             exit 1
           }
           # Windows' own bsdtar reads .7z; an unqualified 'tar' can resolve to Git's GNU tar, which can't.
-          & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $mesaRoot x64/opengl32.dll x64/libgallium_wgl.dll
+          & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $extractRoot @members
           if ($LASTEXITCODE -ne 0) { Write-Error "Extracting Mesa's OpenGL DLLs failed (tar exit $LASTEXITCODE)"; exit 1 }
-          Get-ChildItem -LiteralPath $dllDir | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
+          Get-ChildItem -LiteralPath $dllDir -Filter *.dll | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
           "MESA_DLL_DIR=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Smoke-check extracted executable
@@ -836,12 +973,12 @@ jobs:
           }
 
           $summary = @(
-            '### Windows package smoke check',
+            "### Windows package smoke check ($env:RUNNER_ARCH)",
             '',
             "- Result: $(if ($failure) { 'FAILED' } else { 'passed' })",
             "- OpenGL renderer: ``$renderer``",
             "- OpenGL version: ``$version``",
-            "- Software driver: Mesa llvmpipe from mesa-dist-win (temporary copy only, not in the package)"
+            "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)"
           )
           if ($failure) { $summary += "- Failure: $failure" }
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
@@ -885,17 +1022,15 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Download Linux packages
+      - name: Download packages (every OS and architecture)
+        # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/. Package
+        # names differ by architecture (cmake/Packaging.cmake), and so do the CPack staging
+        # directories dropped below, so nothing in one artifact overwrites another's.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: linux-packages
+          pattern: '*-packages-*'
           path: dist/
-
-      - name: Download Windows packages
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: windows-packages
-          path: dist/
+          merge-multiple: true
 
       - name: Drop CPack staging directories
         # The package artifacts also carry CPack's _CPack_Packages staging directory (see
@@ -903,6 +1038,30 @@ jobs:
         # release assets, so remove everything else: signing, the upload and the asset-count
         # check below then all see exactly the same set.
         run: find dist -mindepth 1 -maxdepth 1 ! -type f -exec rm -rf -- {} +
+
+      - name: Verify the package set
+        # Exactly the expected packages, before anything is signed: x64 keeps the names earlier
+        # releases used (win64 / Linux), so existing download links still work, and ARM64's are
+        # windows-arm64 / linux-aarch64 (#2214). A missing, extra or renamed package fails here. A new
+        # package (such as #2302's NSIS installers) has to be added to this list.
+        run: |
+          version=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
+          if [[ -z "$version" ]]; then
+            echo "Could not determine PROJECT_VERSION from CMakeLists.txt." >&2
+            exit 1
+          fi
+          expected=$(printf 'TaskSmack-%s-%s\n' \
+            "$version" Linux.deb "$version" Linux.tar.gz "$version" win64.zip \
+            "$version" linux-aarch64.deb "$version" linux-aarch64.tar.gz "$version" windows-arm64.zip |
+            LC_ALL=C sort)
+          actual=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          if [[ "$expected" != "$actual" ]]; then
+            echo "dist/ does not hold exactly the expected packages (< expected, > found):" >&2
+            diff <(echo "$expected") <(echo "$actual") >&2 || true
+            exit 1
+          fi
+          echo "dist/ holds the $(wc -l <<< "$actual") expected packages:"
+          echo "$actual"
 
       - name: Stage SBOM into dist
         env:
