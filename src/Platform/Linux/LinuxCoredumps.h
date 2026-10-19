@@ -241,6 +241,8 @@ struct JournalRead
     bool opened = false;                ///< The journal could be read; entries may still be empty
     std::string error;                  ///< Why not, when !opened
     std::vector<JournalFields> entries; ///< Newest first
+    /// The systemd-coredump user's UID, which it may drop to (isTrustedCoredumpEntry()); nullopt without one
+    std::optional<std::uint32_t> coredumpUid;
 };
 
 /// Reads the systemd-coredump entries since @p sinceUsec (microseconds since the epoch), newest first,
@@ -400,6 +402,12 @@ inline void readCrashFacts(const std::filesystem::path& root,
     std::vector<CrashEvent> merged;
     for (const JournalFields& fields : read.entries)
     {
+        // Only what systemd-coredump wrote (#2382). The reader skips the rest already, so they don't count
+        // toward its limit; checked again here, where the tests' readers reach it.
+        if (!isTrustedCoredumpEntry(fields, read.coredumpUid))
+        {
+            continue;
+        }
         std::string coreFile;
         std::optional<CrashEvent> event = crashFromJournal(fields, coreFile);
         if (!event.has_value())

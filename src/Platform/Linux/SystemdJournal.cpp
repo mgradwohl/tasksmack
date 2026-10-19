@@ -101,6 +101,7 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
     {
         coredumpUid = static_cast<std::uint32_t>(*uid);
     }
+    read.coredumpUid = coredumpUid; // readCrashFacts() checks the entries again (#2382)
     while (read.entries.size() < maxEntries && sd_journal_previous(handle) > 0)
     {
         std::uint64_t usec = 0;
