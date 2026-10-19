@@ -18,6 +18,7 @@
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsProcessActions.h"
 
 #include <gtest/gtest.h>
 
@@ -214,6 +215,13 @@ class SuspendedChild
     [[nodiscard]] ProcessTarget target() const
     {
         return {.pid = static_cast<std::int32_t>(m_Pid), .startTimeTicks = startTicksOf(m_Process.get())};
+    }
+    /// Its main thread's suspend count (1 as created), read by suspending it once more and resuming it.
+    [[nodiscard]] DWORD suspendCount() const
+    {
+        const DWORD previous = SuspendThread(m_Thread.get());
+        ResumeThread(m_Thread.get());
+        return previous;
     }
     /// Whether it has exited, waiting up to @p timeout for it to.
     [[nodiscard]] bool exited(std::chrono::milliseconds timeout = WAIT) const
@@ -1057,6 +1065,61 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
     const auto after = BrokerPipe::receiveFrame(client->get(), WAIT, {});
     ASSERT_FALSE(after.has_value());
     EXPECT_EQ(after.error(), BrokerPipe::ReceiveEnd::Closed) << "the helper closed the pipe";
+}
+
+// Suspend is a real action since #2582: in an over-the-shoulder session it is the one action, as a
+// kill is.
+TEST(BrokerHelperTest, AnOverTheShoulderSessionsOneActionCanBeASuspend)
+{
+    const UniqueHandle self = ownProcess();
+    const std::wstring name = freshName();
+    const CountingReads counting;
+    const BrokerPipe::Sid me = ownSid();
+    const BrokerPipe::Sid administrator = anotherAccount();
+    auto session = std::async(std::launch::async,
+                              [&self, &name, &me, &administrator, handler = counting.handler()]
+                              { return BrokerHelper::serveParent(self.get(), me, administrator, name, handler, WAIT, WAIT, {}); });
+    auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), self.get(), WAIT, {});
+    ASSERT_TRUE(client.has_value()) << client.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(client->get(), 1, Broker::Hello{}).message));
+
+    const ProcessTarget absent{.pid = 4242, .startTimeTicks = 99}; // the counting handler acts on nothing
+    const auto suspend = roundTrip(client->get(), 2, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Suspend});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(suspend.message));
+    EXPECT_EQ(counting.calls->load(), 1);
+
+    ASSERT_EQ(session.wait_for(WAIT), std::future_status::ready) << "a session for one action outlived its suspend";
+    EXPECT_EQ(session.get(), BrokerHelper::Exit::Done);
+}
+
+// The helper's handler with the real Windows actions, as TaskSmackHelper.exe serves them, on this test's
+// own suspended child: Suspend and Resume reach it through the shared request mapping (#2582).
+TEST(BrokerHelperTest, TheHelpersActionsSuspendAndResumeAChildAndNeverItself)
+{
+    WindowsProcessActions actions;
+    const BrokerPipeServer::RequestHandler handler = [&actions](const Broker::Request& request)
+    {
+        return BrokerServer::handleRequest(request, actions);
+    };
+    const SuspendedChild child;
+    ASSERT_TRUE(child.process() != nullptr);
+    ASSERT_EQ(child.suspendCount(), 1U);
+
+    const auto suspended = handler(Broker::SignalRequest{.target = child.target(), .signal = Broker::Signal::Suspend});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(suspended));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(suspended).success) << std::get<Broker::ActionResult>(suspended).errorMessage;
+    EXPECT_EQ(child.suspendCount(), 2U);
+
+    const auto resumed = handler(Broker::SignalRequest{.target = child.target(), .signal = Broker::Signal::Resume});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(resumed));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(resumed).success) << std::get<Broker::ActionResult>(resumed).errorMessage;
+    EXPECT_EQ(child.suspendCount(), 1U);
+
+    // The helper (here, this test process) never suspends itself: refused before anything is opened.
+    const auto own = handler(Broker::SignalRequest{.target = ownTarget(), .signal = Broker::Signal::Suspend});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(own));
+    EXPECT_FALSE(std::get<Broker::ActionResult>(own).success);
+    EXPECT_NE(std::get<Broker::ActionResult>(own).errorMessage.find("TaskSmack itself"), std::string::npos);
 }
 // --- The process mitigations HelperMain turns on (#2557) --------------------------------------------
 // Never in this process: they can't be turned off again. A stand-in for SetProcessMitigationPolicy

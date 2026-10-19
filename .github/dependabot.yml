@@ -22,6 +22,13 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+    groups:
+      # Every github/codeql-action step in a run must be the same version, or CodeQL fails
+      # ("Loaded a configuration file for version X, but running version Y"); separate PRs for
+      # init, analyze and upload-sarif each fail on their own.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   # Python dependencies (requirements.txt, requirements-glad.txt, requirements-icons.txt,
   # requirements-dev-tools.txt -- see #856/#857/#858)

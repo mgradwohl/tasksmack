@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
 
 // clang-format off
@@ -45,14 +46,19 @@ struct WindowsProcessFunctions
     std::vector<CpuSetRecord> (*readCpuSets)() = nullptr;
     /// PssCaptureSnapshot(), which a dump is written from (#2001); null: every dump is written live.
     Windows::PssCaptureSnapshotFn pssCaptureSnapshot = nullptr;
-    /// IsProcessCritical(), asked of the verified handle before Kill, Terminate, a priority change or an
+    /// IsProcessCritical(), asked of the verified handle before Kill, Terminate, Suspend, a priority change or an
     /// affinity change (#2556). Null, or a failed call, refuses the action: a critical process is never
     /// acted on for want of an answer.
     BOOL(WINAPI* isProcessCritical)(HANDLE process, PBOOL critical) = nullptr;
-    /// GetProcessInformation(), read for ProcessProtectionLevelInfo before Kill or Terminate (#2556).
-    /// Null, or a failed call, reads as not protected: Windows refuses to end a protected process anyway,
+    /// GetProcessInformation(), read for ProcessProtectionLevelInfo before Kill, Terminate or Suspend (#2556).
+    /// Null, or a failed call, reads as not protected: Windows refuses to end or suspend one anyway,
     /// so this only words the refusal.
     BOOL(WINAPI* getProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
+    /// ntdll's NtSuspendProcess (#2582), through the verified handle once the guard has passed. Null:
+    /// Suspend is unavailable (canStop false) and refused.
+    Windows::NtProcessSuspendResumeFn ntSuspendProcess = nullptr;
+    /// ntdll's NtResumeProcess (#2582). Null: Resume is unavailable (canContinue false) and refused.
+    Windows::NtProcessSuspendResumeFn ntResumeProcess = nullptr;
 };
 
 /// The real Win32 calls.
@@ -68,9 +74,14 @@ struct WindowsProcessFunctions
 /// Some processes are never acted on, however TaskSmack runs: elevated, or as the elevated helper with
 /// SeDebugPrivilege (#2556). PID 4 (the kernel's System process; PID 0 is refused as invalid), and any critical process (IsProcessCritical:
 /// winlogon.exe, the DcomLaunch svchost.exe, whose exit bugchecks Windows), are refused Kill, Terminate,
-/// a priority change and an affinity change; a protected process is refused Kill and Terminate with a
-/// message saying so. Each is a plain error, never permissionDenied: running as administrator, which
-/// "Authenticate and retry" offers, doesn't make it safe.
+/// a priority change, an affinity change and Suspend; a protected process is refused Kill, Terminate
+/// and Suspend with a message saying so, and TaskSmack's own process is refused Suspend (#2582), which
+/// would freeze it with nothing left to resume it. Each is a plain error, never permissionDenied:
+/// running as administrator, which "Retry as administrator" offers, doesn't make it safe. Every action
+/// Windows refuses for want of access (ERROR_ACCESS_DENIED from OpenProcess or the call itself, and
+/// STATUS_ACCESS_DENIED from NtSuspendProcess or NtResumeProcess) sets permissionDenied (#2582, #2602), so
+/// BrokeredProcessActions can retry it through the elevated helper; except for a protected process,
+/// whose refused open says it is protected, with no retry, since an administrator is refused too.
 class WindowsProcessActions : public IProcessActions
 {
   public:
@@ -87,7 +98,12 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionCapabilities actionCapabilities() const override;
     [[nodiscard]] ProcessActionResult terminate(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
+    /// Suspend (#2582): NtSuspendProcess on the verified handle, every thread at once, as Resource
+    /// Monitor and Process Explorer do. Refused for PID 4, TaskSmack's own process, and a critical or
+    /// protected process. Windows counts suspensions, so a process suspended twice needs two resumes.
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
+    /// Resume (#2582): NtResumeProcess on the verified handle. Not guarded: letting a process run again
+    /// can't stop Windows.
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
     /// Windows has no ionice equivalent (#803): refused, and canSetIoPriority is false.
@@ -117,6 +133,8 @@ class WindowsProcessActions : public IProcessActions
   private:
     /// Helper to terminate a process with given exit code
     [[nodiscard]] ProcessActionResult terminateProcess(const ProcessTarget& target, uint32_t exitCode) const;
+    /// stop() (@p suspend) or resume().
+    [[nodiscard]] ProcessActionResult suspendOrResume(const ProcessTarget& target, bool suspend) const;
 
     WindowsProcessFunctions m_Fns;
     std::vector<std::uint32_t> m_GroupSizes; // Each processor group's maximum processor count, read at construction

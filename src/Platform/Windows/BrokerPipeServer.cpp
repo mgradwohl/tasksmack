@@ -40,11 +40,9 @@ namespace
 
 bool isActionWindowsDoes(const Broker::Request& request) noexcept
 {
-    if (const auto* signal = std::get_if<Broker::SignalRequest>(&request))
-    {
-        return signal->signal == Broker::Signal::Terminate || signal->signal == Broker::Signal::Kill;
-    }
-    return std::holds_alternative<Broker::PriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request);
+    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess).
+    return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
+           std::holds_alternative<Broker::AffinityRequest>(request);
 }
 
 bool isRead(const Broker::Request& request) noexcept

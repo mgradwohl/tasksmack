@@ -6,7 +6,6 @@
 #include "ProcMapsParser.h"
 #include "ProcParsing.h"
 
-#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <expected>
@@ -14,7 +13,6 @@
 #include <system_error>
 
 #include <fcntl.h>
-#include <unistd.h>
 
 namespace Platform
 {
@@ -23,37 +21,6 @@ namespace
 {
 
 using Posix::FdGuard;
-
-/// The whole of the file @p name in the directory @p dirFd, or the errno of the open or read that
-/// failed. Read to EOF in chunks: maps is served a page at a time.
-[[nodiscard]] std::expected<std::string, int> readWholeFileAt(int dirFd, const char* name)
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-    const FdGuard fd(::openat(dirFd, name, O_RDONLY | O_CLOEXEC));
-    if (fd.get() < 0)
-    {
-        return std::unexpected(errno);
-    }
-    std::string contents;
-    std::array<char, 8192> chunk{};
-    for (;;)
-    {
-        const auto n = ::read(fd.get(), chunk.data(), chunk.size());
-        if (n == 0)
-        {
-            return contents;
-        }
-        if (n < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue; // interrupted by a signal: retry
-            }
-            return std::unexpected(errno);
-        }
-        contents.append(chunk.data(), static_cast<std::size_t>(n));
-    }
-}
 
 [[nodiscard]] ModulesReadResult failure(int err)
 {
@@ -103,7 +70,7 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     {
         return failure(ESRCH); // gone, or the PID now names another process
     }
-    const std::expected<std::string, int> maps = readWholeFileAt(dir.get(), "maps");
+    const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps");
     if (!maps.has_value())
     {
         return failure(maps.error());

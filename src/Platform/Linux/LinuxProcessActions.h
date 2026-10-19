@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -44,6 +45,15 @@ struct LinuxProcessSyscalls
     /// target's credentials, and whether the tool holds CAP_SYS_PTRACE. Left null, the real check is
     /// used; tests fake it to reach what runs once ptrace allows the attach (#807).
     SyscallTrace::PtraceContext (*ptraceContext)(std::int32_t pid, const std::string& toolPath) = nullptr;
+    /// waitpid(pid, status, options), as createDump() waits on gcore. Left null, the real call is used;
+    /// tests fake a failure to see gcore's process group still killed and reaped (#2148, #2479).
+    pid_t (*waitPid)(pid_t pid, int* status, int options) = nullptr;
+    /// The state letter in /proc/<pid>/stat ('T' or 't' when stopped), '\0' when it can't be read. Left
+    /// null, the real /proc is read; tests script a ptrace stop for a cancelled dump to wake (#2122, #2479).
+    char (*processState)(std::int32_t pid) = nullptr;
+    /// The TracerPid in /proc/<pid>/status (0 for nobody), nullopt when it can't be read (the process is
+    /// gone). Left null, the real /proc is read.
+    std::optional<std::int32_t> (*tracerPid)(std::int32_t pid) = nullptr;
 };
 
 /// The real system calls.

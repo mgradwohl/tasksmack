@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/AsciiTrim.h"
+
 #include <algorithm>
 #include <bit>
 #include <charconv>
@@ -47,13 +49,11 @@ class CpuAffinity
     /// number at or above MAX_CPUS, stray characters -- rather than whatever part of it parsed.
     [[nodiscard]] static std::optional<CpuAffinity> fromCpuList(std::string_view text)
     {
-        constexpr std::string_view WHITESPACE = " \t\r\n";
-        const auto first = text.find_first_not_of(WHITESPACE);
-        if (first == std::string_view::npos)
+        text = trimAscii(text);
+        if (text.empty())
         {
             return std::nullopt;
         }
-        text = text.substr(first, text.find_last_not_of(WHITESPACE) - first + 1);
 
         CpuAffinity affinity;
         const char* p = text.data();

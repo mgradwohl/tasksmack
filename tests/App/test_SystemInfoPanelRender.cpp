@@ -34,6 +34,7 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -57,11 +58,18 @@ struct ProbeLog
     bool wifiGated = false;               ///< The platform gates the Wi-Fi details behind location access (#1782).
     std::atomic<int> adapterReadsWith{0}; ///< readNetworkAdapters() calls that asked for the Wi-Fi details
     std::atomic<int> adapterReadsWithout{0};
-    bool publicIp = false;             ///< The platform can look the public addresses up (#1518).
-    std::atomic<int> publicIpReads{0}; ///< readPublicIp() calls
-    std::atomic<bool> osThrows{false}; ///< readOs() throws, so the whole read fails (#1891)
-    std::atomic<int> osAttempts{0};    ///< readOs() calls, the throwing ones included
+    bool publicIp = false;                     ///< The platform can look the public addresses up (#1518).
+    std::atomic<int> publicIpReads{0};         ///< readPublicIp() calls
+    std::atomic<bool> osThrows{false};         ///< readOs() throws, so the whole read fails (#1891)
+    std::atomic<int> osAttempts{0};            ///< readOs() calls, the throwing ones included
+    bool authorizable = false;                 ///< authorize() can ask for a password, and the firmware has root-only facts (#2381)
+    std::atomic<bool> authorizeEntered{false}; ///< authorize() was called: the password prompt is "up"
+    std::atomic<bool> authorizeSawStop{false}; ///< authorize() gave up because its stop token was stopped
 };
+
+/// How long the fake's authorize() waits for its stop token before giving up by itself: a password
+/// prompt nobody answers, far longer than detaching may take.
+constexpr auto AUTHORIZE_BLOCK = std::chrono::seconds(10);
 
 /// The Wi-Fi link row's value, which only a read with the Wi-Fi details has.
 constexpr std::string_view WIFI_PHY = "802.11ax (Wi-Fi 6)";
@@ -78,8 +86,26 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return m_HasOs ? Platform::SystemInfoCapabilities{.hasOs = true,
                                                           .unavailableReason = {},
                                                           .wifiDetailsGated = m_Log->wifiGated,
-                                                          .hasPublicIp = m_Log->publicIp}
+                                                          .hasPublicIp = m_Log->publicIp,
+                                                          .canReadAuthorized = m_Log->authorizable}
                        : m_Default.capabilities();
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_HasOs && m_Log->authorizable;
+    }
+    /// A password prompt nobody answers: waits until @p stop is stopped (or AUTHORIZE_BLOCK passes),
+    /// then reports it wasn't authorized.
+    bool authorize(const std::stop_token& stop) override
+    {
+        m_Log->authorizeEntered = true;
+        const auto deadline = std::chrono::steady_clock::now() + AUTHORIZE_BLOCK;
+        while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        m_Log->authorizeSawStop = stop.stop_requested();
+        return false;
     }
     [[nodiscard]] Platform::PublicIpInfo readPublicIp() override
     {
@@ -103,9 +129,19 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         info.name = "Fixture Linux " + std::to_string(read);
         return info;
     }
+    /// Where authorizable, firmware whose identifiers only root can read, so the section leads with
+    /// "Authenticate to read" (#2310).
     [[nodiscard]] Platform::FirmwareInfo readFirmware() override
     {
-        return m_Default.readFirmware();
+        if (!m_Log->authorizable)
+        {
+            return m_Default.readFirmware();
+        }
+        Platform::FirmwareInfo info;
+        info.available = true;
+        info.systemManufacturer = "Fixture Systems";
+        info.identifiersNeedAdmin = true;
+        return info;
     }
     [[nodiscard]] Platform::MemoryModulesInfo readMemoryModules() override
     {
@@ -302,6 +338,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
         ProbeLog log;
         log.wifiGated = m_Log.wifiGated;
         log.publicIp = m_Log.publicIp;
+        log.authorizable = m_Log.authorizable;
         Domain::SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(log, true));
         model.read();
         const std::vector<SystemInfo::Section> sections = SystemInfo::buildSystemInfoSections(*model.snapshot(), {}, model.capabilities());
@@ -469,6 +506,38 @@ TEST_F(SystemInfoPanelRenderTest, DetachingWaitsForAReadInFlight)
     m_Panel->onDetach();
     EXPECT_EQ(m_Log.reads.load(), 1);
     release.join();
+    m_Panel.reset();
+}
+
+// #2381 (#2479): closing TaskSmack while "Authenticate to read"'s password prompt is still up gives the
+// prompt up rather than waiting for it to be answered: onDetach() stops the read's stop token, which
+// reaches authorize(), before waiting for the read. Without that stop, detaching waits out the fake's
+// unanswered prompt (AUTHORIZE_BLOCK).
+TEST_F(SystemInfoPanelRenderTest, DetachingGivesUpOnAPasswordPromptStillUp)
+{
+    m_Log.authorizable = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    ASSERT_TRUE(frame().contains("Authenticate to read"));
+
+    const ImGuiID button = rowButtonId(SystemInfo::RowAction::AuthenticateToRead, ICON_FA_LOCK "  Authenticate to read");
+    ASSERT_NE(button, 0U);
+    // Pressed until the next read is in the prompt, as "Show Wi-Fi details" is (#1845).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!m_Log.authorizeEntered.load() && std::chrono::steady_clock::now() < deadline)
+    {
+        ImGui::ActivateItemByID(button);
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(m_Log.authorizeEntered.load()) << "the click never reached authorize()";
+
+    const auto started = std::chrono::steady_clock::now();
+    m_Panel->onDetach();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::seconds(2)) << "detaching waited for the password prompt to be answered";
+    EXPECT_TRUE(m_Log.authorizeSawStop.load());
     m_Panel.reset();
 }
 

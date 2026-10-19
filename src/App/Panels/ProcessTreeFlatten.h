@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <ranges>
 #include <unordered_set>
 #include <vector>
 
@@ -37,8 +36,7 @@ struct ProcessTreeRow
     bool hasChildren;
     bool isExpanded;
     bool isContext; // shown only as an ancestor of a filter match, not a match itself (#838)
-    // Children shown under it, expanded or not: the rows expanding it adds, its badge (#838). Set by
-    // buildProcessTreeRows(); collectProcessTreeRows() leaves it 0.
+    // Children shown under it, expanded or not: the rows expanding it adds, its badge (#838).
     std::size_t childCount = 0;
 };
 
@@ -51,94 +49,7 @@ struct StackFrame
     int depth;
 };
 
-/// The walk behind collectProcessTreeRows(), with filter membership as a
-/// predicate (`isFiltered(index)`) and the walk's stack supplied by the caller so it can be reused.
-// isFiltered is called once per child, so it is used as an lvalue rather than forwarded.
-template<typename IsFiltered>
-inline void walkProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                            IsFiltered&& isFiltered, // NOLINT(cppcoreguidelines-missing-std-forward)
-                            const std::unordered_set<std::uint64_t>& collapsedKeys,
-                            std::size_t procIdx,
-                            int depth,
-                            std::vector<StackFrame>& stack,
-                            std::vector<ProcessTreeRow>& outRows)
-{
-    stack.clear();
-    stack.push_back(StackFrame{.procIdx = procIdx, .depth = depth});
-
-    while (!stack.empty())
-    {
-        const StackFrame frame = stack.back();
-        stack.pop_back();
-
-        // Prevent excessive depth (may indicate cycles or malformed data)
-        if (frame.depth >= MAX_DEPTH)
-        {
-            spdlog::warn("ProcessTreeFlatten: Maximum tree depth ({}) exceeded, possible cycle or malformed data", MAX_DEPTH);
-            continue;
-        }
-
-        const auto& proc = snapshots[frame.procIdx];
-        const bool isExpanded = !collapsedKeys.contains(proc.uniqueKey);
-
-        // Only children in the filtered set count. An expanded node's are pushed in reverse, so they
-        // pop off the stack -- and are emitted -- in their original order; a collapsed node only
-        // needs to know whether it has any. No per-node list of children is built.
-        bool hasChildren = false;
-        for (const std::size_t childIdx : std::views::reverse(proc.childrenIndices))
-        {
-            if (!isFiltered(childIdx))
-            {
-                continue;
-            }
-            hasChildren = true;
-            if (!isExpanded)
-            {
-                break;
-            }
-            stack.push_back(StackFrame{.procIdx = childIdx, .depth = frame.depth + 1});
-        }
-
-        outRows.push_back(ProcessTreeRow{
-            .procIdx = frame.procIdx, .depth = frame.depth, .hasChildren = hasChildren, .isExpanded = isExpanded, .isContext = false});
-    }
-}
-
 } // namespace Detail
-
-/// Iteratively walks one root process and its descendants (pre-order, with children pushed in
-/// reverse so they pop off the stack in original order), appending one ProcessTreeRow per node
-/// to `outRows`. Does not clear `outRows` first, so a caller can accumulate rows from multiple
-/// root processes into one flat list.
-///
-/// Takes every input explicitly (snapshots, filtered-set membership, collapsed-key set) instead
-/// of reading any ProcessesPanel member state, so it's fully testable without a live ImGui
-/// context. The only side effect is an spdlog::warn() on cycle/depth-limit detection.
-///
-/// @param snapshots     The full list of process snapshots.
-/// @param filteredSet   Indices into `snapshots` that pass the current filter, for O(1) membership checks.
-/// @param collapsedKeys uniqueKeys of processes the user has collapsed (their children are skipped).
-/// @param procIdx       Index of the root process to start this walk from.
-/// @param depth         Depth to assign the root process (0 for a top-level root).
-/// @param outRows       Appended to in render order; not cleared by this function.
-inline void collectProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                   const std::unordered_set<std::size_t>& filteredSet,
-                                   const std::unordered_set<std::uint64_t>& collapsedKeys,
-                                   std::size_t procIdx,
-                                   int depth,
-                                   std::vector<ProcessTreeRow>& outRows)
-{
-    std::vector<Detail::StackFrame> stack;
-    stack.reserve(32); // Reserve space for typical tree depth to avoid reallocations
-    Detail::walkProcessTree(
-        snapshots,
-        [&filteredSet](std::size_t index) { return filteredSet.contains(index); },
-        collapsedKeys,
-        procIdx,
-        depth,
-        stack,
-        outRows);
-}
 
 /// Marks a process that is not in a build's `order`, or one with no parent among those that are.
 inline constexpr std::size_t NOT_SHOWN = std::numeric_limits<std::size_t>::max();

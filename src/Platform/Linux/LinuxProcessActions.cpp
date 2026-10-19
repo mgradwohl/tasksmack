@@ -330,6 +330,11 @@ int realSetAffinity(id_t tid, std::size_t setSize, const cpu_set_t* set)
     return ::sched_setaffinity(static_cast<pid_t>(tid), setSize, set);
 }
 
+pid_t realWaitPid(pid_t pid, int* status, int options)
+{
+    return ::waitpid(pid, status, options);
+}
+
 int realIoprioGet(pid_t pid)
 {
 #ifdef SYS_ioprio_get
@@ -352,13 +357,17 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .ioprioGet = &realIoprioGet,
             .setAffinity = &realSetAffinity,
             .listThreads = &realListThreads,
-            .isThreadOf = &realIsThreadOf};
+            .isThreadOf = &realIsThreadOf,
+            .waitPid = &realWaitPid};
 }
 
 namespace
 {
 // Defined with the other syscall-trace helpers below; the default for LinuxProcessSyscalls::ptraceContext.
 [[nodiscard]] SyscallTrace::PtraceContext ptraceContextFor(std::int32_t pid, const std::string& tracerPath);
+// Defined with the dump helpers below; the defaults for LinuxProcessSyscalls::processState and ::tracerPid.
+[[nodiscard]] char processStateFromProc(std::int32_t pid);
+[[nodiscard]] std::optional<std::int32_t> tracerPidFromProc(std::int32_t pid);
 } // namespace
 
 LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
@@ -382,6 +391,18 @@ LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const L
     if (m_Syscalls.ptraceContext == nullptr)
     {
         m_Syscalls.ptraceContext = &ptraceContextFor;
+    }
+    if (m_Syscalls.waitPid == nullptr)
+    {
+        m_Syscalls.waitPid = &realWaitPid;
+    }
+    if (m_Syscalls.processState == nullptr)
+    {
+        m_Syscalls.processState = &processStateFromProc;
+    }
+    if (m_Syscalls.tracerPid == nullptr)
+    {
+        m_Syscalls.tracerPid = &tracerPidFromProc;
     }
 }
 
@@ -1073,16 +1094,22 @@ namespace
     return comm;
 }
 
-/// Whether @p pid is stopped, by a signal or a tracer ('T' or 't' in /proc/<pid>/stat), so a cancelled
-/// dump knows whether to wake it.
-[[nodiscard]] bool processIsStopped(std::int32_t pid)
+/// The state letter of @p pid in /proc/<pid>/stat ('T' or 't' when stopped, by a signal or a tracer), so a
+/// cancelled dump knows whether to wake it; '\0' when it can't be read.
+[[nodiscard]] char processStateFromProc(std::int32_t pid)
 {
     const std::string stat = readSmallFile(std::format("/proc/{}/stat", pid)).value_or(std::string{});
-    return LinuxCoreDump::isStoppedState(LinuxCoreDump::stateFromStat(stat).value_or('\0'));
+    return LinuxCoreDump::stateFromStat(stat).value_or('\0');
+}
+
+/// Whether @p pid is stopped, by a signal or a tracer, as @p syscalls reads its state.
+[[nodiscard]] bool processIsStopped(const LinuxProcessSyscalls& syscalls, std::int32_t pid)
+{
+    return LinuxCoreDump::isStoppedState(syscalls.processState(pid));
 }
 
 /// Who traces @p pid (its TracerPid; 0 for nobody), or nullopt once its status can't be read (it is gone).
-[[nodiscard]] std::optional<std::int32_t> processTracer(std::int32_t pid)
+[[nodiscard]] std::optional<std::int32_t> tracerPidFromProc(std::int32_t pid)
 {
     const std::optional<std::string> status = readSmallFile(std::format("/proc/{}/status", pid));
     return status.has_value() ? LinuxCoreDump::tracerPidFromStatus(*status) : std::nullopt;
@@ -1090,13 +1117,13 @@ namespace
 
 /// Waits, up to LinuxCoreDump::DETACH_WAIT_MS, until @p pid is traced by @p tracerBefore again (whoever
 /// traced it before the dump; usually nobody): the killed gdb has exited and let go of it (#2122).
-void waitForDumperToDetach(std::int32_t pid, std::int32_t tracerBefore)
+void waitForDumperToDetach(const LinuxProcessSyscalls& syscalls, std::int32_t pid, std::int32_t tracerBefore)
 {
     constexpr auto STEP = std::chrono::milliseconds(10);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(LinuxCoreDump::DETACH_WAIT_MS);
     for (;;)
     {
-        const std::optional<std::int32_t> tracer = processTracer(pid);
+        const std::optional<std::int32_t> tracer = syscalls.tracerPid(pid);
         if (!tracer.has_value() || *tracer == tracerBefore || std::chrono::steady_clock::now() >= deadline)
         {
             return;
@@ -1136,8 +1163,9 @@ bool readAvailable(int fd, std::string& text)
 
 /// Runs @p argv in a process group of its own, stdin and stdout on /dev/null and stderr kept, until it
 /// exits or @p stopToken is requested; then the whole group is killed (gcore runs gdb under it) and
-/// reaped. Blocking: called on createDump()'s worker thread.
-[[nodiscard]] ToolRun runCancellable(const std::vector<std::string>& argv, const std::stop_token& stopToken)
+/// reaped, waited on through @p syscalls. Blocking: called on createDump()'s worker thread.
+[[nodiscard]] ToolRun
+runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::string>& argv, const std::stop_token& stopToken)
 {
     ToolRun run;
     std::array<int, 2> pipeFds{-1, -1};
@@ -1200,7 +1228,7 @@ bool readAvailable(int fd, std::string& text)
         }
         int status = 0;
         // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
-        const pid_t waited = ::waitpid(child, &status, WNOHANG);
+        const pid_t waited = syscalls.waitPid(child, &status, WNOHANG);
         if (waited == child)
         {
             // Whatever it wrote last, up to the end of the pipe (or until nothing more is ready).
@@ -1216,7 +1244,7 @@ bool readAvailable(int fd, std::string& text)
         {
             // Not left running: gdb may be attached to the target, which would stay stopped (#2148).
             ::kill(-child, SIGKILL);
-            while (::waitpid(child, &status, 0) < 0 && errno == EINTR)
+            while (syscalls.waitPid(child, &status, 0) < 0 && errno == EINTR)
             {
             }
             return run;
@@ -1224,7 +1252,7 @@ bool readAvailable(int fd, std::string& text)
         if (stopToken.stop_requested())
         {
             ::kill(-child, SIGKILL);
-            while (::waitpid(child, &status, 0) < 0 && errno == EINTR)
+            while (syscalls.waitPid(child, &status, 0) < 0 && errno == EINTR)
             {
             }
             run.cancelled = true;
@@ -1317,10 +1345,10 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
     const std::filesystem::path prefix = file.string() + ".partial";
     const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
-    const bool wasStopped = processIsStopped(target.pid);
-    const std::int32_t tracerBefore = processTracer(target.pid).value_or(0);
+    const bool wasStopped = processIsStopped(m_Syscalls, target.pid);
+    const std::int32_t tracerBefore = m_Syscalls.tracerPid(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
-    const ToolRun run = runCancellable(LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    const ToolRun run = runCancellable(m_Syscalls, LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
     if (run.spawnError)
     {
         releaseName();
@@ -1334,8 +1362,8 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         // stay stopped. Killing gcore's group doesn't wait for gdb (gcore's child) to exit, and until it
         // has, the process shows 't' and its stop is still to come (#2122): wait for gdb to let go first.
         // One that was running before is then woken, through the pidfd, so it is still the target.
-        waitForDumperToDetach(target.pid, tracerBefore);
-        if (!wasStopped && processIsStopped(target.pid))
+        waitForDumperToDetach(m_Syscalls, target.pid, tracerBefore);
+        if (!wasStopped && processIsStopped(m_Syscalls, target.pid))
         {
             static_cast<void>(sendThroughPidfd(m_Syscalls, pidfd, SIGCONT));
         }

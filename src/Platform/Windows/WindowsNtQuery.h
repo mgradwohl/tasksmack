@@ -1,6 +1,8 @@
 #pragma once
 
-// The one place the Windows probes resolve ntdll's NtQuerySystemInformation(Ex) (#1183). Each lookup
+// The one place the Windows probes resolve ntdll's NtQuerySystemInformation(Ex) (#1183), and the
+// actions its NtSuspendProcess and NtResumeProcess (#2582). ntdll.dll is already loaded in every
+// process, so it is found with GetModuleHandleW, never loaded from a search path. Each lookup
 // is a function-local static initialised by a lambda, so it runs once, thread-safely, whichever
 // probe asks first; and, these being inline functions, every translation unit shares that one static.
 
@@ -36,6 +38,10 @@ using NtQuerySystemInformationExFn = LONG(NTAPI*)(ULONG systemInformationClass,
                                                   ULONG systemInformationLength,
                                                   PULONG returnLength);
 
+/// NtSuspendProcess or NtResumeProcess (#2582): every thread of the process, as one call, so a thread
+/// started meanwhile isn't missed. The handle needs PROCESS_SUSPEND_RESUME; the result is an NTSTATUS.
+using NtProcessSuspendResumeFn = LONG(NTAPI*)(HANDLE process);
+
 /// Look up `name` in ntdll.dll, which every process has loaded; null if it is missing.
 template<typename Fn> [[nodiscard]] Fn ntdllProc(const char* name) noexcept
 {
@@ -58,6 +64,26 @@ template<typename Fn> [[nodiscard]] Fn ntdllProc(const char* name) noexcept
     static const auto fn = [] noexcept
     {
         return ntdllProc<NtQuerySystemInformationExFn>("NtQuerySystemInformationEx");
+    }();
+    return fn;
+}
+
+/// ntdll's NtSuspendProcess, or null if it cannot be found. Resolved once.
+[[nodiscard]] inline NtProcessSuspendResumeFn ntSuspendProcess() noexcept
+{
+    static const auto fn = [] noexcept
+    {
+        return ntdllProc<NtProcessSuspendResumeFn>("NtSuspendProcess");
+    }();
+    return fn;
+}
+
+/// ntdll's NtResumeProcess, or null if it cannot be found. Resolved once.
+[[nodiscard]] inline NtProcessSuspendResumeFn ntResumeProcess() noexcept
+{
+    static const auto fn = [] noexcept
+    {
+        return ntdllProc<NtProcessSuspendResumeFn>("NtResumeProcess");
     }();
     return fn;
 }

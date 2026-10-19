@@ -133,6 +133,20 @@ TEST(PanelPlatformsTest, TheCrashHistoryReadsEveryUsersCrashesThroughARunningHel
     EXPECT_EQ(broker->requests().size(), 1U);
 }
 
+// #2416 (#2479): the crash history the app makes reads through the shared helper, as System Information's
+// probe does -- not only the seam above. An unbrokered probe would take every other user's crashes away.
+TEST(PanelPlatformsTest, TheAppsCrashHistoryProbeGoesThroughTheSharedHelper)
+{
+    Detail::setSharedPrivilegedBrokerForTesting(helperWithEveryUsersCrashes());
+    const std::shared_ptr<Platform::ISystemInfoProbe> probe = makeCrashHistoryProbe(nullptr);
+    const std::unique_ptr<Platform::ISystemInfoProbe> systemInfo = makeSystemInfoPanelProbe(nullptr);
+    Detail::setSharedPrivilegedBrokerForTesting(nullptr);
+
+    ASSERT_NE(probe, nullptr);
+    EXPECT_TRUE(probe->canReadAuthorized()) << "made without the helper";
+    EXPECT_TRUE(systemInfo->canReadAuthorized());
+}
+
 TEST(PanelPlatformsTest, TheCrashHistoryNeverStartsTheHelper)
 {
     const std::shared_ptr<Mocks::FakeBroker> broker = helperWithEveryUsersCrashes();

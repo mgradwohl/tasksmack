@@ -46,7 +46,9 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 
 With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only matter for acting on processes: without them the Limited Data notice says which actions are refused. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, and `CAP_KILL` lets it end any process, so grant them only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow them there. Re-apply the capabilities after each update.
 
-**Acting on another user's process without either:** with the .deb or .rpm installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorised.
+**Acting on another user's process without either:** with the .deb or .rpm installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorised. TaskSmack running as root offers none of this, since it needs no helper.
+
+For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). It runs as root, serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
 
 On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
 
@@ -59,7 +61,7 @@ If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptrace
 ## Acting as an administrator on Windows
 
 TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
-ending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
+ending, suspending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
 administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
 **Open files** and **Connections** sections also offer **Read as administrator** when such a process
 refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
@@ -67,8 +69,8 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
 
 - **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
   refused actions and reads are retried through the helper without asking again. The helper exits when
-  TaskSmack does, or after 5 minutes without an action. Suspend, resume and I/O priority, which Windows
-  doesn't support, don't keep it running.
+  TaskSmack does, or after 5 minutes without an action. An I/O priority change, which Windows doesn't
+  support, doesn't keep it running.
 - **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
   an administrator's name and password, and the helper then runs as that administrator. It does that one
   action and exits, so the next one asks again. It wouldn't read another account's process for you,
