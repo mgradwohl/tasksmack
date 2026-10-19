@@ -11,7 +11,8 @@
 //   and status wording the Linux kernel uses, so the section reads the same on both. Every status comes
 //   from what Windows reports; where it doesn't say whether the CPU needs a mitigation, the status is
 //   "Unknown" rather than a guess from the CPU's vendor (#1781).
-// BitLocker's state needs administrator, so the section says so rather than reading it.
+// - each fixed volume's BitLocker protection status from the shell's System.Volume.BitLockerProtection
+//   property, which Explorer reads for its drive icons and which needs no administrator (#2584).
 // Every call goes through an injectable table; WindowsPlatformSecurity.cpp supplies the real one, tests
 // substitute fakes. The decoding is standard library only, so its tests run on every platform.
 
@@ -123,6 +124,17 @@ inline constexpr std::uint32_t KVA_L1TF_MITIGATION_PRESENT = 0x2000U;   // bit 1
 /// A vulnerability's status when Windows doesn't report whether the CPU needs its mitigation.
 inline constexpr std::string_view UNKNOWN_STATUS = "Unknown";
 
+// System.Volume.BitLockerProtection's values, as the property's schema lists them (its enum's display
+// texts on Windows 11): IPropertyDescription::GetEnumTypeList on the key PSGetPropertyKeyFromName returns.
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_ON = 1;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_OFF = 2;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_ENCRYPTING = 3;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_DECRYPTING = 4;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_SUSPENDED = 5;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_LOCKED = 6;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_NOT_ENCRYPTABLE = 7;
+inline constexpr std::uint32_t BITLOCKER_PROTECTION_WAITING_FOR_ACTIVATION = 8;
+
 /// The calls readPlatformSecurity() makes.
 struct Functions
 {
@@ -135,6 +147,12 @@ struct Functions
     std::optional<std::uint32_t> (*tpmDeviceInfo)(std::uint32_t& version) = nullptr;
     /// NtQuerySystemInformation into @p buffer, whose size is the length asked for; the NTSTATUS (0 on success).
     std::int32_t (*querySystemInformation)(std::uint32_t infoClass, std::span<std::byte> buffer) = nullptr;
+    /// The fixed volumes' drives ("C:"), in drive-letter order (GetLogicalDrives, GetDriveTypeW); nullopt
+    /// when the drives can't be listed.
+    std::optional<std::vector<std::string>> (*fixedVolumes)() = nullptr;
+    /// System.Volume.BitLockerProtection of @p volume ("C:") from the shell's property store; nullopt when
+    /// the shell doesn't report it, as for a volume BitLocker knows nothing of.
+    std::optional<std::uint32_t> (*bitLockerProtection)(const std::string& volume) = nullptr;
 };
 
 /// The real table (WindowsPlatformSecurity.cpp; Windows only).
@@ -164,6 +182,36 @@ statusText(std::optional<bool> required, bool mitigated, std::string_view mitiga
         return 2;
     }
     return tpmVersion == TPM_VERSION_12_CODE ? 1 : 0;
+}
+
+/// System.Volume.BitLockerProtection's value as a state; Unknown when absent or not one the schema lists.
+[[nodiscard]] constexpr BitLockerState bitLockerState(std::optional<std::uint32_t> protection) noexcept
+{
+    if (!protection.has_value())
+    {
+        return BitLockerState::Unknown;
+    }
+    switch (*protection)
+    {
+    case BITLOCKER_PROTECTION_ON:
+        return BitLockerState::On;
+    case BITLOCKER_PROTECTION_OFF:
+        return BitLockerState::Off;
+    case BITLOCKER_PROTECTION_ENCRYPTING:
+        return BitLockerState::Encrypting;
+    case BITLOCKER_PROTECTION_DECRYPTING:
+        return BitLockerState::Decrypting;
+    case BITLOCKER_PROTECTION_SUSPENDED:
+        return BitLockerState::Suspended;
+    case BITLOCKER_PROTECTION_LOCKED:
+        return BitLockerState::Locked;
+    case BITLOCKER_PROTECTION_NOT_ENCRYPTABLE:
+        return BitLockerState::NotEncryptable;
+    case BITLOCKER_PROTECTION_WAITING_FOR_ACTIVATION:
+        return BitLockerState::WaitingForActivation;
+    default:
+        return BitLockerState::Unknown;
+    }
 }
 
 /// Spectre v2 (branch target injection) from SpeculationControlFlags. Windows has no "not affected" state
@@ -452,6 +500,17 @@ inline void readPlatformSecurity(PlatformSecurityInfo& info, const Functions& fn
     if (info.vulnerabilitiesRead)
     {
         info.vulnerabilities = decodeVulnerabilities(speculation, kvaShadow);
+    }
+
+    std::optional<std::vector<std::string>> volumes = fns.fixedVolumes();
+    info.bitLockerRead = volumes.has_value();
+    if (volumes.has_value())
+    {
+        for (std::string& volume : *volumes)
+        {
+            const BitLockerState state = bitLockerState(fns.bitLockerProtection(volume));
+            info.bitLocker.push_back({.volume = std::move(volume), .state = state});
+        }
     }
 }
 

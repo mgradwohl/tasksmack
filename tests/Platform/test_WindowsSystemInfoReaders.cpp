@@ -250,6 +250,12 @@ struct FakeSecurity
     /// NtQuerySystemInformation's answers by class: the bytes written, or absent for STATUS_INVALID_INFO_CLASS.
     std::vector<std::pair<std::uint32_t, std::vector<std::byte>>> answers;
     std::uint32_t codeIntegrityLengthSeen = 0;
+    /// The fixed drives listed, or nullopt when they can't be; each one's BitLocker protection value.
+    std::optional<std::vector<std::string>> fixedVolumes = std::vector<std::string>{"C:", "D:"};
+    std::vector<std::pair<std::string, std::optional<std::uint32_t>>> protections = {
+        {"C:", WindowsPlatformSecurity::BITLOCKER_PROTECTION_ON},
+        {"D:", WindowsPlatformSecurity::BITLOCKER_PROTECTION_OFF},
+    };
 };
 
 /// The fake table's state, set by fakeSecurityFunctions().
@@ -310,6 +316,13 @@ void answer(FakeSecurity& fake, std::uint32_t infoClass, std::vector<std::byte> 
             std::memcpy(buffer.data(), it->second.data(), buffer.size());
             return 0;
         },
+        .fixedVolumes = [] { return fakeState().fixedVolumes; },
+        .bitLockerProtection = [](const std::string& volume) -> std::optional<std::uint32_t>
+        {
+            const auto& protections = fakeState().protections;
+            const auto it = std::ranges::find(protections, volume, &std::pair<std::string, std::optional<std::uint32_t>>::first);
+            return it == protections.end() ? std::nullopt : it->second;
+        },
     };
 }
 
@@ -361,8 +374,55 @@ TEST(WindowsPlatformSecurityTest, ReadsEveryFact)
     EXPECT_EQ(statusOf(info, "gather_data_sampling"), "Not affected");
     EXPECT_EQ(statusOf(info, "spec_rstack_overflow"), "Not affected");
     EXPECT_EQ(statusOf(info, "reg_file_data_sampling"), "Not affected");
+    EXPECT_TRUE(info.bitLockerRead);
+    ASSERT_EQ(info.bitLocker.size(), 2U);
+    EXPECT_EQ(info.bitLocker[0].volume, "C:");
+    EXPECT_EQ(info.bitLocker[0].state, BitLockerState::On);
+    EXPECT_EQ(info.bitLocker[1].volume, "D:");
+    EXPECT_EQ(info.bitLocker[1].state, BitLockerState::Off);
     EXPECT_TRUE(info.lsms.empty()); // the Linux facts stay unread
     EXPECT_FALSE(info.selinuxEnforcing.has_value());
+}
+
+// #2584: System.Volume.BitLockerProtection's values, as the property's schema lists them, and anything
+// else (absent, or a value a later Windows adds) as Unknown.
+TEST(WindowsPlatformSecurityTest, BitLockerProtectionValuesMapToStates)
+{
+    using WindowsPlatformSecurity::bitLockerState;
+    EXPECT_EQ(bitLockerState(1U), BitLockerState::On);
+    EXPECT_EQ(bitLockerState(2U), BitLockerState::Off);
+    EXPECT_EQ(bitLockerState(3U), BitLockerState::Encrypting);
+    EXPECT_EQ(bitLockerState(4U), BitLockerState::Decrypting);
+    EXPECT_EQ(bitLockerState(5U), BitLockerState::Suspended);
+    EXPECT_EQ(bitLockerState(6U), BitLockerState::Locked);
+    EXPECT_EQ(bitLockerState(7U), BitLockerState::NotEncryptable);
+    EXPECT_EQ(bitLockerState(8U), BitLockerState::WaitingForActivation);
+    EXPECT_EQ(bitLockerState(0U), BitLockerState::Unknown);
+    EXPECT_EQ(bitLockerState(9U), BitLockerState::Unknown);
+    EXPECT_EQ(bitLockerState(std::nullopt), BitLockerState::Unknown);
+}
+
+// #2584: a drive the shell reports nothing for reads Unknown; drives that can't be listed leave it unread.
+TEST(WindowsPlatformSecurityTest, BitLockerUnreportedAndUnlistedDrives)
+{
+    FakeSecurity unreported = modernIntel();
+    unreported.fixedVolumes = std::vector<std::string>{"C:", "G:"};
+    unreported.protections = {{"C:", WindowsPlatformSecurity::BITLOCKER_PROTECTION_SUSPENDED}, {"G:", std::nullopt}};
+    PlatformSecurityInfo info;
+    WindowsPlatformSecurity::readPlatformSecurity(info, fakeSecurityFunctions(unreported));
+    EXPECT_TRUE(info.bitLockerRead);
+    ASSERT_EQ(info.bitLocker.size(), 2U);
+    EXPECT_EQ(info.bitLocker[0].state, BitLockerState::Suspended);
+    EXPECT_EQ(info.bitLocker[1].volume, "G:");
+    EXPECT_EQ(info.bitLocker[1].state, BitLockerState::Unknown);
+
+    FakeSecurity unlisted = modernIntel();
+    unlisted.fixedVolumes = std::nullopt;
+    PlatformSecurityInfo unlistedInfo;
+    WindowsPlatformSecurity::readPlatformSecurity(unlistedInfo, fakeSecurityFunctions(unlisted));
+    EXPECT_FALSE(unlistedInfo.bitLockerRead);
+    EXPECT_TRUE(unlistedInfo.bitLocker.empty());
+    EXPECT_EQ(unlistedInfo.secureBoot, SecurityFeatureState::On); // the rest is unaffected
 }
 
 TEST(WindowsPlatformSecurityTest, SecureBootAndTpmStates)
