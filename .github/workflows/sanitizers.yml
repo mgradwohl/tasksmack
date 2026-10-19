@@ -242,7 +242,8 @@ jobs:
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full report available in artifacts: `sanitizer-reports/${{ matrix.preset }}.html`" >> $GITHUB_STEP_SUMMARY
+          # Single-quoted printf format: the backticks are Markdown code marks, not command substitution (#2532).
+          printf 'Full report available in artifacts: `%s`\n' "sanitizer-reports/${{ matrix.preset }}.html" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sanitizer logs and reports
         if: always()
