@@ -145,7 +145,6 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
 
 // How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
-/// The toolbar's offer after a refused single-process action (#2308): the lock and the words.
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
 {

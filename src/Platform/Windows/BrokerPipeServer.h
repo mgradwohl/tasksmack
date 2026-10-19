@@ -41,8 +41,13 @@ using RequestHandler = std::function<Broker::Response(const Broker::Request&)>;
 enum class Grant : std::uint8_t
 {
     Session,   ///< Any number of requests, until the session ends: an elevation of TaskSmack's own user
-    OneAction, ///< One action Windows does, then the session ends: an over-the-shoulder elevation
+    OneAction, ///< One request that isn't the Hello or a read, then the session ends: an over-the-shoulder elevation
 };
+
+/// Whether @p request is a read (of a process, or System Information's): every request kind that isn't
+/// the Hello or an action. A new request kind must be sorted into one or the other here, which a
+/// static_assert on the kinds' count enforces (#2550).
+[[nodiscard]] bool isRead(const Broker::Request& request) noexcept;
 
 /// Whether @p request is a process action Windows does: end, kill, a priority or an affinity. Not
 /// Suspend, Resume or an I/O priority, which WindowsProcessActions always refuses.
@@ -71,9 +76,10 @@ enum class SessionEnd : std::uint8_t
 /// version; until then nothing reaches @p handler. A frame that doesn't decode gets an ErrorReply, and
 /// the session goes on; one declared larger than the protocol allows ends it, since a byte stream can't
 /// skip it. The idle timeout runs on @p clock, steady_clock unless a test steps it (#2546).
-/// Under Grant::OneAction (#2550), the session ends once the reply to its first isActionWindowsDoes()
-/// request is sent, whatever that action's result, and only the opening Hello puts off the idle exit,
-/// so a client can't hold the consent open by greeting again.
+/// Under Grant::OneAction (#2550), the session ends once the reply to its first request that is neither
+/// the Hello nor isRead() is sent, whatever its result: any action, including one Windows refuses, so a
+/// kind of action added later is limited too. Only the opening Hello puts off the idle exit, so a
+/// client can't hold the consent open by greeting again.
 [[nodiscard]] SessionEnd serve(HANDLE pipe,
                                const RequestHandler& handler,
                                std::chrono::milliseconds idleTimeout,

@@ -725,6 +725,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/ShellLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ShellPanels.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PanelPlatforms.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/NativeWindow.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/WindowOverride.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)

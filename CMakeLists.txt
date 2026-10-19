@@ -154,6 +154,7 @@ set(TASKSMACK_SOURCES
     src/App/ShellLayer.cpp
     src/App/ShellPanels.cpp
     src/App/PanelPlatforms.cpp
+    src/App/NativeWindow.cpp
     src/App/StatusBarView.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp

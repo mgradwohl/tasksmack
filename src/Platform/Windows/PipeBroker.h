@@ -79,7 +79,9 @@ class PipeBroker final : public IPrivilegedBroker
     static constexpr std::string_view ALREADY_ASKING =
         "already asking for an administrator's consent: the UAC prompt may be waiting behind TaskSmack or in the taskbar";
 
-    explicit PipeBroker(Launcher launcher);
+    /// @p readsOtherUsers: whether the helper it starts will run as TaskSmack's own user, and so read
+    /// other users' processes (IPrivilegedBroker::readsOtherUsers(); HelperLauncher::readsOtherUsers()).
+    explicit PipeBroker(Launcher launcher, bool readsOtherUsers = true);
     ~PipeBroker() override;
     PipeBroker(const PipeBroker&) = delete;
     PipeBroker& operator=(const PipeBroker&) = delete;
@@ -101,6 +103,10 @@ class PipeBroker final : public IPrivilegedBroker
     void disconnect();
 
     [[nodiscard]] bool connected() const noexcept override;
+    [[nodiscard]] bool readsOtherUsers() const noexcept override
+    {
+        return m_ReadsOtherUsers;
+    }
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                     const std::stop_token& stopToken) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
@@ -134,6 +140,7 @@ class PipeBroker final : public IPrivilegedBroker
     /// Under m_Mutex: closes the pipe and lets go of the helper's process.
     void closeLocked() const noexcept;
 
+    bool m_ReadsOtherUsers = true;
     std::shared_ptr<const Launcher> m_Launcher; // shared with each launch's thread, which may outlive this
     std::shared_ptr<ConnectState> m_ConnectState = std::make_shared<ConnectState>();
     std::shared_ptr<Launch> m_Pending; // a launch given up on that hasn't returned yet; under m_ConnectState's flag

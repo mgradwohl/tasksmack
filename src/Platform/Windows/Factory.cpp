@@ -75,7 +75,10 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* ownerWindow)
         spdlog::info("Acting as an administrator isn't offered: {}", available.error());
         return nullptr;
     }
-    return std::make_shared<Windows::PipeBroker>(Windows::HelperLauncher::makeLauncher({}, static_cast<HWND>(ownerWindow)));
+    // A standard user's elevation runs as an administrator, which reads only the user's own processes:
+    // no "Read as administrator" is offered there; actions still are (#2550).
+    return std::make_shared<Windows::PipeBroker>(Windows::HelperLauncher::makeLauncher({}, static_cast<HWND>(ownerWindow)),
+                                                 Windows::HelperLauncher::readsOtherUsers());
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

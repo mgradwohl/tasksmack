@@ -95,6 +95,20 @@ availability(bool elevated, const std::wstring& ownImage, BrokerHelper::Self::In
 /// availability() for this process, as the factory asks it.
 [[nodiscard]] std::expected<void, std::string> availability();
 
+/// Whether a helper started from a token of @p elevationType runs as that token's own user, and so may
+/// read other users' processes (#2550): TokenElevationTypeLimited, a split-token administrator, whose
+/// UAC prompt only asks for consent. TokenElevationTypeDefault, unelevated, is a standard user (or UAC
+/// is off): the prompt asks for an administrator's password, the helper runs as that administrator,
+/// and it then reads only the user's own processes (BrokerHelper::sessionPolicy()), which the user can
+/// read already. Full is already elevated, and needs no helper.
+/// With Windows 11's Administrator Protection, even a Limited administrator's elevation runs as a
+/// separate system-managed account, so the helper gives it the over-the-shoulder session; this can't
+/// tell that beforehand, and the helper's own check stays the one that counts.
+[[nodiscard]] bool readsOtherUsers(TOKEN_ELEVATION_TYPE elevationType) noexcept;
+
+/// readsOtherUsers() for this process's token: false when it can't be read.
+[[nodiscard]] bool readsOtherUsers() noexcept;
+
 } // namespace Platform::Windows::HelperLauncher
 
 #endif // _WIN32

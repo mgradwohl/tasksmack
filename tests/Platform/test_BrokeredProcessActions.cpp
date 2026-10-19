@@ -54,7 +54,7 @@ struct Fixture
 
 TEST(BrokeredProcessActionsTest, AnInProcessSuccessNeverReachesTheHelper)
 {
-    Fixture f(/*connected=*/true);
+    const Fixture f(/*connected=*/true);
     EXPECT_TRUE(f.actions->kill(TARGET).success);
     EXPECT_EQ(f.inner->killCount(), 1);
     EXPECT_TRUE(f.broker->requests().empty());
@@ -95,7 +95,7 @@ TEST(BrokeredProcessActionsTest, APermissionRefusalWithoutAHelperIsReturnedForTh
 
 TEST(BrokeredProcessActionsTest, RunAuthorizedConnectsThenActsThroughTheHelper)
 {
-    Fixture f(/*connected=*/false);
+    const Fixture f(/*connected=*/false);
     const ProcessActionResult result = f.actions->runAuthorized(
         {.kind = AuthorizedAction::Kind::SetIoPriority, .target = TARGET, .ioClass = IoPriorityClass::Realtime, .level = 2},
         std::stop_token{});
@@ -110,7 +110,7 @@ TEST(BrokeredProcessActionsTest, RunAuthorizedConnectsThenActsThroughTheHelper)
 
 TEST(BrokeredProcessActionsTest, RunAuthorizedReportsADismissedPrompt)
 {
-    Fixture f(/*connected=*/false);
+    const Fixture f(/*connected=*/false);
     f.broker->setConnectFailure("the password prompt was dismissed");
     const ProcessActionResult result =
         f.actions->runAuthorized({.kind = AuthorizedAction::Kind::Kill, .target = TARGET}, std::stop_token{});
@@ -164,7 +164,7 @@ TEST(BrokeredProcessActionsTest, EachActionMapsToItsRequest)
 
 TEST(BrokeredProcessActionsTest, TheRealtimeIoClassIsOfferedWhileTheHelperRuns)
 {
-    Fixture f(/*connected=*/false);
+    const Fixture f(/*connected=*/false);
     EXPECT_FALSE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
     f.broker->setConnected(true);
     EXPECT_TRUE(f.actions->actionCapabilities().canSetRealtimeIoPriority);
@@ -172,7 +172,7 @@ TEST(BrokeredProcessActionsTest, TheRealtimeIoClassIsOfferedWhileTheHelperRuns)
 
 TEST(BrokeredProcessActionsTest, ReadsAndOtherCallsAreTheInProcessOnes)
 {
-    Fixture f(/*connected=*/true);
+    const Fixture f(/*connected=*/true);
     [[maybe_unused]] const IoPriorityReadResult read = f.actions->getIoPriority(TARGET);
     EXPECT_EQ(f.inner->getIoPriorityCount(), 1);
     EXPECT_TRUE(f.broker->requests().empty());
@@ -218,7 +218,7 @@ struct EnvironmentFixture
 
 TEST(BrokeredEnvironmentReaderTest, AnInProcessReadNeverReachesTheHelper)
 {
-    EnvironmentFixture f(/*connected=*/true);
+    const EnvironmentFixture f(/*connected=*/true);
     EXPECT_EQ(f.reader->readEnvironment(TARGET).status, EnvironmentReadStatus::Ok);
     EXPECT_TRUE(f.broker->requests().empty());
 }
@@ -245,14 +245,14 @@ TEST(BrokeredEnvironmentReaderTest, ARefusedReadWithoutAHelperIsReturnedForTheUi
 
 TEST(BrokeredEnvironmentReaderTest, ReadAuthorizedConnectsThenReadsThroughTheHelper)
 {
-    EnvironmentFixture f(/*connected=*/false);
+    const EnvironmentFixture f(/*connected=*/false);
     EXPECT_EQ(f.reader->readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::Ok);
     EXPECT_EQ(f.broker->connectCount(), 1);
 }
 
 TEST(BrokeredEnvironmentReaderTest, ADismissedPromptLeavesTheRefusal)
 {
-    EnvironmentFixture f(/*connected=*/false);
+    const EnvironmentFixture f(/*connected=*/false);
     f.broker->setConnectFailure("the password prompt was dismissed");
     EXPECT_EQ(f.reader->readAuthorized(TARGET, std::stop_token{}).status, EnvironmentReadStatus::PermissionDenied);
     EXPECT_TRUE(f.broker->requests().empty());
@@ -278,6 +278,38 @@ TEST(BrokeredModulesReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwis
     EXPECT_TRUE(reader.canReadAuthorized());
     EXPECT_EQ(reader.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::Ok);
     EXPECT_EQ(broker->connectCount(), 1);
+}
+
+// #2550 (#2577 review, finding 1): where the helper would run as another account and read only the
+// user's own processes (a standard user's Windows TaskSmack), no reader offers a prompt that can't help,
+// and none prompts; refused actions are still offered the retry.
+TEST(BrokeredModulesReaderTest, AHelperThatReadsOnlyTheUsersOwnProcessesIsNotOfferedForReads)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    broker->setReadsOtherUsers(false);
+
+    auto modules = std::make_unique<TestMocks::MockProcessModulesReader>();
+    modules->setResult({.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    BrokeredModulesReader modulesReader(std::move(modules), broker);
+    EXPECT_FALSE(modulesReader.canReadAuthorized());
+    EXPECT_EQ(modulesReader.readAuthorized(TARGET, std::stop_token{}).status, ModulesReadStatus::PermissionDenied);
+
+    auto openFiles = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    const BrokeredOpenFilesReader openFilesReader(std::move(openFiles), broker);
+    EXPECT_FALSE(openFilesReader.canReadAuthorized());
+
+    auto connections = std::make_unique<TestMocks::MockProcessConnectionsReader>();
+    const BrokeredConnectionsReader connectionsReader(std::move(connections), broker);
+    EXPECT_FALSE(connectionsReader.canReadAuthorized());
+
+    auto environment = std::make_unique<TestMocks::MockProcessEnvironmentReader>();
+    const BrokeredEnvironmentReader environmentReader(std::move(environment), broker);
+    EXPECT_FALSE(environmentReader.canReadAuthorized());
+    EXPECT_EQ(broker->connectCount(), 0) << "no prompt for a read that can't be helped";
+
+    const Fixture f(/*connected=*/false);
+    f.broker->setReadsOtherUsers(false);
+    EXPECT_TRUE(f.actions->actionCapabilities().canAuthorizeInteractively) << "an action is still offered the retry";
 }
 
 TEST(BrokeredOpenFilesReaderTest, ARefusedReadGoesThroughARunningHelperAndADismissedPromptLeavesTheRefusal)

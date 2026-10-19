@@ -50,10 +50,6 @@ class Scenario;
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);
 
-/// The main window's native handle, for a system dialog or prompt to belong to: an HWND on Windows;
-/// null where there is no window (headless tests) or none of that kind.
-[[nodiscard]] void* mainNativeWindow();
-
 /// The crash history's probe over the platform's @p probe: through @p broker, the helper System
 /// Information's probe shares, so both read every user's crashes once it runs (#2416). makeCrashHistoryProbe()'s
 /// seam, for tests.

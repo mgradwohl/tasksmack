@@ -957,10 +957,10 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
-    // A read, and an action Windows refuses, aren't the action.
+    // Reads aren't the action.
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::ModulesRequest{.target = TARGET})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
-    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::IoPriorityRequest{})));
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::CrashesRequest{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
     EXPECT_NE(served.wait_for(0ms), std::future_status::ready);
 
@@ -971,6 +971,44 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
     EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(reply->message));
     ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
     EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ActionDone);
+}
+
+// The rule fails closed (#2577 review, finding 2): any request that isn't the Hello or a read is the
+// one action, even one Windows refuses today, so an action kind Windows does later is limited too.
+TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
+{
+    for (const Broker::Request& action : {Broker::Request{Broker::IoPriorityRequest{}},
+                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
+                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}}})
+    {
+        const PipePair pair = connectedPair();
+        ASSERT_TRUE(pair.server && pair.client);
+        const SteppedClock clock;
+        auto served = serveGrantAsync(pair.server.get(), stepping(clock, {}), WAIT, clock.clock(), BrokerPipeServer::Grant::OneAction);
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+        ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, action)));
+        ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+        ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+        EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ActionDone);
+    }
+}
+
+TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
+{
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::Hello{}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::PriorityRequest{.target = TARGET, .nice = 0}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::IoPriorityRequest{}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::AffinityRequest{.target = TARGET, .cpus = {}}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::EnvironmentRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ModulesRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::OpenFilesRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ConnectionsRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryRollupRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::FirmwareFileRequest{}));
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::CrashesRequest{}));
+    static_assert(std::variant_size_v<Broker::Request> == 12, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

@@ -1,6 +1,6 @@
 #include "ProcessDumpView.h"
 
-#include "App/PanelPlatforms.h"
+#include "App/NativeWindow.h"
 #include "App/PlatformOpen.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"

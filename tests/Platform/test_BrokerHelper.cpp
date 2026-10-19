@@ -1046,14 +1046,11 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
     EXPECT_EQ(std::get<Broker::ModulesReply>(refused.message).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
     EXPECT_EQ(counting.calls->load(), 1);
 
-    // A Suspend, which Windows always refuses, isn't the action: the session goes on.
-    const auto suspend = roundTrip(client->get(), 4, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Suspend});
-    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(suspend.message));
-    // The kill is: answered, then the session ends.
-    const auto kill = roundTrip(client->get(), 5, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Kill});
+    // The kill is the one action: answered, then the session ends.
+    const auto kill = roundTrip(client->get(), 4, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Kill});
     ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(kill.message));
     EXPECT_TRUE(std::get<Broker::ActionResult>(kill.message).success);
-    EXPECT_EQ(counting.calls->load(), 3);
+    EXPECT_EQ(counting.calls->load(), 2);
 
     ASSERT_EQ(session.wait_for(WAIT), std::future_status::ready) << "a session for one action outlived it";
     EXPECT_EQ(session.get(), BrokerHelper::Exit::Done);

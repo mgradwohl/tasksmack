@@ -221,6 +221,27 @@ std::expected<void, std::string> availability(bool elevated, const std::wstring&
     return {};
 }
 
+bool readsOtherUsers(TOKEN_ELEVATION_TYPE elevationType) noexcept
+{
+    return elevationType == TokenElevationTypeLimited;
+}
+
+bool readsOtherUsers() noexcept
+{
+    UniqueHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    {
+        return false;
+    }
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+    DWORD size = 0;
+    if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
+    {
+        return false;
+    }
+    return readsOtherUsers(type);
+}
+
 std::expected<void, std::string> availability()
 {
     const auto image = ownImage(&::GetModuleFileNameW);

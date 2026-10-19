@@ -191,6 +191,9 @@ struct SessionPolicy
 /// a same-user session's idle timeout. The same account: a session, as asked. Another account (an
 /// over-the-shoulder elevation): Grant::OneAction, the shorter of @p idleTimeout and
 /// OVER_THE_SHOULDER_IDLE_TIMEOUT, and reads of TaskSmack's user's own processes only.
+/// Under Windows 11's Administrator Protection every elevation runs as a separate, system-managed
+/// administrator account, never as the signed-in user, so it always gets the one-action session, an
+/// administrator's own included. That fails safe: one prompt per action.
 [[nodiscard]] SessionPolicy
 sessionPolicy(const BrokerPipe::Sid& user, const BrokerPipe::Sid& helperUser, std::chrono::milliseconds idleTimeout);
 
@@ -204,8 +207,8 @@ inline constexpr std::string_view OTHER_USERS_READ_REFUSED =
 
 /// @p handler for an over-the-shoulder session (#2550): a read of a process that @p ownedByUser says
 /// isn't TaskSmack's user's is refused with OTHER_USERS_READ_REFUSED, as a failed read of its kind, and
-/// never reaches @p handler; a system-wide read (firmware, crashes) is refused outright. The Hello and
-/// actions pass through.
+/// never reaches @p handler; a system-wide read (firmware, crashes), or any other kind of read, is
+/// refused outright (BrokerPipeServer::isRead()). The Hello and actions pass through.
 [[nodiscard]] BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
                                                                      std::function<bool(const ProcessTarget&)> ownedByUser);
 

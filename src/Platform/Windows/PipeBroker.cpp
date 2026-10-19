@@ -63,7 +63,8 @@ struct PipeBroker::Launch
     }
 };
 
-PipeBroker::PipeBroker(Launcher launcher) : m_Launcher(std::make_shared<const Launcher>(std::move(launcher)))
+PipeBroker::PipeBroker(Launcher launcher, bool readsOtherUsers)
+    : m_ReadsOtherUsers(readsOtherUsers), m_Launcher(std::make_shared<const Launcher>(std::move(launcher)))
 {}
 
 PipeBroker::~PipeBroker()

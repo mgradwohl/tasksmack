@@ -336,6 +336,16 @@ TEST(HelperLauncherTest, AnInstallItsUserCanChangeIsntOfferedTheHelper)
 }
 #endif
 
+// #2577 review, finding 1: only a split-token administrator's helper runs as TaskSmack's own user, and
+// so can read other users' processes. A standard user's (Default, unelevated) runs as the administrator
+// who typed their password, and reads only the user's own.
+TEST(HelperLauncherTest, OnlyASplitTokenAdministratorsHelperReadsOtherUsers)
+{
+    EXPECT_TRUE(HelperLauncher::readsOtherUsers(TokenElevationTypeLimited));
+    EXPECT_FALSE(HelperLauncher::readsOtherUsers(TokenElevationTypeDefault));
+    EXPECT_FALSE(HelperLauncher::readsOtherUsers(TokenElevationTypeFull));
+}
+
 TEST(HelperLauncherTest, NoHelperBesideTaskSmackIsntOffered)
 {
     // A folder of this test's own, with no helper in it.

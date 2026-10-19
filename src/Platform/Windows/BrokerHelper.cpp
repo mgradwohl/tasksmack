@@ -502,39 +502,63 @@ BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::Request
 {
     return [handler = std::move(handler), ownedByUser = std::move(ownedByUser)](const Broker::Request& request) -> Broker::Response
     {
+        // The Hello and actions pass. Each per-process read below needs its target to be the user's,
+        // and any other read is refused: fails closed (BrokerPipeServer::isRead() asserts every request
+        // kind is sorted into a read or not).
+        if (!BrokerPipeServer::isRead(request))
+        {
+            return handler(request);
+        }
         const std::string refusal(OTHER_USERS_READ_REFUSED);
         const auto owned = [&ownedByUser](const ProcessTarget& target)
         {
             return ownedByUser && ownedByUser(target);
         };
-        if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request); read != nullptr && !owned(read->target))
+        if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request))
         {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
             return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
         }
-        if (const auto* read = std::get_if<Broker::ModulesRequest>(&request); read != nullptr && !owned(read->target))
+        if (const auto* read = std::get_if<Broker::ModulesRequest>(&request))
         {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
             return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = refusal}};
         }
-        if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request); read != nullptr && !owned(read->target))
+        if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request))
         {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
             OpenFilesReadResult refused;
             refused.status = OpenFilesReadStatus::Failed;
             refused.detail = refusal;
             return Broker::OpenFilesReply{.result = std::move(refused)};
         }
-        if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request); read != nullptr && !owned(read->target))
+        if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request))
         {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
             return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = refusal}};
         }
-        if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request); read != nullptr && !owned(read->target))
+        if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request))
         {
+            if (owned(read->target))
+            {
+                return handler(request);
+            }
             return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
         }
-        if (std::holds_alternative<Broker::FirmwareFileRequest>(request) || std::holds_alternative<Broker::CrashesRequest>(request))
-        {
-            return Broker::ErrorReply{.message = refusal};
-        }
-        return handler(request);
+        // System-wide reads (firmware, every user's crashes), and any read kind not named above.
+        return Broker::ErrorReply{.message = refusal};
     };
 }
 

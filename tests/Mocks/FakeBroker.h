@@ -45,6 +45,17 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_Connected;
     }
 
+    /// Whether the helper could read other users' processes (#2550): true unless a test says not.
+    void setReadsOtherUsers(bool reads) noexcept
+    {
+        m_ReadsOtherUsers = reads;
+    }
+
+    [[nodiscard]] bool readsOtherUsers() const noexcept override
+    {
+        return m_ReadsOtherUsers;
+    }
+
     /// What connect() does: succeed (and connect) by default, or fail with this reason.
     void setConnectFailure(std::string reason)
     {
@@ -120,6 +131,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
     std::atomic<bool> m_Connected{true};
+    std::atomic<bool> m_ReadsOtherUsers{true};
 };
 
 } // namespace Mocks

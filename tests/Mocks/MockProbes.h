@@ -25,6 +25,7 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -313,7 +314,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     /// means the probe reports per-process energy itself.
     void setPackageEnergy(std::optional<Platform::PackageEnergyReading> reading)
     {
-        m_PackageEnergy = reading;
+        m_PackageEnergy = std::move(reading);
     }
 
     [[nodiscard]] std::optional<Platform::PackageEnergyReading> readPackageEnergy() const override
