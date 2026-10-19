@@ -209,6 +209,15 @@ add_test(NAME CheckDllLoadsScript
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
 
+# cmake/ReproducibleTarball.cmake makes the Linux .tar.gz byte-reproducible (#2636). It needs GNU
+# tar, so the test is Linux-only, like the script's use.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME ReproducibleTarballScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reproducible_tarball.py)
+    set_tests_properties(ReproducibleTarballScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}" TIMEOUT 120)
+endif()
+
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
 set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript

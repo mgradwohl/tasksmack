@@ -5,6 +5,13 @@ if(CPACK_GENERATOR STREQUAL "DEB" OR CPACK_GENERATOR STREQUAL "RPM")
     set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;helper;/")
 endif()
 
+# The Linux .tar.gz is repacked with its entries sorted and their owner, modes and times normalized,
+# so two builds of the same commit give identical bytes (#2636): CPack adds them in readdir order,
+# which differs between filesystems. See cmake/ReproducibleTarball.cmake.
+if(CPACK_GENERATOR STREQUAL "TGZ" AND "@CMAKE_SYSTEM_NAME@" STREQUAL "Linux")
+    list(APPEND CPACK_POST_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/ReproducibleTarball.cmake")
+endif()
+
 # Windows: the .zip and the NSIS installer also package TaskSmackHelper.exe (the "windows_helper"
 # component; #2550), only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build
 # (#2302). Before anything is packaged, VerifyWindowsSignatures.cmake refuses a TaskSmack.exe or helper

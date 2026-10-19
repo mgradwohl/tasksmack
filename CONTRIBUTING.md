@@ -2750,6 +2750,13 @@ signing; see below). Local/dev builds leave
 `SOURCE_DATE_EPOCH` unset and get the real configure-time timestamp, which is fine since dev
 builds have no reproducibility requirement.
 
+CPack adds a `.tar.gz`'s entries in the order the filesystem lists the staging directory, which
+differs between filesystems (and so between runners), with the build user's owner and umask. On
+Linux, `cmake/ReproducibleTarball.cmake` (a CPack post-build script) therefore repacks the `.tar.gz`
+with GNU tar: entries sorted by name, owned by root, modes 0755/0644, mtimes set to
+`SOURCE_DATE_EPOCH`, and gzip without a name or timestamp. CPackDeb already sorts and normalizes the
+`.deb`'s entries.
+
 `version.h` also records whether `git status` saw the checkout clean or dirty at configure time, so
 anything a release job leaves untracked in the checkout (ccache's `.ccache/`, for one) must be
 gitignored; otherwise the build job's binary says "dirty", a clean rebuild's says "clean", and the
