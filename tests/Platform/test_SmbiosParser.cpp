@@ -1,7 +1,8 @@
 /// @file test_SmbiosParser.cpp
 /// @brief Platform::Smbios (#1513) on hand-built tables: the RawSMBIOSData header, the structure walk
 /// (string sets, the double NUL, truncated and garbage input), string indices, types 0-3, chassis types
-/// with the lock bit, platform roles, entry-point versions, and every prefix of a valid table.
+/// with the lock bit, platform roles, entry-point versions, virtual-machine hints, and every prefix of a
+/// valid table.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/SmbiosParser.h"
@@ -358,6 +359,76 @@ TEST(SmbiosParserTest, DecodeFirmwareFillsTheSection)
     FirmwareInfo none;
     EXPECT_FALSE(decodeFirmware(ByteVector{0, 3}, none));
     EXPECT_TRUE(none.smbiosVersion.empty());
+}
+
+// The hypervisors' own type 1 names, as their virtual machines report them (#2377).
+TEST(SmbiosParserTest, VirtualMachineVendorsFromSystemNames)
+{
+    EXPECT_EQ(virtualMachineVendor("Microsoft Corporation Virtual Machine"), "Hyper-V");
+    EXPECT_EQ(virtualMachineVendor("QEMU QEMU Virtual Machine"), "QEMU"); // UTM on Apple silicon
+    EXPECT_EQ(virtualMachineVendor("QEMU Standard PC (Q35 + ICH9, 2009)"), "QEMU");
+    EXPECT_EQ(virtualMachineVendor("VMware, Inc. VMware20,1"), "VMware");
+    // Parallels' ARM product name ends like Hyper-V's: the vendor's own name wins.
+    EXPECT_EQ(virtualMachineVendor("Parallels International GmbH. Parallels ARM Virtual Machine"), "Parallels");
+    EXPECT_EQ(virtualMachineVendor("innotek GmbH VirtualBox"), "VirtualBox");
+    EXPECT_EQ(virtualMachineVendor("Xen HVM domU"), "Xen");
+    EXPECT_EQ(virtualMachineVendor("Amazon EC2 m7g.large"), "Amazon EC2");
+
+    EXPECT_EQ(virtualMachineVendor("Microsoft Corporation Surface Laptop 7"), "");
+    EXPECT_EQ(virtualMachineVendor("Contoso Surface Pro"), "");
+    EXPECT_EQ(virtualMachineVendor(" "), "");
+}
+
+TEST(SmbiosParserTest, VirtualMachineHintFromTheBiosBitOrTheSystemNames)
+{
+    const auto bios = [](std::uint8_t extension2)
+    {
+        return makeStructure(TYPE_BIOS, 0x18, {{0x04, 1}, {BIOS_CHARACTERISTICS_EXTENSION_2_OFFSET, extension2}}, {"Contoso"});
+    };
+    const auto system = [](std::string_view manufacturer, std::string_view product)
+    {
+        return makeStructure(TYPE_SYSTEM, 0x1B, {{0x04, 1}, {0x05, 2}}, {manufacturer, product});
+    };
+    const ByteVector end = makeStructure(TYPE_END_OF_TABLE, 4, {}, {});
+    const auto hintOf = [&end](const ByteVector& first, const ByteVector& second)
+    {
+        return virtualMachineHint(makeRaw(3, 4, concat({first, second, end})));
+    };
+
+    // Bare metal: neither the bit (0x22 is a real laptop's byte: UEFI, target content distribution) nor a name
+    const auto bareMetalHint = hintOf(bios(0x22), system("Contoso", "Laptop 7"));
+    ASSERT_TRUE(bareMetalHint.has_value());
+    const VirtualMachineHint bareMetal = bareMetalHint.value_or(VirtualMachineHint{});
+    EXPECT_FALSE(bareMetal.virtualMachine);
+    EXPECT_TRUE(bareMetal.vendor.empty());
+
+    // The bit alone: a hypervisor whose names aren't known
+    const auto bitOnlyHint = hintOf(bios(0x22 | BIOS_VIRTUAL_MACHINE_BIT), system("Contoso", "Laptop 7"));
+    ASSERT_TRUE(bitOnlyHint.has_value());
+    const VirtualMachineHint bitOnly = bitOnlyHint.value_or(VirtualMachineHint{});
+    EXPECT_TRUE(bitOnly.virtualMachine);
+    EXPECT_TRUE(bitOnly.vendor.empty());
+
+    // A name alone: a hypervisor that doesn't set the bit
+    const auto nameOnlyHint = hintOf(bios(0x00), system("Parallels International GmbH.", "Parallels ARM Virtual Machine"));
+    ASSERT_TRUE(nameOnlyHint.has_value());
+    const VirtualMachineHint nameOnly = nameOnlyHint.value_or(VirtualMachineHint{});
+    EXPECT_TRUE(nameOnly.virtualMachine);
+    EXPECT_EQ(nameOnly.vendor, "Parallels");
+
+    // A type 0 from before SMBIOS 2.4 has no extension byte 2: no bit, not an error
+    const ByteVector shortBios = makeStructure(TYPE_BIOS, 0x12, {{0x04, 1}}, {"Contoso"});
+    const auto oldTableHint = hintOf(shortBios, system("Contoso", "Desktop"));
+    ASSERT_TRUE(oldTableHint.has_value());
+    const VirtualMachineHint oldTable = oldTableHint.value_or(VirtualMachineHint{});
+    EXPECT_FALSE(oldTable.virtualMachine);
+    const std::vector<Structure> oldStructures = parseStructures(shortBios);
+    const Structure* oldBios = findFirst(oldStructures, TYPE_BIOS);
+    ASSERT_NE(oldBios, nullptr);
+    EXPECT_FALSE(biosDescribesVirtualMachine(*oldBios));
+
+    // No table at all
+    EXPECT_FALSE(virtualMachineHint(ByteVector{0, 3}).has_value());
 }
 
 /// Writes @p value little-endian over @p size bytes at @p offset of a structure's formatted area.

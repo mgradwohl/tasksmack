@@ -52,6 +52,8 @@
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <intrin.h> // __cpuid: the hypervisor-present bit (#809); x64 only (64-bit builds only, #2214)
+#else
+#include "Platform/SmbiosParser.h" // ARM64's hypervisor hint without CPUID (#2377)
 #endif
 
 namespace Platform
@@ -172,6 +174,54 @@ template<typename Query>
 constexpr ULONG SystemCodeIntegrityInformationClass = 103;
 constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
 
+#if !defined(_M_X64) && !defined(__x86_64__)
+// SYSTEM_HYPERVISOR_QUERY_INFORMATION's class, which a standard user may query (#2377)
+constexpr ULONG SystemHypervisorInformationClass = 91;
+
+/// Whether the SMBIOS table (GetSystemFirmwareTable('RSMB'), no administrator rights needed) describes
+/// a virtual machine (#2377); nullopt when it can't be read. WindowsSystemInfoProbe reads the same table
+/// for System Information's Firmware section.
+[[nodiscard]] std::optional<bool> readSmbiosVirtualMachine()
+{
+    constexpr DWORD RSMB = 0x52534D42;
+    const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0);
+    if (size == 0)
+    {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> table(size);
+    const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+    if (written == 0 || written > size)
+    {
+        return std::nullopt;
+    }
+    table.resize(written);
+    const std::optional<Smbios::VirtualMachineHint> hint = Smbios::virtualMachineHint(table);
+    if (!hint.has_value())
+    {
+        return std::nullopt;
+    }
+    return hint->virtualMachine;
+}
+
+/// A running hypervisor without CPUID (ARM64, #2377): SystemHypervisorInformation, the secure kernel's
+/// state and the SMBIOS table's virtual-machine hint (hypervisorPresentWithoutCpuid()).
+[[nodiscard]] std::optional<bool> readHypervisorPresentWithoutCpuid(Windows::NtQuerySystemInformationFn ntQuery,
+                                                                    std::optional<bool> vbsRunning)
+{
+    std::optional<bool> kernelReports;
+    if (ntQuery != nullptr)
+    {
+        std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information{};
+        if (ntQuery(SystemHypervisorInformationClass, information.data(), static_cast<ULONG>(information.size()), nullptr) == 0)
+        {
+            kernelReports = hypervisorQueryPresent(information);
+        }
+    }
+    return hypervisorPresentWithoutCpuid(kernelReports, vbsRunning, readSmbiosVirtualMachine());
+}
+#endif
+
 /// Sockets, cores, logical processors and cache sizes from one GetLogicalProcessorInformationEx call
 /// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
 /// processor as the per-core counters do (#1107), for efficiencyClassByCoreId and `activeIds`, which
@@ -256,20 +306,10 @@ void readProcessorTopology(const WindowsSystemProbeFunctions::Cpu& fns,
     CpuTopology::sumCacheInstances(caches, details);
 }
 
-/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
-/// processor-feature flags, CPUID, and two NtQuerySystemInformation classes a standard user may
-/// query -- no WMI, no elevation.
-void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+/// Memory integrity and virtualization-based security (#809), from two NtQuerySystemInformation
+/// classes a standard user may query. Nothing is read without @p ntQuery.
+void readSecureKernelStatus(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
 {
-    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
-    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
-    // CPUID is x64-only; on ARM64 hypervisorPresent stays unknown (#2214).
-#if defined(_M_X64) || defined(__x86_64__)
-    std::array<int, 4> registers{};
-    __cpuid(registers.data(), 1);
-    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
-#endif
-
     if (ntQuery == nullptr)
     {
         return;
@@ -290,6 +330,23 @@ void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails&
     {
         details.vbsRunning = secureKernelRunning(isolatedUserMode[0]);
     }
+}
+
+/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
+/// processor-feature flags, CPUID, and NtQuerySystemInformation classes a standard user may query --
+/// no WMI, no elevation. ARM64 has no CPUID, so it asks Windows and the SMBIOS table instead (#2377).
+void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+{
+    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
+    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
+    readSecureKernelStatus(ntQuery, details);
+#if defined(_M_X64) || defined(__x86_64__)
+    std::array<int, 4> registers{};
+    __cpuid(registers.data(), 1);
+    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
+#else
+    details.hypervisorPresent = readHypervisorPresentWithoutCpuid(ntQuery, details.vbsRunning);
+#endif
 }
 
 /// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof

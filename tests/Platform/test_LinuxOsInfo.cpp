@@ -170,6 +170,10 @@ TEST(LinuxOsInfoTest, VirtualizationHints)
     root.write("sys/class/dmi/id/sys_vendor", "Microsoft Corporation");
     root.write("sys/class/dmi/id/product_name", "Virtual Machine");
     EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine (Hyper-V)");
+    // Parallels' ARM product name ends like Hyper-V's; its own name wins (#2377).
+    root.write("sys/class/dmi/id/sys_vendor", "Parallels International GmbH.");
+    root.write("sys/class/dmi/id/product_name", "Parallels ARM Virtual Machine");
+    EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine (Parallels)");
     root.write(".dockerenv", "");
     EXPECT_EQ(virtualizationHint(root.path()), "Container (Docker)");
     root.write("run/.containerenv", "engine=\"podman\"\n");

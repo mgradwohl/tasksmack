@@ -3,8 +3,9 @@
 // A pure SMBIOS (DMTF DSP0134) table parser (#1513): the RawSMBIOSData blob Windows'
 // GetSystemFirmwareTable('RSMB') returns, a bounds-checked walk of the structure table (formatted area,
 // then a string set ended by a double NUL), and decoders for types 0 (BIOS), 1 (System), 2 (Baseboard)
-// and 3 (Chassis), 16 (Physical Memory Array) and 17 (Memory Device, #1515). Standard library only, so
-// it is fuzzed and unit-tested on every platform.
+// and 3 (Chassis), 16 (Physical Memory Array) and 17 (Memory Device, #1515), and the virtual-machine
+// hint types 0 and 1 give (#2377). Standard library only, so it is fuzzed and unit-tested on every
+// platform.
 //
 // Reuse: parseStructures() yields every structure; filter by type and read fields with
 // Structure::byte()/word()/dword()/qword()/stringAt(), which return nothing past the structure's
@@ -432,6 +433,72 @@ inline constexpr std::uint8_t CHASSIS_TYPE_MASK = 0x7F;
     default:
         return {};
     }
+}
+
+/// Type 0's BIOS Characteristics Extension Byte 2 (SMBIOS 2.4+) and its bit 4, which a hypervisor's
+/// firmware sets: "SMBIOS table describes a virtual machine" (DSP0134 7.1.2.2).
+inline constexpr std::size_t BIOS_CHARACTERISTICS_EXTENSION_2_OFFSET = 0x13;
+inline constexpr std::uint8_t BIOS_VIRTUAL_MACHINE_BIT = 0x10;
+
+/// Whether a type 0 structure says the table describes a virtual machine; false for a structure too
+/// short to carry the byte (before SMBIOS 2.4).
+[[nodiscard]] inline bool biosDescribesVirtualMachine(const Structure& bios) noexcept
+{
+    const std::optional<std::uint8_t> extension = bios.byte(BIOS_CHARACTERISTICS_EXTENSION_2_OFFSET);
+    return extension.has_value() && (*extension & BIOS_VIRTUAL_MACHINE_BIT) != 0;
+}
+
+/// The hypervisor a system's manufacturer and product name (type 1, or Linux's DMI sys_vendor and
+/// product_name) name: "QEMU", "Hyper-V", "Parallels", ... Empty for a name no known hypervisor sets.
+/// @p systemNames is the two joined by a space. A vendor's own name wins over Hyper-V's bare "Virtual
+/// Machine", which other products end with too ("Parallels ARM Virtual Machine", "QEMU Virtual Machine").
+[[nodiscard]] constexpr std::string_view virtualMachineVendor(std::string_view systemNames) noexcept
+{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 8> VENDORS{{
+        {"QEMU", "QEMU"}, // UTM's QEMU backend too
+        {"KVM", "KVM"},
+        {"VMware", "VMware"},
+        {"VirtualBox", "VirtualBox"},
+        {"Xen", "Xen"},
+        {"Parallels", "Parallels"},
+        {"Amazon EC2", "Amazon EC2"},
+        {"Virtual Machine", "Hyper-V"}, // Microsoft Corporation's product name
+    }};
+    for (const auto& [needle, vendor] : VENDORS)
+    {
+        if (systemNames.contains(needle))
+        {
+            return vendor;
+        }
+    }
+    return {};
+}
+
+/// What a SMBIOS table says about running in a virtual machine (#2377).
+struct VirtualMachineHint
+{
+    bool virtualMachine = false; ///< Type 0's virtual-machine bit is set, or type 1 names a hypervisor
+    std::string_view vendor;     ///< virtualMachineVendor() of type 1's names; empty when it names none
+};
+
+/// The virtual-machine hint of a RawSMBIOSData blob; nullopt when the blob holds no table.
+[[nodiscard]] inline std::optional<VirtualMachineHint> virtualMachineHint(Bytes rawSmbiosData)
+{
+    const std::optional<Table> table = parseRawSmbiosData(rawSmbiosData);
+    if (!table.has_value())
+    {
+        return std::nullopt;
+    }
+    const std::vector<Structure> structures = parseStructures(table->data);
+    VirtualMachineHint hint;
+    if (const Structure* system = findFirst(structures, TYPE_SYSTEM); system != nullptr)
+    {
+        const SystemFields fields = decodeSystem(*system, *table);
+        hint.vendor = virtualMachineVendor(fields.manufacturer + " " + fields.productName);
+    }
+    const Structure* bios = findFirst(structures, TYPE_BIOS);
+    hint.virtualMachine = !hint.vendor.empty() || (bios != nullptr && biosDescribesVirtualMachine(*bios));
+    return hint;
 }
 
 /// Whether a string is a firmware placeholder for "no value" ("Unknown", "Not Specified", "NO DIMM",

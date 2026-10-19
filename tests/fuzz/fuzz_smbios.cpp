@@ -20,6 +20,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     Platform::MemoryModulesInfo memory;
     static_cast<void>(Platform::Smbios::decodeMemoryModules(bytes, memory));
     Platform::Smbios::decodeMemoryTable(bytes, memory);
+    static_cast<void>(Platform::Smbios::virtualMachineHint(bytes)); // #2377
 
     const Platform::Smbios::Table table{.majorVersion = 3, .minorVersion = 4, .data = bytes};
     for (const Platform::Smbios::Structure& structure : Platform::Smbios::parseStructures(bytes))
@@ -28,6 +29,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         static_cast<void>(Platform::Smbios::decodeSystem(structure, table));
         static_cast<void>(Platform::Smbios::decodeBaseboard(structure));
         static_cast<void>(Platform::Smbios::decodeChassis(structure));
+        static_cast<void>(Platform::Smbios::biosDescribesVirtualMachine(structure));
         static_cast<void>(Platform::Smbios::decodeMemoryArray(structure));
         static_cast<void>(Platform::Smbios::decodeMemoryDevice(structure));
         static_cast<void>(structure.qword(0x0F));

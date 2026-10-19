@@ -469,4 +469,39 @@ inline constexpr std::uint32_t CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED = 0x400U;
     return (cpuidLeaf1Ecx & 0x8000'0000U) != 0;
 }
 
+/// SYSTEM_HYPERVISOR_QUERY_INFORMATION, what SystemHypervisorInformation fills (#2377): the BOOLEANs
+/// HypervisorConnected, HypervisorDebuggingEnabled and HypervisorPresent, five spare bytes, then the
+/// ULONGLONG EnabledEnlightenments.
+inline constexpr std::size_t HYPERVISOR_QUERY_INFORMATION_SIZE = 16;
+
+/// Whether SystemHypervisorInformation says Windows runs on a hypervisor: present, or connected to one
+/// (Hyper-V, or one that offers its interface).
+[[nodiscard]] constexpr bool hypervisorQueryPresent(std::span<const std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information) noexcept
+{
+    constexpr std::size_t CONNECTED = 0;
+    constexpr std::size_t PRESENT = 2;
+    return information[CONNECTED] != 0 || information[PRESENT] != 0;
+}
+
+/// A running hypervisor without CPUID's bit (ARM64, #2377), from what Windows and the firmware say:
+/// @p kernelReports is SystemHypervisorInformation's answer (hypervisorQueryPresent()), @p vbsRunning
+/// the secure kernel's state, which needs Hyper-V under it, and @p smbiosVirtualMachine whether the
+/// SMBIOS table describes a virtual machine (Smbios::virtualMachineHint()), which catches a hypervisor
+/// that offers no Hyper-V interface (QEMU, Parallels, VMware). Any yes is a yes. A no needs the kernel's
+/// own answer: the table alone says nothing of Hyper-V running under this Windows on bare metal.
+[[nodiscard]] constexpr std::optional<bool> hypervisorPresentWithoutCpuid(std::optional<bool> kernelReports,
+                                                                          std::optional<bool> vbsRunning,
+                                                                          std::optional<bool> smbiosVirtualMachine) noexcept
+{
+    if (kernelReports.value_or(false) || vbsRunning.value_or(false) || smbiosVirtualMachine.value_or(false))
+    {
+        return true;
+    }
+    if (kernelReports.has_value())
+    {
+        return false;
+    }
+    return std::nullopt;
+}
+
 } // namespace Platform
