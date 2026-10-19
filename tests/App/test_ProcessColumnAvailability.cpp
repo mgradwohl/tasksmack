@@ -36,19 +36,29 @@ using ProcessColumnAvailability::unavailableValuesNote;
     caps.hasProcessType = true;
     caps.hasArchitecture = true; // #2394
     caps.hasGdiObjects = true;
-    caps.hasSharedMemory = false;
+    caps.hasSharedMemory = true;  // The shareable working set (#2583)
     caps.hasPrivateBytes = false; // Private bytes are the commit size, Virtual (#1879)
     caps.hasSwapBytes = false;    // No per-process swap figure (#1879)
     return caps;
 }
 
-TEST(ProcessColumnAvailabilityTest, SharedMemoryIsUnsupportedOnWindows)
+TEST(ProcessColumnAvailabilityTest, SharedMemoryIsSupportedOnWindowsAndStaysHiddenByDefault)
 {
-    // #1210: Windows has no shared memory figure, so its column is all dashes and its header says why.
+    // #2583: Windows fills Shared from the shareable working set; its column was all dashes before
+    // (#1035, #1210). It stays off by default, as on Linux. Power is still unsupported (#1028).
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
-    EXPECT_FALSE(isSupported(ProcessColumn::Shared, caps));
-    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Shared, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_TRUE(isSupported(ProcessColumn::Shared, caps));
+    EXPECT_TRUE(unavailableValuesNote(ProcessColumn::Shared, caps).empty());
+    EXPECT_TRUE(rowFormatOptions(caps).hasSharedMemory);
+    EXPECT_FALSE(getColumnInfo(ProcessColumn::Shared).defaultVisible);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps).isVisible(ProcessColumn::Shared));
     EXPECT_FALSE(isSupported(ProcessColumn::Power, caps));
+
+    // Without the capability the column is all dashes and its header says why.
+    Platform::ProcessCapabilities without = caps;
+    without.hasSharedMemory = false;
+    EXPECT_FALSE(isSupported(ProcessColumn::Shared, without));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Shared, without), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
 }
 
 TEST(ProcessColumnAvailabilityTest, WindowsHasNeitherPrivateNorSwap)
@@ -590,7 +600,7 @@ TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
     const ProcessRowFormat::RowFormatOptions options = rowFormatOptions(caps);
     EXPECT_FALSE(options.hasPowerUsage);
-    EXPECT_FALSE(options.hasSharedMemory);
+    EXPECT_TRUE(options.hasSharedMemory);
     EXPECT_TRUE(options.hasIoCounters);
     EXPECT_TRUE(options.hasNetworkCounters);
     EXPECT_TRUE(options.hasThreadCount);

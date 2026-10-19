@@ -208,8 +208,8 @@ TEST(ProcessRowFormatTest, UnavailableCellTextIsAnEmDash)
 
 TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
 {
-    // Windows measures neither power (#1028) nor shared memory (#1035): those cells must say "no
-    // data", not a measured-looking value, even when a snapshot carries one.
+    // A platform that doesn't measure power (Windows, #1028) or shared memory: those cells must say
+    // "no data", not a measured-looking value, even when a snapshot carries one.
     ProcessRowFormat::RowFormatOptions unsupported;
     unsupported.hasPowerUsage = false;
     unsupported.hasSharedMemory = false;
@@ -228,6 +228,19 @@ TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
     const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, noPower);
     expectUnavailable(entry.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
     EXPECT_EQ(entry.shared.text, "64.0 MiB");
+}
+
+TEST(ProcessRowFormatTest, WindowsShowsSharedMemoryButNotPower)
+{
+    // Windows fills Shared from the shareable working set (#2583) but measures no power (#1028).
+    ProcessRowFormat::RowFormatOptions windows;
+    windows.hasPowerUsage = false;
+    windows.hasSharedMemory = true;
+    const RowFormatCache cells = buildRowFormatCache(makeSnapshot(), windows);
+    EXPECT_EQ(cells.shared.text, "64.0 MiB");
+    EXPECT_EQ(cells.shared.tone, CellTone::Value);
+    EXPECT_EQ(cells.shared.unavailableReason, nullptr);
+    expectUnavailable(cells.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
 }
 
 TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapability)

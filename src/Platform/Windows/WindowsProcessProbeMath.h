@@ -912,6 +912,7 @@ struct WindowsProcessMemoryFields
 struct WindowsProcessMemory
 {
     std::uint64_t rssBytes = 0;
+    std::uint64_t sharedBytes = 0;
     std::uint64_t peakRssBytes = 0;
     std::uint64_t virtualBytes = 0;
 };
@@ -920,6 +921,12 @@ struct WindowsProcessMemory
 /// - Memory (rssBytes): the private working set, Task Manager's default "Memory (private working
 ///   set)". The full working set also counts shared pages (DLLs, mapped files) that every process
 ///   mapping them shows again.
+/// - Shared (sharedBytes): the shareable working set, WorkingSetSize - WorkingSetPrivateSize: the pages
+///   in RAM that can be shared with other processes (DLLs, mapped files), whether or not another
+///   process maps them now (#2583). Both figures come in the same SYSTEM_PROCESS_INFORMATION entry, so
+///   it costs no system call; QueryWorkingSetEx would say which pages are shared now, page by page.
+///   Clamped at 0: the two are read together but not atomically, and a negative private working set
+///   counts as 0, as it does for Memory.
 /// - Virtual (virtualBytes): the commit size, Task Manager's "Commit size". VirtualSize counts
 ///   reserved address space too, which reads in terabytes for any process using Control Flow Guard
 ///   or a large reservation (Chromium, the JVM).
@@ -927,8 +934,10 @@ struct WindowsProcessMemory
 ///   pages, so it can be above every private working set the process had.
 [[nodiscard]] constexpr WindowsProcessMemory windowsProcessMemory(const WindowsProcessMemoryFields& fields) noexcept
 {
+    const std::uint64_t privateWorkingSet = fields.workingSetPrivateSize > 0 ? static_cast<std::uint64_t>(fields.workingSetPrivateSize) : 0;
     return WindowsProcessMemory{
-        .rssBytes = fields.workingSetPrivateSize > 0 ? static_cast<std::uint64_t>(fields.workingSetPrivateSize) : 0,
+        .rssBytes = privateWorkingSet,
+        .sharedBytes = fields.workingSetSize > privateWorkingSet ? fields.workingSetSize - privateWorkingSet : 0,
         .peakRssBytes = fields.peakWorkingSetSize,
         .virtualBytes = fields.pagefileUsage,
     };

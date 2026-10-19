@@ -2213,6 +2213,9 @@ struct NowBar
     /// with no fill (drawUnavailableVerticalBar()) rather than as a zero bar, which would read as a
     /// measured 0 (#1918). value01 is then ignored.
     bool available = true;
+    /// Hover text for the bar's value-strip entry when not null, as ValueStripEntry::tooltip: what the
+    /// series is, where its name alone could mislead (#2583: Shared on Windows). Must outlive the strip call.
+    const char* stripTooltip = nullptr;
 };
 
 /// A chart's NowBars, held in place: built every frame without a heap allocation (#1018). A chart
@@ -3318,7 +3321,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         std::string_view compactHead;
         std::string_view compactTail;
         bool rightAxis = false;         // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
-        std::string_view tooltip;       // An extra's hover text (ValueStripEntry::tooltip)
+        std::string_view tooltip;       // Hover text (ValueStripEntry::tooltip, NowBar::stripTooltip)
         AxisSide side = AxisSide::Left; // The side of the axis the series is read against (#1882)
     };
     static std::vector<Entry> entries; // UI thread only; reused
@@ -3347,7 +3350,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .compactHead = label.name,
                            .compactTail = bar.valueText,
                            .rightAxis = label.rightAxis,
-                           .tooltip = {},
+                           .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
                            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
     }
     for (const ValueStripEntry& entry : extras)

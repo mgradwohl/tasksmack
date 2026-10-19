@@ -62,15 +62,13 @@ TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
     EXPECT_NO_THROW({ const WindowsProcessProbe probe; });
 }
 
-TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInvented)
+TEST(WindowsProcessProbeTest, PowerIsNotClaimedAndNoEnergyIsInvented)
 {
     // Power used to be "available" whenever AC status was known, and was a fabricated 1 J per
-    // sample shared out by CPU time (#1028). Shared memory was never filled (#1035). Neither is
-    // claimed now, and no process carries energy.
+    // sample shared out by CPU time (#1028). It is not claimed now, and no process carries energy.
     WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasPowerUsage);
-    EXPECT_FALSE(caps.hasSharedMemory);
     // SYSTEM_PROCESS_INFORMATION's PageFaultCount is a 32-bit ULONG that wraps (#1184).
     EXPECT_EQ(caps.pageFaultCountBits, 32U);
 
@@ -101,6 +99,23 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasPublisher);
     EXPECT_TRUE(caps.hasProcessType);
     EXPECT_TRUE(caps.hasGdiObjects);
+
+    // Shared is the shareable working set (#2583); it was never filled before (#1035).
+    EXPECT_TRUE(caps.hasSharedMemory);
+}
+
+TEST(WindowsProcessProbeTest, OwnProcessReportsItsShareableWorkingSet)
+{
+    // This test binary maps ntdll, kernel32 and the C runtime, whose code pages are shareable, so its
+    // working set has a shareable part (#2583): Shared is WorkingSetSize less Memory, the private
+    // working set.
+    WindowsProcessProbe probe;
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    ASSERT_NE(it, processes.end());
+    EXPECT_GT(it->sharedBytes, 0ULL);
+    EXPECT_GT(it->rssBytes, 0ULL);
 }
 
 TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)

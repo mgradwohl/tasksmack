@@ -899,7 +899,8 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         counters.startTimeTicks = static_cast<std::uint64_t>(info->createTime.QuadPart);
         counters.startTimeEpoch = Windows::fileTimeToUnixSeconds(counters.startTimeTicks);
 
-        // Memory is the private working set and Virtual the commit size, as Task Manager shows them (#1184)
+        // Memory is the private working set and Virtual the commit size, as Task Manager shows them (#1184);
+        // Shared the rest of the working set, its shareable pages (#2583)
         const WindowsProcessMemory memory = windowsProcessMemory({
             .workingSetPrivateSize = info->workingSetPrivateSize.QuadPart,
             .workingSetSize = info->workingSetSize,
@@ -908,6 +909,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
             .pagefileUsage = info->pagefileUsage,
         });
         counters.rssBytes = memory.rssBytes;
+        counters.sharedBytes = memory.sharedBytes;
         counters.peakRssBytes = memory.peakRssBytes;
         counters.virtualBytes = memory.virtualBytes;
         counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(info->pageFaultCount, std::uint64_t{0});
@@ -1291,7 +1293,8 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasReducedPrivileges = denial.reducedPrivileges,
         // Elevated + EStats access-denied: blocked by policy or a driver; elevating can't help (#1358).
         .networkCountersBlocked = denial.blocked,
-        .hasSharedMemory = false,
+        // The shareable working set: WorkingSetSize - WorkingSetPrivateSize, from the same entry (#2583)
+        .hasSharedMemory = true,
         // hasPrivateBytes and hasSwapBytes stay false (#1879): Windows' private bytes (PrivatePageCount)
         // are the commit charge, already the Virtual column, and Windows doesn't report how much of one
         // process is in the pagefile.

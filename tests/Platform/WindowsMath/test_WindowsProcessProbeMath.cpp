@@ -1420,10 +1420,60 @@ TEST(WindowsProcessMemoryTest, NegativePrivateWorkingSetReadsAsZero)
     EXPECT_EQ(memory.rssBytes, 0U);
 }
 
+TEST(WindowsProcessMemoryTest, SharedIsTheShareableWorkingSet)
+{
+    // The same process: 160 MiB of its 200 MiB working set is DLL and mapped-file pages, which other
+    // processes can share (#2583). Memory and Shared add up to the whole working set.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.sharedBytes, 160 * ONE_MIB);
+    EXPECT_EQ(memory.rssBytes + memory.sharedBytes, 200 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, AnAllPrivateWorkingSetHasNoSharedPart)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(64 * ONE_MIB),
+        .workingSetSize = 64 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 64 * ONE_MIB);
+    EXPECT_EQ(memory.sharedBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, SharedClampsAtZeroWhenThePrivateWorkingSetIsTheLarger)
+{
+    // The two figures are not read atomically: a private working set read after the working set grew
+    // can exceed it. Shared reads 0 then, not a wrapped-around 16 EiB.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(48 * ONE_MIB),
+        .workingSetSize = 40 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 48 * ONE_MIB);
+    EXPECT_EQ(memory.sharedBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, ANegativePrivateWorkingSetLeavesTheWholeWorkingSetShared)
+{
+    // A negative WorkingSetPrivateSize counts as 0 for Memory, so it counts as 0 for Shared too: Shared
+    // is the whole working set, never more than it.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = -1,
+        .workingSetSize = 8 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 0U);
+    EXPECT_EQ(memory.sharedBytes, 8 * ONE_MIB);
+}
+
 TEST(WindowsProcessMemoryTest, KernelPseudoProcessWithNoMemoryReadsZero)
 {
     const WindowsProcessMemory memory = windowsProcessMemory({});
     EXPECT_EQ(memory.rssBytes, 0U);
+    EXPECT_EQ(memory.sharedBytes, 0U);
     EXPECT_EQ(memory.peakRssBytes, 0U);
     EXPECT_EQ(memory.virtualBytes, 0U);
 }

@@ -315,7 +315,7 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsCpuMemoryAndResources)
 TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCapabilities)
 {
     ChartInputs inputs(busyPoint);
-    inputs.ctx.hasSharedMemory = false; // Windows: no Shared line (#1035)
+    inputs.ctx.hasSharedMemory = false; // A platform without Shared: no Shared line (#1035)
     inputs.ctx.hasPowerUsage = true;    // Linux with RAPL: a Power chart before Resources
     ProcessDetailsCharts charts;
     renderOverview(charts, inputs.ctx);
