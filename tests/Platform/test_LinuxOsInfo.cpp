@@ -5,7 +5,7 @@
 /// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo; and Platform::LinuxCommitPaging
 /// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxStorage (#1517),
 /// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
-/// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys; and
+/// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys, dm-crypt volumes (#2585); and
 /// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors; and Platform::LinuxNetworkAdapters
 /// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root.
 /// The headers use only the standard library, so these build and run on every platform.
@@ -926,6 +926,130 @@ TEST(LinuxPlatformSecurityTest, NothingReadableLeavesEverythingUnknown)
     std::filesystem::create_directories(root.path() / "sys/class"); // sysfs, but no TPM
     LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
     EXPECT_EQ(info.tpm, SecurityFeatureState::NotSupported);
+}
+
+/// A /sys/block/dm-N in @p root (#2585): its dm/name, dm/uuid, dev and one slaves/ entry per @p slaves.
+void writeDmDevice(const FixtureRoot& root,
+                   std::string_view kernelName,
+                   std::string_view name,
+                   std::string_view uuid,
+                   std::string_view device,
+                   std::initializer_list<std::string_view> slaves)
+{
+    root.write(std::format("sys/block/{}/dm/name", kernelName), std::format("{}\n", name));
+    root.write(std::format("sys/block/{}/dm/uuid", kernelName), std::format("{}\n", uuid));
+    root.write(std::format("sys/block/{}/dev", kernelName), std::format("{}\n", device));
+    for (const std::string_view slave : slaves)
+    {
+        root.write(std::format("sys/block/{}/slaves/{}", kernelName, slave), ""); // a symlink in sysfs
+    }
+}
+
+TEST(LinuxPlatformSecurityTest, CryptTypeFromTheDeviceMapperUuid)
+{
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType("CRYPT-LUKS2-0123456789abcdef0123456789abcdef-dm_crypt-0"), "LUKS2");
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType("CRYPT-LUKS1-0123456789abcdef0123456789abcdef-home"), "LUKS1");
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType("CRYPT-PLAIN-cryptswap"), "Plain");
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType("CRYPT-VERITY-0123-root"), ""); // integrity, not encryption
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType("LVM-abcdefABCDEF"), "");
+    EXPECT_EQ(LinuxPlatformSecurity::cryptType(""), "");
+}
+
+// #2585: Ubuntu's "encrypt the disk" install: / on an LVM volume on a LUKS2 physical volume.
+TEST(LinuxPlatformSecurityTest, LuksTwoRootOnLvm)
+{
+    const FixtureRoot root;
+    root.write("sys/block/nvme0n1/dev", "259:0\n");
+    writeDmDevice(root, "dm-0", "dm_crypt-0", "CRYPT-LUKS2-0123456789abcdef0123456789abcdef-dm_crypt-0", "252:0", {"nvme0n1p3"});
+    writeDmDevice(root, "dm-1", "ubuntu--vg-ubuntu--lv", "LVM-abcdefABCDEF", "252:1", {"dm-0"});
+    root.write("proc/self/mountinfo",
+               "26 1 252:1 / / rw,relatime shared:1 - ext4 /dev/mapper/ubuntu--vg-ubuntu--lv rw\n"
+               "22 26 0:21 / /proc rw,nosuid shared:12 - proc proc rw\n"
+               "30 26 259:2 / /boot rw,relatime shared:5 - ext4 /dev/nvme0n1p2 rw\n"
+               "31 30 259:1 / /boot/efi rw,relatime shared:6 - vfat /dev/nvme0n1p1 rw\n");
+
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
+    EXPECT_TRUE(info.encryptedVolumesRead);
+    ASSERT_EQ(info.encryptedVolumes.size(), 1U); // the LV isn't a volume of its own
+    const EncryptedVolume& volume = info.encryptedVolumes[0];
+    EXPECT_EQ(volume.name, "dm_crypt-0");
+    EXPECT_EQ(volume.type, "LUKS2");
+    EXPECT_EQ(volume.device, "nvme0n1p3");
+    EXPECT_EQ(volume.mountPoints, std::vector<std::string>{"/"}); // through the LV; /boot isn't encrypted
+}
+
+// #2585: a LUKS1 /home straight on a partition, matched by its major:minor.
+TEST(LinuxPlatformSecurityTest, LuksOneHome)
+{
+    const FixtureRoot root;
+    writeDmDevice(root, "dm-0", "home_crypt", "CRYPT-LUKS1-0123456789abcdef0123456789abcdef-home_crypt", "253:0", {"sda2"});
+    root.write("proc/self/mountinfo",
+               "26 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"
+               "40 26 253:0 / /home rw,relatime shared:20 - ext4 /dev/dm-0 rw\n");
+
+    bool read = false;
+    const std::vector<EncryptedVolume> volumes = LinuxPlatformSecurity::readEncryptedVolumes(root.path(), read);
+    EXPECT_TRUE(read);
+    ASSERT_EQ(volumes.size(), 1U);
+    EXPECT_EQ(volumes[0].type, "LUKS1");
+    EXPECT_EQ(volumes[0].device, "sda2");
+    EXPECT_EQ(volumes[0].mountPoints, std::vector<std::string>{"/home"}); // "/" on sda1 isn't
+}
+
+// #2585: plain dm-crypt: a btrfs /data, whose mountinfo names an anonymous device so only its
+// /dev/mapper source matches (#2432), with two subvolumes; and an unmounted swap, in dm-N order.
+TEST(LinuxPlatformSecurityTest, PlainCryptVolumes)
+{
+    const FixtureRoot root;
+    writeDmDevice(root, "dm-10", "cryptswap", "CRYPT-PLAIN-cryptswap", "252:10", {"sda3"});
+    writeDmDevice(root, "dm-2", "cryptdata", "CRYPT-PLAIN-cryptdata", "252:2", {"sdb"});
+    root.write("proc/self/mountinfo",
+               "26 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"
+               "41 26 0:45 /@data /data rw,relatime shared:21 - btrfs /dev/mapper/cryptdata rw,subvol=/@data\n"
+               "42 41 0:45 /@snapshots /data/.snapshots rw,relatime shared:22 - btrfs /dev/mapper/cryptdata rw\n");
+
+    bool read = false;
+    const std::vector<EncryptedVolume> volumes = LinuxPlatformSecurity::readEncryptedVolumes(root.path(), read);
+    EXPECT_TRUE(read);
+    ASSERT_EQ(volumes.size(), 2U);
+    EXPECT_EQ(volumes[0].name, "cryptdata"); // dm-2 before dm-10
+    EXPECT_EQ(volumes[0].type, "Plain");
+    EXPECT_EQ(volumes[0].device, "sdb");
+    EXPECT_EQ(volumes[0].mountPoints, (std::vector<std::string>{"/data", "/data/.snapshots"}));
+    EXPECT_EQ(volumes[1].name, "cryptswap");
+    EXPECT_TRUE(volumes[1].mountPoints.empty()); // swap isn't mounted
+}
+
+// #2585: an LVM volume with no crypt device under it isn't encrypted; read, and none.
+TEST(LinuxPlatformSecurityTest, LvmWithoutCryptIsNotEncrypted)
+{
+    const FixtureRoot root;
+    writeDmDevice(root, "dm-0", "fedora-root", "LVM-abcdefABCDEF", "253:0", {"sda2"});
+    root.write("proc/self/mountinfo", "26 1 253:0 / / rw,relatime shared:1 - xfs /dev/mapper/fedora-root rw\n");
+
+    bool read = false;
+    EXPECT_TRUE(LinuxPlatformSecurity::readEncryptedVolumes(root.path(), read).empty());
+    EXPECT_TRUE(read);
+}
+
+// #2585: no device-mapper devices at all is "none"; no /sys/block is unknown, not "none".
+TEST(LinuxPlatformSecurityTest, NoDmDevicesAndNoSysBlock)
+{
+    {
+        const FixtureRoot root;
+        root.write("sys/block/nvme0n1/dev", "259:0\n");
+        bool read = false;
+        EXPECT_TRUE(LinuxPlatformSecurity::readEncryptedVolumes(root.path(), read).empty());
+        EXPECT_TRUE(read);
+    }
+    {
+        const FixtureRoot root; // sysfs not mounted, or /sys/block unreadable
+        PlatformSecurityInfo info;
+        LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
+        EXPECT_FALSE(info.encryptedVolumesRead);
+        EXPECT_TRUE(info.encryptedVolumes.empty());
+    }
 }
 
 TEST(LinuxSensorsTest, ParsesValuesAndChannels)
