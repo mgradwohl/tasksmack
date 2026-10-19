@@ -10,7 +10,7 @@ This document defines the test matrix and acceptance criteria for the Wayland na
 ## Implementation Summary
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
 1. **Native Wayland:** Compositor-managed maximize/restore, event-consistent local-coordinate drag
-2. **X11/XWayland:** Client-side maximize/restore, global-coordinate drag (existing behavior preserved)
+2. **X11/XWayland:** Maximize asks the window manager when it supports EWMH maximize (#1339), otherwise client-side maximize/restore; global-coordinate drag (existing behavior preserved)
 3. **Windows:** Client-side interactions (existing behavior preserved)
 
 Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which env vars happen to be set. Native Wayland is `driver == "wayland"`, checked first -- this matters because `DISPLAY` is commonly set on a Wayland session too (e.g. XWayland running for other apps), so testers should not assume "DISPLAY is set" means an X11/XWayland run. XWayland fallback is `driver == "x11"` *and* `WAYLAND_DISPLAY` set; plain X11 is `driver == "x11"` with `WAYLAND_DISPLAY` unset.
@@ -31,10 +31,12 @@ These tests verify the backend detection and capability query system that gates 
 
 **Test Coverage:**
 - `ClassifyBackendTest` (6 cases) - table-tests `VideoBackend::classifyBackend(driverName, waylandDisplaySet)` directly. It's a pure function with no SDL/environment calls of its own, so every backend and edge case (empty/unrecognized driver name, Wayland regardless of env, X11 with/without `WAYLAND_DISPLAY`, Windows per-platform) is exercised deterministically regardless of what driver the test process actually has active.
-- `VideoBackendTest` (7 `TEST_F` cases) - exercises the real `initialize()`/`isWayland()`/etc. path against whichever real or headless SDL driver is active, so (unlike `ClassifyBackendTest`) these check cross-backend invariants rather than asserting a specific backend on every platform:
+- `ShouldUseBorderlessTitleBarTest` (3 cases) - table-tests `VideoBackend::shouldUseBorderlessTitleBar(forceNativeDecorationsOnWayland, isWayland)`: the custom title bar is used unless the native-decorations opt-in is on *and* the backend is native Wayland (#745).
+- `VideoBackendTest` (8 `TEST_F` cases) - exercises the real `initialize()`/`isWayland()`/etc. path against whichever real or headless SDL driver is active, so (unlike `ClassifyBackendTest`) these check cross-backend invariants rather than asserting a specific backend on every platform:
   - `InitializeIsIdempotent` - calling `initialize()` twice doesn't change the result
   - `DriverNameIsNotEmptyAfterInitialize` - driver name is always available once initialized
   - `BackendFlagsAreMutuallyExclusive` - at most one of `isWayland`/`isX11`/`isXWaylandFallback`/`isWindows` is true
+  - `ResetForTestingAllowsReinitialization` - `resetForTesting()` clears the cached backend, and a second `initialize()` detects the same driver again
   - `NativeWaylandIsNeverClassifiedAsXWaylandFallback` - regression test for the native-Wayland-vs-XWayland bug fixed in this PR; self-skips unless the actual driver is `"wayland"`
   - `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
   - `SupportsGlobalMouseStateIsFalseOnlyOnWayland` - global mouse state is deliberately unsupported on native Wayland (`TitleBarLayer` uses the window-local query there instead)
@@ -70,7 +72,7 @@ ctest --preset debug              # Linux tests
 
 #### Linux - XWayland Fallback
 - [ ] GNOME Wayland with XWayland fallback enabled
-  - [ ] Start tasksmack with `DISPLAY=:<N>` and `WAYLAND_DISPLAY` set, **and** `SDL_VIDEODRIVER=x11` -- setting the display variables alone does not select XWayland; SDL still normally chooses its native Wayland driver
+  - [ ] Start TaskSmack with `DISPLAY=:<N>` and `WAYLAND_DISPLAY` set, **and** `SDL_VIDEODRIVER=x11` -- setting the display variables alone does not select XWayland; SDL still normally chooses its native Wayland driver
   - [ ] Verify VideoBackend logs confirm the `x11` driver before recording results
   - Verify behavior matches X11 (client-side positioning)
 
@@ -204,7 +206,7 @@ Test toggle maximize/restore:
 **Ensure no regressions in:**
 - [ ] Process monitoring continues unaffected by window operations
 - [ ] UI responsiveness remains >60 FPS during and after drag/resize
-- [ ] Settings persistence (window position/size) works correctly
+- [ ] Settings persistence (window position/size) works correctly -- on native Wayland only the size and maximized state are restored, since the app can't position its window there (`Window::supportsPositioning()`)
 - [ ] Window close, minimize, other button actions work correctly
 
 ## Acceptance Criteria
@@ -241,16 +243,16 @@ Test toggle maximize/restore:
 ## How to Run Tests
 
 ### Prerequisites
-- Build tasksmack from the `mgradwohl-wayland-native-support` branch
+- Build TaskSmack from `main` (for example `cmake --workflow --preset dev`, or the `release` preset); the binary is `build/<preset>/bin/TaskSmack`. The commands below run it from that directory.
 - Enable resize performance tracing for diagnostics:
   ```bash
-  TASKSMACK_TRACE_RESIZE_PERF=1 ./tasksmack
+  TASKSMACK_TRACE_RESIZE_PERF=1 ./TaskSmack
   ```
 
 ### Quick Smoke Test (All Platforms)
 ```bash
 # Maximize, restore, drag, resize
-./tasksmack &
+./TaskSmack &
 # (perform manual test scenarios above)
 ```
 
@@ -263,7 +265,7 @@ Test toggle maximize/restore:
 export DISPLAY=:99
 export WAYLAND_DISPLAY=wayland-99
 export SDL_VIDEODRIVER=x11
-./tasksmack
+./TaskSmack
 # Verify the logged driver is actually "x11" (VideoBackend logs "Detected XWayland fallback")
 # before recording results -- if it logs native Wayland instead, SDL_VIDEODRIVER wasn't honored
 # and results from this run don't test XWayland at all.
@@ -277,7 +279,7 @@ export SDL_VIDEODRIVER=x11
 
 ## Documentation References
 
-- Architecture: tasksmack.md - Custom Title Bar Behavior section
-- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::getCurrentMousePosition()`, `TitleBarLayer::hitTestCallback()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
+- Architecture: tasksmack.md - Application and Rendering Lifecycle section (custom title-bar behavior per backend)
+- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::queryMouseState()`, `TitleBarLayer::hitTestCallback()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
 - Issue references: #593 (implementation), #865 (validation gate, consolidating #382 and #754), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression), #750 (drag/title-bar-button routing fix)
 - Related: #373 (custom title bar intro, historical context)

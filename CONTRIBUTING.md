@@ -128,7 +128,8 @@ python -m pip install --require-hashes -r requirements-glad.txt
 # Services tab (systemd), and on the System Information page Boot performance (#1525), disk SMART
 # health (udisks2), crash details (systemd-coredump's journal entries), and each network adapter's
 # DNS, Wi-Fi and DHCP details (systemd-resolved, NetworkManager, systemd-networkd). Found with
-# pkg-config at configure time; without it those say they are unavailable.
+# pkg-config at configure time; without it those say they are unavailable. tasksmack-helper links it
+# too, to read every user's crash entries from the journal.
 # -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
 sudo apt install libsystemd-dev pkg-config
 ```
@@ -437,6 +438,11 @@ The application target is `TaskSmack`.
 
 - Windows: the binary is under `build/win-debug/bin/TaskSmack.exe` (or your selected preset)
 - Linux: the binary is under `build/debug/bin/TaskSmack` (or your selected preset)
+- Linux: `tasksmack-helper` is built beside it, but TaskSmack only uses the installed
+  `/usr/libexec/tasksmack/tasksmack-helper` with its polkit policy. To try **Authenticate and retry**
+  from a source build, install a `.deb`/`.rpm` built with `cpack` (see Packaging below), or install
+  just that component from a `release` build (which links libc++ statically) with
+  `sudo cmake --install build/release --prefix /usr --component helper`.
 
 ## Test
 
@@ -2320,8 +2326,8 @@ Packages are created in `dist/`.
 
 What a package contains, and what it depends on (#1398):
 
-- Only the executable, the runtime assets, the Linux desktop entry and icons, and the licences
-  (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
+- Only the executable, the runtime assets, the Linux desktop entry and icons, the privileged helpers
+  described below, and the licences (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
   `third_party_licenses/` in the Windows `.zip`). Every library TaskSmack is built from is linked
   statically, so no headers, `.a`/`.lib` files, or CMake/pkg-config files belong in a package.
   Whatever the FetchContent dependencies' own install rules declare goes into a `third_party`
@@ -2332,8 +2338,19 @@ What a package contains, and what it depends on (#1398):
   apt.llvm.org clang the release is built with. `readelf -d build/release/bin/TaskSmack` should
   list no `libc++*.so`. Debug and the sanitizer presets keep the shared libc++.
 - The `.deb`'s `Depends` come from `dpkg-shlibdeps`, plus the libraries SDL3 `dlopen()`s that it
-  can't see (X11, GL/EGL), listed in `cmake/Packaging.cmake`; Wayland, the other X11 extensions
-  and Mesa's drivers are `Recommends`.
+  can't see (X11, GL/EGL), listed in `cmake/Packaging.cmake`; Wayland, the other X11 extensions,
+  Mesa's drivers and `pkexec | policykit-1` (for the helper below) are `Recommends`.
+- Linux's privileged helper, `tasksmack-helper` (#2307), and its polkit action are the `helper`
+  install component: the helper goes to `${CMAKE_INSTALL_LIBEXECDIR}/tasksmack/` and
+  `assets/linux/app.tasksmack.TaskSmack.helper.policy` to `${CMAKE_INSTALL_DATADIR}/polkit-1/actions/`
+  (`cmake/InstallRules.cmake`). Only the `.deb` and `.rpm` package that component
+  (`cmake/CPackProjectConfig.cmake.in`); the `.tar.gz` doesn't, and TaskSmack then offers no
+  **Authenticate and retry** / **Authenticate to read**. TaskSmack starts the helper with `pkexec` from
+  the fixed path `/usr/libexec/tasksmack/tasksmack-helper` (`PkexecBroker::INSTALLED_HELPER_PATH`),
+  which is also the policy's `org.freedesktop.policykit.exec.path`, so a package must use the `/usr`
+  prefix and the default `libexec` directory. The action is `app.tasksmack.TaskSmack.helper`, with
+  `auth_admin_keep` for an active session and `auth_admin` otherwise. The helper links only Platform
+  code (no SDL, ImGui, GL or config), and TaskSmack doesn't offer it when it already runs as root.
 - Windows' elevated helper, `TaskSmackHelper.exe` (#2550), installs beside `TaskSmack.exe`
   (`cmake --install` always installs it, in the `windows_helper` component). The `.zip` and the NSIS
   installer carry it only with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`, which is for

@@ -50,6 +50,8 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 
 Each package comes for x64 and, from v0.9.0, for ARM64. The x64 files are `TaskSmack-<version>-Linux.deb`, `-Linux.tar.gz` and `-win64.zip`; the ARM64 ones are `TaskSmack-<version>-linux-aarch64.deb`, `-linux-aarch64.tar.gz` and `-windows-arm64.zip` (Windows on Arm, such as Snapdragon X PCs).
 
+On Linux, the `.deb` also installs a small privileged helper and its polkit action, which let TaskSmack act on or read another user's process after asking for an administrator's password (**Authenticate and retry**, **Authenticate to read**); the `.tar.gz` doesn't include them. See the [FAQ](docs/guide/faq.md#process-io-fds-or-network-show-na-on-linux).
+
 Published x64 packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
 Every release asset is signed with Sigstore; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
