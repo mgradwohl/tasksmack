@@ -9,6 +9,7 @@
 *.gif binary
 *.ico binary
 *.svg binary
+*.ttf binary
 *.zip binary
 *.7z binary
 *.pdf binary
