@@ -3,6 +3,8 @@ name: ClusterFuzzLite Continuous Build
 on:
   push:
     branches: [main]
+    # Must match cflite_pr.yml's paths, so every path PR fuzzing watches also refreshes the baseline it
+    # fuzzes against; tools/check-cflite-paths.py (a pre-commit hook) fails if they drift (#2533).
     paths:
       - '.clusterfuzzlite/**'
       - '.github/workflows/cflite_*.yml'
@@ -13,7 +15,27 @@ on:
       - 'src/App/UserConfig.cpp'
       - 'src/App/UserConfig.h'
       - 'src/App/UserConfigHelpers.h'
+      - 'src/Core/ConfigDirOverride.*'
+      - 'src/Platform/BrokerProtocol.h'
+      - 'src/Platform/DnsMessage.h'
+      - 'src/Platform/EdidParser.h'
+      - 'src/Platform/HwIdsParser.h'
+      - 'src/Platform/IProcessModules.h'
+      - 'src/Platform/IProcessOpenFiles.h'
+      - 'src/Platform/ISystemInfoProbe.h'
+      - 'src/Platform/Linux/DesktopEntryIcons.h'
+      - 'src/Platform/Linux/LinuxCommitPaging.h'
+      - 'src/Platform/Linux/LinuxCoredumps.h'
+      - 'src/Platform/Linux/LinuxKernelModules.h'
+      - 'src/Platform/Linux/LinuxNetworkAdapters.h'
+      - 'src/Platform/Linux/LinuxStorage.h'
+      - 'src/Platform/Linux/NetworkdLinkJson.h'
+      - 'src/Platform/Linux/ProcFdParser.h'
+      - 'src/Platform/Linux/ProcMapsParser.h'
       - 'src/Platform/Linux/ProcParsing.h'
+      - 'src/Platform/Linux/ProcStatusSecurityParser.h'
+      - 'src/Platform/PartitionTable.h'
+      - 'src/Platform/SmbiosParser.h'
       - 'src/UI/Theme.h'
       - 'src/UI/ThemeLoader.cpp'
       - 'src/UI/ThemeLoader.h'

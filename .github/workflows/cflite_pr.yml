@@ -3,6 +3,8 @@ name: ClusterFuzzLite PR Fuzzing
 on:
   pull_request:
     branches: [main]
+    # Must match cflite_build.yml's paths, so the main baseline this job fuzzes against is rebuilt for
+    # every path it watches; tools/check-cflite-paths.py (a pre-commit hook) fails if they drift (#2533).
     paths:
       - '.clusterfuzzlite/**'
       - '.github/workflows/cflite_*.yml'

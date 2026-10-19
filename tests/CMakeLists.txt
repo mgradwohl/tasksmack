@@ -184,6 +184,10 @@ add_test(NAME CoverageMismatchesScript
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
 
+# tools/check-cflite-paths.py keeps the ClusterFuzzLite baseline build's paths equal to PR fuzzing's (#2533).
+add_test(NAME CheckCflitePathsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)
+
 # tools/check-dll-loads.py keeps src/ from loading a DLL by bare name (#2530).
 add_test(NAME CheckDllLoadsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_dll_loads.py)

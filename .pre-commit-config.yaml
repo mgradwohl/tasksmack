@@ -64,6 +64,14 @@ repos:
         language: python
         files: '^(\.github/(workflows|actions)/.*\.ya?ml|tools/check-cache-prune-triggers\.py)$'
         pass_filenames: false
+      # Fuzzing baseline coverage (#2533): every path cflite_pr.yml fuzzes must also trigger cflite_build.yml,
+      # or a merge touching it leaves the baseline stale and a later PR is blamed for a crash already on main.
+      - id: check-cflite-paths
+        name: Check ClusterFuzzLite build and PR workflows watch the same paths
+        entry: python -I -X utf8 tools/check-cflite-paths.py
+        language: python
+        files: '^(\.github/workflows/cflite_(build|pr)\.yml|tools/check-cflite-paths\.py)$'
+        pass_filenames: false
       # DLL planting (#2530): src/ must load every DLL with LoadLibraryExW and a LOAD_LIBRARY_SEARCH_* flag,
       # never bare LoadLibraryW, or a same-named DLL next to a portable TaskSmack.exe is loaded instead.
       - id: check-dll-loads

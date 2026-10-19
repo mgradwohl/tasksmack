@@ -237,6 +237,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-cache-prune-triggers**: Fail when a workflow that saves Actions caches (ccache, `actions/cache`, a
   repo cache action's `mode: save`, `setup-windows-llvm`, or a reusable workflow that does) is missing from
   `cache-prune.yml`'s `workflow_run` list (`tools/check-cache-prune-triggers.py`, #2410)
+- **check-cflite-paths**: Fail when `cflite_build.yml`'s `push` paths and `cflite_pr.yml`'s `pull_request`
+  paths differ, so every path PR fuzzing watches also refreshes the main baseline it fuzzes against
+  (`tools/check-cflite-paths.py`, #2533)
 - **check-dll-loads**: Fail when `src/` loads a DLL with bare `LoadLibrary`/`LoadLibraryA`/`LoadLibraryW`,
   or `LoadLibraryEx*` without a `LOAD_LIBRARY_SEARCH_*` flag; either searches the application directory
   first, so a planted DLL next to a portable `TaskSmack.exe` would load (`tools/check-dll-loads.py`, #2530)
@@ -1031,12 +1034,14 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
-any fuzzed parser (`ProcParsing.h`, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
-`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
+any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
+`ThemeLoader.{cpp,h}`, and the types they fill, such as `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
 (`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
 pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
-refresh the baseline build (`cflite_build.yml`). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
+can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
+`check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
