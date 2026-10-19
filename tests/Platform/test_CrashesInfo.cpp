@@ -485,12 +485,34 @@ LinuxCoredumps::JournalFields entry(std::string_view comm, std::uint32_t pid, st
         {"TIMESTAMP", std::to_string(unixSeconds * 1'000'000)},
         {"COMM", std::string(comm)},
         {"EXE", std::format("/usr/bin/{}", comm)},
+        {"_EXE", "/usr/lib/systemd/systemd-coredump"}, // written by systemd-coredump itself (#2382)
+        {"_UID", "0"},
     };
     if (!file.empty())
     {
         fields.emplace_back("FILENAME", std::string(file));
     }
     return fields;
+}
+
+// #2382 (#2479): an entry with systemd-coredump's message ID that systemd-coredump didn't write -- any user
+// can log one, with made-up COREDUMP_* fields -- is never listed, whatever reader returned it.
+TEST_F(CoredumpsFixture, AJournalEntryNotWrittenBySystemdCoredumpIsNotListed)
+{
+    const auto withoutSender = [](LinuxCoredumps::JournalFields fields)
+    {
+        std::erase_if(fields, [](const auto& field) { return field.first == "_EXE"; });
+        return fields;
+    };
+    LinuxCoredumps::JournalFields forged = withoutSender(entry("forged", 66, NOW - DAY));
+    forged.emplace_back("_EXE", "/usr/bin/logger"); // logged by a user, not by systemd-coredump
+    FakeJournal journal;
+    journal.entries = {forged, withoutSender(entry("nosender", 67, NOW - DAY)), entry("real", 7, NOW - (2 * DAY))};
+
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, journal.reader());
+    ASSERT_EQ(info.events.size(), 1U);
+    EXPECT_EQ(info.events[0].pid, 7U);
 }
 
 TEST_F(CoredumpsFixture, TheJournalAddsDetailsAndCrashesWithoutACore)
