@@ -25,18 +25,25 @@ JSDoc and language-level docstrings are not C++ conventions. When declaration-le
 
 ## Quick Start
 
-```bash
-git clone https://github.com/mgradwohl/tasksmack.git
-cd tasksmack
+On a new machine, in this order:
 
-# Python 3.14+ is required.
-python3.14 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+1. **Clone.** On Windows, install git and PowerShell 7 first (see
+   [Automated Setup (Windows)](#automated-setup-windows)).
 
-# Set up pre-commit hooks (recommended)
-pre-commit install
-```
+   ```bash
+   git clone https://github.com/mgradwohl/tasksmack.git
+   cd tasksmack
+   ```
+
+2. **Run your OS's automated setup**, below: [Linux](#automated-setup-linux) or
+   [Windows](#automated-setup-windows). The script installs the toolchain and Python 3.14 and
+   creates the project's Python environment (`.venv`, with pre-commit in it unless you pass
+   `--minimal`/`-Minimal`); then you activate `.venv` and run `check-prereqs`. To install the
+   prerequisites by hand instead, see [Check Prerequisites](#check-prerequisites).
+3. **Install the pre-commit hooks** (recommended), with `.venv` active: `pre-commit install`.
+   See [Pre-commit Hooks](#pre-commit-hooks-recommended).
+4. **Configure, build and test** with the [One-Command Dev Workflow](#one-command-dev-workflow):
+   `cmake --workflow --preset dev` on Linux, `cmake --workflow --preset win-dev` on Windows.
 
 ### Automated Setup (Linux)
 
@@ -52,11 +59,35 @@ The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling wi
 
 ### Automated Setup (Windows)
 
+A clean Windows 10 or 11 has neither git nor PowerShell 7 (`pwsh`), which the setup script runs
+in. Install both with winget (part of Windows' App Installer) from any terminal:
+
+```powershell
+winget install --id Git.Git --exact --source winget
+winget install --id Microsoft.PowerShell --exact --source winget
+```
+
+Then open a **new PowerShell 7 terminal** (`pwsh`; in Windows Terminal, the "PowerShell" profile,
+not "Windows PowerShell"), so both are on `PATH`, clone (see Quick Start), and from the
+repository root run:
+
 ```powershell
 pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
+```
+
+A normal (not elevated) terminal is fine: the installers ask for administrator approval (UAC) as
+they need it. The Visual Studio Build Tools install comes first and is the slow part, often 20
+minutes or more, with no output while it runs. When the script finishes, open another new
+PowerShell 7 terminal, so the `PATH` and `LLVM_ROOT` it set apply, and from the repository root
+run:
+
+```powershell
 .venv\Scripts\Activate.ps1    # Use the project-local Python environment
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
+
+Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
+`.venv\Scripts\Activate.ps1` under its default execution policy (`Restricted`).
 
 The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), LLVM 22 (`-LlvmVersion` must stay on the pinned major), CMake, Ninja, Python 3.14 and ccache, then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it and, unless `-Minimal` is used, the development dependencies from `requirements.txt`. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and treats ccache as recommended, not required.
 

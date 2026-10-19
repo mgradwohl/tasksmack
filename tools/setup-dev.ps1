@@ -9,8 +9,11 @@
 #
 # See CONTRIBUTING.md for full documentation of prerequisites.
 #
-# Note: LLVM_ROOT must be set to C:\Program Files\LLVM after installation.
-# Run this script from an elevated (Administrator) PowerShell session.
+# Needs winget and PowerShell 7; a clean Windows gets PowerShell 7 with
+# `winget install --id Microsoft.PowerShell --exact --source winget` (CONTRIBUTING.md, Automated Setup (Windows)).
+# Run it from a normal PowerShell 7 terminal: the installers ask for administrator approval (UAC)
+# themselves. It sets LLVM_ROOT to C:\Program Files\LLVM, machine-wide from an elevated terminal and
+# for the current user otherwise.
 
 [CmdletBinding()]
 param(
@@ -233,13 +236,17 @@ if (-not $Minimal) {
 Write-Host ""
 Write-Host "=== Setup complete ==="
 Write-Host ""
-Write-Host "IMPORTANT: Restart your terminal (or log out/in) for PATH changes to take effect."
+Write-Host "IMPORTANT: Open a new PowerShell 7 (pwsh) terminal for the PATH and LLVM_ROOT changes to take effect."
 Write-Host ""
-Write-Host "Next steps:"
-Write-Host "  1. Activate Python:     .venv\Scripts\Activate.ps1"
-Write-Host "  2. Verify environment:  pwsh tools/check-prereqs.ps1"
-Write-Host "  3. Configure project:   cmake --preset win-debug"
-Write-Host "  4. Build:               cmake --build --preset win-debug"
-Write-Host "  5. Run tests:           ctest --preset win-debug"
+Write-Host "Next steps, in the new terminal, from the repository root:"
+Write-Host "  1. Activate Python:        .venv\Scripts\Activate.ps1"
+Write-Host "  2. Verify environment:     pwsh tools/check-prereqs.ps1"
+if (-not $Minimal) {
+    Write-Host "  3. Install git hooks:      pre-commit install"
+}
+else {
+    Write-Host "  3. Install git hooks:      python -m pip install -r requirements.txt; pre-commit install"
+}
+Write-Host "  4. Configure, build, test: cmake --workflow --preset win-dev"
 Write-Host ""
 Write-Host "For full documentation see CONTRIBUTING.md"
