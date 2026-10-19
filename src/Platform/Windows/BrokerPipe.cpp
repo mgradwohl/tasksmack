@@ -65,6 +65,7 @@ enum class IoEnd : std::uint8_t
     TimedOut,
     Stopped,
     Failed,
+    Abandoned, ///< The process finishIo() was also told to watch ended
 };
 
 struct IoOutcome
@@ -80,11 +81,17 @@ struct IoOutcome
 }
 
 /// Waits until @p deadline for the I/O pending on @p overlapped to finish, looking at @p stopToken every
-/// POLL_STEP. I/O given up on is cancelled and waited out, so @p overlapped and its buffer are free when
-/// this returns. I/O that finished before the cancel took is Done, whatever the deadline.
-[[nodiscard]] IoOutcome
-finishIo(HANDLE pipe, OVERLAPPED& overlapped, std::chrono::steady_clock::time_point deadline, const std::stop_token& stopToken)
+/// POLL_STEP, and giving up (Abandoned) if @p abandonWhenSignalled, unless null, is signalled first.
+/// I/O given up on is cancelled and waited out, so @p overlapped and its buffer are free when this
+/// returns. I/O that finished before the cancel took is Done, whatever the deadline.
+[[nodiscard]] IoOutcome finishIo(HANDLE pipe,
+                                 OVERLAPPED& overlapped,
+                                 std::chrono::steady_clock::time_point deadline,
+                                 const std::stop_token& stopToken,
+                                 HANDLE abandonWhenSignalled = nullptr)
 {
+    const std::array<HANDLE, 2> handles{overlapped.hEvent, abandonWhenSignalled};
+    const DWORD handleCount = abandonWhenSignalled != nullptr ? 2 : 1;
     IoEnd gaveUp = IoEnd::Done;
     while (true)
     {
@@ -99,9 +106,16 @@ finishIo(HANDLE pipe, OVERLAPPED& overlapped, std::chrono::steady_clock::time_po
             gaveUp = IoEnd::TimedOut;
             break;
         }
-        const DWORD waited = WaitForSingleObject(overlapped.hEvent, static_cast<DWORD>(std::min(left, POLL_STEP).count()));
+        // The I/O's event first: when both are signalled, the I/O that finished is what counts.
+        const DWORD waited =
+            WaitForMultipleObjects(handleCount, handles.data(), FALSE, static_cast<DWORD>(std::min(left, POLL_STEP).count()));
         if (waited == WAIT_OBJECT_0)
         {
+            break;
+        }
+        if (waited == WAIT_OBJECT_0 + 1)
+        {
+            gaveUp = IoEnd::Abandoned;
             break;
         }
         if (waited != WAIT_TIMEOUT)
@@ -183,6 +197,17 @@ std::expected<std::wstring, std::string> makePipeName()
         name += std::format(L"{:02x}", byte);
     }
     return name;
+}
+
+bool isPipeName(std::wstring_view name) noexcept
+{
+    constexpr std::size_t HEX_DIGITS = 32; // makePipeName()'s 16 random bytes
+    if (!name.starts_with(PIPE_NAME_PREFIX) || name.size() != PIPE_NAME_PREFIX.size() + HEX_DIGITS)
+    {
+        return false;
+    }
+    return std::ranges::all_of(name.substr(PIPE_NAME_PREFIX.size()),
+                               [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); });
 }
 
 std::expected<Sid, std::string> userSidOfToken(HANDLE token)
@@ -348,9 +373,19 @@ std::expected<void, std::string> checkServerProcess(HANDLE pipe, DWORD expectedP
 }
 
 std::expected<void, std::string>
-acceptClient(HANDLE pipe, DWORD expectedClientPid, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
+acceptClient(HANDLE pipe, HANDLE expectedClient, std::chrono::milliseconds timeout, const std::stop_token& stopToken)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    // From the handle the caller holds, so the PID names the process held, and no other, until it lets go.
+    const DWORD expectedClientPid = GetProcessId(expectedClient);
+    if (expectedClientPid == 0)
+    {
+        return std::unexpected(std::format("couldn't tell TaskSmack's process ID: {}", lastErrorText(GetLastError())));
+    }
+    if (WaitForSingleObject(expectedClient, 0) != WAIT_TIMEOUT)
+    {
+        return std::unexpected(std::string("TaskSmack exited before it opened the pipe"));
+    }
     const UniqueHandle event = makeEvent();
     if (!event)
     {
@@ -363,10 +398,12 @@ acceptClient(HANDLE pipe, DWORD expectedClientPid, std::chrono::milliseconds tim
         const DWORD error = GetLastError();
         if (error == ERROR_IO_PENDING)
         {
-            switch (finishIo(pipe, overlapped, deadline, stopToken).end)
+            switch (finishIo(pipe, overlapped, deadline, stopToken, expectedClient).end)
             {
             case IoEnd::Done:
                 break;
+            case IoEnd::Abandoned:
+                return std::unexpected(std::string("TaskSmack exited before it opened the pipe"));
             case IoEnd::TimedOut:
                 return std::unexpected(std::string("TaskSmack didn't open the pipe in time"));
             case IoEnd::Stopped:
@@ -493,6 +530,7 @@ bool sendFrame(HANDLE pipe,
         error = "cancelled";
         return false;
     case IoEnd::Failed:
+    case IoEnd::Abandoned: // not watched here
         break;
     }
     error = "the write failed";

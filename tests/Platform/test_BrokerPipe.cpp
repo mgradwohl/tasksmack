@@ -83,6 +83,14 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
     return UniqueHandle(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId()));
 }
 
+/// This process, as the helper holds TaskSmack's: a handle acceptClient() checks the client against
+/// (#2517). Open for the whole run.
+[[nodiscard]] HANDLE self()
+{
+    static const UniqueHandle process = ownProcess();
+    return process.get();
+}
+
 /// A PID that isn't this process's.
 [[nodiscard]] DWORD notMyPid()
 {
@@ -131,8 +139,7 @@ struct PipePair
         ADD_FAILURE() << server.error();
         return {};
     }
-    auto accepted =
-        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), WAIT, {}); });
+    auto accepted = std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, self(), WAIT, {}); });
     const UniqueHandle process = ownProcess();
     auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
     const auto acceptedClient = accepted.get();
@@ -395,8 +402,7 @@ TEST(BrokerPipeTest, ASecondClientIsRefused)
     const std::wstring name = freshName();
     const auto server = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
-    auto accepted =
-        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), WAIT, {}); });
+    auto accepted = std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, self(), WAIT, {}); });
     const UniqueHandle process = ownProcess();
     const auto first = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
     ASSERT_TRUE(first.has_value()) << first.error();
@@ -422,8 +428,7 @@ TEST(BrokerPipeTest, APipeServedByAnotherProcessIsRefused)
     const std::wstring name = freshName();
     const auto server = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
-    auto accepted =
-        std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, GetCurrentProcessId(), 1s, {}); });
+    auto accepted = std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, self(), 1s, {}); });
     const UniqueHandle process = ownProcess();
     const auto client = BrokerPipe::connectToServer(name, notMyPid(), process.get(), WAIT, {});
     ASSERT_FALSE(client.has_value());
@@ -431,31 +436,14 @@ TEST(BrokerPipeTest, APipeServedByAnotherProcessIsRefused)
     [[maybe_unused]] const auto served = accepted.get(); // whatever the server made of a client that gave up on it
 }
 
-TEST(BrokerPipeTest, AClientThatIsntTheExpectedProcessIsDisconnected)
-{
-    const std::wstring name = freshName();
-    const auto server = BrokerPipe::createServerPipe(name, mySid());
-    ASSERT_TRUE(server.has_value()) << server.error();
-    auto accepted = std::async(std::launch::async, [pipe = server->get()] { return BrokerPipe::acceptClient(pipe, notMyPid(), WAIT, {}); });
-    const UniqueHandle process = ownProcess();
-    const auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), process.get(), WAIT, {});
-    const auto acceptedClient = accepted.get();
-    ASSERT_FALSE(acceptedClient.has_value());
-    EXPECT_TRUE(acceptedClient.error().contains("not TaskSmack")) << acceptedClient.error();
-    if (client.has_value())
-    {
-        const auto frame = BrokerPipe::receiveFrame(client->get(), WAIT, {});
-        ASSERT_FALSE(frame.has_value());
-        EXPECT_NE(frame.error(), BrokerPipe::ReceiveEnd::TimedOut) << "the refused client is cut off, not left waiting";
-    }
-}
+// A client that isn't the expected process: test_BrokerHelper.cpp's, which has another process to expect.
 
 TEST(BrokerPipeTest, NoClientWithinTheTimeoutIsGivenUpOn)
 {
     const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
     const auto start = std::chrono::steady_clock::now();
-    const auto accepted = BrokerPipe::acceptClient(server->get(), GetCurrentProcessId(), 100ms, {});
+    const auto accepted = BrokerPipe::acceptClient(server->get(), self(), 100ms, {});
     ASSERT_FALSE(accepted.has_value());
     EXPECT_EQ(accepted.error(), "TaskSmack didn't open the pipe in time");
     EXPECT_LT(since(start), WAIT);
@@ -848,7 +836,7 @@ class InProcessHelper
         try
         {
             const auto pipe = BrokerPipe::createServerPipe(pipeName, mySid());
-            if (pipe.has_value() && BrokerPipe::acceptClient(pipe->get(), GetCurrentProcessId(), WAIT, stopToken).has_value())
+            if (pipe.has_value() && BrokerPipe::acceptClient(pipe->get(), self(), WAIT, stopToken).has_value())
             {
                 m_Body(pipe->get(), stopToken);
             }

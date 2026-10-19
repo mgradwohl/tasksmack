@@ -266,6 +266,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/BrokerPipe.cpp
     src/Platform/Windows/BrokerPipeServer.cpp
     src/Platform/Windows/PipeBroker.cpp
+    src/Platform/Windows/BrokerHelper.cpp # TaskSmackHelper.exe's session: parent checks, pipe, serve (#2517)
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
@@ -457,6 +458,7 @@ elseif(WIN32)
         src/Platform/Windows/BrokerPipe.h
         src/Platform/Windows/BrokerPipeServer.h
         src/Platform/Windows/PipeBroker.h
+        src/Platform/Windows/BrokerHelper.h
         src/Platform/Windows/WindowsProcessDump.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsProcessDumpMath.h
@@ -784,6 +786,56 @@ if(UNIX AND NOT APPLE)
     endif()
     # Beside TaskSmack in the build tree, where the tests find it.
     set_target_properties(tasksmack-helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
+
+# TaskSmackHelper.exe (#2517; #2181): the elevated broker TaskSmack starts with ShellExecuteExW("runas")
+# when the user chooses an action it can't do itself. Platform sources only -- no SDL, ImGui, GL, config
+# or themes -- so as little as possible runs elevated. A Windows-subsystem program, so starting it opens
+# no console window. Windows only; Linux has tasksmack-helper above.
+if(WIN32)
+    add_executable(TaskSmackHelper WIN32
+        src/Platform/Windows/HelperMain.cpp
+        src/Platform/Windows/BrokerHelper.cpp
+        src/Platform/Windows/BrokerPipe.cpp
+        src/Platform/Windows/BrokerPipeServer.cpp
+        src/Platform/BrokerRequestMapping.cpp
+        src/Platform/Windows/WindowsDebugPrivilege.cpp
+        src/Platform/Windows/WindowsElevation.cpp
+        src/Platform/Windows/WindowsProcessActions.cpp
+        src/Platform/Windows/WindowsProcessIdentity.cpp
+        src/Platform/Windows/WindowsProcessDump.cpp
+        src/Platform/Windows/WindowsProcessMachine.cpp
+        src/Platform/Windows/WindowsFolderPicker.cpp
+        src/Platform/Windows/WindowsProcessModules.cpp
+        src/Platform/Windows/WindowsProcessOpenFiles.cpp
+        src/Platform/Windows/WindowsProcessConnections.cpp
+        src/Platform/Windows/WinString.cpp
+        src/Platform/ThreadName.cpp
+    )
+    target_compile_features(TaskSmackHelper PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackHelper)
+    tasksmack_apply_text_encoding(TaskSmackHelper)
+    tasksmack_apply_windows_platform(TaskSmackHelper)
+    target_include_directories(TaskSmackHelper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
+    target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only)
+    # The app's manifest: asInvoker (so only the launcher's "runas" elevates it, and Windows' installer
+    # detection never does), long paths and the UTF-8 code page. And every DLL its imports load comes
+    # from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32), never the helper's own folder, which a
+    # portable TaskSmack may have unpacked somewhere its user can write; HelperMain.cpp sets the same
+    # for anything loaded later.
+    target_link_options(TaskSmackHelper PRIVATE
+        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
+        "LINKER:/DEPENDENTLOADFLAG:0x800"
+    )
+    # Beside TaskSmack.exe, where TaskSmack starts it from, the tests find it, and release packaging
+    # (and its Authenticode signing, #2302) picks it up.
+    get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if(_is_multi_config)
+        set_target_properties(TaskSmackHelper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+    else()
+        set_target_properties(TaskSmackHelper PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
+    unset(_is_multi_config)
 endif()
 
 include(cmake/InstallRules.cmake)

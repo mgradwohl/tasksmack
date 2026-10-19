@@ -12,8 +12,8 @@
 //     medium can. The client opens it at SECURITY_IDENTIFICATION, so the helper can't act as it.
 // Then each side checks that the other end is the process it expects: TaskSmack that the server is the
 // helper it started (GetNamedPipeServerProcessId), the helper that the client is the TaskSmack that
-// started it (GetNamedPipeClientProcessId). Each holds a handle to that process meanwhile, so its PID
-// can't be reused.
+// started it (GetNamedPipeClientProcessId). Each is handed a handle to that process, not a bare PID,
+// and holds it meanwhile, so its PID can't be reused (#2517).
 //
 // The pipe is in byte mode, and a frame is BrokerProtocol's own: a four-byte little-endian length, then
 // that many bytes. A frame declared larger than MAX_MESSAGE_BYTES is refused before anything is
@@ -41,6 +41,7 @@
 #include <span>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform::Windows::BrokerPipe
@@ -57,6 +58,10 @@ inline constexpr DWORD CLIENT_ACCESS = FILE_READ_DATA | FILE_WRITE_DATA | FILE_R
 /// A fresh pipe name, \\.\pipe\TaskSmack.Broker.<128 random bits in hex>, from the system's
 /// cryptographic random number generator. The error says why there are no random bits.
 [[nodiscard]] std::expected<std::wstring, std::string> makePipeName();
+
+/// Whether @p name is one makePipeName() could have made: its prefix, then exactly 32 lowercase hex
+/// digits. TaskSmackHelper.exe refuses any other name on its command line (#2517).
+[[nodiscard]] bool isPipeName(std::wstring_view name) noexcept;
 
 /// A SID, as its bytes: the user one of a token, copied out of its TOKEN_USER. Never a string, so no
 /// text a caller passes along can name whom the pipe lets in.
@@ -96,10 +101,13 @@ using Sid = std::vector<std::byte>;
 [[nodiscard]] std::expected<void, std::string> checkServerProcess(HANDLE pipe, DWORD expectedPid);
 
 /// Waits up to @p timeout for a client to open @p pipe (from createServerPipe), then checks it is
-/// process @p expectedClientPid. A client that isn't is disconnected, and the error says so: the pipe
-/// has no second instance for TaskSmack to try, so the helper gives up.
+/// process @p expectedClient, a handle to that process with at least SYNCHRONIZE and
+/// PROCESS_QUERY_LIMITED_INFORMATION that the caller holds for the whole session, so its PID can't be
+/// reused (#2517). Gives up as soon as that process ends, too: nothing else may open the pipe for it. A
+/// client that isn't it is disconnected, and the error says so: the pipe has no second instance for
+/// TaskSmack to try, so the helper gives up.
 [[nodiscard]] std::expected<void, std::string>
-acceptClient(HANDLE pipe, DWORD expectedClientPid, std::chrono::milliseconds timeout, const std::stop_token& stopToken);
+acceptClient(HANDLE pipe, HANDLE expectedClient, std::chrono::milliseconds timeout, const std::stop_token& stopToken);
 
 /// Opens pipe @p name as its client once its server has made it, waiting up to @p timeout for that,
 /// then checks its server is process @p expectedServerPid. @p serverProcess is that process, waited

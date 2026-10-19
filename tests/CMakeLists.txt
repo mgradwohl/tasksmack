@@ -484,6 +484,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
+    Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessIconSource.cpp
@@ -864,6 +865,12 @@ endif()
 if(TARGET tasksmack-helper)
     add_dependencies(TaskSmackTests tasksmack-helper)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_HELPER_PATH="$<TARGET_FILE:tasksmack-helper>")
+endif()
+
+# test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517).
+if(TARGET TaskSmackHelper)
+    add_dependencies(TaskSmackTests TaskSmackHelper)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>")
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
