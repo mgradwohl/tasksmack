@@ -16,6 +16,7 @@
 #pragma comment(lib, "advapi32.lib")
 
 #include "WinString.h"
+#include "WindowsConversions.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <array>
@@ -107,8 +108,7 @@ setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const Start
         // The time first: a stale LastDisabledTime beside an enabled State is what Windows leaves too.
         FILETIME now{};
         api.now(&now);
-        const std::uint64_t fileTime = (static_cast<std::uint64_t>(now.dwHighDateTime) << 32U) | now.dwLowDateTime;
-        const auto time = numberBytes(Math::fileTimeToUnixSeconds(fileTime));
+        const auto time = numberBytes(Windows::fileTimeToUnixSeconds(Windows::fileTimeTicks(now)));
         const LSTATUS timed = api.setValue(key.get(), L"LastDisabledTime", 0, REG_QWORD, time.data(), static_cast<DWORD>(time.size()));
         if (timed != ERROR_SUCCESS)
         {
@@ -190,7 +190,7 @@ StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry,
     {
         FILETIME now{};
         m_Api.now(&now);
-        disabledAt = (static_cast<std::uint64_t>(now.dwHighDateTime) << 32U) | now.dwLowDateTime;
+        disabledAt = Windows::fileTimeTicks(now);
     }
     const std::vector<std::uint8_t> value = Math::encodeStartupApproved(existing, enabled, disabledAt);
     const LSTATUS written = m_Api.setValue(key.get(), valueName.c_str(), 0, REG_BINARY, value.data(), static_cast<DWORD>(value.size()));

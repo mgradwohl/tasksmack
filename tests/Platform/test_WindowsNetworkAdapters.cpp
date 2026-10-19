@@ -10,6 +10,7 @@
 /// real calls, without the Wi-Fi details.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsNetworkAdapters.h"
 
 #include <gtest/gtest.h>
@@ -755,7 +756,7 @@ TEST(WindowsNetworkAdaptersHelpers, Formatting)
     EXPECT_EQ(phyName(dot11_phy_type_eht, 6135), "802.11be (Wi-Fi 7)");
     EXPECT_EQ(phyName(dot11_phy_type_unknown, 0), "");
 
-    EXPECT_EQ(guidText(WIFI_GUID), "{12345678-9ABC-DEF0-0123-456789ABCDEF}");
+    EXPECT_EQ(Windows::guidText(WIFI_GUID), "{12345678-9ABC-DEF0-0123-456789ABCDEF}");
 }
 
 TEST(WindowsNetworkAdaptersReal, ReadsThisMachine)

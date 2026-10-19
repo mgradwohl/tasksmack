@@ -7,6 +7,7 @@
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsStartupActions.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
@@ -31,7 +32,7 @@ namespace Math = Windows::StartupMath;
 
 // 2024-01-02T03:04:05Z, the fake clock's time.
 constexpr std::uint64_t UNIX_SECONDS = 1704164645;
-constexpr std::uint64_t NOW = Math::FILETIME_UNIX_EPOCH + (UNIX_SECONDS * Math::FILETIME_TICKS_PER_SECOND);
+constexpr std::uint64_t NOW = Windows::FILETIME_UNIX_EPOCH + (UNIX_SECONDS * Windows::FILETIME_TICKS_PER_SECOND);
 
 /// The fake registry: values by (key, name), the key being "HKCU\..." or "HKLM\...". Reset per test.
 struct FakeRegistry

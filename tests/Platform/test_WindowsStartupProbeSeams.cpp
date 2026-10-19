@@ -10,6 +10,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/Windows/ComPtr.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsStartupProbe.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
@@ -128,7 +129,7 @@ FakeSystem& fake()
     data[0] = enabled ? 0x02 : 0x03;
     if (!enabled)
     {
-        const std::uint64_t fileTime = Math::FILETIME_UNIX_EPOCH + (DISABLED_AT * Math::FILETIME_TICKS_PER_SECOND);
+        const std::uint64_t fileTime = Windows::FILETIME_UNIX_EPOCH + (DISABLED_AT * Windows::FILETIME_TICKS_PER_SECOND);
         std::memcpy(&data[4], &fileTime, sizeof(fileTime));
     }
     return data;

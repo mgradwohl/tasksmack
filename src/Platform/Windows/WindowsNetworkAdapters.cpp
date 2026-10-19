@@ -4,6 +4,7 @@
 #include "Platform/ProcessEnvironment.h"
 #include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
+#include "WindowsConversions.h"
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers, as in the header
 // clang-format off
@@ -407,7 +408,7 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed, bool includeDet
         const std::span<const WLAN_INTERFACE_INFO> infos(&interfaces->InterfaceInfo[0], interfaces->dwNumberOfItems);
         for (const WLAN_INTERFACE_INFO& info : infos)
         {
-            const std::string guid = guidText(info.InterfaceGuid);
+            const std::string guid = Windows::guidText(info.InterfaceGuid);
             const auto match =
                 std::ranges::find_if(listed,
                                      [&guid](const Listed& entry)
@@ -579,22 +580,6 @@ std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz)
     default:
         return {};
     }
-}
-
-std::string guidText(const GUID& guid)
-{
-    return std::format("{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                       guid.Data1,
-                       guid.Data2,
-                       guid.Data3,
-                       guid.Data4[0],
-                       guid.Data4[1],
-                       guid.Data4[2],
-                       guid.Data4[3],
-                       guid.Data4[4],
-                       guid.Data4[5],
-                       guid.Data4[6],
-                       guid.Data4[7]);
 }
 
 } // namespace Platform::WindowsNetworkAdapters

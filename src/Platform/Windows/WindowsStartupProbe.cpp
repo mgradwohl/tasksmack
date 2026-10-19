@@ -33,6 +33,7 @@
 #include "ComPtr.h"
 #include "ComScope.h"
 #include "WinString.h"
+#include "WindowsConversions.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <algorithm>
@@ -351,11 +352,6 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
     }
     CoTaskMemFree(path);
     return result;
-}
-
-[[nodiscard]] std::uint64_t toUint64(const FILETIME& time) noexcept
-{
-    return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32U) | time.dwLowDateTime;
 }
 
 /// What WindowsStartupProbe reads from an executable's version resource.
@@ -965,7 +961,7 @@ struct WindowsStartupProbe::Impl
 
         const std::wstring key = toLower(path);
         seenPaths.insert(key);
-        const std::uint64_t lastWrite = toUint64(attributes.ftLastWriteTime);
+        const std::uint64_t lastWrite = Windows::fileTimeTicks(attributes.ftLastWriteTime);
         auto [it, inserted] = versionStrings.try_emplace(key);
         if (inserted || it->second.lastWrite != lastWrite)
         {

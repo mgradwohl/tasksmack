@@ -57,6 +57,7 @@
 #include "WinString.h"
 #include "WindowsBootPerformance.h"
 #include "WindowsCommitPaging.h"
+#include "WindowsConversions.h"
 #include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
 #include "WindowsDriverNodes.h"
@@ -895,7 +896,7 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
     }
     constexpr unsigned HIGH_SHIFT = 32;
     return WindowsDrivers::FileStamp{
-        .lastWriteTime = (std::uint64_t{data.ftLastWriteTime.dwHighDateTime} << HIGH_SHIFT) | data.ftLastWriteTime.dwLowDateTime,
+        .lastWriteTime = Windows::fileTimeTicks(data.ftLastWriteTime),
         .size = (std::uint64_t{data.nFileSizeHigh} << HIGH_SHIFT) | data.nFileSizeLow,
     };
 }

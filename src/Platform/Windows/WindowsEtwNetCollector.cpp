@@ -2,6 +2,7 @@
 
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -78,11 +79,6 @@ constexpr ULONG CLIENT_CONTEXT_QPC = 1;
     return wide;
 }
 
-[[nodiscard]] std::uint64_t fileTimeTicks(const FILETIME& time) noexcept
-{
-    return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32U) | time.dwLowDateTime;
-}
-
 [[nodiscard]] bool systemIsElevated()
 {
     return Windows::isProcessElevated();
@@ -97,7 +93,7 @@ constexpr ULONG CLIENT_CONTEXT_QPC = 1;
     FILETIME user{};
     if (GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernel, &user) != FALSE)
     {
-        self.creationTime = fileTimeTicks(creation);
+        self.creationTime = Windows::fileTimeTicks(creation);
     }
     return self;
 }
@@ -124,7 +120,7 @@ constexpr ULONG CLIENT_CONTEXT_QPC = 1;
     {
         return EtwNet::OwnerLiveness::Unknown;
     }
-    return fileTimeTicks(creation) == owner.creationTime ? EtwNet::OwnerLiveness::Alive : EtwNet::OwnerLiveness::PidReused;
+    return Windows::fileTimeTicks(creation) == owner.creationTime ? EtwNet::OwnerLiveness::Alive : EtwNet::OwnerLiveness::PidReused;
 }
 
 [[nodiscard]] UdpCollectorStartResult startFailure(ULONG status) noexcept

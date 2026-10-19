@@ -471,6 +471,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
     Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
     Platform/WindowsMath/test_WindowsAffinityMath.cpp
+    Platform/WindowsMath/test_WindowsConversions.cpp
     Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
     Platform/WindowsMath/test_WindowsProcessMachineMath.cpp
 )

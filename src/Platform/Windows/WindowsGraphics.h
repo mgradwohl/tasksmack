@@ -25,6 +25,7 @@
 #include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsDriverNodes.h" // DriverNode, findDriverNode()
 
 // clang-format off
@@ -163,7 +164,7 @@ findVulkanDevice(std::span<const Vulkan::Device> devices, const LUID& luid, std:
 /// A FILETIME's UTC date, "2024-09-05". Driver dates are midnight UTC.
 [[nodiscard]] inline std::string fileTimeDate(const FILETIME& time)
 {
-    const std::uint64_t ticks = (static_cast<std::uint64_t>(time.dwHighDateTime) << 32U) | time.dwLowDateTime;
+    const std::uint64_t ticks = Windows::fileTimeTicks(time);
     constexpr std::uint64_t TICKS_PER_DAY = 864'000'000'000ULL; // 100 ns ticks
     const std::chrono::sys_days epoch{std::chrono::year{1601} / 1 / 1};
     const std::chrono::year_month_day date{epoch + std::chrono::days{static_cast<std::int64_t>(ticks / TICKS_PER_DAY)}};

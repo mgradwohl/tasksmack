@@ -1,9 +1,10 @@
 /// @file test_WindowsStartupProbeMath.cpp
 /// @brief WindowsStartupProbeMath.h (#801): the StartupApproved value (enabled/disabled byte, the
-/// disable FILETIME, short and corrupt values), FILETIME to Unix time, scope, and the executable a Run
-/// command line starts. No Windows header, so these run on every platform.
+/// disable FILETIME, short and corrupt values), scope, and the executable a Run command line starts.
+/// No Windows header, so these run on every platform.
 
 #include "Platform/IStartupProbe.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
 #include <gtest/gtest.h>
@@ -79,13 +80,6 @@ TEST(WindowsStartupProbeMathTest, ShortAndCorruptValues)
     longer[0] = 0xFF;
     EXPECT_EQ(parseStartupApproved(longer), state(false));
 }
-TEST(WindowsStartupProbeMathTest, FileTimeToUnixSeconds)
-{
-    EXPECT_EQ(fileTimeToUnixSeconds(FILE_TIME), UNIX_SECONDS);
-    EXPECT_EQ(fileTimeToUnixSeconds(FILETIME_UNIX_EPOCH), 0U);
-    EXPECT_EQ(fileTimeToUnixSeconds(0), 0U);
-}
-
 TEST(WindowsStartupProbeMathTest, ScopeFollowsLocation)
 {
     EXPECT_EQ(scopeOf(StartupLocation::RunUser), StartupScope::User);

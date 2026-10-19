@@ -1,10 +1,12 @@
 #pragma once
 
 // Pure helpers behind WindowsStartupProbe and WindowsStartupActions (#801): the StartupApproved value
-// format (parse and encode), its keys, FILETIME to Unix time, and the executable a Run command line
-// starts. No Windows header, so the tests build on every platform (tests/Platform/WindowsMath/).
+// format (parse and encode), its keys, and the executable a Run command line starts (FILETIME to Unix
+// time is in WindowsConversions.h). No Windows header, so the tests build on every platform
+// (tests/Platform/WindowsMath/).
 
 #include "Platform/IStartupProbe.h"
+#include "WindowsConversions.h"
 
 #include <array>
 #include <cctype>
@@ -28,16 +30,6 @@ struct ApprovedState
 
     friend constexpr bool operator==(const ApprovedState&, const ApprovedState&) noexcept = default;
 };
-
-/// 100 ns FILETIME ticks between 1601-01-01 and the Unix epoch.
-inline constexpr std::uint64_t FILETIME_UNIX_EPOCH = 116444736000000000ULL;
-inline constexpr std::uint64_t FILETIME_TICKS_PER_SECOND = 10000000ULL;
-
-/// A FILETIME (100 ns ticks since 1601) as Unix seconds; 0 for one at or before the Unix epoch.
-[[nodiscard]] constexpr std::uint64_t fileTimeToUnixSeconds(std::uint64_t fileTime) noexcept
-{
-    return fileTime > FILETIME_UNIX_EPOCH ? (fileTime - FILETIME_UNIX_EPOCH) / FILETIME_TICKS_PER_SECOND : 0;
-}
 
 /// Parses a REG_BINARY value under Explorer\StartupApproved\{Run,Run32,StartupFolder} (normally 12
 /// bytes). Byte 0 is even when the entry is enabled (0x02, 0x06) and odd when it is disabled (0x03,

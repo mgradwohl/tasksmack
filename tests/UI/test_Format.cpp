@@ -245,49 +245,11 @@ TEST(FormatTest, EpochDateTimeHandlesDistantFuture)
 // Numeric Conversion Tests
 // =============================================================================
 
-TEST(FormatTest, ToIntSaturatedClampsToIntMax)
-{
-    // Values beyond int max should clamp
-    // Note: On Windows, long is 32-bit (same as int), so we can only test overflow
-    // on platforms where long is larger than int (e.g., Linux where long is 64-bit)
-#if LONG_MAX > INT_MAX
-    // 64-bit long: can test overflow beyond INT_MAX
-    const long largeValue = static_cast<long>(std::numeric_limits<int>::max()) + 1000L;
-    EXPECT_EQ(UI::Format::toIntSaturated(largeValue), std::numeric_limits<int>::max());
-#else
-    // 32-bit long (Windows): test with INT_MAX itself since we can't exceed it
-    EXPECT_EQ(UI::Format::toIntSaturated(static_cast<long>(std::numeric_limits<int>::max())), std::numeric_limits<int>::max());
-#endif
-}
-
-TEST(FormatTest, ToIntSaturatedPreservesNormalValues)
-{
-    EXPECT_EQ(UI::Format::toIntSaturated(42L), 42);
-    EXPECT_EQ(UI::Format::toIntSaturated(-42L), -42);
-    EXPECT_EQ(UI::Format::toIntSaturated(0L), 0);
-    EXPECT_EQ(UI::Format::toIntSaturated(100L), 100);
-}
-
-TEST(FormatTest, PercentToIntClampsNegativeToZero)
-{
-    EXPECT_EQ(UI::Format::percentToInt(-10.0), 0);
-    EXPECT_EQ(UI::Format::percentToInt(0.0), 0);
-    EXPECT_EQ(UI::Format::percentToInt(50.5), 51); // Rounds to nearest
-    EXPECT_EQ(UI::Format::percentToInt(100.0), 100);
-}
-
 TEST(FormatTest, PercentHelpersTreatNaNAsNoReading)
 {
     // NaN marks a sample with no reading; it used to print "-2,147,483,648%" and reach bar geometry (#1148).
     constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
     constexpr double INF = std::numeric_limits<double>::infinity();
-    EXPECT_EQ(UI::Format::percentToInt(NaN), 0);
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::quiet_NaN()), 0);
-    EXPECT_EQ(UI::Format::percentToInt(INF), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(-INF), 0);
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<double>::max()), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::max()), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(3.0e9), std::numeric_limits<int>::max()); // beyond a 32-bit long
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(NaN), 0.0);
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(INF), 100.0);
     EXPECT_DOUBLE_EQ(UI::Format::percent01(NaN), 0.0);
