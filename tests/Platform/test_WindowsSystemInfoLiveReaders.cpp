@@ -183,6 +183,21 @@ TEST(WindowsPlatformSecurityLiveTest, SpeculationControlDecodesToKnownStatuses)
     }
 }
 
+// #2584: the shell's BitLocker property reads without administrator. Whatever this machine's drives are,
+// they list, and each reads a state without failing; the system drive is a fixed one.
+TEST(WindowsPlatformSecurityLiveTest, BitLockerReadsEveryFixedDrive)
+{
+    PlatformSecurityInfo info;
+    WindowsPlatformSecurity::readPlatformSecurity(info, WindowsPlatformSecurity::systemFunctions());
+    EXPECT_TRUE(info.bitLockerRead);
+    EXPECT_FALSE(info.bitLocker.empty()) << "the system drive is fixed";
+    for (const BitLockerVolume& volume : info.bitLocker)
+    {
+        EXPECT_EQ(volume.volume.size(), 2U) << volume.volume;
+        EXPECT_EQ(volume.volume.back(), ':') << volume.volume;
+    }
+}
+
 TEST(WindowsPlatformSecurityLiveTest, UnknownInformationClassFails)
 {
     std::array<std::byte, 64> buffer{};

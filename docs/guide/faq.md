@@ -26,7 +26,7 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 sudo ./TaskSmack
 ```
 
-Run this way, links, "Open folder" and "Open config file" still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
+Run this way, links, **Open folder**, and Settings' **Edit Config File** and **Open Themes Folder** still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
 
 **Fix (option 2 — grant capabilities):**
 
@@ -46,7 +46,7 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 
 With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only matter for acting on processes: without them the Limited Data notice says which actions are refused. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, and `CAP_KILL` lets it end any process, so grant them only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow them there. Re-apply the capabilities after each update.
 
-**Acting on another user's process without either:** with the .deb or .rpm installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorised. TaskSmack running as root offers none of this, since it needs no helper.
+**Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
 
 For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). It runs as root, serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
 
@@ -61,7 +61,7 @@ If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptrace
 ## Acting as an administrator on Windows
 
 TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
-ending, suspending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
+ending, suspending, re-prioritizing or re-pinning an elevated or another account's process, offers **Retry as
 administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
 **Open files** and **Connections** sections also offer **Read as administrator** when such a process
 refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
@@ -92,21 +92,17 @@ signed UAC prompt would then hand it administrator rights. So a portable copy un
 into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
 the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
 
-The helper ships only in Authenticode-signed releases (#2302), so that its UAC prompt names TaskSmack's
-publisher. In a release without it, TaskSmack offers neither button. If TaskSmack is already running as
+The helper ships only in the Authenticode-signed x64 `.zip`
+([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
+publisher. The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers
+neither button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 
 ---
 
 ## GPU section doesn't appear
 
-**Cause:** No available backend discovered a usable GPU. TaskSmack combines operating-system APIs with optional vendor libraries and hides GPU sections when none can provide data.
-
-| Vendor | Backend |
-|--------|---------|
-| NVIDIA | NVML from the installed NVIDIA driver; Windows can also expose fallback data through DXGI/PDH |
-| AMD | ROCm SMI on Linux; DXGI/PDH capability-dependent data on Windows |
-| Intel/generic | DRM/sysfs on Linux; DXGI/PDH on Windows |
+**Cause:** No available backend discovered a usable GPU. TaskSmack combines operating-system APIs with optional vendor libraries (see the user guide's [GPU Monitoring](user-guide.md#gpu-monitoring) table) and hides GPU sections when none can provide data.
 
 **Checklist:**
 
@@ -126,23 +122,14 @@ administrator, it needs no helper and offers neither.
 
 They are counted the way the GPU tab counts each GPU, so the two can be compared:
 
-- **GPU %** is the process's utilisation of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
+- **GPU %** is the process's utilization of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
 - **GPU Mem** counts, on each GPU, the memory the GPU tab reports as used there: dedicated memory (VRAM) on a discrete GPU, shared system memory on an integrated GPU on Windows, even while the process uses none of it. It is added up across the GPUs the process uses, so it is never more than those GPUs show in use. Process Details also lists the dedicated and shared amounts separately when the process has shared GPU memory, which Windows reports and Linux does not.
 
 ---
 
 ## Where do I put custom themes?
 
-Drop `.toml` theme files in the platform-specific user themes directory:
-
-| Platform | Path |
-|----------|------|
-| Windows | `%APPDATA%\TaskSmack\themes\` |
-| Linux | `~/.config/tasksmack/themes/` |
-
-Create the folder if it does not exist, then restart TaskSmack. Your theme will appear in the theme selector in the settings menu.
-
-See the built-in theme files (shipped alongside the application) for the expected key structure, and the [theme reference](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md) for every key.
+In the `themes` folder of TaskSmack's config directory: `%APPDATA%\TaskSmack\themes\` on Windows, `$XDG_CONFIG_HOME/tasksmack/themes/` (usually `~/.config/tasksmack/themes/`) on Linux. Settings' (F2) **Open Themes Folder** opens it. Restart TaskSmack and the theme appears in the **Theme** list in Settings. See the user guide's [Themes and Configuration](user-guide.md#themes-and-configuration) for the steps, and the [theme reference](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md) for every key.
 
 ---
 

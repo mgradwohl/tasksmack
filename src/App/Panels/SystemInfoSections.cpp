@@ -995,6 +995,57 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
     return section;
 }
 
+std::string_view bitLockerStateText(Platform::BitLockerState state) noexcept
+{
+    using Platform::BitLockerState;
+    switch (state)
+    {
+    case BitLockerState::On:
+        return "On";
+    case BitLockerState::Off:
+        return "Off";
+    case BitLockerState::Encrypting:
+        return "Encrypting";
+    case BitLockerState::Decrypting:
+        return "Decrypting";
+    case BitLockerState::Suspended:
+        return "Suspended";
+    case BitLockerState::Locked:
+        return "Locked";
+    case BitLockerState::NotEncryptable:
+        return "Not encryptable";
+    case BitLockerState::WaitingForActivation:
+        return "Waiting for activation";
+    case BitLockerState::Unknown:
+        break;
+    }
+    return "Unknown";
+}
+
+namespace
+{
+
+/// One "BitLocker (C:)" row per fixed drive (#2584); one "BitLocker" row saying why when there are none.
+void appendBitLockerRows(const Platform::PlatformSecurityInfo& security, std::vector<Row>& rows)
+{
+    if (!security.bitLockerRead || security.bitLocker.empty())
+    {
+        rows.push_back(row("BitLocker", {}, security.bitLockerRead ? "No fixed drives" : "Windows couldn't list the drives"));
+        return;
+    }
+    for (const Platform::BitLockerVolume& volume : security.bitLocker)
+    {
+        Row bitLocker = row("BitLocker (" + volume.volume + ")", std::string(bitLockerStateText(volume.state)));
+        if (volume.state == Platform::BitLockerState::Unknown)
+        {
+            bitLocker.valueTooltip = "Windows doesn't report BitLocker for this drive";
+        }
+        rows.push_back(std::move(bitLocker));
+    }
+}
+
+} // namespace
+
 Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
 {
     using Platform::SecurityFeatureState;
@@ -1046,7 +1097,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
         rows.push_back(row("Kernel DMA Protection",
                            triStateText(security.kernelDmaProtection, "On", "Off", ""),
                            "Not reported by this version of Windows"));
-        rows.push_back(row("BitLocker", {}, "Requires administrator"));
+        appendBitLockerRows(security, rows);
     }
     else
     {

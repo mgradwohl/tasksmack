@@ -14,8 +14,8 @@ To avoid duplication and doc drift, these are the canonical docs:
 - [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
 - [docs/dev/completed-features.md](docs/dev/completed-features.md): canonical implemented-feature inventory
 - [docs/guide/](docs/guide/): user guide and troubleshooting
-- [docs/dev/](docs/dev/): concise docs-site navigation back to these canonical developer sources
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
+- [docs/dev/](docs/dev/): the docs site's developer overview and the Wayland test matrix
+- [AGENTS.md](AGENTS.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md): agent guidance (also useful to contributors)
 
 Avoid copying contributor commands or architecture diagrams into additional Markdown files. Link to the relevant canonical section instead.
 
@@ -77,15 +77,8 @@ cmake --workflow --preset tsan-cycle       # TSan
 If you just want a quick check of your environment, run:
 
 ```bash
-./tools/check-prereqs.sh    # Linux
-.\tools\check-prereqs.ps1   # Windows
-```
-
-```bash
-# Manual Windows configure, build, and test
-cmake --preset win-debug
-cmake --build --preset win-debug
-ctest --preset win-debug
+./tools/check-prereqs.sh        # Linux
+pwsh tools/check-prereqs.ps1    # Windows
 ```
 
 ### Linux Pre-Requisites
@@ -145,31 +138,15 @@ sudo apt install libsystemd-dev pkg-config
 - FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
 - **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
 
-**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version
-info -- the DPI-awareness manifest is separate, embedded via `/MANIFESTINPUT` at link
-time, so it doesn't depend on RC compilation at all) into `TaskSmack.exe`.
-`CMakeLists.txt` (see `cmake/RCCompiler.cmake`) requires `llvm-rc` (installed alongside
-`clang`/`clang++`, so no setup beyond the LLVM install above is needed) instead of the
-Windows SDK's own `rc.exe`, and fails configuration outright with an actionable error if
-`llvm-rc` can't be found -- there is no silent fallback to `rc.exe`, since that's the
-exact RC compiler known to hang indefinitely on this project (#746). **You no longer
-need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
-just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
-setups. To use a different RC compiler instead, opt in explicitly by passing
-`-DCMAKE_RC_COMPILER=<path>` to `cmake --preset ...` or setting the `RC` environment
-variable before configuring, both of which skip auto-detection -- **with one exception:
-use `RC` specifically to pin `rc.exe`**, not `-DCMAKE_RC_COMPILER=`. On a build tree
-that predates this fix (or on the very first configure of a brand-new one),
-`CMakeLists.txt` can't yet tell an intentional `-DCMAKE_RC_COMPILER=<path to rc.exe>`
-override apart from a stale cached value from before, and -- since `rc.exe` is the one
-tool with a confirmed hang -- resolves that specific ambiguity in favor of safety by
-re-detecting `llvm-rc` instead, ignoring the override. `RC` isn't affected by this at
-all and always wins. Any other RC compiler passed via `-DCMAKE_RC_COMPILER=` (i.e. not
-named `rc.exe`) doesn't hit this ambiguity and is always honored as pinned. Also like
-CMake's `CC`/`CXX`, `RC` may include compiler arguments (e.g. `RC="C:\tools\llvm-rc.exe
---flag"`) -- these are split out automatically -- and, following that same CC/CXX
-convention, a path containing a space (e.g. the default `C:\Program Files\LLVM\bin`)
-must be quoted within the value itself: `RC="\"C:\Program Files\LLVM\bin\llvm-rc.exe\""`.
+**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
+`TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`
+requires `llvm-rc`, which comes with the LLVM install above, and fails configuration with an actionable
+error if it can't find it. There's no fallback to the Windows SDK's `rc.exe`, which hangs on this project
+(#746), and no need for a Visual Studio Developer Command Prompt. To use another RC compiler, set the `RC`
+environment variable before configuring (it may include arguments, and a path with spaces must be quoted
+inside the value: `RC="\"C:\Program Files\LLVM\bin\llvm-rc.exe\""`), or pass
+`-DCMAKE_RC_COMPILER=<path>`. Use `RC` to pin `rc.exe` itself: a `-DCMAKE_RC_COMPILER` that points at
+`rc.exe` with no earlier selection recorded is treated as a stale cache entry and replaced by `llvm-rc`.
 
 Install Python + jinja2:
 
@@ -283,7 +260,7 @@ rather than in per-file headers.
 
 ## Build
 
-TaskSmack builds only 64-bit targets (x64 today; ARM64 is planned, #2214). Configuring for a 32-bit
+TaskSmack builds only 64-bit targets: x64 and ARM64 (Linux aarch64 and Windows ARM64, #2214). Configuring for a 32-bit
 target fails at configure time.
 
 This repo uses CMake Presets; list them with:
@@ -672,10 +649,7 @@ Three established ways to get real coverage of such a file's logic:
    bar's buttons through `TitleBarLayer`, and the whole shell as `main.cpp` composes it.
 
 Before writing any of these tests, check whether the logic already exists as a shared, tested
-helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
-turned out to be a byte-for-byte duplicate of the already-shared, already-tested
-`Core::isEnvFlagEnabled()` (`Core/EnvUtils.h`); deleting the duplicate and reusing the shared
-helper was strictly better than writing a third copy of the same test.
+helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
 ### Testing Linux D-Bus readers (systemd, NetworkManager, udisks2)
 
@@ -724,9 +698,7 @@ the untested logic needs OS handles or not:
    an `IDXGIAdapter1*`, avoiding COM mocking entirely), `WindowsGPUProbeMath.h`
    (`normalizeGPUName`/`gpuNamesMatch`), `WindowsProcessActionsMath.h` (`niceToPriorityClass`),
    and `WindowsDiskProbeMath.h` (`parsePhysicalDriveIndex`, alongside the pre-existing
-   `clampNonNegativeQuadPart`). Writing tests against `parsePowerStatus` this way is what caught
-   a real bug: `BATTERY_FLAG_UNKNOWN` (0xFF) also has the `BATTERY_FLAG_NO_BATTERY` bit (0x80)
-   set, so the original bitmask-first check order made the `Unknown` battery state unreachable.
+   `clampNonNegativeQuadPart`).
    Test a header that reaches no Windows header (directly or through its includes) in
    `tests/Platform/WindowsMath/test_<Header>.cpp`, listed in `WINDOWS_MATH_TEST_SOURCES`: those
    files are built on every platform, so Linux CI runs the Windows probes' arithmetic under its
@@ -1038,6 +1010,10 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_coredump_names` | the systemd-coredump core file name parser: comm with `\xNN` escapes, uid, boot id, pid, time and compression (`Platform/Linux/LinuxCoredumps.h`) | `tests/fuzz/corpus/fuzz_coredump_names/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
+| `fuzz_networkd_json` | systemd-networkd's link description: the JSON parser and the DHCPv4 lease read from it (`Platform/Linux/NetworkdLinkJson.h`) | `tests/fuzz/corpus/fuzz_networkd_json/` |
+| `fuzz_dns_message` | the DNS reply parser for the opt-in public IP lookup, the only parser fed bytes from the network (`Platform/DnsMessage.h`) | `tests/fuzz/corpus/fuzz_dns_message/` |
+| `fuzz_desktop_entry` | the `.desktop` entry parser and its `Exec` splitting (`Platform/Linux/DesktopEntryIcons.h`) | `tests/fuzz/corpus/fuzz_desktop_entry/` |
+| `fuzz_broker_protocol` | the privileged helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
@@ -1206,7 +1182,8 @@ PR CI (`ci.yml`'s Linux Release job) only *builds* `TaskSmackBenchmarks` -- it n
 change that breaks the benchmark build fails the PR (#1348). Timing runs and the regression gate below
 live only in `heavy-checks.yml`.
 
-`heavy-checks.yml`'s `benchmark-regression` job runs on every push to `main`, gating against
+`heavy-checks.yml`'s `benchmark-regression` job runs nightly and on pushes to `main` that touch the code the
+benchmarks measure, gating against
 `perf-data/linux-ci-baseline.json` via `tools/check-benchmark-regression.py` (40% threshold,
 comparing medians of `tools/bench.sh`'s 10 repetitions per benchmark) -- a failure here **fails
 the job** (`exit 1`), unlike the informational-only mode this ran in before #683. The script also
@@ -1223,44 +1200,15 @@ denominator; a `SkipWithError` (`"error_occurred": true`) on either side still c
 `BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
 hosted runner, instead of timing an empty probe's early return (#1420).
 
-This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
-was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
-comparisons, and comparing it against hosted `ubuntu-24.04` runners (shared 4-vCPU machines)
-flagged machine-class differences as regressions on every single run (65/84 benchmarks
-"regressed," up to +813%, including pure-arithmetic microbenchmarks -- see #683). Comparing
-CI-recorded-vs-CI-recorded instead removes that machine-class variance entirely.
-
-Removing machine-class variance does not remove all hosted-runner noise, though: capturing the
-baseline required three separate `heavy-checks.yml` dispatches to characterize, and the CPU
-performance ubuntu-24.04 hosted runners actually deliver appears **bimodal**, not a smooth
-noise distribution around one typical value -- two of the three captures were closely
-consistent with each other (within ~16% on every benchmark), while the third was consistently
-20-60% faster across essentially all 78 comparable benchmarks simultaneously (a uniform,
-systemic shift, not the mixed-sign scatter true noise would produce). The committed baseline
-intentionally uses one of the two *slower*-class samples: comparing a future run against it can
-only ever show a large "improvement" if that run lands on the faster class (never a false
-regression, since improvements never fail the gate), whereas the reverse choice (a fast-class
-baseline) would make roughly half of all future runs report a 50-150%+ false "regression" purely
-from landing on the slower class. This trades some sensitivity to genuinely small/moderate
-regressions for eliminating false positives outright -- which was the explicit problem #682 was
-created to solve (a red gate nobody could trust). Catching smaller regressions reliably despite
-this would need either a same-job speed-calibration measurement to normalize away the class
-effect, or requiring two independent runs to agree before failing; neither is implemented here.
-
-The runner classes do not slow every benchmark alike, either (#2336). Allocator/memory-bound
-benchmarks such as `BM_ProcessModel_GetSnapshots` (a full copy of ~150 `ProcessSnapshot`s) and
-`BM_ChartWidgets_ComputeAlpha` measured 1.18-1.44x the baseline on most of 47 main captures, with
-no code change, and failed the gate on 2 of them, while the arithmetic-bound benchmarks sat near 1.0x
-on the same runs. Normalizing by the run's own speed does not fix that: the run-wide median or
-geometric-mean ratio is pulled to 0.4-0.9x by benchmarks that have improved since the baseline
-was recorded, so dividing by it fails every capture; a stable arithmetic reference set
-(`BM_Numeric_ProcessTableWorkload/*`) is near 1.0x exactly on the runs where the memory-bound pair
-is high, and judging faster runners against it fails the wall-clock-bound
-`BM_ProcessModel_RefreshRate/*`. Instead, `--threshold-overrides FILE` gives the benchmarks a JSON
-file lists their own threshold, each with a required `reason`; `perf-data/linux-ci-thresholds.json`
-puts those two at 60%, which no capture reached and a 2x slowdown on the baseline's runner class
-still crosses. Add an entry only with the captures that justify it, and remove it when a baseline
-refresh makes it unnecessary. The flag is opt-in: without it every benchmark uses `--threshold`.
+This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
+recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
+difference as a regression on every run (#683). Hosted runners also land on two speed classes, so the
+committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
+improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
+allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
+JSON file lists their own threshold, each with a required `reason`. `perf-data/linux-ci-thresholds.json`
+sets those. Add an entry only with the captures that justify it, and remove it when a baseline refresh
+makes it unnecessary. Without the flag every benchmark uses `--threshold`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
 changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
@@ -1275,10 +1223,9 @@ deliberate, reviewed performance change that the gate should treat as the new no
    ```
 3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
-   Given the bimodal runner behavior above, if every benchmark shifted by roughly the same
-   percentage in the same direction, that's very likely a runner-class difference, not a real
-   change -- dispatch one more run and compare it to the candidate before deciding which to
-   keep, rather than trusting a single capture.
+   If every benchmark shifted by roughly the same percentage in the same direction, that's very
+   likely a runner-class difference, not a real change: dispatch one more run and compare before
+   deciding which to keep.
 4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
    ```bash
    cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
@@ -1300,6 +1247,12 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
 | `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
+| `BM_DiskProbe_Read` | Raw OS disk I/O counter read |
+| `BM_ProcessTree_*`, `BM_ProcessFilter_Indices` | Building the Processes table's tree-view rows, and the filter pass over Windows-like command lines |
+| `BM_ProcessRowMeter_*` | One headless ImGui frame of the Processes table with and without the inline meters (#1528) |
+| `BM_ProcessIcons_*` | One headless ImGui frame of the Processes table's name column with and without process icons (#1800) |
+| `BM_ProcessDetailsHistory_*` | Process Details' per-process history append and trim at a full window (#1179) |
+| `BM_PDHGPUProbe_*`, `BM_PDHInstanceCache_*` | The PDH per-process GPU counter read and its instance-name cache (Windows only) |
 | `BM_Format_*` | UI formatting functions |
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 | `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
@@ -1831,7 +1784,7 @@ TASKSMACK_TRACE_RESIZE_PERF=1 ./build/profile/bin/TaskSmack 2>&1 | tee /tmp/resi
 # Windows — profile build
 cmake --preset win-profile
 cmake --build --preset win-profile
-$env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object /tmp/resize-trace.log
+$env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object $env:TEMP\resize-trace.log
 ```
 
 Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
@@ -1843,7 +1796,7 @@ where more frequent logging is useful. Each line reports avg/p95/p99/max per pha
 avg/max — p95/p99 answer "did we miss the 16.6 ms (60 fps) frame budget at the tail", which an
 average can hide and a single max spike can overstate:
 
-```
+```text
 ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
   frames=94 resizeFrames=0
   frame avg/p95/p99/max=4.421/6.912/7.340/7.580 ms       ← update+render+post+swap (the 16.6ms/60fps figure)
@@ -1980,7 +1933,7 @@ Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) whe
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
 are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
 `ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
-the first time that tab is shown). On Linux the UI thread keeps the process name (`TaskSmack`;
+the first time that tab is shown) and `ts-sampler-auto` (the Startup tab's list, while it's shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
 Names come from `Platform/ThreadName.h`; give any new worker thread one there (15 bytes at most).
@@ -2432,7 +2385,7 @@ The root `CMakeLists.txt` is intentionally declarative and delegates to focused 
 
 The root file keeps project setup, the version header, source/header lists, the `TaskSmack` target definition, and `tests`/`benchmarks` subdirectory wiring. Note that `CompilerOptions.cmake` must stay included before `Dependencies.cmake` so global flags (coverage, hardening, compiler launcher) apply to third-party builds, and `StaticAnalysis.cmake` is included before the Windows `.rc` file is appended to `TASKSMACK_SOURCES` so analysis targets only see real C++ sources.
 
-Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks was tracked in GitHub issues #60 through #64, all done (#63, `modernize-use-auto`, by PR #738).
+Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks.
 
 ## Adding Dependencies
 
@@ -2485,12 +2438,17 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the nightly schedule (Windows Release runs nightly and on dispatch only; the unity build weekly), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs and on pushes to `main`; the Windows run is also skipped when every change is Linux-only, and the Linux run when every change is Windows-only). Each `clang-tidy` run happens inside that OS's debug job, after its tests and on the tree it configured, so the LLVM setup and configure happen once per OS per PR head (the nightly runs those jobs in clang-tidy-only mode, without a build). The tidy step is `continue-on-error`, so a finding leaves the build check green and is reported separately: a small `Static Analysis (Windows)` job reports the Windows result under the check name the ruleset requires (#1875), and `CI Success` itself fails on a Linux finding or on a Linux tidy run that didn't happen, with a `clang-tidy (Linux)` annotation pointing at the step (#2047; no extra required check). On a PR it analyzes only the translation units the change can affect -- changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header -- and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406); the nightly run analyzes every file, runs IWYU (include analysis) only via manual dispatch, and runs a **blocking** Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch.
+  - **Builds:** Linux and Windows Debug on push/PR; Linux Release on the same events plus the nightly schedule, also compiling and linking (but not running) `TaskSmackBenchmarks` so a PR that breaks the benchmark build fails CI (#1348); Windows Release nightly and on dispatch only; the unity build weekly. Docs-only pull requests skip the C++ builds and `clang-tidy`. It also checks Markdown links.
+  - **`clang-tidy` (blocking):** runs on Linux and Windows on PRs, the schedule and dispatch, not on pushes to `main`. The Windows run is skipped when every change is Linux-only, and the Linux run when every change is Windows-only. Each run happens inside that OS's debug job, after its tests and on the tree it configured, so LLVM setup and configure happen once per OS per PR head (the nightly runs those jobs in clang-tidy-only mode, without a build). The tidy step is `continue-on-error`, so a finding leaves the build check green and is reported separately: a small `Static Analysis (Windows)` job reports the Windows result under the check name the ruleset requires (#1875), and `CI Success` fails on a Linux finding or on a Linux tidy run that didn't happen, with a `clang-tidy (Linux)` annotation (#2047).
+  - **Which files:** on a PR it analyzes only the translation units the change can affect (changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header), and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406). The nightly run analyzes every file.
+  - **Other jobs:** a blocking Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs, and IWYU (include analysis) on manual dispatch only.
+  - **`CI Success`** is the gate job used for branch protection. When a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). Release packaging stays x64 until phase 3 of #2214.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
-CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each CI, Sanitizers and Heavy Checks run on `main` and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
@@ -2500,7 +2458,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
-- **`main-health.yml`**: After every run of the main workflows on `main` (CI -- which includes the nightly full `clang-tidy` --, CodeQL, Sanitizers, Heavy Checks, OSV, Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
+- **`main-health.yml`**: After every run of the main workflows on `main` (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene
@@ -2509,7 +2467,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
-- **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
+- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip`; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
 - **`changelog.yml`**: Automates changelog generation using `git-cliff` for strict `vMAJOR.MINOR.PATCH` tags.
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
@@ -2532,30 +2490,20 @@ SHA-256 digest before executing it.
 
 ### Keeping Dependencies Current
 
-Three automated mechanisms cover different parts of "is this pinned version stale/vulnerable,"
-and one category is deliberately left manual. See #89 for the history.
+Three automated mechanisms check whether a pinned version is stale or vulnerable, and one category is left
+manual (#89, #798).
 
-**One-time setup for `renovate.yml`** (two steps, neither done automatically since both are
-account/repo-level security settings):
+**One-time setup for `renovate.yml`.** Neither step is automatic, since both are repository security settings:
 
-1. **Required**, or the workflow can't open PRs at all: enable Settings → Actions → General →
-   Workflow permissions → "Allow GitHub Actions to create and approve pull requests". Verify it's
-   on via `gh api repos/mgradwohl/tasksmack/actions/permissions/workflow` --
-   `can_approve_pull_request_reviews` must be `true`; `renovate.yml` fails on every run while
-   it's `false`.
-2. **Required**, or `renovate.yml` fails immediately with an actionable error instead of running:
-   PRs opened with the default `GITHUB_TOKEN` don't trigger other workflows (`ci.yml` included)
-   -- GitHub's loop-prevention behavior for the built-in token. `renovate.yml` deliberately does
-   not fall back to `GITHUB_TOKEN` (it used to, silently, which let dependency-update PRs skip CI
-   and be merged unvalidated); it fails the run instead until this is set up. Add a fine-grained
-   PAT scoped to just this repo, with Contents, Pull requests, Issues (needed because
-   `dependencyDashboard: true` in `renovate.json5` has Renovate create/update a tracking issue),
-   and **Workflows** (needed because the LLVM entry edits `LLVM_SEMVER_VERSION` inside `ci.yml`
-   itself, and GitHub blocks pushes touching `.github/workflows/*` without this scope even with
-   Contents:write) all set to "Read and write", as the `RENOVATE_TOKEN` repository secret so CI
-   actually gates these PRs like any other.
+1. Enable Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to create and approve
+   pull requests". `gh api repos/mgradwohl/tasksmack/actions/permissions/workflow` must show
+   `can_approve_pull_request_reviews: true`, or every run fails.
+2. Add a fine-grained PAT for this repository as the `RENOVATE_TOKEN` secret, with Contents, Pull requests,
+   Issues (for the Dependency Dashboard issue) and Workflows (the LLVM entry edits `ci.yml`) set to "Read and
+   write". `renovate.yml` fails without it rather than falling back to `GITHUB_TOKEN`, whose pull requests
+   don't trigger CI.
 
-**Libraries and code we pull in** (i.e. actual dependencies):
+**Libraries and code we pull in:**
 
 | Source | Freshness (new releases) | Vulnerabilities (CVEs) |
 |---|---|---|
@@ -2563,161 +2511,55 @@ account/repo-level security settings):
 | Python packages (`requirements.txt`) | Dependabot (weekly, Monday) | `dependency-review.yml` + `osv-scanner.yml` (weekly) |
 | C++ `FetchContent` libraries (`cmake/Dependencies.cmake`, `tests/CMakeLists.txt`, `benchmarks/CMakeLists.txt`) | `renovate.yml` (weekly, Wednesday) | `osv-scanner.yml` (weekly) |
 
-Renovate is configured in `.github/renovate.json5`, restricted (via `enabledManagers`) to the
-custom regex manager plus Renovate's native `pre-commit` manager (see Tier 1 below), so it never
-also tries to manage the ecosystems Dependabot already covers.
-It matches this project's `GIT_TAG <sha>  # <tag> - pinned to SHA for supply chain security`
-convention and always proposes another full SHA pin, never a floating tag/branch. Each dependency
-needs its own `versioningTemplate` because tag conventions differ (`vX.Y.Z` semver for most,
-`release-X.Y.Z` for SDL3, `VER-X-Y-Z` for freetype, `vX.Y.Zb-docking` for imgui, which
-deliberately restricts matches to this project's tracked docking branch rather than mainline
-releases). `nothings/stb` is intentionally excluded: it's pinned to a raw commit with no
-upstream tags at all, so there's nothing to compare against -- left as an occasional manual
-check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before merge.
+Renovate is configured in `.github/renovate.json5` and limited (`enabledManagers`) to its custom regex
+manager and its native `pre-commit` manager, so it never manages what Dependabot covers. It matches this
+project's `GIT_TAG <sha>  # <tag> - pinned to SHA for supply chain security` convention and always proposes
+another full SHA pin. Each dependency has its own `versioningTemplate`, since tag conventions differ
+(`release-X.Y.Z` for SDL3, `VER-X-Y-Z` for FreeType, `vX.Y.Zb-docking` for ImGui's docking branch).
+`nothings/stb` is pinned to a raw commit with no tags, so it's checked by hand now and then. Renovate only
+opens PRs; the same CI gate applies before merge.
 
-**Tools we build with** (cmake, LLVM/clang, Python, ninja, ccache, git -- see
-`tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
-below. See #798 for the full repo-wide audit and rationale behind this split.
+**Tools we build with** (CMake, LLVM, Python, Ninja, ccache; see `tools/check-prereqs.sh`), in three tiers:
 
-- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`,
-  `actionlint-py` -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
-  custom regex needed. The `clang-format` mirror (same file, same manager) is the one exception:
-  its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
-  bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry
-  keyed on the manager's `pre-commit/mirrors-clang-format` dep name) -- minor/patch bumps still
-  auto-PR freely. Windows CI has no Renovate-tracked `ninja`/`ccache` pins: `ninja` is
-  preinstalled on the `windows-2025` runner image and `.github/actions/setup-windows-llvm/action.yml`
-  only verifies its version (bump its `ninja-version` input when the image changes), and
-  `ccache` is installed by `hendrikmuhs/ccache-action` from that action's own pinned,
-  checksum-verified release binary.
-- *Tier 2 -- detected automatically, but only opens a PR after a human ticks the checkbox on
-  the Dependency Dashboard issue Renovate maintains* (`dependencyDashboardApproval: true`):
-  compiler/interpreter/build-generator bumps that need a deliberate look (new warnings, codegen
-  changes, build-semantics changes) before a PR even opens.
-  - **LLVM** is pinned across every workflow that runs a compiler or clang-tooling step --
-    `.github/workflows/ci.yml`, `heavy-checks.yml`, `release.yml`, and `static-analysis.yml`
-    each pin both `LLVM_VERSION` (Linux major) and `LLVM_SEMVER_VERSION` (Windows exact
-    version); `codeql.yml`, `sanitizers.yml`, and `copilot-setup-steps.yml` pin the Linux major
-    only; `tools/setup-dev.sh` (`LLVM_SUPPORTED_VERSION`, the single literal its own `--llvm`
-    guard also reads back from, so the guard can't desync from the value Renovate bumps),
-    `tools/setup-dev.ps1` (`$LlvmVersion`), and `cmake/Options.cmake`
-    (`TASKSMACK_LLVM_VERSION`, which feeds clang-tidy/IWYU tool discovery) round out the
-    per-workflow list. `reusable-build-test.yml`'s own `llvm-version`/`llvm-semver-version`
-    input defaults are *also* tracked separately: `ci.yml`'s `build-linux-*`/`build-windows-*`
-    jobs call that reusable workflow passing only `os`/`build_type`, never the LLVM inputs, so
-    it's the reusable workflow's own defaults -- not `ci.yml`'s env vars -- that actually
-    govern the compiler the main build+test jobs use. `.github/actions/setup-windows-llvm/
-    action.yml`'s and `.github/actions/setup-llvm/action.yml`'s own `llvm-version` input
-    defaults round out the list -- every real caller of both actions passes this input
-    explicitly today (all 15 `setup-llvm` call sites and all 5 `setup-windows-llvm` ones), so
-    neither is the active bug the reusable-workflow one was, but both are still the actions'
-    documented contracts and would silently go stale for a future caller that omits the input.
-    `setup-llvm/action.yml` also has two internal bash fallbacks duplicating "22" a second and
-    third time for when its input arrives empty. These were briefly removed as apparently dead
-    code (every real `uses:` call site in this repo's own workflows passes a value explicitly)
-    -- but GitHub Copilot's own code-review setup-step runner invokes this action through a
-    path that doesn't resolve `${{ env.LLVM_VERSION }}` and sends an empty string in practice,
-    which broke Copilot's own review setup step on this very PR. Restored; kept deliberately
-    un-tracked rather than added as a fifth/sixth Renovate manager, since they're a defensive
-    fallback for an external caller this repo doesn't control, not a real second pin. All of
-    the above are grouped into one PR so they can't drift out of sync. Every
-    Linux major-only manager's extraction is anchored to a full stable
-    `llvmorg-X.Y.Z` tag (nothing after the patch digit), the same anchoring reasoning as the
-    Python interpreter managers below: without it, a prerelease tag like `llvmorg-23.1.0-rc3`
-    would reduce to the same "23" a real major release would, putting a premature update on
-    the dashboard before a stable LLVM 23 actually exists.
+- *Tier 1, opened automatically:* the pre-commit hook tools (`rev:` pins in `.pre-commit-config.yaml`). The
+  `clang-format` mirror's *major* bumps are gated like LLVM's, since its formatting follows the compiler's
+  major. Windows CI has no Renovate-tracked Ninja or ccache pins: Ninja comes with the runner image (bump
+  `setup-windows-llvm`'s `ninja-version` input when the image changes) and ccache comes from
+  `hendrikmuhs/ccache-action`'s pinned release.
+- *Tier 2, a PR opens only after someone ticks it on the Dependency Dashboard*
+  (`dependencyDashboardApproval: true`), for every update, not just major ones:
+  - **LLVM**, grouped into one PR: `LLVM_VERSION`/`LLVM_SEMVER_VERSION` in the workflows that run a compiler
+    or clang tool, the `llvm-version` input defaults of `reusable-build-test.yml` (which `ci.yml`'s build jobs
+    rely on) and of the `setup-llvm` and `setup-windows-llvm` actions, `LLVM_SUPPORTED_VERSION` in
+    `tools/setup-dev.sh`, `$LlvmVersion` in `tools/setup-dev.ps1`, and `TASKSMACK_LLVM_VERSION` in
+    `cmake/Options.cmake`. Only stable `llvmorg-X.Y.Z` tags count. Before approving, confirm the Windows
+    version is installable from both Chocolatey (CI) and WinGet (`tools/setup-dev.ps1`), which can lag
+    upstream (#752). These need updating by hand in the same PR (grep for the old major too): the
+    `clang++-22`/`clang-22` names in `CMakePresets.json`'s Linux presets, `release.yml`'s
+    `LLVM_LINUX_EXACT_VERSION`, the "LLVM 22" checks in `tools/pgo.sh`/`tools/pgo.ps1`, `tools/common.sh`'s
+    clang-format version-discovery list, and the two fallback defaults inside `setup-llvm/action.yml`, kept
+    for Copilot's review setup, which can call it with an empty input.
+  - **Python interpreter** (major.minor, from stable tags only), grouped: `setup-python-glad/action.yml`,
+    `pre-commit.yml`, `$PythonVersion` in `tools/setup-dev.ps1` and `PYTHON_VERSION` in
+    `tools/setup-dev.sh`. Update by hand in the same PR: the "3.14" in this guide's setup commands and in
+    `requirements.txt`'s header.
+  - **CMake, Ninja and ccache** pins in `tools/setup-dev.ps1` (`$CMakeVersion`, `$NinjaVersion`,
+    `$CcacheVersion`). CMake and Ninja match the `windows-2025` runner image. WinGet's feed lags upstream
+    and no CI job runs this script, so confirm WinGet has the version before approving.
+- *Tier 3, manual:* tools that ride the OS, runner or SDK rather than their own releases (`wpr`, `xperf`,
+  `wpa`, CPack's NSIS/dpkg/rpmbuild, `gh`, `xvfb`), and optional local-only tools (Inkscape, heaptrack,
+  FlameGraph, hotspot).
 
-    Every update to this group -- not just major bumps -- requires dashboard approval, unlike
-    the rest of this tier. Both CI (`choco install llvm`; Windows jobs restore the installed tree from
-    an Actions cache keyed on the exact version and saved only by `main`, so the first `main` runs
-    after a bump fall back to Chocolatey) and the dev-box script
-    (`winget install LLVM.LLVM`) resolve the pinned Windows version through Chocolatey/WinGet,
-    and #752 already recorded a concrete real-world case of that feed lagging upstream
-    (upstream had `22.1.8` while Chocolatey only had `22.1.7`) -- an auto-PR'd Windows *patch*
-    bump would have generated an unmergeable PR with nothing to catch it before CI ran. A
-    human must confirm the proposed version is actually installable through both feeds before
-    approving, matching the same manual-verification precedent as the CMake/Ninja/ccache
-    dev-box pins below. This supersedes #752's blanket "Windows major bumps are entirely
-    disabled" rule with the dashboard-approval mechanism used everywhere else in this tier.
-
-    None of the above tracking makes a major LLVM bump a single-PR, mechanical operation --
-    it never has been (see #752), and the dashboard-approval gate exists precisely because a
-    human still has to do real work when approving one. Known locations Renovate does *not*
-    track, that must be updated by hand as part of that same approval (not exhaustive --
-    grep the repo for the old major number too): `CMakePresets.json`'s Linux presets hardcode
-    the compiler binary names (`clang++-22`/`clang-22`); `release.yml`'s
-    `LLVM_LINUX_EXACT_VERSION` is a separate, manually-verified apt package-version pin (see
-    that variable's own comment for the verification command); `tools/pgo.sh`/`tools/pgo.ps1`
-    hardcode "LLVM 22" throughout their `llvm-profdata`-version validation and error text; and
-    `tools/clang-format.sh`'s version-discovery fallback list (`for ver in 22 21 20 19 18 17`)
-    stops at the current major.
-  - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
-    `python-version: '3.14'`, `.github/workflows/pre-commit.yml`'s `python-version: '3.14'`
-    (its own independent pin for `actions/setup-python`, otherwise left stale by a bump to the
-    others), `tools/setup-dev.ps1`'s `$PythonVersion` param default (the winget `--id` and the
-    `Resolve-Python` install-path probing both derive from that one variable at runtime), and
-    `tools/setup-dev.sh`'s `readonly PYTHON_VERSION` (the `python3.14`/`python3.14-venv` apt
-    package names and the venv-creation command both derive from it) -- all four grouped
-    together so none of them can desync from a version Renovate bumps. This is the interpreter
-    *version string* specifically -- not `actions/setup-python`'s own action-version pin, which
-    Dependabot already covers separately and always did; the version string passed to it was
-    the actual gap. All four managers extract and compare major.minor only, from a *stable* tag
-    only (the extraction regex requires the upstream tag to end in a bare patch digit, e.g.
-    `v3.14.1`, excluding prerelease tags like `v3.15.0rc2` -- CPython publishes those well
-    before the matching stable release, so without this a prerelease could be misread as a
-    stable minor bump and proposed before the real release exists). The WinGet package ID this
-    repo pins (`Python.Python.3.14`) only exists at major.minor granularity, so a patch-shaped
-    proposal like `3.14.1` would rewrite it to a nonexistent ID -- restricting extraction to
-    major.minor means a patch-only stable release reduces to the same value already pinned,
-    proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump require dashboard
-    approval before a PR opens.
-
-    As with the LLVM major checklist above, the four tracked pins aren't the only "3.14" in
-    the repo -- this document's own copy-pasteable instructions hardcode it too (the manual
-    setup command near the top of this guide, the automated-setup description text, and the
-    Windows `winget install Python.Python.3.14` block below), and Dependabot's own comment in
-    `requirements.txt`'s header says "Python 3.14". None of these are simple regex-trackable
-    pins (they're prose and copy-paste command text, not a single assignment), so they're
-    listed here as the known manual-companion-edit checklist for whoever approves a Python
-    interpreter bump via the dashboard, same reasoning as the LLVM one.
-  - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
-    `$NinjaVersion`, `$CcacheVersion`) are gated on *every* update, not just major, unlike the
-    rest of this tier: these track each project's real upstream `github-tags` releases, but
-    `tools/setup-dev.ps1` installs via `winget install --version <pin>`, and WinGet's own feed
-    lags upstream unpredictably (its CMake feed currently tops out at `3.31.8` while upstream
-    already has `3.31.12` -- a same-major patch bump could still propose an uninstallable
-    version). No CI job exercises this dev-box installer script, so nothing would catch that
-    automatically; a human must manually confirm WinGet catalog availability before approving
-    any bump here. See the prerequisite fix below for why these pins exist at all now.
-- *Tier 3 -- stays manual, no independent version feed exists to track*: `wpr`/`xperf`/`wpa`/
-  `wpaexporter`, CPack's NSIS/dpkg/rpmbuild, the `gh` CLI, `xvfb` -- these ride the OS/runner/SDK
-  rather than their own release cadence. Optional local-only tools (Inkscape, heaptrack,
-  FlameGraph scripts, hotspot) are also unpinned by design: advisory tooling that never gates
-  CI, low priority to track.
-
-**Prerequisite fix that made Tier 2's CMake/Ninja/ccache tracking possible**: `tools/setup-dev.ps1`
-previously installed CMake and Ninja via a floating `winget install` with no `--version`, and
-ccache with no dev-box pin written down anywhere -- a value can't be tracked for drift if it
-isn't recorded somewhere. All three now pin an explicit version: CMake and Ninja match what the
-`windows-2025` GitHub Actions runner image itself ships (confirmed directly against
-`actions/runner-images`' `Windows2025-Readme.md`, for dev/CI parity); ccache has no CI-side
-winget equivalent to mirror (CI gets it from `hendrikmuhs/ccache-action`'s own pinned,
-checksum-verified release binary), so it pins the latest version winget actually has available.
-
-**`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
-`MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these remain **not** automated,
-by design, and are unrelated to the tiers above. They're minimum-requirement floors checked
-against whatever a contributor already has installed locally, not artifacts to fetch a newer
-version of. Raising a floor is a project-policy decision (e.g. "we now use a C++23-modules
-feature that needs clang 23"), not a freshness check -- there's no code-level trigger that would
-tell a bot when to bump one, and doing so on a schedule risks breaking contributors'
-environments with no warning. Bump these by hand when there's an actual reason to.
+**`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`, `MIN_CCACHE_VERSION`,
+`MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`) are minimum requirements for what a contributor has installed, not
+versions to fetch. Raise one by hand when the project needs a newer feature.
 
 ### Cutting a Release
 
 Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is what triggers both an official TaskSmack
-release (`release.yml`: validates the tag, builds and signs Linux/Windows packages for x64 and
-ARM64, and publishes a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
+release (`release.yml`: validates the tag, builds Linux/Windows packages for x64 and ARM64,
+signs every asset with Sigstore and, once enabled, the Windows x64 `.zip` with Authenticode, and publishes a
+GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
 it has no `workflow_dispatch` trigger).
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
@@ -2813,7 +2655,7 @@ asset layout. These are still smoke checks, not a functional test suite.
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
-`usr/bin` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man}`, and the `.zip`
+`usr/bin`, `usr/libexec/tasksmack` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}`, and the `.zip`
 may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
 
 ### Windows code signing
@@ -2977,7 +2819,7 @@ security: sanitize process name input
 docs: update architecture overview
 test: add ProcessModel delta edge cases
 ci: cache FetchContent dependencies
-build: bump minimum CMake to 3.28
+build: bump minimum CMake to 3.30
 chore: remove unused include
 revert: revert "feat: add network panel"
 ```
@@ -3016,8 +2858,10 @@ In Actions → workflow run → Artifacts, you may see:
 - `tsan-report`
 - `linux-debug-test-results`, `linux-release-test-results`
 - `windows-debug-test-results`, `windows-release-test-results`
-- `clang-tidy-results`
+- `windows-coverage-report`
+- `clang-tidy-results`, `clang-tidy-results-windows`
 - `iwyu-results`
+- `benchmark-results`
 
 ### CI Artifacts (GitHub CLI)
 
@@ -3027,31 +2871,13 @@ gh run download <run-id> -n coverage-report
 
 ## Branching Strategy
 
-The project uses the following branch patterns:
-
-| Branch | Purpose | CI Runs |
-|--------|---------|---------|
-| `main` | Stable release branch | Yes |
-| `feature/*` | Individual feature branches | On PR to main |
-| `dev/*` | Integration branches for multi-PR epics | Yes |
-
-### When to use `dev/*` branches
-
-Use a `dev/` branch when working on a large feature that spans multiple PRs (an "epic"). For example:
-- `dev/network-monitoring` - Collects multiple network-related PRs before merging to main
-- `dev/gpu-support` - Integration branch for GPU monitoring features
-
-Workflow:
-1. Create `dev/epic-name` from `main`
-2. Create feature branches and PR them into `dev/epic-name`
-3. Once all features are complete and tested, PR `dev/epic-name` into `main`
-
-For simple single-PR features, branch directly from `main` with a `feature/` prefix.
+Branch from `main` and open a pull request back to `main`. CI runs on pull requests to `main` and on pushes to
+`main`.
 
 ## Pull Request Process
 
 1. Fork the repository
-2. Create a feature branch (or target a `dev/*` branch for epic work)
+2. Create a branch from `main`
 3. Make your changes
 4. Run clang-tidy: `./tools/clang-tidy.sh debug` (Linux) or `pwsh tools/clang-tidy.ps1 debug` (Windows)
 5. Run formatting: `./tools/clang-format.sh` (Linux) or `pwsh tools/clang-format.ps1` (Windows)
@@ -3073,7 +2899,7 @@ For simple single-PR features, branch directly from `main` with a `feature/` pre
 - Aim to complete reviews within 2–3 business days.
 - Distinguish blocking concerns (must fix) from suggestions (nice to have) in comments.
 - Approve once all blocking issues are addressed; don't hold approval for minor nits.
-- When evaluating layer boundaries, refer to the architecture section in [.github/copilot-instructions.md](.github/copilot-instructions.md).
+- When evaluating layer boundaries, refer to [tasksmack.md](tasksmack.md).
 
 ### Merge criteria
 - All CI checks pass.

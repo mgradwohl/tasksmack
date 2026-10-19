@@ -6,8 +6,8 @@
 // Only standard-library file access, so the parsing and the fixture tests build and run everywhere.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/SmbiosParser.h"
 
-#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -169,22 +169,9 @@ struct OsRelease
 [[nodiscard]] inline std::string hypervisorHint(const std::filesystem::path& root)
 {
     const std::string dmi = readLine(root / "sys/class/dmi/id/sys_vendor") + " " + readLine(root / "sys/class/dmi/id/product_name");
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 8> VENDORS{{
-        {"QEMU", "Virtual machine (QEMU)"},
-        {"KVM", "Virtual machine (KVM)"},
-        {"VMware", "Virtual machine (VMware)"},
-        {"VirtualBox", "Virtual machine (VirtualBox)"},
-        {"Virtual Machine", "Virtual machine (Hyper-V)"}, // Microsoft Corporation's product name
-        {"Xen", "Virtual machine (Xen)"},
-        {"Parallels", "Virtual machine (Parallels)"},
-        {"Amazon EC2", "Virtual machine (Amazon EC2)"},
-    }};
-    for (const auto& [needle, label] : VENDORS)
+    if (const std::string_view vendor = Smbios::virtualMachineVendor(dmi); !vendor.empty())
     {
-        if (dmi.contains(needle))
-        {
-            return std::string(label);
-        }
+        return std::string("Virtual machine (").append(vendor).append(")");
     }
     // WSL's kernels name themselves: "...-microsoft-standard-WSL2" (WSL 2, a VM), "...-Microsoft" (WSL 1,
     // a translation layer, not a VM).

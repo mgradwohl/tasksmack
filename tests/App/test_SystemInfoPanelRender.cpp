@@ -65,6 +65,7 @@ struct ProbeLog
     bool authorizable = false;                 ///< authorize() can ask for a password, and the firmware has root-only facts (#2381)
     std::atomic<bool> authorizeEntered{false}; ///< authorize() was called: the password prompt is "up"
     std::atomic<bool> authorizeSawStop{false}; ///< authorize() gave up because its stop token was stopped
+    bool bitLocker = false;                    ///< Windows security with a fixed drive in every BitLocker state (#2584)
 };
 
 /// How long the fake's authorize() waits for its stop token before giving up by itself: a password
@@ -161,7 +162,27 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     }
     [[nodiscard]] Platform::PlatformSecurityInfo readPlatformSecurity() override
     {
-        return m_Default.readPlatformSecurity();
+        if (!m_Log->bitLocker)
+        {
+            return m_Default.readPlatformSecurity();
+        }
+        using Platform::BitLockerState;
+        Platform::PlatformSecurityInfo info;
+        info.available = true;
+        info.family = Platform::OsFamily::Windows;
+        info.bitLockerRead = true;
+        info.bitLocker = {
+            {.volume = "C:", .state = BitLockerState::On},
+            {.volume = "D:", .state = BitLockerState::Off},
+            {.volume = "E:", .state = BitLockerState::Encrypting},
+            {.volume = "F:", .state = BitLockerState::Decrypting},
+            {.volume = "G:", .state = BitLockerState::Suspended},
+            {.volume = "H:", .state = BitLockerState::Locked},
+            {.volume = "I:", .state = BitLockerState::NotEncryptable},
+            {.volume = "J:", .state = BitLockerState::WaitingForActivation},
+            {.volume = "K:", .state = BitLockerState::Unknown},
+        };
+        return info;
     }
     [[nodiscard]] Platform::SensorsInfo readSensors() override
     {
@@ -837,6 +858,30 @@ TEST_F(SystemInfoPanelRenderTest, AReadInAHeadlessApplicationTakesNoGraphicsFact
     bool drawn = false;
     EXPECT_NO_THROW(drawn = frameUntil("Fixture Linux 1"));
     EXPECT_TRUE(drawn);
+}
+
+// #2584: the Security section draws each fixed drive's BitLocker state, read without administrator, so
+// nothing on it asks for administrator.
+TEST_F(SystemInfoPanelRenderTest, SecurityDrawsEveryBitLockerState)
+{
+    m_Log.bitLocker = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("BitLocker (K:)"));
+    const std::string text = frame();
+    for (const char* drawn : {"BitLocker (C:)",
+                              "BitLocker (D:)",
+                              "Encrypting",
+                              "Decrypting",
+                              "Suspended",
+                              "Locked",
+                              "Not encryptable",
+                              "Waiting for activation",
+                              "Unknown"})
+    {
+        EXPECT_TRUE(text.contains(drawn)) << drawn << " in:" << '\n' << text;
+    }
+    EXPECT_FALSE(text.contains("Requires administrator")) << text;
 }
 
 // #1395: Copy all puts every section's text on the clipboard.

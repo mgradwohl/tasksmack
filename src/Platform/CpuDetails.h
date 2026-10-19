@@ -50,7 +50,7 @@ struct CpuDetails
     // Windows and Linux (SystemCapabilities::hasVirtualizationInfo; Linux since #2592)
     std::optional<bool> virtualizationFirmwareEnabled; ///< Hardware virtualization enabled in firmware.
     std::optional<bool> slatSupported;                 ///< Second-level address translation.
-    std::optional<bool> hypervisorPresent;             ///< A hypervisor is running (CPUID).
+    std::optional<bool> hypervisorPresent;             ///< A hypervisor is running (CPUID; ARM64: Windows and SMBIOS, #2377).
     // Windows only (SystemCapabilities::hasVirtualizationSecurityInfo)
     std::optional<bool> vbsRunning;  ///< Virtualization-based security's secure kernel is running.
     std::optional<bool> hvciEnabled; ///< Memory integrity (hypervisor-enforced code integrity).

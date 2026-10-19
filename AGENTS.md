@@ -72,7 +72,7 @@ Sampling literals live in `src/Domain/SamplingConfig.h` — reuse them, don't re
 Python tooling (GLAD codegen, IWYU, pre-commit) expects the project venv: `source .venv/bin/activate` before
 running `tools/*.sh` scripts that shell out to Python, if a venv exists at `.venv/`.
 
-## Wayland-Native Support (PR #743, implementing issue #593; validation #382)
+## Wayland-Native Support (PR #743, implementing #593; validation #865)
 
 All platform-specific window behavior uses `Core::VideoBackend` abstraction:
 
@@ -81,8 +81,12 @@ All platform-specific window behavior uses `Core::VideoBackend` abstraction:
 - `supportsClientSideMaximize()`, `supportsGlobalMouseState()`
 - Never directly parse `SDL_GetCurrentVideoDriver()` outside VideoBackend
 
-**Maximize/Restore:** Native Wayland delegates to compositor; X11/XWayland/Windows use client-side positioning.
+**Maximize/Restore:** Native Wayland delegates to the compositor. X11/XWayland ask the window manager to maximize
+(`SDL_MaximizeWindow`) when it supports EWMH maximize (#1339), and otherwise position the window client-side.
+Windows always maximizes client-side.
 
-**Drag Handling:** Wayland uses event-consistent local window coordinates; X11/XWayland/Windows use global mouse state.
+**Drag Handling:** Native Wayland hands title-bar drag to the compositor (`SDL_HITTEST_DRAGGABLE`, #744), and
+drag/resize tracking reads window-local mouse state; X11/XWayland/Windows use global mouse state
+(`TitleBarLayer::queryMouseState()`).
 
 **Compositor Safety:** Never assume GNOME/KDE/Sway/Hyprland specifics; implement graceful fallback. Test matrix: `docs/dev/wayland-test-matrix.md`.

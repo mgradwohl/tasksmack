@@ -638,4 +638,34 @@ TEST(VirtualizationStatusTest, HypervisorPresentIsCpuidLeafOneEcxBit31)
     EXPECT_FALSE(hypervisorPresentBit(0x7FFF'FFFFU));
 }
 
+// SYSTEM_HYPERVISOR_QUERY_INFORMATION as an x64 Windows 11 with Hyper-V answers it, and variations (#2377)
+TEST(VirtualizationStatusTest, HypervisorQueryPresentReadsConnectedOrPresent)
+{
+    using Information = std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE>;
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x01, 0x00, 0x01, 0x04, 0, 0, 0, 0, 0x84, 0xDF, 0x17, 0x74, 0, 0, 0, 0}));
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x00, 0x00, 0x01})); // present, not connected
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x01}));             // connected
+    EXPECT_FALSE(hypervisorQueryPresent(Information{}));
+    // Debugging enabled, the spare bytes and the enlightenments alone say nothing
+    EXPECT_FALSE(hypervisorQueryPresent(
+        Information{0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}));
+}
+
+TEST(VirtualizationStatusTest, HypervisorWithoutCpuidCombinesWindowsAndTheFirmware)
+{
+    constexpr std::optional<bool> UNKNOWN;
+    // Any yes is a yes: Hyper-V as Windows reports it, the secure kernel (which needs it), or a VM's table
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(true, false, false), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, true, false), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, false, true), true) << "QEMU, Parallels or VMware: no Hyper-V interface";
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, UNKNOWN, true), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, true, UNKNOWN), true);
+    // A no is Windows' own: bare metal, without Hyper-V
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, false, false), false);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, UNKNOWN, UNKNOWN), false);
+    // Without it, a bare-metal table can't rule out Hyper-V running under this Windows
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, false, false), UNKNOWN);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, UNKNOWN, UNKNOWN), UNKNOWN);
+}
+
 } // namespace Platform

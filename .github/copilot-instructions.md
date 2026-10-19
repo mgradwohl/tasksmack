@@ -2,7 +2,7 @@
 
 Linux and Windows system monitor (macOS is not supported) (C++23 / Clang/LLVM 22 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
 
-> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../docs/dev/completed-features.md) (implemented features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../docs/dev/completed-features.md) (implemented features), [AGENTS.md](../AGENTS.md) (shared rules for every agent)
 
 ## Documentation Map (Source of Truth)
 
@@ -19,7 +19,7 @@ TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
     - Layer contracts, sampling, capability behavior, platform strategy, and roadmap.
 - **Implemented features list (canonical):** [completed-features.md](../docs/dev/completed-features.md)
     - User-visible and engineering features already implemented.
-- **Agent guidance:** [AGENTS.md](../AGENTS.md) (canonical shared rules for every agent: workflow, merge authority, PR/issue rules), [copilot-instructions.md](copilot-instructions.md) (this file: Copilot's project detail) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
+- **Agent guidance:** [AGENTS.md](../AGENTS.md) (canonical shared rules for every agent: workflow, merge authority, PR/issue rules), and [copilot-instructions.md](copilot-instructions.md) (this file: Copilot's project detail)
     - Primarily for agents, but still useful to contributors. Where this file and AGENTS.md disagree, AGENTS.md wins.
 - **Review checklist (canonical):** [skills/code-review/SKILL.md](skills/code-review/SKILL.md)
 - **Security policy:** [SECURITY.md](../SECURITY.md)
@@ -32,7 +32,7 @@ Contribution process helpers:
 - PR checklist: [.github/pull_request_template.md](pull_request_template.md)
 - Issue templates: [.github/ISSUE_TEMPLATE/](ISSUE_TEMPLATE/)
 
-The `docs/dev/` pages are navigation pages, not duplicate developer references. If you need to add documentation, keep it narrowly scoped and link to the relevant canonical source.
+The `docs/dev/` pages (the developer overview, the feature inventory and the Wayland test matrix) are not duplicate developer references. If you need to add documentation, keep it narrowly scoped and link to the relevant canonical source.
 
 ## Quick Reference
 
@@ -97,9 +97,8 @@ Probes return **raw counters**, domain computes **deltas and rates**:
 // Platform: raw counters (stateless read from OS)
 ProcessCounters{userTime=1000, systemTime=500, startTimeTicks=12345}
 
-// Domain: compute delta from previous snapshot
-uint64_t uniqueKey = hash(pid, startTime);  // Handle PID reuse
-auto prev = m_PrevCounters[uniqueKey];
+// Domain: compute delta from the previous sample of the same process,
+// keyed by (pid, startTimeTicks) so a reused PID starts a fresh baseline
 cpuPercent = (delta_user + delta_system) / totalCpuDelta * 100;
 
 // UI: render ProcessSnapshot.cpuPercent
@@ -124,9 +123,9 @@ struct ProcessCapabilities {
 ### Data Refresh (Current Architecture)
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
 - `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
-- `GPUModel` is the single owner of GPU acquisition (#1417): each refresh reads the system and the per-process GPU counters in one probe-locked section and publishes the per-process ones as a `ProcessGPUPublication` (own `PublicationSlot`, stamped with the refresh time). `ProcessModel` merges the newest one -- never calling the GPU probe or taking its lock -- treats one older than `Sampling::PROCESS_GPU_DATA_MAX_AGE_MS` as a failed read, and marks a process first listed after the read as unread (`gpuFieldsRead`), never merging a publication entry for its pid (that belongs to an exited process that held the pid)
-- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations. Each builds its generation outside any lock a reader takes and swaps it in through `Domain::PublicationSlot` (a short mutex around a `shared_ptr`), so `publication()` never waits for a history copy (#868); their writers are serialised on a writer mutex so versions commit in order (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
-- `SystemModel` keeps its history in `Domain::SharedHistoryBuffer` (`src/Domain/SharedHistory.h`): append-only blocks whose slots are written once and never again, so a publication holds `Domain::HistoryView`s of them -- contiguous, immutable, converting to `std::span` -- instead of copies, and a publish is O(series) whatever the history length (#1412). Each sample's history append is a transaction with the strong guarantee: `stageHistoryAppend()` makes every allocation first -- new core slots and new interfaces' Rx/Tx series built and backfilled off to the side, their last-seen entries, `reserve()` on every existing series, vector capacity and hash buckets -- then the `noexcept` `commitHistoryAppend()` splices the staged nodes in and pushes to every series without allocating, and the snapshot is moved in last. A `std::bad_alloc` therefore leaves every series aligned and the model unchanged (a failure in `publish()` after the commit leaves the history one sample ahead of an unchanged publication); `tests/Domain/test_SystemModelAllocationFailure.cpp` fails each allocation of such a sample in turn. `GPUModel` does the same per GPU (#1412, slice 3): each GPU's 11 published series are `SharedHistoryBuffer`s appended per sample (no `GPUSnapshot` history), `stageHistoryAppend()` builds a GPU new to a read off to the side and reserves every existing series and the map's buckets, and the `noexcept` `commitHistoryAppend()` splices it in and appends a sample or a placeholder (#1146) to every GPU; `tests/Domain/test_GPUModelAllocationFailure.cpp` covers a refresh that adds a GPU. `StorageModel` does the same (#1412 slice 2): its timestamps, totals and per-disk series are shared buffers, and `applySample()` copies the per-disk rate state and stages a new disk's backfilled series before the `noexcept` commit swaps and splices them in (`tests/Domain/test_StorageModelAllocationFailure.cpp`). `ProcessModel`'s five aggregated system histories (timestamps, power, page faults, threads, handles) are `SharedHistoryBuffer`s too (#2156): `tryCopySystemHistoriesIfNewer()` hands out `HistoryView`s rather than copies, `appendSystemHistoryLocked()` reserves all five before pushing to any, and a failed append in a refresh drops that one history sample but still publishes the process list (`tests/Domain/test_ProcessModelAllocationFailure.cpp`). The allocation-failure tests share the binary's one `operator new` replacement, `tests/Domain/AllocationFailureHook.{h,cpp}` (`TestSupport::FailAllocationAfter`; compiled out, and the tests skipped, where `TASKSMACK_NO_ALLOCATOR_HOOK` is defined: Windows and sanitizer builds).
+- `GPUModel` is the single owner of GPU acquisition (#1417) and publishes per-process GPU data as a `ProcessGPUPublication`; `ProcessModel` merges the newest one and never calls the GPU probe. See tasksmack.md "Sampling and Publication"
+- System, Storage, and GPU models build each generation outside any lock a reader takes and swap it in through `Domain::PublicationSlot`, so `publication()` never waits for a history copy (#868); writers are serialized on a writer mutex (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
+- History is held in `Domain::SharedHistoryBuffer`s whose appends are allocation-failure-safe transactions; see tasksmack.md "History Storage" before changing a model's history
 - `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
@@ -177,9 +176,7 @@ Prefer these when the modern form preserves behavior and improves clarity; don't
 - `std::ranges` and `std::views` over raw loops with no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns)
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
-- prefer modern C++ 23 alternatives for legacy patterns when the replacement preserves behavior and improves clarity (e.g., `std::string::contains()` over a containment-only `find()`, `std::views` over a raw loop with no early exit)
-- prefer modern C++ 23 standard library features  that improves code clarity, safety, or performance (e.g., `std::format` for type-safe formatting, `std::jthread` for threads with automatic joining)
-- prefer modern C++ 23 standard library features when a third-party library function provides similar functionality to a C++23 standard library feature (e.g., prefer `std::format` over `fmt::format`)
+- prefer a C++23 standard library feature over a third-party function that does the same (e.g., `std::format` over `fmt::format`)
 - prefer modern C++ 23 types to improve code clarity, safety, or performance (e.g., `std::span` for array views, `std::optional` for optional values) over legacy types
 - prefer range-based for loops and standard algorithms from `<algorithm>` over traditional for loops for better readability and safety
 - prefer `enum class` over traditional `enum` for better type safety and scoping with a type 'enum class EnumName : std::uint8_t { ... };' to specify underlying type when size matters
@@ -308,7 +305,8 @@ TEST(ProcessModelTest, CpuPercentFromDeltas) { /* ... */ }
 
 ### Coverage
 ```bash
-pwsh tools/coverage.ps1    # Generates coverage/index.html
+./tools/coverage.sh        # Linux
+pwsh tools/coverage.ps1    # Windows; both write coverage/index.html
 ```
 
 ## Adding New Features
@@ -359,9 +357,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.
 
 ---
-*For comprehensive build instructions, prerequisites, tools, and project structure, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
-
-*For PR process and contribution workflow, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*For build instructions, prerequisites, tools, project structure and the PR process, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
 ---
 

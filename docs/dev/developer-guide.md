@@ -1,12 +1,16 @@
 # Developer Guide
 
-The repository keeps contributor instructions in one canonical file:
+This page is a short map for contributors. The detail lives in two files in the repository, so it's kept
+next to the code it describes:
 
-**[Read `CONTRIBUTING.md` on GitHub](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md)**
+- **[`CONTRIBUTING.md`](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md):** prerequisites,
+  automated setup, CMake presets, tests, formatting, static analysis, benchmarks, profiling, packaging, CI, and
+  the pull-request process.
+- **[`tasksmack.md`](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md):** the architecture: the
+  Platform, Domain, Core, UI and App layers, dependency rules, sampling threads, capabilities, platform
+  backends, configuration and the current engineering direction.
 
-It covers prerequisites, automated setup, CMake presets, tests, formatting, static analysis, benchmarks, profiling, packaging, CI, and the pull-request process.
-
-## Fast Path
+## Set up and build
 
 ### Linux
 
@@ -23,11 +27,43 @@ pwsh tools/setup-dev.ps1
 cmake --workflow --preset win-dev
 ```
 
-Run the prerequisite checker if an existing environment fails to configure:
+The `dev` and `win-dev` workflows configure, build and test a debug build. If an existing environment fails to
+configure, run the prerequisite checker:
 
 ```bash
-./tools/check-prereqs.sh
-pwsh tools/check-prereqs.ps1
+./tools/check-prereqs.sh       # Linux
+pwsh tools/check-prereqs.ps1   # Windows
 ```
 
-The docs site intentionally does not duplicate the detailed command reference. This prevents setup and CI instructions from drifting away from the repository's current tooling.
+List the presets with `cmake --list-presets` and the workflows with `cmake --list-presets=workflow`.
+[CONTRIBUTING.md's Build section](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#build) has
+the preset tables, sanitizers, coverage, benchmarks, profiling, PGO and packaging.
+
+## Architecture
+
+Layers depend in one direction: `Platform` reads raw OS counters, `Domain` turns them into rates, histories
+and immutable snapshots, `Core` owns the SDL3 window and main loop, `UI` draws with ImGui and ImPlot, and
+`App` holds the panels. App is the only place that creates platform probes. See
+[Layer Model](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md#layer-model) and
+[Dependency Rules](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md#dependency-rules).
+
+## Metrics pipeline
+
+Platform probes collect raw counters, Domain models calculate rates and bounded histories, and App panels
+render cached publications. Process enumeration and the heavier system metrics run on separate
+`BackgroundSampler` workers. System, Storage and GPU publish immutable, versioned snapshot-and-history
+generations, and process consumers use `ProcessModel` snapshot versions, so render loops do no probe I/O,
+take no model locks and copy no history.
+
+History is stored in `Domain::HistoryBuffer<T>` rings (`src/Domain/History.h`), sized from the configured
+history window by `Sampling::historyCapacityForSeconds()` so the whole window (10 seconds to 30 minutes) fits
+even at the fastest 100 ms refresh. Entries older than the window are trimmed on every sample in O(1), and all
+the series in one model share one timestamp ring and are trimmed together.
+
+The full description is
+[Sampling and Publication](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md#sampling-and-publication)
+in `tasksmack.md`.
+
+## What's implemented
+
+[Implemented Features](completed-features.md) lists what TaskSmack does today, by area and platform.

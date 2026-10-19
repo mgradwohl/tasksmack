@@ -1705,6 +1705,8 @@ TEST(SystemInfoSectionsTest, WindowsSecurityRows)
     security.tpmVersionMajor = 2;
     security.memoryIntegrity = true;
     security.kernelDmaProtection = false;
+    security.bitLockerRead = true;
+    security.bitLocker = {{.volume = "C:", .state = Platform::BitLockerState::On}};
     security.vulnerabilitiesRead = true;
     security.vulnerabilities = {
         {.name = "l1tf", .status = "Not affected"},
@@ -1716,10 +1718,8 @@ TEST(SystemInfoSectionsTest, WindowsSecurityRows)
     EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 2.0)");
     EXPECT_EQ(findRow(section, "Memory integrity (HVCI)")->value, "On");
     EXPECT_EQ(findRow(section, "Kernel DMA Protection")->value, "Off");
-    const Row* bitLocker = findRow(section, "BitLocker");
-    ASSERT_NE(bitLocker, nullptr);
-    EXPECT_FALSE(bitLocker->available());
-    EXPECT_EQ(bitLocker->unavailableReason, "Requires administrator");
+    EXPECT_EQ(findRow(section, "BitLocker (C:)")->value, "On"); // read without administrator (#2584)
+    EXPECT_EQ(findRow(section, "BitLocker"), nullptr);
     EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 1 mitigated, 1 not affected");
     EXPECT_EQ(findRow(section, "L1TF")->value, "Not affected");
     EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced IBRS");
@@ -1747,10 +1747,71 @@ TEST(SystemInfoSectionsTest, WindowsSecurityUnknownsSayWhy)
         EXPECT_FALSE(item->unavailableReason.empty()) << label;
     }
     EXPECT_EQ(findRow(section, "CPU vulnerabilities")->unavailableReason, "Windows didn't report its speculation control settings");
+    EXPECT_EQ(findRow(section, "BitLocker")->unavailableReason, "Windows couldn't list the drives");
 
     unread.vulnerabilitiesRead = true;
+    unread.bitLockerRead = true;
     const Section none = SystemInfo::buildSecuritySection(unread);
     EXPECT_EQ(findRow(none, "CPU vulnerabilities")->unavailableReason, "Windows reports none");
+    EXPECT_EQ(findRow(none, "BitLocker")->unavailableReason, "No fixed drives");
+}
+
+// #2584: every BitLocker state Windows reports, one row per fixed drive in the order read; Unknown says why.
+TEST(SystemInfoSectionsTest, WindowsBitLockerRowPerDriveInEveryState)
+{
+    using Platform::BitLockerState;
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Windows;
+    security.bitLockerRead = true;
+    const std::vector<std::pair<BitLockerState, std::string_view>> states = {
+        {BitLockerState::On, "On"},
+        {BitLockerState::Off, "Off"},
+        {BitLockerState::Encrypting, "Encrypting"},
+        {BitLockerState::Decrypting, "Decrypting"},
+        {BitLockerState::Suspended, "Suspended"},
+        {BitLockerState::Locked, "Locked"},
+        {BitLockerState::NotEncryptable, "Not encryptable"},
+        {BitLockerState::WaitingForActivation, "Waiting for activation"},
+        {BitLockerState::Unknown, "Unknown"},
+    };
+    char letter = 'C';
+    for (const auto& [state, text] : states)
+    {
+        EXPECT_EQ(SystemInfo::bitLockerStateText(state), text);
+        security.bitLocker.push_back({.volume = std::string{letter, ':'}, .state = state});
+        ++letter;
+    }
+    const Section section = SystemInfo::buildSecuritySection(security);
+    letter = 'C';
+    for (const auto& [state, text] : states)
+    {
+        const std::string label = std::string("BitLocker (") + letter + ":)";
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_EQ(item->value, text) << label;
+        EXPECT_EQ(item->valueTooltip.empty(), state != BitLockerState::Unknown) << label;
+        ++letter;
+    }
+    EXPECT_EQ(findRow(section, "BitLocker (K:)")->valueTooltip, "Windows doesn't report BitLocker for this drive");
+    // Never asks for administrator any more.
+    for (const Row& item : section.rows)
+    {
+        EXPECT_FALSE(item.unavailableReason.contains("administrator")) << item.label;
+    }
+}
+
+// #2584: Linux has no BitLocker rows.
+TEST(SystemInfoSectionsTest, LinuxSecurityHasNoBitLockerRows)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Linux;
+    const Section section = SystemInfo::buildSecuritySection(security);
+    for (const Row& item : section.rows)
+    {
+        EXPECT_FALSE(item.label.starts_with("BitLocker")) << item.label;
+    }
 }
 
 TEST(SystemInfoSectionsTest, WindowsSensorsRowsAndVendorDriverNote)

@@ -240,10 +240,14 @@ struct VisibleSection
 /// any status worded otherwise.
 [[nodiscard]] std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities);
 
+/// A BitLocker state as the Security section shows it (#2584): "On", "Suspended", "Not encryptable"...;
+/// "Unknown" when Windows didn't report it.
+[[nodiscard]] std::string_view bitLockerStateText(Platform::BitLockerState state) noexcept;
+
 /// The Security section (#1514): Secure Boot, the TPM, the security modules, SELinux and AppArmor, the
 /// kernel lockdown mode, then the CPU vulnerabilities, a summary row and one row per vulnerability. On
-/// Windows, memory integrity (HVCI), Kernel DMA Protection and BitLocker (which needs administrator) take
-/// the place of the Linux-only rows.
+/// Windows, memory integrity (HVCI), Kernel DMA Protection and each fixed drive's BitLocker state (#2584,
+/// read without administrator) take the place of the Linux-only rows.
 [[nodiscard]] Section buildSecuritySection(const Platform::PlatformSecurityInfo& security);
 
 /// One sensor's value in its unit: "45.0 °C (high 80.0 °C, critical 100.0 °C)", "1200 RPM",
