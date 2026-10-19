@@ -221,6 +221,78 @@ TEST(SystemdServicesTest, AnAliasIsNotAServiceOfItsOwn)
     return dir.path;
 }
 
+// #2590: a loaded service's User, ExecStart and Type fill its Account, Command and Type.
+TEST(SystemdServicesTest, AServicesConfigFillsItsAccountCommandAndType)
+{
+    SystemdServices::Listing listing;
+    listing.units = {
+        {.name = "nginx.service", .description = "nginx", .activeState = "active", .subState = "running", .objectPath = "/u/1"},
+        {.name = "cron.service", .description = "cron", .activeState = "active", .subState = "running", .objectPath = "/u/2"},
+        {.name = "unread.service", .description = "unread", .activeState = "active", .subState = "running", .objectPath = "/u/3"},
+    };
+    listing.unitFiles = {{"ssh.service", "disabled"}}; // Installed, not loaded: no configuration to read
+    listing.configs["nginx.service"] = {.user = "www-data",
+                                        .dynamicUser = false,
+                                        .execStart = {{"/usr/sbin/nginx", "-g", "daemon on; master_process on;"}},
+                                        .type = "forking"};
+    listing.configs["cron.service"] = {.user = "", .dynamicUser = false, .execStart = {{"/usr/sbin/cron", "-f"}}, .type = "exec"};
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(listing);
+    const ServiceInfo* nginx = find(services, "nginx.service");
+    ASSERT_NE(nginx, nullptr);
+    EXPECT_EQ(nginx->account, "www-data");
+    EXPECT_EQ(nginx->binaryPath, "/usr/sbin/nginx -g daemon on; master_process on;");
+    EXPECT_EQ(nginx->serviceType, "Forking");
+    const ServiceInfo* cron = find(services, "cron.service");
+    ASSERT_NE(cron, nullptr);
+    EXPECT_EQ(cron->account, "root") << "no User=: systemd runs it as root";
+    EXPECT_EQ(cron->serviceType, "Exec");
+    for (const char* name : {"unread.service", "ssh.service"})
+    {
+        const ServiceInfo* bare = find(services, name);
+        ASSERT_NE(bare, nullptr) << name;
+        EXPECT_TRUE(bare->account.empty()) << name;
+        EXPECT_TRUE(bare->binaryPath.empty()) << name;
+        EXPECT_TRUE(bare->serviceType.empty()) << name;
+    }
+}
+
+TEST(SystemdServicesTest, AnEmptyUserIsRootUnlessTheUserIsDynamic)
+{
+    SystemdServices::UnitConfig config;
+    EXPECT_EQ(SystemdServices::accountFrom("cron.service", config), "") << "User not read: not guessed";
+    config.user = "";
+    EXPECT_EQ(SystemdServices::accountFrom("cron.service", config), "root");
+    config.dynamicUser = true;
+    EXPECT_EQ(SystemdServices::accountFrom("systemd-timesyncd.service", config), "systemd-timesyncd");
+    config.user = "ntp";
+    EXPECT_EQ(SystemdServices::accountFrom("systemd-timesyncd.service", config), "ntp") << "User= wins";
+}
+
+TEST(SystemdServicesTest, ACommandJoinsEachArgvWithSpacesAndEachLineWithASemicolon)
+{
+    EXPECT_EQ(SystemdServices::commandLineFrom({}), "");
+    EXPECT_EQ(SystemdServices::commandLineFrom({{"/usr/bin/true"}}), "/usr/bin/true");
+    EXPECT_EQ(SystemdServices::commandLineFrom({{"/usr/sbin/sshd", "-D", "-o", "LogLevel=INFO"}}), "/usr/sbin/sshd -D -o LogLevel=INFO");
+    EXPECT_EQ(SystemdServices::commandLineFrom({{"/bin/mkdir", "-p", "/run/x"}, {}, {"/usr/bin/x", "--start"}}),
+              "/bin/mkdir -p /run/x; /usr/bin/x --start")
+        << "an empty argv is skipped";
+}
+
+TEST(SystemdServicesTest, TypesAreLabelledAsWindowsLabelsItsTypes)
+{
+    EXPECT_EQ(SystemdServices::serviceTypeText("simple"), "Simple");
+    EXPECT_EQ(SystemdServices::serviceTypeText("exec"), "Exec");
+    EXPECT_EQ(SystemdServices::serviceTypeText("forking"), "Forking");
+    EXPECT_EQ(SystemdServices::serviceTypeText("oneshot"), "Oneshot");
+    EXPECT_EQ(SystemdServices::serviceTypeText("dbus"), "D-Bus");
+    EXPECT_EQ(SystemdServices::serviceTypeText("notify"), "Notify");
+    EXPECT_EQ(SystemdServices::serviceTypeText("notify-reload"), "Notify (reload)");
+    EXPECT_EQ(SystemdServices::serviceTypeText("idle"), "Idle");
+    EXPECT_EQ(SystemdServices::serviceTypeText("something-new"), "something-new") << "as systemd gave it";
+    EXPECT_EQ(SystemdServices::serviceTypeText(""), "");
+}
+
 TEST(LinuxServiceProbeTest, ListsTheReadsServices)
 {
     const ScopedTempDir dir("ts_test_services_running");
@@ -244,7 +316,10 @@ TEST(LinuxServiceProbeTest, ListsTheReadsServices)
     EXPECT_TRUE(caps.hasDisplayName);
     EXPECT_TRUE(caps.hasStartType);
     EXPECT_TRUE(caps.hasPid);
-    EXPECT_FALSE(caps.hasBinaryPath);
+    EXPECT_TRUE(caps.hasBinaryPath);  // ExecStart (#2590)
+    EXPECT_TRUE(caps.hasAccount);     // User
+    EXPECT_TRUE(caps.hasServiceType); // Type
+    EXPECT_FALSE(caps.hasGroup);
     const ServiceEnumeration list = probe.enumerate();
     ASSERT_TRUE(list.ok) << list.failureReason;
     ASSERT_EQ(list.services.size(), 1U);

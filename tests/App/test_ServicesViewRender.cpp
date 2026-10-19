@@ -465,8 +465,8 @@ TEST_F(ServicesViewRenderTest, ClippedCellsShowTheirWholeTextOnHover)
     EXPECT_FALSE(accountText.contains("Supports Bluetooth")) << "the row's tooltip gives way to the cell's";
 }
 
-// #2006: a platform that can't tell a service's account (Linux's systemd probe) hides the Account column by
-// default, rather than drawing a column of blanks.
+// #2006: a platform that can't tell a service's account hides the Account column by default, rather than
+// drawing a column of blanks. (Linux's systemd probe fills it since #2590.)
 TEST_F(ServicesViewRenderTest, TheAccountColumnIsHiddenWhereThePlatformCantFillIt)
 {
     const auto publication = makePublication();
@@ -490,10 +490,10 @@ TEST_F(ServicesViewRenderTest, TheAccountColumnIsHiddenWhereThePlatformCantFillI
     };
     // A table keeps the columns it was first set up with (DefaultHide applies once), so only the first
     // set-up is looked at here; ClippedCellsShowTheirWholeTextOnHover draws the column where it is filled.
-    Platform::ServiceCapabilities linuxLike = enumerable();
-    linuxLike.hasAccount = false;
-    linuxLike.hasDescription = false;
-    const std::string text = headers(linuxLike);
+    Platform::ServiceCapabilities noAccount = enumerable();
+    noAccount.hasAccount = false;
+    noAccount.hasDescription = false;
+    const std::string text = headers(noAccount);
     EXPECT_TRUE(text.contains("Start type")) << text;
     EXPECT_FALSE(text.contains("Account")) << text;
 }

@@ -20,6 +20,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -76,23 +78,45 @@ struct ServicesRead
 /// (systemctl enable) shows within this long.
 inline constexpr std::chrono::seconds UNIT_FILES_TTL{30};
 
-/// The last ListUnitFiles answer readServices() was given, and when.
+/// How long readServices() reuses a loaded service's User, ExecStart and Type (#2590) while its state
+/// and main process stay the same: three or four property reads per service, and they change only when
+/// its unit file is edited and systemd reloaded. A service that starts, stops or restarts is read again
+/// on the next call; an edit to one left running shows within this long.
+inline constexpr std::chrono::seconds UNIT_CONFIG_TTL{300};
+
+/// A loaded service's configuration as readServices() last read it, and the state it was read in (#2590).
+struct CachedUnitConfig
+{
+    SystemdServices::UnitConfig config;
+    std::string activeState;
+    std::string subState;
+    std::uint32_t mainPid = 0;
+    std::chrono::steady_clock::time_point readAt;
+};
+
+/// The last ListUnitFiles answer readServices() was given, and when; and each loaded service's
+/// configuration (#2590), all of it from the unit files.
 struct UnitFileCache
 {
     std::vector<std::pair<std::string, std::string>> unitFiles;
-    std::optional<std::chrono::steady_clock::time_point> readAt; ///< Empty: nothing cached (or forgotten)
+    std::optional<std::chrono::steady_clock::time_point> readAt;  ///< Empty: nothing cached (or forgotten)
+    std::map<std::string, CachedUnitConfig, std::less<>> configs; ///< By unit name
 
     void forget() noexcept
     {
         readAt.reset();
+        configs.clear();
     }
 };
 
 /// Reads org.freedesktop.systemd1.Manager's ListUnits (the loaded services and their state) and
 /// ListUnitFiles (every installed service and whether it is enabled), then each running service's
-/// MainPID, in one connection. Unprivileged. With @p cache, a ListUnitFiles answer younger than
-/// UNIT_FILES_TTL at @p now is reused rather than asked again. A MainPID read that times out ends the
-/// MainPID reads for this call (#2125): a stalled systemd costs one call timeout, not one per service.
+/// MainPID, then each loaded service's User, ExecStart and Type (#2590), in one connection.
+/// Unprivileged. With @p cache, a ListUnitFiles answer younger than UNIT_FILES_TTL at @p now is reused
+/// rather than asked again, and so is a service's configuration while its state and main process are
+/// unchanged and it is younger than UNIT_CONFIG_TTL; without one, every service's is read. A MainPID
+/// read that times out ends the MainPID reads for this call (#2125), and a configuration read that
+/// times out ends those: a stalled systemd costs one call timeout, not one per service.
 [[nodiscard]] ServicesRead readServices(UnitFileCache* cache = nullptr,
                                         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 

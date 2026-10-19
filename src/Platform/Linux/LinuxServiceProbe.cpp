@@ -31,6 +31,10 @@ LinuxServiceProbe::LinuxServiceProbe(Reader reader, const std::filesystem::path&
         m_Capabilities.hasDisplayName = true; // The unit's Description
         m_Capabilities.hasStartType = true;   // From its unit file's state
         m_Capabilities.hasPid = true;         // A running service's MainPID
+        // A loaded service's Type, ExecStart and User (#2590); a unit file that isn't loaded has none.
+        m_Capabilities.hasServiceType = true;
+        m_Capabilities.hasBinaryPath = true;
+        m_Capabilities.hasAccount = true;
     }
 }
 

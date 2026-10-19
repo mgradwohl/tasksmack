@@ -19,6 +19,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <string>
@@ -60,8 +61,19 @@ using DnsServers = std::vector<std::pair<std::int32_t, std::vector<std::uint8_t>
 /// systemd-resolved's search domains, a(sb): each one and whether it only routes lookups.
 using DnsDomains = std::vector<std::pair<std::string, bool>>;
 
-/// A property value: 's', 'o', 'u', 'ay', 'a{sv}', 'a(iay)', 'a(sb)', and udisks2's 'b', 't', 'd', 'x',
-/// 'q' and 'as'.
+/// One line of a systemd Service's ExecStart (#2590): its binary, argv and ignore-errors flag. The run
+/// times, PID and exit status the property also carries are served as zeros.
+struct ExecCommand
+{
+    std::string path;
+    std::vector<std::string> argv;
+    bool ignoreErrors = false;
+};
+/// A systemd Service's ExecStart, a(sasbttttuii) (#2590).
+using ExecCommands = std::vector<ExecCommand>;
+
+/// A property value: 's', 'o', 'u', 'ay', 'a{sv}', 'a(iay)', 'a(sb)', udisks2's 'b', 't', 'd', 'x',
+/// 'q' and 'as', and systemd's ExecStart 'a(sasbttttuii)'.
 using PropertyValue = std::variant<std::string,
                                    ObjectPath,
                                    std::uint32_t,
@@ -74,7 +86,8 @@ using PropertyValue = std::variant<std::string,
                                    double,
                                    std::int64_t,
                                    std::uint16_t,
-                                   std::vector<std::string>>;
+                                   std::vector<std::string>,
+                                   ExecCommands>;
 
 /// One row of systemd's ListUnits reply, "(ssssssouso)" (#2006).
 struct UnitRow
@@ -178,6 +191,15 @@ class FakeSystemBus
     void failProperty(const std::string& path, const std::string& interface, const std::string& name, std::string errorName)
     {
         m_PropertyErrors[path + '\n' + interface + '\n' + name] = std::move(errorName);
+    }
+
+    /// How many times a property has been asked for (Properties.Get), answered or failed (#2590), so a
+    /// test can tell a cached read from a fresh one. Safe while the bus is serving.
+    [[nodiscard]] int propertyReads(const std::string& path, const std::string& interface, const std::string& name) const
+    {
+        const std::scoped_lock lock(m_ReadsMutex);
+        const auto found = m_PropertyReads.find(path + '\n' + interface + '\n' + name);
+        return found == m_PropertyReads.end() ? 0 : found->second;
     }
 
     /// A method that reads and answers the call itself, before start().
@@ -484,10 +506,64 @@ class FakeSystemBus
             }
             return result >= 0 ? sd_bus_message_close_container(reply) : result;
         }
+        if (const auto* commands = std::get_if<ExecCommands>(&value))
+        {
+            result = sd_bus_message_open_container(reply, 'v', "a(sasbttttuii)");
+            if (result >= 0)
+            {
+                result = appendExecCommands(reply, *commands);
+            }
+            return result >= 0 ? sd_bus_message_close_container(reply) : result;
+        }
         result = sd_bus_message_open_container(reply, 'v', "a{sv}");
         if (result >= 0)
         {
             result = appendDict(reply, std::get<std::map<std::string, DictValue>>(value));
+        }
+        return result >= 0 ? sd_bus_message_close_container(reply) : result;
+    }
+
+    /// systemd's ExecStart, a(sasbttttuii), into @p reply (#2590).
+    static int appendExecCommands(sd_bus_message* reply, const ExecCommands& commands)
+    {
+        int result = sd_bus_message_open_container(reply, 'a', "(sasbttttuii)");
+        for (auto it = commands.begin(); result >= 0 && it != commands.end(); ++it)
+        {
+            result = sd_bus_message_open_container(reply, 'r', "sasbttttuii");
+            if (result >= 0)
+            {
+                result = sd_bus_message_append(reply, "s", it->path.c_str());
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_message_open_container(reply, 'a', "s");
+            }
+            for (auto arg = it->argv.begin(); result >= 0 && arg != it->argv.end(); ++arg)
+            {
+                result = sd_bus_message_append(reply, "s", arg->c_str());
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_message_close_container(reply);
+            }
+            if (result >= 0)
+            {
+                const std::uint64_t never = 0;
+                result = sd_bus_message_append(reply,
+                                               "bttttuii",
+                                               static_cast<int>(it->ignoreErrors),
+                                               never,
+                                               never,
+                                               never,
+                                               never,
+                                               std::uint32_t{0},
+                                               std::int32_t{0},
+                                               std::int32_t{0});
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_message_close_container(reply);
+            }
         }
         return result >= 0 ? sd_bus_message_close_container(reply) : result;
     }
@@ -575,6 +651,10 @@ class FakeSystemBus
             if (sd_bus_message_read(message, "ss", &iface, &name) < 0)
             {
                 return 0;
+            }
+            {
+                const std::scoped_lock lock(self->m_ReadsMutex);
+                ++self->m_PropertyReads[std::string(path) + '\n' + iface + '\n' + name];
             }
             if (const auto failure = self->m_PropertyErrors.find(std::string(path) + '\n' + iface + '\n' + name);
                 failure != self->m_PropertyErrors.end())
@@ -692,6 +772,8 @@ class FakeSystemBus
 
     Properties m_Properties;
     std::map<std::string, std::string> m_PropertyErrors; ///< path\ninterface\nname -> the error its reads fail with
+    mutable std::mutex m_ReadsMutex;                     ///< Guards m_PropertyReads: the bus thread counts, a test reads
+    std::map<std::string, int> m_PropertyReads;          ///< path\ninterface\nname -> how often it was asked for
     std::map<std::string, std::variant<StringMethod, IntMethod, NoArgMethod, RawMethod>> m_Methods;
     std::filesystem::path m_Dir;
     pid_t m_Daemon = 0; // NOLINT(misc-include-cleaner) - pid_t comes with <spawn.h> and <unistd.h>

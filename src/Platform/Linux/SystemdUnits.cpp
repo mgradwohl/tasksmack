@@ -23,6 +23,7 @@
 #include <cstring>
 #include <ctime>
 #include <format>
+#include <map>
 #include <span>
 #include <stop_token>
 #include <string_view>
@@ -211,6 +212,117 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
     return sd_bus_message_exit_container(reply);
 }
 
+/// One of a service's string properties (User, Type) into @p value: false only when systemd didn't
+/// answer in time. Any other failure (an unknown property, say) leaves @p value empty.
+[[nodiscard]] bool readServiceString(sd_bus* bus, const char* object, const char* name, std::optional<std::string>& value)
+{
+    BusError error;
+    char* text = nullptr;
+    const int result = sd_bus_get_property_string(bus, SYSTEMD, object, SYSTEMD_SERVICE, name, error.get(), &text);
+    if (result >= 0)
+    {
+        value = (text != nullptr) ? std::string(text) : std::string{};
+    }
+    std::free(text); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
+    return result >= 0 || !timedOut(error.raw(), result);
+}
+
+/// The service's ExecStart, a(sasbttttuii) (#2590): each ExecStart= line's binary path, argv,
+/// ignore-errors flag, start and exit times, PID and exit status. Each line's argv into @p commands
+/// (its path, when argv is empty); the rest is skipped. False only when systemd didn't answer in time;
+/// any other failure, a malformed reply included, leaves @p commands as it was.
+[[nodiscard]] bool readExecStart(sd_bus* bus, const char* object, std::vector<std::vector<std::string>>& commands)
+{
+    BusError error;
+    Message reply;
+    int result = sd_bus_get_property(bus, SYSTEMD, object, SYSTEMD_SERVICE, "ExecStart", error.get(), reply.out(), "a(sasbttttuii)");
+    if (result < 0)
+    {
+        return !timedOut(error.raw(), result);
+    }
+    std::vector<std::vector<std::string>> lines;
+    result = sd_bus_message_enter_container(reply.get(), 'a', "(sasbttttuii)");
+    while (result >= 0 && (result = sd_bus_message_enter_container(reply.get(), 'r', "sasbttttuii")) > 0)
+    {
+        const char* path = nullptr;
+        std::vector<std::string> argv;
+        result = sd_bus_message_read(reply.get(), "s", &path);
+        if (result >= 0)
+        {
+            result = sd_bus_message_enter_container(reply.get(), 'a', "s");
+        }
+        while (result >= 0)
+        {
+            const char* argument = nullptr;
+            result = sd_bus_message_read(reply.get(), "s", &argument);
+            if (result <= 0)
+            {
+                break;
+            }
+            argv.emplace_back(argument != nullptr ? argument : "");
+        }
+        if (result >= 0)
+        {
+            result = sd_bus_message_exit_container(reply.get()); // the argv
+        }
+        if (result >= 0)
+        {
+            result = sd_bus_message_skip(reply.get(), "bttttuii");
+        }
+        if (result >= 0)
+        {
+            result = sd_bus_message_exit_container(reply.get()); // the line
+        }
+        if (result >= 0)
+        {
+            if (argv.empty() && path != nullptr && *path != '\0')
+            {
+                argv.emplace_back(path);
+            }
+            lines.push_back(std::move(argv));
+        }
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_message_exit_container(reply.get());
+    }
+    if (result >= 0)
+    {
+        commands = std::move(lines);
+    }
+    return true;
+}
+
+/// Whether the service runs as a user systemd allocates for it (DynamicUser=yes) into @p dynamic: false
+/// only when systemd didn't answer in time.
+[[nodiscard]] bool readDynamicUser(sd_bus* bus, const char* object, bool& dynamic)
+{
+    BusError error;
+    int value = 0;
+    const int result = sd_bus_get_property_trivial(bus, SYSTEMD, object, SYSTEMD_SERVICE, "DynamicUser", error.get(), 'b', &value);
+    dynamic = result >= 0 && value != 0;
+    return result >= 0 || !timedOut(error.raw(), result);
+}
+
+/// A loaded service's User, ExecStart and Type into @p config (#2590): three property reads, and a
+/// fourth, DynamicUser, only when User is empty. False when systemd stopped answering partway; a
+/// property that couldn't be read otherwise is left empty.
+[[nodiscard]] bool readUnitConfig(sd_bus* bus, const char* object, SystemdServices::UnitConfig& config)
+{
+    if (!readServiceString(bus, object, "User", config.user))
+    {
+        return false;
+    }
+    if (config.user.has_value() && config.user->empty() && !readDynamicUser(bus, object, config.dynamicUser))
+    {
+        return false;
+    }
+    std::optional<std::string> type;
+    const bool answered = readExecStart(bus, object, config.execStart) && readServiceString(bus, object, "Type", type);
+    config.type = type.value_or(std::string{});
+    return answered;
+}
+
 } // namespace
 
 ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_point now)
@@ -305,6 +417,59 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
         {
             read.listing.mainPids.emplace(unit.name, pid);
         }
+    }
+    // Each loaded service's User, ExecStart and Type (#2590): three or four properties per service, so
+    // with a cache a service's are read again only when its state or main process changed or
+    // UNIT_CONFIG_TTL passed -- once warm, a refresh asks only about the services that started, stopped
+    // or restarted.
+    bool answering = true;
+    for (const SystemdServices::Unit& unit : read.listing.units)
+    {
+        if (unit.objectPath.empty())
+        {
+            continue;
+        }
+        const auto pid = read.listing.mainPids.find(unit.name);
+        const std::uint32_t mainPid = pid != read.listing.mainPids.end() ? pid->second : 0;
+        CachedUnitConfig* cached = nullptr;
+        if (cache != nullptr)
+        {
+            if (const auto found = cache->configs.find(unit.name); found != cache->configs.end())
+            {
+                cached = &found->second;
+            }
+        }
+        const bool fresh = cached != nullptr && cached->activeState == unit.activeState && cached->subState == unit.subState &&
+                           cached->mainPid == mainPid && now - cached->readAt < UNIT_CONFIG_TTL;
+        if (!fresh && answering)
+        {
+            SystemdServices::UnitConfig config;
+            answering = readUnitConfig(bus.get(), unit.objectPath.c_str(), config);
+            if (answering)
+            {
+                if (cache != nullptr)
+                {
+                    cache->configs.insert_or_assign(unit.name,
+                                                    CachedUnitConfig{.config = config,
+                                                                     .activeState = unit.activeState,
+                                                                     .subState = unit.subState,
+                                                                     .mainPid = mainPid,
+                                                                     .readAt = now});
+                }
+                read.listing.configs.emplace(unit.name, std::move(config));
+                continue;
+            }
+            // systemd isn't answering: what was read before for the rest, not a call timeout per service
+        }
+        if (cached != nullptr)
+        {
+            read.listing.configs.emplace(unit.name, cached->config);
+        }
+    }
+    if (cache != nullptr)
+    {
+        // A service no longer loaded needs no configuration kept.
+        std::erase_if(cache->configs, [&read](const auto& entry) { return !read.listing.configs.contains(entry.first); });
     }
     read.ok = true;
     return read;
