@@ -1459,6 +1459,30 @@ TEST(AnimationRequestTest, MotionRateKeepsMovementUnderHalfAPixelPerFrame)
     EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 10.0);
 }
 
+TEST(AnimationRequestTest, EasingRateKeepsStepsUnderTheEasingTolerance)
+{
+    // #2626: an ease (a NowBar's fill, a rescaling axis) may step MAX_EASING_PIXELS_PER_FRAME a frame.
+    // 80 px/s is the fastest ease the 20 fps idle path covers; anything slower asks for no more.
+    constexpr double IDLE = 20.0;
+    constexpr double MAX = 60.0;
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(80.0), IDLE);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForEasing(30.0), IDLE, MAX), 0.0);
+    // At half a pixel a frame the same 30 px/s settle asked for 60 fps: the idle-fps regression.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForMotion(30.0), IDLE, MAX), MAX);
+    // A fast ease still gets the full animation rate.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForEasing(400.0), IDLE, MAX), MAX);
+    // The tolerance is a parameter of the motion rate; a non-positive one asks for nothing.
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0, 4.0), 7.5);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(std::numeric_limits<double>::quiet_NaN()), 0.0);
+    EXPECT_EQ(Core::AnimationRequest::framesPerSecondForEasing(std::numeric_limits<double>::infinity()),
+              std::numeric_limits<double>::infinity());
+    static_cast<void>(Core::AnimationRequest::consume());
+    Core::AnimationRequest::requestForEasing(100.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 25.0);
+}
+
 TEST(FramePacingTest, IsWithinInteractionGrace)
 {
     EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0, 1.5));

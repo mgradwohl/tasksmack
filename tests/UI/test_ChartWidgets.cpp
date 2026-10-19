@@ -2266,6 +2266,22 @@ TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame
     EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
 }
 
+TEST(HistoryChartMotionTest, AxisEaseSpeedIsTheBoundsStepOverItsSizePerSecond)
+{
+    // #2626: a bound stepping 100 -> 110 in a 50 ms frame moves the top of the data by 10/110 of the
+    // plot's height: about 1.8 heights a second.
+    EXPECT_NEAR(axisEaseHeightsPerSecond(100.0, 110.0, 0.05), 10.0 / 110.0 / 0.05, 1e-12);
+    // Falling counts the same as rising, relative to the bound drawn.
+    EXPECT_NEAR(axisEaseHeightsPerSecond(110.0, 100.0, 0.05), 10.0 / 100.0 / 0.05, 1e-12);
+    // No step, no speed: a second read of the bound in the same frame adds nothing.
+    EXPECT_DOUBLE_EQ(axisEaseHeightsPerSecond(100.0, 100.0, 0.05), 0.0);
+    // Nothing to go on: the full rate, as every ease asked for before.
+    const double infinity = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(axisEaseHeightsPerSecond(100.0, 110.0, 0.0), infinity);
+    EXPECT_EQ(axisEaseHeightsPerSecond(100.0, 0.0, 0.05), infinity);
+    EXPECT_EQ(axisEaseHeightsPerSecond(std::numeric_limits<double>::quiet_NaN(), 110.0, 0.05), infinity);
+}
+
 TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)
 {
     // The default 300 s window across 1000 px scrolls ~3.3 px/s: far too slow to need 60 fps.
