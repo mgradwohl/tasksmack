@@ -727,6 +727,16 @@ static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
 static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
 static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
 static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
+// And networkRowKind()'s (#2568).
+static_assert(IF_TYPE_ETHERNET == IF_TYPE_ETHERNET_CSMACD);
+static_assert(IF_TYPE_PPP_LINK == IF_TYPE_PPP);
+static_assert(IF_TYPE_LOOPBACK == IF_TYPE_SOFTWARE_LOOPBACK);
+static_assert(IF_TYPE_VIRTUAL == IF_TYPE_PROP_VIRTUAL);
+static_assert(IF_TYPE_WIFI == IF_TYPE_IEEE80211);
+static_assert(IF_TYPE_TUNNEL_LINK == IF_TYPE_TUNNEL);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN == NdisPhysicalMediumWirelessLan);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN == NdisPhysicalMediumWirelessWan);
+static_assert(NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 == NdisPhysicalMediumNative802_11);
 
 namespace
 {
@@ -911,7 +921,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         const bool hardware =
             isHardwareNetworkRow(row.InterfaceAndOperStatusFlags.HardwareInterface != 0, row.Type, row.PhysicalMediumType);
         ifaceCounters.isVirtual = !hardware;
-        ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.isVirtualKnown = true;                                   // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.kind = networkRowKind(row.Type, row.PhysicalMediumType); // The Type icon's link kind (#2568)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)

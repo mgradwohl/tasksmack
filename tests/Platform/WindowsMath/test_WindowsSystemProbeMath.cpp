@@ -444,7 +444,6 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
 {
     constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
     constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
-    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED)); // vEthernet, WAN Miniport
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));       // Kernel Debug adapter
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
@@ -452,11 +451,39 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
     EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
 }
 
+// #2568: the link kind behind the Interface Status table's Type icon.
+TEST(WindowsSystemProbeMathTest, ARowsKindComesFromItsIfType)
+{
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
+    constexpr std::uint32_t IF_TYPE_IEEE1394 = 144;
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3), NetInterfaceKind::Ethernet);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Ethernet); // vEthernet
+    EXPECT_EQ(networkRowKind(IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WWAN_GSM, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WWAN_CDMA, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_LOOPBACK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Loopback);
+    EXPECT_EQ(networkRowKind(IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Tunnel); // Teredo, IP-HTTPS
+    EXPECT_EQ(networkRowKind(IF_TYPE_PPP_LINK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Tunnel);    // WAN Miniport (PPPOE)
+    EXPECT_EQ(networkRowKind(IF_TYPE_VIRTUAL, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Other);
+    EXPECT_EQ(networkRowKind(IF_TYPE_IEEE1394, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Other);
+}
+
+TEST(WindowsSystemProbeMathTest, ARadioMediumDecidesARowsKindOverItsIfType)
+{
+    // A Bluetooth PAN adapter is an Ethernet row over the Bluetooth medium; some Wi-Fi and mobile
+    // broadband drivers report an Ethernet row over their radio's medium.
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_BLUETOOTH), NetInterfaceKind::Bluetooth);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11), NetInterfaceKind::WiFi);
+}
+
 TEST(WindowsSystemProbeMathTest, AWifiAdaptersExtraPortsAreHardwareLinks)
 {
     // "Wi-Fi 2" to "Wi-Fi 5" (Wi-Fi Direct, hotspot, multi-link ports of the same adapter) report
     // HardwareInterface: they are counted, so their radio traffic is in the Total (#1284).
-    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
     EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
 }
 

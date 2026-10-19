@@ -16,6 +16,7 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/SystemTypes.h"
 #include "UI/ChartSmoothing.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
@@ -1105,6 +1106,49 @@ TEST_F(SystemSectionsRenderTest, NetworkShowAllListsTheLoopbackInterface)
     const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
     EXPECT_NE(text.find(ICON_FA_HOUSE), std::string::npos) << text;
     EXPECT_NE(text.find("lo"), std::string::npos) << text;
+}
+
+// #2568: the Type column went by the interface's name alone, so a Bluetooth PAN link or a virtual
+// adapter -- Windows names both like any other ("Ethernet 3", "vEthernet (WSL)") -- showed the wired
+// icon. It now shows the type the platform's link kind gives.
+TEST_F(SystemSectionsRenderTest, NetworkStatusTableShowsBluetoothAndVirtualAdaptersByTheirLinkKind)
+{
+    NetworkInputs inputs;
+    auto& interfaces = inputs.publication.snapshot.networkInterfaces;
+    interfaces.clear();
+    auto pan = interfaceSample("Ethernet 3", 0.0, 0.0);
+    pan.displayName = "Personal Area Network Adapter";
+    pan.kind = Platform::NetInterfaceKind::Bluetooth;
+    interfaces.push_back(pan);
+    auto vEthernet = interfaceSample("Ethernet 4", 0.0, 0.0);
+    vEthernet.displayName = "Hyper-V Virtual Ethernet Adapter";
+    vEthernet.kind = Platform::NetInterfaceKind::Ethernet;
+    vEthernet.isVirtual = true;
+    interfaces.push_back(vEthernet);
+    inputs.showAll = true; // both are hidden by default
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    // The rows the table drew, and the type each one's icon was drawn from.
+    ASSERT_EQ(inputs.cache.statusRows.size(), 2U);
+    ASSERT_EQ(inputs.cache.statusRowText.size(), 2U);
+    for (std::size_t row = 0; row < inputs.cache.statusRows.size(); ++row)
+    {
+        const auto& iface = inputs.cache.statusRows[row];
+        const NetInterfaceUtils::InterfaceType type = inputs.cache.statusRowText[row].type;
+        const std::string_view icon = NetInterfaceUtils::interfaceTypeIcon(type);
+        EXPECT_NE(icon, ICON_FA_ETHERNET) << iface.name;
+        EXPECT_NE(icon, ICON_FA_NETWORK_WIRED) << iface.name;
+        EXPECT_EQ(type, iface.isVirtual ? NetInterfaceUtils::InterfaceType::Virtual : NetInterfaceUtils::InterfaceType::Bluetooth)
+            << iface.name;
+    }
+    // And the icons drawn: the Bluetooth and cloud icons, never the wired ones.
+    EXPECT_NE(text.find(ICON_FA_BLUETOOTH), std::string::npos) << text;
+    EXPECT_NE(text.find(ICON_FA_CLOUD), std::string::npos) << text;
+    EXPECT_EQ(text.find(ICON_FA_ETHERNET), std::string::npos) << text;
+    const auto status = text.find("Interface Status");
+    ASSERT_NE(status, std::string::npos) << text;
+    EXPECT_EQ(text.find(ICON_FA_NETWORK_WIRED, status), std::string::npos) << text; // the chart's header has one above the table
 }
 
 TEST_F(SystemSectionsRenderTest, NetworkWithoutSmoothingStateStillDraws)

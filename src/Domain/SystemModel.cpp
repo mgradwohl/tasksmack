@@ -732,6 +732,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
         ifaceSnap.isVirtual = iface.isVirtual;
         ifaceSnap.isVirtualKnown = iface.isVirtualKnown;
+        ifaceSnap.kind = iface.kind;
 
         // Compute rates only if we have previous data and positive time delta. A rate that isn't
         // computed stays 0, and its status says why, so the UI can tell it from a measured 0 (#1375).

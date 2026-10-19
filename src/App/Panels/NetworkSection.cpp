@@ -610,6 +610,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         for (const auto& row : rows)
         {
             cache.statusRowText.push_back({
+                .type = NetInterfaceUtils::interfaceType(row),
                 .speed = (row.linkSpeedMbps > 0) ? UI::Format::formatLinkSpeed(row.linkSpeedMbps) : std::string{},
                 .sent = NetInterfaceUtils::makeRateCell(row.txBytesPerSec, row.txRateStatus),
                 .received = NetInterfaceUtils::makeRateCell(row.rxBytesPerSec, row.rxRateStatus),
@@ -649,12 +650,10 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             // Wide enough for its header and for any of the icons it can hold, at the current font.
             // It was a fixed 30px on a non-resizable table: the header was cut to "T..." from Extra
             // Large up on a scaled display, and to "..." at Even Huger (#966).
-            constexpr auto TYPE_COLUMN_CONTENTS =
-                std::to_array<const char*>({"Type", ICON_FA_NETWORK_WIRED, ICON_FA_HOUSE, ICON_FA_WIFI, ICON_FA_ETHERNET});
-            float typeColumnWidth = 0.0F;
-            for (const char* text : TYPE_COLUMN_CONTENTS)
+            float typeColumnWidth = ImGui::CalcTextSize("Type").x;
+            for (const char* icon : NetInterfaceUtils::INTERFACE_TYPE_ICONS)
             {
-                typeColumnWidth = std::max(typeColumnWidth, ImGui::CalcTextSize(text).x);
+                typeColumnWidth = std::max(typeColumnWidth, ImGui::CalcTextSize(icon).x);
             }
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, typeColumnWidth);
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.5F);
@@ -664,6 +663,28 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::TableSetupColumn("Sent", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableSetupColumn("Received", ImGuiTableColumnFlags_None, 1.2F);
             ImGui::TableHeadersRow();
+
+            // The Type icon's colour: muted for loopback and virtual adapters, an accent per kind of link.
+            const auto typeIconColor = [&theme](NetInterfaceUtils::InterfaceType type) -> ImVec4
+            {
+                switch (type)
+                {
+                case NetInterfaceUtils::InterfaceType::Loopback:
+                case NetInterfaceUtils::InterfaceType::Virtual:
+                    return theme.scheme().textMuted;
+                case NetInterfaceUtils::InterfaceType::WiFi:
+                    return theme.accentColor(0);
+                case NetInterfaceUtils::InterfaceType::Ethernet:
+                    return theme.accentColor(1);
+                case NetInterfaceUtils::InterfaceType::Bluetooth:
+                    return theme.accentColor(2);
+                case NetInterfaceUtils::InterfaceType::Cellular:
+                    return theme.accentColor(3);
+                case NetInterfaceUtils::InterfaceType::Other:
+                    break;
+                }
+                return theme.scheme().textPrimary;
+            };
 
             // A Sent/Received cell (#1375): a reading in the direction's colour, a measured zero in
             // its own format but muted, and a muted dash with the reason on hover where there's none.
@@ -691,29 +712,10 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5F);
                 }
 
-                // Type icon column
+                // Type icon column: the type worked out once per publication from the platform's
+                // link kind (NetInterfaceUtils::interfaceType(), #2568).
                 ImGui::TableNextColumn();
-                const char* typeIcon = ICON_FA_NETWORK_WIRED;
-                ImVec4 iconColor = theme.scheme().textPrimary;
-
-                const auto& name = iface.name;
-                if (name.starts_with("lo") || name.contains("Loopback"))
-                {
-                    typeIcon = ICON_FA_HOUSE;
-                    iconColor = theme.scheme().textMuted;
-                }
-                else if (name.starts_with("wl") || name.starts_with("wifi") || name.starts_with("wlan") || name.contains("Wi-Fi") ||
-                         name.contains("WiFi") || name.contains("Wireless"))
-                {
-                    typeIcon = ICON_FA_WIFI;
-                    iconColor = theme.accentColor(0);
-                }
-                else if (name.starts_with("eth") || name.starts_with("en") || name.contains("Ethernet"))
-                {
-                    typeIcon = ICON_FA_ETHERNET;
-                    iconColor = theme.accentColor(1);
-                }
-                ImGui::TextColored(iconColor, "%s", typeIcon);
+                ImGui::TextColored(typeIconColor(rowText.type), "%s", NetInterfaceUtils::interfaceTypeIcon(rowText.type));
 
                 // Name
                 ImGui::TableNextColumn();

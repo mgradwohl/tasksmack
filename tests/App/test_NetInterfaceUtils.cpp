@@ -12,6 +12,7 @@
 
 #include "App/Panels/NetInterfaceUtils.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/SystemTypes.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -183,9 +184,10 @@ TEST(NetInterfaceUtilsTest, IsVirtualFollowsThePlatformFlagOverAVirtualLookingNa
     auto nic = makeInterface("veth0"); // a NIC renamed veth0: the platform found its backing device
     nic.isVirtual = false;
     nic.isVirtualKnown = true;
+    nic.kind = Platform::NetInterfaceKind::Ethernet;
     EXPECT_FALSE(isVirtualInterface(nic));
     EXPECT_FALSE(isAlwaysHidden(nic));
-    EXPECT_STREQ(getInterfaceTypeIcon(nic), ICON_FA_ETHERNET);
+    EXPECT_EQ(interfaceType(nic), InterfaceType::Ethernet);
     EXPECT_EQ(getSortedFilteredInterfaces({nic}, /*showVirtualInterfaces=*/false).size(), 1U);
 }
 
@@ -225,6 +227,15 @@ TEST(NetInterfaceUtilsTest, IsBluetoothDetectsBnepInterface)
     EXPECT_TRUE(isBluetoothInterface(iface));
 }
 
+TEST(NetInterfaceUtilsTest, IsBluetoothFollowsThePlatformsLinkKind)
+{
+    // #2568: a Bluetooth PAN link the platform recognised by its medium, whatever it is called.
+    auto pan = makeInterface("Ethernet 3", "Personal Area Network Adapter");
+    pan.kind = Platform::NetInterfaceKind::Bluetooth;
+    EXPECT_TRUE(isBluetoothInterface(pan));
+    EXPECT_TRUE(isAlwaysHidden(pan));
+}
+
 TEST(NetInterfaceUtilsTest, IsBluetoothReturnsFalseForNonBluetooth)
 {
     auto eth0 = makeInterface("eth0");
@@ -236,71 +247,123 @@ TEST(NetInterfaceUtilsTest, IsBluetoothReturnsFalseForNonBluetooth)
 }
 
 // =============================================================================
-// getInterfaceTypeIcon Tests
+// interfaceType / interfaceTypeIcon Tests (#2568)
 // =============================================================================
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsBluetooth)
+/// A Windows-style interface the platform classified: its friendly name, kind and virtual flag.
+Domain::SystemSnapshot::InterfaceSnapshot classified(const std::string& name, Platform::NetInterfaceKind kind, bool isVirtual)
 {
-    auto iface = makeInterface("Bluetooth Network Connection");
-    EXPECT_EQ(getInterfaceTypeIcon(iface), ICON_FA_BLUETOOTH);
+    auto iface = makeInterface(name);
+    iface.kind = kind;
+    iface.isVirtual = isVirtual;
+    iface.isVirtualKnown = true;
+    return iface;
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsWifiForWlInterface)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsBluetooth)
 {
-    auto iface = makeInterface("wlan0");
-    EXPECT_EQ(getInterfaceTypeIcon(iface), ICON_FA_WIFI);
+    EXPECT_EQ(interfaceType(makeInterface("Bluetooth Network Connection")), InterfaceType::Bluetooth);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsWifiForWifiInName)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsWifiForWlInterface)
 {
-    auto iface1 = makeInterface("Wi-Fi");
-    auto iface2 = makeInterface("WiFi Adapter");
-    auto iface3 = makeInterface("Wireless LAN");
-    EXPECT_EQ(getInterfaceTypeIcon(iface1), ICON_FA_WIFI);
-    EXPECT_EQ(getInterfaceTypeIcon(iface2), ICON_FA_WIFI);
-    EXPECT_EQ(getInterfaceTypeIcon(iface3), ICON_FA_WIFI);
+    EXPECT_EQ(interfaceType(makeInterface("wlan0")), InterfaceType::WiFi);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsWifiForWifiInDisplayName)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsWifiForWifiInName)
 {
-    auto iface = makeInterface("wlp2s0", "Intel(R) Wi-Fi 6 AX200");
-    EXPECT_EQ(getInterfaceTypeIcon(iface), ICON_FA_WIFI);
+    EXPECT_EQ(interfaceType(makeInterface("Wi-Fi")), InterfaceType::WiFi);
+    EXPECT_EQ(interfaceType(makeInterface("WiFi Adapter")), InterfaceType::WiFi);
+    EXPECT_EQ(interfaceType(makeInterface("Wireless LAN")), InterfaceType::WiFi);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsCloudForVirtualInterface)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsWifiForWifiInDisplayName)
 {
-    auto docker = makeInterface("docker0");
-    auto veth = makeInterface("veth12345");
-    EXPECT_EQ(getInterfaceTypeIcon(docker), ICON_FA_CLOUD);
-    EXPECT_EQ(getInterfaceTypeIcon(veth), ICON_FA_CLOUD);
+    EXPECT_EQ(interfaceType(makeInterface("wlp2s0", "Intel(R) Wi-Fi 6 AX200")), InterfaceType::WiFi);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsHouseForLoopback)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsVirtualForVirtualInterface)
 {
-    // Note: "lo" is detected as virtual first (by isVirtualInterface), so gets cloud icon.
-    // The house icon is only returned for interfaces that contain "Loopback" but are NOT
-    // detected as virtual (i.e., the virtual check happens first).
-    // This test verifies the actual behavior of the function.
-    auto lo = makeInterface("lo");
-    // "lo" is detected as virtual first, so gets cloud icon (not house)
-    EXPECT_EQ(getInterfaceTypeIcon(lo), ICON_FA_CLOUD);
+    EXPECT_EQ(interfaceType(makeInterface("docker0")), InterfaceType::Virtual);
+    EXPECT_EQ(interfaceType(makeInterface("veth12345")), InterfaceType::Virtual);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconReturnsEthernetByDefault)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsLoopbackForLoopback)
 {
-    auto eth0 = makeInterface("eth0");
-    auto enp0s3 = makeInterface("enp0s3");
-    auto winEth = makeInterface("Intel(R) Ethernet Connection");
-    EXPECT_EQ(getInterfaceTypeIcon(eth0), ICON_FA_ETHERNET);
-    EXPECT_EQ(getInterfaceTypeIcon(enp0s3), ICON_FA_ETHERNET);
-    EXPECT_EQ(getInterfaceTypeIcon(winEth), ICON_FA_ETHERNET);
+    // Loopback is virtual too, but it keeps its own icon: the check comes before the virtual one.
+    EXPECT_EQ(interfaceType(makeInterface("lo")), InterfaceType::Loopback);
+    EXPECT_EQ(interfaceType(makeInterface("Loopback Pseudo-Interface 1")), InterfaceType::Loopback);
+    EXPECT_EQ(interfaceType(classified("lo", Platform::NetInterfaceKind::Loopback, true)), InterfaceType::Loopback);
 }
 
-TEST(NetInterfaceUtilsTest, GetInterfaceTypeIconBluetoothTakesPrecedence)
+TEST(NetInterfaceUtilsTest, InterfaceTypeReturnsEthernetForEthernetNames)
+{
+    EXPECT_EQ(interfaceType(makeInterface("eth0")), InterfaceType::Ethernet);
+    EXPECT_EQ(interfaceType(makeInterface("enp0s3")), InterfaceType::Ethernet);
+    EXPECT_EQ(interfaceType(makeInterface("Intel(R) Ethernet Connection")), InterfaceType::Ethernet);
+}
+
+TEST(NetInterfaceUtilsTest, InterfaceTypeOfAnUnclassifiedUnrecognisedNameIsOther)
+{
+    EXPECT_EQ(interfaceType(makeInterface("ib0")), InterfaceType::Other);
+}
+
+TEST(NetInterfaceUtilsTest, InterfaceTypeBluetoothTakesPrecedence)
 {
     // Bluetooth should be detected even if name contains "Wireless"
-    auto iface = makeInterface("Bluetooth Wireless Connection");
-    EXPECT_EQ(getInterfaceTypeIcon(iface), ICON_FA_BLUETOOTH);
+    EXPECT_EQ(interfaceType(makeInterface("Bluetooth Wireless Connection")), InterfaceType::Bluetooth);
+}
+
+// #2568: on Windows the name is the friendly name, so the platform's link kind decides.
+TEST(NetInterfaceUtilsTest, InterfaceTypeFollowsThePlatformsLinkKindOverTheName)
+{
+    using Platform::NetInterfaceKind;
+    // A Bluetooth PAN adapter Windows calls "Ethernet 3": the Bluetooth medium decides.
+    EXPECT_EQ(interfaceType(classified("Ethernet 3", NetInterfaceKind::Bluetooth, false)), InterfaceType::Bluetooth);
+    // A renamed Wi-Fi adapter and a WWAN modem.
+    EXPECT_EQ(interfaceType(classified("Home", NetInterfaceKind::WiFi, false)), InterfaceType::WiFi);
+    EXPECT_EQ(interfaceType(classified("Cellular", NetInterfaceKind::Cellular, false)), InterfaceType::Cellular);
+    EXPECT_EQ(interfaceType(classified("wwan0", NetInterfaceKind::Cellular, false)), InterfaceType::Cellular);
+    // A USB NIC named "Office", and an InfiniBand port.
+    EXPECT_EQ(interfaceType(classified("Office", NetInterfaceKind::Ethernet, false)), InterfaceType::Ethernet);
+    EXPECT_EQ(interfaceType(classified("ib0", NetInterfaceKind::Other, false)), InterfaceType::Other);
+    // A Wi-Fi-looking name on a wired link.
+    EXPECT_EQ(interfaceType(classified("WiFi-Bridge Uplink", NetInterfaceKind::Ethernet, false)), InterfaceType::Ethernet);
+}
+
+TEST(NetInterfaceUtilsTest, InterfaceTypeOfAVirtualAdapterIsVirtualWhateverItsLink)
+{
+    using Platform::NetInterfaceKind;
+    // Hyper-V/WSL vEthernet: an Ethernet link that is virtual.
+    EXPECT_EQ(interfaceType(classified("vEthernet (WSL)", NetInterfaceKind::Ethernet, true)), InterfaceType::Virtual);
+    // A VPN adapter with an ordinary name, and a WireGuard tunnel.
+    EXPECT_EQ(interfaceType(classified("Ethernet 4", NetInterfaceKind::Ethernet, true)), InterfaceType::Virtual);
+    EXPECT_EQ(interfaceType(classified("wg0", NetInterfaceKind::Tunnel, true)), InterfaceType::Virtual);
+    // A tunnel is a cloud even where the platform calls it hardware (a PPP link over a modem).
+    EXPECT_EQ(interfaceType(classified("ppp0", NetInterfaceKind::Tunnel, false)), InterfaceType::Virtual);
+}
+
+TEST(NetInterfaceUtilsTest, InterfaceTypeIconMapsEveryType)
+{
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Loopback), ICON_FA_HOUSE);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::WiFi), ICON_FA_WIFI);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Cellular), ICON_FA_SIGNAL);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Ethernet), ICON_FA_ETHERNET);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Bluetooth), ICON_FA_BLUETOOTH);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Virtual), ICON_FA_CLOUD);
+    EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Other), ICON_FA_NETWORK_WIRED);
+    // The Type column is sized for every icon it can hold.
+    for (const InterfaceType type : {InterfaceType::Loopback,
+                                     InterfaceType::WiFi,
+                                     InterfaceType::Cellular,
+                                     InterfaceType::Ethernet,
+                                     InterfaceType::Bluetooth,
+                                     InterfaceType::Virtual,
+                                     InterfaceType::Other})
+    {
+        const std::string_view icon = interfaceTypeIcon(type);
+        EXPECT_TRUE(std::ranges::any_of(INTERFACE_TYPE_ICONS, [icon](const char* listed) { return icon == listed; })) << icon;
+    }
 }
 
 // =============================================================================
@@ -446,7 +509,7 @@ TEST(NetInterfaceUtilsTest, GetSortedFilteredInterfacesFallsBackToNameIfNoDispla
 
 TEST(NetInterfaceUtilsTest, GetSortedFilteredInterfacesEmptyInput)
 {
-    std::vector<Domain::SystemSnapshot::InterfaceSnapshot> interfaces;
+    const std::vector<Domain::SystemSnapshot::InterfaceSnapshot> interfaces;
 
     auto result = getSortedFilteredInterfaces(interfaces, false, true);
     EXPECT_TRUE(result.empty());

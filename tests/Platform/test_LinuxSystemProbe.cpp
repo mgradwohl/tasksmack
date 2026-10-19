@@ -818,6 +818,86 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
     }
 }
 
+// #2568: each interface's link kind comes from its uevent DEVTYPE, its wireless directory and its
+// ARPHRD type, for the Interface Status table's Type icon.
+TEST(LinuxSystemProbeTest, AnInterfacesKindComesFromItsSysfsTypeAndDevType)
+{
+    ScopedTempDir proc("ts_test_sys_net_kind");
+    ScopedTempDir sys("ts_test_sys_class_net_kind");
+    std::filesystem::create_directories(proc.path / "net");
+    const std::vector<std::string_view> names{
+        "eth0", "wlan0", "wlp2s0", "bnep0", "wwan0", "wwan1", "wg0", "tun0", "docker0", "sit0", "ib0", "odd0"};
+    {
+        std::ofstream netDev(proc.path / "net" / "dev");
+        netDev << NET_DEV_HEADER;
+        for (const auto name : names)
+        {
+            netDev << netDevLine(name, 100, 10);
+        }
+    }
+    const auto addInterface = [&sys](std::string_view name, bool hardware, std::string_view arpType, std::string_view devType)
+    {
+        addSysfsInterface(sys.path, name, hardware);
+        std::ofstream(sys.path / name / "type") << arpType << "\n";
+        std::ofstream uevent(sys.path / name / "uevent");
+        if (!devType.empty())
+        {
+            uevent << "DEVTYPE=" << devType << "\n";
+        }
+        uevent << "INTERFACE=" << name << "\nIFINDEX=2\n";
+    };
+    addInterface("eth0", true, "1", "");
+    addInterface("wlan0", true, "1", "wlan");
+    addInterface("wlp2s0", true, "1", ""); // no DEVTYPE, but wireless extensions
+    std::filesystem::create_directories(sys.path / "wlp2s0" / "wireless");
+    addInterface("bnep0", true, "1", "bluetooth");
+    addInterface("wwan0", true, "1", "wwan");
+    addInterface("wwan1", true, "519", ""); // a raw-IP modem (qmi_wwan)
+    addInterface("wg0", false, "65534", "wireguard");
+    addInterface("tun0", false, "65534", "");
+    addInterface("docker0", false, "1", "bridge");
+    addInterface("sit0", false, "776", "");
+    addInterface("ib0", true, "32", "");       // InfiniBand
+    addSysfsInterface(sys.path, "odd0", true); // no type or uevent to read
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    using Platform::NetInterfaceKind;
+    const std::unordered_map<std::string, NetInterfaceKind> expected{
+        {"eth0", NetInterfaceKind::Ethernet},
+        {"wlan0", NetInterfaceKind::WiFi},
+        {"wlp2s0", NetInterfaceKind::WiFi},
+        {"bnep0", NetInterfaceKind::Bluetooth},
+        {"wwan0", NetInterfaceKind::Cellular},
+        {"wwan1", NetInterfaceKind::Cellular},
+        {"wg0", NetInterfaceKind::Tunnel},
+        {"tun0", NetInterfaceKind::Tunnel},
+        {"docker0", NetInterfaceKind::Ethernet}, // an Ethernet bridge; isVirtual makes it a cloud
+        {"sit0", NetInterfaceKind::Tunnel},
+        {"ib0", NetInterfaceKind::Other},
+        {"odd0", NetInterfaceKind::Unknown},
+    };
+    ASSERT_EQ(counters.networkInterfaces.size(), names.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        ASSERT_TRUE(expected.contains(iface.name)) << iface.name;
+        EXPECT_EQ(iface.kind, expected.at(iface.name)) << iface.name;
+    }
+}
+
+TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsHasAnUnknownKind)
+{
+    ScopedTempDir proc("ts_test_sys_net_kind_missing");
+    ScopedTempDir sys("ts_test_sys_class_net_kind_missing");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_EQ(counters.networkInterfaces[0].kind, Platform::NetInterfaceKind::Unknown);
+}
+
 // #1891: whitespace between an interface's name and its colon is trimmed from the name.
 TEST(LinuxSystemProbeTest, AnInterfaceNameIsTrimmedBeforeItsColon)
 {

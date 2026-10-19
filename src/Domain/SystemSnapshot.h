@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/CpuDetails.h"
+#include "Platform/SystemTypes.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -143,6 +144,7 @@ struct SystemSnapshot
         uint64_t linkSpeedMbps = 0;  // Link speed (0 if unknown)
         bool isVirtual = false;      // Software interface left out of the Total (see Platform InterfaceCounters)
         bool isVirtualKnown = false; // The platform classified it, so isVirtual is authoritative (#1260)
+        Platform::NetInterfaceKind kind = Platform::NetInterfaceKind::Unknown; // The link's kind (#2568)
         // Whether rxBytesPerSec / txBytesPerSec are readings or held at 0 for a reason (#1375)
         InterfaceRateStatus rxRateStatus = InterfaceRateStatus::Measured;
         InterfaceRateStatus txRateStatus = InterfaceRateStatus::Measured;
