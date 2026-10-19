@@ -11,6 +11,7 @@
 #include "UI/FontLoading.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
+#include "UI/ThemeLoader.h"
 
 #include <SDL3/SDL.h>
 #include <glad/gl.h>
@@ -119,7 +120,7 @@ void UILayer::onAttach()
         {
             // An absent directory is normal and stays quiet; anything else (permissions, a
             // symlink loop) would otherwise drop the user's themes without a word.
-            spdlog::warn("Skipping user themes in {}: {}", userThemesDir.string(), ec.message());
+            spdlog::warn("{}", ThemeLoader::userThemesSkippedMessage(userThemesDir, ec));
         }
 
         // Apply default/fallback theme colors (user config will override later)

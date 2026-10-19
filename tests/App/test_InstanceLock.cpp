@@ -175,6 +175,21 @@ TEST_F(InstanceLockTest, AsRootAFailedHandOverStillLocksAndSaysWhy)
     EXPECT_TRUE(lock.error().starts_with("couldn't give " + (m_Dir / "made").string())) << lock.error();
 }
 
+// #2437 (#2479): the main case is a config directory that already exists, so only the lock file itself is
+// handed over. A failed handover of it is reported too: a lock file left root's would refuse the next run.
+TEST_F(InstanceLockTest, AsRootAnExistingLockFileIsHandedOver)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root the directory is root's own, so nothing is handed over";
+    }
+    const auto lockPath = m_Dir / "tasksmack.lock";
+    std::ofstream(lockPath) << "";
+    const InstanceLock lock(lockPath, InstanceLock::Testing{.effectiveUid = 0, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().starts_with("couldn't give " + lockPath.string())) << lock.error();
+}
+
 // Not root: nothing is handed over, and nothing to report.
 TEST_F(InstanceLockTest, NotRootNothingIsHandedOver)
 {

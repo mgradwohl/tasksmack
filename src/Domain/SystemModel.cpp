@@ -942,7 +942,9 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
                                      fieldDelta(&Platform::CpuCounters::softirq) + fieldDelta(&Platform::CpuCounters::steal);
     if (totalDelta == 0)
     {
-        return usage; // Avoid division by zero
+        // No CPU time passed (a stalled or failing probe repeating its counters): no reading, a gap,
+        // not 0% busy (#2534)
+        return noCpuReading();
     }
 
     const double totalDeltaDouble = Numeric::toDouble(totalDelta);

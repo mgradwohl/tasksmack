@@ -184,6 +184,10 @@ add_test(NAME CoverageMismatchesScript
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
 
+# tools/check-dll-loads.py keeps src/ from loading a DLL by bare name (#2530).
+add_test(NAME CheckDllLoadsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_dll_loads.py)
+
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
@@ -191,7 +195,7 @@ add_test(NAME CachePruneStaleScript
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
 set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
-    CheckCachePruneTriggersScript CachePruneStaleScript
+    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript
     PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see

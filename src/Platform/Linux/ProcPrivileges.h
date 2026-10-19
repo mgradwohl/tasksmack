@@ -8,9 +8,24 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <vector>
+
+#include <sys/types.h>
 
 namespace Platform::ProcPrivileges
 {
+
+/// This process's supplementary groups, through @p getGroups (getgroups(2), or a stand-in with its
+/// signature in tests). Sized by asking first: a fixed buffer fails with EINVAL for a user in more groups
+/// than it holds (#2400). Empty if they can't be read.
+template<typename GetGroups> [[nodiscard]] std::vector<gid_t> supplementaryGroups(GetGroups getGroups)
+{
+    const int wanted = getGroups(0, nullptr);
+    std::vector<gid_t> groups(static_cast<std::size_t>(wanted > 0 ? wanted : 0));
+    const int count = groups.empty() ? 0 : getGroups(static_cast<int>(groups.size()), groups.data());
+    groups.resize(static_cast<std::size_t>(count > 0 ? count : 0));
+    return groups;
+}
 
 /// capability.h bit numbers of the capabilities that open other users' /proc entries.
 inline constexpr unsigned CAP_DAC_OVERRIDE_BIT = 1;    // a superset of CAP_DAC_READ_SEARCH for these reads

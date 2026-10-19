@@ -64,6 +64,14 @@ repos:
         language: python
         files: '^(\.github/(workflows|actions)/.*\.ya?ml|tools/check-cache-prune-triggers\.py)$'
         pass_filenames: false
+      # DLL planting (#2530): src/ must load every DLL with LoadLibraryExW and a LOAD_LIBRARY_SEARCH_* flag,
+      # never bare LoadLibraryW, or a same-named DLL next to a portable TaskSmack.exe is loaded instead.
+      - id: check-dll-loads
+        name: Check DLLs are loaded with a restricted search path
+        entry: python -I -X utf8 tools/check-dll-loads.py
+        language: python
+        files: '^(src/.*\.(cpp|cc|cxx|h|hpp)|tools/check-dll-loads\.py)$'
+        pass_filenames: false
 
   # C++ formatting with clang-format
   - repo: https://github.com/pre-commit/mirrors-clang-format

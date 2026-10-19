@@ -1021,6 +1021,30 @@ TEST(PkexecBrokerTest, AHelperThatExitsIsReapedWithoutAnotherConnect)
     EXPECT_FALSE(broker.connected());
 }
 
+// #2448 (#2479): the password prompt polkit shows for the helper says what the session allows -- reading
+// other users' process details (their environment above all) and protected system information, not only
+// acting on processes.
+TEST(HelperPolicyTest, ThePromptSaysTheSessionAlsoReads)
+{
+    std::ifstream file(std::string(TASKSMACK_SOURCE_ASSETS_DIR) + "/linux/app.tasksmack.TaskSmack.helper.policy");
+    ASSERT_TRUE(file.is_open());
+    const std::string policy((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const auto element = [&policy](std::string_view tag) -> std::string
+    {
+        const std::string open = "<" + std::string(tag) + ">";
+        const std::size_t start = policy.find(open);
+        const std::size_t end = policy.find("</" + std::string(tag) + ">", start);
+        return start == std::string::npos || end == std::string::npos ? std::string{}
+                                                                      : policy.substr(start + open.size(), end - start - open.size());
+    };
+    const std::string message = element("message");
+    const std::string description = element("description");
+    EXPECT_TRUE(message.contains("read")) << message;
+    EXPECT_TRUE(message.contains("environment")) << message;
+    EXPECT_TRUE(message.contains("system information")) << message;
+    EXPECT_TRUE(description.contains("read")) << description;
+}
+
 TEST(PkexecBrokerTest, ADismissedPromptIsReportedAsSuch)
 {
     // A launcher that exits as pkexec does when the prompt is dismissed (126).

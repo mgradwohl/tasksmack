@@ -1391,6 +1391,20 @@ TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
     EXPECT_EQ(plan().sendCalls, 4);
 }
 
+// #1483 (#2479): with CAP_SYS_NICE but not CAP_KILL, signal 0 to another user's process fails with EPERM,
+// so the priority actions must confirm the target through the pidfd's poll, never a signal.
+TEST_F(LinuxProcessActionsFaultTest, PriorityChangesNeverNeedASignalToConfirmTheTarget)
+{
+    plan().sendErrno = EPERM;
+    plan().pollResult = 0; // still running
+    const ProcessActionResult priority = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_TRUE(priority.success) << priority.errorMessage;
+    const ProcessActionResult ioPriority = m_Actions.setIoPriority(ownTarget(), IoPriorityClass::BestEffort, 4);
+    EXPECT_TRUE(ioPriority.success) << ioPriority.errorMessage;
+    EXPECT_EQ(plan().sendCalls, 0);
+    EXPECT_GE(plan().pollCalls, 2);
+}
+
 TEST_F(LinuxProcessActionsFaultTest, WithoutPidfdsEveryActionIsRefused)
 {
     // ENOSYS: a kernel before 5.3. EPERM/EACCES: a seccomp filter, not "another user".

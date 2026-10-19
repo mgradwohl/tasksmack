@@ -237,6 +237,30 @@ TEST_F(NonAsciiRoundTripTest, UserThemeWithANonAsciiFileNameIsDiscoveredAndLoade
     EXPECT_TRUE(UI::ThemeLoader::loadTheme(themePath).has_value());
 }
 
+TEST_F(NonAsciiRoundTripTest, UnreadableUserThemesWarningNamesANonAsciiDirectoryWithoutThrowing)
+{
+    // UILayer::onAttach() logs this when is_directory() fails on the user themes folder with anything but
+    // not-found. It used path::string(), which throws outside the ANSI code page (CJK under 1252) and took
+    // onAttach() down with it (#2531).
+    const std::filesystem::path themesDir = dir() / Core::utf8ToPath(std::format("{}{}", CJK_NAME, EMOJI_NAME)) / "themes";
+    const std::error_code denied = std::make_error_code(std::errc::permission_denied);
+    std::string message;
+    ASSERT_NO_THROW(message = UI::ThemeLoader::userThemesSkippedMessage(themesDir, denied));
+    EXPECT_TRUE(message.contains(Core::pathToUtf8(themesDir))) << message;
+    EXPECT_TRUE(message.contains(denied.message())) << message;
+}
+
+#ifdef _WIN32
+TEST(NonAsciiPathTest, UnreadableUserThemesWarningSurvivesAnUnpairedSurrogate)
+{
+    // NTFS allows a lone UTF-16 surrogate in a name; no code page, not even UTF-8, can narrow it (#2531).
+    const std::filesystem::path themesDir = std::filesystem::path(std::wstring{L'C', L':', L'\\', static_cast<wchar_t>(0xD800)}) / "themes";
+    std::string message;
+    ASSERT_NO_THROW(message = UI::ThemeLoader::userThemesSkippedMessage(themesDir, std::make_error_code(std::errc::permission_denied)));
+    EXPECT_TRUE(message.contains("\xEF\xBF\xBD")) << "the surrogate should come out as U+FFFD: " << message;
+}
+#endif
+
 // ========== Log file ==========
 
 TEST_F(NonAsciiRoundTripTest, LogFileIsCreatedAtTheExactNonAsciiPath)

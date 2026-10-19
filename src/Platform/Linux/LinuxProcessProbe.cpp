@@ -260,10 +260,7 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
     if (m_ProcMount.has_value() && m_ProcMount->gid.has_value())
     {
         const auto gid = static_cast<gid_t>(*m_ProcMount->gid);
-        // Sized by asking first: a fixed buffer fails with EINVAL for a user in more groups (#2400)
-        std::vector<gid_t> groups(static_cast<std::size_t>(std::max(::getgroups(0, nullptr), 0)));
-        const int count = groups.empty() ? 0 : ::getgroups(static_cast<int>(groups.size()), groups.data());
-        groups.resize(static_cast<std::size_t>(std::max(count, 0)));
+        const std::vector<gid_t> groups = ProcPrivileges::supplementaryGroups(::getgroups);
         m_InProcMountGroup = ::getegid() == gid || std::ranges::find(groups, gid) != groups.end();
     }
 
@@ -1710,7 +1707,7 @@ void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<P
         }
         // The process behind this handle, which may not be the row's: its PID can have been reused
         // since the stat pass. Its sockets go into the map under its own start time either way.
-        const std::uint64_t startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+        const std::uint64_t startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
         ProcessCounters scanned{};
         scanned.pid = counters.pid;
         countProcessFds(pidDirFd.get(),

@@ -1375,6 +1375,34 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     EXPECT_DOUBLE_EQ(idle->powerWatts, 0.0);
 }
 
+// #2444 (#2479): a multi-socket machine's other packages reach the attribution: package 0 used 2 J and
+// package 1 3 J, so the busy process draws 5 W, not package 0's 2 W.
+TEST(ProcessModelTest, EveryPackagesEnergyIsSharedOut)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
+    rawProbe->setTotalCpuTime(10'000);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{
+        .energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {{.energyUj = 1'000'000, .maxRangeUj = 0}}});
+
+    Domain::ProcessModel::Clock::time_point now{};
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh();
+
+    now += std::chrono::seconds(1);
+    rawProbe->withCpuTime(1, 200, 0);
+    rawProbe->setTotalCpuTime(10'100);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{
+        .energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {{.energyUj = 4'000'000, .maxRangeUj = 0}}});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    const auto busy = std::ranges::find_if(snaps, [](const Domain::ProcessSnapshot& s) { return s.pid == 1; });
+    ASSERT_NE(busy, snaps.end());
+    EXPECT_DOUBLE_EQ(busy->powerWatts, 5.0);
+}
+
 TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
 {
     auto probe = std::make_unique<MockProcessProbe>();

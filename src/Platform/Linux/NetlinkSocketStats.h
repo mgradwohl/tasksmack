@@ -194,10 +194,6 @@ struct SocketOwner
 /// it (see buildInodeToPidMap()). LinuxProcessProbe builds the same map during its own fd walk (#1426).
 void addSocketOwner(std::unordered_map<std::uint64_t, SocketOwner>& inodeToPid, std::uint64_t inode, SocketOwner owner);
 
-/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory
-/// `pidDirFd` is open on; 0 if it can't be read. The owner start time buildInodeToPidMap() records.
-[[nodiscard]] std::uint64_t readStartTimeTicksAt(int pidDirFd) noexcept;
-
 } // namespace Platform
 
 #endif // __linux__ && headers available
