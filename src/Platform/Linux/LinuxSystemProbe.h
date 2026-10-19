@@ -2,9 +2,11 @@
 
 #include "Platform/CpuDetails.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/Linux/LinuxCpuDetails.h"
 #include "Platform/SystemTypes.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstddef>
 #include <filesystem>
 #include <mutex>
@@ -35,6 +37,14 @@ class LinuxSystemProbe : public ISystemProbe
     /// Testability constructor that also takes the CPU sysfs root (normally /sys/devices/system/cpu),
     /// where the CPU frequency is read (#1183), and the CPU Details' caches and base clock (#809).
     LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot, std::filesystem::path cpuSysfsRoot);
+
+    /// Testability constructor that also takes the file system root (normally /) under which the
+    /// CPU Details' virtualization status finds /dev/kvm and the hypervisor hints (DMI, WSL's kernel
+    /// release; LinuxOsInfo::runsUnderHypervisor()), read once here (#2592).
+    LinuxSystemProbe(std::filesystem::path procRoot,
+                     std::filesystem::path sysClassNetRoot,
+                     std::filesystem::path cpuSysfsRoot,
+                     const std::filesystem::path& rootDir);
 
     ~LinuxSystemProbe() override = default;
 
@@ -108,6 +118,9 @@ class LinuxSystemProbe : public ISystemProbe
     // may run on several threads.
     std::mutex m_CpuDetailsMutex;
     CpuTopology::CachedCpuDetails m_CpuDetails;
+    // Virtualization status (#2592), read once at construction and copied onto each read of the
+    // details above. Not changed after construction, so it needs no lock.
+    LinuxCpuDetails::CpuVirtualization m_CpuVirtualization;
     std::size_t m_LastCoreCount = 0;
 
     /// Publish this sample's CPU details and core count (#809), in one critical section, so a

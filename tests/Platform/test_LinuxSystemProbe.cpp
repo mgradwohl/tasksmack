@@ -669,13 +669,54 @@ TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
     }
 
     LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
-    EXPECT_FALSE(probe.capabilities().hasVirtualizationInfo);
+    EXPECT_TRUE(probe.capabilities().hasVirtualizationInfo);          // vmx/svm, /dev/kvm, hypervisor (#2592)
+    EXPECT_FALSE(probe.capabilities().hasVirtualizationSecurityInfo); // VBS/HVCI are Windows facts (#809)
     const auto details = probe.read().cpuDetails;
     EXPECT_EQ(details.sockets, 1U);
     EXPECT_EQ(details.physicalCores, 1U);
     EXPECT_EQ(details.logicalProcessors, 2U);
     EXPECT_EQ(details.l2CacheBytes, 1024ULL * 1024ULL); // One instance, shared by both siblings
     EXPECT_EQ(details.baseSpeedMHz, 2900U);
+}
+
+TEST(LinuxSystemProbeTest, CpuVirtualizationComesFromTheInjectedRoots)
+{
+    // Read once at construction from the proc root's cpuinfo and the file system root's /dev/kvm and
+    // hypervisor hints, and kept when the details are re-read for a CPU coming online (#2592)
+    ScopedTempDir root("ts_test_sys_virt_root");
+    const auto proc = root.path / "proc";
+    std::filesystem::create_directories(proc);
+    std::filesystem::create_directories(root.path / "dev");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc / "stat");
+        std::ofstream cpuInfo(proc / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\nflags\t\t: fpu vmx ept\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(1);
+    std::ofstream(root.path / "dev" / "kvm") << "";
+
+    LinuxSystemProbe probe(proc, proc / "no-sys-class-net", root.path / "no-cpu-sysfs", root.path);
+    auto details = probe.read().cpuDetails;
+    EXPECT_EQ(details.virtualizationFirmwareEnabled, true);
+    EXPECT_EQ(details.slatSupported, true);
+    EXPECT_EQ(details.hypervisorPresent, false);
+    EXPECT_EQ(details.kvmAvailable, true);
+    EXPECT_FALSE(details.vbsRunning.has_value());
+    EXPECT_FALSE(details.hvciEnabled.has_value());
+
+    // Not re-read: removing /dev/kvm changes nothing, even across a re-read of the topology
+    std::filesystem::remove(root.path / "dev" / "kvm");
+    writeOnline(2);
+    details = probe.read().cpuDetails;
+    EXPECT_EQ(details.logicalProcessors, 2U);
+    EXPECT_EQ(details.kvmAvailable, true);
+    EXPECT_EQ(details.virtualizationFirmwareEnabled, true);
 }
 
 TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)

@@ -698,12 +698,13 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasSwap = true,
         .hasCommitCharge = true, // GetPerformanceInfo's CommitTotal/CommitLimit/CommitPeak (#1627)
         .hasUptime = true,
-        .hasIoWait = false,            // Windows doesn't expose iowait
-        .hasSteal = false,             // Windows doesn't expose steal time
-        .hasLoadAvg = false,           // Windows doesn't have load average
-        .hasCpuFreq = true,            // Current clock: rated base x % Processor Performance (#1184, #1530)
-        .hasNetworkCounters = true,    // Via GetIfTable2 (64-bit counters, Unicode names)
-        .hasVirtualizationInfo = true, // Firmware/SLAT/hypervisor/VBS status (#809)
+        .hasIoWait = false,                    // Windows doesn't expose iowait
+        .hasSteal = false,                     // Windows doesn't expose steal time
+        .hasLoadAvg = false,                   // Windows doesn't have load average
+        .hasCpuFreq = true,                    // Current clock: rated base x % Processor Performance (#1184, #1530)
+        .hasNetworkCounters = true,            // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasVirtualizationInfo = true,         // Firmware/SLAT/hypervisor status (#809)
+        .hasVirtualizationSecurityInfo = true, // VBS and memory integrity (#809)
     };
 }
 

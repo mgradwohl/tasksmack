@@ -9,10 +9,13 @@
 
 #include <array>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -159,21 +162,12 @@ struct OsRelease
     return text;
 }
 
-/// A container or VM hint, all unprivileged: Podman's /run/.containerenv, Docker's /.dockerenv, then
-/// the DMI system vendor and product names known hypervisors set, then WSL's kernel release (WSL 2 is a
-/// Hyper-V VM without DMI, #2004), then the CPU's hypervisor flag (a VM of no hypervisor named above).
-/// "None detected" otherwise.
-[[nodiscard]] inline std::string virtualizationHint(const std::filesystem::path& root)
+/// The hypervisor hint, all unprivileged: the DMI system vendor and product names known hypervisors
+/// set, then WSL's kernel release (WSL 2 is a Hyper-V VM without DMI, #2004), then the CPU's hypervisor
+/// flag (a VM of no hypervisor named above). Empty when none is detected. WSL 1, which is not a VM, is
+/// named here too, as its own label.
+[[nodiscard]] inline std::string hypervisorHint(const std::filesystem::path& root)
 {
-    std::error_code ec;
-    if (std::filesystem::exists(root / "run/.containerenv", ec))
-    {
-        return "Container (Podman)";
-    }
-    if (std::filesystem::exists(root / ".dockerenv", ec))
-    {
-        return "Container (Docker)";
-    }
     const std::string dmi = readLine(root / "sys/class/dmi/id/sys_vendor") + " " + readLine(root / "sys/class/dmi/id/product_name");
     constexpr std::array<std::pair<std::string_view, std::string_view>, 8> VENDORS{{
         {"QEMU", "Virtual machine (QEMU)"},
@@ -211,6 +205,43 @@ struct OsRelease
             }
             break; // Every CPU lists the same flags
         }
+    }
+    return {};
+}
+
+/// Whether hypervisorHint() found a virtual machine (CPU Details' Hypervisor row, #2592): true for any
+/// "Virtual machine" label, false when it found nothing, nullopt for WSL 1 -- a translation layer on
+/// Windows, whose Linux side cannot tell whether Windows itself runs under Hyper-V.
+[[nodiscard]] inline std::optional<bool> runsUnderHypervisor(const std::filesystem::path& root)
+{
+    const std::string hint = hypervisorHint(root);
+    if (hint.empty())
+    {
+        return false;
+    }
+    if (hint.starts_with("Virtual machine"))
+    {
+        return true;
+    }
+    return std::nullopt;
+}
+
+/// A container or VM hint, all unprivileged: Podman's /run/.containerenv, Docker's /.dockerenv, then
+/// hypervisorHint(). "None detected" otherwise.
+[[nodiscard]] inline std::string virtualizationHint(const std::filesystem::path& root)
+{
+    std::error_code ec;
+    if (std::filesystem::exists(root / "run/.containerenv", ec))
+    {
+        return "Container (Podman)";
+    }
+    if (std::filesystem::exists(root / ".dockerenv", ec))
+    {
+        return "Container (Docker)";
+    }
+    if (std::string hint = hypervisorHint(root); !hint.empty())
+    {
+        return hint;
     }
     return "None detected";
 }

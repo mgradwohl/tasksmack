@@ -1,11 +1,12 @@
 #pragma once
 
-// The CPU facts for the Overview's CPU Details block (#809): topology, base clock, cache sizes and,
-// on Windows, virtualization status. Every field is optional, so a value the platform or hardware
-// cannot supply is shown as unavailable (or hidden) rather than as a fake 0. They are cached facts:
-// each system probe reads them when it is built and again only when the set of active processors it
-// samples changes (hotplug, hot-add, a CPU taken offline), committing a re-read only when it
-// describes the processors of that sample -- see cpuDetailsNeedRead() and commitIfConsistent().
+// The CPU facts for the Overview's CPU Details block (#809): topology, base clock, cache sizes and
+// virtualization status (Windows; Linux since #2592). Every field is optional, so a value the
+// platform or hardware cannot supply is shown as unavailable (or hidden) rather than as a fake 0.
+// They are cached facts: each system probe reads them when it is built and again only when the set
+// of active processors it samples changes (hotplug, hot-add, a CPU taken offline), committing a
+// re-read only when it describes the processors of that sample -- see cpuDetailsNeedRead() and
+// commitIfConsistent().
 //
 // The topology, cache and refresh logic below is pure (no OS headers), so it is unit-tested on every
 // platform; the Linux and Windows probes only gather the raw records it works on.
@@ -46,12 +47,15 @@ struct CpuDetails
     std::optional<std::uint64_t> l2CacheBytes;
     std::optional<std::uint64_t> l3CacheBytes;
 
-    // Windows only (SystemCapabilities::hasVirtualizationInfo)
+    // Windows and Linux (SystemCapabilities::hasVirtualizationInfo; Linux since #2592)
     std::optional<bool> virtualizationFirmwareEnabled; ///< Hardware virtualization enabled in firmware.
     std::optional<bool> slatSupported;                 ///< Second-level address translation.
     std::optional<bool> hypervisorPresent;             ///< A hypervisor is running (CPUID).
-    std::optional<bool> vbsRunning;                    ///< Virtualization-based security's secure kernel is running.
-    std::optional<bool> hvciEnabled;                   ///< Memory integrity (hypervisor-enforced code integrity).
+    // Windows only (SystemCapabilities::hasVirtualizationSecurityInfo)
+    std::optional<bool> vbsRunning;  ///< Virtualization-based security's secure kernel is running.
+    std::optional<bool> hvciEnabled; ///< Memory integrity (hypervisor-enforced code integrity).
+    // Linux only (#2592); nullopt elsewhere, and the row is then left out
+    std::optional<bool> kvmAvailable; ///< /dev/kvm exists: KVM can run virtual machines here.
 
     bool operator==(const CpuDetails&) const = default;
 };

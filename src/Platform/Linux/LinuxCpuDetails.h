@@ -6,7 +6,9 @@
 //   CPUs; their numbers are the online set the sysfs scans below are limited to;
 // - cache totals from the online CPUs' cpuN/cache/index* (each shared instance counted once), and
 //   per-processor efficiency classes from their cpuN/cpu_capacity;
-// - the base clock: the highest base_frequency across cpufreq/policy* and the cpuN/cpufreq links.
+// - the base clock: the highest base_frequency across cpufreq/policy* and the cpuN/cpufreq links;
+// - virtualization status (#2592): the x86 vmx/svm and EPT/NPT flags in /proc/cpuinfo, /dev/kvm,
+//   and LinuxOsInfo's hypervisor detection, read once by LinuxSystemProbe (they do not change).
 // LinuxSystemProbe reads them when it is built and again when the set of CPUs in /proc/stat changes,
 // committing a re-read only when the online CPUs it describes are that sample's (commitIfConsistent()).
 //
@@ -15,6 +17,7 @@
 
 #include "Platform/AsciiTrim.h"
 #include "Platform/CpuDetails.h"
+#include "Platform/Linux/LinuxOsInfo.h"
 
 #include <algorithm>
 #include <charconv>
@@ -23,6 +26,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -642,6 +646,173 @@ namespace Detail
         return joined;
     }
     return hardware;
+}
+
+/// The virtualization facts in /proc/cpuinfo's x86 "flags" and "vmx flags" lines (#2592), from the
+/// first processor's block: every CPU lists the same flags.
+struct CpuVirtualizationFlags
+{
+    bool hasFlags = false;   ///< A "flags" line was found (x86; Arm lists "Features" instead, without these)
+    bool vmx = false;        ///< Intel VT-x
+    bool svm = false;        ///< AMD-V
+    bool slat = false;       ///< Intel EPT or AMD NPT (second-level address translation)
+    bool hypervisor = false; ///< CPUID's hypervisor bit: this kernel runs as a guest
+
+    bool operator==(const CpuVirtualizationFlags&) const = default;
+};
+
+/// CpuVirtualizationFlags from /proc/cpuinfo's text. EPT is looked for in both lines: kernels since
+/// 5.8 list the VMX features on their own "vmx flags" line, and keep "ept" on the "flags" line too.
+[[nodiscard]] inline CpuVirtualizationFlags parseCpuVirtualizationFlags(std::string_view text)
+{
+    CpuVirtualizationFlags flags;
+    bool seenProcessor = false;
+    while (!text.empty())
+    {
+        const auto newline = text.find('\n');
+        const std::string_view line = text.substr(0, newline);
+        text = (newline == std::string_view::npos) ? std::string_view{} : text.substr(newline + 1);
+
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = Platform::trimAscii(line.substr(0, colon));
+        if (key == "processor")
+        {
+            if (seenProcessor)
+            {
+                break; // The first block is enough
+            }
+            seenProcessor = true;
+            continue;
+        }
+        const bool isFlags = (key == "flags");
+        if (!isFlags && key != "vmx flags")
+        {
+            continue;
+        }
+        flags.hasFlags = flags.hasFlags || isFlags;
+        std::string_view rest = line.substr(colon + 1);
+        while (!rest.empty())
+        {
+            const auto start = rest.find_first_not_of(" \t\r");
+            if (start == std::string_view::npos)
+            {
+                break;
+            }
+            rest.remove_prefix(start);
+            const auto end = rest.find_first_of(" \t\r");
+            const std::string_view flag = rest.substr(0, end);
+            rest = (end == std::string_view::npos) ? std::string_view{} : rest.substr(end);
+            if (flag == "vmx")
+            {
+                flags.vmx = true;
+            }
+            else if (flag == "svm")
+            {
+                flags.svm = true;
+            }
+            else if (flag == "ept" || flag == "npt")
+            {
+                flags.slat = true;
+            }
+            else if (flag == "hypervisor")
+            {
+                flags.hypervisor = true;
+            }
+        }
+    }
+    return flags;
+}
+
+/// The CPU Details virtualization fields Linux reports (#2592). VBS and memory integrity are Windows
+/// facts (#809) and have no counterpart here.
+struct CpuVirtualization
+{
+    std::optional<bool> firmwareEnabled;   ///< CpuDetails::virtualizationFirmwareEnabled
+    std::optional<bool> slatSupported;     ///< CpuDetails::slatSupported
+    std::optional<bool> hypervisorPresent; ///< CpuDetails::hypervisorPresent
+    std::optional<bool> kvmAvailable;      ///< CpuDetails::kvmAvailable
+
+    bool operator==(const CpuVirtualization&) const = default;
+};
+
+/// The virtualization fields from the CPU's flags, LinuxOsInfo::runsUnderHypervisor() and whether
+/// /dev/kvm exists. Each is left unknown where the facts do not settle it, rather than guessed:
+/// - hypervisorPresent: true when a hypervisor is detected (by name, or by the CPUID hypervisor bit,
+///   which every hypervisor sets for its guests and Windows reads too). Without one it is false on
+///   x86, where that bit would be listed, and unknown elsewhere (Arm has no such flag, and a VM that
+///   names itself in no DMI string would go unseen), or under WSL 1.
+/// - firmwareEnabled ("hardware virtualization is enabled", as Windows' PF_VIRT_FIRMWARE_ENABLED):
+///   * /dev/kvm proves it: KVM registers the device only once the CPU's virtualization extensions
+///     are usable (on any architecture).
+///   * vmx: true. Since Linux 5.6 the kernel drops vmx from the flags when the firmware leaves VT-x
+///     off (IA32_FEATURE_CONTROL), so listing it means it is on; an older kernel may still list it.
+///     In a VM it means nested virtualization is on for this guest.
+///   * svm without /dev/kvm: unknown. The kernel lists svm even when the firmware disables it
+///     (VM_CR.SVMDIS); only kvm_amd loading, which then creates /dev/kvm, shows it is on.
+///   * neither flag, inside a VM: unknown. A guest sees vmx/svm only when the hypervisor exposes
+///     nested virtualization, so their absence says nothing about the host's firmware. (The
+///     Virtualization row reads "Enabled" under a hypervisor anyway, as on Windows.)
+///   * neither flag, on x86 bare metal: false -- the CPU lacks it, or (Intel) the firmware has it
+///     off; Windows' flag is false in both cases too.
+///   * neither flag, no x86 flags line (Arm): unknown; its virtualization support is not listed.
+/// - slatSupported: with vmx or svm listed, whether ept or npt is too (in a VM, whether the
+///   hypervisor exposes it to this guest); unknown without either, since the kernel clears the VMX
+///   feature flags along with vmx when the firmware leaves VT-x off.
+/// - kvmAvailable: whether /dev/kvm exists. Whether this user may open it is not checked.
+[[nodiscard]] inline CpuVirtualization
+summarizeVirtualization(const CpuVirtualizationFlags& flags, std::optional<bool> hypervisorDetected, bool kvmDevicePresent) noexcept
+{
+    CpuVirtualization result;
+    if (flags.hypervisor || hypervisorDetected.value_or(false))
+    {
+        result.hypervisorPresent = true;
+    }
+    else if (hypervisorDetected.has_value() && flags.hasFlags)
+    {
+        result.hypervisorPresent = false;
+    }
+    if (kvmDevicePresent || flags.vmx)
+    {
+        result.firmwareEnabled = true;
+    }
+    else if (!flags.svm && result.hypervisorPresent.has_value() && !*result.hypervisorPresent)
+    {
+        result.firmwareEnabled = false; // x86 bare metal (a known "no hypervisor" implies a flags line)
+    }
+
+    if (flags.vmx || flags.svm)
+    {
+        result.slatSupported = flags.slat;
+    }
+    result.kvmAvailable = kvmDevicePresent;
+    return result;
+}
+
+/// The virtualization fields from `procRoot`/cpuinfo, `root`/dev/kvm and the hypervisor hints under
+/// `root` (normally /proc and /; fixture trees in tests). See summarizeVirtualization().
+[[nodiscard]] inline CpuVirtualization readVirtualization(const std::filesystem::path& procRoot, const std::filesystem::path& root)
+{
+    CpuVirtualizationFlags flags;
+    if (const auto cpuInfo = Detail::readFile(procRoot / "cpuinfo"); cpuInfo.has_value())
+    {
+        flags = parseCpuVirtualizationFlags(*cpuInfo);
+    }
+    std::error_code ec;
+    const bool kvm = std::filesystem::exists(root / "dev" / "kvm", ec);
+    return summarizeVirtualization(flags, LinuxOsInfo::runsUnderHypervisor(root), kvm);
+}
+
+/// Copy the virtualization fields into `details`, whose other fields read() fills.
+inline void applyVirtualization(const CpuVirtualization& virtualization, CpuDetails& details) noexcept
+{
+    details.virtualizationFirmwareEnabled = virtualization.firmwareEnabled;
+    details.slatSupported = virtualization.slatSupported;
+    details.hypervisorPresent = virtualization.hypervisorPresent;
+    details.kvmAvailable = virtualization.kvmAvailable;
 }
 
 } // namespace Platform::LinuxCpuDetails

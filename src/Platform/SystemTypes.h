@@ -165,9 +165,13 @@ struct SystemCapabilities
     bool hasLoadAvg = false;
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
-    // CpuDetails' virtualization fields mean something here (Windows). Elsewhere the CPU Details
-    // block leaves those rows out rather than showing them as unknown (#809).
+    // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,
+    // and Linux since #2592). Elsewhere the CPU Details block leaves those rows out rather than
+    // showing them as unknown (#809).
     bool hasVirtualizationInfo = false;
+    // CpuDetails' virtualization-based security and memory integrity fields mean something here
+    // (Windows only, #809); without it those two rows are left out (#2592).
+    bool hasVirtualizationSecurityInfo = false;
 };
 
 } // namespace Platform

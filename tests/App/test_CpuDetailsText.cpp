@@ -66,6 +66,7 @@ using CpuDetailsText::UNAVAILABLE_TEXT;
                   .hasCpuFreq = true,
                   .hasUptime = true,
                   .hasVirtualizationInfo = true,
+                  .hasVirtualizationSecurityInfo = true,
                   .processCount = 312,
                   .threadCount = 4'521.0,
                   .handleCount = 152'340.0,
@@ -129,7 +130,8 @@ TEST(CpuDetailsTextTest, VirtualizationRowsAreHiddenWithoutTheCapability)
 {
     const auto snap = windowsLikeSnapshot();
     Inputs in = windowsInputs(snap);
-    in.hasVirtualizationInfo = false; // Linux
+    in.hasVirtualizationInfo = false; // A platform with no virtualization facts (the synthetic workload)
+    in.hasVirtualizationSecurityInfo = false;
     in.handlesAreFileDescriptors = true;
     const auto rows = buildRows(in);
     for (const std::string_view label : {"Virtualization", "Hypervisor", "Virtualization-based security", "Memory integrity", "Handles"})
@@ -147,6 +149,7 @@ TEST(CpuDetailsTextTest, UnknownFactsAreMarkedUnavailableNotZero)
     in.hasCpuFreq = true;
     in.hasUptime = true;
     in.hasVirtualizationInfo = true;
+    in.hasVirtualizationSecurityInfo = true;
     const auto rows = buildRows(in);
     for (const std::string_view label : {"Speed",
                                          "Up time",
@@ -195,6 +198,41 @@ TEST(CpuDetailsTextTest, VirtualizationFollowsTheFirmwareWithoutAHypervisor)
     // A running hypervisor means it is enabled, whatever the firmware flag reads from its root partition
     snap.cpuDetails.hypervisorPresent = true;
     EXPECT_EQ(findRow(buildRows(windowsInputs(snap)), "Virtualization")->value, "Enabled");
+}
+
+// Linux (#2592): the virtualization, hypervisor and KVM rows, but no VBS or memory integrity rows,
+// which are Windows facts (#809), rather than showing them as unknown.
+TEST(CpuDetailsTextTest, LinuxShowsVirtualizationAndKvmButNotVbs)
+{
+    auto snap = windowsLikeSnapshot();
+    snap.cpuDetails.vbsRunning.reset();
+    snap.cpuDetails.hvciEnabled.reset();
+    snap.cpuDetails.hypervisorPresent = false;
+    snap.cpuDetails.virtualizationFirmwareEnabled = true;
+    snap.cpuDetails.kvmAvailable = true;
+    Inputs in = windowsInputs(snap);
+    in.hasVirtualizationSecurityInfo = false;
+    in.handlesAreFileDescriptors = true;
+    auto rows = buildRows(in);
+    ASSERT_NE(findRow(rows, "Virtualization"), nullptr);
+    EXPECT_EQ(findRow(rows, "Virtualization")->value, "Enabled");
+    ASSERT_NE(findRow(rows, "Hypervisor"), nullptr);
+    EXPECT_EQ(findRow(rows, "Hypervisor")->value, "Not detected");
+    ASSERT_NE(findRow(rows, "KVM"), nullptr);
+    EXPECT_EQ(findRow(rows, "KVM")->value, "Available");
+    EXPECT_EQ(findRow(rows, "Virtualization-based security"), nullptr);
+    EXPECT_EQ(findRow(rows, "Memory integrity"), nullptr);
+
+    snap.cpuDetails.kvmAvailable = false;
+    rows = buildRows(in);
+    ASSERT_NE(findRow(rows, "KVM"), nullptr);
+    EXPECT_EQ(findRow(rows, "KVM")->value, "Not available");
+}
+
+TEST(CpuDetailsTextTest, KvmRowIsLeftOutWhereThePlatformDoesNotReportIt)
+{
+    const auto snap = windowsLikeSnapshot(); // Windows: kvmAvailable is never set
+    EXPECT_EQ(findRow(buildRows(windowsInputs(snap)), "KVM"), nullptr);
 }
 
 TEST(CpuDetailsTextTest, CapabilitiesTheProbeLacksHideTheirRows)

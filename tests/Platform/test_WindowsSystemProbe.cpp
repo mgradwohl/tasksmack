@@ -62,7 +62,8 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSwap);
     EXPECT_TRUE(caps.hasUptime);
     EXPECT_FALSE(caps.hasLoadAvg);
-    EXPECT_TRUE(caps.hasVirtualizationInfo); // #809
+    EXPECT_TRUE(caps.hasVirtualizationInfo);         // #809
+    EXPECT_TRUE(caps.hasVirtualizationSecurityInfo); // VBS and memory integrity rows (#809, #2592)
 }
 
 TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)

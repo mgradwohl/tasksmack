@@ -194,6 +194,20 @@ TEST(LinuxOsInfoTest, WslAndUnnamedHypervisorsAreVirtualMachines)
     EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine (QEMU)");
 }
 
+// #2592: the CPU Details' Hypervisor row reuses the same detection, without the container hints.
+TEST(LinuxOsInfoTest, RunsUnderHypervisorFollowsTheHint)
+{
+    const FixtureRoot root;
+    EXPECT_EQ(runsUnderHypervisor(root.path()), false);
+    root.write(".dockerenv", "");
+    EXPECT_EQ(runsUnderHypervisor(root.path()), false) << "a container is not a hypervisor";
+    root.write("proc/sys/kernel/osrelease", "4.4.0-19041-Microsoft\n");
+    EXPECT_FALSE(runsUnderHypervisor(root.path()).has_value()) << "WSL 1 cannot tell";
+    root.write("proc/sys/kernel/osrelease", "6.18.54.1-microsoft-standard-WSL2\n");
+    EXPECT_EQ(runsUnderHypervisor(root.path()), true);
+    EXPECT_EQ(virtualizationHint(root.path()), "Container (Docker)"); // The OS row still names the container
+}
+
 void writeDmi(const FixtureRoot& root)
 {
     const std::string dmi = "sys/class/dmi/id/";

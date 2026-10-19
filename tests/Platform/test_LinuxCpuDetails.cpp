@@ -1,6 +1,6 @@
 /// @file test_LinuxCpuDetails.cpp
-/// @brief Tests for Platform::LinuxCpuDetails (#809): /proc/cpuinfo topology, sysfs cache totals and
-/// the base clock, against fixture proc/sys trees. LinuxCpuDetails.h uses only the standard library,
+/// @brief Tests for Platform::LinuxCpuDetails (#809): /proc/cpuinfo topology, sysfs cache totals,
+/// the base clock and virtualization status (#2592), against fixture proc/sys trees. LinuxCpuDetails.h uses only the standard library,
 /// so these build and run on every platform.
 
 #include "Platform/CpuDetails.h"
@@ -60,6 +60,10 @@ class FixtureDir
     FixtureDir(FixtureDir&&) = delete;
     FixtureDir& operator=(FixtureDir&&) = delete;
 
+    [[nodiscard]] std::filesystem::path root() const
+    {
+        return m_Path;
+    }
     [[nodiscard]] std::filesystem::path proc() const
     {
         return m_Path / "proc";
@@ -230,7 +234,7 @@ TEST(LinuxCpuDetailsTest, SingleSocketSmtSystem)
     EXPECT_EQ(details.baseSpeedMHz, 3600U);     // base_frequency, not the boost clock
     EXPECT_FALSE(details.performanceCores.has_value());
     EXPECT_TRUE(details.efficiencyClassByCoreId.empty());            // No cpu_capacity: not known as hybrid
-    EXPECT_FALSE(details.virtualizationFirmwareEnabled.has_value()); // Not a Linux fact
+    EXPECT_FALSE(details.virtualizationFirmwareEnabled.has_value()); // readVirtualization()'s, not read()'s (#2592)
 }
 
 TEST(LinuxCpuDetailsTest, DualSocketSystem)
@@ -544,6 +548,167 @@ TEST(LinuxCpuDetailsTest, CpuModelFallsBackToHardwareThenEmpty)
     EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nHardware\t: BCM2835\n"), "BCM2835");
     EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo("processor\t: 0\nCPU part\t: 0xd49\nmodel name\t:   \n"), "");
     EXPECT_EQ(LinuxCpuDetails::cpuModelFromCpuInfo(""), "");
+}
+
+// -----------------------------------------------------------------------------
+// Virtualization status (#2592)
+// -----------------------------------------------------------------------------
+
+/// A /proc/cpuinfo with two processor blocks sharing `flags` (and `vmxFlags`, when not empty).
+[[nodiscard]] std::string cpuInfoWithFlags(std::string_view flags, std::string_view vmxFlags = {})
+{
+    std::string text;
+    for (int cpu = 0; cpu < 2; ++cpu)
+    {
+        text += std::format("processor\t: {}\nvendor_id\t: Test\nflags\t\t: {}\n", cpu, flags);
+        if (!vmxFlags.empty())
+        {
+            text += std::format("vmx flags\t: {}\n", vmxFlags);
+        }
+        text += "bugs\t\t: spectre_v1\n\n";
+    }
+    return text;
+}
+
+TEST(LinuxCpuDetailsTest, VirtualizationFlagsWithVmx)
+{
+    // Kernel 5.8+: EPT on its own "vmx flags" line
+    const auto flags = LinuxCpuDetails::parseCpuVirtualizationFlags(
+        cpuInfoWithFlags("fpu vme de pse tsc msr vmx sse2 ht", "vnmi preemption_timer ept vpid"));
+    EXPECT_TRUE(flags.hasFlags);
+    EXPECT_TRUE(flags.vmx);
+    EXPECT_FALSE(flags.svm);
+    EXPECT_TRUE(flags.slat);
+    EXPECT_FALSE(flags.hypervisor);
+
+    // An older kernel lists ept on the "flags" line; vmx as the last flag, before a CR
+    const auto older = LinuxCpuDetails::parseCpuVirtualizationFlags("processor\t: 0\nflags\t\t: fpu ept vmx\r\n");
+    EXPECT_TRUE(older.vmx);
+    EXPECT_TRUE(older.slat);
+
+    // Bare metal: no hypervisor, so firmware-enabled VT-x and its EPT
+    const auto summary = LinuxCpuDetails::summarizeVirtualization(flags, false, false);
+    EXPECT_EQ(summary.hypervisorPresent, false);
+    EXPECT_EQ(summary.firmwareEnabled, true);
+    EXPECT_EQ(summary.slatSupported, true);
+    EXPECT_EQ(summary.kvmAvailable, false);
+}
+
+TEST(LinuxCpuDetailsTest, VirtualizationFlagsWithSvm)
+{
+    const auto flags = LinuxCpuDetails::parseCpuVirtualizationFlags(cpuInfoWithFlags("fpu vme de svm extapic npt lbrv"));
+    EXPECT_TRUE(flags.hasFlags);
+    EXPECT_FALSE(flags.vmx);
+    EXPECT_TRUE(flags.svm);
+    EXPECT_TRUE(flags.slat);
+    EXPECT_FALSE(flags.hypervisor);
+
+    // svm is listed even when the firmware disables it: only /dev/kvm settles it
+    const auto withoutKvm = LinuxCpuDetails::summarizeVirtualization(flags, false, false);
+    EXPECT_FALSE(withoutKvm.firmwareEnabled.has_value());
+    EXPECT_EQ(withoutKvm.slatSupported, true);
+    EXPECT_EQ(withoutKvm.hypervisorPresent, false);
+    const auto withKvm = LinuxCpuDetails::summarizeVirtualization(flags, false, true);
+    EXPECT_EQ(withKvm.firmwareEnabled, true);
+    EXPECT_EQ(withKvm.kvmAvailable, true);
+}
+
+TEST(LinuxCpuDetailsTest, VirtualizationFlagsWithNeither)
+{
+    // "vmxx", "svm_lock" and "nept" are not the flags themselves
+    const auto flags = LinuxCpuDetails::parseCpuVirtualizationFlags(cpuInfoWithFlags("fpu vmxx svm_lock nept sse2"));
+    EXPECT_TRUE(flags.hasFlags);
+    EXPECT_FALSE(flags.vmx);
+    EXPECT_FALSE(flags.svm);
+    EXPECT_FALSE(flags.slat);
+
+    // x86 bare metal: no VT-x/AMD-V (absent, or off in firmware); SLAT unknown
+    const auto bareMetal = LinuxCpuDetails::summarizeVirtualization(flags, false, false);
+    EXPECT_EQ(bareMetal.firmwareEnabled, false);
+    EXPECT_FALSE(bareMetal.slatSupported.has_value());
+    EXPECT_EQ(bareMetal.hypervisorPresent, false);
+
+    // Arm: no x86 flags line, so neither the extensions nor a missing hypervisor bit say anything
+    const auto arm = LinuxCpuDetails::parseCpuVirtualizationFlags("processor\t: 0\nFeatures\t: fp asimd evtstrm\n");
+    EXPECT_FALSE(arm.hasFlags);
+    const auto armSummary = LinuxCpuDetails::summarizeVirtualization(arm, false, false);
+    EXPECT_FALSE(armSummary.firmwareEnabled.has_value());
+    EXPECT_FALSE(armSummary.hypervisorPresent.has_value());
+    // ...unless KVM registered /dev/kvm, which it does only with usable extensions
+    EXPECT_EQ(LinuxCpuDetails::summarizeVirtualization(arm, false, true).firmwareEnabled, true);
+
+    // Only the first processor block is read; nothing at all leaves everything but KVM unknown
+    EXPECT_FALSE(LinuxCpuDetails::parseCpuVirtualizationFlags("processor\t: 0\n\nprocessor\t: 1\nflags\t: vmx\n").vmx);
+    const auto empty = LinuxCpuDetails::summarizeVirtualization(LinuxCpuDetails::parseCpuVirtualizationFlags(""), false, false);
+    EXPECT_FALSE(empty.firmwareEnabled.has_value());
+    EXPECT_FALSE(empty.hypervisorPresent.has_value());
+    EXPECT_FALSE(empty.slatSupported.has_value());
+    EXPECT_EQ(empty.kvmAvailable, false);
+}
+
+TEST(LinuxCpuDetailsTest, VirtualizationUnderAHypervisor)
+{
+    // A guest without nested virtualization: the CPUID hypervisor bit, no vmx/svm
+    const auto guest = LinuxCpuDetails::parseCpuVirtualizationFlags(cpuInfoWithFlags("fpu vme hypervisor sse2"));
+    EXPECT_TRUE(guest.hypervisor);
+    const auto summary = LinuxCpuDetails::summarizeVirtualization(guest, false, false);
+    EXPECT_EQ(summary.hypervisorPresent, true);
+    EXPECT_FALSE(summary.firmwareEnabled.has_value()) << "a guest's missing vmx/svm says nothing about the host's firmware";
+    EXPECT_FALSE(summary.slatSupported.has_value());
+
+    // A hypervisor named by DMI or WSL's kernel, without the CPUID bit
+    const auto plain = LinuxCpuDetails::parseCpuVirtualizationFlags(cpuInfoWithFlags("fpu vme sse2"));
+    EXPECT_EQ(LinuxCpuDetails::summarizeVirtualization(plain, true, false).hypervisorPresent, true);
+    EXPECT_FALSE(LinuxCpuDetails::summarizeVirtualization(plain, true, false).firmwareEnabled.has_value());
+    // WSL 1 (runsUnderHypervisor() unknown): neither present nor absent
+    EXPECT_FALSE(LinuxCpuDetails::summarizeVirtualization(plain, std::nullopt, false).hypervisorPresent.has_value());
+    EXPECT_FALSE(LinuxCpuDetails::summarizeVirtualization(plain, std::nullopt, false).firmwareEnabled.has_value());
+
+    // Nested virtualization exposed: vmx, but no EPT for this guest
+    const auto nested = LinuxCpuDetails::parseCpuVirtualizationFlags(cpuInfoWithFlags("fpu vmx hypervisor"));
+    const auto nestedSummary = LinuxCpuDetails::summarizeVirtualization(nested, true, true);
+    EXPECT_EQ(nestedSummary.hypervisorPresent, true);
+    EXPECT_EQ(nestedSummary.firmwareEnabled, true);
+    EXPECT_EQ(nestedSummary.slatSupported, false);
+    EXPECT_EQ(nestedSummary.kvmAvailable, true);
+}
+
+TEST(LinuxCpuDetailsTest, ReadVirtualizationFindsDevKvm)
+{
+    const FixtureDir fixture;
+    FixtureDir::write(fixture.proc() / "cpuinfo", cpuInfoWithFlags("fpu svm npt"));
+    const auto absent = LinuxCpuDetails::readVirtualization(fixture.proc(), fixture.root());
+    EXPECT_EQ(absent.kvmAvailable, false);
+    EXPECT_FALSE(absent.firmwareEnabled.has_value()); // svm without kvm_amd loaded
+    EXPECT_EQ(absent.hypervisorPresent, false);
+
+    FixtureDir::write(fixture.root() / "dev" / "kvm", "");
+    const auto present = LinuxCpuDetails::readVirtualization(fixture.proc(), fixture.root());
+    EXPECT_EQ(present.kvmAvailable, true);
+    EXPECT_EQ(present.firmwareEnabled, true);
+    EXPECT_EQ(present.slatSupported, true);
+
+    // applyVirtualization() copies all four onto the details read() fills
+    CpuDetails details;
+    LinuxCpuDetails::applyVirtualization(present, details);
+    EXPECT_EQ(details.kvmAvailable, true);
+    EXPECT_EQ(details.virtualizationFirmwareEnabled, true);
+    EXPECT_EQ(details.slatSupported, true);
+    EXPECT_EQ(details.hypervisorPresent, false);
+    EXPECT_FALSE(details.vbsRunning.has_value()); // Windows only (#809)
+    EXPECT_FALSE(details.hvciEnabled.has_value());
+}
+
+TEST(LinuxCpuDetailsTest, ReadVirtualizationReusesTheOsInfoHypervisorDetection)
+{
+    // LinuxOsInfo's DMI vendor names the hypervisor though this CPU lists no hypervisor bit
+    const FixtureDir fixture;
+    FixtureDir::write(fixture.proc() / "cpuinfo", cpuInfoWithFlags("fpu vme sse2"));
+    EXPECT_EQ(LinuxCpuDetails::readVirtualization(fixture.proc(), fixture.root()).hypervisorPresent, false);
+    FixtureDir::write(fixture.root() / "sys" / "class" / "dmi" / "id" / "sys_vendor", "QEMU\n");
+    const auto vm = LinuxCpuDetails::readVirtualization(fixture.proc(), fixture.root());
+    EXPECT_EQ(vm.hypervisorPresent, true);
+    EXPECT_FALSE(vm.firmwareEnabled.has_value());
 }
 
 } // namespace

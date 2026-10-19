@@ -82,6 +82,13 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot, std::filesyst
 LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
                                    std::filesystem::path sysClassNetRoot,
                                    std::filesystem::path cpuSysfsRoot)
+    : LinuxSystemProbe(std::move(procRoot), std::move(sysClassNetRoot), std::move(cpuSysfsRoot), std::filesystem::path("/"))
+{}
+
+LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
+                                   std::filesystem::path sysClassNetRoot,
+                                   std::filesystem::path cpuSysfsRoot,
+                                   const std::filesystem::path& rootDir)
     : m_ProcRoot(std::move(procRoot)),
       m_SysClassNetRoot(std::move(sysClassNetRoot)),
       m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
@@ -116,9 +123,14 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_CpuModel = "Unknown CPU";
     }
 
+    // Virtualization status (#2592): fixed for the life of the system, so read once here and
+    // stamped onto every read of the details below.
+    m_CpuVirtualization = LinuxCpuDetails::readVirtualization(m_ProcRoot, rootDir);
+
     // The details describe the CPUs /proc/cpuinfo lists now, so a CPU that goes online or offline
     // before the first read() is a change from this set, not the baseline (#809).
     m_CpuDetails.details = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetails.ids);
+    LinuxCpuDetails::applyVirtualization(m_CpuVirtualization, m_CpuDetails.details);
     m_LastCoreCount = m_NumCores;
 
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
@@ -154,7 +166,8 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasLoadAvg = true,
                               .hasCpuFreq = true,
                               .hasNetworkCounters = true,
-                              .hasVirtualizationInfo = false}; // No virtualization/VBS facts on Linux (#809)
+                              .hasVirtualizationInfo = true,           // vmx/svm, /dev/kvm, hypervisor detection (#2592)
+                              .hasVirtualizationSecurityInfo = false}; // VBS and memory integrity are Windows facts (#809)
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -394,6 +407,7 @@ void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
         // Rare: only when the set of online CPUs changes, never every sample
         std::vector<std::size_t> describedIds;
         CpuDetails fresh = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &describedIds);
+        LinuxCpuDetails::applyVirtualization(m_CpuVirtualization, fresh);
         (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
     }
     if (!counters.cpuPerCore.empty())
