@@ -728,6 +728,11 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     return themes;
 }
 
+auto ThemeLoader::userThemesSkippedMessage(const std::filesystem::path& userThemesDir, const std::error_code& error) -> std::string
+{
+    return "Skipping user themes in " + Core::pathToUtf8(userThemesDir) + ": " + error.message();
+}
+
 auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
     try
