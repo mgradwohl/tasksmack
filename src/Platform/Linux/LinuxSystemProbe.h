@@ -6,8 +6,8 @@
 #include "Platform/SystemTypes.h"
 
 #include <chrono>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <optional>
