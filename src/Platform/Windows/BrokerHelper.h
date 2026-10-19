@@ -24,7 +24,13 @@
 //     runs the helper as another user, still lets in only the user who asked;
 //   - accepts one client, which must be that process (BrokerPipe::acceptClient);
 //   - serves it (BrokerPipeServer::serve) until it closes the pipe, the idle timeout passes, or
-//     TaskSmack's process ends, whichever comes first.
+//     TaskSmack's process ends, whichever comes first;
+//   - serves an over-the-shoulder elevation less (#2550; finding 2 of #2548's review): when the helper
+//     runs as another account than TaskSmack's user (a standard user's TaskSmack, approved with an
+//     administrator's password), the administrator approved one action, not a session. So the session
+//     ends once one action is answered, waits OVER_THE_SHOULDER_IDLE_TIMEOUT at most for it, and reads
+//     only TaskSmack's user's own processes (sessionPolicy()). Same-user elevation, where UAC isn't a
+//     boundary anyway, is unchanged.
 // The command line is untrusted: anything that doesn't parse exactly is refused before anything is
 // opened. The arguments only say where to look; who is let in is decided by the parent process's
 // handle and token.
@@ -42,6 +48,7 @@
 #include <windows.h>
 // clang-format on
 
+#include "Platform/IProcessActions.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -63,6 +70,10 @@ namespace Platform::Windows::BrokerHelper
 
 /// How long the helper waits for a user request before it exits; TaskSmack starts it again when needed.
 inline constexpr std::chrono::minutes IDLE_TIMEOUT{5};
+/// How long an over-the-shoulder session waits for its one action (#2550): long enough to act on the
+/// prompt just approved, short enough that the administrator's approval doesn't wait around for
+/// whatever else runs as TaskSmack's user.
+inline constexpr std::chrono::minutes OVER_THE_SHOULDER_IDLE_TIMEOUT{1};
 
 /// The file name TaskSmack's executable has: the helper serves only the one beside it.
 inline constexpr std::wstring_view TASKSMACK_FILE_NAME = L"TaskSmack.exe";
@@ -168,10 +179,40 @@ class ProcessWatch
     std::jthread m_Thread; // last: joined first, while the rest is alive
 };
 
+/// What one consent lets TaskSmack's user do through the helper (#2550).
+struct SessionPolicy
+{
+    BrokerPipeServer::Grant grant = BrokerPipeServer::Grant::Session;
+    std::chrono::milliseconds idleTimeout{IDLE_TIMEOUT};
+    bool readsOwnProcessesOnly = false; ///< Process reads only of TaskSmack's user's processes, no system-wide reads
+};
+
+/// The session for TaskSmack's @p user from a helper running as @p helperUser, with @p idleTimeout as
+/// a same-user session's idle timeout. The same account: a session, as asked. Another account (an
+/// over-the-shoulder elevation): Grant::OneAction, the shorter of @p idleTimeout and
+/// OVER_THE_SHOULDER_IDLE_TIMEOUT, and reads of TaskSmack's user's own processes only.
+[[nodiscard]] SessionPolicy
+sessionPolicy(const BrokerPipe::Sid& user, const BrokerPipe::Sid& helperUser, std::chrono::milliseconds idleTimeout);
+
+/// Whether @p target, confirmed by its start time, runs as @p user: its token's user. False when that
+/// can't be told (the process is gone or another one, or its token can't be read).
+[[nodiscard]] bool runsAs(const ProcessTarget& target, const BrokerPipe::Sid& user);
+
+/// The words a read refused by readsOnlyOwnProcesses() carries, for Process Details to show.
+inline constexpr std::string_view OTHER_USERS_READ_REFUSED =
+    "The administrator helper was approved for another account, so it reads only your own processes";
+
+/// @p handler for an over-the-shoulder session (#2550): a read of a process that @p ownedByUser says
+/// isn't TaskSmack's user's is refused with OTHER_USERS_READ_REFUSED, as a failed read of its kind, and
+/// never reaches @p handler; a system-wide read (firmware, crashes) is refused outright. The Hello and
+/// actions pass through.
+[[nodiscard]] BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
+                                                                     std::function<bool(const ProcessTarget&)> ownedByUser);
+
 /// How the helper's run ended, and its exit status.
 enum class Exit : std::uint8_t
 {
-    Done = 0,     ///< The session ended: the client closed the pipe, it was idle, or TaskSmack exited
+    Done = 0,     ///< The session ended: the client closed the pipe, it was idle, TaskSmack exited, or its one action was answered
     Failed = 1,   ///< The session broke, its handshake failed, or something unexpected went wrong
     Usage = 2,    ///< The command line isn't one TaskSmack makes
     NoParent = 3, ///< The process named isn't there, isn't the one that started at the time given, isn't the
@@ -184,8 +225,9 @@ enum class Exit : std::uint8_t
 [[nodiscard]] std::string exitMeaning(DWORD code);
 
 /// The whole session for @p arguments: open the parent and check it against @p self, make its pipe,
-/// accept it, and serve @p handler until the session ends (see above). @p acceptTimeout bounds the wait
-/// for the parent to open the pipe; @p stopToken ends any of it early.
+/// accept it, and serve @p handler until the session ends (see above), as sessionPolicy() says for the
+/// parent's user and this process's own. @p acceptTimeout bounds the wait for the parent to open the
+/// pipe; @p stopToken ends any of it early.
 [[nodiscard]] Exit run(const Arguments& arguments,
                        const Self& self,
                        const BrokerPipeServer::RequestHandler& handler,
@@ -195,9 +237,11 @@ enum class Exit : std::uint8_t
 
 /// run() once the parent is open and its user read: refuses a @p user that checkUserSid() doesn't take
 /// (a service's, LocalSystem's, a group) as NoParent, then makes pipe @p pipeName for that user, accepts
-/// @p parent as its client and serves it. @p parent must stay open until this returns.
+/// @p parent as its client and serves it, under sessionPolicy(@p user, @p helperUser, @p idleTimeout).
+/// @p parent must stay open until this returns.
 [[nodiscard]] Exit serveParent(HANDLE parent,
                                const BrokerPipe::Sid& user,
+                               const BrokerPipe::Sid& helperUser,
                                const std::wstring& pipeName,
                                const BrokerPipeServer::RequestHandler& handler,
                                std::chrono::milliseconds idleTimeout,

@@ -1,5 +1,7 @@
 #include "PanelPlatforms.h"
 
+#include "Core/Application.h"
+#include "Core/Window.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
@@ -13,6 +15,9 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "SyntheticScenario.h"
 
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
+
 #include <memory>
 #include <utility>
 
@@ -23,10 +28,12 @@ namespace
 {
 
 /// The one privileged broker every real run's IProcessActions shares (#2308): made once, on first use,
-/// and started only when the user first chooses "Authenticate and retry". Null where there is none.
+/// and started only when the user first chooses "Authenticate and retry" ("Retry as administrator" on
+/// Windows). Null where there is none. Its prompt belongs to the main window (#2550), which exists
+/// before any panel asks for this.
 [[nodiscard]] const std::shared_ptr<Platform::IPrivilegedBroker>& sharedPrivilegedBroker()
 {
-    static const std::shared_ptr<Platform::IPrivilegedBroker> broker = Platform::makePrivilegedBroker();
+    static const std::shared_ptr<Platform::IPrivilegedBroker> broker = Platform::makePrivilegedBroker(mainNativeWindow());
     return broker;
 }
 
@@ -42,6 +49,23 @@ namespace
 }
 
 } // namespace
+
+void* mainNativeWindow()
+{
+    try
+    {
+        const auto& app = Core::Application::get();
+        if (!app.hasWindow())
+        {
+            return nullptr;
+        }
+        return SDL_GetPointerProperty(SDL_GetWindowProperties(app.getWindow().getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    }
+    catch (...) // no Application (headless tests): nothing to belong to
+    {
+        return nullptr;
+    }
+}
 
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {

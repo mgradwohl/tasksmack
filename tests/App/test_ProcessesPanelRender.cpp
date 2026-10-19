@@ -15,6 +15,7 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -968,7 +969,7 @@ TEST_F(ProcessesPanelRenderTest, ARefusedRowActionOffersAuthenticateAndRetry)
     pressModalFilledButton(*panel, "Kill");
     panel->waitForRowActionForTesting();
     ASSERT_TRUE(panel->offersAuthenticateAndRetry());
-    EXPECT_NE(renderAndCapture(*panel).find("Authenticate and retry"), std::string::npos) << "drawn in the toolbar";
+    EXPECT_NE(renderAndCapture(*panel).find(App::AuthorizeWording::RETRY_TEXT), std::string::npos) << "drawn in the toolbar";
 
     panel->retryRowActionAuthorizedForTesting();
     panel->waitForRowActionForTesting();

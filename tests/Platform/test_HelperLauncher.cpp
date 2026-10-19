@@ -18,10 +18,12 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 // clang-format off
@@ -261,6 +263,92 @@ TEST(HelperLauncherTest, WithoutItsOwnFullPathNothingIsStarted)
     EXPECT_EQ(fake.calls, 0) << "never a helper found relative to the current directory";
 }
 
+// --- The prompt's owner, and whether the helper is offered at all (#2550) -----------------------------
+
+TEST(HelperLauncherTest, ThePromptBelongsToTheWindowItIsGiven)
+{
+    const FakeShell& fake = resetFakeShell();
+    // Any window will do for the fake: the desktop's is always there, and nothing is shown.
+    auto* const window = GetDesktopWindow();
+    ASSERT_NE(window, nullptr);
+    const auto helper = HelperLauncher::launch(freshName(), {}, fakes(), window);
+    ASSERT_TRUE(helper.has_value()) << helper.error();
+    EXPECT_EQ(fake.window, window) << "the UAC prompt comes up in front of TaskSmack";
+
+    static_cast<void>(resetFakeShell());
+    const auto unowned = HelperLauncher::launch(freshName(), {}, fakes());
+    ASSERT_TRUE(unowned.has_value()) << unowned.error();
+    EXPECT_EQ(fakeShell().window, nullptr);
+}
+
+TEST(HelperLauncherTest, TheBrokersLauncherPassesItsWindowOn)
+{
+    const FakeShell& fake = resetFakeShell(ERROR_CANCELLED);
+    auto* const window = GetDesktopWindow();
+    const PipeBroker::Launcher launcher = HelperLauncher::makeLauncher(fakes(), window);
+    const auto helper = launcher(freshName(), {});
+    EXPECT_FALSE(helper.has_value());
+    EXPECT_EQ(fake.calls, 1);
+    EXPECT_EQ(fake.window, window);
+}
+
+[[nodiscard]] std::expected<void, std::string> passingInstall(HANDLE /*process*/, std::span<const std::wstring> files)
+{
+    EXPECT_EQ(files.size(), 2U) << "TaskSmack.exe and the helper";
+    return {};
+}
+
+[[nodiscard]] std::expected<void, std::string> changeableInstall(HANDLE /*process*/, std::span<const std::wstring> /*files*/)
+{
+    return std::unexpected(std::string("TaskSmack's user can change its folder"));
+}
+
+#ifdef TASKSMACK_WINDOWS_HELPER_PATH
+/// A TaskSmack.exe beside the helper the build made: where availability() looks for it.
+[[nodiscard]] std::wstring taskSmackBesideTheBuiltHelper()
+{
+    return BrokerHelper::besidePath(std::filesystem::path(TASKSMACK_WINDOWS_HELPER_PATH).wstring(), L"TaskSmack.exe");
+}
+
+TEST(HelperLauncherTest, TheHelperIsOfferedBesideAnInstallOnlyAnAdministratorCanChange)
+{
+    const auto available = HelperLauncher::availability(false, taskSmackBesideTheBuiltHelper(), &passingInstall);
+    EXPECT_TRUE(available.has_value()) << available.error_or("");
+}
+
+TEST(HelperLauncherTest, AnElevatedTaskSmackNeedsNoHelper)
+{
+    const auto available = HelperLauncher::availability(true, taskSmackBesideTheBuiltHelper(), &passingInstall);
+    ASSERT_FALSE(available.has_value());
+    EXPECT_TRUE(available.error().contains("already runs as an administrator")) << available.error();
+}
+
+TEST(HelperLauncherTest, AnInstallItsUserCanChangeIsntOfferedTheHelper)
+{
+    const auto refused = HelperLauncher::availability(false, taskSmackBesideTheBuiltHelper(), &changeableInstall);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(refused.error().contains("only an administrator can change")) << refused.error();
+
+    // With the real check: the build's folder is this user's to change (and an administrator's, when
+    // the tests run elevated), as a portable or per-user copy's would be.
+    const auto real = HelperLauncher::availability(false, taskSmackBesideTheBuiltHelper(), &BrokerHelper::checkUnchangeableByParent);
+    EXPECT_FALSE(real.has_value()) << "the build folder passed as one only an administrator can change";
+}
+#endif
+
+TEST(HelperLauncherTest, NoHelperBesideTaskSmackIsntOffered)
+{
+    // A folder of this test's own, with no helper in it.
+    std::error_code error;
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path(error) / std::format(L"tasksmack-2550-{}", GetCurrentProcessId());
+    std::filesystem::create_directories(folder, error);
+    const auto missing = HelperLauncher::availability(false, (folder / L"TaskSmack.exe").wstring(), &passingInstall);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error(), HelperLauncher::HELPER_MISSING);
+    EXPECT_FALSE(HelperLauncher::availability(false, L"TaskSmack.exe", &passingInstall).has_value()) << "not a full path";
+    std::filesystem::remove_all(folder, error);
+}
 // --- Through PipeBroker -------------------------------------------------------------------------------
 
 TEST(HelperLauncherTest, ADismissedPromptLeavesTheBrokerReadyToAskAgain)

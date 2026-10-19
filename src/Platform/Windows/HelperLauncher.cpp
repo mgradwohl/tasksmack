@@ -2,11 +2,14 @@
 
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <optional>
 #include <span>
@@ -131,7 +134,8 @@ std::string launchError(DWORD error)
     return std::format("couldn't start TaskSmackHelper.exe: {}", std::system_category().message(static_cast<int>(error)));
 }
 
-std::expected<UniqueHandle, std::string> launch(const std::wstring& pipeName, const std::stop_token& stopToken, const Functions& functions)
+std::expected<UniqueHandle, std::string>
+launch(const std::wstring& pipeName, const std::stop_token& stopToken, const Functions& functions, HWND owner)
 {
     if (stopToken.stop_requested())
     {
@@ -164,6 +168,7 @@ std::expected<UniqueHandle, std::string> launch(const std::wstring& pipeName, co
     // The process back, ShellExecuteExW's work done before it returns (this thread may end next), and
     // no error dialog of the shell's: the error is TaskSmack's to show.
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.hwnd = owner; // the prompt in front of TaskSmack (#2550)
     info.lpVerb = L"runas";
     info.lpFile = helper.c_str();
     info.lpParameters = line->c_str();
@@ -180,12 +185,50 @@ std::expected<UniqueHandle, std::string> launch(const std::wstring& pipeName, co
     return process;
 }
 
-PipeBroker::Launcher makeLauncher(Functions functions)
+PipeBroker::Launcher makeLauncher(Functions functions, HWND owner)
 {
-    return [functions](const std::wstring& pipeName, const std::stop_token& stopToken)
+    return [functions, owner](const std::wstring& pipeName, const std::stop_token& stopToken)
     {
-        return launch(pipeName, stopToken, functions);
+        return launch(pipeName, stopToken, functions, owner);
     };
+}
+
+std::expected<void, std::string> availability(bool elevated, const std::wstring& ownImage, BrokerHelper::Self::InstallCheck installCheck)
+{
+    if (elevated)
+    {
+        return std::unexpected(std::string("TaskSmack already runs as an administrator"));
+    }
+    const std::wstring helper = BrokerHelper::besidePath(ownImage, HELPER_FILE_NAME);
+    std::error_code error;
+    if (helper.empty() || !std::filesystem::is_regular_file(helper, error))
+    {
+        return std::unexpected(std::string(HELPER_MISSING));
+    }
+    // What the helper will check before it serves (#2572): ask first, rather than raise a UAC prompt
+    // for a helper that then refuses TaskSmack.
+    const std::array<std::wstring, 2> install{ownImage, helper};
+    if (installCheck == nullptr)
+    {
+        return std::unexpected(std::string("no install check"));
+    }
+    if (const auto unchangeable = installCheck(GetCurrentProcess(), install); !unchangeable.has_value())
+    {
+        return std::unexpected(std::format("TaskSmack's folder isn't one only an administrator can change, so Windows can't run its "
+                                           "administrator helper for it: {}",
+                                           unchangeable.error()));
+    }
+    return {};
+}
+
+std::expected<void, std::string> availability()
+{
+    const auto image = ownImage(&::GetModuleFileNameW);
+    if (!image.has_value())
+    {
+        return std::unexpected(std::string("couldn't tell where TaskSmack is"));
+    }
+    return availability(isProcessElevated(), *image, &BrokerHelper::checkUnchangeableByParent);
 }
 
 } // namespace Platform::Windows::HelperLauncher

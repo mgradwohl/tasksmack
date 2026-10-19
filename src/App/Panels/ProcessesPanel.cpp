@@ -34,6 +34,7 @@
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
+#include "AuthorizeWording.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -145,7 +146,6 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
 // How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
 /// The toolbar's offer after a refused single-process action (#2308): the lock and the words.
-constexpr const char* AUTHENTICATE_AND_RETRY_LABEL = ICON_FA_LOCK "  Authenticate and retry";
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
 {
@@ -1473,7 +1473,7 @@ void ProcessesPanel::renderContent()
     const float foldButtonsWidth = m_TreeViewEnabled ? (style.ItemSpacing.x + foldButtonWidth) * 2.0F : 0.0F;
     // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
     const bool offerRetry = offersAuthenticateAndRetry();
-    const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AUTHENTICATE_AND_RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
     const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
                                 (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
@@ -1544,11 +1544,11 @@ void ProcessesPanel::renderContent()
     if (offerRetry)
     {
         ImGui::SameLine();
-        if (ImGui::SmallButton(AUTHENTICATE_AND_RETRY_LABEL))
+        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
         {
             retryRowActionAuthorized();
         }
-        ImGui::SetItemTooltip("Asks for an administrator's password, then does it as the administrator");
+        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)

@@ -390,6 +390,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
+    App/test_AuthorizeWording.cpp
     App/test_ProcessDumpView.cpp
     App/test_ProcessActionConfirmPopup.cpp
     App/test_ProcessActionsBlockRender.cpp
@@ -890,6 +891,7 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerHelper.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp # HelperLauncher::availability()
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )

@@ -1,5 +1,6 @@
 #include "ProcessPriorityView.h"
 
+#include "AuthorizeWording.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
@@ -381,11 +382,11 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
         // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
         if (offersAuthenticateAndRetry())
         {
-            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+            if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
             {
                 retryAuthorized();
             }
-            ImGui::SetItemTooltip("Asks for an administrator's password, then sets the priority as the administrator");
+            ImGui::SetItemTooltip("%s", AuthorizeWording::PRIORITY_TOOLTIP);
         }
     }
 }

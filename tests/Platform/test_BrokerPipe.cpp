@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -833,6 +834,170 @@ TEST(BrokerPipeServeTest, AStoppedSessionEnds)
     EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Stopped);
 }
 
+// --- What puts off the Windows helper's idle exit, and a session for one action (#2550) ---------------
+
+/// serve() under @p grant on its own thread, with an idle clock that @p handler steps.
+[[nodiscard]] std::future<BrokerPipeServer::SessionEnd> serveGrantAsync(HANDLE pipe,
+                                                                        BrokerPipeServer::RequestHandler handler,
+                                                                        std::chrono::milliseconds idleTimeout,
+                                                                        Broker::IdleClock clock,
+                                                                        BrokerPipeServer::Grant grant)
+{
+    return std::async(std::launch::async,
+                      [pipe, handler = std::move(handler), idleTimeout, clock = std::move(clock), grant]
+                      { return BrokerPipeServer::serve(pipe, handler, idleTimeout, std::stop_token{}, clock, grant); });
+}
+
+/// A handler that steps @p clock by @p step on each request, before its reply goes out, and answers
+/// an action with success.
+[[nodiscard]] BrokerPipeServer::RequestHandler stepping(const SteppedClock& clock, std::chrono::steady_clock::duration step)
+{
+    return [clock, step](const Broker::Request& request) -> Broker::Response
+    {
+        clock.step(step);
+        if (std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
+            std::holds_alternative<Broker::IoPriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request))
+        {
+            return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+        }
+        return Broker::ErrorReply{.message = "not in this test"};
+    };
+}
+
+TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
+{
+    using Broker::Signal;
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::Hello{}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Terminate}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::PriorityRequest{.target = TARGET, .nice = 0}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::AffinityRequest{.target = TARGET, .cpus = {}}));
+    // What Windows always refuses keeps nothing alive.
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
+    // Nor does a read.
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
+    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CrashesRequest{}));
+
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{}));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
+}
+
+TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    // Each request steps the idle clock by a quarter of the timeout; the fourth takes it to the timeout
+    // after the Hello, unless one of them put the exit off.
+    constexpr std::chrono::milliseconds IDLE = 1h;
+    const SteppedClock clock;
+    auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 4), IDLE, clock.clock(), BrokerPipeServer::Grant::Session);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    const std::array<Broker::Request, 4> refused{
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend},
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume},
+        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend},
+    };
+    std::uint32_t id = 2;
+    for (const Broker::Request& request : refused)
+    {
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, request)));
+        ASSERT_TRUE(receiveResponse(pair.client.get()).has_value()) << "request " << id << " ended the session early";
+        ++id;
+    }
+    const auto status = served.wait_for(WAIT);
+    pair.client.reset(); // a session they put off would wait out IDLE for real; this ends it now
+    ASSERT_EQ(status, std::future_status::ready) << "a request Windows refuses put off the idle exit";
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
+}
+
+TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    // Each action steps the clock by half the timeout after it has put the exit off: three of them
+    // would reach it from the Hello, but each starts the wait again.
+    constexpr std::chrono::milliseconds IDLE = 1h;
+    const SteppedClock clock;
+    auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 2), IDLE, clock.clock(), BrokerPipeServer::Grant::Session);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    const std::array<Broker::Request, 3> actions{
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate},
+        Broker::PriorityRequest{.target = TARGET, .nice = 0},
+        Broker::AffinityRequest{.target = TARGET, .cpus = {}},
+    };
+    std::uint32_t id = 2;
+    for (const Broker::Request& request : actions)
+    {
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, request)));
+        const auto reply = receiveResponse(pair.client.get());
+        ASSERT_TRUE(reply.has_value()) << "action " << id << " found the session ended";
+        EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(reply->message));
+        ++id;
+    }
+    EXPECT_NE(served.wait_for(0ms), std::future_status::ready) << "a same-user session goes on after an action";
+    pair.client.reset();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
+{
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const SteppedClock clock;
+    auto served = serveGrantAsync(pair.server.get(), stepping(clock, {}), WAIT, clock.clock(), BrokerPipeServer::Grant::OneAction);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    // A read, and an action Windows refuses, aren't the action.
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::ModulesRequest{.target = TARGET})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::IoPriorityRequest{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    EXPECT_NE(served.wait_for(0ms), std::future_status::ready);
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(4, Broker::PriorityRequest{.target = TARGET, .nice = 10})));
+    const auto reply = receiveResponse(pair.client.get());
+    ASSERT_TRUE(reply.has_value()) << "the action is answered before the session ends";
+    EXPECT_EQ(reply->requestId, 4U);
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(reply->message));
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ActionDone);
+}
+
+TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)
+{
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    // Each read steps the clock by half the timeout. A second Hello between them would put the exit
+    // off in a session; in a session for one action, only the first one counts.
+    constexpr std::chrono::milliseconds IDLE = 1h;
+    const SteppedClock clock;
+    auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 2), IDLE, clock.clock(), BrokerPipeServer::Grant::OneAction);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::ModulesRequest{.target = TARGET})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(3, Broker::Hello{})));
+    const auto again = receiveResponse(pair.client.get());
+    ASSERT_TRUE(again.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::HelloReply>(again->message));
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(4, Broker::ModulesRequest{.target = TARGET})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    const auto status = served.wait_for(WAIT);
+    pair.client.reset();
+    ASSERT_EQ(status, std::future_status::ready) << "the second Hello put off the idle exit";
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
+}
 // --- PipeBroker, the client ----------------------------------------------------------------------------
 
 /// A helper served on a thread of this process: the launcher makes the pipe it is given, as

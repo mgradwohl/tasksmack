@@ -10,6 +10,10 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -19,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -34,6 +39,7 @@
 #include <ios>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -811,7 +817,7 @@ TEST(BrokerHelperTest, AParentRunningAsAServiceOrSystemIsRefusedAsAParent)
             first, first + GetLengthSid(sid)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the SID's own length
         LocalFree(sid);
         const std::wstring name = freshName();
-        EXPECT_EQ(BrokerHelper::serveParent(self.get(), bytes, name, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
+        EXPECT_EQ(BrokerHelper::serveParent(self.get(), bytes, bytes, name, handler, WAIT, WAIT, {}), BrokerHelper::Exit::NoParent);
         EXPECT_FALSE(BrokerPipe::connectToServer(name, GetCurrentProcessId(), self.get(), 100ms, {}).has_value()) << "no pipe was made";
     }
 }
@@ -868,6 +874,193 @@ TEST(BrokerHelperTest, AStoppedSessionEnds)
     EXPECT_TRUE(exit == BrokerHelper::Exit::NoClient || exit == BrokerHelper::Exit::Done) << static_cast<int>(exit);
 }
 
+// --- An over-the-shoulder elevation (#2550) ------------------------------------------------------------
+// The helper running as another account than TaskSmack's user: an administrator typed their password
+// for a standard user's TaskSmack. One action, a minute at most, and reads of the user's own processes.
+
+/// The SID @p text names, as bytes.
+[[nodiscard]] BrokerPipe::Sid sidFrom(const wchar_t* text)
+{
+    PSID sid = nullptr;
+    if (ConvertStringSidToSidW(text, &sid) == FALSE)
+    {
+        ADD_FAILURE() << "not a SID";
+        return {};
+    }
+    const auto* const first = static_cast<const std::byte*>(sid);
+    BrokerPipe::Sid bytes(first,
+                          first + GetLengthSid(sid)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the SID's own length
+    LocalFree(sid);
+    return bytes;
+}
+
+[[nodiscard]] BrokerPipe::Sid ownSid()
+{
+    auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
+    EXPECT_TRUE(sid.has_value()) << sid.error_or("");
+    return sid.value_or(BrokerPipe::Sid{});
+}
+
+/// An administrator's account that isn't this test's user.
+[[nodiscard]] BrokerPipe::Sid anotherAccount()
+{
+    return sidFrom(L"S-1-5-21-1111111111-2222222222-3333333333-1001");
+}
+
+[[nodiscard]] ProcessTarget ownTarget()
+{
+    return {.pid = static_cast<std::int32_t>(GetCurrentProcessId()), .startTimeTicks = startTicksOf(GetCurrentProcess())};
+}
+
+TEST(BrokerHelperTest, AnElevationOfTaskSmacksOwnUserIsTheSessionItWas)
+{
+    const BrokerPipe::Sid me = ownSid();
+    const BrokerHelper::SessionPolicy policy = BrokerHelper::sessionPolicy(me, me, BrokerHelper::IDLE_TIMEOUT);
+    EXPECT_EQ(policy.grant, BrokerPipeServer::Grant::Session);
+    EXPECT_EQ(policy.idleTimeout, BrokerHelper::IDLE_TIMEOUT);
+    EXPECT_FALSE(policy.readsOwnProcessesOnly);
+}
+
+TEST(BrokerHelperTest, AnOverTheShoulderElevationIsOneActionWithinAMinuteOnTheUsersOwnProcesses)
+{
+    const BrokerHelper::SessionPolicy policy = BrokerHelper::sessionPolicy(ownSid(), anotherAccount(), BrokerHelper::IDLE_TIMEOUT);
+    EXPECT_EQ(policy.grant, BrokerPipeServer::Grant::OneAction);
+    EXPECT_EQ(policy.idleTimeout, std::chrono::milliseconds{BrokerHelper::OVER_THE_SHOULDER_IDLE_TIMEOUT});
+    EXPECT_EQ(BrokerHelper::OVER_THE_SHOULDER_IDLE_TIMEOUT, 1min);
+    EXPECT_TRUE(policy.readsOwnProcessesOnly);
+    EXPECT_EQ(BrokerHelper::sessionPolicy(ownSid(), anotherAccount(), 100ms).idleTimeout, 100ms) << "never longer than asked";
+}
+
+TEST(BrokerHelperTest, AProcessRunsAsTheUserItsTokenNames)
+{
+    EXPECT_TRUE(BrokerHelper::runsAs(ownTarget(), ownSid()));
+    EXPECT_FALSE(BrokerHelper::runsAs(ownTarget(), anotherAccount()));
+    const SuspendedChild child;
+    ASSERT_TRUE(child.process() != nullptr);
+    EXPECT_TRUE(BrokerHelper::runsAs(child.target(), ownSid())) << "a child of this user's";
+}
+
+TEST(BrokerHelperTest, AProcessWhoseUserCantBeToldIsNoOnesOwn)
+{
+    ProcessTarget other = ownTarget();
+    ++other.startTimeTicks;
+    EXPECT_FALSE(BrokerHelper::runsAs(other, ownSid())) << "another start time: not the process named";
+    EXPECT_FALSE(BrokerHelper::runsAs({.pid = 0, .startTimeTicks = 1}, ownSid()));
+
+    const SuspendedChild child;
+    ASSERT_TRUE(child.process() != nullptr);
+    const ProcessTarget gone = child.target();
+    ASSERT_NE(TerminateProcess(child.process(), 1), FALSE);
+    ASSERT_TRUE(child.exited());
+    EXPECT_FALSE(BrokerHelper::runsAs(gone, ownSid())) << "an exited process";
+}
+
+/// Answers every read Ok and every action with success, counting what reaches it.
+struct CountingReads
+{
+    std::shared_ptr<std::atomic<int>> calls = std::make_shared<std::atomic<int>>(0);
+
+    [[nodiscard]] BrokerPipeServer::RequestHandler handler() const
+    {
+        return [calls = calls](const Broker::Request& request) -> Broker::Response
+        {
+            ++*calls;
+            if (std::holds_alternative<Broker::ModulesRequest>(request))
+            {
+                return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}};
+            }
+            return Broker::ActionResult{.success = true, .errorMessage = {}, .successNote = {}};
+        };
+    }
+};
+
+TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
+{
+    const CountingReads counting;
+    const ProcessTarget mine{.pid = 1, .startTimeTicks = 1};
+    const ProcessTarget theirs{.pid = 2, .startTimeTicks = 2};
+    const BrokerPipeServer::RequestHandler handler =
+        BrokerHelper::readsOnlyOwnProcesses(counting.handler(), [&mine](const ProcessTarget& target) { return target == mine; });
+
+    const auto own = handler(Broker::ModulesRequest{.target = mine});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(own));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(own).result.status, ModulesReadStatus::Ok);
+    EXPECT_EQ(counting.calls->load(), 1);
+
+    const auto modules = handler(Broker::ModulesRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(modules));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(modules).result.status, ModulesReadStatus::Failed);
+    EXPECT_EQ(std::get<Broker::ModulesReply>(modules).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
+
+    const auto files = handler(Broker::OpenFilesRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(files));
+    EXPECT_EQ(std::get<Broker::OpenFilesReply>(files).result.status, OpenFilesReadStatus::Failed);
+    EXPECT_EQ(std::get<Broker::OpenFilesReply>(files).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
+
+    const auto connections = handler(Broker::ConnectionsRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(connections));
+    EXPECT_EQ(std::get<Broker::ConnectionsReply>(connections).result.status, ConnectionsReadStatus::Failed);
+    EXPECT_EQ(std::get<Broker::ConnectionsReply>(connections).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
+
+    const auto environment = handler(Broker::EnvironmentRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(environment));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(environment).result.status, EnvironmentReadStatus::Failed);
+
+    const auto rollup = handler(Broker::MemoryRollupRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(rollup));
+    EXPECT_FALSE(std::get<Broker::MemoryRollupReply>(rollup).result.has_value());
+
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(handler(Broker::CrashesRequest{}))) << "every user's crashes";
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(handler(Broker::FirmwareFileRequest{})));
+    EXPECT_EQ(counting.calls->load(), 1) << "no refused read reached the readers";
+
+    // Actions aren't limited by owner: ending another account's process is what the administrator approved.
+    const auto kill = handler(Broker::SignalRequest{.target = theirs, .signal = Broker::Signal::Kill});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(kill));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(kill).success);
+    EXPECT_EQ(counting.calls->load(), 2);
+}
+
+TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
+{
+    const UniqueHandle self = ownProcess();
+    const std::wstring name = freshName();
+    const CountingReads counting;
+    const BrokerPipe::Sid me = ownSid();
+    const BrokerPipe::Sid administrator = anotherAccount();
+    auto session = std::async(std::launch::async,
+                              [&self, &name, &me, &administrator, handler = counting.handler()]
+                              { return BrokerHelper::serveParent(self.get(), me, administrator, name, handler, WAIT, WAIT, {}); });
+    auto client = BrokerPipe::connectToServer(name, GetCurrentProcessId(), self.get(), WAIT, {});
+    ASSERT_TRUE(client.has_value()) << client.error();
+    const auto hello = roundTrip(client->get(), 1, Broker::Hello{});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+
+    // This process is this user's: read as asked. Another process isn't, and its read is refused.
+    const auto own = roundTrip(client->get(), 2, Broker::ModulesRequest{.target = ownTarget()});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(own.message));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(own.message).result.status, ModulesReadStatus::Ok);
+    const ProcessTarget absent{.pid = 4242, .startTimeTicks = 99};
+    const auto refused = roundTrip(client->get(), 3, Broker::ModulesRequest{.target = absent});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(refused.message));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(refused.message).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
+    EXPECT_EQ(counting.calls->load(), 1);
+
+    // A Suspend, which Windows always refuses, isn't the action: the session goes on.
+    const auto suspend = roundTrip(client->get(), 4, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Suspend});
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(suspend.message));
+    // The kill is: answered, then the session ends.
+    const auto kill = roundTrip(client->get(), 5, Broker::SignalRequest{.target = absent, .signal = Broker::Signal::Kill});
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(kill.message));
+    EXPECT_TRUE(std::get<Broker::ActionResult>(kill.message).success);
+    EXPECT_EQ(counting.calls->load(), 3);
+
+    ASSERT_EQ(session.wait_for(WAIT), std::future_status::ready) << "a session for one action outlived it";
+    EXPECT_EQ(session.get(), BrokerHelper::Exit::Done);
+    const auto after = BrokerPipe::receiveFrame(client->get(), WAIT, {});
+    ASSERT_FALSE(after.has_value());
+    EXPECT_EQ(after.error(), BrokerPipe::ReceiveEnd::Closed) << "the helper closed the pipe";
+}
 // --- The process mitigations HelperMain turns on (#2557) --------------------------------------------
 // Never in this process: they can't be turned off again. A stand-in for SetProcessMitigationPolicy
 // records what each would have been set to.

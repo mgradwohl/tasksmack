@@ -38,10 +38,14 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();
 
 /// The privileged broker (#2307, #2308): on Linux the pkexec-started helper, where the .deb or .rpm
-/// installed it and TaskSmack isn't already root; null otherwise, and on Windows until #2311. Not
-/// started here: the first IProcessActions::runAuthorized() starts it, after the password prompt. App
-/// makes one and shares it between every IProcessActions it composes (BrokeredProcessActions).
-[[nodiscard]] std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker();
+/// installed it and TaskSmack isn't already root; on Windows TaskSmackHelper.exe started through UAC
+/// (#2550), where it is beside TaskSmack.exe in an install only an administrator can change and
+/// TaskSmack isn't already elevated; null otherwise. Not started here: the first
+/// IProcessActions::runAuthorized() starts it, after the password or consent prompt. @p ownerWindow is
+/// the native window that prompt belongs to (an HWND on Windows, so the UAC prompt comes up in front of
+/// TaskSmack), or null; polkit's agent places its own. App makes one and shares it between every
+/// IProcessActions it composes (BrokeredProcessActions).
+[[nodiscard]] std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* ownerWindow);
 
 /// Creates the platform-appropriate IProcessIconSource (#1800): executables' icons on Windows, desktop
 /// entries' PNG icons on Linux.

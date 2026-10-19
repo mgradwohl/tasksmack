@@ -13,8 +13,9 @@
 //   - a callIfIdle() that times out keeps the session (#2406): the helper still answers, and that late
 //     reply is dropped, by the next call or, before it asks again, by callIfIdle();
 //   - any other failure, a reply cut off partway included (#2451), closes the pipe, and the helper
-//     exits; it also exits after a few idle minutes on its own, after which connected() is false and
-//     connect() starts it again.
+//     exits; it also exits after a few idle minutes on its own, or, for an over-the-shoulder elevation,
+//     once its one action is answered (BrokerHelper::sessionPolicy(), #2550), after which connected()
+//     is false and connect() starts it again.
 //
 // The UAC prompt has no time limit, so the Launcher runs on a thread of its own, outside the lock calls
 // take (#2549; finding 3 of #2520's review). Meanwhile call() is "not connected" and callIfIdle() is

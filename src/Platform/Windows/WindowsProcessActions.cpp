@@ -355,7 +355,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canCreateDump = HAS_DUMPS,         // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
         .canChooseDumpFolder = HAS_DUMPS,   // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
         .dumpsFromSnapshot = HAS_DUMPS,     // PssCaptureSnapshot, else from the running process (#2001)
-        .canAuthorizeInteractively = false, // the elevated helper comes with #2311
+        .canAuthorizeInteractively = false, // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
     };
 }
 

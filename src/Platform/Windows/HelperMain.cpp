@@ -4,7 +4,8 @@
 // it runs elevated. It serves only the TaskSmack.exe beside it that started it, and only from an
 // install TaskSmack's user can't change (BrokerHelper::checkParentIsTaskSmack). It answers a closed set
 // of BrokerProtocol requests on a named pipe only that TaskSmack may open, and exits when TaskSmack
-// closes the pipe or exits, or after a few idle minutes.
+// closes the pipe or exits, or after a few idle minutes; an over-the-shoulder elevation, as another
+// account, after its one action (BrokerHelper::sessionPolicy, #2550).
 //
 // It links only Platform: no SDL, ImGui, GL or config file. Its command line is untrusted, so
 // BrokerHelper parses it exactly and decides whom to let in from TaskSmack's process handle and token,

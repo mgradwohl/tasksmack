@@ -38,11 +38,26 @@ namespace
 
 } // namespace
 
+bool isActionWindowsDoes(const Broker::Request& request) noexcept
+{
+    if (const auto* signal = std::get_if<Broker::SignalRequest>(&request))
+    {
+        return signal->signal == Broker::Signal::Terminate || signal->signal == Broker::Signal::Kill;
+    }
+    return std::holds_alternative<Broker::PriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request);
+}
+
+bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept
+{
+    return Broker::putsOffTheIdleExit(request) && (std::holds_alternative<Broker::Hello>(request) || isActionWindowsDoes(request));
+}
+
 SessionEnd serve(HANDLE pipe,
                  const RequestHandler& handler,
                  std::chrono::milliseconds idleTimeout,
                  const std::stop_token& stopToken,
-                 const Broker::IdleClock& clock)
+                 const Broker::IdleClock& clock,
+                 Grant grant)
 {
     bool greeted = false;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
@@ -75,6 +90,7 @@ SessionEnd serve(HANDLE pipe,
         Broker::Response response;
         std::uint32_t requestId = 0;
         bool endAfterReply = false;
+        bool actionAnswered = false;
         if (!decoded.has_value())
         {
             response = Broker::ErrorReply{.message = decoded.error()};
@@ -83,7 +99,8 @@ SessionEnd serve(HANDLE pipe,
         else
         {
             requestId = decoded->requestId;
-            if (Broker::putsOffTheIdleExit(decoded->message))
+            const bool greetsAgain = greeted && std::holds_alternative<Broker::Hello>(decoded->message);
+            if (putsOffTheWindowsIdleExit(decoded->message) && (grant != Grant::OneAction || !greetsAgain))
             {
                 lastActivity = Broker::idleNow(clock);
             }
@@ -102,6 +119,7 @@ SessionEnd serve(HANDLE pipe,
             else
             {
                 response = answer(handler, decoded->message);
+                actionAnswered = isActionWindowsDoes(decoded->message);
             }
         }
         std::vector<std::uint8_t> reply = Broker::encodeResponse(requestId, response);
@@ -120,6 +138,10 @@ SessionEnd serve(HANDLE pipe,
         if (endAfterReply)
         {
             return SessionEnd::HandshakeFailed;
+        }
+        if (grant == Grant::OneAction && actionAnswered)
+        {
+            return SessionEnd::ActionDone; // the consent was for this one action (#2550)
         }
     }
 }

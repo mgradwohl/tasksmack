@@ -1,6 +1,12 @@
 #include "BrokerHelper.h"
 
+#include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WinString.h"
@@ -8,6 +14,7 @@
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -15,6 +22,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -26,6 +34,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <aclapi.h>
@@ -465,6 +474,70 @@ std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arg
     return self.installCheck(parent, installed);
 }
 
+SessionPolicy sessionPolicy(const BrokerPipe::Sid& user, const BrokerPipe::Sid& helperUser, std::chrono::milliseconds idleTimeout)
+{
+    if (user == helperUser)
+    {
+        return {.grant = BrokerPipeServer::Grant::Session, .idleTimeout = idleTimeout, .readsOwnProcessesOnly = false};
+    }
+    const std::chrono::milliseconds shortened = std::min<std::chrono::milliseconds>(idleTimeout, OVER_THE_SHOULDER_IDLE_TIMEOUT);
+    return {.grant = BrokerPipeServer::Grant::OneAction, .idleTimeout = shortened, .readsOwnProcessesOnly = true};
+}
+
+bool runsAs(const ProcessTarget& target, const BrokerPipe::Sid& user)
+{
+    // The handle the token is read from is the one whose start time was checked, so the user read is
+    // the target's. A process's user doesn't change while it runs.
+    const auto process = openProcessVerified({}, target, 0);
+    if (!process.has_value())
+    {
+        return false;
+    }
+    const auto owner = BrokerPipe::userSidOfProcess(process->get());
+    return owner.has_value() && *owner == user;
+}
+
+BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
+                                                       std::function<bool(const ProcessTarget&)> ownedByUser)
+{
+    return [handler = std::move(handler), ownedByUser = std::move(ownedByUser)](const Broker::Request& request) -> Broker::Response
+    {
+        const std::string refusal(OTHER_USERS_READ_REFUSED);
+        const auto owned = [&ownedByUser](const ProcessTarget& target)
+        {
+            return ownedByUser && ownedByUser(target);
+        };
+        if (const auto* read = std::get_if<Broker::EnvironmentRequest>(&request); read != nullptr && !owned(read->target))
+        {
+            return Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}};
+        }
+        if (const auto* read = std::get_if<Broker::ModulesRequest>(&request); read != nullptr && !owned(read->target))
+        {
+            return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = refusal}};
+        }
+        if (const auto* read = std::get_if<Broker::OpenFilesRequest>(&request); read != nullptr && !owned(read->target))
+        {
+            OpenFilesReadResult refused;
+            refused.status = OpenFilesReadStatus::Failed;
+            refused.detail = refusal;
+            return Broker::OpenFilesReply{.result = std::move(refused)};
+        }
+        if (const auto* read = std::get_if<Broker::ConnectionsRequest>(&request); read != nullptr && !owned(read->target))
+        {
+            return Broker::ConnectionsReply{.result = {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = refusal}};
+        }
+        if (const auto* read = std::get_if<Broker::MemoryRollupRequest>(&request); read != nullptr && !owned(read->target))
+        {
+            return Broker::MemoryRollupReply{.result = std::unexpected(MemoryRollupFailure::Unavailable)};
+        }
+        if (std::holds_alternative<Broker::FirmwareFileRequest>(request) || std::holds_alternative<Broker::CrashesRequest>(request))
+        {
+            return Broker::ErrorReply{.message = refusal};
+        }
+        return handler(request);
+    };
+}
+
 std::string exitMeaning(DWORD code)
 {
     switch (code)
@@ -476,7 +549,9 @@ std::string exitMeaning(DWORD code)
     case static_cast<DWORD>(Exit::Usage):
         return "the helper didn't understand its command line";
     case static_cast<DWORD>(Exit::NoParent):
-        return "the helper didn't accept TaskSmack as the process that started it";
+        // Most often a TaskSmack its user can change (#2572): a portable or per-user copy.
+        return "the helper didn't accept TaskSmack as the process that started it: it serves only a TaskSmack installed where "
+               "only an administrator can change it, such as Program Files";
     case static_cast<DWORD>(Exit::NoClient):
         return "the helper couldn't make its pipe";
     default:
@@ -535,7 +610,13 @@ Exit run(const Arguments& arguments,
         {
             return Exit::NoParent;
         }
-        return serveParent(parent->get(), *user, arguments.pipeName, handler, idleTimeout, acceptTimeout, stopToken);
+        // And the helper's own account, to tell an over-the-shoulder elevation (#2550).
+        const auto helperUser = BrokerPipe::userSidOfProcess(GetCurrentProcess());
+        if (!helperUser.has_value())
+        {
+            return Exit::Failed;
+        }
+        return serveParent(parent->get(), *user, *helperUser, arguments.pipeName, handler, idleTimeout, acceptTimeout, stopToken);
     }
     catch (...) // NOLINT(bugprone-empty-catch) - an allocation failure or the like: TaskSmack sees the pipe close
     {}
@@ -544,6 +625,7 @@ Exit run(const Arguments& arguments,
 
 Exit serveParent(HANDLE parent,
                  const BrokerPipe::Sid& user,
+                 const BrokerPipe::Sid& helperUser,
                  const std::wstring& pipeName,
                  const BrokerPipeServer::RequestHandler& handler,
                  std::chrono::milliseconds idleTimeout,
@@ -568,11 +650,18 @@ Exit serveParent(HANDLE parent,
         {
             return Exit::NoClient;
         }
-        switch (BrokerPipeServer::serve(pipe->get(), handler, idleTimeout, watch.token()))
+        // An over-the-shoulder elevation gets one action and its own user's processes' reads (#2550).
+        const SessionPolicy policy = sessionPolicy(user, helperUser, idleTimeout);
+        const BrokerPipeServer::RequestHandler served =
+            policy.readsOwnProcessesOnly
+                ? readsOnlyOwnProcesses(handler, [&user](const ProcessTarget& target) { return runsAs(target, user); })
+                : handler;
+        switch (BrokerPipeServer::serve(pipe->get(), served, policy.idleTimeout, watch.token(), {}, policy.grant))
         {
         case BrokerPipeServer::SessionEnd::ClientClosed:
         case BrokerPipeServer::SessionEnd::Idle:
         case BrokerPipeServer::SessionEnd::Stopped:
+        case BrokerPipeServer::SessionEnd::ActionDone:
             return Exit::Done;
         case BrokerPipeServer::SessionEnd::HandshakeFailed:
         case BrokerPipeServer::SessionEnd::Broken:

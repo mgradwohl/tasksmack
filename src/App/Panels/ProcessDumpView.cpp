@@ -1,5 +1,6 @@
 #include "ProcessDumpView.h"
 
+#include "App/PanelPlatforms.h"
 #include "App/PlatformOpen.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -16,7 +17,6 @@
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
-#include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
 
@@ -456,28 +456,6 @@ void ProcessDumpView::onSelectionChanged() noexcept
     cancelConfirm();
 }
 
-namespace
-{
-/// The main window's native handle, for the folder dialog to be modal to: an HWND on Windows; null
-/// where there is no window (headless tests) or none of that kind.
-[[nodiscard]] void* dialogOwnerWindow()
-{
-    try
-    {
-        const auto& app = Core::Application::get();
-        if (!app.hasWindow())
-        {
-            return nullptr;
-        }
-        return SDL_GetPointerProperty(SDL_GetWindowProperties(app.getWindow().getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
-    }
-    catch (...) // no Application (headless tests): the dialog has no owner
-    {
-        return nullptr;
-    }
-}
-} // namespace
-
 void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform::ProcessTarget* liveTarget)
 {
     static_cast<void>(takeFolderChoice(actions));
@@ -517,7 +495,7 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
         }
         if (choosePressed)
         {
-            chooseFolder(actions, dialogOwnerWindow());
+            chooseFolder(actions, mainNativeWindow());
         }
     }
 

@@ -20,6 +20,8 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/Windows/HelperLauncher.h"
+#include "Platform/Windows/PipeBroker.h"
 #include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsElevation.h"
@@ -41,6 +43,8 @@
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
 
+#include <spdlog/spdlog.h>
+
 #include <memory>
 
 namespace Platform
@@ -61,9 +65,17 @@ std::unique_ptr<IProcessActions> makeProcessActions()
     return std::make_unique<WindowsProcessActions>();
 }
 
-std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker()
+std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* ownerWindow)
 {
-    return nullptr; // the elevated helper comes with #2311
+    // As on Linux, nothing is offered that can't work (#2550): an elevated TaskSmack needs no helper, a
+    // build without TaskSmackHelper.exe has none, and the helper refuses a TaskSmack its user can change
+    // (#2572), which a portable or per-user copy is. That is asked now, before any UAC prompt.
+    if (const auto available = Windows::HelperLauncher::availability(); !available.has_value())
+    {
+        spdlog::info("Acting as an administrator isn't offered: {}", available.error());
+        return nullptr;
+    }
+    return std::make_shared<Windows::PipeBroker>(Windows::HelperLauncher::makeLauncher({}, static_cast<HWND>(ownerWindow)));
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()
