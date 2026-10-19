@@ -245,17 +245,20 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     return handleAction(request, actions);
 }
 
-SessionEnd
-serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers)
+SessionEnd serve(int fd,
+                 IProcessActions& actions,
+                 std::chrono::milliseconds idleTimeout,
+                 const std::stop_token& stopToken,
+                 const Readers& readers,
+                 const Broker::IdleClock& clock)
 {
     bool greeted = false;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
     // don't keep the helper alive (#2369, #2405).
-    auto lastActivity = std::chrono::steady_clock::now();
+    auto lastActivity = Broker::idleNow(clock);
     while (true)
     {
-        const auto left =
-            std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (std::chrono::steady_clock::now() - lastActivity));
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (Broker::idleNow(clock) - lastActivity));
         if (left.count() <= 0)
         {
             return SessionEnd::Idle;
@@ -289,7 +292,7 @@ serve(int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, c
             requestId = decoded->requestId;
             if (Broker::putsOffTheIdleExit(decoded->message))
             {
-                lastActivity = std::chrono::steady_clock::now();
+                lastActivity = Broker::idleNow(clock);
             }
             const bool hello = std::holds_alternative<Broker::Hello>(decoded->message);
             if (!greeted && !hello)

@@ -19,6 +19,7 @@
 // clang-format on
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 
 #include <chrono>
 #include <cstdint>
@@ -50,9 +51,13 @@ enum class SessionEnd : std::uint8_t
 /// it, no Hello or action arrives for @p idleTimeout (reads come on their own timers, so they don't put
 /// it off), or @p stopToken is stopped. The first frame must be a Hello of this protocol version; until
 /// then nothing reaches @p handler. A frame that doesn't decode gets an ErrorReply, and the session goes
-/// on; one declared larger than the protocol allows ends it, since a byte stream can't skip it.
-[[nodiscard]] SessionEnd
-serve(HANDLE pipe, const RequestHandler& handler, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken);
+/// on; one declared larger than the protocol allows ends it, since a byte stream can't skip it. The idle
+/// timeout runs on @p clock, steady_clock unless a test steps it (#2546).
+[[nodiscard]] SessionEnd serve(HANDLE pipe,
+                               const RequestHandler& handler,
+                               std::chrono::milliseconds idleTimeout,
+                               const std::stop_token& stopToken,
+                               const Broker::IdleClock& clock = {});
 
 } // namespace Platform::Windows::BrokerPipeServer
 

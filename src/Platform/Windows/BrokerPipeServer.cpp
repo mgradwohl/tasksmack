@@ -38,16 +38,19 @@ namespace
 
 } // namespace
 
-SessionEnd serve(HANDLE pipe, const RequestHandler& handler, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken)
+SessionEnd serve(HANDLE pipe,
+                 const RequestHandler& handler,
+                 std::chrono::milliseconds idleTimeout,
+                 const std::stop_token& stopToken,
+                 const Broker::IdleClock& clock)
 {
     bool greeted = false;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
     // don't keep the helper alive (#2369, #2405).
-    auto lastActivity = std::chrono::steady_clock::now();
+    auto lastActivity = Broker::idleNow(clock);
     while (true)
     {
-        const auto left =
-            std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (std::chrono::steady_clock::now() - lastActivity));
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (Broker::idleNow(clock) - lastActivity));
         if (left.count() <= 0)
         {
             return SessionEnd::Idle;
@@ -82,7 +85,7 @@ SessionEnd serve(HANDLE pipe, const RequestHandler& handler, std::chrono::millis
             requestId = decoded->requestId;
             if (Broker::putsOffTheIdleExit(decoded->message))
             {
-                lastActivity = std::chrono::steady_clock::now();
+                lastActivity = Broker::idleNow(clock);
             }
             if (const auto* hello = std::get_if<Broker::Hello>(&decoded->message))
             {

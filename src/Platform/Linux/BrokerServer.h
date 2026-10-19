@@ -6,6 +6,7 @@
 // with a mock; serve() is the loop tasksmack-helper runs.
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -59,8 +60,13 @@ enum class SessionEnd : std::uint8_t
 /// Answers requests on @p fd until the client closes it, no Hello or action arrives for @p idleTimeout
 /// (reads come on their own timers, so they don't put it off), or @p stopToken is stopped. The first
 /// frame must be a Hello of this protocol version; until then nothing else is acted on. A frame that
-/// doesn't decode gets an ErrorReply, and the session goes on.
-[[nodiscard]] SessionEnd serve(
-    int fd, IProcessActions& actions, std::chrono::milliseconds idleTimeout, const std::stop_token& stopToken, const Readers& readers = {});
+/// doesn't decode gets an ErrorReply, and the session goes on. The idle timeout runs on @p clock,
+/// steady_clock unless a test steps it (#2546).
+[[nodiscard]] SessionEnd serve(int fd,
+                               IProcessActions& actions,
+                               std::chrono::milliseconds idleTimeout,
+                               const std::stop_token& stopToken,
+                               const Readers& readers = {},
+                               const Broker::IdleClock& clock = {});
 
 } // namespace Platform::BrokerServer

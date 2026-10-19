@@ -6,6 +6,8 @@
 
 #include "Platform/BrokerProtocol.h"
 
+#include <chrono>
+#include <functional>
 #include <variant>
 
 namespace Platform::Broker
@@ -20,6 +22,16 @@ namespace Platform::Broker
     return std::holds_alternative<Hello>(request) || std::holds_alternative<SignalRequest>(request) ||
            std::holds_alternative<PriorityRequest>(request) || std::holds_alternative<IoPriorityRequest>(request) ||
            std::holds_alternative<AffinityRequest>(request);
+}
+
+/// Where a server's idle timeout reads the time: an empty one is steady_clock. Tests pass a clock they
+/// step from the handler, so whether a session ends idle doesn't hang on how fast the machine is (#2546).
+using IdleClock = std::function<std::chrono::steady_clock::time_point()>;
+
+/// The time on @p clock, or steady_clock's when it is empty.
+[[nodiscard]] inline std::chrono::steady_clock::time_point idleNow(const IdleClock& clock)
+{
+    return clock ? clock() : std::chrono::steady_clock::now();
 }
 
 } // namespace Platform::Broker

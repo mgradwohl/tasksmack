@@ -4,6 +4,7 @@
 // pipe with a fresh random name per test. Every wait is bounded.
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
@@ -642,13 +643,37 @@ struct CountingHandler
 };
 
 /// serve() on pair.server, on its own thread.
-[[nodiscard]] std::future<BrokerPipeServer::SessionEnd>
-serveAsync(HANDLE pipe, BrokerPipeServer::RequestHandler handler, std::chrono::milliseconds idleTimeout, std::stop_token stopToken = {})
+[[nodiscard]] std::future<BrokerPipeServer::SessionEnd> serveAsync(HANDLE pipe,
+                                                                   BrokerPipeServer::RequestHandler handler,
+                                                                   std::chrono::milliseconds idleTimeout,
+                                                                   std::stop_token stopToken = {},
+                                                                   Broker::IdleClock clock = {})
 {
     return std::async(std::launch::async,
-                      [pipe, handler = std::move(handler), idleTimeout, stopToken = std::move(stopToken)]
-                      { return BrokerPipeServer::serve(pipe, handler, idleTimeout, stopToken); });
+                      [pipe, handler = std::move(handler), idleTimeout, stopToken = std::move(stopToken), clock = std::move(clock)]
+                      { return BrokerPipeServer::serve(pipe, handler, idleTimeout, stopToken, clock); });
 }
+
+/// An idle clock that moves only when it is stepped, so a test says when the idle timeout runs out (#2546).
+class SteppedClock
+{
+  public:
+    [[nodiscard]] Broker::IdleClock clock() const
+    {
+        return [ticks = m_Ticks]
+        {
+            return std::chrono::steady_clock::time_point{std::chrono::steady_clock::duration{ticks->load()}};
+        };
+    }
+
+    void step(std::chrono::steady_clock::duration by) const
+    {
+        *m_Ticks += by.count();
+    }
+
+  private:
+    std::shared_ptr<std::atomic<std::chrono::steady_clock::rep>> m_Ticks = std::make_shared<std::atomic<std::chrono::steady_clock::rep>>(0);
+};
 
 TEST(BrokerPipeServeTest, AnswersRequestsAfterTheHelloAndEndsWhenTheClientCloses)
 {
@@ -766,32 +791,38 @@ TEST(BrokerPipeServeTest, AHandlerThatThrowsGetsAnErrorReplyAndTheSessionGoesOn)
 
 TEST(BrokerPipeServeTest, ReadsDontPutOffTheIdleExit)
 {
-    const PipePair pair = connectedPair();
+    PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
-    constexpr auto IDLE = 400ms;
-    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), IDLE);
+    // The idle timeout runs on a clock each read steps by a sixth of it, on the serve thread before the
+    // reply goes out, so how the session ends hangs on the order of the requests, not on the machine's
+    // speed (#2546). The clock's hour is far longer than the test runs, so nothing times out for real.
+    constexpr std::chrono::milliseconds IDLE = 1h;
+    constexpr int READS = 6;
+    const SteppedClock clock;
+    auto served = serveAsync(
+        pair.server.get(),
+        [clock, step = IDLE / READS](const Broker::Request&) -> Broker::Response
+        {
+            clock.step(step);
+            return Broker::ErrorReply{.message = "not in this test"};
+        },
+        IDLE,
+        {},
+        clock.clock());
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
-    // PSS/USS reads every 50 ms, as the sampler's might come: the session still ends IDLE after the Hello.
-    const auto start = std::chrono::steady_clock::now();
-    std::uint32_t id = 2;
-    while (served.wait_for(50ms) != std::future_status::ready && since(start) < WAIT)
+    // PSS/USS reads, as the sampler's come: every one is answered, and the last takes the clock to the idle
+    // timeout after the Hello, which ends the session.
+    for (std::uint32_t id = 2; id < 2 + READS; ++id)
     {
-        std::string error;
-        if (!BrokerPipe::sendFrame(
-                pair.client.get(), Broker::encodeRequest(id++, Broker::MemoryRollupRequest{.target = TARGET}), WAIT, {}, error))
-        {
-            break;
-        }
-        if (!BrokerPipe::receiveFrame(pair.client.get(), WAIT, {}).has_value())
-        {
-            break;
-        }
+        ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(id, Broker::MemoryRollupRequest{.target = TARGET})));
+        ASSERT_TRUE(receiveResponse(pair.client.get()).has_value()) << "read " << id << " ended the session early";
     }
-    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    const auto status = served.wait_for(WAIT);
+    pair.client.reset(); // a session the reads put off would wait out IDLE for real; this ends it now
+    ASSERT_EQ(status, std::future_status::ready) << "the reads put off the idle exit";
     EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::Idle);
-    EXPECT_LT(since(start), WAIT);
 }
 
 TEST(BrokerPipeServeTest, AnIdleSessionEnds)

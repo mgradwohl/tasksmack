@@ -4,6 +4,7 @@
 
 #include "Mocks/MockProbes.h"
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokerSessionRules.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
@@ -21,6 +22,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -30,6 +32,7 @@
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
@@ -383,6 +386,27 @@ serveAsync(SocketPair& pair, IProcessActions& actions, std::chrono::milliseconds
                       [&pair, &actions, idle] { return BrokerServer::serve(pair.server(), actions, idle, std::stop_token{}); });
 }
 
+/// An idle clock that moves only when it is stepped, so a test says when the idle timeout runs out (#2546).
+class SteppedClock
+{
+  public:
+    [[nodiscard]] Broker::IdleClock clock() const
+    {
+        return [ticks = m_Ticks]
+        {
+            return std::chrono::steady_clock::time_point{std::chrono::steady_clock::duration{ticks->load()}};
+        };
+    }
+
+    void step(std::chrono::steady_clock::duration by) const
+    {
+        *m_Ticks += by.count();
+    }
+
+  private:
+    std::shared_ptr<std::atomic<std::chrono::steady_clock::rep>> m_Ticks = std::make_shared<std::atomic<std::chrono::steady_clock::rep>>(0);
+};
+
 TEST(BrokerServeTest, AnswersRequestsAfterTheHelloAndEndsWhenTheClientCloses)
 {
     SocketPair pair;
@@ -588,23 +612,30 @@ TEST(BrokerServeTest, PssAndUssReadsDontPutOffTheIdleExit)
     SocketPair pair;
     ASSERT_TRUE(pair.valid());
     TestMocks::MockProcessActions actions;
+    // The idle timeout runs on a clock each read steps by half of it, on the serve thread before the reply
+    // goes out, so how the session ends hangs on the order of the requests, not on the machine's speed
+    // (#2546). The clock's hour is far longer than the test runs, so nothing times out for real.
+    constexpr std::chrono::milliseconds IDLE = std::chrono::hours{1};
+    const SteppedClock clock;
     BrokerServer::Readers readers;
-    readers.memoryRollup = [](std::int32_t, std::uint64_t) -> MemoryRollupRead
+    readers.memoryRollup = [clock, step = IDLE / 2](std::int32_t, std::uint64_t) -> MemoryRollupRead
     {
+        clock.step(step);
         return MemoryRollup{};
     };
-    constexpr std::chrono::milliseconds IDLE{1000};
-    auto session =
-        std::async(std::launch::async, [&] { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers); });
+    auto session = std::async(std::launch::async,
+                              [&, idle = clock.clock()]
+                              { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers, idle); });
     ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
-    for (std::uint32_t id = 2; id <= 3; ++id) // at about 400 and 800 ms
+    for (std::uint32_t id = 2; id <= 3; ++id) // at half the idle timeout after the Hello, then at all of it
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds{400});
         EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(
             roundTrip(pair.client(), id, Broker::MemoryRollupRequest{.target = TARGET}).message));
     }
-    // Idle a second after the Hello, not after the last read (which would be about 1.8 s)
-    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{700}), std::future_status::ready);
+    // Idle the timeout after the Hello, not after the last read
+    const auto status = session.wait_for(REPLY_TIMEOUT);
+    pair.closeClient(); // a session the reads put off would wait out IDLE for real; this ends it now
+    ASSERT_EQ(status, std::future_status::ready) << "the reads put off the idle exit";
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
 }
 
@@ -625,18 +656,21 @@ TEST(BrokerServeTest, ProcessDetailsAndSystemInformationReadsDontPutOffTheIdleEx
     {
         return Broker::FirmwareFileReply{.status = Broker::FirmwareFileStatus::Unreadable, .bytes = {}};
     };
-    readers.crashes = []
+    // The idle timeout runs on a clock each round's last read steps by half of it, as in the test above (#2546).
+    constexpr std::chrono::milliseconds IDLE = std::chrono::hours{1};
+    const SteppedClock clock;
+    readers.crashes = [clock, step = IDLE / 2]
     {
+        clock.step(step);
         return CrashesInfo{};
     };
-    constexpr std::chrono::milliseconds IDLE{1000};
-    auto session =
-        std::async(std::launch::async, [&] { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers); });
+    auto session = std::async(std::launch::async,
+                              [&, idle = clock.clock()]
+                              { return BrokerServer::serve(pair.server(), actions, IDLE, std::stop_token{}, readers, idle); });
     ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
     std::uint32_t id = 2;
-    for (int round = 0; round < 2; ++round) // at about 400 and 800 ms
+    for (int round = 0; round < 2; ++round) // the second round's last read takes the clock to the idle timeout
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds{400});
         EXPECT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(
             roundTrip(pair.client(), id++, Broker::ConnectionsRequest{.target = TARGET}).message));
         EXPECT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(
@@ -649,8 +683,10 @@ TEST(BrokerServeTest, ProcessDetailsAndSystemInformationReadsDontPutOffTheIdleEx
             roundTrip(pair.client(), id++, Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}).message));
         EXPECT_TRUE(std::holds_alternative<Broker::CrashesReply>(roundTrip(pair.client(), id++, Broker::CrashesRequest{}).message));
     }
-    // Idle a second after the Hello, not after the last reads (which would be about 1.8 s)
-    ASSERT_EQ(session.wait_for(std::chrono::milliseconds{700}), std::future_status::ready);
+    // Idle the timeout after the Hello, not after the last reads
+    const auto status = session.wait_for(REPLY_TIMEOUT);
+    pair.closeClient(); // a session the reads put off would wait out IDLE for real; this ends it now
+    ASSERT_EQ(status, std::future_status::ready) << "the reads put off the idle exit";
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
 }
 
