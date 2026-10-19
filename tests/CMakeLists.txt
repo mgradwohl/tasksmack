@@ -904,6 +904,8 @@ if(TARGET TaskSmackHelper)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>"
         TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH="$<TARGET_FILE:TaskSmackHelperTestParent>"
+        # Whether the helper is built with CFG and CETCOMPAT, which the tests then check it has (#2557)
+        $<$<BOOL:${TASKSMACK_HELPER_HARDENED}>:TASKSMACK_WINDOWS_HELPER_HARDENED>
     )
 endif()
 

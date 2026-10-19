@@ -19,9 +19,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cwctype>
 #include <expected>
 #include <filesystem>
@@ -29,7 +31,9 @@
 #include <fstream>
 #include <future>
 #include <initializer_list>
+#include <ios>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -43,6 +47,7 @@
 #include <vector>
 
 #include <sddl.h>
+#include <winver.h>
 
 namespace Platform::Windows
 {
@@ -863,6 +868,84 @@ TEST(BrokerHelperTest, AStoppedSessionEnds)
     EXPECT_TRUE(exit == BrokerHelper::Exit::NoClient || exit == BrokerHelper::Exit::Done) << static_cast<int>(exit);
 }
 
+// --- The process mitigations HelperMain turns on (#2557) --------------------------------------------
+// Never in this process: they can't be turned off again. A stand-in for SetProcessMitigationPolicy
+// records what each would have been set to.
+
+/// What applyMitigations() asked for, by policy, as the bytes it passed.
+struct MitigationRecorder
+{
+    std::map<PROCESS_MITIGATION_POLICY, std::vector<std::byte>> set;
+    std::vector<PROCESS_MITIGATION_POLICY> refuse;
+
+    [[nodiscard]] BrokerHelper::SetMitigationPolicy setter()
+    {
+        return [this](PROCESS_MITIGATION_POLICY policy, void* value, std::size_t size)
+        {
+            const std::span<const std::byte> bytes(static_cast<const std::byte*>(value), size);
+            set[policy].assign(bytes.begin(), bytes.end());
+            return std::ranges::find(refuse, policy) == refuse.end();
+        };
+    }
+
+    /// The value asked for @p policy, as @p T; all zero when it wasn't asked for, or not with T's size.
+    /// A plain value keeps clang-tidy's optional dataflow satisfied: bugprone-unchecked-optional-access
+    /// doesn't model gtest's ASSERT_TRUE early return.
+    template<typename T> [[nodiscard]] T value(PROCESS_MITIGATION_POLICY policy) const
+    {
+        T result{};
+        const auto found = set.find(policy);
+        if (found != set.end() && found->second.size() == sizeof(T))
+        {
+            std::memcpy(&result, found->second.data(), sizeof(T));
+        }
+        return result;
+    }
+};
+
+// NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - each policy is a union of its bitfields and Flags
+TEST(BrokerHelperTest, TheHelpersMitigationsAreTurnedOn)
+{
+    MitigationRecorder recorder;
+    EXPECT_TRUE(BrokerHelper::applyMitigations(recorder.setter()).empty());
+    EXPECT_EQ(recorder.set.size(), 6U);
+
+    const auto imageLoad = recorder.value<PROCESS_MITIGATION_IMAGE_LOAD_POLICY>(ProcessImageLoadPolicy);
+    EXPECT_EQ(imageLoad.NoRemoteImages, 1U);
+    EXPECT_EQ(imageLoad.NoLowMandatoryLabelImages, 1U);
+    EXPECT_EQ(imageLoad.PreferSystem32Images, 1U);
+
+    const auto extensionPoints = recorder.value<PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY>(ProcessExtensionPointDisablePolicy);
+    EXPECT_EQ(extensionPoints.DisableExtensionPoints, 1U);
+
+    const auto strictHandles = recorder.value<PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY>(ProcessStrictHandleCheckPolicy);
+    EXPECT_EQ(strictHandles.RaiseExceptionOnInvalidHandleReference, 1U);
+    EXPECT_EQ(strictHandles.HandleExceptionsPermanentlyEnabled, 1U);
+
+    const auto dynamicCode = recorder.value<PROCESS_MITIGATION_DYNAMIC_CODE_POLICY>(ProcessDynamicCodePolicy);
+    EXPECT_EQ(dynamicCode.ProhibitDynamicCode, 1U);
+    EXPECT_EQ(dynamicCode.AllowThreadOptOut, 0U);
+    EXPECT_EQ(dynamicCode.AllowRemoteDowngrade, 0U);
+
+    const auto fonts = recorder.value<PROCESS_MITIGATION_FONT_DISABLE_POLICY>(ProcessFontDisablePolicy);
+    EXPECT_EQ(fonts.DisableNonSystemFonts, 1U);
+
+    const auto redirectionTrust = recorder.value<PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY>(ProcessRedirectionTrustPolicy);
+    EXPECT_EQ(redirectionTrust.EnforceRedirectionTrust, 1U);
+    EXPECT_EQ(redirectionTrust.AuditRedirectionTrust, 0U);
+}
+// NOLINTEND(cppcoreguidelines-pro-type-union-access)
+
+TEST(BrokerHelperTest, AMitigationWindowsRefusesIsNamedAndTheRestAreStillTurnedOn)
+{
+    // An older Windows, which knows neither policy.
+    MitigationRecorder recorder;
+    recorder.refuse = {ProcessImageLoadPolicy, ProcessRedirectionTrustPolicy};
+    const std::vector<std::string_view> refused = BrokerHelper::applyMitigations(recorder.setter());
+    EXPECT_EQ(refused, (std::vector<std::string_view>{"image load", "redirection trust"}));
+    EXPECT_EQ(recorder.set.size(), 6U) << "each is asked for on its own";
+}
+
 // --- TaskSmackHelper.exe, run directly as this user -------------------------------------------------
 
 #if defined(TASKSMACK_WINDOWS_HELPER_PATH) && defined(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH)
@@ -1128,6 +1211,220 @@ TEST(TaskSmackHelperTest, RefusesACopiedHelperMadeTheChildOfAProgramCalledTaskSm
     ASSERT_TRUE(helper.process() != nullptr);
     EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
     EXPECT_EQ(WaitNamedPipeW(arguments.pipeName.c_str(), 0), FALSE);
+}
+
+// --- TaskSmackHelper.exe's image (#2557) ------------------------------------------------------------
+
+/// A PE file's bytes, read in bounds only. Plain values, all zero for anything that isn't there, keep
+/// clang-tidy's optional dataflow satisfied: bugprone-unchecked-optional-access doesn't model gtest's
+/// ASSERT_TRUE early return.
+class PeFile
+{
+  public:
+    /// Where a data directory is in the file; size 0 when the image has none.
+    struct Directory
+    {
+        std::size_t offset = 0;
+        DWORD size = 0;
+    };
+
+    explicit PeFile(const std::filesystem::path& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::vector<char> chars{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        m_Bytes.resize(chars.size());
+        std::memcpy(m_Bytes.data(), chars.data(), chars.size());
+
+        const auto dos = at<IMAGE_DOS_HEADER>(0);
+        if (dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0)
+        {
+            return;
+        }
+        const auto ntOffset = static_cast<std::size_t>(dos.e_lfanew);
+        const auto nt = at<IMAGE_NT_HEADERS64>(ntOffset);
+        if (nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        {
+            return;
+        }
+        m_Nt = nt;
+        m_Valid = true;
+        const std::size_t sections = ntOffset + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + nt.FileHeader.SizeOfOptionalHeader;
+        for (std::size_t i = 0; i < nt.FileHeader.NumberOfSections; ++i)
+        {
+            m_Sections.push_back(at<IMAGE_SECTION_HEADER>(sections + (i * sizeof(IMAGE_SECTION_HEADER))));
+        }
+    }
+
+    /// Whether it is a 64-bit PE file.
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return m_Valid;
+    }
+
+    /// Its 64-bit NT headers; all zero when it isn't a 64-bit PE file.
+    [[nodiscard]] const IMAGE_NT_HEADERS64& headers() const noexcept
+    {
+        return m_Nt;
+    }
+
+    /// The @p T at file offset @p offset; all zero when it doesn't fit.
+    template<typename T> [[nodiscard]] T at(std::size_t offset) const
+    {
+        T value{};
+        if (offset <= m_Bytes.size() && m_Bytes.size() - offset >= sizeof(T))
+        {
+            std::memcpy(&value, std::next(m_Bytes.data(), static_cast<std::ptrdiff_t>(offset)), sizeof(T));
+        }
+        return value;
+    }
+
+    /// The data directory @p index; size 0 when it has none.
+    [[nodiscard]] Directory directory(std::size_t index) const
+    {
+        if (!m_Valid || index >= m_Nt.OptionalHeader.NumberOfRvaAndSizes)
+        {
+            return {};
+        }
+        const IMAGE_DATA_DIRECTORY entry = std::span(m_Nt.OptionalHeader.DataDirectory)[index];
+        const auto offset = entry.VirtualAddress == 0 ? std::nullopt : offsetOf(entry.VirtualAddress);
+        return offset.has_value() ? Directory{.offset = *offset, .size = entry.Size} : Directory{};
+    }
+
+    /// The NUL-terminated name at relative virtual address @p rva, lower-cased; empty when unreadable.
+    [[nodiscard]] std::string nameAt(DWORD rva) const
+    {
+        std::string name;
+        const auto start = offsetOf(rva);
+        if (!start.has_value())
+        {
+            return name;
+        }
+        for (std::size_t offset = *start; offset < m_Bytes.size(); ++offset)
+        {
+            const char c = at<char>(offset);
+            if (c == '\0')
+            {
+                break;
+            }
+            name.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        return name;
+    }
+
+  private:
+    /// The file offset of relative virtual address @p rva; empty when no section holds it.
+    [[nodiscard]] std::optional<std::size_t> offsetOf(DWORD rva) const
+    {
+        for (const IMAGE_SECTION_HEADER& section : m_Sections)
+        {
+            if (rva >= section.VirtualAddress && rva - section.VirtualAddress < section.SizeOfRawData)
+            {
+                return std::size_t{section.PointerToRawData} + (rva - section.VirtualAddress);
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<std::byte> m_Bytes;
+    IMAGE_NT_HEADERS64 m_Nt{};
+    bool m_Valid = false;
+    std::vector<IMAGE_SECTION_HEADER> m_Sections;
+};
+
+TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardAndCetShadowStacks)
+{
+#ifndef TASKSMACK_WINDOWS_HELPER_HARDENED
+    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; CMakeLists.txt)";
+#else
+    const PeFile image(TASKSMACK_WINDOWS_HELPER_PATH);
+    ASSERT_TRUE(image.valid()) << "not a 64-bit PE file";
+    const WORD characteristics = image.headers().OptionalHeader.DllCharacteristics;
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT, 0);
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, 0);
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, 0);
+
+    // The load configuration's guard flags: the compiler's checks went in (-cfguard), and the linker's
+    // table of valid call targets with them.
+    const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
+    ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)) << "no load configuration";
+    const auto guardFlags = image.at<DWORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
+    EXPECT_NE(guardFlags & IMAGE_GUARD_CF_INSTRUMENTED, 0U) << "no CFG checks";
+    EXPECT_NE(guardFlags & IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT, 0U) << "no CFG target table";
+
+    // CET shadow-stack compatibility is an extended DLL characteristic, in a debug directory entry.
+    const PeFile::Directory debug = image.directory(IMAGE_DIRECTORY_ENTRY_DEBUG);
+    ASSERT_NE(debug.size, 0U) << "no debug directory";
+    bool cetCompatible = false;
+    for (std::size_t i = 0; i < debug.size / sizeof(IMAGE_DEBUG_DIRECTORY); ++i)
+    {
+        const auto entry = image.at<IMAGE_DEBUG_DIRECTORY>(debug.offset + (i * sizeof(IMAGE_DEBUG_DIRECTORY)));
+        if (entry.Type == IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS)
+        {
+            cetCompatible = (image.at<DWORD>(entry.PointerToRawData) & IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT) != 0;
+        }
+    }
+    EXPECT_TRUE(cetCompatible) << "no /CETCOMPAT";
+#endif
+}
+
+TEST(TaskSmackHelperImageTest, ImportsNeitherComNorTheDumpWriter)
+{
+    // The folder picker (COM's IFileOpenDialog) and the dump writer aren't linked in (#2557).
+    const PeFile image(TASKSMACK_WINDOWS_HELPER_PATH);
+    ASSERT_TRUE(image.valid()) << "not a 64-bit PE file";
+    const PeFile::Directory imports = image.directory(IMAGE_DIRECTORY_ENTRY_IMPORT);
+    ASSERT_NE(imports.size, 0U) << "no imports";
+    std::vector<std::string> names;
+    for (std::size_t offset = imports.offset; offset < imports.offset + imports.size; offset += sizeof(IMAGE_IMPORT_DESCRIPTOR))
+    {
+        const auto descriptor = image.at<IMAGE_IMPORT_DESCRIPTOR>(offset);
+        if (descriptor.Name == 0)
+        {
+            break;
+        }
+        names.push_back(image.nameAt(descriptor.Name));
+    }
+    EXPECT_TRUE(std::ranges::contains(names, "kernel32.dll")) << "the import table wasn't read";
+    for (const std::string_view unwanted : {"ole32.dll", "oleaut32.dll", "combase.dll", "dbghelp.dll", "dxgi.dll", "setupapi.dll"})
+    {
+        EXPECT_FALSE(std::ranges::contains(names, unwanted)) << unwanted;
+    }
+}
+
+/// String @p name of the version resource of @p file, in US English and Unicode (as the .rc gives it).
+[[nodiscard]] std::wstring versionString(const std::filesystem::path& file, std::wstring_view name)
+{
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(file.c_str(), &ignored);
+    if (size == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> block(size);
+    if (GetFileVersionInfoW(file.c_str(), 0, size, block.data()) == FALSE)
+    {
+        return {};
+    }
+    const std::wstring query = std::format(L"\\StringFileInfo\\040904B0\\{}", name);
+    void* value = nullptr;
+    UINT length = 0;
+    if (VerQueryValueW(block.data(), query.c_str(), &value, &length) == FALSE || value == nullptr || length == 0)
+    {
+        return {};
+    }
+    return {static_cast<const wchar_t*>(value)}; // NUL-terminated within the block
+}
+
+TEST(TaskSmackHelperImageTest, NamesItselfInItsVersionResource)
+{
+    // What the UAC prompt and Explorer show for it.
+    const std::filesystem::path helper(TASKSMACK_WINDOWS_HELPER_PATH);
+    EXPECT_EQ(versionString(helper, L"FileDescription"), L"TaskSmack administrator helper");
+    EXPECT_EQ(versionString(helper, L"ProductName"), L"TaskSmack");
+    EXPECT_EQ(versionString(helper, L"CompanyName"), L"TaskSmack");
+    EXPECT_EQ(versionString(helper, L"OriginalFilename"), L"TaskSmackHelper.exe");
+    EXPECT_FALSE(versionString(helper, L"FileVersion").empty());
 }
 
 #endif // TASKSMACK_WINDOWS_HELPER_PATH && TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH

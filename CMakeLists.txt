@@ -544,8 +544,18 @@ if(WIN32)
     endif()
 
     # Configure the RC file with version info
+    set(TASKSMACK_RC_FILE_DESCRIPTION "TaskSmack - System Monitor")
+    set(TASKSMACK_RC_INTERNAL_NAME "TaskSmack")
     configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
-    message(STATUS "Configured Windows resource file with version ${PROJECT_VERSION}")
+    # The same for TaskSmackHelper.exe (#2557), so its UAC prompt and Explorer name TaskSmack's helper,
+    # not just a file name.
+    set(TASKSMACK_HELPER_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack-helper.rc)
+    set(TASKSMACK_RC_FILE_DESCRIPTION "TaskSmack administrator helper")
+    set(TASKSMACK_RC_INTERNAL_NAME "TaskSmackHelper")
+    configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_HELPER_RC_OUT} @ONLY)
+    unset(TASKSMACK_RC_FILE_DESCRIPTION)
+    unset(TASKSMACK_RC_INTERNAL_NAME)
+    message(STATUS "Configured Windows resource files with version ${PROJECT_VERSION}")
 
     # Configure and use our custom manifest for DPI awareness and Windows compatibility
     set(TASKSMACK_MANIFEST_IN ${CMAKE_SOURCE_DIR}/assets/app.manifest.in)
@@ -570,8 +580,9 @@ endif()
 # The Windows compile definitions and system libraries the platform sources need, in one place for
 # every target that compiles them: tasksmack_configure_app_target() below and TaskSmackTests
 # (tests/CMakeLists.txt), so the two can't drift (#1702). The tests link pdh, psapi and userenv on
-# top of it. Call it only when WIN32.
-function(tasksmack_apply_windows_platform target)
+# top of it. Call it only when WIN32. tasksmack_apply_windows_definitions() is the definitions alone, for
+# TaskSmackHelper.exe, which links a smaller list of its own (#2557).
+function(tasksmack_apply_windows_definitions target)
     # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
     # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
     # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
@@ -592,7 +603,10 @@ function(tasksmack_apply_windows_platform target)
         # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
         SPDLOG_WCHAR_FILENAMES
     )
+endfunction()
 
+function(tasksmack_apply_windows_platform target)
+    tasksmack_apply_windows_definitions(${target})
     target_link_libraries(${target} PRIVATE
         iphlpapi
         ws2_32
@@ -804,21 +818,46 @@ if(WIN32)
         src/Platform/Windows/WindowsElevation.cpp
         src/Platform/Windows/WindowsProcessActions.cpp
         src/Platform/Windows/WindowsProcessIdentity.cpp
-        src/Platform/Windows/WindowsProcessDump.cpp
         src/Platform/Windows/WindowsProcessMachine.cpp
-        src/Platform/Windows/WindowsFolderPicker.cpp
         src/Platform/Windows/WindowsProcessModules.cpp
         src/Platform/Windows/WindowsProcessOpenFiles.cpp
         src/Platform/Windows/WindowsProcessConnections.cpp
         src/Platform/Windows/WinString.cpp
         src/Platform/ThreadName.cpp
+        ${TASKSMACK_HELPER_RC_OUT} # version info (#2557): "TaskSmack administrator helper" in its UAC prompt
     )
     target_compile_features(TaskSmackHelper PRIVATE cxx_std_23)
     tasksmack_apply_default_warnings(TaskSmackHelper)
     tasksmack_apply_text_encoding(TaskSmackHelper)
-    tasksmack_apply_windows_platform(TaskSmackHelper)
+    tasksmack_apply_windows_definitions(TaskSmackHelper)
     target_include_directories(TaskSmackHelper PRIVATE ${TaskSmack_SOURCE_DIR}/src ${TaskSmack_BINARY_DIR}/generated)
-    target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only)
+    # Only what the helper calls (#2557), not the app's whole list. No dump writer and no COM folder
+    # picker: WindowsProcessActions.cpp leaves its dump members to IProcessActions' refusals without them.
+    target_compile_definitions(TaskSmackHelper PRIVATE TASKSMACK_NO_PROCESS_DUMPS)
+    target_link_libraries(TaskSmackHelper PRIVATE spdlog::spdlog_header_only
+        advapi32 # tokens, security descriptors and AccessCheck (BrokerHelper, BrokerPipe)
+        bcrypt # BCryptGenRandom (BrokerPipe)
+        iphlpapi # the process's TCP and UDP tables (WindowsProcessConnections)
+        ws2_32 # ntohs and the address formatting there
+        version # a module's file description and version (WindowsProcessModules)
+    )
+    # Exploit mitigations for the one image that runs elevated (#2557): Control Flow Guard (the compiler's
+    # checks on indirect calls, and the linker's table of their valid targets) and CET shadow-stack
+    # compatibility, so Windows checks returns against a hardware shadow stack where the CPU has one.
+    # Not under a sanitizer, whose runtime isn't built for CFG; TASKSMACK_HELPER_HARDENED tells the tests
+    # what to expect.
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _helper_config)
+    if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_helper_config}}" MATCHES "-fsanitize")
+        set(TASKSMACK_HELPER_HARDENED OFF)
+        message(STATUS "TaskSmackHelper: CFG and CETCOMPAT off under a sanitizer")
+    else()
+        set(TASKSMACK_HELPER_HARDENED ON)
+        # clang-cl's /guard:cf; the plain driver has no spelling of its own for an MSVC target (-mguard is
+        # MinGW's). A module flag, so ThinLTO's link-time code generation keeps it.
+        target_compile_options(TaskSmackHelper PRIVATE "SHELL:-Xclang -cfguard")
+        target_link_options(TaskSmackHelper PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT")
+    endif()
+    unset(_helper_config)
     # The app's manifest: asInvoker (so only the launcher's "runas" elevates it, and Windows' installer
     # detection never does), long paths and the UTF-8 code page. And every DLL its imports load comes
     # from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32), never the helper's own folder, which a

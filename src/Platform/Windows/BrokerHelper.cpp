@@ -26,6 +26,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <aclapi.h>
 #include <winternl.h>
@@ -581,6 +582,49 @@ Exit serveParent(HANDLE parent,
     catch (...) // NOLINT(bugprone-empty-catch) - an allocation failure or the like: TaskSmack sees the pipe close
     {}
     return Exit::Failed;
+}
+
+std::vector<std::string_view> applyMitigations(const SetMitigationPolicy& set)
+{
+    std::vector<std::string_view> refused;
+    const auto apply = [&set, &refused](PROCESS_MITIGATION_POLICY policy, auto value, std::string_view name)
+    {
+        if (!set(policy, &value, sizeof(value)))
+        {
+            refused.push_back(name);
+        }
+    };
+
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - each policy is a union of its bitfields and Flags
+    PROCESS_MITIGATION_IMAGE_LOAD_POLICY imageLoad{};
+    imageLoad.NoRemoteImages = 1;
+    imageLoad.NoLowMandatoryLabelImages = 1;
+    imageLoad.PreferSystem32Images = 1;
+    apply(ProcessImageLoadPolicy, imageLoad, "image load");
+
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extensionPoints{};
+    extensionPoints.DisableExtensionPoints = 1;
+    apply(ProcessExtensionPointDisablePolicy, extensionPoints, "extension points");
+
+    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strictHandles{};
+    strictHandles.RaiseExceptionOnInvalidHandleReference = 1;
+    strictHandles.HandleExceptionsPermanentlyEnabled = 1;
+    apply(ProcessStrictHandleCheckPolicy, strictHandles, "strict handle checks");
+
+    PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamicCode{};
+    dynamicCode.ProhibitDynamicCode = 1;
+    apply(ProcessDynamicCodePolicy, dynamicCode, "dynamic code");
+
+    PROCESS_MITIGATION_FONT_DISABLE_POLICY fonts{};
+    fonts.DisableNonSystemFonts = 1;
+    apply(ProcessFontDisablePolicy, fonts, "non-system fonts");
+
+    PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY redirectionTrust{};
+    redirectionTrust.EnforceRedirectionTrust = 1;
+    apply(ProcessRedirectionTrustPolicy, redirectionTrust, "redirection trust");
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+
+    return refused;
 }
 
 } // namespace Platform::Windows::BrokerHelper

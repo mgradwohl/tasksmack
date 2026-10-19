@@ -20,6 +20,8 @@
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
 
+#include <spdlog/spdlog.h>
+
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -62,6 +64,20 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
     // TaskSmack may have unpacked somewhere its user can write. The imports are covered by the linker's
     // /DEPENDENTLOADFLAG (CMakeLists.txt).
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // And the process mitigations (#2557), before anything else runs. One this Windows doesn't know is
+    // only logged: the helper still works without it.
+    try
+    {
+        const std::vector<std::string_view> refused =
+            Helper::applyMitigations([](PROCESS_MITIGATION_POLICY policy, void* value, std::size_t size)
+                                     { return SetProcessMitigationPolicy(policy, value, size) != FALSE; });
+        for (const std::string_view name : refused)
+        {
+            spdlog::warn("TaskSmackHelper: Windows refused the {} mitigation", name);
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - out of memory listing them: the helper runs without the log
+    {}
 
     int count = 0;
     LPWSTR* argv = nullptr;

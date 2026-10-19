@@ -1,4 +1,5 @@
-// TaskSmack Windows Resource File
+// TaskSmack Windows Resource File: TaskSmack.exe's and TaskSmackHelper.exe's (#2557), configured
+// once for each with its own description and file name (CMakeLists.txt).
 // This file is configured by CMake - do not edit directly!
 // Edit assets/tasksmack.rc.in instead.
 
@@ -36,11 +37,11 @@ BEGIN
         BLOCK "040904B0"  // US English, Unicode
         BEGIN
             VALUE "CompanyName",      "TaskSmack"
-            VALUE "FileDescription",  "TaskSmack - System Monitor"
+            VALUE "FileDescription",  "@TASKSMACK_RC_FILE_DESCRIPTION@"
             VALUE "FileVersion",      "@PROJECT_VERSION@"
-            VALUE "InternalName",     "TaskSmack"
+            VALUE "InternalName",     "@TASKSMACK_RC_INTERNAL_NAME@"
             VALUE "LegalCopyright",   "MIT License"
-            VALUE "OriginalFilename", "TaskSmack.exe"
+            VALUE "OriginalFilename", "@TASKSMACK_RC_INTERNAL_NAME@.exe"
             VALUE "ProductName",      "TaskSmack"
             VALUE "ProductVersion",   "@PROJECT_VERSION@"
         END

@@ -47,6 +47,7 @@
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -55,6 +56,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace Platform::Windows::BrokerHelper
 {
@@ -201,6 +203,25 @@ enum class Exit : std::uint8_t
                                std::chrono::milliseconds idleTimeout,
                                std::chrono::milliseconds acceptTimeout,
                                const std::stop_token& stopToken);
+
+/// SetProcessMitigationPolicy(), or a test's stand-in that records what it is asked for: true when
+/// the policy was set.
+using SetMitigationPolicy = std::function<bool(PROCESS_MITIGATION_POLICY policy, void* value, std::size_t size)>;
+
+/// Turns on, through @p set, the process mitigations an elevated process that only serves a pipe can
+/// live with (#2557), each on its own:
+///   - image loads: no image from a remote (UNC) path or with a low mandatory label, and System32's
+///     copy of a DLL before any other;
+///   - extension points off: no AppInit DLLs, legacy IMEs, winevent hooks or the like loaded into it;
+///   - strict handle checks: using a handle that isn't open raises an exception instead of reaching
+///     whatever object holds that value later;
+///   - no dynamic code: no page is made executable, or an executable one writable, after start;
+///   - system fonts only: the helper draws nothing;
+///   - redirection trust: no junction a non-administrator made is followed.
+/// HelperMain calls it first, before any DLL loads. Not the Win32k system-call filter: terminate's
+/// WM_CLOSE (EnumWindows, PostMessageW) needs Win32k. A policy Windows refuses (an older Windows that
+/// doesn't know it) is skipped. Returns the names of the ones refused, for the log.
+[[nodiscard]] std::vector<std::string_view> applyMitigations(const SetMitigationPolicy& set);
 
 } // namespace Platform::Windows::BrokerHelper
 

@@ -39,6 +39,16 @@
 namespace Platform
 {
 
+// TaskSmackHelper.exe builds this file with TASKSMACK_NO_PROCESS_DUMPS (CMakeLists.txt, #2557): the
+// helper never serves a dump or a folder dialog, so the dump writer (dbghelp.dll) and the COM folder
+// picker, which loads shell extensions in-process, stay out of the elevated image. There the three dump
+// members are IProcessActions' defaults, which refuse as unsupported.
+#ifdef TASKSMACK_NO_PROCESS_DUMPS
+constexpr bool HAS_DUMPS = false;
+#else
+constexpr bool HAS_DUMPS = true;
+#endif
+
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
@@ -342,9 +352,9 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
-        .canCreateDump = true,              // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
-        .canChooseDumpFolder = true,        // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
-        .dumpsFromSnapshot = true,          // PssCaptureSnapshot, else from the running process (#2001)
+        .canCreateDump = HAS_DUMPS,         // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = HAS_DUMPS,   // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = HAS_DUMPS,     // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false, // the elevated helper comes with #2311
     };
 }
@@ -605,6 +615,23 @@ CpuAffinityLayout WindowsProcessActions::affinityLayout() const
 }
 // NOLINTEND(misc-include-cleaner)
 
+#ifdef TASKSMACK_NO_PROCESS_DUMPS
+ProcessDumpResult
+WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+{
+    return IProcessActions::createDump(target, directory, stopToken);
+}
+
+DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+{
+    return IProcessActions::dumpSpace(target, directory);
+}
+
+FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+{
+    return IProcessActions::chooseDumpFolder(initial, ownerWindow);
+}
+#else
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 ProcessDumpResult
 WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
@@ -672,5 +699,6 @@ FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path
     return Windows::pickFolder(ownerWindow, initial, L"Save dump files to");
 }
 // NOLINTEND(misc-include-cleaner)
+#endif // TASKSMACK_NO_PROCESS_DUMPS
 
 } // namespace Platform
