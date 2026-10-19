@@ -1028,6 +1028,29 @@ SyscallTrace::PtraceContext ptraceDescendantsOnly(std::int32_t /*pid*/, const st
     return names;
 }
 
+/// A thread that requests @p stop once gcore's "<name>.partial.<pid>" for @p pid shows in @p dir (or after
+/// ten seconds): the dump is under way. The final name is reserved before gcore starts (#2147), so any
+/// file at all would show too soon, before the fake gcore has done what comes before its write (#2479).
+[[nodiscard]] std::jthread cancelOncePartialShows(std::stop_source& stop, const std::filesystem::path& dir, std::int32_t pid)
+{
+    return std::jthread(
+        // NOLINTNEXTLINE(bugprone-exception-escape) - a test's helper thread: what escapes it ends the run, as a failed test should
+        [&stop, dir, pid]
+        {
+            const std::string suffix = std::format(".partial.{}", pid);
+            const auto partialShows = [&dir, &suffix]
+            {
+                return std::ranges::any_of(filesIn(dir), [&suffix](const std::string& name) { return name.ends_with(suffix); });
+            };
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (!partialShows() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            stop.request_stop();
+        });
+}
+
 /// ptrace would allow strace only through TaskSmack's own root privilege (Yama mode 1).
 SyscallTrace::PtraceContext ptraceAllowedAsRoot(std::int32_t /*pid*/, const std::string& /*toolPath*/)
 {
@@ -1170,17 +1193,7 @@ TEST(LinuxProcessActionsDumpTest, ACancelledDumpKillsGcoreAndDeletesThePartialFi
     // Writes part of the core, then hangs as a long dump would (sleep runs in gcore's process group).
     LinuxProcessActions actions(fakeDumpTools(work.path, "printf 'PART' > \"$2.$3\"\nsleep 30\n"), syscallsWithPtrace(&ptraceAllowed));
     std::stop_source stop;
-    std::jthread canceller(
-        [&stop, &dumps]
-        {
-            // Once the partial file shows, the dump is under way: cancel it.
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            while (filesIn(dumps.path).empty() && std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            stop.request_stop();
-        });
+    std::jthread canceller = cancelOncePartialShows(stop, dumps.path, ownTarget().pid);
     const auto started = std::chrono::steady_clock::now();
     const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
     canceller.join();
@@ -1207,21 +1220,88 @@ TEST(LinuxProcessActionsDumpTest, ACancelledDumpWakesATargetItLeftStopped)
         return LinuxCoreDump::stateFromStat(line).value_or('?');
     };
     std::stop_source stop;
-    std::jthread canceller(
-        [&stop, &dumps]
-        {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            while (filesIn(dumps.path).empty() && std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            stop.request_stop();
-        });
+    // Not before the partial file shows (#2479): the reserved name shows at once, before the SIGSTOP.
+    std::jthread canceller = cancelOncePartialShows(stop, dumps.path, child.target().pid);
     const ProcessDumpResult dump = actions.createDump(child.target(), dumps.path, stop.get_token());
     canceller.join();
     ASSERT_FALSE(dump.has_value());
     EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
     EXPECT_FALSE(LinuxCoreDump::isStoppedState(stateOf())) << "state " << stateOf();
+}
+
+/// The tool path the last ptrace check was asked about, by ptraceAllowedRecordingTool.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+std::string g_PtraceCheckedTool;
+
+/// ptraceAllowed, recording which tool's privilege was asked about in g_PtraceCheckedTool.
+SyscallTrace::PtraceContext ptraceAllowedRecordingTool(std::int32_t pid, const std::string& toolPath)
+{
+    g_PtraceCheckedTool = toolPath;
+    return ptraceAllowed(pid, toolPath);
+}
+
+// #2148 (#2479): gcore is a script, and a file capability on a script is never applied, so createDump must
+// ask whether the gdb beside it may attach, not the gcore script itself.
+TEST(LinuxProcessActionsDumpTest, ThePtraceCheckIsForTheGdbGcoreRuns)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_gdb_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_gdb_out");
+    const SyscallTrace::Tools tools = fakeDumpTools(work.path, "printf 'CORE' > \"$2.$3\"\n");
+    LinuxProcessActions actions(tools, syscallsWithPtrace(&ptraceAllowedRecordingTool));
+    g_PtraceCheckedTool.clear();
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_TRUE(dump.has_value()) << dump.error();
+    EXPECT_EQ(g_PtraceCheckedTool, (work.path / "gdb").string());
+    EXPECT_NE(g_PtraceCheckedTool, tools.coreDumperPath);
+}
+
+/// The child the last waitpid was asked about, by waitPidFailingOnce: gcore, which leads its process group.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+pid_t g_WaitedChild = -1;
+/// Whether waitPidFailingOnce has failed yet.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+bool g_WaitFailed = false;
+
+/// waitpid() that fails once with ECHILD, as if the child were lost to another reaper, then is the real one.
+pid_t waitPidFailingOnce(pid_t pid, int* status, int options)
+{
+    g_WaitedChild = pid;
+    if (!g_WaitFailed)
+    {
+        g_WaitFailed = true;
+        errno = ECHILD;
+        return -1;
+    }
+    return ::waitpid(pid, status, options);
+}
+
+// #2148 (#2479): when waiting on gcore fails, its process group (gcore and the gdb it runs, maybe attached to
+// the target) is killed and reaped, not left running.
+TEST(LinuxProcessActionsDumpTest, AFailedWaitOnGcoreStillKillsItsProcessGroup)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_wait_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_wait_out");
+    LinuxProcessSyscalls syscalls = syscallsWithPtrace(&ptraceAllowed);
+    syscalls.waitPid = &waitPidFailingOnce;
+    g_WaitedChild = -1;
+    g_WaitFailed = false;
+    // Hangs as a long dump would; exec, so the group is that one process, which only this test can reap.
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exec sleep 30\n"), syscalls);
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    EXPECT_FALSE(dump.has_value());
+    ASSERT_TRUE(g_WaitFailed);
+    ASSERT_GT(g_WaitedChild, 0);
+    errno = 0;
+    const bool groupGone = ::kill(-g_WaitedChild, 0) != 0 && errno == ESRCH;
+    EXPECT_TRUE(groupGone) << "gcore's process group " << g_WaitedChild << " is still there";
+    if (!groupGone)
+    {
+        ::kill(-g_WaitedChild, SIGKILL);
+        ::waitpid(g_WaitedChild, nullptr, 0);
+    }
+    EXPECT_TRUE(filesIn(dumps.path).empty());
 }
 
 TEST(LinuxProcessActionsDumpTest, ADumpPtraceWouldRefuseIsRefusedBeforeGcoreRuns)
@@ -1689,6 +1769,7 @@ TEST(LinuxProcessSyscallsTest, TheRealTableIsComplete)
     EXPECT_NE(real.ioprioGet, nullptr);
     EXPECT_NE(real.listThreads, nullptr);
     EXPECT_NE(real.isThreadOf, nullptr);
+    EXPECT_NE(real.waitPid, nullptr);
 }
 
 TEST(LinuxProcessSyscallsTest, TheRealThreadListingOfAMissingProcessSaysWhy)
@@ -1793,6 +1874,93 @@ TEST_F(LinuxProcessActionsFaultTest, ATraceOfAReusedPidIsRefused)
     EXPECT_TRUE(result.errorMessage.contains("different process")) << result.errorMessage;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+}
+
+/// A target that a cancelled dump's gdb holds, as /proc shows it (#2122): running ('S', untraced) before the
+/// dump; once it is cancelled, still traced by gdb (TracerPid tracedPolls more times) in a tracing stop
+/// ('t'), and once gdb has let go, left stopped ('T').
+struct TracedTargetPlan
+{
+    int stateReads = 0;
+    int tracerReads = 0;
+    int tracedPolls = 3;          ///< TracerPid reads after the dump that still show gdb
+    bool untraced = false;        ///< TracerPid has read 0 since the dump
+    int sigcontsWhileTraced = 0;  ///< SIGCONTs sent before TracerPid read 0 (too soon: gdb's stop is to come)
+    int sigcontsOnceUntraced = 0; ///< SIGCONTs sent after
+};
+
+TracedTargetPlan& tracedPlan()
+{
+    static TracedTargetPlan state;
+    return state;
+}
+
+char tracedTargetState(std::int32_t /*pid*/)
+{
+    TracedTargetPlan& target = tracedPlan();
+    if (target.stateReads++ == 0)
+    {
+        return 'S';
+    }
+    return target.untraced ? 'T' : 't';
+}
+
+std::optional<std::int32_t> tracedTargetTracer(std::int32_t /*pid*/)
+{
+    TracedTargetPlan& target = tracedPlan();
+    if (target.tracerReads++ == 0)
+    {
+        return 0;
+    }
+    if (target.tracedPolls > 0)
+    {
+        --target.tracedPolls;
+        return 777;
+    }
+    target.untraced = true;
+    return 0;
+}
+
+int tracedTargetSignal(int pidfd, int signal)
+{
+    if (signal == SIGCONT && tracedPlan().untraced)
+    {
+        ++tracedPlan().sigcontsOnceUntraced;
+    }
+    else if (signal == SIGCONT)
+    {
+        ++tracedPlan().sigcontsWhileTraced;
+    }
+    return fakePidfdSendSignal(pidfd, signal);
+}
+
+// #2122 (#2479): a cancelled dump whose killed gdb hasn't let go yet leaves the target in a tracing stop ('t',
+// TracerPid set) -- which turns into 'T' once gdb exits. The dump waits until TracerPid is back to what it was,
+// then wakes the target with one SIGCONT. Unlike ACancelledDumpWakesATargetItLeftStopped's SIGSTOP, which the
+// code before the fix already woke, this is the ptrace stop it missed.
+TEST_F(LinuxProcessActionsFaultTest, ACancelledDumpWakesAPtraceStoppedTargetOnceItsTracerIsGone)
+{
+    tracedPlan() = TracedTargetPlan{};
+    const TestSupport::ScopedTempDir work("tasksmack_dump_traced_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_traced_out");
+    // The pidfd and its signals are faked, so nothing is really sent to this test process.
+    LinuxProcessActions actions(fakeDumpTools(work.path, "printf 'PART' > \"$2.$3\"\nsleep 30\n"),
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &tracedTargetSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .ptraceContext = &ptraceAllowed,
+                                                     .processState = &tracedTargetState,
+                                                     .tracerPid = &tracedTargetTracer});
+    std::stop_source stop;
+    std::jthread canceller = cancelOncePartialShows(stop, dumps.path, ownTarget().pid);
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    canceller.join();
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
+    EXPECT_TRUE(tracedPlan().untraced) << "waited for TracerPid to read 0";
+    EXPECT_EQ(tracedPlan().sigcontsWhileTraced, 0);
+    EXPECT_EQ(tracedPlan().sigcontsOnceUntraced, 1);
+    EXPECT_EQ(plan().sendCalls, 1);
 }
 
 } // namespace
