@@ -872,16 +872,18 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::PriorityRequest{.target = TARGET, .nice = 0}));
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::AffinityRequest{.target = TARGET, .cpus = {}}));
+    // Suspend and Resume are real actions on Windows since #2582 (NtSuspendProcess, NtResumeProcess).
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     // What Windows always refuses keeps nothing alive.
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
-    EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
     // Nor does a read.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CrashesRequest{}));
 
     EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Kill}));
-    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Suspend}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::SignalRequest{.target = TARGET, .signal = Signal::Resume}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::IoPriorityRequest{}));
     EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::Hello{}));
 }
@@ -898,11 +900,12 @@ TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
 
+    // An I/O priority is the one action Windows always refuses (Suspend and Resume are real since #2582).
     const std::array<Broker::Request, 4> refused{
-        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend},
-        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume},
         Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
-        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend},
+        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::BestEffort, .level = 4},
+        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 0},
+        Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::BestEffort, .level = 7},
     };
     std::uint32_t id = 2;
     for (const Broker::Request& request : refused)
@@ -928,9 +931,11 @@ TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
     auto served = serveGrantAsync(pair.server.get(), stepping(clock, IDLE / 2), IDLE, clock.clock(), BrokerPipeServer::Grant::Session);
     ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
     ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
-    const std::array<Broker::Request, 3> actions{
+    const std::array<Broker::Request, 5> actions{
         Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate},
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}, // #2582
         Broker::PriorityRequest{.target = TARGET, .nice = 0},
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}, // #2582
         Broker::AffinityRequest{.target = TARGET, .cpus = {}},
     };
     std::uint32_t id = 2;
@@ -975,11 +980,13 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
 
 // The rule fails closed (#2577 review, finding 2): any request that isn't the Hello or a read is the
 // one action, even one Windows refuses today, so an action kind Windows does later is limited too.
+// Suspend and Resume, real actions since #2582, are the one action like Kill.
 TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
 {
     for (const Broker::Request& action : {Broker::Request{Broker::IoPriorityRequest{}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
-                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}}})
+                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
+                                          Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}}})
     {
         const PipePair pair = connectedPair();
         ASSERT_TRUE(pair.server && pair.client);
@@ -998,6 +1005,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
 {
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::Hello{}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}));
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::PriorityRequest{.target = TARGET, .nice = 0}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::IoPriorityRequest{}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::AffinityRequest{.target = TARGET, .cpus = {}}));

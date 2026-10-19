@@ -6,6 +6,7 @@
 #include "WindowsAffinityMath.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessDump.h"
 #include "WindowsProcessDumpMath.h"
@@ -283,16 +284,17 @@ std::vector<CpuSetRecord> realReadCpuSets()
 }
 
 /// Why `action` must not reach the verified `process` (#2556), logged, or nullopt: a protected process
-/// is never ended, and a critical one (or one whose criticality can't be read) never ended,
-/// re-prioritised or re-pinned. Errors, not permissionDenied: no administrator password makes them safe.
+/// is never ended or suspended, and a critical one (or one whose criticality can't be read) never
+/// ended, suspended, re-prioritised or re-pinned. Errors, not permissionDenied: no administrator
+/// password makes them safe.
 [[nodiscard]] std::optional<ProcessActionResult>
 guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTarget& target, GuardedAction action)
 {
     std::string refusal;
     BOOL critical = FALSE;
-    if (action == GuardedAction::End && isProtected(fns, process))
+    if ((action == GuardedAction::End || action == GuardedAction::Suspend) && isProtected(fns, process))
     {
-        refusal = protectedProcessRefusal(target.pid);
+        refusal = protectedProcessRefusal(target.pid, action);
     }
     else if (fns.isProcessCritical == nullptr)
     {
@@ -329,6 +331,8 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .pssCaptureSnapshot = &PssCaptureSnapshot,
         .isProcessCritical = &IsProcessCritical,
         .getProcessInformation = &GetProcessInformation,
+        .ntSuspendProcess = Windows::ntSuspendProcess(),
+        .ntResumeProcess = Windows::ntResumeProcess(),
     };
 }
 
@@ -342,12 +346,12 @@ WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,      // WM_CLOSE to the process's windows: a request it may answer (#1094)
-        .canKill = true,           // TerminateProcess
-        .canStop = false,          // Windows doesn't have SIGSTOP equivalent
-        .canContinue = false,      // Windows doesn't have SIGCONT equivalent
-        .canSetPriority = true,    // SetPriorityClass
-        .canSetIoPriority = false, // No ionice equivalent (#803)
+        .canTerminate = true,                            // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,                                 // TerminateProcess
+        .canStop = m_Fns.ntSuspendProcess != nullptr,    // NtSuspendProcess (#2582)
+        .canContinue = m_Fns.ntResumeProcess != nullptr, // NtResumeProcess (#2582)
+        .canSetPriority = true,                          // SetPriorityClass
+        .canSetIoPriority = false,                       // No ionice equivalent (#803)
         .canSetRealtimeIoPriority = false,
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
@@ -411,17 +415,80 @@ ProcessActionResult WindowsProcessActions::kill(const ProcessTarget& target)
 
 ProcessActionResult WindowsProcessActions::stop(const ProcessTarget& target)
 {
-    // Windows doesn't have a direct equivalent to SIGSTOP
-    // Could potentially use SuspendThread on all threads, but that's complex
-    spdlog::warn("Stop not supported on Windows for process {}", target.pid);
-    return ProcessActionResult::error("Stop (SIGSTOP) is not supported on Windows");
+    spdlog::info("Suspending process {}", target.pid);
+    return suspendOrResume(target, true);
 }
 
 ProcessActionResult WindowsProcessActions::resume(const ProcessTarget& target)
 {
-    // Windows doesn't have a direct equivalent to SIGCONT
-    spdlog::warn("Resume not supported on Windows for process {}", target.pid);
-    return ProcessActionResult::error("Resume (SIGCONT) is not supported on Windows");
+    spdlog::info("Resuming process {}", target.pid);
+    return suspendOrResume(target, false);
+}
+
+ProcessActionResult WindowsProcessActions::suspendOrResume(const ProcessTarget& target, bool suspend) const
+{
+    // NtSuspendProcess and NtResumeProcess act on every thread in one call, so a thread the process
+    // starts meanwhile isn't missed, as it would be by SuspendThread on each (#2582).
+    Windows::NtProcessSuspendResumeFn call = suspend ? m_Fns.ntSuspendProcess : m_Fns.ntResumeProcess;
+    if (call == nullptr)
+    {
+        return ProcessActionResult::error(
+            std::format("{} is not available on this Windows; nothing sent to process {}", suspend ? "Suspend" : "Resume", target.pid));
+    }
+    if (suspend)
+    {
+        if (auto refused = systemPidResult(target, GuardedAction::Suspend))
+        {
+            return std::move(*refused);
+        }
+        // TaskSmack (or, in the elevated helper, the helper) suspended would hang with nothing left to
+        // resume it. Checked by PID before anything is opened (isSamePid(): Windows ignores a PID's
+        // low two bits when it looks one up, so PID+1 would open this process too).
+        if (isSamePid(static_cast<std::uint32_t>(target.pid), GetCurrentProcessId()))
+        {
+            std::string refusal = selfSuspendRefusal(target.pid);
+            spdlog::warn("{}", refusal);
+            return ProcessActionResult::error(std::move(refusal));
+        }
+    }
+
+    bool retryable = false; // An access-denied open that running as administrator could cure
+    VerifiedProcess process = openVerified(m_Fns,
+                                           target,
+                                           PROCESS_SUSPEND_RESUME,
+                                           [this, &target, suspend, &retryable](DWORD error)
+                                           {
+                                               // A protected process refuses PROCESS_SUSPEND_RESUME even to
+                                               // an administrator: say so, and offer no retry.
+                                               const bool isProtected = error == ERROR_ACCESS_DENIED && isProtectedPid(m_Fns, target.pid);
+                                               retryable = error == ERROR_ACCESS_DENIED && !isProtected;
+                                               return suspendResumeOpenFailure(error, target.pid, suspend, isProtected);
+                                           });
+    if (!process.result.success)
+    {
+        process.result.permissionDenied = retryable;
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // Checked on the handle the call goes through, so the process checked is the process suspended.
+    if (suspend)
+    {
+        if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Suspend))
+        {
+            return std::move(*refused);
+        }
+    }
+
+    const LONG status = call(process.handle.get());
+    if (status < 0) // NT_SUCCESS() is a non-negative NTSTATUS
+    {
+        const auto code = static_cast<std::uint32_t>(status);
+        std::string msg = suspendResumeFailure(code, target.pid, suspend);
+        spdlog::warn("{}", msg);
+        return isSuspendResumeAccessDenied(code) ? ProcessActionResult::denied(std::move(msg)) : ProcessActionResult::error(std::move(msg));
+    }
+    spdlog::info("{} process {}", suspend ? "Suspended" : "Resumed", target.pid);
+    return ProcessActionResult::ok();
 }
 
 ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode) const

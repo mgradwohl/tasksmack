@@ -227,27 +227,29 @@ TEST(WindowsProcessActionsTest, CapabilitiesReportedCorrectly)
 
     EXPECT_TRUE(caps.canTerminate);
     EXPECT_TRUE(caps.canKill);
-    EXPECT_FALSE(caps.canStop);
-    EXPECT_FALSE(caps.canContinue);
+    EXPECT_TRUE(caps.canStop);       // NtSuspendProcess (#2582)
+    EXPECT_TRUE(caps.canContinue);   // NtResumeProcess (#2582)
     EXPECT_TRUE(caps.canCreateDump); // MiniDumpWriteDump (#807)
 }
 
-TEST(WindowsProcessActionsTest, StopNotSupported)
+TEST(WindowsProcessActionsTest, SuspendingThisProcessIsRefusedBeforeAnythingIsSent)
 {
     WindowsProcessActions actions;
 
-    const auto result = actions.stop({.pid = 1, .startTimeTicks = 1});
+    // Refused by PID, whatever the start time: a suspended TaskSmack (here, this test) would hang.
+    const auto result = actions.stop({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_NE(result.errorMessage.find("TaskSmack itself"), std::string::npos) << result.errorMessage;
 }
 
-TEST(WindowsProcessActionsTest, ResumeNotSupported)
+TEST(WindowsProcessActionsTest, SuspendAndResumeOfANonExistentProcessFail)
 {
     WindowsProcessActions actions;
 
-    const auto result = actions.resume({.pid = 1, .startTimeTicks = 1});
-    EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_FALSE(actions.stop({.pid = 999999, .startTimeTicks = 1}).success);
+    EXPECT_FALSE(actions.resume({.pid = 999999, .startTimeTicks = 1}).success);
+    EXPECT_EQ(actions.stop({.pid = 0, .startTimeTicks = 1}).errorMessage, "Invalid PID");
 }
 
 TEST(WindowsProcessActionsTest, SetPriorityRejectsInvalidPid)
@@ -343,6 +345,14 @@ class SuspendedChild
     [[nodiscard]] bool exitsSoon() const
     {
         return WaitForSingleObject(m_Info.hProcess, 5000) == WAIT_OBJECT_0;
+    }
+    /// Its main thread's suspend count: 1 as created, more for each suspend not yet resumed. Read by
+    /// suspending the thread once more and resuming it, which returns the count it had.
+    [[nodiscard]] DWORD suspendCount() const
+    {
+        const DWORD previous = SuspendThread(m_Info.hThread);
+        ResumeThread(m_Info.hThread);
+        return previous;
     }
     [[nodiscard]] ProcessTarget target() const
     {
@@ -570,6 +580,42 @@ TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
     const auto again = actions.kill(target);
     EXPECT_FALSE(again.success);
     EXPECT_EQ(again.errorMessage, std::format("Process {} has exited; action not sent", target.pid));
+}
+
+// Suspend and Resume (#2582) on the test's own suspended child, never on any other process: Windows
+// counts suspensions per thread, so each suspend adds one to the main thread's count and each resume
+// takes one away.
+TEST(WindowsProcessActionsTest, SuspendThenResumeChangesTheChildsSuspendCount)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ASSERT_EQ(child.suspendCount(), 1U) << "created suspended";
+
+    WindowsProcessActions actions;
+    const auto suspended = actions.stop(child.target());
+    EXPECT_TRUE(suspended.success) << suspended.errorMessage;
+    EXPECT_EQ(child.suspendCount(), 2U);
+
+    const auto resumed = actions.resume(child.target());
+    EXPECT_TRUE(resumed.success) << resumed.errorMessage;
+    EXPECT_EQ(child.suspendCount(), 1U);
+    EXPECT_TRUE(child.alive());
+}
+
+TEST(WindowsProcessActionsTest, SuspendOrResumeWithADifferentStartTimeLeavesTheChildAlone)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+
+    WindowsProcessActions actions;
+    const auto suspended = actions.stop(reused);
+    EXPECT_FALSE(suspended.success);
+    EXPECT_NE(suspended.errorMessage.find("different process"), std::string::npos) << suspended.errorMessage;
+    const auto resumed = actions.resume(reused);
+    EXPECT_FALSE(resumed.success);
+    EXPECT_EQ(child.suspendCount(), 1U) << "nothing reached the child";
 }
 
 TEST(WindowsProcessActionsTest, SetPriorityChangesTheClassOfAMatchingProcess)

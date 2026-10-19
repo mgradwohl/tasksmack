@@ -406,26 +406,26 @@ TEST(WindowsRealProbesTest, ProcessActionsCapabilitiesAreAccurate)
     EXPECT_TRUE(caps.canTerminate);
     EXPECT_TRUE(caps.canKill);
 
-    // Windows should NOT support stop/continue (Unix signals)
-    EXPECT_FALSE(caps.canStop);
-    EXPECT_FALSE(caps.canContinue);
+    // Suspend and Resume: NtSuspendProcess and NtResumeProcess (#2582)
+    EXPECT_TRUE(caps.canStop);
+    EXPECT_TRUE(caps.canContinue);
 }
 
-TEST(WindowsRealProbesTest, ProcessActionsStopReturnsError)
+TEST(WindowsRealProbesTest, ProcessActionsRefuseToSuspendThisProcess)
 {
     Platform::WindowsProcessActions actions;
 
-    // Verify stop returns an error since it's not supported
+    // Refused by PID before anything is opened: this process is never suspended
     const auto result = actions.stop({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
 }
 
-TEST(WindowsRealProbesTest, ProcessActionsResumeReturnsError)
+TEST(WindowsRealProbesTest, ProcessActionsResumeRefusesAnotherStartTime)
 {
     Platform::WindowsProcessActions actions;
 
-    // Verify resume returns an error since it's not supported
+    // Start time 1 is not this process's, so nothing is sent
     const auto result = actions.resume({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());

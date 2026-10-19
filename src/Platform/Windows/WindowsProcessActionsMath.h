@@ -152,6 +152,7 @@ enum class GuardedAction : std::uint8_t
     End,      ///< Kill (TerminateProcess) or Terminate (WM_CLOSE)
     Priority, ///< SetPriorityClass
     Affinity, ///< SetProcessAffinityMask or SetProcessDefaultCpuSets
+    Suspend,  ///< NtSuspendProcess (#2582)
 };
 
 /// What TaskSmack won't do, worded to follow "TaskSmack won't".
@@ -163,6 +164,8 @@ enum class GuardedAction : std::uint8_t
         return "change its priority";
     case GuardedAction::Affinity:
         return "change its CPU affinity";
+    case GuardedAction::Suspend:
+        return "suspend it";
     case GuardedAction::End:
         break;
     }
@@ -202,13 +205,82 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
     return std::format("Cannot tell whether process {} is a critical system process: error {}; action not sent", pid, error);
 }
 
-/// Kill or Terminate refused because @p pid's process is protected (PPL or PP, #2556): an anti-malware
-/// service or a system process that Windows keeps even an administrator from ending.
-[[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid)
+/// Kill, Terminate or Suspend (@p action) refused because @p pid's process is protected (PPL or PP,
+/// #2556, #2582): an anti-malware service or a system process that Windows keeps even an administrator
+/// from ending or suspending.
+[[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid, GuardedAction action = GuardedAction::End)
 {
-    return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can end; "
-                       "TaskSmack won't end it",
-                       pid);
+    return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can {}; "
+                       "TaskSmack won't {}",
+                       pid,
+                       action == GuardedAction::Suspend ? "suspend" : "end",
+                       guardedActionWording(action));
+}
+
+/// Whether OpenProcess() given @p requested opens the process whose PID is @p actual (#2582). A process
+/// ID is a handle in the kernel's client-ID table, whose low two bits are tag bits that a lookup ignores,
+/// so OpenProcess(PID + 1) opens PID's process; a PID compared to refuse one process is compared the same.
+[[nodiscard]] constexpr bool isSamePid(std::uint32_t requested, std::uint32_t actual) noexcept
+{
+    constexpr std::uint32_t TAG_BITS = 0x3U;
+    return (requested & ~TAG_BITS) == (actual & ~TAG_BITS);
+}
+
+/// Suspend refused because @p pid is the process asked to do it (#2582): suspending TaskSmack freezes
+/// its window (and the elevated helper, its pipe), with nothing left running to resume it. Not a
+/// permission failure: running as administrator doesn't change the answer.
+[[nodiscard]] inline std::string selfSuspendRefusal(int32_t pid)
+{
+    return std::format("Process {} is TaskSmack itself; suspending it would freeze TaskSmack with nothing left to resume it", pid);
+}
+
+/// NTSTATUS values NtSuspendProcess and NtResumeProcess return that suspendResumeFailure() words,
+/// spelled out since <windows.h> doesn't define them (<ntstatus.h> does).
+inline constexpr std::uint32_t NT_STATUS_ACCESS_DENIED = 0xC0000022U;
+inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
+
+/// Whether NtSuspendProcess or NtResumeProcess refused for want of access (#2582): acting as an
+/// administrator could cure it, so the caller offers to retry.
+[[nodiscard]] constexpr bool isSuspendResumeAccessDenied(std::uint32_t status) noexcept
+{
+    return status == NT_STATUS_ACCESS_DENIED;
+}
+
+/// Why NtSuspendProcess (@p suspend) or NtResumeProcess failed with @p status for @p pid (#2582).
+[[nodiscard]] inline std::string suspendResumeFailure(std::uint32_t status, int32_t pid, bool suspend)
+{
+    const char* verb = suspend ? "suspend" : "resume";
+    switch (status)
+    {
+    case NT_STATUS_ACCESS_DENIED:
+        return std::format("Access denied: can't {} process {}", verb, pid);
+    case NT_STATUS_PROCESS_IS_TERMINATING:
+        return std::format("Process {} is exiting, so it can't be {}", pid, suspend ? "suspended" : "resumed");
+    default:
+        return std::format("Failed to {} process {}: NTSTATUS 0x{:08X}", verb, pid, status);
+    }
+}
+
+/// Why opening @p pid's process to suspend (@p suspend) or resume it failed with @p error (#2582).
+/// @p isProtected: Windows refuses PROCESS_SUSPEND_RESUME on a protected process even to an
+/// administrator, so a refusal there says so rather than leave it to look like a permission failure.
+[[nodiscard]] inline std::string suspendResumeOpenFailure(std::uint32_t error, int32_t pid, bool suspend, bool isProtected)
+{
+    const char* verb = suspend ? "suspend" : "resume";
+    if (error == ERROR_ACCESS_DENIED && isProtected)
+    {
+        return std::format(
+            "Process {} is a protected process (a system or anti-malware service), which not even an administrator can {}", pid, verb);
+    }
+    switch (error)
+    {
+    case ERROR_ACCESS_DENIED:
+        return std::format("Access denied: can't {} process {}. It may run elevated or as another user.", verb, pid);
+    case ERROR_INVALID_PARAMETER:
+        return "Process not found - may have already exited";
+    default:
+        return std::format("Failed to open process {}: error {}", pid, error);
+    }
 }
 
 /// Set affinity refused for lack of access (#1881): a protected process (anti-malware, DRM, some

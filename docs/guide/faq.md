@@ -59,7 +59,7 @@ If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptrace
 ## Acting as an administrator on Windows
 
 TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
-ending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
+ending, suspending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
 administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
 **Open files** and **Connections** sections also offer **Read as administrator** when such a process
 refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
@@ -67,8 +67,8 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
 
 - **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
   refused actions and reads are retried through the helper without asking again. The helper exits when
-  TaskSmack does, or after 5 minutes without an action. Suspend, resume and I/O priority, which Windows
-  doesn't support, don't keep it running.
+  TaskSmack does, or after 5 minutes without an action. An I/O priority change, which Windows doesn't
+  support, doesn't keep it running.
 - **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
   an administrator's name and password, and the helper then runs as that administrator. It does that one
   action and exits, so the next one asks again. It wouldn't read another account's process for you,

@@ -59,7 +59,7 @@ This is the canonical inventory of user-visible and engineering features current
 | NVIDIA GPU | NVML | NVML |
 | AMD GPU | ROCm SMI | DXGI/PDH capability-dependent data |
 | Intel/generic GPU | DRM/sysfs | DXGI/PDH |
-| Stop/resume | `SIGSTOP` / `SIGCONT` | Not supported |
+| Stop/resume | `SIGSTOP` / `SIGCONT` | `NtSuspendProcess` / `NtResumeProcess` on a start-time-checked handle; critical and protected processes, PID 4 and TaskSmack itself are never suspended (#2582) |
 | Process environment variables | `/proc/[pid]/environ`, on demand for the selected process; secret-looking values masked until revealed | Not supported |
 | Process security context | `/proc/[pid]/status` IDs, capabilities, `no_new_privs`, seccomp, LSM label and cgroup | The process token: user, integrity level, elevation, privileges and groups |
 | Process dump files | gdb's `gcore` | `MiniDumpWriteDump` from a `PssCaptureSnapshot` clone |
