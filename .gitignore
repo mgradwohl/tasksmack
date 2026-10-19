@@ -9,6 +9,9 @@
 /release/
 /optimized/
 /.cache/
+# ccache's cache when CCACHE_DIR is inside the checkout, where hendrikmuhs/ccache-action puts it in CI.
+# Untracked, it makes `git status` dirty, and version.h then records "dirty" in the release binary.
+/.ccache/
 /.venv/
 
 # Python bytecode cache

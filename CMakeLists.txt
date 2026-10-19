@@ -85,6 +85,13 @@ if(GIT_STATUS_RESULT EQUAL 0)
         set(GIT_SOURCE_STATE "clean")
     else()
         set(GIT_SOURCE_STATE "dirty")
+        # A release build (SOURCE_DATE_EPOCH set) from a dirty tree records "dirty" in version.h, so its
+        # binary differs from a rebuild of a clean checkout of the same tag. Name what made it dirty: an
+        # untracked .ccache/ that CI's ccache action left in the checkout did that once.
+        if(DEFINED ENV{SOURCE_DATE_EPOCH})
+            message(WARNING "SOURCE_DATE_EPOCH is set but the source tree is dirty, so version.h records "
+                            "\"dirty\" and this build won't match one from a clean checkout:\n${GIT_STATUS_OUTPUT}")
+        endif()
     endif()
 endif()
 

@@ -2839,6 +2839,12 @@ so two independent builds of the same tag produce byte-identical archives. Local
 `SOURCE_DATE_EPOCH` unset and get the real configure-time timestamp, which is fine since dev
 builds have no reproducibility requirement.
 
+`version.h` also records whether `git status` saw the checkout clean or dirty at configure time, so
+anything a release job leaves untracked in the checkout (ccache's `.ccache/`, for one) must be
+gitignored; otherwise the build job's binary says "dirty", a clean rebuild's says "clean", and the
+packages differ. A configure with `SOURCE_DATE_EPOCH` set warns, naming the files, when the tree is
+dirty.
+
 `release.yml`'s `verify-reproducibility` (Linux) and `verify-reproducibility-windows` jobs each
 rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH`, once per
 architecture on that architecture's runner, and compare package digests against the corresponding
