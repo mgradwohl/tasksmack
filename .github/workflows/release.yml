@@ -265,9 +265,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # x64: 45 minutes, as build-linux's (see its comment); this rebuild never uses ccache.
           - arch: x64
             runner: ubuntu-24.04
-            timeout: 30
+            timeout: 45
           - arch: arm64
             runner: ubuntu-24.04-arm
             timeout: 60
