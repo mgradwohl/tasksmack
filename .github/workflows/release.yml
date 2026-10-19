@@ -373,9 +373,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # x64 runs 45 minutes like the Linux legs (#2596): the build plus tests passed 30 in dry run 39314253661.
           - arch: x64
             runner: windows-2025
-            timeout: 30
+            timeout: 45
             signed: true
           - arch: arm64
             runner: windows-11-arm
@@ -599,7 +600,7 @@ jobs:
         include:
           - arch: x64
             runner: windows-2025
-            timeout: 30
+            timeout: 45
           - arch: arm64
             runner: windows-11-arm
             timeout: 60
