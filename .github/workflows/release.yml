@@ -179,9 +179,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # x64: 45 minutes. Its build alone grew from about 16 to over 25 minutes (about 1,580 to
+          # 1,670 Ninja steps; run 39285215761 was cancelled at 30 while linking the tests). ccache
+          # can't cover that: under 15% of its compiles are cacheable.
           - arch: x64
             runner: ubuntu-24.04
-            timeout: 30
+            timeout: 45
           - arch: arm64
             runner: ubuntu-24.04-arm
             timeout: 60
