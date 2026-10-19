@@ -37,7 +37,7 @@ enum class ShortcutAction : std::uint8_t
     Quit,           ///< F10: the window's normal close request, so settings are saved
 };
 
-/// One function key, what it does, and how the Help window and tooltips name it.
+/// One function key, what it does, and how the Help window names it.
 struct FunctionKeyBinding
 {
     FunctionKey key = FunctionKey::F1;
@@ -94,19 +94,6 @@ struct InputState
         }
     }
     return ShortcutAction::None;
-}
-
-/// The label of the key bound to @p action ("F5"), or empty when none is, for tooltips.
-[[nodiscard]] constexpr std::string_view keyLabelFor(ShortcutAction action) noexcept
-{
-    for (const FunctionKeyBinding& binding : FUNCTION_KEY_BINDINGS)
-    {
-        if (binding.action == action)
-        {
-            return binding.keyLabel;
-        }
-    }
-    return {};
 }
 
 /// Where a shortcut works: the Help window groups its list by this, in this order (#172).
@@ -176,13 +163,6 @@ enum class ShortcutTarget : std::uint8_t
     Processes,      ///< The Processes tab's table
     ProcessDetails, ///< The Process Details tab
 };
-
-/// Whether @p action depends on the tab on show (F5, F9): the shell dispatches these only after the
-/// tab bar has taken this frame's tab click, so they go to the tab actually drawn this frame (#170).
-[[nodiscard]] constexpr bool isTabShortcut(ShortcutAction action) noexcept
-{
-    return action == ShortcutAction::ToggleTreeView || action == ShortcutAction::KillSelected;
-}
 
 /// The panel a tab-sensitive @p action goes to with @p activeTab (the shell's tab event name) on show:
 /// F5 to the Processes table only; F9 to Processes or Process Details, each with its own confirm.

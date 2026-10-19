@@ -389,17 +389,4 @@ inline void spreadColumns(ColumnLayout& layout, float widthPx) noexcept
     }
 }
 
-/// fitColumns() at `availableWidthPx`, then spreadColumns() over it: the shallowest layout that fits,
-/// spanning the whole width. The fewer rows, the more height the charts below keep.
-[[nodiscard]] inline ColumnLayout columnLayout(std::span<const float> labelWidthsPx,
-                                               std::span<const float> valueWidthsPx,
-                                               float availableWidthPx,
-                                               float perPairExtraPx) noexcept
-{
-    ColumnLayout layout =
-        fitColumns(labelWidthsPx, valueWidthsPx, {.availableWidthPx = availableWidthPx, .perPairExtraPx = perPairExtraPx});
-    spreadColumns(layout, availableWidthPx);
-    return layout;
-}
-
 } // namespace App::CpuDetailsText

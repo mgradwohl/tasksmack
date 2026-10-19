@@ -184,35 +184,6 @@ TEST(ProcessDetailsLayoutTest, StartTimeIsComparedExactly)
     EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0));
 }
 
-// ========== Exited process (#927) ==========
-
-using ProcessDetailsLayout::selectedProcessHasExited;
-
-// A process that was being shown and is now missing from the process list has exited.
-TEST(ProcessDetailsLayoutTest, MissingAfterBeingSeenIsExited)
-{
-    EXPECT_TRUE(selectedProcessHasExited(/*hasSelection=*/true, /*hadSnapshot=*/true, /*snapshotPresent=*/false));
-}
-
-// Missing before any snapshot has arrived is the lookup still in progress, not an exit: the pane
-// must not announce that a just-selected process has exited.
-TEST(ProcessDetailsLayoutTest, MissingBeforeBeingSeenIsNotExited)
-{
-    EXPECT_FALSE(selectedProcessHasExited(true, false, false));
-}
-
-TEST(ProcessDetailsLayoutTest, PresentProcessIsNotExited)
-{
-    EXPECT_FALSE(selectedProcessHasExited(true, true, true));
-    EXPECT_FALSE(selectedProcessHasExited(true, false, true));
-}
-
-TEST(ProcessDetailsLayoutTest, NoSelectionIsNeverExited)
-{
-    EXPECT_FALSE(selectedProcessHasExited(false, true, false));
-    EXPECT_FALSE(selectedProcessHasExited(false, false, false));
-}
-
 // ========== Confirm Action dialog (#971 review) ==========
 
 using ProcessDetailsLayout::computeConfirmButtonWidth;

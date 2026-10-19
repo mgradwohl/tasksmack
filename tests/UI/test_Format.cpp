@@ -288,8 +288,6 @@ TEST(FormatTest, PercentHelpersTreatNaNAsNoReading)
     EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<double>::max()), std::numeric_limits<int>::max());
     EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::max()), std::numeric_limits<int>::max());
     EXPECT_EQ(UI::Format::percentToInt(3.0e9), std::numeric_limits<int>::max()); // beyond a 32-bit long
-    EXPECT_EQ(UI::Format::percentCompact(NaN), "N/A");
-    EXPECT_EQ(UI::Format::percentCompact(std::numeric_limits<float>::quiet_NaN()), "N/A");
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(NaN), 0.0);
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(INF), 100.0);
     EXPECT_DOUBLE_EQ(UI::Format::percent01(NaN), 0.0);
@@ -417,16 +415,8 @@ TEST(FormatTest, CheckedCountMaxSizeT)
 // Percentage Formatting Tests
 // =============================================================================
 
-TEST(FormatTest, PercentCompactFormatsCorrectly)
-{
-    // Just test that the function produces reasonable output
-    const auto result = UI::Format::percentCompact(50.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
-}
-
-// #1195: a process's share of the machine is usually a few percent or less, which percentCompact()
-// rounded to "0%" or "1%" while the Processes table showed one decimal.
+// #1195: a process's share of the machine is usually a few percent or less, which a whole-percent
+// format rounded to "0%" or "1%" while the Processes table showed one decimal.
 TEST(FormatTest, PercentOneDecimalKeepsTheFractionOfSmallPercents)
 {
     EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0.6%");
@@ -434,20 +424,6 @@ TEST(FormatTest, PercentOneDecimalKeepsTheFractionOfSmallPercents)
     EXPECT_EQ(UI::Format::percentOneDecimal(99.96), "100.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(0.0), "0.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(std::numeric_limits<double>::quiet_NaN()), "N/A");
-}
-
-TEST(FormatTest, PercentCompactHandlesZero)
-{
-    const auto result = UI::Format::percentCompact(0.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
-}
-
-TEST(FormatTest, PercentCompactHandles100)
-{
-    const auto result = UI::Format::percentCompact(100.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
 }
 
 // =============================================================================
@@ -1599,13 +1575,14 @@ TEST(FormatTest, FormatPercentPrintsWhatRoundsToZeroAsZero)
     EXPECT_EQ(UI::Format::formatPercent(-0.05), "-0.1%");
 }
 
-// Whole percents read the same as percentCompact(), the existing whole-percent value formatter.
-TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
+// From ten up, a percent is whole, with no decimal.
+TEST(FormatTest, FormatPercentIsWholeFromTen)
 {
-    for (const double percent : {10.0, 12.0, 42.0, 99.0, 100.0})
-    {
-        EXPECT_EQ(UI::Format::formatPercent(percent), UI::Format::percentCompact(percent)) << percent;
-    }
+    EXPECT_EQ(UI::Format::formatPercent(10.0), "10%");
+    EXPECT_EQ(UI::Format::formatPercent(12.0), "12%");
+    EXPECT_EQ(UI::Format::formatPercent(42.0), "42%");
+    EXPECT_EQ(UI::Format::formatPercent(99.0), "99%");
+    EXPECT_EQ(UI::Format::formatPercent(100.0), "100%");
 }
 
 // =============================================================================
@@ -1970,7 +1947,7 @@ TEST(FormatDisplayLocaleTest, DisplayIgnoresTheGlobalLocale)
     const UI::Format::ScopedDisplayPunctuation classic(UI::Format::NumericPunctuation{});
     EXPECT_EQ(UI::Format::formatBytesWithUnit(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB), "1234.5 KiB");
     EXPECT_EQ(UI::Format::formatIntLocalized(1234567), "1234567");
-    EXPECT_EQ(UI::Format::percentCompact(42.0), "42%");
+    EXPECT_EQ(UI::Format::formatPercent(42.0), "42%");
 }
 
 TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
@@ -1981,7 +1958,7 @@ TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
     EXPECT_EQ(UI::Format::withLocaleDecimalPoint(std::format("{:g} Gbps", 2.5)), "2,5 Gbps");
     EXPECT_EQ(UI::Format::formatFixedLocalized(1234567.891, 2, {}), "1.234.567,89");
     EXPECT_EQ(UI::Format::formatPercent(87), "87%");
-    EXPECT_EQ(UI::Format::percentCompact(1234), "1.234%");
+    EXPECT_EQ(UI::Format::formatPercent(1234), "1.234%");
     // A value too long for the stack buffer still gets the punctuation.
     const std::string huge = UI::Format::formatFixedLocalized(1.0e70, 1, " B");
     EXPECT_TRUE(huge.ends_with(",0 B")) << huge;

@@ -217,14 +217,20 @@ TEST(BatteryCapacityTest, MilliwattHoursAreWattHoursUnlessUnknownOrRelative)
     EXPECT_DOUBLE_EQ(capacityWh(100U, BATTERY_CAPACITY_RELATIVE_BIT), 0.0);
 }
 
-TEST(BatteryCapacityTest, HealthIsFullOverDesignRoundedAndCapped)
+TEST(BatteryCapacityTest, OnePacksHealthIsFullOverDesignRoundedAndCapped)
 {
-    EXPECT_EQ(healthPercentFromCapacity(50'000U, 45'000U, 0U), 90);
-    EXPECT_EQ(healthPercentFromCapacity(4'500U, 4'000U, 0U), 89);    // 88.9, rounded as on Linux (#2409)
-    EXPECT_EQ(healthPercentFromCapacity(50'000U, 52'000U, 0U), 100); // Above design: capped
-    EXPECT_EQ(healthPercentFromCapacity(0U, 45'000U, 0U), -1);       // No design: unknown, no division
-    EXPECT_EQ(healthPercentFromCapacity(50'000U, 0U, 0U), -1);
-    EXPECT_EQ(healthPercentFromCapacity(100U, 90U, BATTERY_CAPACITY_RELATIVE_BIT), -1); // Relative units
+    const auto health = [](std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities)
+    {
+        const std::array<BatteryCapacityReading, 1> pack{
+            {{.designed = designed, .fullCharged = fullCharged, .capabilities = capabilities, .cycleCount = 0U}}};
+        return combineBatteryCapacities(pack).healthPercent;
+    };
+    EXPECT_EQ(health(50'000U, 45'000U, 0U), 90);
+    EXPECT_EQ(health(4'500U, 4'000U, 0U), 89);    // 88.9, rounded as on Linux (#2409)
+    EXPECT_EQ(health(50'000U, 52'000U, 0U), 100); // Above design: capped
+    EXPECT_EQ(health(0U, 45'000U, 0U), -1);       // No design: unknown, no division
+    EXPECT_EQ(health(50'000U, 0U, 0U), -1);
+    EXPECT_EQ(health(100U, 90U, BATTERY_CAPACITY_RELATIVE_BIT), -1); // Relative units
 }
 
 TEST(BatteryCapacityTest, TwoBatteriesAreSummedAndHealthComesFromTheSums)

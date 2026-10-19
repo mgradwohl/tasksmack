@@ -49,7 +49,7 @@ TEST_F(ThemeRealTest, DiscoversTheBundledThemes)
     bool foundMocha = false;
     for (std::size_t i = 0; i < themes.size(); ++i)
     {
-        EXPECT_FALSE(Theme::get().themeName(i).empty()) << i;
+        EXPECT_FALSE(themes[i].name.empty()) << i;
         foundMocha = foundMocha || themes[i].id == "mocha";
     }
     EXPECT_TRUE(foundMocha);
@@ -176,7 +176,6 @@ TEST_F(ThemeRealTest, AnOutOfRangeThemeIndexChangesNothing)
     theme.setTheme(count + 5);
     static_cast<void>(theme.applyPendingStyleChanges());
     EXPECT_EQ(theme.currentThemeId(), before);
-    EXPECT_EQ(theme.themeName(count + 5), "Unknown");
 }
 
 TEST_F(ThemeRealTest, AccentColorsWrapAround)

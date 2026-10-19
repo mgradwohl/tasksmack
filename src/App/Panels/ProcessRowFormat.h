@@ -260,21 +260,6 @@ template<std::integral T> [[nodiscard]] inline AlignedCellText countCell(T value
     return cell;
 }
 
-[[nodiscard]] inline std::string formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit)
-{
-    return alignedBytesCell(bytes, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedBytesPerSecString(double bytesPerSec, UI::Format::ByteUnit unit)
-{
-    return alignedBytesPerSecCell(bytesPerSec, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedPowerString(double watts)
-{
-    return alignedPowerCell(watts).text;
-}
-
 /// @p engines comma-joined ("3D, Compute"), as the GPU Engine and NPU Engine cells show them; empty for none.
 [[nodiscard]] inline std::string joinEngines(const std::vector<std::string>& engines)
 {

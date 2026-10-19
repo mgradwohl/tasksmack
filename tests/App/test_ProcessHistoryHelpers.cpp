@@ -324,6 +324,7 @@ TEST(ProcessHistoryHelpersTest, ASampleAcceptedEarlierInTheBatchCountsAsSeen)
     EXPECT_TRUE(exitedAfterBatch(false, true, false));
     EXPECT_FALSE(exitedAfterBatch(false, false, false)); // never seen: just selected
     EXPECT_FALSE(exitedAfterBatch(true, true, true));    // still present
+    EXPECT_FALSE(exitedAfterBatch(true, false, false));  // present, first sight (#927)
 }
 
 } // namespace

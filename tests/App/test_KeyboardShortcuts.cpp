@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
 
 namespace App::KeyboardShortcuts
 {
@@ -66,19 +67,10 @@ TEST(KeyboardShortcutsTest, BindingsAreUniqueAndLabelled)
     }
 }
 
-TEST(KeyboardShortcutsTest, KeyLabelsForTooltips)
-{
-    EXPECT_EQ(keyLabelFor(ShortcutAction::ToggleTreeView), "F5");
-    EXPECT_EQ(keyLabelFor(ShortcutAction::KillSelected), "F9");
-    EXPECT_EQ(keyLabelFor(ShortcutAction::Quit), "F10");
-    EXPECT_TRUE(keyLabelFor(ShortcutAction::None).empty());
-}
-
 TEST(KeyboardShortcutsTest, F1OpensHelpNotAbout)
 {
     // #172: F1 is Help; About is reached from Help's footer and from Settings.
     EXPECT_EQ(actionFor(FunctionKey::F1, InputState{}), ShortcutAction::ShowHelp);
-    EXPECT_EQ(keyLabelFor(ShortcutAction::ShowHelp), "F1");
 }
 
 TEST(KeyboardShortcutsTest, EveryAreaHasAHeadingAndAShortcut)
@@ -108,16 +100,6 @@ TEST(KeyboardShortcutsTest, HelpListStartsWithTheFunctionKeys)
     }
 }
 
-TEST(KeyboardShortcutsTest, OnlyF5AndF9DependOnTheTab)
-{
-    EXPECT_TRUE(isTabShortcut(ShortcutAction::ToggleTreeView));
-    EXPECT_TRUE(isTabShortcut(ShortcutAction::KillSelected));
-    EXPECT_FALSE(isTabShortcut(ShortcutAction::ShowHelp));
-    EXPECT_FALSE(isTabShortcut(ShortcutAction::OpenSettings));
-    EXPECT_FALSE(isTabShortcut(ShortcutAction::Quit));
-    EXPECT_FALSE(isTabShortcut(ShortcutAction::None));
-}
-
 TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
 {
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "Processes"), ShortcutTarget::Processes);
@@ -128,6 +110,19 @@ TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "SystemOverview"), ShortcutTarget::None); // No selection
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::ShowHelp, "Processes"), ShortcutTarget::None);
     EXPECT_EQ(tabShortcutTarget(ShortcutAction::Quit, "ProcessDetails"), ShortcutTarget::None);
+}
+
+// Only F5 and F9 depend on the tab: every other action goes to no panel, on any tab.
+TEST(KeyboardShortcutsTest, OnlyF5AndF9DependOnTheTab)
+{
+    for (const std::string_view tab : {"Processes", "ProcessDetails", "SystemOverview"})
+    {
+        SCOPED_TRACE(std::string(tab));
+        EXPECT_EQ(tabShortcutTarget(ShortcutAction::ShowHelp, tab), ShortcutTarget::None);
+        EXPECT_EQ(tabShortcutTarget(ShortcutAction::OpenSettings, tab), ShortcutTarget::None);
+        EXPECT_EQ(tabShortcutTarget(ShortcutAction::Quit, tab), ShortcutTarget::None);
+        EXPECT_EQ(tabShortcutTarget(ShortcutAction::None, tab), ShortcutTarget::None);
+    }
 }
 
 TEST(KeyboardShortcutsTest, AFrameRequestIsTakenOnce)

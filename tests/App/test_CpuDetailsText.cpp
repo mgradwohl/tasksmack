@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,7 +23,6 @@ namespace
 {
 
 using CpuDetailsText::buildRows;
-using CpuDetailsText::columnLayout;
 using CpuDetailsText::Inputs;
 using CpuDetailsText::Row;
 using CpuDetailsText::UNAVAILABLE_TEXT;
@@ -222,14 +222,25 @@ TEST(CpuDetailsTextTest, NoSnapshotNoRows)
 }
 
 // -----------------------------------------------------------------------------
-// columnLayout
+// fitColumns, then spreadColumns, as CpuDetailsBlock lays the rows out
 // -----------------------------------------------------------------------------
+
+/// fitColumns() at `availableWidthPx`, then spreadColumns() over it, as beginCard() and render() do
+/// (CpuDetailsBlock.cpp): the shallowest layout that fits, spanning the whole width.
+[[nodiscard]] CpuDetailsText::ColumnLayout
+fitThenSpread(std::span<const float> labelWidthsPx, std::span<const float> valueWidthsPx, float availableWidthPx, float perPairExtraPx)
+{
+    CpuDetailsText::ColumnLayout layout =
+        CpuDetailsText::fitColumns(labelWidthsPx, valueWidthsPx, {.availableWidthPx = availableWidthPx, .perPairExtraPx = perPairExtraPx});
+    CpuDetailsText::spreadColumns(layout, availableWidthPx);
+    return layout;
+}
 
 TEST(CpuDetailsTextTest, NarrowWidthStacksOnePair)
 {
     const std::vector<float> labels(20, 100.0F);
     const std::vector<float> values(20, 80.0F);
-    const auto layout = columnLayout(labels, values, 150.0F, 10.0F);
+    const auto layout = fitThenSpread(labels, values, 150.0F, 10.0F);
     EXPECT_EQ(layout.pairs, 1U);
     EXPECT_EQ(layout.rowsPerPair, 20U);
 }
@@ -238,14 +249,14 @@ TEST(CpuDetailsTextTest, WiderWindowsUseMorePairsAndFewerRows)
 {
     const std::vector<float> labels(20, 100.0F);
     const std::vector<float> values(20, 90.0F); // 200 px a pair with the 10 px extra
-    EXPECT_EQ(columnLayout(labels, values, 400.0F, 10.0F).pairs, 2U);
-    const auto four = columnLayout(labels, values, 800.0F, 10.0F);
+    EXPECT_EQ(fitThenSpread(labels, values, 400.0F, 10.0F).pairs, 2U);
+    const auto four = fitThenSpread(labels, values, 800.0F, 10.0F);
     EXPECT_EQ(four.pairs, 4U);
     EXPECT_EQ(four.rowsPerPair, 5U);
     EXPECT_FLOAT_EQ(four.totalWidth, 800.0F);
     // Past the widest layout, the spare width goes to the value columns: the block spans the window
     const std::vector<float> few(4, 50.0F);
-    const auto spread = columnLayout(few, few, 1000.0F, 0.0F);
+    const auto spread = fitThenSpread(few, few, 1000.0F, 0.0F);
     EXPECT_EQ(spread.pairs, 4U);
     EXPECT_FLOAT_EQ(spread.totalWidth, 1000.0F);
     EXPECT_FLOAT_EQ(spread.valueWidths[0], 50.0F + 150.0F);
@@ -257,7 +268,7 @@ TEST(CpuDetailsTextTest, EachPairIsSizedToItsOwnRows)
     std::vector<float> labels(9, 60.0F);
     labels.back() = 200.0F;
     const std::vector<float> values(9, 50.0F);
-    const auto layout = columnLayout(labels, values, 470.0F, 0.0F);
+    const auto layout = fitThenSpread(labels, values, 470.0F, 0.0F);
     EXPECT_EQ(layout.pairs, 3U);
     EXPECT_FLOAT_EQ(layout.labelWidths[0], 60.0F);
     EXPECT_FLOAT_EQ(layout.labelWidths[2], 200.0F);
@@ -273,7 +284,7 @@ TEST(CpuDetailsTextTest, AWideWindowFitsEveryRowInThreeLinesAcrossTheFullWidth)
     labels[18] = 215.0F;
     const std::vector<float> values(22, 60.0F);
     constexpr float AVAILABLE = 1870.0F; // A 1900 px window's content width
-    const auto layout = columnLayout(labels, values, AVAILABLE, 16.0F);
+    const auto layout = fitThenSpread(labels, values, AVAILABLE, 16.0F);
     EXPECT_LE(layout.rowsPerPair, 3U);
     EXPECT_FLOAT_EQ(layout.totalWidth, AVAILABLE); // The leftover width is shared out: the block spans it all
     float sum = 0.0F;
@@ -284,7 +295,7 @@ TEST(CpuDetailsTextTest, AWideWindowFitsEveryRowInThreeLinesAcrossTheFullWidth)
     EXPECT_NEAR(sum, AVAILABLE, 0.01F);
 
     // At 1000 px the same rows take about three pairs of seven or eight lines
-    const auto narrow = columnLayout(labels, values, 970.0F, 16.0F);
+    const auto narrow = fitThenSpread(labels, values, 970.0F, 16.0F);
     EXPECT_GE(narrow.pairs, 3U);
     EXPECT_LE(narrow.rowsPerPair, 8U);
 }
@@ -307,12 +318,12 @@ TEST(CpuDetailsTextTest, TheCollapsedSummaryListsTheKnownHeadlineFacts)
 TEST(CpuDetailsTextTest, PairsAreCappedAndEvenedOut)
 {
     const std::vector<float> wide(24, 50.0F);
-    const auto capped = columnLayout(wide, wide, 10000.0F, 0.0F);
+    const auto capped = fitThenSpread(wide, wide, 10000.0F, 0.0F);
     EXPECT_EQ(capped.pairs, CpuDetailsText::MAX_COLUMN_PAIRS);
     EXPECT_EQ(capped.rowsPerPair, 3U); // 24 rows over 8 pairs
     // 9 rows over up to 8 pairs: 2 rows a pair, 5 pairs, none left empty
     const std::vector<float> nine(9, 50.0F);
-    const auto even = columnLayout(nine, nine, 10000.0F, 0.0F);
+    const auto even = fitThenSpread(nine, nine, 10000.0F, 0.0F);
     EXPECT_EQ(even.rowsPerPair, 2U);
     EXPECT_EQ(even.pairs, 5U);
 }
@@ -320,9 +331,9 @@ TEST(CpuDetailsTextTest, PairsAreCappedAndEvenedOut)
 TEST(CpuDetailsTextTest, DegenerateInputsFallBackToOnePair)
 {
     const std::vector<float> five(5, 50.0F);
-    EXPECT_EQ(columnLayout(five, five, 0.0F, 0.0F).pairs, 1U);
-    EXPECT_EQ(columnLayout(five, five, std::numeric_limits<float>::quiet_NaN(), 0.0F).pairs, 1U);
-    EXPECT_EQ(columnLayout({}, {}, 1000.0F, 0.0F).rowsPerPair, 0U);
+    EXPECT_EQ(fitThenSpread(five, five, 0.0F, 0.0F).pairs, 1U);
+    EXPECT_EQ(fitThenSpread(five, five, std::numeric_limits<float>::quiet_NaN(), 0.0F).pairs, 1U);
+    EXPECT_EQ(fitThenSpread({}, {}, 1000.0F, 0.0F).rowsPerPair, 0U);
 }
 
 TEST(CpuDetailsTextTest, EveryRowHasAPlaceAtEveryWidth)

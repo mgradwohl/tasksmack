@@ -378,14 +378,13 @@ TEST(ProcessColumnSettingsTest, AllColumnsCanBeShown)
 TEST(ProcessColumnSettingsTest, ResetRestoresTheDefaultColumns)
 {
     ProcessColumnSettings settings;
-    EXPECT_TRUE(settings.isDefault());
+    EXPECT_EQ(settings.visible, ProcessColumnSettings::defaults().visible);
 
     settings.requestVisible(ProcessColumn::Command, false);
     settings.requestVisible(ProcessColumn::Threads, true);
-    EXPECT_FALSE(settings.isDefault());
+    EXPECT_NE(settings.visible, ProcessColumnSettings::defaults().visible);
 
     settings = ProcessColumnSettings::defaults();
-    EXPECT_TRUE(settings.isDefault());
     EXPECT_EQ(settings, ProcessColumnSettings{});
     for (const ProcessColumn col : allProcessColumns())
     {

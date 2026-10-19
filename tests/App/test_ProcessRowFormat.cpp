@@ -22,10 +22,7 @@ using ProcessRowFormat::AlignedCellText;
 using ProcessRowFormat::alignedPowerCell;
 using ProcessRowFormat::buildRowFormatCache;
 using ProcessRowFormat::CellTone;
-using ProcessRowFormat::formatAlignedBytesPerSecString;
-using ProcessRowFormat::formatAlignedBytesString;
 using ProcessRowFormat::formatAlignedPercentString;
-using ProcessRowFormat::formatAlignedPowerString;
 using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
@@ -104,18 +101,18 @@ TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatt
     const UI::Format::ScopedDisplayPunctuation commaDecimal({.decimalPoint = ',', .thousandsSep = {}, .grouping = {}});
     const double bytes = 1.5 * 1024.0 * 1024.0;
 
-    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB");
+    EXPECT_EQ(alignedBytesCell(bytes, UI::Format::BYTE_UNIT_MB).text, "1,5 MiB");
     EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MiB");
-    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB/s");
+    EXPECT_EQ(alignedBytesPerSecCell(bytes, UI::Format::BYTE_UNIT_MB).text, "1,5 MiB/s");
     EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MiB/s");
 
     EXPECT_EQ(formatAlignedPercentString(0.6), "0,6%");
     EXPECT_EQ(UI::Format::formatPercent(0.6), "0,6%");
     EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0,6%");
 
-    EXPECT_EQ(formatAlignedPowerString(45.0), "45,0 W");
+    EXPECT_EQ(alignedPowerCell(45.0).text, "45,0 W");
     EXPECT_EQ(UI::Format::formatWatts(45.0), "45,0 W");
-    EXPECT_EQ(formatAlignedPowerString(0.0), "0,0 W");
+    EXPECT_EQ(alignedPowerCell(0.0).text, "0,0 W");
     EXPECT_EQ(UI::Format::formatPowerOrZero(0.0), "0,0 W");
 
     // The allocating slow path agrees with the per-cell fast path.
@@ -129,24 +126,24 @@ TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatt
     }
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedBytesStringUsesGivenUnit)
+TEST(ProcessRowFormatTest, AlignedBytesCellUsesGivenUnit)
 {
     const auto formatted =
-        formatAlignedBytesString(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024));
+        alignedBytesCell(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024)).text;
 
     EXPECT_EQ(formatted, "1.0 GiB");
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedBytesPerSecStringUsesGivenUnit)
+TEST(ProcessRowFormatTest, AlignedBytesPerSecCellUsesGivenUnit)
 {
-    const auto formatted = formatAlignedBytesPerSecString(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0));
+    const auto formatted = alignedBytesPerSecCell(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0)).text;
 
     EXPECT_EQ(formatted, "1.0 MiB/s");
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedPowerStringConcatenatesPartsInOrder)
+TEST(ProcessRowFormatTest, AlignedPowerCellConcatenatesPartsInOrder)
 {
-    EXPECT_EQ(formatAlignedPowerString(5.5), "5.5 W");
+    EXPECT_EQ(alignedPowerCell(5.5).text, "5.5 W");
 }
 
 // =============================================================================

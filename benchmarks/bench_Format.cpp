@@ -71,22 +71,6 @@ static void BM_Format_FormatBytesPerSec(benchmark::State& state)
 }
 BENCHMARK(BM_Format_FormatBytesPerSec);
 
-// Benchmark percentCompact() - called for CPU% column
-static void BM_Format_PercentCompact(benchmark::State& state)
-{
-    const auto pool = makePool<std::mt19937>(std::uniform_real_distribution<double>(0.0, 100.0));
-
-    std::size_t idx = 0;
-    for (auto _ : state)
-    {
-        auto result = UI::Format::percentCompact(pool[idx & kPoolMask]);
-        benchmark::DoNotOptimize(result.data());
-        ++idx;
-    }
-    state.SetItemsProcessed(state.iterations());
-}
-BENCHMARK(BM_Format_PercentCompact);
-
 // Benchmark formatDuration() - called for the CPU Time column (the benchmark
 // keeps its old name so it still matches its entry in
 // perf-data/linux-ci-baseline.json; formatCpuTimeCompact() became
@@ -224,8 +208,8 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
 
         // Format all columns as done in ProcessesPanel
         auto pidStr = UI::Format::formatId(pid);
-        auto cpuStr = UI::Format::percentCompact(cpuPercent);
-        auto memStr = UI::Format::percentCompact(memPercent);
+        auto cpuStr = UI::Format::formatPercent(cpuPercent);
+        auto memStr = UI::Format::formatPercent(memPercent);
         auto rssStr = UI::Format::formatBytes(static_cast<double>(rssBytes));
         auto virtStr = UI::Format::formatBytes(static_cast<double>(virtBytes));
         auto shrStr = UI::Format::formatBytes(static_cast<double>(sharedBytes));
@@ -252,7 +236,7 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
 BENCHMARK(BM_Format_FullProcessRow);
 
 // Benchmark with different numbers of processes to simulate table rendering.
-// NOTE: This benchmark uses the std::string-returning functions (percentCompact,
+// NOTE: This benchmark uses the std::string-returning functions (formatPercent,
 // formatBytes).  ProcessesPanel does NOT use these for the CPU%/bytes columns at
 // render time — it uses the zero-allocation splitPercentForAlignment /
 // splitBytesForAlignmentFast fast paths instead.  See BM_Format_ProcessTable_FastPath
@@ -279,7 +263,7 @@ static void BM_Format_ProcessTable(benchmark::State& state)
     {
         for (size_t i = 0; i < processCount; ++i)
         {
-            auto cpuStr = UI::Format::percentCompact(cpuValues[i]);
+            auto cpuStr = UI::Format::formatPercent(cpuValues[i]);
             auto memStr = UI::Format::formatBytes(static_cast<double>(memValues[i]));
             benchmark::DoNotOptimize(cpuStr.data());
             benchmark::DoNotOptimize(memStr.data());

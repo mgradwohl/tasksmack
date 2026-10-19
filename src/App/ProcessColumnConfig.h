@@ -476,12 +476,6 @@ struct ProcessColumnSettings
         return {};
     }
 
-    /// Whether every column is shown or hidden as it is by default.
-    [[nodiscard]] bool isDefault() const
-    {
-        return visible == defaults().visible;
-    }
-
     friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;
 };
 

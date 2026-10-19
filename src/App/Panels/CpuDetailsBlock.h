@@ -52,7 +52,7 @@ float layOutRows(std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGe
 /// The Overview's CPU Details block (#809). Its heading -- a caret, "CPU Details" and, beside it,
 /// the CPU model (expanded) or a one-line summary (collapsed) -- is one text line and toggles the
 /// block. Expanded, `rows` follow as label/value column pairs across the full width
-/// (CpuDetailsText::columnLayout()); collapsed, the heading line is all, no taller than the
+/// (CpuDetailsText::fitColumns(), then spreadColumns()); collapsed, the heading line is all, no taller than the
 /// one-line header it replaced. Every row is drawn: the rows are laid out deep enough to hold them
 /// all, at the layout beginCard() sized the card for. A value that is not a reading is drawn muted, with its reason on
 /// hover. `measured` holds the rows' widths between frames. Returns true when the heading was

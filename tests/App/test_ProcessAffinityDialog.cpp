@@ -23,15 +23,6 @@ namespace
 
 constexpr const char* POPUP_ID = "###SetAffinity";
 
-TEST(ProcessAffinityDialogTest, OffersEveryOnlineCpuAndAnyHigherOneItsAffinityNames)
-{
-    EXPECT_EQ(affinityDialogCpuCount(Platform::CpuAffinity::fromMask(0b1010U), 8), 8U);
-    Platform::CpuAffinity high;
-    high.set(70);
-    EXPECT_EQ(affinityDialogCpuCount(high, 8), 71U) << "an offline CPU it names keeps its box";
-    EXPECT_EQ(affinityDialogCpuCount(Platform::CpuAffinity{}, 0), 1U) << "never no box";
-}
-
 TEST(ProcessAffinityDialogTest, TicksTheCurrentAffinityAndAppliesTheBoxes)
 {
     ProcessAffinityDialog dialog;
@@ -143,6 +134,12 @@ TEST(ProcessAffinitySectionsTest, OffersTheOnlineCpusAndAnyOfflineOneTheAffinity
         << "the online set wins over the count";
     EXPECT_EQ(affinityDialogOfferedCpus(Platform::CpuAffinity::fromMask(0b0100U), 16, layout), (std::vector<std::size_t>{0, 1, 2, 3}));
     EXPECT_EQ(affinityDialogOfferedCpus(Platform::CpuAffinity{}, 0, Platform::CpuAffinityLayout{}), (std::vector<std::size_t>{0}));
+
+    // No online set: the CPU count decides, and a higher CPU the affinity names still keeps its box.
+    Platform::CpuAffinity high;
+    high.set(70);
+    EXPECT_EQ(affinityDialogOfferedCpus(high, 8, Platform::CpuAffinityLayout{}), (std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6, 7, 70}))
+        << "an offline CPU it names keeps its box";
 }
 
 TEST(ProcessAffinityDialogTest, ASectionsBoxTicksItsCpusAndApplyNeedsOne)

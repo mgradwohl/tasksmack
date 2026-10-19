@@ -89,7 +89,9 @@ TEST(BatteryCapacityRuleTest, WindowsCombinesByTheSharedRule)
     EXPECT_DOUBLE_EQ(windows.designWh, shared.design);
     EXPECT_DOUBLE_EQ(windows.fullChargeWh, shared.fullCharge);
     EXPECT_EQ(windows.healthPercent, shared.healthPercent);
-    EXPECT_EQ(healthPercentFromCapacity(4'500U, 4'000U, 0U), batteryHealthPercent(4.0, 4.5));
+    const std::array<BatteryCapacityReading, 1> onePack{
+        {{.designed = 4'500U, .fullCharged = 4'000U, .capabilities = 0U, .cycleCount = 0U}}};
+    EXPECT_EQ(combineBatteryCapacities(onePack).healthPercent, batteryHealthPercent(4.0, 4.5));
 }
 
 } // namespace

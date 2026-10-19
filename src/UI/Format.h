@@ -329,21 +329,6 @@ template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent
     return toIntSaturated(std::lround(static_cast<double>(percent)));
 }
 
-/// "42%", or "N/A" for NaN, which marks a sample with no reading.
-template<std::floating_point T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    if (std::isnan(percent))
-    {
-        return "N/A";
-    }
-    return formatIntLocalized(percentToInt(percent)) + '%';
-}
-
-template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    return formatIntLocalized(percent) + '%';
-}
-
 [[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
     return std::format("{}", value);
@@ -900,7 +885,7 @@ struct AlignedBytesParts
 
 /// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
 /// (the same splitPercentForAlignment() rounding and locale decimal point), or "N/A" for NaN. A
-/// process's share of the machine is usually under a few percent, where percentCompact() rounded it
+/// process's share of the machine is usually under a few percent, which a whole-percent format rounded
 /// to "0%" or "1%" (#1195).
 [[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
 {
