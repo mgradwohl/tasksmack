@@ -317,11 +317,7 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
     static auto* const create = [] -> D3D12CreateDeviceFn
     {
         HMODULE module = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (module == nullptr)
-        {
-            return nullptr;
-        }
-        return reinterpret_cast<D3D12CreateDeviceFn>(GetProcAddress(module, "D3D12CreateDevice"));
+        return Windows::getProcAddress<D3D12CreateDeviceFn>(module, "D3D12CreateDevice");
     }();
     return create;
 }

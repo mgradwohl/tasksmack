@@ -5,6 +5,7 @@
 #include "Platform/ThreadName.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
 #include "WindowsProcessIdentity.h"
 
 #include <algorithm>
@@ -234,11 +235,7 @@ WindowsProcessOpenFilesReader::WindowsProcessOpenFilesReader(const ProcessOpenFi
 {
     if (m_Api.ntQuerySystemInformation == nullptr)
     {
-        if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"); ntdll != nullptr)
-        {
-            m_Api.ntQuerySystemInformation =
-                reinterpret_cast<ProcessOpenFilesFunctions::NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
-        }
+        m_Api.ntQuerySystemInformation = Windows::ntQuerySystemInformation();
     }
 }
 

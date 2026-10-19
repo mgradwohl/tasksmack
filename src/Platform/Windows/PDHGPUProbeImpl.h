@@ -9,6 +9,7 @@
 #include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsProcAddress.h"
 
 #include <spdlog/spdlog.h>
 
@@ -520,14 +521,12 @@ struct PDHGPUProbe::Impl
         }
 
         // Load function pointers
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - Required for GetProcAddress
-        pdhOpenQuery = reinterpret_cast<PdhOpenQueryFn>(GetProcAddress(pdhModule.get(), "PdhOpenQueryW"));
-        pdhCloseQuery = reinterpret_cast<PdhCloseQueryFn>(GetProcAddress(pdhModule.get(), "PdhCloseQuery"));
-        pdhAddEnglishCounter = reinterpret_cast<PdhAddEnglishCounterFn>(GetProcAddress(pdhModule.get(), "PdhAddEnglishCounterW"));
-        pdhCollectQueryData = reinterpret_cast<PdhCollectQueryDataFn>(GetProcAddress(pdhModule.get(), "PdhCollectQueryData"));
-        pdhGetFormattedCounterArray =
-            reinterpret_cast<PdhGetFormattedCounterArrayFn>(GetProcAddress(pdhModule.get(), "PdhGetFormattedCounterArrayW"));
-        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        HMODULE pdh = pdhModule.get();
+        pdhOpenQuery = Windows::getProcAddress<PdhOpenQueryFn>(pdh, "PdhOpenQueryW");
+        pdhCloseQuery = Windows::getProcAddress<PdhCloseQueryFn>(pdh, "PdhCloseQuery");
+        pdhAddEnglishCounter = Windows::getProcAddress<PdhAddEnglishCounterFn>(pdh, "PdhAddEnglishCounterW");
+        pdhCollectQueryData = Windows::getProcAddress<PdhCollectQueryDataFn>(pdh, "PdhCollectQueryData");
+        pdhGetFormattedCounterArray = Windows::getProcAddress<PdhGetFormattedCounterArrayFn>(pdh, "PdhGetFormattedCounterArrayW");
 
         if (!pdhFunctionsLoaded())
         {
