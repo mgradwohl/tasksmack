@@ -2334,6 +2334,16 @@ What a package contains, and what it depends on (#1398):
 - The `.deb`'s `Depends` come from `dpkg-shlibdeps`, plus the libraries SDL3 `dlopen()`s that it
   can't see (X11, GL/EGL), listed in `cmake/Packaging.cmake`; Wayland, the other X11 extensions
   and Mesa's drivers are `Recommends`.
+- Windows' elevated helper, `TaskSmackHelper.exe` (#2550), installs beside `TaskSmack.exe`
+  (`cmake --install` always installs it, in the `windows_helper` component). The `.zip` and the NSIS
+  installer carry it only with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`, which is for
+  Authenticode-signed builds (#2302). Packaging then runs `cmake/VerifyWindowsSignatures.cmake` first,
+  which refuses unless `TaskSmack.exe` and the helper both have valid signatures from the same signer.
+  Off (the default), unsigned dev and dry-run builds package as before, without the helper. Sign both
+  executables in `build/<preset>/bin` after building and before `cpack`. The helper serves only an
+  install its user can't change (`BrokerHelper::checkUnchangeableBy`), so it works from the NSIS
+  installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
+  its user owns.
 - Windows builds other than Debug link the C and C++ runtime statically (`/MT`), so the `.zip`'s
   `TaskSmack.exe` runs without the Visual C++ Redistributable: `llvm-objdump -p` on it should list
   no `MSVCP140.dll`, `VCRUNTIME140*.dll` or `api-ms-win-crt-*.dll`. Debug keeps `/MDd`.

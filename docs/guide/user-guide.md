@@ -23,6 +23,8 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` (from v0.9.0, no Visual C++ Redistributable needed) |
 
+On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
+
 ### Verifying a Release
 
 Every file on a release (the `.deb`, `.tar.gz`, `.zip`, and the SBOM) is signed with

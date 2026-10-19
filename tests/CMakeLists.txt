@@ -104,6 +104,19 @@ if(WIN32)
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript and CheckPrereqsScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
+    # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
+    # executables are refused, by name, before anything could be packaged.
+    if(TARGET TaskSmackHelper)
+        add_test(NAME WindowsSignatureGateScript
+            COMMAND ${CMAKE_COMMAND} -DTASKSMACK_VERIFY_DIR=$<TARGET_FILE_DIR:TaskSmack>
+                    -P ${CMAKE_SOURCE_DIR}/cmake/VerifyWindowsSignatures.cmake)
+        set_tests_properties(WindowsSignatureGateScript PROPERTIES
+            # CMake wraps the message, so any run of spaces and line breaks may separate the words.
+            PASS_REGULAR_EXPRESSION "TaskSmack(Helper)?\\.exe[ \r\n]+isn't[ \r\n]+Authenticode-signed[ \r\n]+\\(NotSigned\\)"
+            # It starts PowerShell too, so it takes its turn with the script tests above (#2054).
+            RESOURCE_LOCK pwsh-script-tests
+            TIMEOUT 120)
+    endif()
 endif()
 
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows

@@ -23,6 +23,11 @@ option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
 option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
+# Windows: whether the .zip and the NSIS installer carry TaskSmackHelper.exe, the elevated helper (#2550).
+# Only for Authenticode-signed builds (#2302): packaging then refuses a helper or TaskSmack.exe that
+# isn't validly signed by one signer (cmake/VerifyWindowsSignatures.cmake). Off, the packages are as
+# before and TaskSmack offers no "Retry as administrator"; `cmake --install` installs it either way.
+option(TASKSMACK_PACKAGE_WINDOWS_HELPER "Windows: package TaskSmackHelper.exe (Authenticode-signed builds only)" OFF)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations

@@ -48,9 +48,48 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only ma
 
 **Acting on another user's process without either:** with the .deb or .rpm installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorised.
 
+On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
+
 If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptraceable`), other users' processes aren't listed: `noaccess` still shows their PIDs to `ls /proc` but refuses everything else about them. The notice says so. Membership of the mount's `gid=` group, or `CAP_SYS_PTRACE`, shows them.
 
 > On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
+
+---
+
+## Acting as an administrator on Windows
+
+TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
+ending, re-prioritising or re-pinning an elevated or another account's process, offers **Retry as
+administrator** beside its error. Process Details' **Modules**, **Open files** and **Connections**
+sections offer **Read as administrator** when such a process refuses to be read. Either button starts
+`TaskSmackHelper.exe`, TaskSmack's administrator helper, through Windows' own UAC prompt, in front of
+TaskSmack's window:
+
+- **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
+  refused actions and reads are retried through the helper without asking again. The helper exits when
+  TaskSmack does, or after 5 minutes without an action. Suspend, resume and I/O priority, which Windows
+  doesn't support, don't keep it running.
+- **If your account is a standard user,** the prompt asks for an administrator's name and password, and
+  the helper then runs as that administrator. It does one action and exits, so the next one asks again.
+  It reads only your own processes: another account's Modules, Open files or Connections say "The
+  administrator helper was approved for another account, so it reads only your own processes". If no
+  action comes within a minute, it exits.
+
+Nothing else runs with elevated rights. The helper never ends a critical system process (one whose end
+would stop Windows), and it acts only on the process you chose, checked by its start time as well as
+its PID.
+
+**Where TaskSmack must be installed.** The helper works only for a TaskSmack installed where only an
+administrator can change it, such as `C:\Program Files\TaskSmack`. That covers `TaskSmack.exe`,
+`TaskSmackHelper.exe`, their folder, and every folder above it. If your account could replace either
+file or move the folder, any program you run could put itself in TaskSmack's place, and the helper's
+signed UAC prompt would then hand it administrator rights. So a portable copy unpacked from the `.zip`
+into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
+the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
+
+The helper ships only in Authenticode-signed releases (#2302), so that its UAC prompt names TaskSmack's
+publisher. In a release without it, TaskSmack offers neither button. If TaskSmack is already running as
+administrator, it needs no helper and offers neither.
 
 ---
 

@@ -4,3 +4,12 @@
 if(CPACK_GENERATOR STREQUAL "DEB" OR CPACK_GENERATOR STREQUAL "RPM")
     set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;helper;/")
 endif()
+
+# Windows: the .zip and the NSIS installer also package TaskSmackHelper.exe (the "windows_helper"
+# component; #2550), only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build
+# (#2302). Before anything is packaged, VerifyWindowsSignatures.cmake refuses a TaskSmack.exe or helper
+# that isn't validly signed by one signer, so an unsigned helper can't ship by mistake.
+if(@TASKSMACK_PACKAGES_WINDOWS_HELPER@ AND (CPACK_GENERATOR STREQUAL "ZIP" OR CPACK_GENERATOR STREQUAL "NSIS"))
+    set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;windows_helper;/")
+    set(CPACK_PRE_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/VerifyWindowsSignatures.cmake")
+endif()

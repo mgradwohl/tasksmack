@@ -141,6 +141,19 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
+# Windows' elevated helper (#2550; #2517), beside TaskSmack.exe, where TaskSmack starts it from: the
+# "windows_helper" component, which the .zip and the NSIS installer carry only when
+# TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build (cmake/Packaging.cmake). It
+# serves only an install TaskSmack's user can't change (BrokerHelper::checkUnchangeableBy), such as
+# the NSIS installer's Program Files folder; from a portable or per-user copy it refuses, and TaskSmack
+# doesn't offer it.
+if(WIN32 AND TARGET TaskSmackHelper)
+    install(TARGETS TaskSmackHelper
+        RUNTIME DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
+        COMPONENT windows_helper
+    )
+endif()
+
 # The privileged helper (#2307; #2181) and its polkit action, in the "helper" component, which
 # cmake/Packaging.cmake adds to the .deb and .rpm only: polkit needs the policy in the system's
 # share/polkit-1/actions and the helper at the path its exec.path names, which only a system package
