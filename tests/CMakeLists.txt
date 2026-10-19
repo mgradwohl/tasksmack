@@ -877,9 +877,11 @@ if(TARGET tasksmack-helper)
 endif()
 
 # test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517). The helper
-# serves only the TaskSmack.exe beside it that started it (#2549), so the tests copy the helper and
-# TaskSmackHelperTestParent.exe, as TaskSmack.exe, into a folder of their own, and that starts the helper
-# through HelperLauncher with CreateProcessW in place of "runas": nothing is elevated, no prompt raised.
+# serves only the TaskSmack.exe beside it that started it, from an install its user can't change (#2549).
+# The tests copy the helper and TaskSmackHelperTestParent.exe, as TaskSmack.exe, into a folder of their
+# own, which that starts the helper from through HelperLauncher, with CreateProcessW in place of "runas",
+# just as a program trying to use the helper on its own would: the helper must refuse it. Nothing is
+# elevated, no prompt raised.
 if(TARGET TaskSmackHelper)
     add_executable(TaskSmackHelperTestParent
         Platform/HelperTestParent.cpp
@@ -889,6 +891,7 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     target_compile_features(TaskSmackHelperTestParent PRIVATE cxx_std_23)
     tasksmack_apply_default_warnings(TaskSmackHelperTestParent)

@@ -20,10 +20,10 @@
 // take (#2549; finding 3 of #2520's review). Meanwhile call() is "not connected" and callIfIdle() is
 // "busy" (as a pkexec prompt holds PkexecBroker's lock), both at once; and the destructor tells the
 // connect to give up, so neither waits for the prompt. A launch given up on is left to finish on its
-// thread: Windows has no way to take a UAC prompt down. If it is then approved, the helper it starts is
-// never connected to, and exits once its accept timeout passes (BrokerPipeServer::ACCEPT_TIMEOUT).
-// Until that launch returns, connect() says a start is already in progress rather than raise a second
-// prompt.
+// thread: Windows has no way to take a UAC prompt down. Until that launch returns, connect() says
+// ALREADY_ASKING rather than raise a second prompt. If the prompt is then approved, the next connect()
+// uses the helper it started, while that still waits for its client (BrokerPipeServer::ACCEPT_TIMEOUT),
+// rather than ask again.
 //
 // How the helper is started is the Launcher's: the app's runs TaskSmackHelper.exe through
 // ShellExecuteExW("runas") (HelperLauncher.h); the tests serve the pipe in-process.
@@ -53,6 +53,7 @@
 #include <mutex>
 #include <stop_token>
 #include <string>
+#include <string_view>
 
 namespace Platform::Windows
 {
@@ -73,6 +74,9 @@ class PipeBroker final : public IPrivilegedBroker
     static constexpr std::chrono::seconds CONNECT_TIMEOUT{120};
     /// How long call() waits for a response once the helper is running, and for it to take a request.
     static constexpr std::chrono::seconds CALL_TIMEOUT{10};
+    /// connect()'s error while a UAC prompt it raised earlier is still up.
+    static constexpr std::string_view ALREADY_ASKING =
+        "already asking for an administrator's consent: the UAC prompt may be waiting behind TaskSmack or in the taskbar";
 
     explicit PipeBroker(Launcher launcher);
     ~PipeBroker() override;

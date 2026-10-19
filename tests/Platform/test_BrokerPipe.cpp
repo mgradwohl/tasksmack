@@ -1184,6 +1184,11 @@ class PromptUp
 {
   public:
     PromptUp() = default;
+    /// A prompt that, once answered, is approved: the launcher then runs @p approved.
+    explicit PromptUp(PipeBroker::Launcher approved)
+    {
+        m_State->approved = std::move(approved);
+    }
     ~PromptUp()
     {
         try
@@ -1200,7 +1205,7 @@ class PromptUp
 
     [[nodiscard]] PipeBroker::Launcher launcher() const
     {
-        return [state = m_State](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string>
+        return [state = m_State](const std::wstring& pipeName, const std::stop_token& stopToken) -> std::expected<UniqueHandle, std::string>
         {
             if (state->runs.fetch_add(1) > 0)
             {
@@ -1208,9 +1213,18 @@ class PromptUp
             }
             state->shown.set_value();
             static_cast<void>(state->answered.wait_for(WAIT));
+            auto result = state->approved
+                            ? state->approved(pipeName, stopToken)
+                            : std::expected<UniqueHandle, std::string>(std::unexpected(std::string("the UAC prompt was dismissed")));
             state->returned.set_value();
-            return std::unexpected(std::string("the UAC prompt was dismissed"));
+            return result;
         };
+    }
+
+    /// How many times the launcher was run: how many prompts were raised.
+    [[nodiscard]] int runs() const
+    {
+        return m_State->runs.load();
     }
 
     /// Whether the prompt is up, within WAIT.
@@ -1245,6 +1259,7 @@ class PromptUp
         std::shared_future<void> answered = answer.get_future().share();
         std::promise<void> returned;
         std::future<void> returnedFuture = returned.get_future();
+        PipeBroker::Launcher approved; // what an approved prompt starts; none: it was dismissed
     };
     std::shared_ptr<State> m_State = std::make_shared<State>();
     bool m_Answered = false;
@@ -1267,7 +1282,7 @@ TEST(PipeBrokerTest, CallsDontWaitForAPromptThatIsUp)
     EXPECT_EQ(broker.callIfIdle(killRequest(), WAIT).error_or(""), "busy") << "as PkexecBroker's is while it connects";
     EXPECT_LT(since(start), AT_ONCE);
     start = std::chrono::steady_clock::now();
-    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), "already starting the administrator helper") << "never a second prompt";
+    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), std::string(PipeBroker::ALREADY_ASKING)) << "never a second prompt";
     EXPECT_FALSE(broker.connected());
     EXPECT_LT(since(start), AT_ONCE);
 
@@ -1291,12 +1306,12 @@ TEST(PipeBrokerTest, AStoppedConnectGivesUpOnThePromptAndAsksAgainOnceItIsAnswer
     EXPECT_LT(since(start), AT_ONCE);
 
     // Windows can't take the prompt down: until it is answered, a second connect doesn't raise another.
-    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), "already starting the administrator helper");
+    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), std::string(PipeBroker::ALREADY_ASKING));
     prompt.answer();
     ASSERT_TRUE(prompt.returned());
-    std::expected<void, std::string> again = std::unexpected(std::string("already starting the administrator helper"));
+    std::expected<void, std::string> again = std::unexpected(std::string(PipeBroker::ALREADY_ASKING));
     const auto retried = std::chrono::steady_clock::now();
-    while (!again.has_value() && again.error() == "already starting the administrator helper" && since(retried) < WAIT)
+    while (!again.has_value() && again.error() == std::string(PipeBroker::ALREADY_ASKING) && since(retried) < WAIT)
     {
         std::this_thread::sleep_for(10ms); // the launch's result follows its return at once
         again = broker.connectWithin({}, WAIT);
@@ -1330,6 +1345,58 @@ TEST(PipeBrokerTest, TheDestructorDoesntWaitForAPrompt)
     // The launch thread outlives the broker; answered, it returns and lets go of what it shares.
     prompt.answer();
     EXPECT_TRUE(prompt.returned());
+}
+
+// #2572 review, finding 2: a prompt approved after its connect gave up isn't wasted. The next connect
+// uses the helper it started, rather than raise a second prompt.
+TEST(PipeBrokerTest, AHelperApprovedAfterItsConnectGaveUpIsUsedByTheNext)
+{
+    InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT));
+    PromptUp prompt(helper.launcher());
+    PipeBroker broker(prompt.launcher());
+    std::stop_source stop;
+    auto connecting = std::async(std::launch::async, [&broker, token = stop.get_token()] { return broker.connectWithin(token, 60s); });
+    ASSERT_TRUE(prompt.shown());
+    stop.request_stop();
+    ASSERT_EQ(connecting.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(connecting.get().error_or(""), "cancelled");
+
+    prompt.answer(); // approved: the helper starts, and waits for its client
+    ASSERT_TRUE(prompt.returned());
+    std::expected<void, std::string> again = std::unexpected(std::string(PipeBroker::ALREADY_ASKING));
+    const auto retried = std::chrono::steady_clock::now();
+    while (!again.has_value() && again.error() == std::string(PipeBroker::ALREADY_ASKING) && since(retried) < WAIT)
+    {
+        std::this_thread::sleep_for(10ms); // the launch's result follows its return at once
+        again = broker.connectWithin({}, WAIT);
+    }
+    ASSERT_TRUE(again.has_value()) << again.error();
+    EXPECT_TRUE(broker.connected());
+    EXPECT_TRUE(broker.call(killRequest(), {}).has_value());
+    EXPECT_EQ(prompt.runs(), 1) << "one prompt, not two";
+}
+
+// #2572 review, finding 3: a launch given up on is told so through its stop token, timeout included.
+TEST(PipeBrokerTest, ALaunchGivenUpOnIsStopped)
+{
+    auto released = std::make_shared<std::promise<void>>();
+    PipeBroker broker(
+        [released](const std::wstring&, const std::stop_token& stopToken) -> std::expected<UniqueHandle, std::string>
+        {
+            const auto deadline = std::chrono::steady_clock::now() + WAIT;
+            while (!stopToken.stop_requested() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(10ms);
+            }
+            if (stopToken.stop_requested())
+            {
+                released->set_value();
+            }
+            return std::unexpected(std::string("stopped"));
+        });
+    const auto connected = broker.connectWithin({}, 100ms);
+    EXPECT_EQ(connected.error_or(""), "the administrator's consent wasn't given in time");
+    EXPECT_EQ(released->get_future().wait_for(WAIT), std::future_status::ready) << "the launcher's token was stopped";
 }
 
 } // namespace

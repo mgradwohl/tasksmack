@@ -3,6 +3,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <format>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -25,6 +27,7 @@
 #include <thread>
 #include <utility>
 
+#include <aclapi.h>
 #include <winternl.h>
 
 namespace Platform::Windows::BrokerHelper
@@ -122,6 +125,85 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
     }
     return readPath([&file](wchar_t* buffer, DWORD size)
                     { return GetFinalPathNameByHandleW(file.get(), buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
+}
+
+/// @p path without the prefix GetFinalPathNameByHandleW gives it: "C:\dir" for "\\?\C:\dir", and
+/// "\\server\share" for "\\?\UNC\server\share", so std::filesystem finds its root and each folder above.
+[[nodiscard]] std::wstring withoutExtendedPrefix(const std::wstring& path)
+{
+    constexpr std::wstring_view UNC = L"\\\\?\\UNC\\";
+    constexpr std::wstring_view EXTENDED = L"\\\\?\\";
+    if (path.starts_with(UNC))
+    {
+        return L"\\\\" + path.substr(UNC.size());
+    }
+    if (path.starts_with(EXTENDED))
+    {
+        return path.substr(EXTENDED.size());
+    }
+    return path;
+}
+
+/// The rights @p token's user has over the file or folder at @p path, from AccessCheck against its
+/// owner, group and DACL. The error says why they couldn't be told.
+[[nodiscard]] std::expected<DWORD, std::string> grantedRights(HANDLE token, const std::wstring& path)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD read = GetNamedSecurityInfoW(path.c_str(),
+                                             SE_FILE_OBJECT,
+                                             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                                             nullptr,
+                                             nullptr,
+                                             nullptr,
+                                             nullptr,
+                                             &descriptor);
+    if (read != ERROR_SUCCESS)
+    {
+        return std::unexpected(std::format("couldn't read who may change {}: {}", WinString::wideToUtf8(path), lastErrorText(read)));
+    }
+    struct Free
+    {
+        void operator()(void* memory) const noexcept
+        {
+            LocalFree(memory);
+        }
+    };
+    const std::unique_ptr<void, Free> owned(descriptor);
+    GENERIC_MAPPING mapping{.GenericRead = FILE_GENERIC_READ,
+                            .GenericWrite = FILE_GENERIC_WRITE,
+                            .GenericExecute = FILE_GENERIC_EXECUTE,
+                            .GenericAll = FILE_ALL_ACCESS};
+    // Room for the privileges AccessCheck may name; MAXIMUM_ALLOWED asks for none.
+    struct Privileges
+    {
+        PRIVILEGE_SET set;
+        std::array<LUID_AND_ATTRIBUTES, 8> more;
+    } privileges{};
+    DWORD privilegesLength = sizeof(privileges);
+    DWORD granted = 0;
+    BOOL status = FALSE;
+    if (AccessCheck(descriptor, token, MAXIMUM_ALLOWED, &mapping, &privileges.set, &privilegesLength, &granted, &status) == FALSE)
+    {
+        return std::unexpected(
+            std::format("couldn't tell who may change {}: {}", WinString::wideToUtf8(path), lastErrorText(GetLastError())));
+    }
+    return status != FALSE ? granted : DWORD{0};
+}
+
+/// Whether @p token's user has none of @p rights over @p path; the error names it otherwise.
+[[nodiscard]] std::expected<void, std::string> checkNone(HANDLE token, const std::filesystem::path& path, DWORD rights)
+{
+    const auto granted = grantedRights(token, path.wstring());
+    if (!granted.has_value())
+    {
+        return std::unexpected(granted.error());
+    }
+    if ((*granted & rights) != 0)
+    {
+        return std::unexpected(
+            std::format("TaskSmack's user can change {} (rights 0x{:08X})", WinString::wideToUtf8(path.wstring()), *granted & rights));
+    }
+    return {};
 }
 
 /// NtQueryInformationProcess(ProcessBasicInformation)'s PROCESS_BASIC_INFORMATION, its fields named:
@@ -265,6 +347,59 @@ bool sameFile(const std::wstring& first, const std::wstring& second)
            CSTR_EQUAL;
 }
 
+std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files)
+{
+    if (files.empty())
+    {
+        return std::unexpected(std::string("no install to check"));
+    }
+    for (const std::wstring& file : files)
+    {
+        // The file itself, links resolved: the folders checked are where it really is.
+        const auto final = finalPathOf(file);
+        if (!final.has_value())
+        {
+            return std::unexpected(std::format("couldn't open {}", WinString::wideToUtf8(file)));
+        }
+        const std::filesystem::path path(withoutExtendedPrefix(*final));
+        if (auto checked = checkNone(token, path, FILE_CHANGE_RIGHTS); !checked.has_value())
+        {
+            return checked;
+        }
+        std::filesystem::path folder = path.parent_path();
+        if (auto checked = checkNone(token, folder, FOLDER_CHANGE_RIGHTS); !checked.has_value())
+        {
+            return checked;
+        }
+        while (folder.has_relative_path())
+        {
+            folder = folder.parent_path();
+            if (auto checked = checkNone(token, folder, ANCESTOR_CHANGE_RIGHTS); !checked.has_value())
+            {
+                return checked;
+            }
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::span<const std::wstring> files)
+{
+    HANDLE primary = nullptr;
+    if (OpenProcessToken(parent, TOKEN_QUERY | TOKEN_DUPLICATE, &primary) == FALSE)
+    {
+        return std::unexpected(std::format("couldn't open TaskSmack's token: {}", lastErrorText(GetLastError())));
+    }
+    const UniqueHandle primaryToken(primary);
+    HANDLE identification = nullptr;
+    if (DuplicateToken(primaryToken.get(), SecurityIdentification, &identification) == FALSE)
+    {
+        return std::unexpected(std::format("couldn't copy TaskSmack's token: {}", lastErrorText(GetLastError())));
+    }
+    const UniqueHandle identificationToken(identification);
+    return checkUnchangeableBy(identificationToken.get(), files);
+}
+
 std::expected<Self, std::string> readSelf()
 {
     const auto image = readPath([](wchar_t* buffer, DWORD size) { return GetModuleFileNameW(nullptr, buffer, size); });
@@ -287,7 +422,11 @@ std::expected<Self, std::string> readSelf()
     {
         return std::unexpected(std::format("couldn't read the helper's start time: {}", lastErrorText(GetLastError())));
     }
-    return Self{.taskSmackPath = std::move(taskSmack), .creatorPid = *creator, .startTicks = *ticks};
+    return Self{.taskSmackPath = std::move(taskSmack),
+                .creatorPid = *creator,
+                .startTicks = *ticks,
+                .helperPath = *image,
+                .installCheck = &checkUnchangeableByParent};
 }
 
 std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arguments& arguments, const Self& self)
@@ -315,7 +454,14 @@ std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arg
     {
         return std::unexpected(std::string("the parent isn't the TaskSmack.exe beside the helper"));
     }
-    return {};
+    // And that install is an administrator's: a TaskSmack.exe beside a copy of the helper in a folder
+    // of the user's own isn't TaskSmack, whatever it is called (#2572 review, finding 1).
+    if (self.installCheck == nullptr)
+    {
+        return std::unexpected(std::string("no check of the install"));
+    }
+    const std::array<std::wstring, 2> installed{self.helperPath, self.taskSmackPath};
+    return self.installCheck(parent, installed);
 }
 
 std::string exitMeaning(DWORD code)

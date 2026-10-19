@@ -9,11 +9,16 @@
 //     pipe's client against can't name another process meanwhile;
 //   - checks that process is TaskSmack, and the one that started it (#2549): it is running the
 //     TaskSmack.exe in the helper's own folder, it is the helper's own parent, and it started first.
-//     Otherwise any program could start the signed helper through its trusted UAC prompt, name some
-//     TaskSmack (or itself), and have an elevated broker. ShellExecuteExW("runas") makes the elevated
-//     process the caller's child, not consent.exe's or AppInfo's: AppInfo creates it with
-//     PROC_THREAD_ATTRIBUTE_PARENT_PROCESS set to the caller's process, so the caller is its parent
-//     both in ProcessBasicInformation and in Task Manager's tree;
+//     ShellExecuteExW("runas") makes the elevated process the caller's child, not consent.exe's or
+//     AppInfo's: AppInfo creates it with PROC_THREAD_ATTRIBUTE_PARENT_PROCESS set to the caller's
+//     process, so the caller is its parent both in ProcessBasicInformation and in Task Manager's tree;
+//   - checks TaskSmack's user can't change that install: neither exe, their folder, nor any folder above
+//     it (checkUnchangeableBy()). Without this, a program could copy the signed helper into a folder of
+//     its own, save itself beside it as TaskSmack.exe, and through the helper's trusted UAC prompt get
+//     an elevated broker. So the helper serves only an install an administrator made, such as one in
+//     Program Files: a TaskSmack unpacked to a folder its user can write is refused.
+//     This stops a program from using the helper on its own. It doesn't stop code that runs inside a
+//     real TaskSmack, which any program of the same user can start and inject into;
 //   - reads TaskSmack's user SID from TaskSmack's own token, never from the command line, and makes the
 //     pipe for that user only (BrokerPipe::createServerPipe), so an over-the-shoulder elevation, which
 //     runs the helper as another user, still lets in only the user who asked;
@@ -92,22 +97,48 @@ struct Arguments
 /// symbolic links, junctions and case don't matter. False when either can't be opened.
 [[nodiscard]] bool sameFile(const std::wstring& first, const std::wstring& second);
 
+/// Rights over an installed exe that would let a user put another program in its place.
+inline constexpr DWORD FILE_CHANGE_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER;
+/// Rights over the install's folder that would let a user add, remove or rename what is in it.
+inline constexpr DWORD FOLDER_CHANGE_RIGHTS = FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+/// Rights over each folder above it that would let a user move the install's folder, or one above it,
+/// out of the way. Not FILE_ADD_FILE or FILE_ADD_SUBDIRECTORY: a new entry can't take an existing
+/// one's name, and every user may create folders at a drive's root.
+inline constexpr DWORD ANCESTOR_CHANGE_RIGHTS = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+
+/// Whether the user of @p token (an impersonation token, identification level is enough) can change
+/// none of @p files: no FILE_CHANGE_RIGHTS over any file, no FOLDER_CHANGE_RIGHTS over the folder of
+/// each, and no ANCESTOR_CHANGE_RIGHTS over any folder above, up to the root. Checked with AccessCheck
+/// against each path's security descriptor, after links are resolved. WRITE_DAC is among the rights,
+/// so an owner's implicit rights count too. Anything that can't be read is a refusal. The error names
+/// the path.
+[[nodiscard]] std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files);
+
+/// checkUnchangeableBy() with @p parent's own token, duplicated for identification: TaskSmack's user.
+[[nodiscard]] std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::span<const std::wstring> files);
+
 /// What the helper knows of itself, that its parent is checked against.
 struct Self
 {
+    using InstallCheck = std::expected<void, std::string> (*)(HANDLE parent, std::span<const std::wstring> files);
+
     std::wstring taskSmackPath;   ///< The TaskSmack.exe its parent must be running: the one beside the helper
     DWORD creatorPid = 0;         ///< The process that created the helper (ProcessBasicInformation's parent)
     std::uint64_t startTicks = 0; ///< The helper's own creation time, in a FILETIME's ticks
+    std::wstring helperPath;      ///< The helper's own image
+    /// Whether the parent's user can't change the install: checkUnchangeableByParent(), or a test's.
+    InstallCheck installCheck = &checkUnchangeableByParent;
 };
 
-/// This process's Self: besidePath(its own image, TASKSMACK_FILE_NAME), its parent's PID and its
-/// creation time. The error says which couldn't be read.
+/// This process's Self: besidePath(its own image, TASKSMACK_FILE_NAME), its parent's PID, its creation
+/// time and its own image. The error says which couldn't be read.
 [[nodiscard]] std::expected<Self, std::string> readSelf();
 
 /// Whether @p parent, opened by openParent() for @p arguments, is the TaskSmack that started this
-/// helper: @p self's creator is the PID named, that process started no later than the helper (so its
-/// PID wasn't reused since), and its image is @p self's taskSmackPath (sameFile()). The error says
-/// which check failed.
+/// helper from an install its user can't change: @p self's creator is the PID named, that process
+/// started no later than the helper (so its PID wasn't reused since), its image is @p self's
+/// taskSmackPath (sameFile()), and @p self's installCheck passes for that and the helper's image. The
+/// error says which check failed.
 [[nodiscard]] std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arguments& arguments, const Self& self);
 
 /// A stop token that is stopped when @p process ends or @p outer is stopped: the session's, so the

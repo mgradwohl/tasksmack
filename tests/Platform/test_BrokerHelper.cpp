@@ -103,11 +103,27 @@ constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOU
     return (static_cast<std::uint64_t>(now.dwHighDateTime) << 32U) | now.dwLowDateTime;
 }
 
+/// Install checks for in-process helpers: one that passes any install, one that passes none.
+[[nodiscard]] std::expected<void, std::string> anyInstall(HANDLE /*parent*/, std::span<const std::wstring> /*files*/)
+{
+    return {};
+}
+
+[[nodiscard]] std::expected<void, std::string> noInstall(HANDLE /*parent*/, std::span<const std::wstring> /*files*/)
+{
+    return std::unexpected(std::string("TaskSmack's user can change the install"));
+}
+
 /// What an in-process helper "started" by @p parent knows of itself: @p parent's image is its
-/// TaskSmack, @p parent created it, and it started now. run() then takes @p parent as TaskSmack.
+/// TaskSmack, @p parent created it, it started now, and its install passes (the build's folder, which
+/// this user can write, couldn't: checkUnchangeableBy() has tests of its own).
 [[nodiscard]] BrokerHelper::Self selfStartedBy(HANDLE parent)
 {
-    return {.taskSmackPath = imageOf(parent), .creatorPid = GetProcessId(parent), .startTicks = nowTicks()};
+    return {.taskSmackPath = imageOf(parent),
+            .creatorPid = GetProcessId(parent),
+            .startTicks = nowTicks(),
+            .helperPath = imageOf(parent),
+            .installCheck = &anyInstall};
 }
 
 [[nodiscard]] std::chrono::milliseconds since(std::chrono::steady_clock::time_point start)
@@ -412,6 +428,107 @@ TEST(BrokerHelperTest, AParentRunningAnotherExecutableIsRefused)
     }
 }
 
+// #2572 review, finding 1: the TaskSmack.exe beside the helper counts only in an install its user can't
+// change, or a program could copy the helper into a folder of its own, beside itself.
+
+TEST(BrokerHelperTest, ATaskSmackInAnInstallItsUserCanChangeIsRefused)
+{
+    const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
+    const auto parent = BrokerHelper::openParent(arguments.parentPid, arguments.parentStartTicks);
+    ASSERT_TRUE(parent.has_value()) << parent.error();
+    BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
+    self.installCheck = &noInstall;
+    auto checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("can change")) << checked.error();
+    self.installCheck = nullptr;
+    EXPECT_FALSE(BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self).has_value()) << "no check is a refusal";
+    // The real check, with this process as TaskSmack: the build's folder is this user's to change.
+    self.installCheck = &BrokerHelper::checkUnchangeableByParent;
+    checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("can change")) << checked.error();
+}
+
+/// This process's token for identification, with Administrators deny-only (CreateRestrictedToken): a
+/// standard user's rights, even on a runner that runs its tests as an administrator.
+[[nodiscard]] UniqueHandle standardUserToken()
+{
+    HANDLE own = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &own) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't open this process's token: " << GetLastError();
+        return {};
+    }
+    const UniqueHandle ownToken(own);
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> administrators{};
+    auto size = static_cast<DWORD>(administrators.size());
+    if (CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, administrators.data(), &size) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't make the Administrators SID: " << GetLastError();
+        return {};
+    }
+    SID_AND_ATTRIBUTES disable{.Sid = administrators.data(), .Attributes = 0};
+    HANDLE restricted = nullptr;
+    if (CreateRestrictedToken(ownToken.get(), DISABLE_MAX_PRIVILEGE, 1, &disable, 0, nullptr, 0, nullptr, &restricted) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't restrict this process's token: " << GetLastError();
+        return {};
+    }
+    const UniqueHandle restrictedToken(restricted);
+    HANDLE identification = nullptr;
+    if (DuplicateToken(restrictedToken.get(), SecurityIdentification, &identification) == FALSE)
+    {
+        ADD_FAILURE() << "couldn't copy the restricted token: " << GetLastError();
+        return {};
+    }
+    return UniqueHandle(identification);
+}
+
+[[nodiscard]] std::wstring systemFile(std::wstring_view name)
+{
+    std::array<wchar_t, MAX_PATH> system{};
+    const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+    return (std::filesystem::path(std::wstring(system.data(), length)) / name).wstring();
+}
+
+TEST(BrokerHelperTest, AnInstallInAFolderOnlyAdministratorsChangePasses)
+{
+    // System32 stands in for Program Files\TaskSmack: a standard user may change neither exe, the folder
+    // nor any folder above it.
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    const std::array<std::wstring, 2> files{systemFile(L"cmd.exe"), systemFile(L"kernel32.dll")};
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files);
+    EXPECT_TRUE(checked.has_value()) << checked.error();
+}
+
+TEST(BrokerHelperTest, AnInstallInAFolderItsUserCanChangeIsRefused)
+{
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    const std::wstring name = freshName();
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() / (L"TaskSmackInstallTest." + name.substr(name.rfind(L'.') + 1));
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    ASSERT_FALSE(error) << error.message();
+    const std::filesystem::path file = folder / L"TaskSmack.exe";
+    std::ofstream(file) << "not TaskSmack";
+    const std::array<std::wstring, 1> mine{file.wstring()};
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), mine);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_TRUE(checked.error().contains("can change")) << checked.error();
+    // A protected file in a folder its user can change still isn't protected: here, its own copy.
+    const std::array<std::wstring, 2> mixed{systemFile(L"cmd.exe"), file.wstring()};
+    EXPECT_FALSE(BrokerHelper::checkUnchangeableBy(token.get(), mixed).has_value());
+    std::filesystem::remove_all(folder, error);
+
+    const std::array<std::wstring, 1> missing{(folder / L"TaskSmack.exe").wstring()};
+    EXPECT_FALSE(BrokerHelper::checkUnchangeableBy(token.get(), missing).has_value()) << "a file that isn't there";
+    EXPECT_FALSE(BrokerHelper::checkUnchangeableBy(token.get(), {}).has_value()) << "nothing to check";
+}
+
 TEST(BrokerHelperTest, ASessionForAParentThatIsntTaskSmackNeverMakesItsPipe)
 {
     const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
@@ -439,6 +556,8 @@ TEST(BrokerHelperTest, TheHelpersOwnIdentityIsReadFromItsProcess)
     EXPECT_NE(self->creatorPid, 0U);
     EXPECT_NE(self->creatorPid, GetCurrentProcessId());
     EXPECT_EQ(self->startTicks, startTicksOf(GetCurrentProcess()));
+    EXPECT_EQ(self->helperPath, imageOf(GetCurrentProcess()));
+    EXPECT_EQ(self->installCheck, &BrokerHelper::checkUnchangeableByParent) << "the real check, never a test's";
 }
 
 TEST(BrokerHelperTest, ExitStatusesAreSaidInWords)
@@ -918,9 +1037,11 @@ class Started
     return static_cast<DWORD>(exit);
 }
 
-// The whole way, as TaskSmack will go: TaskSmack.exe starts the helper beside it through HelperLauncher
-// (CreateProcessW standing in for "runas"), connects a PipeBroker, and has the helper end a process.
-TEST(TaskSmackHelperTest, ServesTheTaskSmackBesideItThatStartedIt)
+// #2572 review, finding 1, the whole way: a program copies the signed helper into a folder of its own,
+// saves itself beside it as TaskSmack.exe, starts it as TaskSmack would (HelperLauncher, CreateProcessW
+// standing in for "runas"), and asks it to end a process. Every other check passes; the install's folder
+// is the program's own, so the helper refuses it, and the process lives.
+TEST(TaskSmackHelperTest, RefusesACopiedHelperBesideAProgramCalledTaskSmack)
 {
     const InstallFolder installed;
     const SuspendedChild victim;
@@ -928,16 +1049,9 @@ TEST(TaskSmackHelperTest, ServesTheTaskSmackBesideItThatStartedIt)
     const ProcessTarget target = victim.target();
     const Started taskSmack(installed.taskSmack(), std::format(L"kill {} {}", target.pid, target.startTimeTicks));
     ASSERT_TRUE(taskSmack.process() != nullptr);
-    EXPECT_EQ(taskSmack.exitCode(2 * STARTUP_WAIT), std::optional<DWORD>(0)) << installed.log();
-    EXPECT_TRUE(victim.exited());
-}
-
-TEST(TaskSmackHelperTest, AnswersGarbageWithAnErrorAndEnds)
-{
-    const InstallFolder installed;
-    const Started taskSmack(installed.taskSmack(), L"garbage");
-    ASSERT_TRUE(taskSmack.process() != nullptr);
-    EXPECT_EQ(taskSmack.exitCode(2 * STARTUP_WAIT), std::optional<DWORD>(0)) << installed.log();
+    EXPECT_EQ(taskSmack.exitCode(2 * STARTUP_WAIT), std::optional<DWORD>(1)) << "it got a broker";
+    EXPECT_TRUE(installed.log().contains(BrokerHelper::exitMeaning(static_cast<DWORD>(BrokerHelper::Exit::NoParent)))) << installed.log();
+    EXPECT_FALSE(victim.exited(0ms));
 }
 
 TEST(TaskSmackHelperTest, RefusesACommandLineTaskSmackDoesntMake)
@@ -1001,19 +1115,19 @@ TEST(TaskSmackHelperTest, RefusesATaskSmackFromAnotherFolder)
     EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
 }
 
-TEST(TaskSmackHelperTest, ExitsWhenItsParentDoes)
+TEST(TaskSmackHelperTest, RefusesACopiedHelperMadeTheChildOfAProgramCalledTaskSmack)
 {
-    // Made the child of the TaskSmack beside it, as AppInfo makes a "runas" process its caller's: the
-    // checks pass and it makes its pipe. That TaskSmack (suspended, it never opens the pipe) then exits.
+    // The same, with the helper made the child of the TaskSmack.exe beside it the way AppInfo makes a
+    // "runas" process its caller's (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS): its creator, start time and
+    // name all pass, and only the folder, this user's, gives it away. No pipe is ever made.
     const InstallFolder installed;
     const Started taskSmack(installed.taskSmack(), L"", {.suspended = true});
     ASSERT_TRUE(taskSmack.process() != nullptr);
     const BrokerHelper::Arguments arguments = taskSmack.asParent();
     const Started helper(installed.helper(), BrokerHelper::commandLine(arguments), {.parent = taskSmack.process()});
     ASSERT_TRUE(helper.process() != nullptr);
-    ASSERT_TRUE(pipeExists(arguments.pipeName)) << "it took the TaskSmack beside it, its parent, as its parent";
-    ASSERT_NE(TerminateProcess(taskSmack.process(), 1), FALSE);
-    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoClient)) << "well within its 30 s accept timeout";
+    EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
+    EXPECT_EQ(WaitNamedPipeW(arguments.pipeName.c_str(), 0), FALSE);
 }
 
 #endif // TASKSMACK_WINDOWS_HELPER_PATH && TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH

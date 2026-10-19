@@ -1,10 +1,10 @@
 // TaskSmackHelper.exe: TaskSmack's privileged broker on Windows (#2517; #2181). TaskSmack's UI never runs
 // elevated for this. When the user chooses an action TaskSmack can't do itself, TaskSmack starts this
 // through ShellExecuteExW("runas"), so Windows asks for consent (or an administrator's password), and
-// it runs elevated. It serves only the TaskSmack.exe beside it, and only the one that started it
-// (BrokerHelper::checkParentIsTaskSmack). It answers a closed set of BrokerProtocol requests on a named
-// pipe only that TaskSmack may open, and exits when TaskSmack closes the pipe or exits, or after a few
-// idle minutes.
+// it runs elevated. It serves only the TaskSmack.exe beside it that started it, and only from an
+// install TaskSmack's user can't change (BrokerHelper::checkParentIsTaskSmack). It answers a closed set
+// of BrokerProtocol requests on a named pipe only that TaskSmack may open, and exits when TaskSmack
+// closes the pipe or exits, or after a few idle minutes.
 //
 // It links only Platform: no SDL, ImGui, GL or config file. Its command line is untrusted, so
 // BrokerHelper parses it exactly and decides whom to let in from TaskSmack's process handle and token,
