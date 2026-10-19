@@ -31,6 +31,11 @@ option(TASKSMACK_PACKAGE_WINDOWS_HELPER "Windows: package TaskSmackHelper.exe (A
 # The publisher the gate requires: the signer certificate's common name, as UAC shows it (#2302 chose
 # SignPath Foundation; docs/code-signing-policy.md).
 set(TASKSMACK_EXPECTED_SIGNER "SignPath Foundation" CACHE STRING "Windows: the common name TaskSmackHelper.exe's signer must have to be packaged")
+# A pipeline that signs the packaged .zip instead of the build's executables (#2302: release.yml hands the .zip
+# to SignPath): CPack then packages the helper unsigned in the .zip, without the gate, and the pipeline must run
+# cmake/VerifyWindowsSignatures.cmake on the signed .zip's contents before publishing it. The NSIS installer
+# can't be signed inside afterwards, so it keeps the gate either way.
+option(TASKSMACK_SIGN_AFTER_PACKAGING "Windows: the .zip is Authenticode-signed after packaging, so check its signatures then, not before" OFF)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations

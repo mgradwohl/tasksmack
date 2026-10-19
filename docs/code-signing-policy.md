@@ -7,21 +7,35 @@ through its free program for open-source projects. Windows shows **SignPath Foun
 signed TaskSmack binary, for example in the User Account Control prompt and in the file's Properties >
 Digital Signatures tab.
 
-Signing is being set up ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). Releases published
-before it is in place are not Authenticode-signed.
+Signing is being set up ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). Until the SignPath
+Foundation approves the project, the release workflow signs with a self-signed SignPath **test** certificate,
+"TaskSmack Test Signing (untrusted)", which Windows doesn't trust; it proves the signing pipeline end to end.
+Releases published before Foundation signing is in place are not signed with a trusted certificate.
 
 ## What is signed
 
-- **`TaskSmack.exe`**, the application in the Windows `.zip` on the
+- **`TaskSmack.exe`**, the application in the Windows x64 `.zip` on the
   [releases page](https://github.com/mgradwohl/tasksmack/releases).
-- **Later, the TaskSmack helper** (`TaskSmackHelper.exe`, [#2181](https://github.com/mgradwohl/tasksmack/issues/2181)),
-  once it ships in the Windows release.
+- **`TaskSmackHelper.exe`**, the TaskSmack helper ([#2181](https://github.com/mgradwohl/tasksmack/issues/2181)),
+  beside it in the same `.zip`. The helper ships only signed: the release workflow refuses to publish a `.zip`
+  whose two executables aren't both validly signed and timestamped by the expected signer with one certificate.
+- Not yet: the Windows ARM64 `.zip`, which ships without the helper and unsigned for now.
+
+## How signing works
+
+The release workflow builds and packages the Windows x64 `.zip` on a GitHub-hosted runner, then a separate job
+that checks out no code and builds nothing submits that `.zip` to SignPath. SignPath signs and timestamps
+`TaskSmack.exe` and `TaskSmackHelper.exe` inside it and returns it. The workflow then checks both signatures
+(`Get-AuthenticodeSignature`: valid, the expected signer, timestamped, one certificate) before the `.zip` is
+hashed, signed with Sigstore and published. The details are in
+[CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#windows-code-signing).
 
 Only binaries built from this repository's source by the project's GitHub Actions release workflow
 ([`.github/workflows/release.yml`](https://github.com/mgradwohl/tasksmack/blob/main/.github/workflows/release.yml)),
-running on GitHub-hosted runners for a `v*.*.*` release tag, are submitted for signing. Nothing built on a
-developer's machine, in a fork, or by a pull request's CI run is signed, and neither are rehearsal runs of the
-release workflow (`dry_run`).
+running on GitHub-hosted runners, are submitted for signing. Nothing built on a developer's machine, in a fork,
+or by a pull request's CI run is signed. Rehearsal runs of the release workflow (`dry_run`) are signed only
+with the untrusted test certificate, never with the SignPath Foundation certificate; once that certificate is
+in use, it signs only real release runs for a `v*.*.*` tag.
 
 The third-party libraries TaskSmack uses are compiled from source and linked statically into
 `TaskSmack.exe`. TaskSmack does not sign binaries published by other projects; if a release ever ships one, it
@@ -49,8 +63,9 @@ Sigstore; see [Verifying a Release](guide/user-guide.md#verifying-a-release).
   [AGENTS.md](https://github.com/mgradwohl/tasksmack/blob/main/AGENTS.md). Changes to the GitHub Actions
   workflows, including the release workflow, need the maintainer's explicit confirmation before they are
   pushed.
-- **Approvers.** mgradwohl approves every signing request in SignPath by hand. The release workflow's signing
-  step will also run in a GitHub environment that requires his approval.
+- **Approvers.** mgradwohl approves every signing request for the SignPath Foundation certificate in SignPath
+  by hand; the release workflow waits for that approval. Requests for the untrusted test certificate need no
+  approval.
 
 All team members use multi-factor authentication for both GitHub and SignPath.
 

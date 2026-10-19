@@ -13,7 +13,9 @@
 #
 # CPack runs it as a CPACK_PRE_BUILD_SCRIPTS script (cmake/CPackProjectConfig.cmake.in), with the staged
 # files in CPACK_TEMPORARY_INSTALL_DIRECTORY, only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on. An
-# unsigned dev or dry-run build leaves that off, so this never runs for it. The tests run it on a folder:
+# unsigned dev build leaves that off, so this never runs for it. A pipeline that signs the packaged .zip
+# instead (TASKSMACK_SIGN_AFTER_PACKAGING; release.yml's SignPath step) runs it on the signed .zip's
+# extracted contents before publishing, as the tests run it on a folder:
 #   cmake -DTASKSMACK_VERIFY_DIR=<folder> [-DTASKSMACK_EXPECTED_SIGNER=<CN>] -P cmake/VerifyWindowsSignatures.cmake
 
 if(DEFINED CPACK_TEMPORARY_INSTALL_DIRECTORY)

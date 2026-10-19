@@ -41,6 +41,16 @@ env:
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
 
+  # Authenticode signing of the Windows x64 .zip through SignPath (#2302; docs/code-signing-policy.md): the
+  # SignPath signing policy sign-windows submits to. 'test-signing' signs with SignPath's self-signed test
+  # certificate, "TaskSmack Test Signing (untrusted)", with no approval: it proves the pipeline end to end, and
+  # nothing it signs is trusted outside this workflow. To sign releases with the SignPath Foundation certificate
+  # once the Foundation approves the project, change the LAST 'test-signing' below to 'release-signing'. That one
+  # line moves tag runs (and dry_run=false dispatches) to the policy whose every request the maintainer approves
+  # in SignPath (sign-windows waits for it), while dry runs stay on test-signing. The signer common name the
+  # build configures and validate-windows-package requires follows the policy (see WINDOWS_EXPECTED_SIGNER's uses).
+  SIGNPATH_SIGNING_POLICY: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'test-signing' || 'test-signing' }}
+
 permissions: {}
 
 jobs:
@@ -343,6 +353,9 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     # windows-11-arm: setup-windows-llvm installs the pinned native woa64 LLVM (plain ARM64, not
     # ARM64EC), and setup-mesa-llvmpipe fetches mmozeiko/build-mesa's ARM64 llvmpipe for the tests.
+    # signed: the leg whose .zip sign-windows sends to SignPath (#2302). Only x64: SignPath's
+    # artifact configuration `windows-zip` describes the win64 .zip, so ARM64 ships unsigned and
+    # without TaskSmackHelper.exe until a second artifact configuration covers its .zip.
     strategy:
       fail-fast: false
       matrix:
@@ -350,9 +363,11 @@ jobs:
           - arch: x64
             runner: windows-2025
             timeout: 30
+            signed: true
           - arch: arm64
             runner: windows-11-arm
             timeout: 60
+            signed: false
     permissions:
       contents: read
     steps:
@@ -401,11 +416,26 @@ jobs:
           python --version
 
       - name: Configure
+        # The signed leg packages TaskSmackHelper.exe (#2550) for sign-windows to sign with TaskSmack.exe.
+        # TASKSMACK_SIGN_AFTER_PACKAGING moves cmake/VerifyWindowsSignatures.cmake's check from CPack,
+        # where the .zip isn't signed yet, to validate-windows-package, which runs it on the signed
+        # .zip, so an unsigned helper still can't be published. TASKSMACK_EXPECTED_SIGNER is the signer
+        # the policy's certificate names, the one that check requires.
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
+          SIGNED: ${{ matrix.signed }}
+          WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
         run: |
-          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+          $signing = @()
+          if ($env:SIGNED -eq 'true') {
+            $signing = @(
+              '-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON',
+              '-DTASKSMACK_SIGN_AFTER_PACKAGING=ON',
+              "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER"
+            )
+          }
+          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" @signing
 
       - name: Build
         shell: pwsh
@@ -435,19 +465,104 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-release -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
 
-      # Authenticode signing (#2302) goes here, between Test and Package, on both architectures:
-      # the x64 and ARM64 zips (and the NSIS installers #2302 adds) both ship TaskSmack.exe.
       - name: Package
         shell: pwsh
         run: |
           cd build/win-release
           cpack -G "ZIP"
 
+      # The signed leg's .zip isn't a release package yet: it goes to sign-windows as
+      # windows-unsigned-<arch>, a name create-release's '*-packages-*' download never matches, and
+      # sign-windows uploads the signed .zip as windows-packages-<arch>. Only the .zip, at the
+      # artifact's root, where SignPath's `windows-zip` artifact configuration looks for it.
+      - name: Upload the unsigned .zip for signing
+        if: matrix.signed
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-unsigned-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload artifacts
+        if: ${{ !matrix.signed }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-packages-${{ matrix.arch }}
           path: dist/*
+          retention-days: 90
+
+  sign-windows:
+    name: Sign Windows Package (x64, SignPath)
+    needs: [build-windows]
+    # No checkout and no build: this job only hands build-windows' .zip to SignPath and takes the
+    # signed one back, so the SignPath token never shares a job with third-party build code (#2302's
+    # decision). SignPath signs TaskSmack.exe and TaskSmackHelper.exe inside the .zip, as the
+    # project's `windows-zip` artifact configuration says, and returns the .zip otherwise unchanged.
+    # SignPath only signs artifacts every job before it built on GitHub-hosted runners.
+    runs-on: ubuntu-24.04
+    # Covers release-signing's manual approval in SignPath (wait-for-completion-timeout below), not
+    # just test-signing's minute or two.
+    timeout-minutes: 75
+    permissions:
+      # What SignPath's documentation asks of the token it's given (github-token, the job's token by
+      # default): read this run's job details for its origin check, and download the artifact.
+      contents: read
+      actions: read
+    steps:
+      - name: Find the unsigned .zip's artifact
+        # build-windows is a matrix, so its x64 leg can't hand an output to this job reliably; the
+        # artifact is looked up by name instead. A re-run attempt can leave more than one, so the
+        # newest wins.
+        id: unsigned
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: windows-unsigned-x64
+        run: |
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?name=${ARTIFACT}" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .id // empty')
+          if [[ -z "$id" ]]; then
+            echo "No ${ARTIFACT} artifact in this run." >&2
+            exit 1
+          fi
+          echo "${ARTIFACT}: artifact ${id}"
+          echo "artifact-id=${id}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign with SignPath
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: tasksmack
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: windows-zip
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # An hour for the maintainer to approve a release-signing request; test-signing needs none.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Check the signed artifact
+        # The action unpacks the signed GitHub artifact into signed/: it must hold just the x64 .zip,
+        # under the name build-windows gave it. validate-windows-package checks the signatures.
+        env:
+          REQUEST_URL: ${{ steps.signpath.outputs.signing-request-web-url }}
+        run: |
+          echo "SignPath signing request (${SIGNPATH_SIGNING_POLICY}): ${REQUEST_URL}"
+          mapfile -t files < <(find signed -type f -printf '%P\n')
+          if [[ ${#files[@]} -ne 1 || ! ${files[0]} =~ ^TaskSmack-[^/]+-win64\.zip$ ]]; then
+            echo "Expected one TaskSmack-<version>-win64.zip from SignPath, found: ${files[*]}" >&2
+            exit 1
+          fi
+          echo "Signed package: ${files[0]}"
+
+      - name: Upload the signed .zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-packages-x64
+          path: signed/*.zip
+          if-no-files-found: error
           retention-days: 90
 
   verify-reproducibility-windows:
@@ -455,6 +570,12 @@ jobs:
     needs: [validate, build-windows]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
+    # original: build-windows' unsigned .zip for this architecture. x64's is the one it sent to
+    # SignPath (windows-unsigned-x64): Authenticode signatures carry a timestamp, so the signed
+    # .zip differs on every run by design and isn't compared. This rebuild is unsigned and
+    # configured without TASKSMACK_PACKAGE_WINDOWS_HELPER, so its .zip lacks the
+    # TaskSmackHelper.exe x64's has; "Compare digests" compares that against the helper this
+    # rebuild built instead.
     strategy:
       fail-fast: false
       matrix:
@@ -462,15 +583,17 @@ jobs:
           - arch: x64
             runner: windows-2025
             timeout: 30
+            original: windows-unsigned-x64
           - arch: arm64
             runner: windows-11-arm
             timeout: 60
+            original: windows-packages-arm64
     # Advisory only -- see verify-reproducibility (Linux)'s comment; not part of
     # create-release's `needs`.
     continue-on-error: true
     permissions:
       contents: read
-      actions: read  # Required to download the windows-packages-<arch> artifact from this run
+      actions: read  # Required to download build-windows' artifact from this run
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -509,10 +632,10 @@ jobs:
           cd build/win-release
           cpack -G "ZIP"
 
-      - name: Download build-windows's packages
+      - name: Download build-windows's unsigned package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: windows-packages-${{ matrix.arch }}
+          name: ${{ matrix.original }}
           path: original-dist/
 
       - name: Compare digests
@@ -521,29 +644,91 @@ jobs:
         # itself), which the existing "Upload artifacts" step uploads along with the real
         # packages. Get-FileHash errors on a directory, so -File restricts Get-ChildItem
         # to regular files up front.
+        #
+        # Identical .zip digests pass. Otherwise every file in the two .zips is compared, and the
+        # only difference allowed is a TaskSmackHelper.exe only the original packages (x64, see the
+        # matrix), which must match the one this rebuild built in build/win-release/bin.
         shell: pwsh
         run: |
-          $failed = $false
-          Get-ChildItem dist/* -File | ForEach-Object {
-            $orig = Join-Path "original-dist" $_.Name
-            if (-not (Test-Path -LiteralPath $orig -PathType Leaf)) {
-              Write-Host "::warning::No matching original artifact for $($_.Name) -- treating as a reproducibility failure, not skipping it."
-              $failed = $true
-              return
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Get-EntryHashes([string] $zipPath) {
+            $hashes = @{}
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+            try {
+              foreach ($entry in $zip.Entries) {
+                if ($entry.FullName.EndsWith('/')) { continue }
+                $stream = $entry.Open()
+                try {
+                  $hashes[$entry.FullName -replace '\\', '/'] = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash
+                } finally {
+                  $stream.Dispose()
+                }
+              }
+            } finally {
+              $zip.Dispose()
             }
-            $rebuiltHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-            $originalHash = (Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash
-            Write-Host "$($_.Name): rebuilt=$rebuiltHash original=$originalHash"
-            if ($rebuiltHash -ne $originalHash) {
-              Write-Host "::warning::$($_.Name) differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+            return $hashes
+          }
+
+          $failed = $false
+          foreach ($rebuiltZip in Get-ChildItem dist/* -File) {
+            $orig = Join-Path "original-dist" $rebuiltZip.Name
+            if (-not (Test-Path -LiteralPath $orig -PathType Leaf)) {
+              Write-Host "::warning::No matching original artifact for $($rebuiltZip.Name) -- treating as a reproducibility failure, not skipping it."
               $failed = $true
+              continue
+            }
+            $rebuiltHash = (Get-FileHash -LiteralPath $rebuiltZip.FullName -Algorithm SHA256).Hash
+            $originalHash = (Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash
+            Write-Host "$($rebuiltZip.Name): rebuilt=$rebuiltHash original=$originalHash"
+            if ($rebuiltHash -eq $originalHash) { continue }
+
+            $rebuilt = Get-EntryHashes $rebuiltZip.FullName
+            $original = Get-EntryHashes (Get-Item -LiteralPath $orig).FullName
+            $differs = $false
+            $helperOnly = $false
+            foreach ($name in $original.Keys) {
+              if ($rebuilt.ContainsKey($name)) {
+                if ($rebuilt[$name] -ne $original[$name]) {
+                  Write-Host "::warning::$name differs between the two independent builds of this tag."
+                  $differs = $true
+                }
+              } elseif ($name -match '(^|/)TaskSmackHelper\.exe$') {
+                $helperHash = (Get-FileHash -LiteralPath build/win-release/bin/TaskSmackHelper.exe -Algorithm SHA256).Hash
+                Write-Host "$($name): rebuilt=$helperHash original=$($original[$name]) (not in the rebuild's .zip; compared with build/win-release/bin)"
+                if ($helperHash -ne $original[$name]) {
+                  Write-Host "::warning::TaskSmackHelper.exe differs between the two independent builds of this tag."
+                  $differs = $true
+                } else {
+                  $helperOnly = $true
+                }
+              } else {
+                Write-Host "::warning::$name is in build-windows' $($rebuiltZip.Name) but not in the rebuild's."
+                $differs = $true
+              }
+            }
+            foreach ($name in $rebuilt.Keys) {
+              if (-not $original.ContainsKey($name)) {
+                Write-Host "::warning::$name is in the rebuild's $($rebuiltZip.Name) but not in build-windows'."
+                $differs = $true
+              }
+            }
+            if (-not $differs -and -not $helperOnly) {
+              Write-Host "::warning::$($rebuiltZip.Name)'s files match but the archives differ (entry metadata)."
+              $differs = $true
+            }
+            if ($differs) {
+              Write-Host "::warning::$($rebuiltZip.Name) differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+              $failed = $true
+            } else {
+              Write-Host "$($rebuiltZip.Name): every file matches; the original also packages the matching TaskSmackHelper.exe."
             }
           }
           if ($failed) {
             Write-Host "Reproducibility check found differences (advisory only; did not block the release)."
             exit 1
           } else {
-            Write-Host "All Windows packages are byte-for-byte identical across two independent builds of this tag."
+            Write-Host "All Windows packages are reproducible across two independent builds of this tag (byte-for-byte, or file-for-file plus the original's matching TaskSmackHelper.exe)."
           }
 
   validate-linux-package:
@@ -714,7 +899,8 @@ jobs:
 
   validate-windows-package:
     name: Validate Windows Release Artifacts (${{ matrix.arch }})
-    needs: [build-windows]
+    # x64's windows-packages-x64 is sign-windows' signed .zip; ARM64's comes from build-windows.
+    needs: [build-windows, sign-windows]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -722,16 +908,31 @@ jobs:
       matrix:
         include:
           # pe-machine: the COFF Machine field TaskSmack.exe must carry (IMAGE_FILE_MACHINE_*).
+          # signed: the .zip is Authenticode-signed and carries TaskSmackHelper.exe (build-windows'
+          # matrix).
           - arch: x64
             runner: windows-2025
             pe-machine: '0x8664'
+            signed: true
           - arch: arm64
             runner: windows-11-arm
             pe-machine: '0xAA64'
+            signed: false
     permissions:
       contents: read
       actions: read  # Required to download the windows-packages-<arch> artifact from this run
     steps:
+      # Only the signature check's script, for "Verify the Authenticode signatures". In its own
+      # folder, since a checkout cleans the folder it checks out into.
+      - name: Check out the signature check
+        if: matrix.signed
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: cmake/VerifyWindowsSignatures.cmake
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Download Windows packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -743,7 +944,11 @@ jobs:
         # CPack produces one top-level directory, with TaskSmack.exe directly inside it. A
         # recursive search would also accept TaskSmack.exe nested at any depth, silently
         # passing even if it moved somewhere users can no longer find per the documented steps.
+        # The signed .zip also carries TaskSmackHelper.exe beside it (#2550), where TaskSmack
+        # starts it from; an unsigned one must not carry it at all.
         shell: pwsh
+        env:
+          SIGNED: ${{ matrix.signed }}
         run: |
           $zipFile = Get-ChildItem dist/*.zip | Select-Object -First 1
           Expand-Archive -Path $zipFile.FullName -DestinationPath extracted
@@ -758,8 +963,62 @@ jobs:
             exit 1
           }
           Write-Host "Found executable: $exe"
+          $helpers = @(Get-ChildItem -Path extracted -Recurse -File -Filter TaskSmackHelper.exe)
+          $helper = Join-Path $topLevelDirs[0].FullName "TaskSmackHelper.exe"
+          if ($env:SIGNED -eq 'true') {
+            if ($helpers.Count -ne 1 -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+              Write-Error "Expected exactly one TaskSmackHelper.exe, directly beside TaskSmack.exe ($helper); found $($helpers.Count)."
+              exit 1
+            }
+            Write-Host "Found helper: $helper"
+          } elseif ($helpers.Count -ne 0) {
+            Write-Error "This .zip isn't Authenticode-signed, so it must not carry TaskSmackHelper.exe (#2302); found $($helpers[0].FullName)."
+            exit 1
+          }
           "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the Authenticode signatures
+        # The check CPack skipped for this .zip (TASKSMACK_SIGN_AFTER_PACKAGING; #2302), run on the
+        # signed .zip before create-release can publish it: cmake/VerifyWindowsSignatures.cmake
+        # requires TaskSmack.exe and TaskSmackHelper.exe to be validly signed by the policy's
+        # signer, timestamped, with one certificate. A missing, invalid, wrongly signed or
+        # untimestamped signature fails the release here.
+        #
+        # test-signing's certificate is self-signed, so no machine trusts it and its signatures
+        # read as UnknownError, not Valid. For that policy only, this ephemeral runner first trusts
+        # the certificate TaskSmack.exe was signed with, once it is self-signed and names the test
+        # signer. The check still proves both files are unchanged since SignPath signed them,
+        # timestamped and signed by that one certificate. release-signing's SignPath Foundation
+        # certificate chains to a public root, so nothing is added to the trust store for it.
+        if: matrix.signed
+        shell: pwsh
+        env:
+          WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
+        run: |
+          $pkg = $env:TASKSMACK_PKG_ROOT
+          foreach ($name in 'TaskSmack.exe', 'TaskSmackHelper.exe') {
+            $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $pkg $name)
+            Write-Host "${name}: $($sig.Status); signer $($sig.SignerCertificate.Subject) ($($sig.SignerCertificate.Thumbprint)); timestamped by $($sig.TimeStamperCertificate.Subject)"
+          }
+          if ($env:SIGNPATH_SIGNING_POLICY -eq 'test-signing') {
+            $cert = (Get-AuthenticodeSignature -LiteralPath $env:TASKSMACK_EXE).SignerCertificate
+            if (-not $cert) {
+              Write-Error "TaskSmack.exe isn't signed."
+              exit 1
+            }
+            $cn = $cert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+            if ($cn -ne $env:WINDOWS_EXPECTED_SIGNER -or $cert.Subject -ne $cert.Issuer) {
+              Write-Error "TaskSmack.exe is signed by $($cert.Subject), issued by $($cert.Issuer); test-signing expects SignPath's self-signed '$env:WINDOWS_EXPECTED_SIGNER' certificate."
+              exit 1
+            }
+            Write-Host "Trusting the self-signed test certificate on this runner only: $($cert.Subject) ($($cert.Thumbprint))"
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'LocalMachine')
+            $store.Open('ReadWrite')
+            try { $store.Add($cert) } finally { $store.Close() }
+          }
+          cmake "-DTASKSMACK_VERIFY_DIR=$pkg" "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER" -P repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify the executable's architecture
         # The COFF header's Machine field, read from the PE file: 0x8664 is x64 and 0xAA64 ARM64
@@ -991,7 +1250,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows, validate-linux-package, validate-windows-package]
+    needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-windows-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -1023,7 +1282,8 @@ jobs:
           upload-release-assets: false
 
       - name: Download packages (every OS and architecture)
-        # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/. Package
+        # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; x64's
+        # Windows .zip is sign-windows' signed one (windows-unsigned-x64 never matches). Package
         # names differ by architecture (cmake/Packaging.cmake), and so do the CPack staging
         # directories dropped below, so nothing in one artifact overwrites another's.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8

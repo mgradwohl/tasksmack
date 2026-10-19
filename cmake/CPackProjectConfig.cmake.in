@@ -9,9 +9,18 @@ endif()
 # component; #2550), only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build
 # (#2302). Before anything is packaged, VerifyWindowsSignatures.cmake refuses a TaskSmack.exe or helper
 # that isn't validly signed, timestamped, by TASKSMACK_EXPECTED_SIGNER with one certificate, so an
-# unsigned or wrongly signed helper can't ship by mistake.
+# unsigned or wrongly signed helper can't ship by mistake. With TASKSMACK_SIGN_AFTER_PACKAGING the .zip
+# is signed after it's packaged (release.yml sends it to SignPath, #2302), so the .zip is packaged
+# unsigned and the same check runs on the signed .zip's contents instead, before anything is published
+# (release.yml's validate-windows-package). The NSIS installer can't be signed inside afterwards, so it
+# keeps the check.
 if(@TASKSMACK_PACKAGES_WINDOWS_HELPER@ AND (CPACK_GENERATOR STREQUAL "ZIP" OR CPACK_GENERATOR STREQUAL "NSIS"))
     set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;windows_helper;/")
-    set(CPACK_PRE_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/VerifyWindowsSignatures.cmake")
-    set(TASKSMACK_EXPECTED_SIGNER "@TASKSMACK_EXPECTED_SIGNER@")
+    if(CPACK_GENERATOR STREQUAL "ZIP" AND @TASKSMACK_SIGN_AFTER_PACKAGING@)
+        message(WARNING "TaskSmackHelper.exe is packaged unsigned (TASKSMACK_SIGN_AFTER_PACKAGING): sign this .zip and "
+                        "check it with cmake/VerifyWindowsSignatures.cmake before publishing it (#2302).")
+    else()
+        set(CPACK_PRE_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/VerifyWindowsSignatures.cmake")
+        set(TASKSMACK_EXPECTED_SIGNER "@TASKSMACK_EXPECTED_SIGNER@")
+    endif()
 endif()
