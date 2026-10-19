@@ -234,6 +234,26 @@ TEST(ProcessActionsViewTest, NoRetryIsOfferedForAFailureOtherThanPermission)
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
 }
 
+TEST(ProcessActionsViewTest, ACriticalProcessRefusalIsShownWithNoAuthenticateOffer)
+{
+    // Windows refuses to end a critical system process (#2556) with a plain error: an administrator
+    // ending it would stop Windows just the same, so no password is asked for.
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canKill = true, .canAuthorizeInteractively = true});
+    mock.setKillResult(Platform::ProcessActionResult::error(
+        "Process 812 is a critical system process, which Windows can't run without; TaskSmack won't end it"));
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, {.pid = 812, .startTimeTicks = 1}, "winlogon.exe");
+    view.dispatchConfirmed(&mock);
+    view.waitForActionForTesting();
+
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text,
+              "Could not kill PID 812: Process 812 is a critical system process, which Windows can't run without; TaskSmack won't end it");
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+    EXPECT_EQ(mock.runAuthorizedCount(), 0);
+}
+
 TEST(ProcessActionsViewTest, TheRetryOfferGoesWithASelectionChangeOrItsTimeout)
 {
     TestMocks::MockProcessActions mock;

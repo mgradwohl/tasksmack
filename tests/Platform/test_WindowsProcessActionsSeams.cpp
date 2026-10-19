@@ -38,19 +38,37 @@ namespace
 /// each test starts from reset().
 struct FailingWin
 {
-    static inline DWORD openError = 0;  // OpenProcess fails with this, when not 0
-    static inline DWORD timesError = 0; // GetProcessTimes fails with this, when not 0
+    static inline DWORD openError = 0;     // OpenProcess fails with this, when not 0
+    static inline DWORD timesError = 0;    // GetProcessTimes fails with this, when not 0
+    static inline DWORD refusedAccess = 0; // OpenProcess asked for any of these rights fails with ERROR_ACCESS_DENIED
+    static inline BOOL critical = FALSE;   // IsProcessCritical's answer
+    static inline DWORD criticalError = 0; // IsProcessCritical fails with this, when not 0
+    static inline DWORD protectionLevel = PROTECTION_LEVEL_NONE;
+    static inline int opens = 0;
+    static inline int criticalChecks = 0;
     static inline int setterCalls = 0;
 
     static void reset()
     {
         openError = 0;
         timesError = 0;
+        refusedAccess = 0;
+        critical = FALSE;
+        criticalError = 0;
+        protectionLevel = PROTECTION_LEVEL_NONE;
+        opens = 0;
+        criticalChecks = 0;
         setterCalls = 0;
     }
 
-    static HANDLE WINAPI openProcess(DWORD /*access*/, BOOL /*inherit*/, DWORD /*pid*/)
+    static HANDLE WINAPI openProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
     {
+        ++opens;
+        if ((access & refusedAccess) != 0)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return nullptr;
+        }
         if (openError != 0)
         {
             SetLastError(openError);
@@ -81,6 +99,27 @@ struct FailingWin
         ++setterCalls;
         return TRUE;
     }
+    static BOOL WINAPI isProcessCritical(HANDLE /*process*/, PBOOL answer)
+    {
+        ++criticalChecks;
+        if (criticalError != 0)
+        {
+            SetLastError(criticalError);
+            return FALSE;
+        }
+        *answer = critical;
+        return TRUE;
+    }
+    static BOOL WINAPI getProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+    {
+        if (infoClass != ProcessProtectionLevelInfo || size != sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        static_cast<PROCESS_PROTECTION_LEVEL_INFORMATION*>(info)->ProtectionLevel = protectionLevel;
+        return TRUE;
+    }
 
     [[nodiscard]] static WindowsProcessFunctions functions()
     {
@@ -92,6 +131,9 @@ struct FailingWin
             .readGroupSizes = [] { return std::vector<std::uint32_t>{8}; },
             .readCores = [] { return std::vector<ProcessorCoreRecord>{}; },
             .readCpuSets = [] { return std::vector<CpuSetRecord>{}; },
+            .pssCaptureSnapshot = nullptr,
+            .isProcessCritical = &isProcessCritical,
+            .getProcessInformation = &getProcessInformation,
         };
     }
 
@@ -153,6 +195,150 @@ TEST_F(WindowsProcessActionsSeamTest, APriorityWindowsRefusesIsReportedWithItsEr
 
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Failed to set priority for process 4242: error 5");
+}
+
+// The critical-process guard (#2556). Every "critical" process here is this test process, opened
+// for query only, and the answer is the fake's: no real critical process is ever opened or touched.
+
+TEST_F(WindowsProcessActionsSeamTest, ACriticalProcessIsNeverEndedReprioritisedOrRepinned)
+{
+    FailingWin::critical = TRUE;
+    WindowsProcessActions actions(FailingWin::functions());
+    const std::string critical = "Process 4242 is a critical system process, which Windows can't run without; TaskSmack won't ";
+
+    const std::vector<std::pair<std::string, ProcessActionResult>> results{
+        {critical + "end it", actions.kill(TARGET)},
+        {critical + "end it", actions.terminate(TARGET)},
+        {critical + "change its priority", actions.setPriority(TARGET, 10)},
+        {critical + "change its priority", actions.setPriority(TARGET, -20)},
+        {critical + "change its CPU affinity", actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U))},
+    };
+    for (const auto& [expected, result] : results)
+    {
+        EXPECT_FALSE(result.success) << expected;
+        EXPECT_EQ(result.errorMessage, expected);
+        // Not a permission failure: the UI must not offer "Authenticate and retry", since an
+        // administrator ending it bugchecks Windows just the same.
+        EXPECT_FALSE(result.permissionDenied) << expected;
+    }
+    EXPECT_EQ(FailingWin::criticalChecks, 5);
+    EXPECT_EQ(FailingWin::setterCalls, 0);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AProcessWhoseCriticalityCantBeReadIsLeftAlone)
+{
+    FailingWin::criticalError = ERROR_ACCESS_DENIED;
+    WindowsProcessActions actions(FailingWin::functions());
+    const std::string expected = "Cannot tell whether process 4242 is a critical system process: error 5; action not sent";
+
+    EXPECT_EQ(actions.kill(TARGET).errorMessage, expected);
+    EXPECT_EQ(actions.terminate(TARGET).errorMessage, expected);
+    EXPECT_EQ(actions.setPriority(TARGET, 0).errorMessage, expected);
+    EXPECT_EQ(actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, expected);
+    EXPECT_EQ(FailingWin::setterCalls, 0);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, WithoutACriticalCheckNothingIsSent)
+{
+    WindowsProcessFunctions functions = FailingWin::functions();
+    functions.isProcessCritical = nullptr;
+    WindowsProcessActions actions(functions);
+    const std::string expected = "Cannot tell whether process 4242 is a critical system process: error 120; action not sent";
+
+    EXPECT_EQ(actions.kill(TARGET).errorMessage, expected);
+    EXPECT_EQ(actions.setPriority(TARGET, 0).errorMessage, expected);
+    EXPECT_EQ(actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, expected);
+    EXPECT_EQ(FailingWin::setterCalls, 0);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, ANonCriticalProcessIsActedOn)
+{
+    // The guard answers "not critical", so the action reaches Windows, which refuses the query-only handle.
+    WindowsProcessActions actions(FailingWin::functions());
+
+    EXPECT_EQ(actions.kill(TARGET).errorMessage, "Failed to terminate process 4242: error 5");
+    EXPECT_EQ(actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, "");
+    EXPECT_EQ(FailingWin::setterCalls, 1);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessIsNeverEndedAndSaysWhy)
+{
+    FailingWin::protectionLevel = PROTECTION_LEVEL_ANTIMALWARE_LIGHT;
+    WindowsProcessActions actions(FailingWin::functions());
+    const std::string expected = "Process 4242 is a protected process (a system or anti-malware service), which not even an administrator "
+                                 "can end; TaskSmack won't end it";
+
+    const ProcessActionResult killed = actions.kill(TARGET);
+    EXPECT_EQ(killed.errorMessage, expected);
+    EXPECT_FALSE(killed.permissionDenied);
+    EXPECT_EQ(actions.terminate(TARGET).errorMessage, expected);
+
+    // Windows refuses a protected process's priority itself: only ending one is guarded here.
+    EXPECT_EQ(actions.setPriority(TARGET, 0).errorMessage, "Failed to set priority for process 4242: error 5");
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessThatRefusesTheKillsOpenIsNamedAsProtected)
+{
+    // Windows refuses PROCESS_TERMINATE on a protected process before any handle exists; a limited
+    // query, which it allows, says why.
+    FailingWin::refusedAccess = PROCESS_TERMINATE;
+    FailingWin::protectionLevel = PROTECTION_LEVEL_WINTCB_LIGHT;
+    WindowsProcessActions actions(FailingWin::functions());
+
+    const ProcessActionResult result = actions.kill(TARGET);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_EQ(result.errorMessage,
+              "Process 4242 is a protected process (a system or anti-malware service), which not even an administrator can end; "
+              "TaskSmack won't end it");
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AnUnprotectedProcessThatRefusesTheKillsOpenKeepsTheError)
+{
+    FailingWin::refusedAccess = PROCESS_TERMINATE;
+    WindowsProcessActions actions(FailingWin::functions());
+
+    EXPECT_EQ(actions.kill(TARGET).errorMessage, "Failed to open process 4242: error 5");
+}
+
+TEST_F(WindowsProcessActionsSeamTest, TheKernelsPidsAreRefusedBeforeAnythingIsOpened)
+{
+    WindowsProcessActions actions(FailingWin::functions());
+
+    constexpr ProcessTarget SYSTEM{.pid = 4, .startTimeTicks = FailingWin::TARGET_TICKS};
+    const ProcessActionResult killed = actions.kill(SYSTEM);
+    EXPECT_EQ(killed.errorMessage, "PID 4 is the System process; TaskSmack won't end it");
+    EXPECT_FALSE(killed.permissionDenied);
+    EXPECT_EQ(actions.terminate(SYSTEM).errorMessage, "PID 4 is the System process; TaskSmack won't end it");
+    EXPECT_EQ(actions.setPriority(SYSTEM, 0).errorMessage, "PID 4 is the System process; TaskSmack won't change its priority");
+    EXPECT_EQ(actions.setAffinity(SYSTEM, CpuAffinity::fromMask(0b1U)).errorMessage,
+              "PID 4 is the System process; TaskSmack won't change its CPU affinity");
+
+    // PID 0, the System Idle Process, is an invalid PID to every action.
+    constexpr ProcessTarget IDLE{.pid = 0, .startTimeTicks = FailingWin::TARGET_TICKS};
+    EXPECT_EQ(actions.kill(IDLE).errorMessage, "Invalid PID");
+    EXPECT_EQ(actions.terminate(IDLE).errorMessage, "Invalid PID");
+    EXPECT_EQ(actions.setPriority(IDLE, 0).errorMessage, "Invalid PID");
+    EXPECT_EQ(actions.setAffinity(IDLE, CpuAffinity::fromMask(0b1U)).errorMessage, "Invalid PID");
+
+    EXPECT_EQ(FailingWin::opens, 0);
+    EXPECT_EQ(FailingWin::setterCalls, 0);
+}
+
+TEST(WindowsProcessFunctionsTest, TheRealFunctionsCheckCriticalityAndProtection)
+{
+    const WindowsProcessFunctions functions = realWindowsProcessFunctions();
+    ASSERT_NE(functions.isProcessCritical, nullptr);
+    ASSERT_NE(functions.getProcessInformation, nullptr);
+
+    // Asked of this test process only: it is neither critical nor protected.
+    BOOL critical = TRUE;
+    ASSERT_NE(functions.isProcessCritical(GetCurrentProcess(), &critical), FALSE);
+    EXPECT_EQ(critical, FALSE);
+    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
+    ASSERT_NE(functions.getProcessInformation(GetCurrentProcess(), ProcessProtectionLevelInfo, &protection, sizeof(protection)), FALSE);
+    EXPECT_EQ(protection.ProtectionLevel, static_cast<DWORD>(PROTECTION_LEVEL_NONE));
 }
 
 TEST(WindowsProcessFunctionsTest, TheRealCpuSetReaderListsEveryLogicalProcessorOnce)

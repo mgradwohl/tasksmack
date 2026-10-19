@@ -232,6 +232,78 @@ std::vector<CpuSetRecord> realReadCpuSets()
     return std::format("Failed to open process {}: error {}", target.pid, error);
 }
 
+/// Whether `process` is protected (PPL or PP), through the seam; false when that can't be read.
+[[nodiscard]] bool isProtected(const WindowsProcessFunctions& fns, HANDLE process)
+{
+    if (fns.getProcessInformation == nullptr)
+    {
+        return false;
+    }
+    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
+    if (fns.getProcessInformation(process, ProcessProtectionLevelInfo, &protection, sizeof(protection)) == 0)
+    {
+        return false;
+    }
+    return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
+}
+
+/// Whether `pid`'s process is protected, to word a refused open: a protected process still lets
+/// anyone open it for a limited query. Not identity-checked, since it decides no action, only how one
+/// Windows already refused is explained.
+[[nodiscard]] bool isProtectedPid(const WindowsProcessFunctions& fns, std::int32_t pid)
+{
+    if (fns.openProcess == nullptr)
+    {
+        return false;
+    }
+    const Windows::UniqueHandle process(fns.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+    return process && isProtected(fns, process.get());
+}
+
+/// The refusal for PID 4, the System process (#2556), logged, or nullopt for any other PID.
+[[nodiscard]] std::optional<ProcessActionResult> systemPidResult(const ProcessTarget& target, GuardedAction action)
+{
+    std::string refusal = systemPidRefusal(target.pid, action);
+    if (refusal.empty())
+    {
+        return std::nullopt;
+    }
+    spdlog::warn("{}", refusal);
+    return ProcessActionResult::error(std::move(refusal));
+}
+
+/// Why `action` must not reach the verified `process` (#2556), logged, or nullopt: a protected process
+/// is never ended, and a critical one (or one whose criticality can't be read) never ended,
+/// re-prioritised or re-pinned. Errors, not permissionDenied: no administrator password makes them safe.
+[[nodiscard]] std::optional<ProcessActionResult>
+guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTarget& target, GuardedAction action)
+{
+    std::string refusal;
+    BOOL critical = FALSE;
+    if (action == GuardedAction::End && isProtected(fns, process))
+    {
+        refusal = protectedProcessRefusal(target.pid);
+    }
+    else if (fns.isProcessCritical == nullptr)
+    {
+        refusal = criticalCheckFailure(target.pid, ERROR_CALL_NOT_IMPLEMENTED);
+    }
+    else if (fns.isProcessCritical(process, &critical) == 0)
+    {
+        refusal = criticalCheckFailure(target.pid, GetLastError());
+    }
+    else if (critical != FALSE)
+    {
+        refusal = criticalProcessRefusal(target.pid, action);
+    }
+    if (refusal.empty())
+    {
+        return std::nullopt;
+    }
+    spdlog::warn("{}", refusal);
+    return ProcessActionResult::error(std::move(refusal));
+}
+
 } // namespace
 
 WindowsProcessFunctions realWindowsProcessFunctions() noexcept
@@ -245,6 +317,8 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .readCores = &realReadCores,
         .readCpuSets = &realReadCpuSets,
         .pssCaptureSnapshot = &PssCaptureSnapshot,
+        .isProcessCritical = &IsProcessCritical,
+        .getProcessInformation = &GetProcessInformation,
     };
 }
 
@@ -281,6 +355,10 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     // to, or refuse. It used to be TerminateProcess, the same as Kill, though the UI promised a
     // graceful shutdown and users pick Terminate over Kill to keep unsaved work (#1094).
     spdlog::info("Asking process {} to close", target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::End))
+    {
+        return std::move(*refused);
+    }
     // The verified handle is held while the windows are enumerated, so the PID cannot be reused
     // by another process between the identity check and the close requests.
     const VerifiedProcess process =
@@ -291,6 +369,11 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     if (!process.handle)
     {
         return process.result;
+    }
+    // A critical process that closes when asked stops Windows as surely as one killed (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::End))
+    {
+        return std::move(*refused);
     }
 
     CloseRequest request{.pid = static_cast<DWORD>(target.pid)};
@@ -333,15 +416,32 @@ ProcessActionResult WindowsProcessActions::resume(const ProcessTarget& target)
 
 ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode) const
 {
-    VerifiedProcess process =
-        openVerified(m_Fns,
-                     target,
-                     PROCESS_TERMINATE,
-                     [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
+    if (auto refused = systemPidResult(target, GuardedAction::End))
+    {
+        return std::move(*refused);
+    }
+    VerifiedProcess process = openVerified(m_Fns,
+                                           target,
+                                           PROCESS_TERMINATE,
+                                           [this, &target](DWORD error)
+                                           {
+                                               // A protected process refuses PROCESS_TERMINATE even to an
+                                               // administrator: say so, rather than give an error number.
+                                               if (error == ERROR_ACCESS_DENIED && isProtectedPid(m_Fns, target.pid))
+                                               {
+                                                   return protectedProcessRefusal(target.pid);
+                                               }
+                                               return std::format("Failed to open process {}: error {}", target.pid, error);
+                                           });
     if (!process.result.success)
     {
         spdlog::error("{}", process.result.errorMessage);
         return std::move(process.result);
+    }
+    // Checked on the handle the kill goes through, so the process checked is the process ended (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::End))
+    {
+        return std::move(*refused);
     }
 
     const BOOL result = TerminateProcess(process.handle.get(), exitCode);
@@ -365,6 +465,10 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
 
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::Priority))
+    {
+        return std::move(*refused);
+    }
 
     VerifiedProcess process = openVerified(m_Fns,
                                            target,
@@ -385,6 +489,12 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
     {
         spdlog::warn("{}", process.result.errorMessage);
         return std::move(process.result);
+    }
+    // Idle or Below normal starves a critical process, and the session with it; nothing a user needs
+    // is served by raising one either (#2556). Realtime is never set at all (niceToPriorityClass()).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Priority))
+    {
+        return std::move(*refused);
     }
 
     const BOOL result = SetPriorityClass(process.handle.get(), priorityClass);
@@ -420,6 +530,10 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
     {
         return ProcessActionResult::error("Invalid PID");
     }
+    if (auto refused = systemPidResult(target, GuardedAction::Affinity))
+    {
+        return std::move(*refused);
+    }
     auto masks = groupMasksForAffinity(cpus, m_GroupSizes);
     if (!masks.has_value())
     {
@@ -436,6 +550,11 @@ ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& targ
     {
         spdlog::warn("Not setting CPU affinity for PID {}: {}", target.pid, process.result.errorMessage);
         return std::move(process.result);
+    }
+    // Pinning a critical process to one CPU can hang the session as surely as starving it (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Affinity))
+    {
+        return std::move(*refused);
     }
 
     BOOL ok = FALSE;

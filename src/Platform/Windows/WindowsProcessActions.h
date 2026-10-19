@@ -45,6 +45,14 @@ struct WindowsProcessFunctions
     std::vector<CpuSetRecord> (*readCpuSets)() = nullptr;
     /// PssCaptureSnapshot(), which a dump is written from (#2001); null: every dump is written live.
     Windows::PssCaptureSnapshotFn pssCaptureSnapshot = nullptr;
+    /// IsProcessCritical(), asked of the verified handle before Kill, Terminate, a priority change or an
+    /// affinity change (#2556). Null, or a failed call, refuses the action: a critical process is never
+    /// acted on for want of an answer.
+    BOOL(WINAPI* isProcessCritical)(HANDLE process, PBOOL critical) = nullptr;
+    /// GetProcessInformation(), read for ProcessProtectionLevelInfo before Kill or Terminate (#2556).
+    /// Null, or a failed call, reads as not protected: Windows refuses to end a protected process anyway,
+    /// so this only words the refusal.
+    BOOL(WINAPI* getProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
 };
 
 /// The real Win32 calls.
@@ -56,6 +64,13 @@ struct WindowsProcessFunctions
 /// Uses TerminateProcess and related APIs. Each action opens a handle to the PID, confirms the
 /// process's creation time matches the target's, and acts through that handle. The handle pins the
 /// process object, so once the check passes a later reuse of the PID cannot redirect the action.
+///
+/// Some processes are never acted on, however TaskSmack runs: elevated, or as the elevated helper with
+/// SeDebugPrivilege (#2556). PID 4 (the kernel's System process; PID 0 is refused as invalid), and any critical process (IsProcessCritical:
+/// winlogon.exe, the DcomLaunch svchost.exe, whose exit bugchecks Windows), are refused Kill, Terminate,
+/// a priority change and an affinity change; a protected process is refused Kill and Terminate with a
+/// message saying so. Each is a plain error, never permissionDenied: running as administrator, which
+/// "Authenticate and retry" offers, doesn't make it safe.
 class WindowsProcessActions : public IProcessActions
 {
   public:

@@ -15,6 +15,7 @@
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessDump.h"
 #include "Platform/Windows/WindowsProcessDumpMath.h"
+#include "Platform/Windows/WindowsProcessMachine.h"
 
 #include <gtest/gtest.h>
 
@@ -699,6 +700,11 @@ struct FakeWin
         }
         return TRUE;
     }
+    static BOOL WINAPI isProcessCritical(HANDLE /*process*/, PBOOL critical)
+    {
+        *critical = FALSE; // the guard has its own tests (test_WindowsProcessActionsSeams.cpp, #2556)
+        return TRUE;
+    }
 
     [[nodiscard]] static WindowsProcessFunctions functions()
     {
@@ -710,6 +716,9 @@ struct FakeWin
             .readGroupSizes = [] { return groupSizes; },
             .readCores = [] { return cores; },
             .readCpuSets = [] { return cpuSets; },
+            .pssCaptureSnapshot = nullptr,
+            .isProcessCritical = &isProcessCritical,
+            .getProcessInformation = nullptr,
         };
     }
 };

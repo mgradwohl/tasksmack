@@ -146,6 +146,71 @@ isCloseRequestWindow(uint32_t windowPid, uint32_t targetPid, bool visible, bool 
                        firstError);
 }
 
+/// An action the critical-process guard covers (#2556), for its refusal's wording.
+enum class GuardedAction : std::uint8_t
+{
+    End,      ///< Kill (TerminateProcess) or Terminate (WM_CLOSE)
+    Priority, ///< SetPriorityClass
+    Affinity, ///< SetProcessAffinityMask or SetProcessDefaultCpuSets
+};
+
+/// What TaskSmack won't do, worded to follow "TaskSmack won't".
+[[nodiscard]] constexpr const char* guardedActionWording(GuardedAction action) noexcept
+{
+    switch (action)
+    {
+    case GuardedAction::Priority:
+        return "change its priority";
+    case GuardedAction::Affinity:
+        return "change its CPU affinity";
+    case GuardedAction::End:
+        break;
+    }
+    return "end it";
+}
+
+/// PID 4 is the System process: the kernel's threads.
+inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
+
+/// Why @p action is refused for @p pid before anything is opened, or empty (#2556): PID 4 is the System
+/// process, the kernel's own, which can't be ended, and changing how it is scheduled starves the whole
+/// machine. Not a permission failure: running as administrator doesn't change the answer. PID 0, the
+/// System Idle Process, is refused as an invalid PID before this is asked.
+[[nodiscard]] inline std::string systemPidRefusal(int32_t pid, GuardedAction action)
+{
+    if (pid == SYSTEM_PROCESS_PID)
+    {
+        return std::format("PID 4 is the System process; TaskSmack won't {}", guardedActionWording(action));
+    }
+    return {};
+}
+
+/// @p action refused because @p pid's process is critical (IsProcessCritical, #2556): Windows stops with
+/// CRITICAL_PROCESS_DIED when one exits (winlogon.exe, the DcomLaunch svchost.exe), and starving or
+/// pinning one can hang logon or the whole session. An administrator, or the elevated helper, could
+/// do it, so this is not a permission failure: no password makes it safe.
+[[nodiscard]] inline std::string criticalProcessRefusal(int32_t pid, GuardedAction action)
+{
+    return std::format(
+        "Process {} is a critical system process, which Windows can't run without; TaskSmack won't {}", pid, guardedActionWording(action));
+}
+
+/// IsProcessCritical() failed with @p error, so whether @p pid's process is critical is unknown (#2556):
+/// the action is refused rather than risk ending one.
+[[nodiscard]] inline std::string criticalCheckFailure(int32_t pid, uint32_t error)
+{
+    return std::format("Cannot tell whether process {} is a critical system process: error {}; action not sent", pid, error);
+}
+
+/// Kill or Terminate refused because @p pid's process is protected (PPL or PP, #2556): an anti-malware
+/// service or a system process that Windows keeps even an administrator from ending.
+[[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid)
+{
+    return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can end; "
+                       "TaskSmack won't end it",
+                       pid);
+}
+
 /// Set affinity refused for lack of access (#1881): a protected process (anti-malware, DRM, some
 /// system services) refuses even an administrator, and an elevated or another user's process needs
 /// TaskSmack to run elevated.
