@@ -7,10 +7,15 @@ through its free program for open-source projects. Windows shows **SignPath Foun
 signed TaskSmack binary, for example in the User Account Control prompt and in the file's Properties >
 Digital Signatures tab.
 
-Signing is being set up ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). Until the SignPath
-Foundation approves the project, the release workflow signs with a self-signed SignPath **test** certificate,
-"TaskSmack Test Signing (untrusted)", which Windows doesn't trust; it proves the signing pipeline end to end.
-Releases published before Foundation signing is in place are not signed with a trusted certificate.
+Signing is being set up ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). The release workflow's
+signing path is in place but switched off, by the repository variable `SIGNPATH_SIGNING_ENABLED`, until the
+SignPath Foundation approves the project: its OSS programme includes the GitHub.com trusted build system the
+workflow submits through. While it's off, the Windows `.zip` is unsigned and doesn't contain the helper, which
+never ships unsigned. Once the Foundation approves, the maintainer adds the GitHub.com trusted build system and a
+`release-signing` policy in SignPath, then sets `SIGNPATH_SIGNING_ENABLED` to `true`. A dry run then signs with a
+self-signed SignPath **test** certificate, "TaskSmack Test Signing (untrusted)", which Windows doesn't trust, to
+prove the pipeline, before releases switch to the Foundation certificate. Releases published before then are
+not Authenticode-signed.
 
 ## What is signed
 

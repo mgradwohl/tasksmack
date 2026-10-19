@@ -51,6 +51,14 @@ env:
   # build configures and validate-windows-package requires follows the policy (see WINDOWS_EXPECTED_SIGNER's uses).
   SIGNPATH_SIGNING_POLICY: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'test-signing' || 'test-signing' }}
 
+  # The switch for the whole signing path: 'true' only when the repository variable
+  # SIGNPATH_SIGNING_ENABLED is 'true'. It stays unset until the SignPath Foundation approves the
+  # project, because SignPath's free organization doesn't include the GitHub.com trusted build
+  # system sign-windows needs. Off, the Windows x64 .zip is packaged as before #2302: no
+  # TaskSmackHelper.exe (it never ships unsigned), no sign-windows, no signature check. Jobs read
+  # vars.SIGNPATH_SIGNING_ENABLED directly, since a job's `if:` can't read `env`.
+  SIGNING_ENABLED: ${{ vars.SIGNPATH_SIGNING_ENABLED == 'true' }}
+
 permissions: {}
 
 jobs:
@@ -357,7 +365,8 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     # windows-11-arm: setup-windows-llvm installs the pinned native woa64 LLVM (plain ARM64, not
     # ARM64EC), and setup-mesa-llvmpipe fetches mmozeiko/build-mesa's ARM64 llvmpipe for the tests.
-    # signed: the leg whose .zip sign-windows sends to SignPath (#2302). Only x64: SignPath's
+    # signed: the leg whose .zip sign-windows sends to SignPath (#2302) when SIGNING_ENABLED is
+    # 'true'; with signing off, every leg packages and uploads as before. Only x64: SignPath's
     # artifact configuration `windows-zip` describes the win64 .zip, so ARM64 ships unsigned and
     # without TaskSmackHelper.exe until a second artifact configuration covers its .zip.
     strategy:
@@ -428,7 +437,7 @@ jobs:
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-          SIGNED: ${{ matrix.signed }}
+          SIGNED: ${{ matrix.signed && env.SIGNING_ENABLED == 'true' }}
           WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
         run: |
           $signing = @()
@@ -480,7 +489,7 @@ jobs:
       # sign-windows uploads the signed .zip as windows-packages-<arch>. Only the .zip, at the
       # artifact's root, where SignPath's `windows-zip` artifact configuration looks for it.
       - name: Upload the unsigned .zip for signing
-        if: matrix.signed
+        if: matrix.signed && env.SIGNING_ENABLED == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-unsigned-${{ matrix.arch }}
@@ -489,7 +498,7 @@ jobs:
           retention-days: 90
 
       - name: Upload artifacts
-        if: ${{ !matrix.signed }}
+        if: ${{ !matrix.signed || env.SIGNING_ENABLED != 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-packages-${{ matrix.arch }}
@@ -499,6 +508,9 @@ jobs:
   sign-windows:
     name: Sign Windows Package (x64, SignPath)
     needs: [build-windows]
+    # Skipped while signing is off (SIGNING_ENABLED); validate-windows-package and create-release
+    # accept that skip only then.
+    if: vars.SIGNPATH_SIGNING_ENABLED == 'true'
     # No checkout and no build: this job only hands build-windows' .zip to SignPath and takes the
     # signed one back, so the SignPath token never shares a job with third-party build code (#2302's
     # decision). SignPath signs TaskSmack.exe and TaskSmackHelper.exe inside the .zip, as the
@@ -574,8 +586,9 @@ jobs:
     needs: [validate, build-windows]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
-    # original: build-windows' unsigned .zip for this architecture. x64's is the one it sent to
-    # SignPath (windows-unsigned-x64): Authenticode signatures carry a timestamp, so the signed
+    # The original is build-windows' unsigned .zip for this architecture. With signing on
+    # (SIGNING_ENABLED), x64's is the one it sent to SignPath (windows-unsigned-x64), since
+    # Authenticode signatures carry a timestamp, so the signed
     # .zip differs on every run by design and isn't compared. This rebuild is unsigned and
     # configured without TASKSMACK_PACKAGE_WINDOWS_HELPER, so its .zip lacks the
     # TaskSmackHelper.exe x64's has; "Compare digests" compares that against the helper this
@@ -587,11 +600,9 @@ jobs:
           - arch: x64
             runner: windows-2025
             timeout: 30
-            original: windows-unsigned-x64
           - arch: arm64
             runner: windows-11-arm
             timeout: 60
-            original: windows-packages-arm64
     # Advisory only -- see verify-reproducibility (Linux)'s comment; not part of
     # create-release's `needs`.
     continue-on-error: true
@@ -639,7 +650,7 @@ jobs:
       - name: Download build-windows's unsigned package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: ${{ matrix.original }}
+          name: ${{ (matrix.arch == 'x64' && env.SIGNING_ENABLED == 'true') && 'windows-unsigned-x64' || format('windows-packages-{0}', matrix.arch) }}
           path: original-dist/
 
       - name: Compare digests
@@ -903,8 +914,15 @@ jobs:
 
   validate-windows-package:
     name: Validate Windows Release Artifacts (${{ matrix.arch }})
-    # x64's windows-packages-x64 is sign-windows' signed .zip; ARM64's comes from build-windows.
+    # With signing on, x64's windows-packages-x64 is sign-windows' signed .zip; otherwise, and for
+    # ARM64, it comes from build-windows. sign-windows is skipped while signing is off, so this runs
+    # when build-windows succeeded and sign-windows succeeded, or was skipped because signing is off;
+    # a failed or cancelled signing (or run) still stops it.
     needs: [build-windows, sign-windows]
+    if: >-
+      ${{ !cancelled() && needs.build-windows.result == 'success' &&
+      (needs.sign-windows.result == 'success' ||
+      (vars.SIGNPATH_SIGNING_ENABLED != 'true' && needs.sign-windows.result == 'skipped')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -912,8 +930,8 @@ jobs:
       matrix:
         include:
           # pe-machine: the COFF Machine field TaskSmack.exe must carry (IMAGE_FILE_MACHINE_*).
-          # signed: the .zip is Authenticode-signed and carries TaskSmackHelper.exe (build-windows'
-          # matrix).
+          # signed: with SIGNING_ENABLED, the .zip is Authenticode-signed and carries
+          # TaskSmackHelper.exe (build-windows' matrix).
           - arch: x64
             runner: windows-2025
             pe-machine: '0x8664'
@@ -929,7 +947,7 @@ jobs:
       # Only the signature check's script, for "Verify the Authenticode signatures". In its own
       # folder, since a checkout cleans the folder it checks out into.
       - name: Check out the signature check
-        if: matrix.signed
+        if: matrix.signed && env.SIGNING_ENABLED == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: repo
@@ -952,7 +970,7 @@ jobs:
         # starts it from; an unsigned one must not carry it at all.
         shell: pwsh
         env:
-          SIGNED: ${{ matrix.signed }}
+          SIGNED: ${{ matrix.signed && env.SIGNING_ENABLED == 'true' }}
         run: |
           $zipFile = Get-ChildItem dist/*.zip | Select-Object -First 1
           Expand-Archive -Path $zipFile.FullName -DestinationPath extracted
@@ -995,7 +1013,7 @@ jobs:
         # signer. The check still proves both files are unchanged since SignPath signed them,
         # timestamped and signed by that one certificate. release-signing's SignPath Foundation
         # certificate chains to a public root, so nothing is added to the trust store for it.
-        if: matrix.signed
+        if: matrix.signed && env.SIGNING_ENABLED == 'true'
         shell: pwsh
         env:
           WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
@@ -1255,6 +1273,13 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-windows-package]
+    # Every job it needs must succeed, except sign-windows, which is skipped while signing is off
+    # (SIGNING_ENABLED). Without this `if:`, that skip would skip the release too.
+    if: >-
+      ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
+      needs.validate-linux-package.result == 'success' && needs.validate-windows-package.result == 'success' &&
+      (needs.sign-windows.result == 'success' ||
+      (vars.SIGNPATH_SIGNING_ENABLED != 'true' && needs.sign-windows.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

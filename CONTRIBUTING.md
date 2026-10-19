@@ -2722,7 +2722,8 @@ it has no `workflow_dispatch` trigger).
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
-tag run (including [Authenticode signing](#windows-code-signing) of the Windows x64 `.zip`), but skips `validate`'s tag, main-ancestry, existing-release and version-equals-tag checks
+tag run (including [Authenticode signing](#windows-code-signing) of the Windows x64 `.zip`, once it's
+switched on), but skips `validate`'s tag, main-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
 tests and validates the ARM64 packages as well as the x64 ones. No tag is pushed, so
@@ -2773,8 +2774,9 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 - Linux x64 packages: `TaskSmack-<version>-Linux.tar.gz` and `TaskSmack-<version>-Linux.deb`
 - Linux aarch64 packages: `TaskSmack-<version>-linux-aarch64.tar.gz` and
   `TaskSmack-<version>-linux-aarch64.deb` (from v0.9.0)
-- Windows x64 package: `TaskSmack-<version>-win64.zip`, with `TaskSmack.exe` and
-  `TaskSmackHelper.exe` Authenticode-signed (see [Windows code signing](#windows-code-signing))
+- Windows x64 package: `TaskSmack-<version>-win64.zip`. Once signing is switched on (see
+  [Windows code signing](#windows-code-signing)), it also carries `TaskSmackHelper.exe`, and both
+  executables are Authenticode-signed; until then it is unsigned and has no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; not Authenticode-signed yet, and without `TaskSmackHelper.exe`)
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
@@ -2798,9 +2800,9 @@ still run, emulated, on the ARM64 runner. Linux installs the
 `Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
 no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
-`TaskSmack.exe` directly under the single top-level directory, matching the documented layout, and
-on x64 `TaskSmackHelper.exe` beside it, which the unsigned ARM64 `.zip` must not carry), checks the
-x64 executables' Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
+`TaskSmack.exe` directly under the single top-level directory, matching the documented layout; a
+signed x64 `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
+one), checks a signed `.zip`'s Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
 launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
 llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Beyond the process staying up
 for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
@@ -2817,8 +2819,25 @@ may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
 ### Windows code signing
 
 The Windows x64 `.zip`'s `TaskSmack.exe` and `TaskSmackHelper.exe` are Authenticode-signed through
-[SignPath](https://signpath.io) (#2302; [code signing policy](docs/code-signing-policy.md)). In
-`release.yml`:
+[SignPath](https://signpath.io) (#2302; [code signing policy](docs/code-signing-policy.md)), once
+signing is switched on.
+
+**The switch** is the repository variable `SIGNPATH_SIGNING_ENABLED` (Settings > Secrets and
+variables > Actions > Variables). It is unset today: SignPath's free organization doesn't include
+the GitHub.com trusted build system that `sign-windows` logs in through ("Trusted build system is not
+allowed to log into the organization"), and the SignPath Foundation's OSS programme does. Until it's
+`true`, `release.yml` packages the x64 `.zip` as it did before #2302: without `TaskSmackHelper.exe`
+(the helper never ships unsigned), with `sign-windows` skipped (`validate-windows-package` and
+`create-release` accept that skip only while the variable is off), and with no signature check.
+Once the Foundation approves the project:
+
+1. in SignPath, add the GitHub.com trusted build system to the organization, and add a
+   `release-signing` signing policy with the Foundation certificate and approval required;
+2. set `SIGNPATH_SIGNING_ENABLED` to `true`;
+3. dispatch a dry run (it uses `test-signing`, below) and check its signatures;
+4. change `SIGNPATH_SIGNING_POLICY`'s last `test-signing` to `release-signing` (below).
+
+With the switch on, `release.yml` does this:
 
 1. `build-windows` (x64) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
    `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=<the policy's signer>`,
@@ -2899,8 +2918,8 @@ dirty.
 rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH`, once per
 architecture on that architecture's runner, and compare package digests against the corresponding
 `build-linux`/`build-windows` leg's artifact -- a missing
-matching artifact counts as a failure, not a skip. Windows x64 compares against the **unsigned**
-`.zip` `build-windows` sent for signing (`windows-unsigned-x64`): an Authenticode signature embeds a
+matching artifact counts as a failure, not a skip. With signing on, Windows x64 compares against
+the **unsigned** `.zip` `build-windows` sent for signing (`windows-unsigned-x64`): an Authenticode signature embeds a
 timestamp, so signed release `.zip`s are not byte-reproducible by design. The rebuild is configured
 without `TASKSMACK_PACKAGE_WINDOWS_HELPER`, so its `.zip` lacks `TaskSmackHelper.exe`; the check then
 compares the two `.zip`s file by file and the original's helper against the one the rebuild built. Both are advisory only (`continue-on-error:
