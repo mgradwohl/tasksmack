@@ -21,7 +21,7 @@ option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_GHASH "Windows clang Debug: global type hashes for faster lld-link PDB writes" OFF)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
-option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
+option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent cache directory instead of per-build _deps" ON)
 option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
 # Windows: whether the .zip and the NSIS installer carry TaskSmackHelper.exe, the elevated helper (#2550).
 # Only for Authenticode-signed builds (#2302): packaging then refuses a helper or TaskSmack.exe that
@@ -36,7 +36,7 @@ set(TASKSMACK_EXPECTED_SIGNER "SignPath Foundation" CACHE STRING "Windows: the c
 # cmake/VerifyWindowsSignatures.cmake on the signed .zip's contents before publishing it. The NSIS installer
 # can't be signed inside afterwards, so it keeps the gate either way.
 option(TASKSMACK_SIGN_AFTER_PACKAGING "Windows: the .zip is Authenticode-signed after packaging, so check its signatures then, not before" OFF)
-set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
+set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
 set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86-64-v3, x86-64-v2). Empty string means no -march flag.")

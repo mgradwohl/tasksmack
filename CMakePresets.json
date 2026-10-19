@@ -206,7 +206,7 @@
         {
             "name": "profile",
             "displayName": "Profile (sampling profiler, not PGO)",
-            "description": "Release build optimized for profiling with perf/Instruments (frame pointers preserved). A plain profiling build: no PGO instrumentation or profile data (for PGO see pgo-generate / pgo-use / pgo-baseline)",
+            "description": "Release build optimized for profiling with perf/heaptrack (frame pointers preserved). A plain profiling build: no PGO instrumentation or profile data (for PGO see pgo-generate / pgo-use / pgo-baseline)",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
@@ -519,14 +519,17 @@
         },
         {
             "name": "msan",
+            "displayName": "MSan",
             "configurePreset": "msan"
         },
         {
             "name": "unity",
+            "displayName": "Unity (fast check build)",
             "configurePreset": "unity"
         },
         {
             "name": "win-unity",
+            "displayName": "Windows Unity (fast check build)",
             "configurePreset": "win-unity"
         }
     ],
@@ -652,6 +655,7 @@
         },
         {
             "name": "msan",
+            "displayName": "MSan Tests",
             "configurePreset": "msan",
             "output": {
                 "outputOnFailure": true
@@ -662,6 +666,7 @@
         },
         {
             "name": "unity",
+            "displayName": "Unity Tests",
             "configurePreset": "unity",
             "output": {
                 "outputOnFailure": true
@@ -672,6 +677,7 @@
         },
         {
             "name": "win-unity",
+            "displayName": "Windows Unity Tests",
             "configurePreset": "win-unity",
             "output": {
                 "outputOnFailure": true
