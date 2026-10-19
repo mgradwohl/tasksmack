@@ -713,21 +713,23 @@ TEST(LinuxProcessProbeTest, HandlesRapidEnumeration)
 // Multithreading Tests
 // =============================================================================
 
-TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
+namespace
 {
-    // Several probes enumerating at the same time must not throw, crash or come back empty, and every
-    // thread must finish its work. Each thread does a fixed number of enumerations and the counts are
-    // checked after joining, so a slow or oversubscribed runner only makes the test take longer; it has
-    // no sleep to outlast (#2283, as the Windows twin's #2259). A real hang is caught by the suite's
-    // ctest TIMEOUT.
+/// Four threads enumerating through @p probe at once (its documented contract, LinuxProcessProbe.h): none
+/// may throw, crash or come back empty, and every one must finish its work. Each does a fixed number
+/// of enumerations, checked after joining, so a slow or oversubscribed runner only makes the test take
+/// longer; it has no sleep to outlast (#2283, as the Windows twin's #2259). A real hang is caught by
+/// the suite's ctest TIMEOUT. Under the tsan preset, a race on the probe's shared caches fails it (#2412).
+void expectConcurrentEnumerationWorks(LinuxProcessProbe& probe)
+{
     constexpr std::size_t THREAD_COUNT = 4;
     constexpr int ITERATIONS_PER_THREAD = 2;
 
     std::array<int, THREAD_COUNT> successes{};
     std::array<int, THREAD_COUNT> exceptions{};
 
-    // Every thread builds its probe first, then they all start enumerating together, so the
-    // enumerations overlap rather than running one after another as the threads happen to start.
+    // The threads all start enumerating together, so the enumerations overlap rather than running one
+    // after another as the threads happen to start.
     std::latch startTogether{static_cast<std::ptrdiff_t>(THREAD_COUNT)};
 
     {
@@ -737,9 +739,8 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
         {
             // Each thread writes only its own slot; join() publishes the writes to this thread.
             threads.emplace_back(
-                [&startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
+                [&probe, &startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
                 {
-                    LinuxProcessProbe probe;
                     startTogether.arrive_and_wait();
                     for (int iteration = 0; iteration < ITERATIONS_PER_THREAD; ++iteration)
                     {
@@ -764,6 +765,27 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
         EXPECT_EQ(exceptions.at(i), 0) << "thread " << i << ": enumerate() threw";
         EXPECT_EQ(successes.at(i), ITERATIONS_PER_THREAD) << "thread " << i << ": not every enumeration returned processes";
     }
+}
+} // namespace
+
+// #2412: one probe shared by every thread, as the sampler and Process Details share it. Separate probes
+// share no state, so they would test no concurrency at all.
+TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
+{
+    LinuxProcessProbe probe;
+    expectConcurrentEnumerationWorks(probe);
+}
+
+// #2412: as above, with the inode-to-PID map and the command-line cache expiring at once, so every
+// enumeration rebuilds them and the threads race on the claim-under-lock rebuild, not just on reads.
+TEST(LinuxProcessProbeTest, ConcurrentEnumerationRebuildingItsCaches)
+{
+    LinuxProcessProbe probe;
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    probe.setInodeMapTtlForTesting(std::chrono::milliseconds(0));
+#endif
+    probe.setCmdlineCacheTtlForTesting(std::chrono::milliseconds(0));
+    expectConcurrentEnumerationWorks(probe);
 }
 
 // =============================================================================
