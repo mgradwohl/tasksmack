@@ -11,6 +11,7 @@
 // process name or PID can never be interpreted as shell syntax.
 
 #include "ProcPrivileges.h"
+#include "ProcStatusSecurityParser.h"
 
 #include <algorithm>
 #include <array>
@@ -251,42 +252,34 @@ template<typename Find> [[nodiscard]] std::optional<Terminal> selectTerminal(std
 }
 
 /// The real, effective and saved IDs from a /proc/[pid]/status line such as
-/// "Uid:\t1000\t1000\t1000\t1000" (@p key "Uid:" or "Gid:"); the fourth, filesystem, ID is not needed.
+/// "Uid:\t1000\t1000\t1000\t1000" (@p key "Uid" or "Gid", without the colon); the fourth, filesystem,
+/// ID is not needed. The line is found by ProcStatusSecurity::fieldValue(); the numbers are parsed here
+/// rather than by parseIdList(), which allocates, so this stays noexcept (#2502).
 [[nodiscard]] inline std::optional<std::array<std::uint32_t, 3>> parseStatusIds(std::string_view status, std::string_view key) noexcept
 {
-    std::size_t lineStart = 0;
-    while (lineStart < status.size())
+    std::optional<std::string_view> value = ProcStatusSecurity::fieldValue(status, key);
+    if (!value.has_value())
     {
-        std::size_t lineEnd = status.find('\n', lineStart);
-        if (lineEnd == std::string_view::npos)
-        {
-            lineEnd = status.size();
-        }
-        std::string_view line(status.data() + lineStart, lineEnd - lineStart);
-        if (line.starts_with(key))
-        {
-            line.remove_prefix(key.size());
-            std::array<std::uint32_t, 3> ids{};
-            for (std::uint32_t& id : ids)
-            {
-                const std::size_t valueStart = line.find_first_not_of(" \t");
-                if (valueStart == std::string_view::npos)
-                {
-                    return std::nullopt;
-                }
-                line.remove_prefix(valueStart);
-                const auto [ptr, ec] = std::from_chars(line.data(), line.data() + line.size(), id);
-                if (ec != std::errc{})
-                {
-                    return std::nullopt;
-                }
-                line.remove_prefix(static_cast<std::size_t>(ptr - line.data()));
-            }
-            return ids;
-        }
-        lineStart = lineEnd + 1;
+        return std::nullopt;
     }
-    return std::nullopt;
+    std::string_view line = *value;
+    std::array<std::uint32_t, 3> ids{};
+    for (std::uint32_t& id : ids)
+    {
+        const std::size_t valueStart = line.find_first_not_of(" \t");
+        if (valueStart == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        line.remove_prefix(valueStart);
+        const auto [ptr, ec] = std::from_chars(line.data(), line.data() + line.size(), id);
+        if (ec != std::errc{})
+        {
+            return std::nullopt;
+        }
+        line.remove_prefix(static_cast<std::size_t>(ptr - line.data()));
+    }
+    return ids;
 }
 
 /// Whether a `security.capability` extended attribute (struct vfs_cap_data, little-endian) gives the

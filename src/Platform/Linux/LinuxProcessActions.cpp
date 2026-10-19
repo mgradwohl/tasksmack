@@ -933,8 +933,8 @@ bool ownProcessCanSetRealtimeIo()
     // the kernel shows that by making root the owner of its /proc directory.
     const std::string procDir = "/proc/" + std::to_string(pid);
     const std::optional<std::string> status = readSmallFile(procDir + "/status");
-    const auto uids = status ? SyscallTrace::parseStatusIds(*status, "Uid:") : std::nullopt;
-    const auto gids = status ? SyscallTrace::parseStatusIds(*status, "Gid:") : std::nullopt;
+    const auto uids = status ? SyscallTrace::parseStatusIds(*status, "Uid") : std::nullopt;
+    const auto gids = status ? SyscallTrace::parseStatusIds(*status, "Gid") : std::nullopt;
     struct stat dirInfo{};
     const bool ownsProcDir = ::stat(procDir.c_str(), &dirInfo) == 0 && dirInfo.st_uid == ::geteuid();
     const auto allEqual = [](const std::optional<std::array<std::uint32_t, 3>>& ids, std::uint32_t expected)

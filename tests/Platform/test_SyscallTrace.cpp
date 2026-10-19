@@ -206,11 +206,11 @@ TEST(SyscallTraceTest, ParsesPtraceScope)
 TEST(SyscallTraceTest, ParsesStatusIds)
 {
     constexpr std::string_view STATUS = "Name:\tbash\nUid:\t1000\t1001\t1002\t1003\nGid:\t100\t100\t100\t100\n";
-    EXPECT_EQ(parseStatusIds(STATUS, "Uid:"), (std::array<std::uint32_t, 3>{1000, 1001, 1002}));
-    EXPECT_EQ(parseStatusIds(STATUS, "Gid:"), (std::array<std::uint32_t, 3>{100, 100, 100}));
-    EXPECT_EQ(parseStatusIds(STATUS, "Groups:"), std::nullopt);
-    EXPECT_EQ(parseStatusIds("Uid:\t1000\n", "Uid:"), std::nullopt);
-    EXPECT_EQ(parseStatusIds("Uid:\tabc\t1\t1\t1\n", "Uid:"), std::nullopt);
+    EXPECT_EQ(parseStatusIds(STATUS, "Uid"), (std::array<std::uint32_t, 3>{1000, 1001, 1002}));
+    EXPECT_EQ(parseStatusIds(STATUS, "Gid"), (std::array<std::uint32_t, 3>{100, 100, 100}));
+    EXPECT_EQ(parseStatusIds(STATUS, "Groups"), std::nullopt);
+    EXPECT_EQ(parseStatusIds("Uid:\t1000\n", "Uid"), std::nullopt);
+    EXPECT_EQ(parseStatusIds("Uid:\tabc\t1\t1\t1\n", "Uid"), std::nullopt);
 }
 
 TEST(SyscallTraceTest, ReadsCapSysPtraceFromFileCapabilities)
