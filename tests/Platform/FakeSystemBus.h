@@ -186,6 +186,14 @@ class FakeSystemBus
         m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
     }
 
+    /// A method that takes the call and never answers it, as a stalled service (#1689), before start().
+    /// The caller gives up only by its own method-call timeout; the bus thread isn't held meanwhile.
+    void addUnansweredMethod(const std::string& path, const std::string& interface, const std::string& member)
+    {
+        m_Methods[path + '\n' + interface + '\n' + member] =
+            RawMethod([](sd_bus_message* /*call*/) -> int { return 1; }); // handled, no reply
+    }
+
     /// Starts the daemon, takes @p serviceName on it when given (leave empty for a bus where the service
     /// isn't running), and points DBUS_SYSTEM_BUS_ADDRESS at it. False, with the reason in error(),
     /// when it couldn't.

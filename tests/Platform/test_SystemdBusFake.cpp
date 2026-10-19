@@ -1010,6 +1010,26 @@ TEST_F(SystemdBusFakeTest, ASystemdThatDoesntAnswerInTimeSaysSo)
     EXPECT_EQ(read.error, "systemd didn't answer in time");
 }
 
+// #1689 (#2479): the tests above have the service answer NoReply at once; this one's never answers, so
+// only the bus's own method-call timeout ends the wait. openSystemBus() sets CALL_TIMEOUT_USEC (2 s);
+// without it libsystemd waits its default 25 s, which this fails by elapsed time (and that default is
+// also what bounds the test if the timeout regresses).
+TEST_F(SystemdBusFakeTest, AReaderWhoseServiceNeverAnswersGivesUpWithinTheCallTimeout)
+{
+    m_Bus.addUnansweredMethod(SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnits");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const auto started = std::chrono::steady_clock::now();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    const auto waited = std::chrono::steady_clock::now() - started;
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
+    // It waited for the timeout (the call wasn't answered some other way), but no longer than it plus
+    // a loaded runner's margin.
+    const auto callTimeout = std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC);
+    EXPECT_GE(waited, callTimeout - std::chrono::milliseconds(100));
+    EXPECT_LT(waited, callTimeout + std::chrono::seconds(2));
+}
+
 } // namespace
 } // namespace Platform
 
