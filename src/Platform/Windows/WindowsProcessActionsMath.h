@@ -205,11 +205,18 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
     return std::format("Cannot tell whether process {} is a critical system process: error {}; action not sent", pid, error);
 }
 
-/// Kill, Terminate or Suspend (@p action) refused because @p pid's process is protected (PPL or PP,
-/// #2556, #2582): an anti-malware service or a system process that Windows keeps even an administrator
-/// from ending or suspending.
+/// @p action refused because @p pid's process is protected (PPL or PP, #2556, #2582): an anti-malware
+/// service or a system process that Windows keeps even an administrator from ending or suspending, or,
+/// when it refuses the open, from re-prioritising or re-pinning (#2602).
 [[nodiscard]] inline std::string protectedProcessRefusal(int32_t pid, GuardedAction action = GuardedAction::End)
 {
+    if (action == GuardedAction::Priority || action == GuardedAction::Affinity)
+    {
+        return std::format("Process {} is a protected process (a system or anti-malware service); Windows won't let even an "
+                           "administrator {}",
+                           pid,
+                           guardedActionWording(action));
+    }
     return std::format("Process {} is a protected process (a system or anti-malware service), which not even an administrator can {}; "
                        "TaskSmack won't {}",
                        pid,
@@ -291,6 +298,49 @@ inline constexpr std::uint32_t NT_STATUS_PROCESS_IS_TERMINATING = 0xC000010AU;
     return std::format("Access denied: can't change the CPU affinity of process {}. It may be protected, or run elevated or as another "
                        "user (run TaskSmack as administrator for those).",
                        pid);
+}
+
+/// @p action refused with ERROR_ACCESS_DENIED for a process that isn't protected (#2602): one running
+/// elevated or as another user, which running as administrator can act on, so the caller offers to retry.
+[[nodiscard]] inline std::string accessDeniedMessage(int32_t pid, GuardedAction action)
+{
+    switch (action)
+    {
+    case GuardedAction::Priority:
+        return std::format("Access denied: can't change the priority of process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::Affinity:
+        return affinityAccessDeniedMessage(pid);
+    case GuardedAction::Suspend:
+        return std::format("Access denied: can't suspend process {}. It may run elevated or as another user.", pid);
+    case GuardedAction::End:
+        break;
+    }
+    return std::format("Access denied: can't end process {}. It may run elevated or as another user.", pid);
+}
+
+/// Why opening @p pid's process for Kill, Terminate, a priority or an affinity change (@p action) failed
+/// with @p error (#2602). @p isProtected: Windows refuses a protected process even to an administrator,
+/// so that refusal says so, rather than read as one running as administrator would cure.
+[[nodiscard]] inline std::string actionOpenFailure(std::uint32_t error, int32_t pid, GuardedAction action, bool isProtected)
+{
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        return isProtected ? protectedProcessRefusal(pid, action) : accessDeniedMessage(pid, action);
+    }
+    if (error == ERROR_INVALID_PARAMETER)
+    {
+        return "Process not found - may have already exited";
+    }
+    return std::format("Failed to open process {}: error {}", pid, error);
+}
+
+/// Whether Terminate's close requests were all refused for want of access (#2602): UIPI keeps a process
+/// from posting to an elevated process's windows, which the elevated helper can post to, so the caller
+/// offers to retry. Some asked and some refused is not retried: the windows already asked would be
+/// asked twice.
+[[nodiscard]] constexpr bool isCloseRequestAccessDenied(int eligible, int failed, std::uint32_t firstError) noexcept
+{
+    return eligible > 0 && failed >= eligible && firstError == ERROR_ACCESS_DENIED;
 }
 
 /// The message when SetProcessAffinityMask() (or, with @p cpuSets, SetProcessDefaultCpuSets()) fails

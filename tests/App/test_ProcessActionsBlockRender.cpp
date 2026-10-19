@@ -25,12 +25,20 @@
 #include "UI/IconsFontAwesome6.h"
 
 #ifdef _WIN32
+#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
 #include "Core/HeadlessVideoDriverTestUtils.h"              // The folder dialog's owner: a display for the main window
 #include "Core/Window.h"
+#include "Mocks/FakeBroker.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredProcessActions.h"
+#include "Platform/Windows/WindowsProcessActions.h" // A Kill Windows refuses for want of access (#2602)
 
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
+
+#include <memory>
+#include <vector>
 #endif
 
 #include <gtest/gtest.h>
@@ -390,6 +398,62 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheCardOpensTheSharedConfirmAndAct
     EXPECT_FALSE(runFrame(body));
     EXPECT_EQ(h.mock.killCount(), 0);
 }
+
+#ifdef _WIN32
+/// OpenProcess refusing every open as Windows refuses an unelevated TaskSmack an elevated process.
+HANDLE WINAPI refuseEveryOpen(DWORD /*access*/, BOOL /*inherit*/, DWORD /*pid*/)
+{
+    SetLastError(ERROR_ACCESS_DENIED);
+    return nullptr;
+}
+
+// #2602: a Kill Windows refuses for want of access, through the real WindowsProcessActions and the
+// helper's decorator with no helper running, shows its error with "Retry as administrator" beside it,
+// and pressing that kills through the helper. Nothing real is opened, let alone killed.
+TEST_F(ProcessActionsBlockRenderTest, AKillWindowsRefusesForWantOfAccessOffersRetryAsAdministrator)
+{
+    Platform::WindowsProcessFunctions functions{};
+    functions.openProcess = &refuseEveryOpen;
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    Platform::BrokeredProcessActions actions(std::make_unique<Platform::WindowsProcessActions>(functions), broker);
+
+    ProcessActionsView view;
+    view.requestAction(Detail::ProcessAction::Kill, TARGET, "elevated.exe");
+    view.dispatchConfirmed(&actions);
+    view.waitForActionForTesting();
+
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        view.renderResultLine();
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    (void) runFrame(body);
+    EXPECT_TRUE(text.contains("Could not kill PID 1001: Access denied: can't end process 1001. It may run elevated or as another user."))
+        << text;
+    EXPECT_TRUE(text.contains("Retry as administrator")) << text;
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+    EXPECT_TRUE(broker->requests().empty()) << "no helper running: nothing is asked until the button is pressed";
+
+    // The button starts the helper (a UAC prompt; here the fake) and kills through it.
+    const ImGuiWindow* details = ImGui::FindWindowByName("Details");
+    ASSERT_NE(details, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::RETRY_LABEL, 0, details->ID));
+    for (int frame = 0; frame < 3 && broker->connectCount() == 0; ++frame)
+    {
+        (void) runFrame(body);
+        view.waitForActionForTesting(); // the retry runs on the action worker (#2305)
+    }
+    EXPECT_EQ(broker->connectCount(), 1);
+    const std::vector<Platform::Broker::Request> requests = broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests.front(),
+              (Platform::Broker::Request{Platform::Broker::SignalRequest{.target = TARGET, .signal = Platform::Broker::Signal::Kill}}));
+    EXPECT_TRUE(view.lastResult().ok) << view.lastResult().text;
+}
+#endif
 
 // #1887: where the platform can set affinity, the Actions card has Set affinity...; it opens the affinity
 // dialog with the process's CPUs ticked, Apply sets them on that process and the card's line says so, and

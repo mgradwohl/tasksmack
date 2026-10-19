@@ -5,6 +5,9 @@
 /// The fakes never hand out a handle that could change anything: OpenProcess returns this test
 /// process opened for query only, so a setter that reaches Windows is refused.
 
+#include "Mocks/FakeBroker.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredProcessActions.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Windows/WindowsAffinityMath.h"
@@ -26,6 +29,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -49,6 +54,7 @@ struct FailingWin
     static inline int opens = 0;
     static inline int criticalChecks = 0;
     static inline int setterCalls = 0;
+    static inline DWORD setterError = 0;  // SetProcessAffinityMask fails with this, when not 0
     static inline LONG suspendStatus = 0; // NtSuspendProcess's NTSTATUS
     static inline LONG resumeStatus = 0;  // NtResumeProcess's NTSTATUS
     static inline int suspendCalls = 0;
@@ -65,6 +71,7 @@ struct FailingWin
         opens = 0;
         criticalChecks = 0;
         setterCalls = 0;
+        setterError = 0;
         suspendStatus = 0;
         resumeStatus = 0;
         suspendCalls = 0;
@@ -102,6 +109,11 @@ struct FailingWin
     static BOOL WINAPI setProcessAffinityMask(HANDLE /*process*/, DWORD_PTR /*mask*/)
     {
         ++setterCalls;
+        if (setterError != 0)
+        {
+            SetLastError(setterError);
+            return FALSE;
+        }
         return TRUE;
     }
     static BOOL WINAPI setProcessDefaultCpuSets(HANDLE /*process*/, const ULONG* /*ids*/, ULONG /*count*/)
@@ -195,6 +207,7 @@ TEST_F(WindowsProcessActionsSeamTest, AnUnreadableCreationTimeStopsEveryActionBe
     {
         EXPECT_FALSE(result.success) << name;
         EXPECT_EQ(result.errorMessage, expected) << name;
+        EXPECT_FALSE(result.permissionDenied) << name;
     }
     EXPECT_EQ(FailingWin::setterCalls, 0);
     EXPECT_EQ(FailingWin::suspendCalls + FailingWin::resumeCalls, 0);
@@ -221,7 +234,8 @@ TEST_F(WindowsProcessActionsSeamTest, APriorityWindowsRefusesIsReportedWithItsEr
     const ProcessActionResult result = actions.setPriority(TARGET, -10);
 
     EXPECT_FALSE(result.success);
-    EXPECT_EQ(result.errorMessage, "Failed to set priority for process 4242: error 5");
+    EXPECT_EQ(result.errorMessage, "Access denied: can't change the priority of process 4242. It may run elevated or as another user.");
+    EXPECT_TRUE(result.permissionDenied) << "an administrator could set it (#2602)";
 }
 
 // The critical-process guard (#2556). Every "critical" process here is this test process, opened
@@ -287,7 +301,9 @@ TEST_F(WindowsProcessActionsSeamTest, ANonCriticalProcessIsActedOn)
     // The guard answers "not critical", so the action reaches Windows, which refuses the query-only handle.
     WindowsProcessActions actions(FailingWin::functions());
 
-    EXPECT_EQ(actions.kill(TARGET).errorMessage, "Failed to terminate process 4242: error 5");
+    const ProcessActionResult killed = actions.kill(TARGET);
+    EXPECT_EQ(killed.errorMessage, "Access denied: can't end process 4242. It may run elevated or as another user.");
+    EXPECT_TRUE(killed.permissionDenied) << "an administrator could end it (#2602)";
     EXPECT_EQ(actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, "");
     EXPECT_EQ(FailingWin::setterCalls, 1);
 }
@@ -304,8 +320,13 @@ TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessIsNeverEndedAndSaysWhy)
     EXPECT_FALSE(killed.permissionDenied);
     EXPECT_EQ(actions.terminate(TARGET).errorMessage, expected);
 
-    // Windows refuses a protected process's priority itself: only ending one is guarded here.
-    EXPECT_EQ(actions.setPriority(TARGET, 0).errorMessage, "Failed to set priority for process 4242: error 5");
+    // Windows refuses a protected process's priority itself: only ending one is guarded here. The
+    // refusal says it is protected, with no retry, since an administrator is refused too (#2602).
+    const ProcessActionResult priority = actions.setPriority(TARGET, 0);
+    EXPECT_EQ(priority.errorMessage,
+              "Process 4242 is a protected process (a system or anti-malware service); Windows won't let even an administrator "
+              "change its priority");
+    EXPECT_FALSE(priority.permissionDenied);
 }
 
 TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessThatRefusesTheKillsOpenIsNamedAsProtected)
@@ -325,12 +346,170 @@ TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessThatRefusesTheKillsOpenIs
               "TaskSmack won't end it");
 }
 
-TEST_F(WindowsProcessActionsSeamTest, AnUnprotectedProcessThatRefusesTheKillsOpenKeepsTheError)
+// Retry as administrator (#2602): an access-denied open of a process that isn't protected (one running
+// elevated or as another user) is permissionDenied, for each action, so BrokeredProcessActions retries
+// it through the elevated helper or the UI offers to.
+
+TEST_F(WindowsProcessActionsSeamTest, AnAccessDeniedOpenOffersRetryAsAdministratorForEveryAction)
 {
-    FailingWin::refusedAccess = PROCESS_TERMINATE;
+    FailingWin::refusedAccess = PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_SET_INFORMATION | PROCESS_SET_LIMITED_INFORMATION;
+    WindowsProcessActions actions(FailingWin::functions());
+    const std::string elevated = ". It may run elevated or as another user.";
+
+    const std::vector<std::pair<std::string, ProcessActionResult>> results{
+        {"Access denied: can't end process 4242" + elevated, actions.kill(TARGET)},
+        {"Access denied: can't end process 4242" + elevated, actions.terminate(TARGET)},
+        {"Access denied: can't change the priority of process 4242" + elevated, actions.setPriority(TARGET, 10)},
+        {affinityAccessDeniedMessage(4242), actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U))},
+    };
+    for (const auto& [expected, result] : results)
+    {
+        EXPECT_FALSE(result.success) << expected;
+        EXPECT_TRUE(result.permissionDenied) << expected;
+        EXPECT_EQ(result.errorMessage, expected);
+    }
+    EXPECT_EQ(FailingWin::criticalChecks, 0) << "nothing was opened to ask";
+    EXPECT_EQ(FailingWin::setterCalls, 0);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AProtectedProcessThatRefusesTheOpenIsNamedAsProtectedWithNoRetry)
+{
+    FailingWin::refusedAccess = PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_SET_INFORMATION | PROCESS_SET_LIMITED_INFORMATION;
+    FailingWin::protectionLevel = PROTECTION_LEVEL_WINTCB_LIGHT;
+    WindowsProcessActions actions(FailingWin::functions());
+    const std::string ended = "Process 4242 is a protected process (a system or anti-malware service), which not even an administrator "
+                              "can end; TaskSmack won't end it";
+    const std::string changed = "Process 4242 is a protected process (a system or anti-malware service); Windows won't let even an "
+                                "administrator ";
+
+    const std::vector<std::pair<std::string, ProcessActionResult>> results{
+        {ended, actions.kill(TARGET)},
+        {ended, actions.terminate(TARGET)},
+        {changed + "change its priority", actions.setPriority(TARGET, 10)},
+        {changed + "change its CPU affinity", actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U))},
+    };
+    for (const auto& [expected, result] : results)
+    {
+        EXPECT_FALSE(result.success) << expected;
+        EXPECT_FALSE(result.permissionDenied) << expected << ": an administrator is refused too";
+        EXPECT_EQ(result.errorMessage, expected);
+    }
+}
+
+TEST_F(WindowsProcessActionsSeamTest, OnlyAnAccessDeniedOpenOffersARetry)
+{
     WindowsProcessActions actions(FailingWin::functions());
 
-    EXPECT_EQ(actions.kill(TARGET).errorMessage, "Failed to open process 4242: error 5");
+    FailingWin::openError = ERROR_INVALID_PARAMETER; // the process has gone
+    for (const ProcessActionResult& result : {actions.kill(TARGET),
+                                              actions.terminate(TARGET),
+                                              actions.setPriority(TARGET, 0),
+                                              actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U))})
+    {
+        EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
+        EXPECT_FALSE(result.permissionDenied);
+    }
+
+    // A reused PID is never retried either: the helper would refuse it just the same.
+    FailingWin::openError = 0;
+    const ProcessActionResult reused = actions.kill({.pid = 4242, .startTimeTicks = FailingWin::TARGET_TICKS + 1});
+    EXPECT_FALSE(reused.success);
+    EXPECT_FALSE(reused.permissionDenied);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AnAffinityChangeWindowsRefusesOffersARetryUnlessProtected)
+{
+    FailingWin::setterError = ERROR_ACCESS_DENIED;
+    WindowsProcessActions actions(FailingWin::functions());
+
+    const ProcessActionResult refused = actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.permissionDenied);
+    EXPECT_EQ(refused.errorMessage, affinityAccessDeniedMessage(4242));
+
+    FailingWin::protectionLevel = PROTECTION_LEVEL_ANTIMALWARE_LIGHT;
+    const ProcessActionResult protectedOne = actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(protectedOne.permissionDenied);
+    EXPECT_EQ(protectedOne.errorMessage, protectedProcessRefusal(4242, GuardedAction::Affinity));
+
+    FailingWin::protectionLevel = PROTECTION_LEVEL_NONE;
+    FailingWin::setterError = ERROR_INVALID_PARAMETER;
+    EXPECT_FALSE(actions.setAffinity(TARGET, CpuAffinity::fromMask(0b1U)).permissionDenied);
+}
+
+// Through BrokeredProcessActions (#2414), as App composes it where the helper is installed: a refused
+// open goes to a running helper at once, and with none running is returned for the UI to offer.
+
+TEST_F(WindowsProcessActionsSeamTest, AnAccessDeniedActionIsRetriedThroughARunningHelper)
+{
+    FailingWin::refusedAccess = PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_SET_INFORMATION | PROCESS_SET_LIMITED_INFORMATION;
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
+    BrokeredProcessActions actions(std::make_unique<WindowsProcessActions>(FailingWin::functions()), broker);
+    const CpuAffinity cpus = CpuAffinity::fromMask(0b1U);
+
+    EXPECT_TRUE(actions.kill(TARGET).success);
+    EXPECT_TRUE(actions.terminate(TARGET).success);
+    EXPECT_TRUE(actions.setPriority(TARGET, 10).success);
+    EXPECT_TRUE(actions.setAffinity(TARGET, cpus).success);
+
+    const std::vector<Broker::Request> expected{
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill},
+        Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate},
+        Broker::PriorityRequest{.target = TARGET, .nice = 10},
+        Broker::AffinityRequest{.target = TARGET, .cpus = cpus},
+    };
+    EXPECT_EQ(broker->requests(), expected);
+    EXPECT_EQ(broker->connectCount(), 0) << "no prompt while the helper runs";
+}
+
+TEST_F(WindowsProcessActionsSeamTest, AnAccessDeniedActionWithNoHelperRunningIsOfferedForRetry)
+{
+    FailingWin::refusedAccess = PROCESS_TERMINATE;
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    BrokeredProcessActions actions(std::make_unique<WindowsProcessActions>(FailingWin::functions()), broker);
+
+    const ProcessActionResult killed = actions.kill(TARGET);
+    EXPECT_FALSE(killed.success);
+    EXPECT_TRUE(killed.permissionDenied);
+    EXPECT_TRUE(actions.actionCapabilities().canAuthorizeInteractively);
+    EXPECT_TRUE(broker->requests().empty());
+    EXPECT_EQ(broker->connectCount(), 0) << "never prompts by itself";
+}
+
+TEST_F(WindowsProcessActionsSeamTest, ACriticalOrProtectedRefusalNeverReachesTheHelper)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
+    BrokeredProcessActions actions(std::make_unique<WindowsProcessActions>(FailingWin::functions()), broker);
+
+    FailingWin::critical = TRUE;
+    EXPECT_FALSE(actions.kill(TARGET).success);
+    EXPECT_FALSE(actions.setPriority(TARGET, 10).success);
+
+    FailingWin::critical = FALSE;
+    FailingWin::refusedAccess = PROCESS_TERMINATE;
+    FailingWin::protectionLevel = PROTECTION_LEVEL_WINTCB_LIGHT;
+    EXPECT_FALSE(actions.kill(TARGET).success);
+
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+TEST(WindowsProcessActionsMathTest, OnlyCloseRequestsAllRefusedForAccessOfferARetry)
+{
+    // Terminate posts WM_CLOSE; UIPI refuses every post to an elevated process's windows (#2602).
+    EXPECT_TRUE(isCloseRequestAccessDenied(2, 2, ERROR_ACCESS_DENIED));
+    EXPECT_FALSE(isCloseRequestAccessDenied(2, 1, ERROR_ACCESS_DENIED)) << "the asked window would be asked twice";
+    EXPECT_FALSE(isCloseRequestAccessDenied(2, 2, ERROR_NOT_ENOUGH_QUOTA));
+    EXPECT_FALSE(isCloseRequestAccessDenied(0, 0, ERROR_ACCESS_DENIED)) << "no window: nothing an administrator can ask";
+}
+
+TEST(WindowsProcessActionsMathTest, AnOpenFailureIsWordedForItsAction)
+{
+    EXPECT_EQ(actionOpenFailure(ERROR_ACCESS_DENIED, 7, GuardedAction::End, false),
+              "Access denied: can't end process 7. It may run elevated or as another user.");
+    EXPECT_EQ(actionOpenFailure(ERROR_ACCESS_DENIED, 7, GuardedAction::End, true), protectedProcessRefusal(7));
+    EXPECT_EQ(actionOpenFailure(ERROR_ACCESS_DENIED, 7, GuardedAction::Affinity, false), affinityAccessDeniedMessage(7));
+    EXPECT_EQ(actionOpenFailure(ERROR_INVALID_PARAMETER, 7, GuardedAction::Priority, false), "Process not found - may have already exited");
+    EXPECT_EQ(actionOpenFailure(ERROR_NOT_ENOUGH_MEMORY, 7, GuardedAction::Priority, false), "Failed to open process 7: error 8");
 }
 
 TEST_F(WindowsProcessActionsSeamTest, TheKernelsPidsAreRefusedBeforeAnythingIsOpened)

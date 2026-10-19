@@ -77,8 +77,11 @@ struct WindowsProcessFunctions
 /// a priority change, an affinity change and Suspend; a protected process is refused Kill, Terminate
 /// and Suspend with a message saying so, and TaskSmack's own process is refused Suspend (#2582), which
 /// would freeze it with nothing left to resume it. Each is a plain error, never permissionDenied:
-/// running as administrator, which "Retry as administrator" offers, doesn't make it safe. Suspend and
-/// Resume (NtSuspendProcess, NtResumeProcess) do set permissionDenied when Windows refuses the access.
+/// running as administrator, which "Retry as administrator" offers, doesn't make it safe. Every action
+/// Windows refuses for want of access (ERROR_ACCESS_DENIED from OpenProcess or the call itself, and
+/// STATUS_ACCESS_DENIED from NtSuspendProcess or NtResumeProcess) sets permissionDenied (#2582, #2602), so
+/// BrokeredProcessActions can retry it through the elevated helper; except for a protected process,
+/// whose refused open says it is protected, with no retry, since an administrator is refused too.
 class WindowsProcessActions : public IProcessActions
 {
   public:
