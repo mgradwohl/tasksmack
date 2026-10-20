@@ -25,6 +25,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
@@ -63,6 +64,30 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
     auto sid = BrokerPipe::userSidOfToken(token.get());
     EXPECT_TRUE(sid.has_value());
     return sid.value_or(BrokerPipe::Sid{});
+}
+
+/// Why the broker won't serve this test's own user, or nothing when it will. It serves only user
+/// accounts (BrokerPipe::checkUserSid). Windows Sandbox's only user, the built-in WDAGUtilityAccount
+/// (RID 504), isn't one, and the sandbox's folder rights aren't a standard install's either, so the
+/// tests that need a pipe for this user, or those rights, skip there instead of failing (#2618).
+[[nodiscard]] std::optional<std::string> brokerRefusesThisUser()
+{
+    UniqueHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    {
+        return std::nullopt;
+    }
+    const auto sid = BrokerPipe::userSidOfToken(token.get());
+    if (!sid.has_value())
+    {
+        return std::nullopt;
+    }
+    const auto checked = BrokerPipe::checkUserSid(*sid);
+    if (checked.has_value())
+    {
+        return std::nullopt;
+    }
+    return checked.error();
 }
 
 /// The SID @p text names, or nothing when it doesn't name one.
@@ -202,6 +227,10 @@ TEST(BrokerPipeTest, TheSecurityDescriptorLetsInOnlyTheUserWithAMediumLabel)
 
 TEST(BrokerPipeTest, UserAccountSidsAreLetIn)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     for (const std::wstring text : {L"S-1-5-21-1-2-3-500", L"S-1-5-21-1-2-3-1001", L"S-1-12-1-1-2-3-4"})
     {
         EXPECT_TRUE(BrokerPipe::checkUserSid(sidFromText(text)).has_value()) << std::string(text.begin(), text.end());
@@ -238,6 +267,10 @@ TEST(BrokerPipeTest, GroupsWellKnownSidsAndJunkAreNotLetIn)
 
 TEST(BrokerPipeTest, ThePipeLetsInOnlyTheUserTakesTheOwnersRightsAndHasAMediumLabel)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
 
@@ -303,6 +336,10 @@ TEST(BrokerPipeTest, APipeForAnotherUserCantBeOpened)
 
 TEST(BrokerPipeTest, ALowIntegrityClientIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const std::wstring name = freshName();
     const auto server = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
@@ -358,6 +395,10 @@ TEST(BrokerPipeTest, ALowIntegrityClientIsRefused)
 
 TEST(BrokerPipeTest, TheServerCanIdentifyTheClientButNotActAsIt)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     // A pipe's server may impersonate its client once it has read from it.
@@ -393,6 +434,10 @@ TEST(BrokerPipeTest, TheServerCanIdentifyTheClientButNotActAsIt)
 }
 TEST(BrokerPipeTest, ASecondPipeOfTheSameNameIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const std::wstring name = freshName();
     const auto first = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(first.has_value()) << first.error();
@@ -401,6 +446,10 @@ TEST(BrokerPipeTest, ASecondPipeOfTheSameNameIsRefused)
 
 TEST(BrokerPipeTest, ASecondClientIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const std::wstring name = freshName();
     const auto server = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
@@ -417,6 +466,10 @@ TEST(BrokerPipeTest, ASecondClientIsRefused)
 
 TEST(BrokerPipeTest, EachSideChecksTheOthersProcess)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     EXPECT_TRUE(BrokerPipe::checkServerProcess(pair.client.get(), GetCurrentProcessId()).has_value());
@@ -427,6 +480,10 @@ TEST(BrokerPipeTest, EachSideChecksTheOthersProcess)
 
 TEST(BrokerPipeTest, APipeServedByAnotherProcessIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const std::wstring name = freshName();
     const auto server = BrokerPipe::createServerPipe(name, mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
@@ -442,6 +499,10 @@ TEST(BrokerPipeTest, APipeServedByAnotherProcessIsRefused)
 
 TEST(BrokerPipeTest, NoClientWithinTheTimeoutIsGivenUpOn)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const auto server = BrokerPipe::createServerPipe(freshName(), mySid());
     ASSERT_TRUE(server.has_value()) << server.error();
     const auto start = std::chrono::steady_clock::now();
@@ -477,6 +538,10 @@ TEST(BrokerPipeTest, AHelperThatExitsBeforeMakingItsPipeIsNotWaitedFor)
 
 TEST(BrokerPipeTest, FramesGoBothWays)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const std::vector<std::uint8_t> request = Broker::encodeRequest(7, Broker::Hello{});
@@ -494,6 +559,10 @@ TEST(BrokerPipeTest, FramesGoBothWays)
 
 TEST(BrokerPipeTest, AFrameLargerThanThePipesBufferArrivesWhole)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     constexpr std::size_t BODY = std::size_t{1} << 20U;
@@ -516,6 +585,10 @@ TEST(BrokerPipeTest, AFrameLargerThanThePipesBufferArrivesWhole)
 
 TEST(BrokerPipeTest, AFrameDeclaredTooLargeIsRefusedBeforeItIsRead)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     ASSERT_TRUE(send(pair.client.get(), lengthPrefix(static_cast<std::uint32_t>(Broker::MAX_MESSAGE_BYTES))));
@@ -528,6 +601,10 @@ TEST(BrokerPipeTest, AFrameDeclaredTooLargeIsRefusedBeforeItIsRead)
 
 TEST(BrokerPipeTest, AFrameTooLargeOrForAGonePeerIsNotSent)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     std::string error;
@@ -541,6 +618,10 @@ TEST(BrokerPipeTest, AFrameTooLargeOrForAGonePeerIsNotSent)
 
 TEST(BrokerPipeTest, AFrameCutShortByAClosedPipeIsAFailure)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     std::vector<std::uint8_t> partial = lengthPrefix(100);
@@ -554,6 +635,10 @@ TEST(BrokerPipeTest, AFrameCutShortByAClosedPipeIsAFailure)
 
 TEST(BrokerPipeTest, AFrameCutShortByTheTimeoutIsAFailure)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     std::vector<std::uint8_t> partial = lengthPrefix(100);
@@ -566,6 +651,10 @@ TEST(BrokerPipeTest, AFrameCutShortByTheTimeoutIsAFailure)
 
 TEST(BrokerPipeTest, ALengthCutShortIsAFailure)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const std::vector<std::uint8_t> twoBytes{1, 0};
@@ -577,6 +666,10 @@ TEST(BrokerPipeTest, ALengthCutShortIsAFailure)
 
 TEST(BrokerPipeTest, NothingWithinTheTimeoutIsATimeout)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const auto start = std::chrono::steady_clock::now();
@@ -590,6 +683,10 @@ TEST(BrokerPipeTest, NothingWithinTheTimeoutIsATimeout)
 
 TEST(BrokerPipeTest, AStoppedReceiveSaysSo)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     std::stop_source stop;
@@ -601,6 +698,10 @@ TEST(BrokerPipeTest, AStoppedReceiveSaysSo)
 
 TEST(BrokerPipeTest, AClosedPipeIsTheEndOfTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     pair.client.reset();
@@ -666,6 +767,10 @@ class SteppedClock
 
 TEST(BrokerPipeServeTest, AnswersRequestsAfterTheHelloAndEndsWhenTheClientCloses)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const CountingHandler counting;
@@ -693,6 +798,10 @@ TEST(BrokerPipeServeTest, AnswersRequestsAfterTheHelloAndEndsWhenTheClientCloses
 
 TEST(BrokerPipeServeTest, AnActionBeforeTheHelloIsRefusedAndEndsTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const CountingHandler counting;
@@ -709,6 +818,10 @@ TEST(BrokerPipeServeTest, AnActionBeforeTheHelloIsRefusedAndEndsTheSession)
 
 TEST(BrokerPipeServeTest, AHelloOfAnotherVersionEndsTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
@@ -724,6 +837,10 @@ TEST(BrokerPipeServeTest, AHelloOfAnotherVersionEndsTheSession)
 
 TEST(BrokerPipeServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
@@ -749,6 +866,10 @@ TEST(BrokerPipeServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGo
 
 TEST(BrokerPipeServeTest, AFrameDeclaredTooLargeEndsTheSessionAsBroken)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
@@ -762,6 +883,10 @@ TEST(BrokerPipeServeTest, AFrameDeclaredTooLargeEndsTheSessionAsBroken)
 
 TEST(BrokerPipeServeTest, AHandlerThatThrowsGetsAnErrorReplyAndTheSessionGoesOn)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     auto served = serveAsync(pair.server.get(), [](const Broker::Request&) -> Broker::Response { throw std::runtime_error("boom"); }, WAIT);
@@ -780,6 +905,10 @@ TEST(BrokerPipeServeTest, AHandlerThatThrowsGetsAnErrorReplyAndTheSessionGoesOn)
 
 TEST(BrokerPipeServeTest, ReadsDontPutOffTheIdleExit)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     // The idle timeout runs on a clock each read steps by a sixth of it, on the serve thread before the
@@ -816,6 +945,10 @@ TEST(BrokerPipeServeTest, ReadsDontPutOffTheIdleExit)
 
 TEST(BrokerPipeServeTest, AnIdleSessionEnds)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), 100ms);
@@ -825,6 +958,10 @@ TEST(BrokerPipeServeTest, AnIdleSessionEnds)
 
 TEST(BrokerPipeServeTest, AStoppedSessionEnds)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     std::stop_source stop;
@@ -890,6 +1027,10 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
 
 TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     // Each request steps the idle clock by a quarter of the timeout; the fourth takes it to the timeout
@@ -922,6 +1063,10 @@ TEST(BrokerPipeServeTest, RequestsWindowsAlwaysRefusesDontPutOffTheIdleExit)
 
 TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     // Each action steps the clock by half the timeout after it has put the exit off: three of them
@@ -955,6 +1100,10 @@ TEST(BrokerPipeServeTest, ActionsWindowsDoesPutOffTheIdleExit)
 
 TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     const SteppedClock clock;
@@ -983,6 +1132,10 @@ TEST(BrokerPipeServeTest, AOneActionSessionEndsOnceItsActionIsAnswered)
 // Suspend and Resume, real actions since #2582, are the one action like Kill.
 TEST(BrokerPipeServeTest, AOneActionSessionEndsAfterAnActionWindowsRefusesToo)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     for (const Broker::Request& action : {Broker::Request{Broker::IoPriorityRequest{}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Suspend}},
                                           Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Resume}},
@@ -1022,6 +1175,10 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     PipePair pair = connectedPair();
     ASSERT_TRUE(pair.server && pair.client);
     // Each read steps the clock by half the timeout. A second Hello between them would put the exit
@@ -1124,6 +1281,10 @@ struct Serving
 
 TEST(PipeBrokerTest, ConnectsToTheHelperAndCallsThroughIt)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT));
     PipeBroker broker(helper.launcher());
     const auto connected = broker.connectWithin({}, WAIT);
@@ -1170,6 +1331,10 @@ TEST(PipeBrokerTest, AHelperThatNeverMakesItsPipeIsGivenUpOn)
 
 TEST(PipeBrokerTest, AHelperOfAnotherVersionIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     InProcessHelper helper(
         [](HANDLE pipe, const std::stop_token&)
         {
@@ -1192,6 +1357,10 @@ TEST(PipeBrokerTest, AHelperOfAnotherVersionIsRefused)
 
 TEST(PipeBrokerTest, DisconnectEndsTheHelpersSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto end = std::make_shared<std::atomic<int>>(-1);
     InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT, end));
     PipeBroker broker(helper.launcher());
@@ -1204,6 +1373,10 @@ TEST(PipeBrokerTest, DisconnectEndsTheHelpersSession)
 
 TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto end = std::make_shared<std::atomic<int>>(-1);
     InProcessHelper helper(serving(CountingHandler{}.handler(), 200ms, end));
     PipeBroker broker(helper.launcher());
@@ -1236,6 +1409,10 @@ TEST(PipeBrokerTest, AHelperThatExitsIsNoLongerConnected)
 
 TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDropped)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto release = std::make_shared<std::promise<void>>();
     InProcessHelper helper(serving(firstReadWaitsFor(release), WAIT));
     PipeBroker broker(helper.launcher());
@@ -1256,6 +1433,10 @@ TEST(PipeBrokerTest, ACallIfIdleThatTimesOutKeepsTheSessionAndItsLateReplyIsDrop
 
 TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto release = std::make_shared<std::promise<void>>();
     InProcessHelper helper(serving(firstReadWaitsFor(release), WAIT));
     PipeBroker broker(helper.launcher());
@@ -1279,6 +1460,10 @@ TEST(PipeBrokerTest, ALateReplyIsTakenBeforeTheNextCallIfIdleAsks)
 }
 TEST(PipeBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto entered = std::make_shared<std::promise<void>>();
     auto release = std::make_shared<std::promise<void>>();
     InProcessHelper helper(serving(
@@ -1301,6 +1486,10 @@ TEST(PipeBrokerTest, ACallIfIdleWhileACallIsWaitingIsBusy)
 
 TEST(PipeBrokerTest, AStoppedCallIsCancelledAndEndsTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     auto release = std::make_shared<std::promise<void>>();
     InProcessHelper helper(serving(
         [releaseFuture = release->get_future().share()](const Broker::Request&) -> Broker::Response
@@ -1365,6 +1554,10 @@ TEST(PipeBrokerTest, AStoppedCallIsCancelledAndEndsTheSession)
 
 TEST(PipeBrokerTest, ACallIfIdleWhoseReplyIsCutOffByTheTimeoutEndsTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     InProcessHelper helper(cutsOffItsReply(false));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
@@ -1378,6 +1571,10 @@ TEST(PipeBrokerTest, ACallIfIdleWhoseReplyIsCutOffByTheTimeoutEndsTheSession)
 
 TEST(PipeBrokerTest, ACallWhoseReplyIsCutOffByTheHelperExitingEndsTheSession)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     InProcessHelper helper(cutsOffItsReply(true));
     PipeBroker broker(helper.launcher());
     ASSERT_TRUE(broker.connectWithin({}, WAIT).has_value());
@@ -1563,6 +1760,10 @@ TEST(PipeBrokerTest, TheDestructorDoesntWaitForAPrompt)
 // uses the helper it started, rather than raise a second prompt.
 TEST(PipeBrokerTest, AHelperApprovedAfterItsConnectGaveUpIsUsedByTheNext)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     InProcessHelper helper(serving(CountingHandler{}.handler(), WAIT));
     PromptUp prompt(helper.launcher());
     PipeBroker broker(prompt.launcher());
