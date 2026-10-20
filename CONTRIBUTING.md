@@ -1500,7 +1500,14 @@ vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
 
 Notes:
-- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
+- `wpr` comes with Windows, so `profile-etw.ps1` records on any machine. `analyze-etw.ps1` also
+  needs `xperf` (and `wpa`/`wpaexporter` to browse or export a trace). Those come with the Windows
+  Performance Toolkit, which `tools/setup-dev.ps1` does not install. Get it from the
+  [Windows SDK installer](https://developer.microsoft.com/windows/downloads/windows-sdk/) by
+  selecting only **Windows Performance Toolkit**; it installs to
+  `C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit` (add that folder to `PATH`
+  if a new terminal doesn't find `xperf`). `check-prereqs.ps1` shows these rows as optional
+  (#2618).
 - ETW recording requires elevation. By default `profile-etw.ps1` elevates only a separate WPR collector, not the target, and validates all output artifacts before returning; `-ElevatedTarget` is the explicit opt-in that runs the target elevated too. From an elevated terminal the script refuses unless `-ElevatedTarget` is passed, since the target would inherit the elevation.
 - Captures use unique WPR instance names and never cancel an existing recording. If
   another recorder prevents startup, leave it alone and coordinate with its owner.
