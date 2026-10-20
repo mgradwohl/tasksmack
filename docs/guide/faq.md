@@ -94,8 +94,9 @@ the helper: TaskSmack then doesn't offer the buttons. Everything else works as b
 
 The helper ships only in the Authenticode-signed x64 `.zip`
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
-publisher. The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers
-neither button. If TaskSmack is already running as
+publisher. Signing is still being set up, so until it is in place no release `.zip` carries the helper.
+The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers neither
+button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 
 ---
@@ -160,7 +161,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 Per-process network rates read N/A when the platform cannot attribute traffic.
 
-- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support.
+- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support. A process in another network namespace than TaskSmack's (inside a container, say) reads N/A, since TaskSmack sees only its own namespace's sockets.
 - **Windows:** TCP EStats collection requires administrator privileges.
 
 System-wide and per-interface throughput should still appear.
