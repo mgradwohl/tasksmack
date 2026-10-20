@@ -248,12 +248,6 @@ else()
 endif()
 if(NOT Python3_EXECUTABLE AND EXISTS "${_tasksmack_venv_python}")
     set(Python3_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter")
-    # GLAD's glad_add_library() runs find_package(Python) and generates with Python_EXECUTABLE,
-    # not Python3_EXECUTABLE; point it at the venv too, so generation uses the interpreter the
-    # jinja2 check below verified.
-    if(NOT Python_EXECUTABLE)
-        set(Python_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter (GLAD)")
-    endif()
 endif()
 unset(_tasksmack_venv_python)
 
@@ -269,6 +263,14 @@ if(NOT JINJA2_CHECK EQUAL 0)
     message(FATAL_ERROR
         "Python jinja2 module not found. Required for GLAD generation.\n"
         "Install with: pip install jinja2")
+endif()
+# GLAD's glad_add_library() runs its own find_package(Python) and generates with Python_EXECUTABLE,
+# not Python3_EXECUTABLE. Left alone, FindPython takes the newest interpreter on the machine -- a
+# runner image's Python 3.15 without jinja2, while CI passed -DPython3_EXECUTABLE for 3.14 (#2672) --
+# so hand GLAD the interpreter the check above verified, whether it came from the command line, the
+# venv or find_package(), unless the caller chose GLAD's explicitly.
+if(NOT Python_EXECUTABLE)
+    set(Python_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "Python interpreter (GLAD)")
 endif()
 
 # GLAD
