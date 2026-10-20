@@ -48,6 +48,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -786,6 +787,45 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumerationRebuildingItsCaches)
 #endif
     probe.setCmdlineCacheTtlForTesting(std::chrono::milliseconds(0));
     expectConcurrentEnumerationWorks(probe);
+}
+
+// #2633: exit() runs static destructors while the sampler thread is still enumerating (Xlib calls it
+// from the render loop when the X connection drops). The child exits under four enumerating threads;
+// a destroyed username cache made the next getUsername() die of SIGSEGV at a null bucket array. The
+// probe is leaked, as the app's survives exit(): only static storage is destroyed.
+TEST(LinuxProcessProbeDeathTest, ExitWhileOtherThreadsEnumerate)
+{
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) ||                                                                       \
+    (defined(__has_feature) && (__has_feature(thread_sanitizer) || __has_feature(address_sanitizer)))
+    // exit() also destroys spdlog's registry under the threads' log calls: a race TSan reports and a
+    // heap-use-after-free ASan reports (#2657)
+    GTEST_SKIP() << "exit() under running threads also frees spdlog's registry under them (#2657)";
+#endif
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
+        {
+            constexpr int THREAD_COUNT = 4;
+            auto* const probe = new LinuxProcessProbe(); // NOLINT(cppcoreguidelines-owning-memory) - outlives exit(), as the app's does
+            std::latch enumerated{THREAD_COUNT};
+            for (int i = 0; i < THREAD_COUNT; ++i)
+            {
+                std::thread(
+                    [probe, &enumerated]()
+                    {
+                        static_cast<void>(probe->enumerate());
+                        enumerated.count_down();
+                        while (true)
+                        {
+                            static_cast<void>(probe->enumerate());
+                        }
+                    })
+                    .detach();
+            }
+            enumerated.wait();
+            std::exit(0); // NOLINT(concurrency-mt-unsafe) - exiting under the other threads is the test
+        },
+        ::testing::ExitedWithCode(0),
+        "");
 }
 
 // =============================================================================
