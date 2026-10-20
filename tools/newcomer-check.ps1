@@ -39,7 +39,8 @@
     TaskSmack.exe, since a sandbox without vGPU has only OpenGL 1.1. Not newcomer steps; reported
     as SETUP. Use <VGpu>Disable</VGpu> and MemoryInMB 8192 in the .wsb. Expect setup-dev.ps1
     to take hours there: Windows Installer spends 2 minutes verifying each signed .msi in the
-    sandbox, and the Visual Studio Build Tools install runs about 126 of them.
+    sandbox, and the Windows SDK's desktop C++ feature alone installs 48 of them. Little CPU shows
+    meanwhile; the SDK's progress is in 06-setup-dev-diagnostics\tasksmack-winsdksetup.log.
 .PARAMETER BuildParallelLevel
     Sets CMAKE_BUILD_PARALLEL_LEVEL for the builds, to keep a sandbox from taking every core of the
     host. 0 (the default) leaves it unset, as a newcomer would.
@@ -288,7 +289,9 @@ function Save-Diagnostic {
     $sources = @(
         (Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir\*.log'),
         (Join-Path $env:TEMP 'dd_*.log'),
-        (Join-Path $env:TEMP 'WinGet\*.log')
+        (Join-Path $env:TEMP 'WinGet\*.log'),
+        # The standalone Windows SDK installer's log, which setup-dev.ps1 names (#2661).
+        (Join-Path $env:TEMP 'tasksmack-winsdksetup*.log')
     )
     foreach ($source in $sources) {
         Get-ChildItem -Path $source -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
