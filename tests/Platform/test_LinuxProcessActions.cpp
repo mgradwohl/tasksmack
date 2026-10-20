@@ -1,5 +1,5 @@
 /// @file test_LinuxProcessActions.cpp
-/// @brief Integration tests for Platform::LinuxProcessActions
+/// @brief Integration tests for Platform::LinuxProcessActions and its process-control half, LinuxProcessControl
 ///
 /// These tests verify the capabilities reporting and error handling
 /// of process actions. We avoid actually terminating processes to keep
@@ -10,6 +10,7 @@
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/LinuxProcessActions.h"
+#include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
@@ -1092,6 +1093,38 @@ TEST(LinuxProcessActionsDumpTest, DumpsAreOfferedOnlyWhereGcoreIsInstalled)
     LinuxProcessActions without(SyscallTrace::Tools{});
     const std::stop_source stop;
     const ProcessDumpResult refused = without.createDump(ownTarget(), dir.path, stop.get_token());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
+}
+
+// #2640: tasksmack-helper links only LinuxProcessControl, which starts no other program: no system call
+// trace and no dump files, however the machine is set up, and both refused as unsupported. Everything
+// else it reports as LinuxProcessActions does, with strace, a terminal and gcore all found.
+TEST(LinuxProcessControlTest, OffersNoTraceOrDumpButTheSameControlAsLinuxProcessActions)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_control_caps");
+    SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    tools.coreDumperPath = fakeDumpTools(dir.path, "exit 0\n").coreDumperPath;
+    const ProcessActionCapabilities full = LinuxProcessActions(tools).actionCapabilities();
+    ASSERT_EQ(full.syscallTrace, SyscallTraceAvailability::Available);
+    ASSERT_TRUE(full.canCreateDump);
+
+    LinuxProcessControl control;
+    const ProcessActionCapabilities caps = control.actionCapabilities();
+    EXPECT_EQ(caps.syscallTrace, SyscallTraceAvailability::Unsupported);
+    EXPECT_FALSE(caps.canCreateDump);
+    EXPECT_EQ(caps.canTerminate, full.canTerminate);
+    EXPECT_EQ(caps.canKill, full.canKill);
+    EXPECT_EQ(caps.canStop, full.canStop);
+    EXPECT_EQ(caps.canContinue, full.canContinue);
+    EXPECT_EQ(caps.canSetPriority, full.canSetPriority);
+    EXPECT_EQ(caps.canSetIoPriority, full.canSetIoPriority);
+    EXPECT_EQ(caps.canSetRealtimeIoPriority, full.canSetRealtimeIoPriority);
+    EXPECT_EQ(caps.canSetAffinity, full.canSetAffinity);
+
+    EXPECT_FALSE(control.launchSyscallTrace(ownTarget()).success);
+    const std::stop_source stop;
+    const ProcessDumpResult refused = control.createDump(ownTarget(), dir.path, stop.get_token());
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
 }

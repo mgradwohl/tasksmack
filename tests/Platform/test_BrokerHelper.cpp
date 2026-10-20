@@ -69,6 +69,30 @@ constexpr std::chrono::milliseconds WAIT{10'000};
 /// antivirus may scan the new image first. ACCEPT_TIMEOUT, as the helper gives TaskSmack.
 constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOUT};
 
+/// Why the broker won't serve this test's own user, or nothing when it will. It serves only user
+/// accounts (BrokerPipe::checkUserSid). Windows Sandbox's only user, the built-in WDAGUtilityAccount
+/// (RID 504), isn't one, and the sandbox's folder rights aren't a standard install's either, so the
+/// tests that need a pipe for this user, or those rights, skip there instead of failing (#2618).
+[[nodiscard]] std::optional<std::string> brokerRefusesThisUser()
+{
+    UniqueHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    {
+        return std::nullopt;
+    }
+    const auto sid = BrokerPipe::userSidOfToken(token.get());
+    if (!sid.has_value())
+    {
+        return std::nullopt;
+    }
+    const auto checked = BrokerPipe::checkUserSid(*sid);
+    if (checked.has_value())
+    {
+        return std::nullopt;
+    }
+    return checked.error();
+}
+
 [[nodiscard]] std::wstring freshName()
 {
     auto name = BrokerPipe::makePipeName();
@@ -513,6 +537,10 @@ TEST(BrokerHelperTest, ATaskSmackInAnInstallItsUserCanChangeIsRefused)
 
 TEST(BrokerHelperTest, AnInstallInAFolderOnlyAdministratorsChangePasses)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     // System32 stands in for Program Files\TaskSmack: a standard user may change neither exe, the folder
     // nor any folder above it.
     const UniqueHandle token = standardUserToken();
@@ -626,6 +654,10 @@ TEST(BrokerHelperTest, AWatchOnARunningProcessEndsAtOnceWhenDestroyed)
 
 TEST(BrokerHelperTest, AClientThatIsntTheParentsProcessIsRefused)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const SuspendedChild child;
     ASSERT_TRUE(child.process() != nullptr);
     const std::wstring name = freshName();
@@ -651,6 +683,10 @@ TEST(BrokerHelperTest, AClientThatIsntTheParentsProcessIsRefused)
 
 TEST(BrokerHelperTest, AcceptGivesUpWhenTheParentExits)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const SuspendedChild child;
     ASSERT_TRUE(child.process() != nullptr);
     const auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
@@ -671,6 +707,10 @@ TEST(BrokerHelperTest, AcceptGivesUpWhenTheParentExits)
 
 TEST(BrokerHelperTest, AcceptRefusesAParentAlreadyGone)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const UniqueHandle gone(CreateEventW(nullptr, TRUE, TRUE, nullptr)); // GetProcessId() can't name it
     ASSERT_TRUE(gone);
     const auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
@@ -716,6 +756,10 @@ TEST(BrokerHelperTest, AcceptRefusesAParentAlreadyGone)
 
 TEST(BrokerHelperTest, ASessionServesTheParentAndEndsWhenItClosesThePipe)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     TestMocks::MockProcessActions actions;
     const BrokerPipeServer::RequestHandler handler = [&actions](const Broker::Request& request)
     {
@@ -761,6 +805,10 @@ TEST(BrokerHelperTest, ASessionForAParentOfAnotherStartTimeNeverMakesItsPipe)
 
 TEST(BrokerHelperTest, ASessionWhoseParentExitsBeforeConnectingEnds)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const SuspendedChild child;
     ASSERT_TRUE(child.process() != nullptr);
     const ProcessTarget parent = child.target();
@@ -782,6 +830,10 @@ TEST(BrokerHelperTest, ASessionWhoseParentExitsBeforeConnectingEnds)
 
 TEST(BrokerHelperTest, ASessionRefusesAClientThatIsntTheParent)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const SuspendedChild child;
     ASSERT_TRUE(child.process() != nullptr);
     const ProcessTarget parent = child.target();
@@ -834,6 +886,10 @@ TEST(BrokerHelperTest, AParentRunningAsAServiceOrSystemIsRefusedAsAParent)
 // pipe's client end stays open (a handle duplicated elsewhere, a pipe that outlives its opener).
 TEST(BrokerHelperTest, AServedSessionEndsWhenTheParentDiesWithThePipeStillOpen)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const SuspendedChild parent;
     ASSERT_TRUE(parent.process() != nullptr);
     const std::wstring name = freshName();
@@ -867,6 +923,10 @@ TEST(BrokerHelperTest, AServedSessionEndsWhenTheParentDiesWithThePipeStillOpen)
 
 TEST(BrokerHelperTest, AStoppedSessionEnds)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());
     const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
     {
@@ -1031,6 +1091,10 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
 
 TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const UniqueHandle self = ownProcess();
     const std::wstring name = freshName();
     const CountingReads counting;
@@ -1071,6 +1135,10 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionEndsOnceItsOneActionIsAnswered)
 // kill is.
 TEST(BrokerHelperTest, AnOverTheShoulderSessionsOneActionCanBeASuspend)
 {
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
     const UniqueHandle self = ownProcess();
     const std::wstring name = freshName();
     const CountingReads counting;

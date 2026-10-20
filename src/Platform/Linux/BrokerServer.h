@@ -1,8 +1,8 @@
 #pragma once
 
 // The privileged helper's side of the broker (#2307): reads BrokerProtocol requests from its client
-// over a BrokerSocket and answers each through LinuxProcessActions, which (running as root) re-verifies
-// every target by PID and start time before it acts. handleRequest() (Platform/BrokerRequestMapping.h,
+// over a BrokerSocket and answers each through LinuxProcessControl (#2640), which (running as root)
+// re-verifies every target by PID and start time before it acts. handleRequest() (Platform/BrokerRequestMapping.h,
 // shared with the Windows helper) is the pure mapping; serve() is the loop tasksmack-helper runs.
 
 #include "Platform/BrokerRequestMapping.h"

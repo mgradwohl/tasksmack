@@ -15,6 +15,7 @@
 #include "Core/Window.h"
 #include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
+#include "Core/X11ConnectionLoss.h"
 #include "Platform/ThreadName.h"
 #include "version.h"
 
@@ -315,6 +316,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 
         // Initialize video backend detection (must happen after SDL_Init)
         VideoBackend::initialize();
+        // Losing the X connection ends the process without running static destructors under the
+        // sampler threads, instead of Xlib's exit() (#2657)
+        if ((VideoBackend::isX11() || VideoBackend::isXWaylandFallback()) && !X11ConnectionLoss::install())
+        {
+            spdlog::warn("Could not install the X connection-loss handler; libX11 isn't loaded");
+        }
 
         WindowSpecification windowSpec;
         windowSpec.Title = m_Spec.Name;

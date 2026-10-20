@@ -39,8 +39,8 @@ On a new machine, in this order:
    [Windows](#automated-setup-windows). The script installs the toolchain and Python 3.14 and
    creates the project's Python environment (`.venv`; on Linux with pre-commit in it unless you
    pass `--minimal`, on Windows only with `-DevTools`); then you activate `.venv` and run
-   `check-prereqs`. To install the
-   prerequisites by hand instead, see [Check Prerequisites](#check-prerequisites).
+   `check-prereqs`. To install the prerequisites by hand instead, see
+   [Check Prerequisites](#check-prerequisites).
 3. **Configure, build and test** with the [One-Command Dev Workflow](#one-command-dev-workflow):
    `cmake --workflow --preset dev` on Linux, `cmake --workflow --preset win-dev` on Windows.
 4. **Before your first pull request**, install the pre-commit hooks, with `.venv` active:
@@ -1977,6 +1977,21 @@ single-instance lock would stop the new one at its "already running" box); close
 ./tools/measure-idle.sh --help
 ```
 
+On Windows, `tools/measure-idle.ps1` (#2492) takes one measurement of an existing build the same way:
+its own fresh `TASKSMACK_CONFIG_DIR`, `TASKSMACK_TRACE_RESIZE_PERF=1`, a warm-up, then per-thread
+CPU (from each thread's processor time), fps and frame times from the same `ResizePerf` summaries,
+and the private working set (Task Manager's "Memory"), private bytes and working set at the start
+and end. It closes the app with `WM_CLOSE` and writes a table, a `RESULT` line and JSON. It has no
+`--repeat` or `--fail-above`; run it again for another sample. Windows numbers pick up whatever
+else the machine is doing, so compare runs taken back to back. `-RedirectAppData` measures a build
+older than `TASKSMACK_CONFIG_DIR` (v0.8.0) without touching your own `%APPDATA%\TaskSmack`; give it
+a `config.toml` with `[window]` `width`/`height` there, since such a build ignores `-Window` too.
+
+```powershell
+pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Warmup 60 -Duration 300
+Get-Help tools/measure-idle.ps1 -Full
+```
+
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
 are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
@@ -2879,20 +2894,25 @@ chore: remove unused include
 revert: revert "feat: add network panel"
 ```
 
-These prefixes map to changelog sections as follows:
+These prefixes map to changelog sections as follows (first match wins; sections appear in this
+order, and each entry shows its scope, so `fix(windows): ...` reads **Windows:** ...):
 
 | Commit prefix | Changelog section |
 |---|---|
+| `security:`, any `(security)` scope, a `fix:`/`build:` that hardens a binary or fixes DLL loading | Security |
 | `feat:` | Added |
 | `fix:` | Fixed |
-| `security:` | Security |
-| `perf:`, `refactor:`, `style:` | Changed |
+| `refactor:`, `style:` | Changed |
+| `perf:` | Performance |
 | `docs:` | Documentation |
-| `test:`, `ci:`, `build:` | Infrastructure |
+| `ci:`, `build:`, `tools:`; `fix(test\|tools\|ci\|build\|cmake\|coverage\|bench\|fuzz\|perf\|...)`, `feat(tools\|test\|perf)`, `perf(bench\|tools)` | Infrastructure |
 | `chore:` | Maintenance |
 | `revert:` | Reverted |
-| `Merge ...` | _(skipped — noise)_ |
-| Unconventional messages | _(skipped)_ |
+| `test:`, `ci(deps):`, `build(deps):` | _(skipped — tests and Dependabot bumps of CI actions and dev tools swamp the release notes)_ |
+| `Merge ...`, `Update CHANGELOG.md for ...` | _(skipped — noise)_ |
+| Untyped titles | By leading verb: Fix → Fixed, Add/Implement → Added, Speed up/Optimize → Performance, Document → Documentation, Bump → Dependencies, Update → Maintenance, anything else → Changed; build/CI/tooling titles → Infrastructure |
+
+Releases up to 0.8.0 still list conventional commits only, as they did when they were generated.
 
 Issue and PR references like `(fixes #42)` or `(#42)` in commit messages are automatically hyperlinked to GitHub.
 

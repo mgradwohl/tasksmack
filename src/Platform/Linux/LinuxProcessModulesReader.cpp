@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <expected>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include <fcntl.h>
@@ -70,7 +71,7 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     {
         return failure(ESRCH); // gone, or the PID now names another process
     }
-    const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps");
+    const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps", m_MaxMapsBytes);
     if (!maps.has_value())
     {
         return failure(maps.error());
@@ -80,7 +81,15 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     {
         return failure(ESRCH);
     }
-    return {.status = ModulesReadStatus::Ok, .modules = ProcMaps::parseProcMaps(*maps), .detail = {}};
+    // The read stopped at the cap (#2642): parse only the whole lines before it.
+    std::string_view text = *maps;
+    const bool truncated = text.size() >= m_MaxMapsBytes;
+    if (truncated)
+    {
+        const std::size_t lastNewline = text.substr(0, m_MaxMapsBytes).rfind('\n');
+        text = text.substr(0, lastNewline == std::string_view::npos ? 0 : lastNewline + 1);
+    }
+    return {.status = ModulesReadStatus::Ok, .modules = ProcMaps::parseProcMaps(text), .detail = {}, .truncated = truncated};
 }
 
 } // namespace Platform

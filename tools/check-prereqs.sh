@@ -568,7 +568,8 @@ main() {
         all_ok=1
     else
         local py_cmd
-        py_cmd="$(basename "${py_path:-python3}")"
+        py_cmd="${py_path:-python3}"
+        py_cmd="${py_cmd##*/}" # no basename: the checker must run with only the tools it checks for on PATH
         if version_at_least "${MIN_PYTHON_VERSION}" "${py_ver}"; then
             echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
         else

@@ -4,8 +4,12 @@
 /// RenderMetrics capture (the Ctrl+Shift+M overlay's per-chart samples), a value strip in a row too
 /// narrow for it, which falls back to compact labels, the table layout with compact spacing (its bars'
 /// tooltips), a history chart drawn with anti-aliasing off, and where the value strip puts each label:
-/// on the side of its series' Y axis, for a single-axis and a dual-axis chart (#1882).
+/// on the side of its series' Y axis, for a single-axis and a dual-axis chart (#1882). And idle pacing:
+/// the bars' settles and a small axis rescale of an idle machine ask for no more than the idle rate,
+/// while a real change does (#2626).
 
+#include "Core/AnimationRequest.h"
+#include "Core/FramePacing.h"
 #include "UI/ChartWidgets.h"
 #include "UI/RenderMetrics.h"
 #include "UI/SeriesLabelAlignment.h"
@@ -16,6 +20,7 @@
 #include <implot.h>
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <string>
@@ -403,6 +408,91 @@ TEST_F(NowBarsRenderTest, AChartWithAntiAliasingOffClearsItsLinesFlagsOnlyWhileI
     ASSERT_TRUE(active);
     EXPECT_EQ(during & CHART_ANTI_ALIASING_FLAGS_MASK, 0); // the chart's lines drawn without AA
     EXPECT_EQ(after, before);                              // the window's own flags given back
+}
+
+// ========== Idle frame pacing (#2626) ==========
+//
+// At idle the loop renders at the 20 fps idle rate unless something drawn asks for more
+// (Core::FramePacing::computeAnimationRate). These draw what an idle Overview draws and check that
+// nothing asks for more than that, while a real change still does.
+
+/// The idle path's frame rate (Application.cpp's IDLE_FRAME_RATE: one frame every 50 ms).
+constexpr double IDLE_FPS = 20.0;
+constexpr double MAX_FPS = 60.0;
+constexpr float IDLE_FRAME_SECONDS = 0.05F;
+
+/// The rate the frames drawn since the last call asked the loop for, as it paces it: 0 is the idle path.
+[[nodiscard]] double pacedRate()
+{
+    return Core::FramePacing::computeAnimationRate(Core::AnimationRequest::consume(), IDLE_FPS, MAX_FPS);
+}
+
+TEST_F(NowBarsRenderTest, AnIdleMachinesNowBarSettlesStayOnTheIdlePath)
+{
+    // Each refresh a bar eases toward its new sample, as the panels smooth it (UI::Widgets::computeAlpha,
+    // tau 400 ms at the default 1 s refresh). An idle machine's samples move by a few to 20 percent;
+    // at half a pixel a frame those settles asked for 30-60 fps for most of every second, so idle
+    // rendered about 34 fps instead of 20 (#2626).
+    ImGui::GetIO().DeltaTime = IDLE_FRAME_SECONDS;
+    constexpr double TAU_SECONDS = 0.4;
+    const double keep = std::exp(-static_cast<double>(IDLE_FRAME_SECONDS) / TAU_SECONDS);
+    constexpr std::array<double, 4> IDLE_SAMPLES{0.30, 0.42, 0.25, 0.40};
+    constexpr int FRAMES_PER_SAMPLE = 20; // 1 s at the idle rate
+
+    std::array<NowBar, 2> bars = twoBars();
+    bars[0].value01 = IDLE_SAMPLES[0];
+    bars[1].value01 = 1.0 - IDLE_SAMPLES[0];
+    static_cast<void>(frame(bars, NowBarValues::Strip)); // the bars' first frame starts them at rest
+    static_cast<void>(Core::AnimationRequest::consume());
+    for (const double sample : IDLE_SAMPLES)
+    {
+        for (int i = 0; i < FRAMES_PER_SAMPLE; ++i)
+        {
+            bars[0].value01 = sample + ((bars[0].value01 - sample) * keep);
+            bars[1].value01 = (1.0 - sample) + ((bars[1].value01 - (1.0 - sample)) * keep);
+            static_cast<void>(frame(bars, NowBarValues::Strip));
+            ASSERT_DOUBLE_EQ(pacedRate(), 0.0) << "sample " << sample << ", frame " << i;
+        }
+    }
+
+    // A real change -- over half the bar's height at once -- still eases at more than the idle rate.
+    bars[0].value01 = 0.95 + ((bars[0].value01 - 0.95) * keep);
+    static_cast<void>(frame(bars, NowBarValues::Strip));
+    EXPECT_GT(pacedRate(), IDLE_FPS);
+}
+
+TEST_F(NowBarsRenderTest, ASmallAxisRescaleStaysOnTheIdlePathAndALargeOneDoesNot)
+{
+    // A rate chart's eased upper bound used to ask for the full animation rate until it settled to
+    // within 0.2 %, seconds after the visible rescale was over (#2626). It now asks for what each step
+    // moves on screen.
+    ImGui::GetIO().DeltaTime = IDLE_FRAME_SECONDS;
+    const auto drawChart = [](double target)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        const double bound = easedChartUpperBound(ImGui::GetID("##EasedAxis"), target);
+        {
+            // 300 s across the window scrolls under 3 px/s: the scroll itself needs no more than idle.
+            const HistoryChart chart(rateHistoryConfigWithUpper("##EasedAxis", -300.0, 0.0, formatAxisLocalized, bound));
+        }
+        ImGui::End();
+        ImGui::Render();
+    };
+
+    drawChart(100.0); // first drawn: starts at its target
+    static_cast<void>(Core::AnimationRequest::consume());
+    // A 3 % rescale (a peak a little higher than the last): every eased step is a few pixels.
+    for (int i = 0; i < 20; ++i)
+    {
+        drawChart(103.0);
+        ASSERT_DOUBLE_EQ(pacedRate(), 0.0) << "frame " << i;
+    }
+    // Tripling the scale moves the whole chart: that ease gets more frames than idle.
+    drawChart(300.0);
+    EXPECT_GT(pacedRate(), IDLE_FPS);
 }
 
 } // namespace
