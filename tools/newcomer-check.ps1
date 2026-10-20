@@ -33,9 +33,11 @@
     The repository to clone; the docs' own clone URL is checked against it.
 .PARAMETER ContinueOnFinding
     Record findings and keep going instead of stopping at the first one.
-.PARAMETER BootstrapWinGet
-    Install winget first. Windows Sandbox has no Microsoft Store, so no winget; an ordinary
-    Windows 10/11 has it. Not a newcomer step, and reported as SETUP.
+.PARAMETER WindowsSandbox
+    Prepare Windows Sandbox first: install winget (the sandbox has no Microsoft Store, so no winget;
+    an ordinary Windows 10/11 has it). Not a newcomer step; reported as SETUP. Expect setup-dev.ps1
+    to take hours there: Windows Installer spends 2 minutes verifying each signed .msi in the
+    sandbox, and the Visual Studio Build Tools install runs about 126 of them.
 .PARAMETER BuildParallelLevel
     Sets CMAKE_BUILD_PARALLEL_LEVEL for the builds, to keep a sandbox from taking every core of the
     host. 0 (the default) leaves it unset, as a newcomer would.
@@ -53,7 +55,7 @@ param(
     [string]$Ref = 'main',
     [string]$RepoUrl = 'https://github.com/mgradwohl/tasksmack.git',
     [switch]$ContinueOnFinding,
-    [switch]$BootstrapWinGet,
+    [switch]$WindowsSandbox,
     [int]$BuildParallelLevel = 0,
     [switch]$SkipPerf,
     [switch]$ShutdownWhenDone
@@ -234,9 +236,19 @@ function Invoke-Shell {
     $p = Start-Process -FilePath $exe -ArgumentList $shellArgs `
         -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $log -RedirectStandardError $errLog -NoNewWindow -PassThru
     $null = $p.Handle  # makes ExitCode readable after the wait on Windows PowerShell
-    if (-not $p.WaitForExit($TimeoutMinutes * 60 * 1000)) {
-        & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
-        throw "timed out after $TimeoutMinutes min: $Command"
+    # A heartbeat every 5 minutes, naming the busiest processes, so a long or stuck step shows
+    # what it is doing.
+    $started = Get-Date
+    $deadline = $started.AddMinutes($TimeoutMinutes)
+    while (-not $p.WaitForExit(300000)) {
+        $busy = Get-Process | Where-Object { $_.CPU } | Sort-Object CPU -Descending | Select-Object -First 4 |
+            ForEach-Object { '{0} {1:N0}s' -f $_.Name, $_.CPU }
+        Write-Log ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
+        Save-Diagnostic -Prefix $LogName
+        if ((Get-Date) -ge $deadline) {
+            & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+            throw "timed out after $TimeoutMinutes min: $Command"
+        }
     }
     $p.WaitForExit()
     if ((Test-Path -LiteralPath $errLog) -and (Get-Item -LiteralPath $errLog).Length -gt 0) {
@@ -245,6 +257,23 @@ function Invoke-Shell {
     }
     Remove-Item -LiteralPath $errLog -ErrorAction SilentlyContinue
     return $p.ExitCode
+}
+
+# Copy the installers' own logs (winget's, and the Visual Studio installer's dd_*.log in TEMP) into
+# OutDir, for a step that failed or timed out inside an installer.
+function Save-Diagnostic {
+    param([string]$Prefix)
+    $dest = Join-Path $OutDir "$Prefix-diagnostics"
+    $null = New-Item -ItemType Directory -Force -Path $dest
+    $sources = @(
+        (Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir\*.log'),
+        (Join-Path $env:TEMP 'dd_*.log'),
+        (Join-Path $env:TEMP 'WinGet\*.log')
+    )
+    foreach ($source in $sources) {
+        Get-ChildItem -Path $source -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
+            Select-Object -First 10 | Copy-Item -Destination $dest -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-LogTail {
@@ -350,7 +379,7 @@ Invoke-Step -Setup 'Machine: clean environment' {
     throw 'no network: https://github.com was unreachable for 2 minutes'
 }
 
-if ($BootstrapWinGet) {
+if ($WindowsSandbox) {
     Invoke-Step -Setup 'Machine: install winget (Windows Sandbox has none)' {
         if (Get-Command winget -ErrorAction SilentlyContinue) { return 'SKIP: winget is already installed' }
         # Microsoft's documented way to add winget to Windows Sandbox:
@@ -428,8 +457,11 @@ Invoke-Step 'Install PowerShell 7 (pwsh)' {
 
 # --- 6. Automated Setup (Windows) ------------------------------------------------------------
 Invoke-Step 'pwsh tools/setup-dev.ps1' {
-    $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes 120 -Command 'pwsh tools/setup-dev.ps1'
-    if ($code -ne 0) { throw "tools/setup-dev.ps1 exited $code`n$(Get-LogTail '06-setup-dev')" }
+    $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes 360 -Command 'pwsh tools/setup-dev.ps1'
+    if ($code -ne 0) {
+        Save-Diagnostic -Prefix '06-setup-dev'
+        throw "tools/setup-dev.ps1 exited $code`n$(Get-LogTail '06-setup-dev')"
+    }
     # Its last lines ask for a new terminal; a newcomer opens one.
     Update-SessionEnvironment
     Add-Note "LLVM_ROOT=$env:LLVM_ROOT"
