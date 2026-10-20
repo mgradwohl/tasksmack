@@ -1095,7 +1095,9 @@ cmake --build --preset win-benchmark
 .\build\win-benchmark\bin\TaskSmackBenchmarks.exe
 ```
 
-For repeatable benchmarking runs (recommended), use the helper scripts:
+For repeatable benchmarking runs (recommended), use the helper scripts. They run every benchmark 10
+times, which takes a while: about 25 minutes on a 16-core x64 machine (#2618). Pass a
+`--benchmark_filter=` to run fewer.
 
 ```bash
 # Linux
