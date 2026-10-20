@@ -307,11 +307,26 @@ if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (
     $AllOK = $false
 }
 
-# Check clangd (required for VS Code workspace defaults, which resolve it from PATH)
-$clangdPath = Get-ToolPath "clangd"
-if (-not (Write-LlvmToolStatus -Name "clangd" -Path $clangdPath -Major (Get-ToolVersion -Path $clangdPath -Pattern 'clangd version (\d+)'))) {
-    $AllOK = $false
+# Developer tools, not needed to build, test or run (#2618): a missing or old one is a warning, not a
+# failure. clangd and clang-format come with LLVM, whose installer doesn't add itself to PATH, so
+# they're found as clang-tidy is (LLVM_ROOT first); VS Code's workspace settings resolve them from
+# PATH, so a row whose tool isn't on PATH says so.
+function Write-DevLlvmToolStatus {
+    param([string]$Name, [string]$Pattern)
+    $path = Find-LlvmTool -Name $Name
+    $major = Get-ToolVersion -Path $path -Pattern $Pattern
+    if ($path -and $major -and [int]$major -ge $MIN_CLANG_VERSION) {
+        $null = Write-LlvmToolStatus -Name $Name -Path $path -Major $major
+        if (-not (Get-ToolPath $Name)) {
+            Write-Host "  (not on PATH; for VS Code, add $(Split-Path -Parent $path) to PATH)" -ForegroundColor Yellow
+        }
+        return
+    }
+    $shown = if ($path) { $path } else { "(optional dev tool; comes with LLVM $MIN_CLANG_VERSION)" }
+    Write-Status -Name $Name -Status "warn" -Version $major -Path $shown -Required $MIN_CLANG_VERSION
 }
+
+Write-DevLlvmToolStatus -Name "clangd" -Pattern 'clangd version (\d+)'
 
 # Check CMake
 $cmakeVer = Get-CMakeVersion
@@ -358,11 +373,9 @@ if (-not (Write-LlvmToolStatus -Name "clang-tidy" -Path $tidyPath -Major (Get-To
     $AllOK = $false
 }
 
-# Check clang-format (VS Code's workspace settings resolve it from PATH)
-$formatPath = Get-ToolPath "clang-format"
-if (-not (Write-LlvmToolStatus -Name "clang-format" -Path $formatPath -Major (Get-ToolVersion -Path $formatPath -Pattern 'clang-format version (\d+)'))) {
-    $AllOK = $false
-}
+# Check clang-format (a developer tool: required before a pull request, not to build)
+Write-DevLlvmToolStatus -Name "clang-format" -Pattern 'clang-format version (\d+)'
+$formatPath = Find-LlvmTool -Name "clang-format"
 
 # Check llvm-profdata and llvm-cov (optional, coverage/PGO) -- found as tools/coverage.ps1 finds them
 $profdataPath = Find-LlvmTool -Name "llvm-profdata"
@@ -370,13 +383,13 @@ $null = Write-LlvmToolStatus -Name "llvm-profdata" -Path $profdataPath -Major (G
 $covPath = Find-LlvmTool -Name "llvm-cov"
 $null = Write-LlvmToolStatus -Name "llvm-cov" -Path $covPath -Major (Get-ToolVersion -Path $covPath -Pattern 'LLVM version (\d+)')
 
-# Optional Windows profiling tools
+# Optional Windows profiling tools (the Windows Performance Toolkit): a warning when missing
 $wprPath = Get-ToolPath "wpr"
 if ($wprPath) {
     Write-Status -Name "wpr" -Status "ok" -Version "available" -Path $wprPath -Required ""
 }
 else {
-    Write-Status -Name "wpr" -Status "fail" -Version $null -Path $wprPath -Required ""
+    Write-Status -Name "wpr" -Status "warn" -Version $null -Path "(optional: Windows Performance Toolkit, for ETW profiling)" -Required ""
 }
 
 $xperfPath = Get-ToolPath "xperf"
@@ -384,7 +397,7 @@ if ($xperfPath) {
     Write-Status -Name "xperf" -Status "ok" -Version "available" -Path $xperfPath -Required ""
 }
 else {
-    Write-Status -Name "xperf" -Status "fail" -Version $null -Path $xperfPath -Required ""
+    Write-Status -Name "xperf" -Status "warn" -Version $null -Path "(optional: Windows Performance Toolkit, for ETW profiling)" -Required ""
 }
 
 $wpaPath = Get-ToolPath "wpa"
@@ -392,7 +405,7 @@ if ($wpaPath) {
     Write-Status -Name "wpa" -Status "ok" -Version "available" -Path $wpaPath -Required ""
 }
 else {
-    Write-Status -Name "wpa" -Status "fail" -Version $null -Path $wpaPath -Required ""
+    Write-Status -Name "wpa" -Status "warn" -Version $null -Path "(optional: Windows Performance Toolkit, for ETW profiling)" -Required ""
 }
 
 $wpaExporterPath = Get-ToolPath "wpaexporter"
@@ -400,7 +413,7 @@ if ($wpaExporterPath) {
     Write-Status -Name "wpaexporter" -Status "ok" -Version "available" -Path $wpaExporterPath -Required ""
 }
 else {
-    Write-Status -Name "wpaexporter" -Status "fail" -Version $null -Path $wpaExporterPath -Required ""
+    Write-Status -Name "wpaexporter" -Status "warn" -Version $null -Path "(optional: Windows Performance Toolkit, for ETW profiling)" -Required ""
 }
 
 # Check Python 3 (required for GLAD OpenGL loader generation) -- the interpreter CMake will use
