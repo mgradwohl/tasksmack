@@ -618,6 +618,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_DRMGPUProbe.cpp
     Platform/test_AccelNpuProbe.cpp
     Platform/test_LinuxProcessIconSource.cpp
+    Core/test_X11ConnectionLoss.cpp  # a broken X connection exits without static destructors (#2657)
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp
@@ -689,6 +690,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/SaveFileDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/X11ConnectionLoss.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp

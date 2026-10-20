@@ -132,6 +132,7 @@ set(TASKSMACK_SOURCES
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
     src/Core/SaveFileDialog.cpp
+    src/Core/X11ConnectionLoss.cpp
     src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
     src/UI/CellText.cpp
