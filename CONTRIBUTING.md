@@ -1929,6 +1929,21 @@ single-instance lock would stop the new one at its "already running" box); close
 ./tools/measure-idle.sh --help
 ```
 
+On Windows, `tools/measure-idle.ps1` (#2492) takes one measurement of an existing build the same way:
+its own fresh `TASKSMACK_CONFIG_DIR`, `TASKSMACK_TRACE_RESIZE_PERF=1`, a warm-up, then per-thread
+CPU (from each thread's processor time), fps and frame times from the same `ResizePerf` summaries,
+and the private working set (Task Manager's "Memory"), private bytes and working set at the start
+and end. It closes the app with `WM_CLOSE` and writes a table, a `RESULT` line and JSON. It has no
+`--repeat` or `--fail-above`; run it again for another sample. Windows numbers pick up whatever
+else the machine is doing, so compare runs taken back to back. `-RedirectAppData` measures a build
+older than `TASKSMACK_CONFIG_DIR` (v0.8.0) without touching your own `%APPDATA%\TaskSmack`; give it
+a `config.toml` with `[window]` `width`/`height` there, since such a build ignores `-Window` too.
+
+```powershell
+pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Warmup 60 -Duration 300
+Get-Help tools/measure-idle.ps1 -Full
+```
+
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
 are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
