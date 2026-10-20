@@ -718,6 +718,12 @@ Invoke-Step 'Profiling: pwsh tools/profile-etw.ps1 bench + analyze-etw.ps1' {
     $tracePath = $trace.Matches[0].Groups[1].Value.Trim()
     Add-Note "TRACE=$(Split-Path -Leaf $tracePath)"
     Assert-DocText 'CONTRIBUTING.md' 'pwsh tools/analyze-etw.ps1 -TracePath'
+    # analyze-etw.ps1 needs xperf, from the Windows Performance Toolkit. Where the docs say setup-dev.ps1
+    # doesn't install it and how to get it, its absence is expected, not a finding.
+    $wptOptional = Test-DocMatch 'CONTRIBUTING.md' 'Windows Performance Toolkit, which `tools/setup-dev\.ps1` does not install'
+    if ($wptOptional -and -not (Get-Command xperf -ErrorAction SilentlyContinue)) {
+        return 'SKIP: trace recorded; analyze-etw.ps1 not run: xperf (Windows Performance Toolkit) is an optional install the docs describe'
+    }
     $code = Invoke-Shell -Shell pwsh -LogName '13-analyze-etw' -TimeoutMinutes 30 -Command ".venv\Scripts\Activate.ps1; pwsh tools/analyze-etw.ps1 -TracePath '$tracePath' -SkipFunctions"
     if ($code -ne 0) {
         Add-Finding "analyze-etw.ps1 exited $code on that trace: $(Get-LogTail '13-analyze-etw' 8)"
