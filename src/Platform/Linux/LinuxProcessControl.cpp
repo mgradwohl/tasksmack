@@ -109,6 +109,24 @@ struct StatIdentity
     return std::nullopt;
 }
 
+/// Why a priority, I/O priority or affinity change is refused before it's tried (#2641), as a signal is
+/// (signalWouldDoNothing()): PID 1, whose priority and affinity every service systemd starts inherits,
+/// and kernel threads (kswapd, jbd2/*, kworker/u*), where a low priority or the Idle I/O class can stall
+/// reclaim or the journal for the whole machine. Through the helper they would otherwise succeed.
+[[nodiscard]] std::optional<std::string> schedulingChangeRefused(std::int32_t pid)
+{
+    if (pid == 1)
+    {
+        return std::string("PID 1 is init, whose priority and CPU affinity TaskSmack doesn't change");
+    }
+    const std::optional<StatIdentity> stat = readStatIdentity(pid);
+    if (stat.has_value() && (stat->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
+    {
+        return std::format("PID {} is a kernel thread, whose priority and CPU affinity TaskSmack doesn't change", pid);
+    }
+    return std::nullopt;
+}
+
 /// Error text shared by every action refused because pidfds are unavailable.
 [[nodiscard]] std::string noPidfdMessage(std::int32_t pid)
 {
@@ -572,6 +590,10 @@ ProcessActionResult LinuxProcessControl::setPriority(const ProcessTarget& target
     {
         return ProcessActionResult::error("Invalid PID");
     }
+    if (const std::optional<std::string> refused = schedulingChangeRefused(target.pid); refused.has_value())
+    {
+        return ProcessActionResult::error(*refused);
+    }
 
     // Clamp nice value to valid range
     const int32_t clampedNice = Domain::Priority::clampNice(nice);
@@ -625,6 +647,10 @@ ProcessActionResult LinuxProcessControl::setIoPriority(const ProcessTarget& targ
     if (static_cast<int>(ioClass) > IoPrio::MAX_CLASS)
     {
         return ProcessActionResult::error("Invalid I/O priority class");
+    }
+    if (const std::optional<std::string> refused = schedulingChangeRefused(target.pid); refused.has_value())
+    {
+        return ProcessActionResult::error(*refused);
     }
 
     // encode() holds the level to 0-7, and to 0 for the classes without levels.
@@ -683,6 +709,10 @@ ProcessActionResult LinuxProcessControl::setAffinity(const ProcessTarget& target
     if (cpus.empty())
     {
         return ProcessActionResult::error("Choose at least one CPU");
+    }
+    if (const std::optional<std::string> refused = schedulingChangeRefused(target.pid); refused.has_value())
+    {
+        return ProcessActionResult::error(*refused);
     }
     if (m_Syscalls.setAffinity == nullptr)
     {
@@ -844,6 +874,15 @@ ProcessActionResult LinuxProcessControl::sendSignal(const ProcessTarget& target,
     {
         spdlog::info("Not sending {}: {}", signalName, *nothing);
         return ProcessActionResult::error(*nothing);
+    }
+    // Suspending itself would leave this process stopped with nothing to resume it: TaskSmack frozen, or
+    // the root helper stopped for good, which the user can neither resume nor end (#2641).
+    // NOLINTNEXTLINE(misc-include-cleaner) - SIGSTOP is provided by <signal.h>
+    if (signal == SIGSTOP && target.pid == ::getpid())
+    {
+        const std::string self = std::format("PID {} is this process, which would have nothing to resume it once suspended", target.pid);
+        spdlog::info("Not sending {}: {}", signalName, self);
+        return ProcessActionResult::error(self);
     }
 
     const int sendResult = sendThroughPidfd(m_Syscalls, pidfd, signal);
