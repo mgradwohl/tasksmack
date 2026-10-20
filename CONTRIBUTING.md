@@ -37,13 +37,15 @@ On a new machine, in this order:
 
 2. **Run your OS's automated setup**, below: [Linux](#automated-setup-linux) or
    [Windows](#automated-setup-windows). The script installs the toolchain and Python 3.14 and
-   creates the project's Python environment (`.venv`, with pre-commit in it unless you pass
-   `--minimal`/`-Minimal`); then you activate `.venv` and run `check-prereqs`. To install the
+   creates the project's Python environment (`.venv`; on Linux with pre-commit in it unless you
+   pass `--minimal`, on Windows only with `-DevTools`); then you activate `.venv` and run
+   `check-prereqs`. To install the
    prerequisites by hand instead, see [Check Prerequisites](#check-prerequisites).
-3. **Install the pre-commit hooks** (recommended), with `.venv` active: `pre-commit install`.
-   See [Pre-commit Hooks](#pre-commit-hooks-recommended).
-4. **Configure, build and test** with the [One-Command Dev Workflow](#one-command-dev-workflow):
+3. **Configure, build and test** with the [One-Command Dev Workflow](#one-command-dev-workflow):
    `cmake --workflow --preset dev` on Linux, `cmake --workflow --preset win-dev` on Windows.
+4. **Before your first pull request**, install the pre-commit hooks, with `.venv` active:
+   `pre-commit install` (on Windows, run `pwsh tools/setup-dev.ps1 -DevTools` first). See
+   [Pre-commit Hooks](#pre-commit-hooks-recommended).
 
 ### Automated Setup (Linux)
 
@@ -89,7 +91,12 @@ pwsh tools/check-prereqs.ps1  # Verify environment
 Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
 `.venv\Scripts\Activate.ps1` under its default execution policy (`Restricted`).
 
-The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), LLVM 22 (`-LlvmVersion` must stay on the pinned major), CMake, Ninja, Python 3.14 and ccache, then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it and, unless `-Minimal` is used, the development dependencies from `requirements.txt`. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and treats ccache as recommended, not required.
+The Windows setup installs only what building, testing and running need:
+- Visual Studio 2022 Build Tools with just the MSVC C++ libraries and the Windows 11 SDK (see [Windows Pre-Requisites](#windows-pre-requisites));
+- LLVM 22 (`-LlvmVersion` must stay on the pinned major);
+- CMake, Ninja and Python 3.14.
+
+It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and treats ccache as recommended, not required.
 
 ### One-Command Dev Workflow
 
@@ -164,10 +171,11 @@ sudo apt install libsystemd-dev pkg-config
 - `LLVM_ROOT` environment variable set
 - CMake 3.29+
 - Ninja
-- ccache 4.9.1+ (optional but recommended)
+- ccache 4.9.1+ (optional, for faster rebuilds; `setup-dev.ps1 -DevTools`)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
+- git (CMake requires it, and fetches the dependencies with it)
 - FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
-- **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
+- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK, and finds them through the Visual Studio installation. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` and `Microsoft.VisualStudio.Component.Windows11SDK.26100` (plus `...VC.Tools.ARM64` on Windows on Arm). A Visual Studio you already have works too if it has those components. See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
 `TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`

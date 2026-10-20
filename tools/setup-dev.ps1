@@ -1,9 +1,9 @@
 # tools/setup-dev.ps1 — Install TaskSmack development prerequisites on Windows.
 #
 # Usage:
-#   pwsh tools/setup-dev.ps1              # Install all prerequisites (requires winget)
+#   pwsh tools/setup-dev.ps1              # Install what building and testing need (requires winget)
+#   pwsh tools/setup-dev.ps1 -DevTools    # Also install the optional developer tools (ccache, pre-commit, ...)
 #   pwsh tools/setup-dev.ps1 -DryRun      # Print what would be installed without running winget
-#   pwsh tools/setup-dev.ps1 -Minimal     # Install build prerequisites only
 #
 # After running this script, verify your environment with: pwsh tools/check-prereqs.ps1
 #
@@ -18,7 +18,14 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    # Optional developer tools, not needed to build, test or run: ccache (faster rebuilds) and
+    # requirements.txt (pre-commit and the other Python dev tools).
+    [switch]$DevTools,
+    # Before #2618 everything was installed by default and -Minimal skipped the dev tools; the
+    # default is now what -Minimal was, so it is accepted and does nothing.
     [switch]$Minimal,
+    # The Windows SDK the Build Tools install. 26100 is the SDK the windows-2025 CI image builds with.
+    [string]$WindowsSdkComponent = "Microsoft.VisualStudio.Component.Windows11SDK.26100",
     [string]$LlvmVersion = "22.1.7",
     # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
     # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
@@ -169,13 +176,22 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 }
 
 # ── Step 1: Core build tools ─────────────────────────────────────────────────
-# Microsoft.VisualStudio.Workload.VCTools pulls in a Windows SDK (including rc.exe) as
-# one of its default components -- no separate SDK package is needed. CMakeLists.txt
-# fails configuration with a clear error if rc.exe can't be found, since TaskSmack's
-# icon and version info depend on it (the DPI-awareness manifest is embedded
-# independently at link time and doesn't need rc.exe).
-Write-Host "==> Installing Visual Studio C++ Build Tools and Windows SDK..."
-Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# clang (LLVM_ROOT) targets the MSVC ABI, so it compiles against the MSVC C++ standard library
+# and CRT and the Windows SDK, and links their import and static libraries; it finds both through
+# the Visual Studio installation. Those are the only two things the build takes from Visual
+# Studio, so install just those components rather than the VCTools workload with its
+# recommended components (#2618, #2646): CMake and Ninja are the standalone ones below, the
+# resource compiler is LLVM's llvm-rc (cmake/RCCompiler.cmake), and MSBuild, the ATL, the test
+# adapters and the bundled CMake are never used. The workload with --includeRecommended was 346
+# packages (131 MSIs).
+$vsComponents = @('Microsoft.VisualStudio.Component.VC.Tools.x86.x64', $WindowsSdkComponent)
+if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+    # Windows on Arm builds natively (#2214), against the ARM64 libraries.
+    $vsComponents += 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+}
+$vsAdd = ($vsComponents | ForEach-Object { "--add $_" }) -join ' '
+Write-Host "==> Installing Visual Studio C++ Build Tools (MSVC libraries and Windows SDK only)..."
+Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --norestart $vsAdd"
 
 Write-Host "==> Installing CMake $CMakeVersion..."
 Invoke-WinGet install --id Kitware.CMake --version $CMakeVersion --source winget --silent --accept-package-agreements --accept-source-agreements
@@ -198,7 +214,7 @@ Write-Host ""
 Write-Host "==> Setting LLVM_ROOT environment variable..."
 $llvmPath = "C:\Program Files\LLVM"
 # A machine-wide variable needs an elevated shell; without one, set it for the current user instead
-# of failing here, after LLVM is installed but before ccache and the Python packages.
+# of failing here, after LLVM is installed but before the Python packages.
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 $envScope = if ($isAdmin) { 'Machine' } else { 'User' }
@@ -210,12 +226,7 @@ if ($DryRun) {
     Write-Host "  LLVM_ROOT set to: $llvmPath ($envScope scope)"
 }
 
-# ── Step 3: ccache ───────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "==> Installing ccache $CcacheVersion..."
-Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winget --silent --accept-package-agreements --accept-source-agreements
-
-# ── Step 4: Project venv + jinja2 for GLAD ──────────────────────────────────
+# ── Step 3: Project venv + jinja2 for GLAD ──────────────────────────────────
 # Into .venv, not the global Python, as setup-dev.sh does on Linux.
 Write-Host ""
 Write-Host "==> Creating the project Python environment (.venv)..."
@@ -226,10 +237,14 @@ Write-Host ""
 Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
 Invoke-VenvPython @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.txt"))
 
-if (-not $Minimal) {
-    # ── Step 5: Development Python dependencies ─────────────────────────────
+if ($DevTools) {
+    # ── Step 4 (-DevTools): optional developer tools ───────────────────────
     Write-Host ""
-    Write-Host "==> Installing development Python dependencies..."
+    Write-Host "==> Installing ccache $CcacheVersion (optional: faster rebuilds)..."
+    Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winget --silent --accept-package-agreements --accept-source-agreements
+
+    Write-Host ""
+    Write-Host "==> Installing development Python dependencies (pre-commit and others)..."
     Invoke-VenvPython @("-m", "pip", "install", "-r", (Join-Path $RepoRoot "requirements.txt"))
 }
 
@@ -241,12 +256,12 @@ Write-Host ""
 Write-Host "Next steps, in the new terminal, from the repository root:"
 Write-Host "  1. Activate Python:        .venv\Scripts\Activate.ps1"
 Write-Host "  2. Verify environment:     pwsh tools/check-prereqs.ps1"
-if (-not $Minimal) {
-    Write-Host "  3. Install git hooks:      pre-commit install"
+Write-Host "  3. Configure, build, test: cmake --workflow --preset win-dev"
+if ($DevTools) {
+    Write-Host "  4. Install git hooks:      pre-commit install"
 }
 else {
-    Write-Host "  3. Install git hooks:      python -m pip install -r requirements.txt; pre-commit install"
+    Write-Host "  Before your first pull request: pwsh tools/setup-dev.ps1 -DevTools, then pre-commit install"
 }
-Write-Host "  4. Configure, build, test: cmake --workflow --preset win-dev"
 Write-Host ""
 Write-Host "For full documentation see CONTRIBUTING.md"
