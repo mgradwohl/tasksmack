@@ -41,6 +41,10 @@
 .PARAMETER BuildParallelLevel
     Sets CMAKE_BUILD_PARALLEL_LEVEL for the builds, to keep a sandbox from taking every core of the
     host. 0 (the default) leaves it unset, as a newcomer would.
+.PARAMETER SetupTimeoutMinutes
+    How long tools/setup-dev.ps1 may run before the check records a FINDING, copies the installers'
+    logs to OutDir and stops. Default 45, ample on an ordinary machine. Windows Sandbox needs about
+    360 (see -WindowsSandbox).
 .PARAMETER SkipPerf
     Skip the benchmark and ETW steps.
 .PARAMETER ShutdownWhenDone
@@ -51,7 +55,7 @@
     # Windows Sandbox: a .wsb that maps a folder holding only this script read-only to
     # C:\newcomer-in and an empty folder writable to C:\newcomer-out, with Networking enabled,
     # MemoryInMB 16384, and this LogonCommand (one line; it shuts the sandbox down at the end):
-    cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
+    cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox -SetupTimeoutMinutes 360 > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
     # Then watch progress.log and wait for DONE in the output folder on the host.
 #>
 [CmdletBinding()]
@@ -63,6 +67,7 @@ param(
     [switch]$ContinueOnFinding,
     [switch]$WindowsSandbox,
     [int]$BuildParallelLevel = 0,
+    [int]$SetupTimeoutMinutes = 45,
     [switch]$SkipPerf,
     [switch]$ShutdownWhenDone
 )
@@ -465,7 +470,20 @@ Invoke-Step 'Install PowerShell 7 (pwsh)' {
 
 # --- 6. Automated Setup (Windows) ------------------------------------------------------------
 Invoke-Step 'pwsh tools/setup-dev.ps1' {
-    $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes 360 -Command 'pwsh tools/setup-dev.ps1'
+    try {
+        $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes $SetupTimeoutMinutes -Command 'pwsh tools/setup-dev.ps1'
+    }
+    catch {
+        # A setup that runs this long is a finding in itself; the installers' logs are in
+        # 06-setup-dev-diagnostics. Nothing after it can run without the toolchain, so stop.
+        Save-Diagnostic -Prefix '06-setup-dev'
+        $vsLog = Get-ChildItem -Path (Join-Path $env:TEMP 'dd_installer_elevated_*.log') -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $packages = if ($vsLog) { @(Select-String -LiteralPath $vsLog.FullName -Pattern 'BEGIN: Installing').Count } else { 0 }
+        $script:Current.Findings++
+        $null = $script:Current.Notes.Add("FINDING: tools/setup-dev.ps1 did not finish within $SetupTimeoutMinutes min (the Visual Studio Build Tools installer had started $packages packages); logs in 06-setup-dev-diagnostics.")
+        throw "STOPRUN: $($_.Exception.Message)"
+    }
     if ($code -ne 0) {
         Save-Diagnostic -Prefix '06-setup-dev'
         throw "tools/setup-dev.ps1 exited $code`n$(Get-LogTail '06-setup-dev')"
