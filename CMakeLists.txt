@@ -231,6 +231,7 @@ set(TASKSMACK_SOURCES
 # Platform-specific sources
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
+    src/Platform/Linux/LinuxProcessControl.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
     # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
     src/Platform/Linux/BrokerSocket.cpp
@@ -783,20 +784,21 @@ endif()
 
 # tasksmack-helper (#2307; #2181): the privileged broker TaskSmack starts with pkexec when the user
 # authenticates for an action it can't do itself. Platform sources only -- no SDL, ImGui, GL, config
-# or themes -- so as little as possible runs as root. Linux only; Windows has its own transport (#2311).
+# or themes -- so as little as possible runs as root. Of the process actions it links only the
+# process-control half (LinuxProcessControl), so nothing that starts strace, gcore or a terminal is in it,
+# and it never searches PATH for them (#2640). Linux only; Windows has its own transport (#2311).
 if(UNIX AND NOT APPLE)
     add_executable(tasksmack-helper
         src/Platform/Linux/HelperMain.cpp
         src/Platform/BrokerRequestMapping.cpp
         src/Platform/Linux/BrokerServer.cpp
         src/Platform/Linux/BrokerSocket.cpp
-        src/Platform/Linux/LinuxProcessActions.cpp
+        src/Platform/Linux/LinuxProcessControl.cpp # not LinuxProcessActions: no trace, dump or spawn (#2640)
         src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         src/Platform/Linux/LinuxProcessModulesReader.cpp
         src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
-        src/Platform/Linux/DetachedSpawn.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)

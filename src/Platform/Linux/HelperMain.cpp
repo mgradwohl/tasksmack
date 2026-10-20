@@ -4,9 +4,12 @@
 // with one end of a socketpair as its stdin. It answers a closed set of BrokerProtocol requests on that
 // socket and exits when TaskSmack closes it, or after a few idle minutes.
 //
-// It links only Platform: no SDL, ImGui, GL or config file. Before it reads a single request it checks
-// that the socket's peer is the process that started it (pkexec execs this in its own place, so that is
-// TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly as the tests do, its own.
+// It links only Platform: no SDL, ImGui, GL or config file. Of the process actions it links only
+// LinuxProcessControl, the half that signals and sets priorities and affinity, not LinuxProcessActions'
+// system call trace and dump files, which start strace, gcore or a terminal (#2640). Before it reads a
+// single request it checks that the socket's peer is the process that started it (pkexec execs this in
+// its own place, so that is TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly
+// as the tests do, its own.
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
@@ -15,8 +18,8 @@
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
 #include "Platform/Linux/LinuxCoredumps.h"
-#include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
+#include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
@@ -91,7 +94,7 @@ int main(int argc, char** argv)
     }
     try
     {
-        Platform::LinuxProcessActions actions;
+        Platform::LinuxProcessControl actions;
         // Process Details' reads of another user's process (#2309).
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;
