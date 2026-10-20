@@ -432,11 +432,13 @@ Invoke-Step 'Clone (Quick Start)' {
 }
 
 # --- 4. Quick Start's Python and pre-commit lines, in a Windows terminal ---------------------
-Invoke-Step 'Quick Start venv lines on Windows' {
-    Assert-DocText 'CONTRIBUTING.md' 'python3.14 -m venv .venv'
+Invoke-Step 'Quick Start on Windows' {
     $quickStart = [regex]::Match((Get-DocText 'CONTRIBUTING.md'), '(?s)## Quick Start(.*?)### Automated Setup').Groups[1].Value
-    $windowsLines = $quickStart -match 'Scripts\\Activate|py -3\.14|setup-dev\.ps1'
-    if (-not $windowsLines) {
+    if (-not $quickStart) { throw "CONTRIBUTING.md has no '## Quick Start' section before '### Automated Setup'." }
+    # Bash-only venv lines in Quick Start, with nothing there for Windows, strand a Windows newcomer.
+    $bashOnly = $quickStart -match 'python3\.14 -m venv|source \.venv/bin/activate'
+    $windowsLines = $quickStart -match 'Scripts\\Activate|py -3\.14|setup-dev\.ps1|automated-setup-windows'
+    if ($bashOnly -and -not $windowsLines) {
         # Run it as written in the default Windows terminal, to show what a newcomer sees.
         $code = Invoke-Shell -Shell powershell -LogName '04-quickstart-venv' -TimeoutMinutes 5 -Command 'python3.14 -m venv .venv'
         Add-Finding "Quick Start's commands are bash only (python3.14, source .venv/bin/activate): 'python3.14 -m venv .venv' in Windows PowerShell exits $code. It also runs before any setup step has installed Python. A Windows newcomer has to skip to Automated Setup (Windows)."
@@ -474,7 +476,8 @@ Invoke-Step '.venv\Scripts\Activate.ps1' {
     # The same line in Windows PowerShell, the terminal a clean Windows opens.
     $code = Invoke-Shell -Shell powershell -LogName '07-activate-windows-powershell' -TimeoutMinutes 2 -Command '.venv\Scripts\Activate.ps1; if (-not $env:VIRTUAL_ENV) { exit 1 }'
     if ($code -ne 0) {
-        $saysPwshTerminal = Test-DocMatch 'CONTRIBUTING.md' '(?i)(PowerShell 7|pwsh) (terminal|session|prompt)[^\r\n]*\r?\n?[^\r\n]*setup-dev\.ps1|setup-dev\.ps1[^\r\n]*\r?\n?[^\r\n]*(PowerShell 7|pwsh) (terminal|session|prompt)'
+        # Does Automated Setup (Windows) say to use a PowerShell 7 terminal?
+        $saysPwshTerminal = Test-DocMatch 'CONTRIBUTING.md' '(?s)### Automated Setup \(Windows\)(?:(?!\n#{2,3} ).)*PowerShell 7\s+terminal'
         if (-not $saysPwshTerminal) {
             Add-Finding "'.venv\Scripts\Activate.ps1' fails in Windows PowerShell, the default terminal (execution policy $(& powershell.exe -NoProfile -Command Get-ExecutionPolicy)); the docs don't say to run the setup lines in a PowerShell 7 (pwsh) terminal, where it works."
         }
