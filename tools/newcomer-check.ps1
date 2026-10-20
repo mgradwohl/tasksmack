@@ -39,7 +39,8 @@
     TaskSmack.exe, since a sandbox without vGPU has only OpenGL 1.1. Not newcomer steps; reported
     as SETUP. Use <VGpu>Disable</VGpu> and MemoryInMB 8192 in the .wsb. Expect setup-dev.ps1
     to take hours there: Windows Installer spends 2 minutes verifying each signed .msi in the
-    sandbox, and the Visual Studio Build Tools install runs about 126 of them.
+    sandbox, and the Windows SDK's desktop C++ feature alone installs 48 of them. Little CPU shows
+    meanwhile; the SDK's progress is in 06-setup-dev-diagnostics\tasksmack-winsdksetup.log.
 .PARAMETER BuildParallelLevel
     Sets CMAKE_BUILD_PARALLEL_LEVEL for the builds, to keep a sandbox from taking every core of the
     host. 0 (the default) leaves it unset, as a newcomer would.
@@ -288,7 +289,9 @@ function Save-Diagnostic {
     $sources = @(
         (Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir\*.log'),
         (Join-Path $env:TEMP 'dd_*.log'),
-        (Join-Path $env:TEMP 'WinGet\*.log')
+        (Join-Path $env:TEMP 'WinGet\*.log'),
+        # The standalone Windows SDK installer's log, which setup-dev.ps1 names (#2661).
+        (Join-Path $env:TEMP 'tasksmack-winsdksetup*.log')
     )
     foreach ($source in $sources) {
         Get-ChildItem -Path $source -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending |
@@ -311,11 +314,19 @@ function Get-DocText {
     return Get-Content -LiteralPath (Join-Path $DocsDir $Name) -Raw -Encoding utf8
 }
 
+# Whether a doc contains $Text, ignoring how the doc wraps it: runs of whitespace, line breaks
+# included, compare equal to one space. Markdown prose wraps anywhere, so a phrase that reads
+# whole on GitHub can sit across two lines in the file.
+function Test-DocText {
+    param([string]$Doc, [string]$Text)
+    return ((Get-DocText $Doc) -replace '\s+', ' ').Contains(($Text -replace '\s+', ' '))
+}
+
 # The docs must still give the command this script is about to run; if not, they and this script
 # disagree, and the script has to be updated to follow them.
 function Assert-DocText {
     param([string]$Doc, [string]$Text)
-    if (-not (Get-DocText $Doc).Contains($Text)) {
+    if (-not (Test-DocText $Doc $Text)) {
         throw "$Doc no longer says '$Text'. The docs and tools/newcomer-check.ps1 disagree; update the script to follow the docs."
     }
 }
@@ -530,7 +541,7 @@ Invoke-Step 'pwsh tools/check-prereqs.ps1' {
 
 # The pre-commit hooks. Where the docs make the developer tools an opt-in "before your first pull
 # request" step (setup-dev.ps1 -DevTools), it runs after the build and launch, as they order it.
-$DevToolsOptIn = (Get-DocText 'CONTRIBUTING.md').Contains('setup-dev.ps1 -DevTools')
+$DevToolsOptIn = Test-DocText 'CONTRIBUTING.md' 'setup-dev.ps1 -DevTools'
 $PreCommitStep = {
     Assert-DocText 'CONTRIBUTING.md' 'pre-commit install'
     $command = '.venv\Scripts\Activate.ps1; pre-commit install'
@@ -607,6 +618,15 @@ Invoke-Step -Setup 'Toolchain evidence (what the build used)' {
         $installs = @(Select-String -LiteralPath $vsLog.FullName -Pattern 'BEGIN: Installing').Count
         $msis = @(Select-String -LiteralPath $vsLog.FullName -Pattern "\.msi' succeeded" | ForEach-Object { $_.Line -replace ".*[\\/ ]([^\\/]+\.msi)' succeeded.*", '$1' } | Sort-Object -Unique).Count
         if ($stamps) { Add-Note ("VS installer: {0} packages installed, {1} MSIs downloaded, {2:N0} min" -f $installs, $msis, ($stamps[-1] - $stamps[0]).TotalMinutes) }
+    }
+    # The standalone Windows SDK's installer log, which setup-dev.ps1 names (#2661).
+    $sdkLog = Join-Path ([IO.Path]::GetTempPath()) 'tasksmack-winsdksetup.log'
+    if (Test-Path -LiteralPath $sdkLog) {
+        $stamps = Select-String -LiteralPath $sdkLog -Pattern '^\[[0-9A-Fa-f]+:[0-9A-Fa-f]+\]\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\]' |
+            ForEach-Object { [datetime]$_.Matches[0].Groups[1].Value }
+        $applied = @(Select-String -LiteralPath $sdkLog -Pattern 'Applied execute package: ([^,]+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+        $features = (Select-String -LiteralPath $sdkLog -Pattern 'Command Line: (.*)' | Select-Object -First 1).Matches.Groups[1].Value
+        if ($stamps) { Add-Note ("Windows SDK installer: {0} packages applied, {1:N0} min; command line: {2}" -f $applied.Count, ($stamps[-1] - $stamps[0]).TotalMinutes, $features) }
     }
     $llvmSize = (Get-ChildItem -LiteralPath $env:LLVM_ROOT -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     Add-Note ("{0}: {1:N1} GB" -f $env:LLVM_ROOT, ($llvmSize / 1GB))
@@ -720,7 +740,8 @@ Invoke-Step 'Profiling: pwsh tools/profile-etw.ps1 bench + analyze-etw.ps1' {
     Assert-DocText 'CONTRIBUTING.md' 'pwsh tools/analyze-etw.ps1 -TracePath'
     # analyze-etw.ps1 needs xperf, from the Windows Performance Toolkit. Where the docs say setup-dev.ps1
     # doesn't install it and how to get it, its absence is expected, not a finding.
-    $wptOptional = Test-DocMatch 'CONTRIBUTING.md' 'Windows Performance Toolkit, which `tools/setup-dev\.ps1` does not install'
+    # \s+, not a space: CONTRIBUTING.md wraps this sentence (#2676).
+    $wptOptional = Test-DocMatch 'CONTRIBUTING.md' 'Windows\s+Performance\s+Toolkit,\s+which\s+`tools/setup-dev\.ps1`\s+does\s+not\s+install'
     if ($wptOptional -and -not (Get-Command xperf -ErrorAction SilentlyContinue)) {
         return 'SKIP: trace recorded; analyze-etw.ps1 not run: xperf (Windows Performance Toolkit) is an optional install the docs describe'
     }

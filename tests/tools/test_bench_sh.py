@@ -92,6 +92,18 @@ BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash")
 _SEPARATED = r"""\s/\\"'=:,;"""
 
 
+def manifest_keys(value) -> list[str]:
+    """Every object key in a decoded manifest, at any depth."""
+    keys = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys += [key, *manifest_keys(item)]
+    elif isinstance(value, list):
+        for item in value:
+            keys += manifest_keys(item)
+    return keys
+
+
 def find_identity_leaks(value, tokens: list[str], paths: list[str], path: str = "") -> list[str]:
     """Every string value (never an object key) of a decoded manifest that still holds a token
     (user or host name) standing alone between the identity pass's separators, or contains one of
@@ -719,7 +731,9 @@ class BenchShTest(unittest.TestCase):
             paths=[str(Path.home()), posix(Path.home()), tempfile.gettempdir(), str(REPO_ROOT), posix(REPO_ROOT), "/home/"],
         )
         self.assertEqual(leaks, [])
-        self.assertNotRegex(text, r"host_?name|user_?name")
+        # No field named for a host or user, at any depth. Keys only: a value such as git.branch may
+        # say "username" without naming anyone (#2655); the tokens above catch real names in values.
+        self.assertEqual([key for key in manifest_keys(manifest) if re.search(r"host_?name|user_?name", key, re.IGNORECASE)], [])
 
 
 def load_bench_manifest():
