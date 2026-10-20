@@ -519,11 +519,17 @@ Invoke-Step 'pwsh tools/check-prereqs.ps1' {
     }
 }
 
-Invoke-Step 'pre-commit install (Quick Start, recommended)' {
+# The pre-commit hooks. Where the docs make the developer tools an opt-in "before your first pull
+# request" step (setup-dev.ps1 -DevTools), it runs after the build and launch, as they order it.
+$DevToolsOptIn = (Get-DocText 'CONTRIBUTING.md').Contains('setup-dev.ps1 -DevTools')
+$PreCommitStep = {
     Assert-DocText 'CONTRIBUTING.md' 'pre-commit install'
-    $code = Invoke-Shell -Shell pwsh -LogName '09-pre-commit-install' -TimeoutMinutes 5 -Command '.venv\Scripts\Activate.ps1; pre-commit install'
-    if ($code -ne 0) { Add-Finding "pre-commit install exits $code after setup-dev.ps1`n$(Get-LogTail '09-pre-commit-install' 5)" }
+    $command = '.venv\Scripts\Activate.ps1; pre-commit install'
+    if ($DevToolsOptIn) { $command = ".venv\Scripts\Activate.ps1; pwsh tools/setup-dev.ps1 -DevTools; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; pre-commit install" }
+    $code = Invoke-Shell -Shell pwsh -LogName '09-pre-commit-install' -TimeoutMinutes 30 -Command $command
+    if ($code -ne 0) { Add-Finding "'$command' exits $code`n$(Get-LogTail '09-pre-commit-install' 5)" }
 }
+if (-not $DevToolsOptIn) { Invoke-Step 'pre-commit install (Quick Start, recommended)' $PreCommitStep }
 
 # --- 7. Build and test -----------------------------------------------------------------------
 Invoke-Step 'cmake --workflow --preset win-dev (configure, build, ctest)' {
@@ -532,6 +538,61 @@ Invoke-Step 'cmake --workflow --preset win-dev (configure, build, ctest)' {
     $summary = Select-String -LiteralPath (Join-Path $OutDir '10-win-dev.log') -Pattern 'tests passed, \d+ tests failed out of' | Select-Object -Last 1
     if ($summary) { Add-Note $summary.Line.Trim() }
     if ($code -ne 0) { throw "cmake --workflow --preset win-dev exited $code`n$(Get-LogTail '10-win-dev' 30)" }
+}
+
+# What the build used, and what setup installed: evidence for #2618's install inventory.
+Invoke-Step -Setup 'Toolchain evidence (what the build used)' {
+  # Evidence only: a failure here is noted, never stops the run. clang -v writes to stderr, which
+  # Windows PowerShell turns into errors under 'Stop'.
+  $ErrorActionPreference = 'Continue'
+  try {
+    $cache =Join-Path $RepoDir 'build\win-debug\CMakeCache.txt'
+    if (Test-Path -LiteralPath $cache) {
+        $keys = 'CMAKE_COMMAND', 'CMAKE_MAKE_PROGRAM', 'CMAKE_CXX_COMPILER', 'CMAKE_LINKER', 'CMAKE_RC_COMPILER', 'CMAKE_MT', 'Python3_EXECUTABLE', 'GIT_EXECUTABLE', 'CCACHE_PROGRAM'
+        $lines = Get-Content -LiteralPath $cache | Where-Object { $_ -match "^($($keys -join '|')):" }
+        Add-Note "CMakeCache: $($lines -join '; ')"
+    }
+    $clang = Join-Path $env:LLVM_ROOT 'bin\clang++.exe'
+    if (Test-Path -LiteralPath $clang) {
+        $probe = Join-Path $env:TEMP 'newcomer-probe.cpp'
+        Set-Content -LiteralPath $probe -Value "#include <vector>`n#include <windows.h>`nint main() { return static_cast<int>(std::vector<int>{}.size()) + (GetCurrentProcessId() == 0); }" -Encoding ascii
+        $verbose = (& $clang -v -fsyntax-only $probe 2>&1) | Out-String
+        $includes = [regex]::Match($verbose, '(?s)search starts here:(.*?)End of search').Groups[1].Value -split "`r?`n" |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        Add-Note "clang include dirs: $($includes -join '; ')"
+        $link = (& $clang -### $probe 2>&1) | Out-String
+        $libPaths = [regex]::Matches($link, '-libpath:([^"]+)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+        Add-Note "clang link libpaths: $($libPaths -join '; ')"
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $json = & $vswhere -products * -include packages -format json | Out-String | ConvertFrom-Json
+        foreach ($vs in @($json)) {
+            $components = @($vs.packages | Where-Object { $_.type -eq 'Component' } | ForEach-Object { $_.id })
+            Add-Note "$($vs.displayName) $($vs.installationVersion): $(@($vs.packages).Count) packages; components: $($components -join ', ')"
+            $size = (Get-ChildItem -LiteralPath $vs.installationPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+            Add-Note ("{0}: {1:N1} GB" -f $vs.installationPath, ($size / 1GB))
+        }
+    }
+    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+    if (Test-Path -LiteralPath $kits) {
+        $size = (Get-ChildItem -LiteralPath $kits -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        Add-Note ("{0}: {1:N1} GB" -f $kits, ($size / 1GB))
+    }
+    # The Visual Studio installer's own record: packages installed and how long it took.
+    $vsLog = Get-ChildItem -Path (Join-Path $env:TEMP 'dd_installer_elevated_*.log') -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | Select-Object -First 1
+    if ($vsLog) {
+        $stamps = Select-String -LiteralPath $vsLog.FullName -Pattern '^\[[0-9a-f]+:[0-9a-f]+\]\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\]' |
+            ForEach-Object { [datetime]$_.Matches[0].Groups[1].Value }
+        $installs = @(Select-String -LiteralPath $vsLog.FullName -Pattern 'BEGIN: Installing').Count
+        $msis = @(Select-String -LiteralPath $vsLog.FullName -Pattern "\.msi' succeeded" | ForEach-Object { $_.Line -replace ".*[\\/ ]([^\\/]+\.msi)' succeeded.*", '$1' } | Sort-Object -Unique).Count
+        if ($stamps) { Add-Note ("VS installer: {0} packages installed, {1} MSIs downloaded, {2:N0} min" -f $installs, $msis, ($stamps[-1] - $stamps[0]).TotalMinutes) }
+    }
+    $llvmSize = (Get-ChildItem -LiteralPath $env:LLVM_ROOT -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+    Add-Note ("{0}: {1:N1} GB" -f $env:LLVM_ROOT, ($llvmSize / 1GB))
+  }
+  catch { Add-Note "evidence incomplete: $($_.Exception.Message)" }
 }
 
 # --- 8. Launch TaskSmack once ----------------------------------------------------------------
@@ -571,6 +632,8 @@ Invoke-Step 'Launch TaskSmack once (smoke test, no input)' {
         Remove-Item -Recurse -Force -LiteralPath $configDir -ErrorAction SilentlyContinue
     }
 }
+
+if ($DevToolsOptIn) { Invoke-Step 'Before the first pull request: setup-dev.ps1 -DevTools + pre-commit install' $PreCommitStep }
 
 # --- 9. Benchmarks and profiling -------------------------------------------------------------
 Invoke-Step 'Benchmarks: win-benchmark build + pwsh tools/bench.ps1 win-benchmark' {
