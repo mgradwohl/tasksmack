@@ -205,6 +205,23 @@ add_test(NAME CheckCflitePathsScript
 add_test(NAME CheckDllLoadsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_dll_loads.py)
 
+# tools/check-utf8.py refuses text that isn't UTF-8 or was encoded twice (#1648, #2529).
+add_test(NAME CheckUtf8Script
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_utf8.py)
+
+# src/main.cpp enables SeDebugPrivilege on Windows before the Application and its probes exist (#2128).
+add_test(NAME StartupWiringScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_startup_wiring.py)
+
+# The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532) and
+# main-health.yml's per-job check (#2313), read from the workflows and run with bash against stubs
+# (#2478). The Main Health cases also need jq on bash's PATH and are skipped without it.
+if(TASKSMACK_BASH)
+    add_test(NAME WorkflowRunStepsScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py)
+    set_tests_properties(WorkflowRunStepsScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
@@ -215,13 +232,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME ReproducibleTarballScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reproducible_tarball.py)
     set_tests_properties(ReproducibleTarballScript PROPERTIES
-        ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}" TIMEOUT 120)
+        # The project config CPack reads (cmake/Packaging.cmake), to check it hands the TGZ to the script.
+        ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND};TASKSMACK_TEST_CPACK_CONFIG=${CMAKE_BINARY_DIR}/CPackProjectConfig.cmake"
+        TIMEOUT 120)
 endif()
 
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
 set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
-    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript
+    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script StartupWiringScript
     PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see

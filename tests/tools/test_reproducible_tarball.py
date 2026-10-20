@@ -128,5 +128,46 @@ class ReproducibleTarballTests(unittest.TestCase):
         self.assertEqual(deb.read_bytes(), b"not an archive")
 
 
+# The build's generated CPackProjectConfig.cmake, passed in by tests/CMakeLists.txt (#2478).
+CPACK_CONFIG = os.environ.get("TASKSMACK_TEST_CPACK_CONFIG")
+
+
+@unittest.skipUnless(CPACK_CONFIG, "TASKSMACK_TEST_CPACK_CONFIG is not set (run through ctest)")
+class ReproducibleTarballHookTests(unittest.TestCase):
+    """The script only helps if CPack runs it: the build's project config must hand it to the TGZ."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def post_build_scripts(self, generator):
+        # CPack includes the project config once per generator, with CPACK_GENERATOR set to it.
+        probe = self.tmp / "probe.cmake"
+        config = CPACK_CONFIG.replace("\\", "/")
+        probe.write_text(
+            f'set(CPACK_GENERATOR "{generator}")\n'
+            f'include("{config}")\n'
+            'message(STATUS "POST_BUILD=[${CPACK_POST_BUILD_SCRIPTS}]")\n',
+            encoding="utf-8",
+        )
+        result = subprocess.run([CMAKE, "-P", str(probe)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        start = output.index("POST_BUILD=[") + len("POST_BUILD=[")
+        return output[start : output.index("]", start)]
+
+    def test_the_tgz_is_repacked_by_the_script(self):
+        scripts = self.post_build_scripts("TGZ")
+        self.assertEqual(Path(scripts).resolve(), SCRIPT.resolve(), scripts)
+
+    def test_other_generators_are_not(self):
+        for generator in ("DEB", "RPM"):
+            with self.subTest(generator=generator):
+                self.assertEqual(self.post_build_scripts(generator), "")
+
+
 if __name__ == "__main__":
     unittest.main()
