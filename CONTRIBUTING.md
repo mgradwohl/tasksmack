@@ -81,6 +81,14 @@ If you just want a quick check of your environment, run:
 pwsh tools/check-prereqs.ps1    # Windows
 ```
 
+To check the whole newcomer path on Windows, from a clean machine to a built, tested and launched
+TaskSmack, run `tools/newcomer-check.ps1` on a throwaway Windows, such as Windows Sandbox (#2618).
+It installs software machine-wide, so don't run it on your own machine. It follows this file's
+steps in order, checks that the docs still give each command it runs, and stops at the first
+place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
+`results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
+Sandbox options.
+
 ### Linux Pre-Requisites
 
 - **Clang 22 + libc++/libc++abi 22 (matches CI)**

@@ -47,6 +47,12 @@
     Shut the machine down at the end (closes Windows Sandbox).
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File newcomer-check.ps1 -OutDir C:\out -ContinueOnFinding
+.EXAMPLE
+    # Windows Sandbox: a .wsb that maps a folder holding only this script read-only to
+    # C:\newcomer-in and an empty folder writable to C:\newcomer-out, with Networking enabled,
+    # MemoryInMB 16384, and this LogonCommand (one line; it shuts the sandbox down at the end):
+    cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
+    # Then watch progress.log and wait for DONE in the output folder on the host.
 #>
 [CmdletBinding()]
 param(
@@ -98,7 +104,7 @@ function Write-OutFile {
     Write-Warning "could not write $path"
 }
 
-function Write-Log {
+function Write-CheckLog {
     param([string]$Message)
     $line = '{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $Message
     Write-Host $line
@@ -129,7 +135,7 @@ $script:Current = $null
 function Add-Note {
     param([string]$Text)
     $null = $script:Current.Notes.Add($Text)
-    Write-Log "  note: $Text"
+    Write-CheckLog "  note: $Text"
 }
 
 # A place the docs or scripts trip a newcomer. Stops the run unless -ContinueOnFinding.
@@ -137,7 +143,7 @@ function Add-Finding {
     param([string]$Text)
     $script:Current.Findings++
     $null = $script:Current.Notes.Add("FINDING: $Text")
-    Write-Log "  FINDING: $Text"
+    Write-CheckLog "  FINDING: $Text"
     if (-not $ContinueOnFinding) {
         throw "STOPRUN: $Text"
     }
@@ -160,7 +166,7 @@ function Invoke-Step {
         Findings = 0
     }
     $null = $script:Results.Add($script:Current)
-    Write-Log "STEP $($script:StepNumber): $Name"
+    Write-CheckLog "STEP $($script:StepNumber): $Name"
     Write-Result
     $start = Get-Date
     try {
@@ -185,7 +191,7 @@ function Invoke-Step {
         }
     }
     $script:Current.Seconds = ((Get-Date) - $start).TotalSeconds
-    Write-Log "  -> $($script:Current.Status) in $([math]::Round($script:Current.Seconds)) s"
+    Write-CheckLog "  -> $($script:Current.Status) in $([math]::Round($script:Current.Seconds)) s"
     Write-Result
 }
 
@@ -229,7 +235,7 @@ function Invoke-Shell {
     $log = Join-Path $OutDir "$LogName.log"
     $errLog = Join-Path $OutDir "$LogName.stderr.log"
     $exe = (Get-Command $Shell -ErrorAction Stop).Source
-    Write-Log "  [$Shell] $($Command -replace "`r?`n", ' ; ')  (log: $LogName.log)"
+    Write-CheckLog "  [$Shell] $($Command -replace "`r?`n", ' ; ')  (log: $LogName.log)"
     $shellArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text')
     if ($ExecutionPolicy) { $shellArgs += @('-ExecutionPolicy', $ExecutionPolicy) }
     $shellArgs += @('-EncodedCommand', $encoded)
@@ -243,7 +249,7 @@ function Invoke-Shell {
     while (-not $p.WaitForExit(300000)) {
         $busy = Get-Process | Where-Object { $_.CPU } | Sort-Object CPU -Descending | Select-Object -First 4 |
             ForEach-Object { '{0} {1:N0}s' -f $_.Name, $_.CPU }
-        Write-Log ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
+        Write-CheckLog ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
         Save-Diagnostic -Prefix $LogName
         if ((Get-Date) -ge $deadline) {
             & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
@@ -356,7 +362,7 @@ namespace NewcomerCheck {
 $null = New-Item -ItemType Directory -Force -Path $WorkDir, $DocsDir
 if (Test-Path -LiteralPath $RepoDir) { throw "$RepoDir already exists; give -WorkDir a fresh directory." }
 Remove-Item -LiteralPath (Join-Path $OutDir 'DONE') -ErrorAction SilentlyContinue
-Write-Log "Newcomer check: ref $Ref, work dir $WorkDir, PowerShell $($PSVersionTable.PSVersion), $([Environment]::OSVersion.VersionString)"
+Write-CheckLog "Newcomer check: ref $Ref, work dir $WorkDir, PowerShell $($PSVersionTable.PSVersion), $([Environment]::OSVersion.VersionString)"
 if ($BuildParallelLevel -gt 0) { $env:CMAKE_BUILD_PARALLEL_LEVEL = "$BuildParallelLevel" }
 
 # --- 0. Machine (not a newcomer step) ---------------------------------------------------------
@@ -600,7 +606,7 @@ $failed = @($script:Results | Where-Object { $_.Status -eq 'FAIL' }).Count
 $findings = @($script:Results | Where-Object { $_.Status -eq 'FINDING' }).Count
 $overall = if ($failed) { 'FAIL' } elseif ($findings) { 'FINDINGS' } else { 'PASS' }
 $total = [TimeSpan]::FromSeconds([math]::Round(((Get-Date) - $script:RunStart).TotalSeconds))
-Write-Log "Overall: $overall ($findings step(s) with findings, $failed failed) in $total; commit $script:Commit"
+Write-CheckLog "Overall: $overall ($findings step(s) with findings, $failed failed) in $total; commit $script:Commit"
 Write-Result
 Write-OutFile -Name 'DONE' -Text "$overall $script:Commit $total`r`n"
 if ($ShutdownWhenDone) {
