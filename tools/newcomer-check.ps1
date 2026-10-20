@@ -35,7 +35,9 @@
     Record findings and keep going instead of stopping at the first one.
 .PARAMETER WindowsSandbox
     Prepare Windows Sandbox first: install winget (the sandbox has no Microsoft Store, so no winget;
-    an ordinary Windows 10/11 has it). Not a newcomer step; reported as SETUP. Expect setup-dev.ps1
+    an ordinary Windows 10/11 has it), and before the launch put CI's pinned Mesa llvmpipe beside
+    TaskSmack.exe, since a sandbox without vGPU has only OpenGL 1.1. Not newcomer steps; reported
+    as SETUP. Use <VGpu>Disable</VGpu> and MemoryInMB 8192 in the .wsb. Expect setup-dev.ps1
     to take hours there: Windows Installer spends 2 minutes verifying each signed .msi in the
     sandbox, and the Visual Studio Build Tools install runs about 126 of them.
 .PARAMETER BuildParallelLevel
@@ -54,7 +56,7 @@
 .EXAMPLE
     # Windows Sandbox: a .wsb that maps a folder holding only this script read-only to
     # C:\newcomer-in and an empty folder writable to C:\newcomer-out, with Networking enabled,
-    # MemoryInMB 16384, and this LogonCommand (one line; it shuts the sandbox down at the end):
+    # MemoryInMB 8192, VGpu Disable, and this LogonCommand (one line; it shuts the sandbox down at the end):
     cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox -SetupTimeoutMinutes 360 > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
     # Then watch progress.log and wait for DONE in the output folder on the host.
 #>
@@ -185,14 +187,21 @@ function Invoke-Step {
         else { $script:Current.Status = 'PASS' }
     }
     catch {
-        $script:Stopped = $true
-        if ($_.Exception.Message.StartsWith('STOPRUN:')) {
+        $message = $_.Exception.Message
+        # NOSTOP: a failure the later steps don't depend on (failing tests in a finished build).
+        if ($message.StartsWith('NOSTOP:')) {
+            $script:Current.Status = 'FAIL'
+            $null = $script:Current.Notes.Add("FAIL: $($message.Substring(7).Trim())")
+        }
+        elseif ($message.StartsWith('STOPRUN:')) {
+            $script:Stopped = $true
             $script:Current.Status = 'FINDING'
             $null = $script:Current.Notes.Add('Stopped at the first finding (rerun with -ContinueOnFinding to see the rest).')
         }
         else {
+            $script:Stopped = $true
             $script:Current.Status = 'FAIL'
-            $null = $script:Current.Notes.Add("FAIL: $($_.Exception.Message)")
+            $null = $script:Current.Notes.Add("FAIL: $message")
         }
     }
     $script:Current.Seconds = ((Get-Date) - $start).TotalSeconds
@@ -537,7 +546,17 @@ Invoke-Step 'cmake --workflow --preset win-dev (configure, build, ctest)' {
     $code = Invoke-Shell -Shell pwsh -LogName '10-win-dev' -TimeoutMinutes 240 -Command '.venv\Scripts\Activate.ps1; cmake --workflow --preset win-dev'
     $summary = Select-String -LiteralPath (Join-Path $OutDir '10-win-dev.log') -Pattern 'tests passed, \d+ tests failed out of' | Select-Object -Last 1
     if ($summary) { Add-Note $summary.Line.Trim() }
-    if ($code -ne 0) { throw "cmake --workflow --preset win-dev exited $code`n$(Get-LogTail '10-win-dev' 30)" }
+    if ($code -ne 0) {
+        $failedTests = @(Select-String -LiteralPath (Join-Path $OutDir '10-win-dev.log') -Pattern '^\s*\d+ - (\S+) \(Failed\)' |
+                ForEach-Object { $_.Matches[0].Groups[1].Value })
+        $built = Test-Path -LiteralPath (Join-Path $RepoDir 'build\win-debug\bin\TaskSmack.exe')
+        if ($built -and $failedTests) {
+            # The build finished and only tests failed: record it and go on to the launch and the
+            # benchmarks, which don't depend on them.
+            throw "NOSTOP: ctest failed: $($failedTests -join ', ')"
+        }
+        throw "cmake --workflow --preset win-dev exited $code`n$(Get-LogTail '10-win-dev' 30)"
+    }
 }
 
 # What the build used, and what setup installed: evidence for #2618's install inventory.
@@ -596,6 +615,29 @@ Invoke-Step -Setup 'Toolchain evidence (what the build used)' {
 }
 
 # --- 8. Launch TaskSmack once ----------------------------------------------------------------
+if ($WindowsSandbox) {
+    Invoke-Step -Setup 'Machine: Mesa llvmpipe beside TaskSmack.exe (no GPU in the sandbox)' {
+        # A sandbox without vGPU has only Windows' OpenGL 1.1, below TaskSmack's 3.3 (user guide,
+        # System requirements), and a newcomer's PC has a GPU driver. So, as CI does for its GPU-less
+        # runners (.github/actions/setup-mesa-llvmpipe, the same pinned archive and SHA-256), put
+        # Mesa's software OpenGL beside the exe. Not a newcomer step.
+        $url = 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z'
+        $sha256 = '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695'
+        $mesaRoot = Join-Path $env:TEMP 'newcomer-mesa'
+        $null = New-Item -ItemType Directory -Force -Path $mesaRoot
+        $archive = Join-Path $mesaRoot 'mesa.7z'
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $sha256) { throw "Mesa archive SHA-256 mismatch: expected $sha256, got $actual" }
+        & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $mesaRoot 'x64/opengl32.dll' 'x64/libgallium_wgl.dll'
+        if ($LASTEXITCODE -ne 0) { throw "extracting Mesa failed (tar exit $LASTEXITCODE)" }
+        $bin = Join-Path $RepoDir 'build\win-debug\bin'
+        Copy-Item -Path (Join-Path $mesaRoot 'x64\*.dll') -Destination $bin
+        $env:GALLIUM_DRIVER = 'llvmpipe'
+        Add-Note "Mesa 26.2.4 llvmpipe (opengl32.dll, libgallium_wgl.dll) copied to $bin; GALLIUM_DRIVER=llvmpipe"
+    }
+}
+
 Invoke-Step 'Launch TaskSmack once (smoke test, no input)' {
     Assert-DocText 'CONTRIBUTING.md' 'build/win-debug/bin/TaskSmack.exe'
     Assert-DocText 'CONTRIBUTING.md' 'TASKSMACK_CONFIG_DIR'
