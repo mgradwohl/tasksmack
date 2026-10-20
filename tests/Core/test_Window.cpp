@@ -206,6 +206,15 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
 
         window.setSize(0, -10);
         waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
+        // WSLg's window manager (Weston's XWM) can take longer than the wait to configure the window
+        // on a busy machine; once a parallel ctest run read it as 1x1, the size from before it was
+        // mapped (#2650). Skip that on a desktop, as below for the maximum; TASKSMACK_REQUIRE_DISPLAY=1
+        // (CI, Xvfb with no window manager) keeps the strict assertion.
+        if (window.getSize() != std::pair{WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION} && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window manager didn't apply the minimum size within the wait (got " << window.getWidth() << "x"
+                         << window.getHeight() << ")";
+        }
         EXPECT_EQ(window.getWidth(), WINDOW_MIN_DIMENSION);
         EXPECT_EQ(window.getHeight(), WINDOW_MIN_DIMENSION);
 
