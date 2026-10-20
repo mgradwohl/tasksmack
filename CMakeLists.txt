@@ -299,6 +299,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsBatteryInfo.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WindowsGPUProbe.cpp
+    src/Platform/Windows/WindowsDriverNodes.cpp # the SetupAPI driver-node lister the GPU probe and System Information share (#2565)
     src/Platform/Windows/DXGIGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp

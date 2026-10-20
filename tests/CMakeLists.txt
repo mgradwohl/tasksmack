@@ -557,6 +557,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbeDXCore.cpp
     Platform/test_WindowsGPURescan.cpp
+    Platform/test_WindowsDriverNodes.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
     Platform/test_WindowsStartupProbeSeams.cpp

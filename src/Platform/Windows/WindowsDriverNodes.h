@@ -2,7 +2,7 @@
 
 // A PnP device node's driver facts, and matching an adapter to its node by PCI location or vendor and
 // device ids: what the Graphics & displays section (#1519) and the GPU probe's driver version (#1799)
-// both read. The node lists themselves are read through SetupAPI by their callers.
+// both read, and listDriverNodes(), the one SetupAPI lister both read their node lists with (#2565).
 
 #include "Platform/GPUTypes.h"
 
@@ -14,9 +14,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <setupapi.h>
+#include <devpropdef.h>
 // clang-format on
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -27,6 +30,27 @@
 namespace Platform::WindowsGraphics
 {
 
+// DEVPKEY_Device_DriverDate and _DriverVersion (devpkey.h) and GUID_DEVCLASS_DISPLAY (devguid.h), spelled
+// out so no translation unit needs <initguid.h>.
+inline constexpr GUID DRIVER_PROPERTY_GUID{
+    .Data1 = 0xa8b865dd,
+    .Data2 = 0x2e3d,
+    .Data3 = 0x4094,
+    .Data4 = {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6},
+};
+inline constexpr DEVPROPKEY DRIVER_DATE_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 2};
+inline constexpr DEVPROPKEY DRIVER_VERSION_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 3};
+inline constexpr GUID DISPLAY_CLASS_GUID{
+    .Data1 = 0x4d36e968,
+    .Data2 = 0xe325,
+    .Data3 = 0x11ce,
+    .Data4 = {0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18},
+};
+
+/// The wide characters of the buffer a node's hardware id and driver version are read into; the last
+/// one stays 0, so a longer text is not read at all.
+inline constexpr std::size_t DRIVER_NODE_TEXT_CHARS = 512;
+
 /// One device node's driver facts.
 struct DriverNode
 {
@@ -36,6 +60,31 @@ struct DriverNode
     std::string driverVersion;    ///< DEVPKEY_Device_DriverVersion
     std::optional<FILETIME> driverDate;
 };
+
+/// The SetupAPI calls listDriverNodes() makes: the system's by default, a test's fakes
+/// (test_WindowsDriverNodes.cpp).
+struct SetupApiFunctions
+{
+    using GetClassDevsFn = decltype(&::SetupDiGetClassDevsW);
+    using DestroyDeviceInfoListFn = decltype(&::SetupDiDestroyDeviceInfoList);
+    using EnumDeviceInfoFn = decltype(&::SetupDiEnumDeviceInfo);
+    using GetDeviceRegistryPropertyFn = decltype(&::SetupDiGetDeviceRegistryPropertyW);
+    using GetDevicePropertyFn = decltype(&::SetupDiGetDevicePropertyW);
+
+    GetClassDevsFn getClassDevs = &::SetupDiGetClassDevsW;
+    DestroyDeviceInfoListFn destroyDeviceInfoList = &::SetupDiDestroyDeviceInfoList;
+    EnumDeviceInfoFn enumDeviceInfo = &::SetupDiEnumDeviceInfo;
+    GetDeviceRegistryPropertyFn getRegistryProperty = &::SetupDiGetDeviceRegistryPropertyW;
+    GetDevicePropertyFn getProperty = &::SetupDiGetDevicePropertyW;
+};
+
+/// Every device node SetupDiGetClassDevsW(@p classGuid, @p enumerator, nullptr, @p flags) lists, with its
+/// first hardware id, bus number and address, and driver version and date (#2565): the GPU probe reads
+/// every present PCI node in any class (#1799), System Information the present Display-class ones
+/// (#1519). Read from the PnP manager's records, so no device is woken. A property a node doesn't
+/// report, or reports with another type, leaves its field empty; no nodes when the list can't be made.
+[[nodiscard]] std::vector<DriverNode>
+listDriverNodes(const GUID* classGuid, const wchar_t* enumerator, DWORD flags, const SetupApiFunctions& api = {});
 
 /// The device node of the adapter with @p vendorId and @p deviceId: the one at @p location when it is
 /// known and a node reports it, else the first with those ids. Null when none matches.
