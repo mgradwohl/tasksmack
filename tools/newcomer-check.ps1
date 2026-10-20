@@ -311,11 +311,19 @@ function Get-DocText {
     return Get-Content -LiteralPath (Join-Path $DocsDir $Name) -Raw -Encoding utf8
 }
 
+# Whether a doc contains $Text, ignoring how the doc wraps it: runs of whitespace, line breaks
+# included, compare equal to one space. Markdown prose wraps anywhere, so a phrase that reads
+# whole on GitHub can sit across two lines in the file.
+function Test-DocText {
+    param([string]$Doc, [string]$Text)
+    return ((Get-DocText $Doc) -replace '\s+', ' ').Contains(($Text -replace '\s+', ' '))
+}
+
 # The docs must still give the command this script is about to run; if not, they and this script
 # disagree, and the script has to be updated to follow them.
 function Assert-DocText {
     param([string]$Doc, [string]$Text)
-    if (-not (Get-DocText $Doc).Contains($Text)) {
+    if (-not (Test-DocText $Doc $Text)) {
         throw "$Doc no longer says '$Text'. The docs and tools/newcomer-check.ps1 disagree; update the script to follow the docs."
     }
 }
@@ -530,7 +538,7 @@ Invoke-Step 'pwsh tools/check-prereqs.ps1' {
 
 # The pre-commit hooks. Where the docs make the developer tools an opt-in "before your first pull
 # request" step (setup-dev.ps1 -DevTools), it runs after the build and launch, as they order it.
-$DevToolsOptIn = (Get-DocText 'CONTRIBUTING.md').Contains('setup-dev.ps1 -DevTools')
+$DevToolsOptIn = Test-DocText 'CONTRIBUTING.md' 'setup-dev.ps1 -DevTools'
 $PreCommitStep = {
     Assert-DocText 'CONTRIBUTING.md' 'pre-commit install'
     $command = '.venv\Scripts\Activate.ps1; pre-commit install'
@@ -720,7 +728,8 @@ Invoke-Step 'Profiling: pwsh tools/profile-etw.ps1 bench + analyze-etw.ps1' {
     Assert-DocText 'CONTRIBUTING.md' 'pwsh tools/analyze-etw.ps1 -TracePath'
     # analyze-etw.ps1 needs xperf, from the Windows Performance Toolkit. Where the docs say setup-dev.ps1
     # doesn't install it and how to get it, its absence is expected, not a finding.
-    $wptOptional = Test-DocMatch 'CONTRIBUTING.md' 'Windows Performance Toolkit, which `tools/setup-dev\.ps1` does not install'
+    # \s+, not a space: CONTRIBUTING.md wraps this sentence (#2676).
+    $wptOptional = Test-DocMatch 'CONTRIBUTING.md' 'Windows\s+Performance\s+Toolkit,\s+which\s+`tools/setup-dev\.ps1`\s+does\s+not\s+install'
     if ($wptOptional -and -not (Get-Command xperf -ErrorAction SilentlyContinue)) {
         return 'SKIP: trace recorded; analyze-etw.ps1 not run: xperf (Windows Performance Toolkit) is an optional install the docs describe'
     }
