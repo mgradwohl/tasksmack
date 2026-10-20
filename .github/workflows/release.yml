@@ -845,6 +845,45 @@ jobs:
           fi
           echo "Installed binary: $BIN"
 
+      - name: Verify the privileged helper's hardening
+        # tasksmack-helper runs as root, so it is built with full RELRO, immediate binding and CET
+        # (x86-64) or BTI/PAC (AArch64) (#2640, cmake/CompilerOptions.cmake's
+        # tasksmack_apply_privileged_hardening()). A toolchain or flag change that silently drops
+        # one fails here. The CET note survives only when every linked object has it, so it's
+        # checked on the packaged binary, not assumed. The AArch64 note isn't verified on a build
+        # yet, so its absence only warns.
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          apt-get install -y binutils
+          HELPER=$(dpkg -L tasksmack | grep -E '/tasksmack-helper$')
+          if [[ -z "$HELPER" || ! -x "$HELPER" ]]; then
+            echo "tasksmack-helper missing or not executable after .deb install" >&2
+            exit 1
+          fi
+          failed=0
+          if ! readelf -d "$HELPER" | grep -Eq 'FLAGS_1.*NOW'; then
+            echo "$HELPER: no BIND_NOW (FLAGS_1 NOW): the GOT is bound lazily" >&2
+            failed=1
+          fi
+          if ! readelf -lW "$HELPER" | grep -q GNU_RELRO; then
+            echo "$HELPER: no GNU_RELRO segment" >&2
+            failed=1
+          fi
+          notes=$(readelf -n "$HELPER")
+          if [[ "$ARCH" == "x64" ]]; then
+            if ! grep -Eq 'x86 feature: IBT, SHSTK' <<<"$notes"; then
+              echo "$HELPER: no x86 IBT/SHSTK property note (CET)" >&2
+              failed=1
+            fi
+          elif ! grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
+            echo "::warning::$HELPER has no AArch64 BTI/PAC property note"
+          fi
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "$HELPER: full RELRO, BIND_NOW and the CPU control-flow note as expected."
+
       - name: Install mesa software rendering
         # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
         # simpler and stronger than an Xvfb-backed smoke check, and this is the same
