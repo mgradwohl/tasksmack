@@ -58,6 +58,10 @@ Every release asset is signed with Sigstore; see [Verifying a Release](docs/guid
 
 Windows release binaries are to be Authenticode-signed through SignPath Foundation (being set up in [#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); see the [Code signing policy](docs/code-signing-policy.md).
 
+## Building from Source
+
+To build TaskSmack yourself on Linux or Windows, follow the [Quick Start](CONTRIBUTING.md#quick-start) in CONTRIBUTING.md. It covers cloning, the automated setup scripts that install every prerequisite, and the one-command build-and-test workflow.
+
 ## Documentation
 
 | Document | Scope |
