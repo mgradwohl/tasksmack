@@ -2846,20 +2846,25 @@ chore: remove unused include
 revert: revert "feat: add network panel"
 ```
 
-These prefixes map to changelog sections as follows:
+These prefixes map to changelog sections as follows (first match wins; sections appear in this
+order, and each entry shows its scope, so `fix(windows): ...` reads **Windows:** ...):
 
 | Commit prefix | Changelog section |
 |---|---|
+| `security:`, any `(security)` scope, a `fix:`/`build:` that hardens a binary or fixes DLL loading | Security |
 | `feat:` | Added |
 | `fix:` | Fixed |
-| `security:` | Security |
-| `perf:`, `refactor:`, `style:` | Changed |
+| `refactor:`, `style:` | Changed |
+| `perf:` | Performance |
 | `docs:` | Documentation |
-| `test:`, `ci:`, `build:` | Infrastructure |
+| `ci:`, `build:`, `tools:`; `fix(test\|tools\|ci\|build\|cmake\|coverage\|bench\|fuzz\|perf\|...)`, `feat(tools\|test\|perf)`, `perf(bench\|tools)` | Infrastructure |
 | `chore:` | Maintenance |
 | `revert:` | Reverted |
-| `Merge ...` | _(skipped — noise)_ |
-| Unconventional messages | _(skipped)_ |
+| `test:`, `ci(deps):`, `build(deps):` | _(skipped — tests and Dependabot bumps of CI actions and dev tools swamp the release notes)_ |
+| `Merge ...`, `Update CHANGELOG.md for ...` | _(skipped — noise)_ |
+| Untyped titles | By leading verb: Fix → Fixed, Add/Implement → Added, Speed up/Optimize → Performance, Document → Documentation, Bump → Dependencies, Update → Maintenance, anything else → Changed; build/CI/tooling titles → Infrastructure |
+
+Releases up to 0.8.0 still list conventional commits only, as they did when they were generated.
 
 Issue and PR references like `(fixes #42)` or `(#42)` in commit messages are automatically hyperlinked to GitHub.
 
