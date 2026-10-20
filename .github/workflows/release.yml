@@ -850,8 +850,7 @@ jobs:
         # (x86-64) or BTI/PAC (AArch64) (#2640, cmake/CompilerOptions.cmake's
         # tasksmack_apply_privileged_hardening()). A toolchain or flag change that silently drops
         # one fails here. The CET note survives only when every linked object has it, so it's
-        # checked on the packaged binary, not assumed. The AArch64 note isn't verified on a build
-        # yet, so its absence only warns.
+        # checked on the packaged binary, not assumed (both notes confirmed on a release dry run).
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -877,7 +876,8 @@ jobs:
               failed=1
             fi
           elif ! grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
-            echo "::warning::$HELPER has no AArch64 BTI/PAC property note"
+            echo "$HELPER: no AArch64 BTI/PAC property note" >&2
+            failed=1
           fi
           if [[ "$failed" -ne 0 ]]; then
             exit 1
