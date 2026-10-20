@@ -269,6 +269,10 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+Ninja runs one compile job per core (plus two) by default. On a machine short of memory, such as a WSL 2 VM (which
+gets half the host's RAM by default), cap the jobs: `cmake --build --preset debug -j 4`, or
+`export CMAKE_BUILD_PARALLEL_LEVEL=4` before `cmake --workflow`, which takes no `-j`.
+
 ### Source encoding
 
 Every TaskSmack target compiles its sources as UTF-8, with UTF-8 narrow string literals
