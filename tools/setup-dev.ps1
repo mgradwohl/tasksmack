@@ -24,8 +24,11 @@ param(
     # Before #2618 everything was installed by default and -Minimal skipped the dev tools; the
     # default is now what -Minimal was, so it is accepted and does nothing.
     [switch]$Minimal,
-    # The Windows SDK the Build Tools install. 26100 is the SDK the windows-2025 CI image builds with.
-    [string]$WindowsSdkComponent = "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+    # The standalone Windows SDK (winget Microsoft.WindowsSDK.10.0.26100). 26100 is the SDK the
+    # windows-2025 CI image builds with. 10.0.26100.7463 is the newest build whose winget manifest
+    # installs on Windows 10 and Windows 11 before 24H2; 10.0.26100.7705's requires 24H2. The
+    # headers and libraries install to Windows Kits\10\{Include,Lib}\10.0.26100.0 either way.
+    [string]$WindowsSdkVersion = "10.0.26100.7463",
     [string]$LlvmVersion = "22.1.7",
     # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
     # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
@@ -177,21 +180,76 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 
 # ── Step 1: Core build tools ─────────────────────────────────────────────────
 # clang (LLVM_ROOT) targets the MSVC ABI, so it compiles against the MSVC C++ standard library
-# and CRT and the Windows SDK, and links their import and static libraries; it finds both through
-# the Visual Studio installation. Those are the only two things the build takes from Visual
-# Studio, so install just those components rather than the VCTools workload with its
-# recommended components (#2618, #2646): CMake and Ninja are the standalone ones below, the
-# resource compiler is LLVM's llvm-rc (cmake/RCCompiler.cmake), and MSBuild, the ATL, the test
-# adapters and the bundled CMake are never used. The workload with --includeRecommended was 346
-# packages (131 MSIs).
-$vsComponents = @('Microsoft.VisualStudio.Component.VC.Tools.x86.x64', $WindowsSdkComponent)
-if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+# and CRT and the Windows SDK, and links their import and static libraries. It finds the MSVC
+# libraries through the Visual Studio installation, and the SDK through the Windows Kits
+# "Installed Roots" registry key, which the standalone SDK installer writes as Visual Studio's
+# does. The MSVC libraries are the only thing the build takes from Visual Studio, so install
+# just that component rather than the VCTools workload with its recommended components (#2618,
+# #2646): CMake and Ninja are the standalone ones below, the resource compiler is LLVM's llvm-rc
+# (cmake/RCCompiler.cmake), and MSBuild, the ATL, the test adapters and the bundled CMake are
+# never used. The workload with --includeRecommended was 346 packages (131 MSIs).
+$isArm64 = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64'
+$vsComponents = @('Microsoft.VisualStudio.Component.VC.Tools.x86.x64')
+if ($isArm64) {
     # Windows on Arm builds natively (#2214), against the ARM64 libraries.
     $vsComponents += 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
 }
 $vsAdd = ($vsComponents | ForEach-Object { "--add $_" }) -join ' '
-Write-Host "==> Installing Visual Studio C++ Build Tools (MSVC libraries and Windows SDK only)..."
+Write-Host "==> Installing Visual Studio C++ Build Tools (MSVC libraries only)..."
 Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --norestart $vsAdd"
+
+# The Windows SDK, standalone and with only the desktop C++ headers and libraries for this
+# machine's architecture (#2661). Visual Studio's Windows11SDK component can't pick SDK features:
+# it installs every feature group (App Verifier, UWP, the Logo Toolkit, signing and MSI tools,
+# and the x86, x64 and ARM64 libraries), 116 MSIs that took about 2 h 15 min in Windows Sandbox.
+# The build uses Include\<sdk>\{ucrt,um,shared} and Lib\<sdk>\{ucrt,um}\<arch>, and no SDK tool.
+# Skipped when those are already there, as they are with Visual Studio's SDK component.
+$sdkBuild = ($WindowsSdkVersion -split '\.')[0..2] -join '.'
+$sdkDir = "$sdkBuild.0"
+$sdkArch = if ($isArm64) { 'arm64' } else { 'x64' }
+$sdkFeature = if ($isArm64) { 'OptionId.DesktopCPParm64' } else { 'OptionId.DesktopCPPx64' }
+
+# The Windows 10 SDK root (Windows Kits\10), from the registry key clang reads, else the default.
+function Get-WindowsKitsRoot {
+    foreach ($key in 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots',
+        'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots') {
+        $root = (Get-ItemProperty -LiteralPath $key -Name KitsRoot10 -ErrorAction SilentlyContinue).KitsRoot10
+        if ($root) { return $root }
+    }
+    return Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+}
+
+# The SDK files the build needs that are missing, as paths; none means the SDK is ready.
+function Get-MissingWindowsSdkFile {
+    $kits = Get-WindowsKitsRoot
+    @(
+        "Include\$sdkDir\um\Windows.h",
+        "Include\$sdkDir\shared\sdkddkver.h",
+        "Include\$sdkDir\ucrt\stdio.h",
+        "Lib\$sdkDir\um\$sdkArch\kernel32.lib",
+        "Lib\$sdkDir\ucrt\$sdkArch\ucrt.lib"
+    ) | ForEach-Object { Join-Path $kits $_ } | Where-Object { -not (Test-Path -LiteralPath $_) }
+}
+
+$missingSdkFiles = @(Get-MissingWindowsSdkFile)
+if ($missingSdkFiles.Count -eq 0) {
+    Write-Host "==> Windows SDK $sdkDir desktop C++ headers and $sdkArch libraries already in $(Get-WindowsKitsRoot); skipping."
+}
+else {
+    Write-Host "==> Installing Windows SDK $WindowsSdkVersion (desktop C++ $sdkArch headers and libraries only)..."
+    # --override replaces the manifest's /q, so it carries the quiet switches itself. The log is
+    # what tools/newcomer-check.ps1's evidence step counts the SDK's packages from.
+    $sdkLog = Join-Path ([IO.Path]::GetTempPath()) 'tasksmack-winsdksetup.log'
+    $sdkStart = Get-Date
+    Invoke-WinGet install --id "Microsoft.WindowsSDK.$sdkBuild" --version $WindowsSdkVersion --source winget --silent --accept-package-agreements --accept-source-agreements --override "/features $sdkFeature /quiet /norestart /ceip off /log `"$sdkLog`""
+    if (-not $DryRun) {
+        $missingSdkFiles = @(Get-MissingWindowsSdkFile)
+        if ($missingSdkFiles.Count -gt 0) {
+            throw "The Windows SDK install finished, but these files are missing: $($missingSdkFiles -join ', '). See $sdkLog."
+        }
+        Write-Host ("  Windows SDK installed in {0:N0} min." -f ((Get-Date) - $sdkStart).TotalMinutes)
+    }
+}
 
 Write-Host "==> Installing CMake $CMakeVersion..."
 Invoke-WinGet install --id Kitware.CMake --version $CMakeVersion --source winget --silent --accept-package-agreements --accept-source-agreements

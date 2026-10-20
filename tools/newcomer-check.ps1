@@ -608,6 +608,15 @@ Invoke-Step -Setup 'Toolchain evidence (what the build used)' {
         $msis = @(Select-String -LiteralPath $vsLog.FullName -Pattern "\.msi' succeeded" | ForEach-Object { $_.Line -replace ".*[\\/ ]([^\\/]+\.msi)' succeeded.*", '$1' } | Sort-Object -Unique).Count
         if ($stamps) { Add-Note ("VS installer: {0} packages installed, {1} MSIs downloaded, {2:N0} min" -f $installs, $msis, ($stamps[-1] - $stamps[0]).TotalMinutes) }
     }
+    # The standalone Windows SDK's installer log, which setup-dev.ps1 names (#2661).
+    $sdkLog = Join-Path ([IO.Path]::GetTempPath()) 'tasksmack-winsdksetup.log'
+    if (Test-Path -LiteralPath $sdkLog) {
+        $stamps = Select-String -LiteralPath $sdkLog -Pattern '^\[[0-9A-Fa-f]+:[0-9A-Fa-f]+\]\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\]' |
+            ForEach-Object { [datetime]$_.Matches[0].Groups[1].Value }
+        $applied = @(Select-String -LiteralPath $sdkLog -Pattern 'Applied execute package: ([^,]+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+        $features = (Select-String -LiteralPath $sdkLog -Pattern 'Command Line: (.*)' | Select-Object -First 1).Matches.Groups[1].Value
+        if ($stamps) { Add-Note ("Windows SDK installer: {0} packages applied, {1:N0} min; command line: {2}" -f $applied.Count, ($stamps[-1] - $stamps[0]).TotalMinutes, $features) }
+    }
     $llvmSize = (Get-ChildItem -LiteralPath $env:LLVM_ROOT -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     Add-Note ("{0}: {1:N1} GB" -f $env:LLVM_ROOT, ($llvmSize / 1GB))
   }
