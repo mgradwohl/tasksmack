@@ -24,6 +24,7 @@
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
 #include "Core/WindowEvents.h"
+#include "Core/WindowSizeTestUtils.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -739,6 +740,10 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
         const Core::Application app(spec);
 
         const auto& window = app.getWindow();
+        if (!TestSupport::waitForWindowSize(window, 800, 600) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 800, 600);
+        }
         EXPECT_EQ(window.getWidth(), 800);
         EXPECT_EQ(window.getHeight(), 600);
     }
@@ -2438,6 +2443,10 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
         const Core::Application app(spec);
 
         const auto& window = app.getWindow();
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
     }

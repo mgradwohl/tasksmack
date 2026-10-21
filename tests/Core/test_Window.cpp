@@ -3,6 +3,7 @@
 #include "Core/Window.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/WindowSizeTestUtils.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -79,24 +80,6 @@ namespace Core
 {
 namespace
 {
-
-// Window::setSize() calls SDL_SyncWindow(), but that only waits a bounded time (100ms on X11),
-// and on a real display the resize is asynchronous (#1309): SDL only updates the size
-// getWidth()/getHeight() report when it processes the resulting configure event, which can come
-// later than that under load or under a compositing window manager (WSLg). Pump events until the
-// window reports the expected size or the deadline passes; the caller still asserts the size, so
-// a resize that never lands still fails.
-void waitForWindowSize(const Window& window, int width, int height)
-{
-    constexpr auto RESIZE_TIMEOUT = std::chrono::seconds{5};
-    constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
-    const auto deadline = std::chrono::steady_clock::now() + RESIZE_TIMEOUT;
-    while (window.getSize() != std::pair{width, height} && std::chrono::steady_clock::now() < deadline)
-    {
-        SDL_PumpEvents();
-        std::this_thread::sleep_for(POLL_INTERVAL);
-    }
-}
 
 // Pumps events until the window's size differs from @p before, or a timeout (#1896).
 void waitForWindowSizeChange(const Window& window, std::pair<int, int> before)
@@ -205,22 +188,17 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
         Window window(WindowSpecification{.Title = "WindowClampTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         window.setSize(0, -10);
-        waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
-        // WSLg's window manager (Weston's XWM) can take longer than the wait to configure the window
-        // on a busy machine; once a parallel ctest run read it as 1x1, the size from before it was
-        // mapped (#2650). Skip that on a desktop, as below for the maximum; TASKSMACK_REQUIRE_DISPLAY=1
-        // (CI, Xvfb with no window manager) keeps the strict assertion.
-        if (window.getSize() != std::pair{WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION} && !TestSupport::displayRequired())
+        // Once a parallel ctest run read it as 1x1 on WSLg (#2650); skip that on a desktop.
+        if (!TestSupport::waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION) && !TestSupport::displayRequired())
         {
-            GTEST_SKIP() << "Window manager didn't apply the minimum size within the wait (got " << window.getWidth() << "x"
-                         << window.getHeight() << ")";
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
         }
         EXPECT_EQ(window.getWidth(), WINDOW_MIN_DIMENSION);
         EXPECT_EQ(window.getHeight(), WINDOW_MIN_DIMENSION);
 
         const auto sizeBefore = window.getSize();
         window.setSize(20000, 50000);
-        waitForWindowSize(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION);
+        (void) TestSupport::waitForWindowSize(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION);
         // A window manager may refuse to grow a window past the display: WSLg's (Weston's XWM)
         // leaves this 200x200 window at 200x200 in roughly a third of runs, even when asked again
         // and again, while the X server alone (Xvfb in CI, no window manager) always applies it.
@@ -253,6 +231,10 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
         const Window window(
             WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
 
@@ -260,12 +242,20 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
         {
             GTEST_SKIP() << "Display server could not apply the first window resize: " << SDL_GetError();
         }
+        if (!TestSupport::waitForWindowSize(window, 512, 384) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 512, 384);
+        }
         EXPECT_EQ(window.getWidth(), 512);
         EXPECT_EQ(window.getHeight(), 384);
 
         if (!SDL_SetWindowSize(window.getHandle(), 576, 432) || !SDL_SyncWindow(window.getHandle()))
         {
             GTEST_SKIP() << "Display server could not apply the second window resize: " << SDL_GetError();
+        }
+        if (!TestSupport::waitForWindowSize(window, 576, 432) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 576, 432);
         }
         EXPECT_EQ(window.getWidth(), 576);
         EXPECT_EQ(window.getHeight(), 432);
@@ -287,6 +277,10 @@ TEST_F(WindowTest, GetSizeInPixelsReturnsPositiveDimensions)
         const Window window(
             WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         const auto [pixelW, pixelH] = window.getSizeInPixels();
         // Physical pixel size must be at least as large as logical size on any display.
         EXPECT_GE(pixelW, 640);
@@ -658,6 +652,12 @@ TEST_F(WindowTest, ASizeSavedAtTwiceTheScaleComesBackAtHalfTheSize)
     try
     {
         Window window(WindowSpecification{.Title = "SavedScaleTest", .Width = 800, .Height = 600, .VSync = false, .Borderless = true});
+        // applySavedGeometry() converts the current size, so it must be the created one: read as 1x1
+        // on WSLg it converts to the 200x200 minimum (#2706).
+        if (!TestSupport::waitForWindowSize(window, 800, 600) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 800, 600);
+        }
         const float scale = window.getUnitScale();
         if (scale <= 0.0F)
         {
@@ -666,7 +666,10 @@ TEST_F(WindowTest, ASizeSavedAtTwiceTheScaleComesBackAtHalfTheSize)
         // Saved on a display at twice this one's scale: the same apparent size is half as many units
         // here (#1168). No position, so only the size is converted and fitted.
         window.applySavedGeometry(std::nullopt, false, scale * 2.0F);
-        waitForWindowSize(window, 400, 300);
+        if (!TestSupport::waitForWindowSize(window, 400, 300) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 400, 300);
+        }
         EXPECT_EQ(window.getSize(), (std::pair{400, 300}));
     }
     catch (const std::exception& e)
@@ -704,7 +707,7 @@ TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
             GTEST_SKIP() << "Window manager declined to grow the window; nothing to shrink";
         }
         window.applySavedGeometry(std::nullopt, false, std::nullopt);
-        waitForWindowSize(window, usable.w, usable.h);
+        (void) TestSupport::waitForWindowSize(window, usable.w, usable.h);
         // The grow can carry the window onto a bigger monitor, and the fit is to the display it is on
         // then, so compare with that display's bounds, not the one it started on (#2088).
         SDL_Rect fitted = usable;
