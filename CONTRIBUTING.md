@@ -1061,10 +1061,11 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_dns_message` | the DNS reply parser for the opt-in public IP lookup, the only parser fed bytes from the network (`Platform/DnsMessage.h`) | `tests/fuzz/corpus/fuzz_dns_message/` |
 | `fuzz_desktop_entry` | the `.desktop` entry parser and its `Exec` splitting (`Platform/Linux/DesktopEntryIcons.h`) | `tests/fuzz/corpus/fuzz_desktop_entry/` |
 | `fuzz_broker_protocol` | the privileged helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_broker_socket` | the privileged helper's frame reassembly, which joins an unprivileged client's packets by the frame's length prefix over a real socketpair (`Platform/Linux/BrokerSocket.cpp`) | `tests/fuzz/corpus/fuzz_broker_socket/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
-`ThemeLoader.{cpp,h}`, and the types they fill, such as `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
+`ThemeLoader.{cpp,h}`, `BrokerSocket.{cpp,h}`, and the types they fill, such as `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
 (`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
 pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
