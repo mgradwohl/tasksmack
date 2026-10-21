@@ -379,17 +379,20 @@ step_clone() {
 
 step_readme() {
     cd "${CLONE_DIR}" || return 1
-    # README.md is the landing page; its Documentation table is the only route to the build steps.
+    # README.md is the landing page; its Building from Source section links CONTRIBUTING's Quick Start.
     local ref
+    ref="$(doc_line README.md "(CONTRIBUTING.md#quick-start)")"
+    if [[ -n "${ref}" ]]; then
+        echo "Doc: ${ref}: $(sed -n "${ref##*:}p" README.md)"
+        return 0
+    fi
     ref="$(doc_line README.md "(CONTRIBUTING.md)")"
     if [[ -z "${ref}" ]]; then
         fail "README.md has no link to CONTRIBUTING.md, so a newcomer cannot find the setup steps"
         return 1
     fi
     echo "Doc: ${ref}: $(sed -n "${ref##*:}p" README.md)"
-    if ! grep -qiE 'git clone|build(ing)? from source.*CONTRIBUTING|getting started' README.md; then
-        finding "README.md has no build-from-source or getting-started pointer; the only route is the Documentation table's Contributing row (${ref}), and README's 'Building from source' sentence links the User Guide instead"
-    fi
+    finding "README.md has no link to CONTRIBUTING's Quick Start; the only route to the build steps is its link to CONTRIBUTING.md (${ref})"
     return 0
 }
 
