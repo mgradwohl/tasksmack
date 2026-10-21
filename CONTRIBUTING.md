@@ -25,18 +25,27 @@ JSDoc and language-level docstrings are not C++ conventions. When declaration-le
 
 ## Quick Start
 
-```bash
-git clone https://github.com/mgradwohl/tasksmack.git
-cd tasksmack
+On a new machine, in this order:
 
-# Python 3.14+ is required.
-python3.14 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+1. **Clone.** On Windows, install git and PowerShell 7 first (see
+   [Automated Setup (Windows)](#automated-setup-windows)).
 
-# Set up pre-commit hooks (recommended)
-pre-commit install
-```
+   ```bash
+   git clone https://github.com/mgradwohl/tasksmack.git
+   cd tasksmack
+   ```
+
+2. **Run your OS's automated setup**, below: [Linux](#automated-setup-linux) or
+   [Windows](#automated-setup-windows). The script installs the toolchain and Python 3.14 and
+   creates the project's Python environment (`.venv`; on Linux with pre-commit in it unless you
+   pass `--minimal`, on Windows only with `-DevTools`); then you activate `.venv` and run
+   `check-prereqs`. To install the prerequisites by hand instead, see
+   [Check Prerequisites](#check-prerequisites).
+3. **Configure, build and test** with the [One-Command Dev Workflow](#one-command-dev-workflow):
+   `cmake --workflow --preset dev` on Linux, `cmake --workflow --preset win-dev` on Windows.
+4. **Before your first pull request**, install the pre-commit hooks, with `.venv` active:
+   `pre-commit install` (on Windows, run `pwsh tools/setup-dev.ps1 -DevTools` first). See
+   [Pre-commit Hooks](#pre-commit-hooks-recommended).
 
 ### Automated Setup (Linux)
 
@@ -52,13 +61,42 @@ The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling wi
 
 ### Automated Setup (Windows)
 
+A clean Windows 10 or 11 has neither git nor PowerShell 7 (`pwsh`), which the setup script runs
+in. Install both with winget (part of Windows' App Installer) from any terminal:
+
+```powershell
+winget install --id Git.Git --exact --source winget
+winget install --id Microsoft.PowerShell --exact --source winget
+```
+
+Then open a **new PowerShell 7 terminal** (`pwsh`; in Windows Terminal, the "PowerShell" profile,
+not "Windows PowerShell"), so both are on `PATH`, clone (see Quick Start), and from the
+repository root run:
+
 ```powershell
 pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
+```
+
+A normal (not elevated) terminal is fine: the installers ask for administrator approval (UAC) as
+they need it. The Visual Studio Build Tools install comes first and is the slow part, often 20
+minutes or more, with no output while it runs. When the script finishes, open another new
+PowerShell 7 terminal, so the `PATH` and `LLVM_ROOT` it set apply, and from the repository root
+run:
+
+```powershell
 .venv\Scripts\Activate.ps1    # Use the project-local Python environment
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
 
-The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), LLVM 22 (`-LlvmVersion` must stay on the pinned major), CMake, Ninja, Python 3.14 and ccache, then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it and, unless `-Minimal` is used, the development dependencies from `requirements.txt`. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and treats ccache as recommended, not required.
+Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
+`.venv\Scripts\Activate.ps1` under its default execution policy (`Restricted`).
+
+The Windows setup installs only what building, testing and running need:
+- Visual Studio 2022 Build Tools with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
+- LLVM 22 (`-LlvmVersion` must stay on the pinned major);
+- CMake, Ninja and Python 3.14.
+
+It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`) for ETW profiling.
 
 ### One-Command Dev Workflow
 
@@ -80,6 +118,14 @@ If you just want a quick check of your environment, run:
 ./tools/check-prereqs.sh        # Linux
 pwsh tools/check-prereqs.ps1    # Windows
 ```
+
+To check the whole newcomer path on Windows, from a clean machine to a built, tested and launched
+TaskSmack, run `tools/newcomer-check.ps1` on a throwaway Windows, such as Windows Sandbox (#2618).
+It installs software machine-wide, so don't run it on your own machine. It follows this file's
+steps in order, checks that the docs still give each command it runs, and stops at the first
+place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
+`results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
+Sandbox options.
 
 ### Linux Pre-Requisites
 
@@ -133,10 +179,11 @@ sudo apt install libsystemd-dev pkg-config
 - `LLVM_ROOT` environment variable set
 - CMake 3.29+
 - Ninja
-- ccache 4.9.1+ (optional but recommended)
+- ccache 4.9.1+ (optional, for faster rebuilds; `setup-dev.ps1 -DevTools`)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
+- git (CMake requires it, and fetches the dependencies with it)
 - FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
-- **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
+- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
 `TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`
@@ -1060,7 +1107,9 @@ cmake --build --preset win-benchmark
 .\build\win-benchmark\bin\TaskSmackBenchmarks.exe
 ```
 
-For repeatable benchmarking runs (recommended), use the helper scripts:
+For repeatable benchmarking runs (recommended), use the helper scripts. They run every benchmark 10
+times, which takes a while: about 25 minutes on a 16-core x64 machine (#2618). Pass a
+`--benchmark_filter=` to run fewer.
 
 ```bash
 # Linux
@@ -1465,7 +1514,14 @@ vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
 
 Notes:
-- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
+- `wpr` comes with Windows, so `profile-etw.ps1` records on any machine. `analyze-etw.ps1` also
+  needs `xperf` (and `wpa`/`wpaexporter` to browse or export a trace). Those come with the Windows
+  Performance Toolkit, which `tools/setup-dev.ps1` does not install. Get it from the
+  [Windows SDK installer](https://developer.microsoft.com/windows/downloads/windows-sdk/) by
+  selecting only **Windows Performance Toolkit**; it installs to
+  `C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit` (add that folder to `PATH`
+  if a new terminal doesn't find `xperf`). `check-prereqs.ps1` shows these rows as optional
+  (#2618).
 - ETW recording requires elevation. By default `profile-etw.ps1` elevates only a separate WPR collector, not the target, and validates all output artifacts before returning; `-ElevatedTarget` is the explicit opt-in that runs the target elevated too. From an elevated terminal the script refuses unless `-ElevatedTarget` is passed, since the target would inherit the elevation.
 - Captures use unique WPR instance names and never cancel an existing recording. If
   another recorder prevents startup, leave it alone and coordinate with its owner.
@@ -1931,6 +1987,21 @@ single-instance lock would stop the new one at its "already running" box); close
     --synthetic processes=5000,history=full
 
 ./tools/measure-idle.sh --help
+```
+
+On Windows, `tools/measure-idle.ps1` (#2492) takes one measurement of an existing build the same way:
+its own fresh `TASKSMACK_CONFIG_DIR`, `TASKSMACK_TRACE_RESIZE_PERF=1`, a warm-up, then per-thread
+CPU (from each thread's processor time), fps and frame times from the same `ResizePerf` summaries,
+and the private working set (Task Manager's "Memory"), private bytes and working set at the start
+and end. It closes the app with `WM_CLOSE` and writes a table, a `RESULT` line and JSON. It has no
+`--repeat` or `--fail-above`; run it again for another sample. Windows numbers pick up whatever
+else the machine is doing, so compare runs taken back to back. `-RedirectAppData` measures a build
+older than `TASKSMACK_CONFIG_DIR` (v0.8.0) without touching your own `%APPDATA%\TaskSmack`; give it
+a `config.toml` with `[window]` `width`/`height` there, since such a build ignores `-Window` too.
+
+```powershell
+pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Warmup 60 -Duration 300
+Get-Help tools/measure-idle.ps1 -Full
 ```
 
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
@@ -2835,20 +2906,25 @@ chore: remove unused include
 revert: revert "feat: add network panel"
 ```
 
-These prefixes map to changelog sections as follows:
+These prefixes map to changelog sections as follows (first match wins; sections appear in this
+order, and each entry shows its scope, so `fix(windows): ...` reads **Windows:** ...):
 
 | Commit prefix | Changelog section |
 |---|---|
+| `security:`, any `(security)` scope, a `fix:`/`build:` that hardens a binary or fixes DLL loading | Security |
 | `feat:` | Added |
 | `fix:` | Fixed |
-| `security:` | Security |
-| `perf:`, `refactor:`, `style:` | Changed |
+| `refactor:`, `style:` | Changed |
+| `perf:` | Performance |
 | `docs:` | Documentation |
-| `test:`, `ci:`, `build:` | Infrastructure |
+| `ci:`, `build:`, `tools:`; `fix(test\|tools\|ci\|build\|cmake\|coverage\|bench\|fuzz\|perf\|...)`, `feat(tools\|test\|perf)`, `perf(bench\|tools)` | Infrastructure |
 | `chore:` | Maintenance |
 | `revert:` | Reverted |
-| `Merge ...` | _(skipped — noise)_ |
-| Unconventional messages | _(skipped)_ |
+| `test:`, `ci(deps):`, `build(deps):` | _(skipped — tests and Dependabot bumps of CI actions and dev tools swamp the release notes)_ |
+| `Merge ...`, `Update CHANGELOG.md for ...` | _(skipped — noise)_ |
+| Untyped titles | By leading verb: Fix → Fixed, Add/Implement → Added, Speed up/Optimize → Performance, Document → Documentation, Bump → Dependencies, Update → Maintenance, anything else → Changed; build/CI/tooling titles → Infrastructure |
+
+Releases up to 0.8.0 still list conventional commits only, as they did when they were generated.
 
 Issue and PR references like `(fixes #42)` or `(#42)` in commit messages are automatically hyperlinked to GitHub.
 

@@ -162,18 +162,22 @@ constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
     return false;
 }
 
+// The username cache and its mutex are never destroyed. exit() runs static destructors while the
+// sampler thread may still be enumerating -- Xlib calls exit() when the X connection drops -- and a
+// destroyed cache sent the next getUsername() through a null bucket array (#2633).
+
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
 {
-    static std::unordered_map<uid_t, std::string> cache;
-    return cache;
+    static auto* const cache = new std::unordered_map<uid_t, std::string>(); // NOLINT(cppcoreguidelines-owning-memory) - never destroyed
+    return *cache;
 }
 
 /// Mutex to protect the username cache
 std::mutex& getUsernameCacheMutex()
 {
-    static std::mutex mutex;
-    return mutex;
+    static auto* const mutex = new std::mutex(); // NOLINT(cppcoreguidelines-owning-memory) - never destroyed
+    return *mutex;
 }
 
 /// Get username from UID, with caching

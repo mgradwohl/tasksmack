@@ -16,8 +16,10 @@
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
+#include "Platform/Linux/HelperPrivileges.h"
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
+#include "Platform/Linux/ProcStatusSecurityParser.h"
 
 #include <gtest/gtest.h>
 
@@ -44,6 +46,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
 #include <sys/socket.h>
@@ -694,6 +697,10 @@ class HelperProcess
     {
         return m_Pid > 0;
     }
+    [[nodiscard]] pid_t pid() const
+    {
+        return m_Pid;
+    }
     /// Its exit status once it exits within a few seconds, or nullopt (killed by a signal, or still running).
     [[nodiscard]] std::optional<int> exitCode()
     {
@@ -715,14 +722,19 @@ class HelperProcess
     std::optional<int> m_ExitCode;
 };
 
-/// A forked child that sleeps until signalled; reaped on scope exit.
+/// A forked child that sleeps until signalled, as @p runAs when given (the root tests' other user); reaped
+/// on scope exit.
 class SleepingChild
 {
   public:
-    SleepingChild() : m_Pid(::fork())
+    explicit SleepingChild(std::optional<uid_t> runAs = std::nullopt) : m_Pid(::fork())
     {
         if (m_Pid == 0)
         {
+            if (runAs.has_value() && (::setgroups(0, nullptr) != 0 || ::setgid(*runAs) != 0 || ::setuid(*runAs) != 0))
+            {
+                ::_exit(1);
+            }
             for (;;)
             {
                 ::pause();
@@ -842,6 +854,116 @@ TEST(TasksmackHelperTest, RefusesToRunWithoutBroker)
     HelperProcess helper(pair.server(), "--help");
     ASSERT_TRUE(helper.started());
     EXPECT_EQ(helper.exitCode(), 2);
+}
+
+/// A field of /proc/<pid>/status ("CapEff", "NoNewPrivs"), or empty.
+[[nodiscard]] std::string statusField(pid_t pid, std::string_view key)
+{
+    std::ifstream file("/proc/" + std::to_string(pid) + "/status");
+    const std::string status((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return std::string(ProcStatusSecurity::fieldValue(status, key).value_or(""));
+}
+
+/// A capability set of /proc/<pid>/status as a mask; nullopt when unreadable.
+[[nodiscard]] std::optional<std::uint64_t> capabilitySet(pid_t pid, std::string_view key)
+{
+    return ProcStatusSecurity::parseCapabilityMask(statusField(pid, key));
+}
+
+// #2640: the helper sets no_new_privs before it serves anything, root or not.
+TEST(TasksmackHelperTest, SetsNoNewPrivsBeforeServing)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server());
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    const auto hello = roundTrip(pair.client(), 1, Broker::Hello{});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+    EXPECT_EQ(statusField(helper.pid(), "NoNewPrivs"), "1");
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
+}
+
+/// The user the root test's target runs as: nobody.
+constexpr uid_t OTHER_USER = 65534;
+
+// #2640, run as root only (`sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'`):
+// the helper started as root, as pkexec starts it, keeps only HelperPrivileges::KEPT_CAPABILITIES -- in
+// every set, with no_new_privs -- and that is enough for every request on another user's process.
+TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAnotherUsersProcess)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "Needs root: sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'";
+    }
+    SleepingChild child(OTHER_USER);
+    ASSERT_TRUE(child.started());
+    ::usleep(100'000); // let it reach setuid()
+    const ProcessTarget target = child.target();
+    ASSERT_NE(target.startTimeTicks, 0U);
+    ASSERT_EQ(statusField(target.pid, "Uid").substr(0, 5), "65534");
+
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server());
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    std::uint32_t id = 1;
+    const auto hello = roundTrip(pair.client(), id++, Broker::Hello{});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+
+    // What it kept: only these, in every set, and it can't gain more.
+    EXPECT_EQ(capabilitySet(helper.pid(), "CapEff"), HelperPrivileges::KEPT_CAPABILITIES);
+    EXPECT_EQ(capabilitySet(helper.pid(), "CapPrm"), HelperPrivileges::KEPT_CAPABILITIES);
+    EXPECT_EQ(capabilitySet(helper.pid(), "CapBnd"), HelperPrivileges::KEPT_CAPABILITIES);
+    EXPECT_EQ(capabilitySet(helper.pid(), "CapInh"), 0U);
+    EXPECT_EQ(capabilitySet(helper.pid(), "CapAmb"), 0U);
+    EXPECT_EQ(statusField(helper.pid(), "NoNewPrivs"), "1");
+
+    const auto expectAction = [&](const Broker::Request& request, const char* what)
+    {
+        const auto reply = roundTrip(pair.client(), id++, request);
+        EXPECT_TRUE(actionResult(reply.message).success) << what << ": " << actionResult(reply.message).errorMessage;
+    };
+    expectAction(Broker::PriorityRequest{.target = target, .nice = 10}, "lower its priority");
+    expectAction(Broker::PriorityRequest{.target = target, .nice = -5}, "raise its priority");
+    expectAction(Broker::IoPriorityRequest{.target = target, .ioClass = IoPriorityClass::Realtime, .level = 3}, "Realtime I/O");
+    expectAction(Broker::IoPriorityRequest{.target = target, .ioClass = IoPriorityClass::Idle, .level = 0}, "Idle I/O");
+    expectAction(Broker::AffinityRequest{.target = target, .cpus = CpuAffinity::fromMask(1)}, "affinity");
+    expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Suspend}, "suspend");
+    expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Resume}, "resume");
+
+    const auto environment = roundTrip(pair.client(), id++, Broker::EnvironmentRequest{.target = target});
+    ASSERT_TRUE(std::holds_alternative<Broker::EnvironmentReply>(environment.message));
+    EXPECT_EQ(std::get<Broker::EnvironmentReply>(environment.message).result.status, EnvironmentReadStatus::Ok);
+    const auto modules = roundTrip(pair.client(), id++, Broker::ModulesRequest{.target = target});
+    ASSERT_TRUE(std::holds_alternative<Broker::ModulesReply>(modules.message));
+    EXPECT_EQ(std::get<Broker::ModulesReply>(modules.message).result.status, ModulesReadStatus::Ok);
+    EXPECT_FALSE(std::get<Broker::ModulesReply>(modules.message).result.modules.empty());
+    const auto files = roundTrip(pair.client(), id++, Broker::OpenFilesRequest{.target = target});
+    ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(files.message));
+    EXPECT_EQ(std::get<Broker::OpenFilesReply>(files.message).result.status, OpenFilesReadStatus::Ok);
+    EXPECT_FALSE(std::get<Broker::OpenFilesReply>(files.message).result.files.empty());
+    const auto connections = roundTrip(pair.client(), id++, Broker::ConnectionsRequest{.target = target});
+    ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(connections.message));
+    EXPECT_EQ(std::get<Broker::ConnectionsReply>(connections.message).result.status, ConnectionsReadStatus::Ok);
+    const auto rollup = roundTrip(pair.client(), id++, Broker::MemoryRollupRequest{.target = target});
+    ASSERT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(rollup.message));
+    const MemoryRollupRead& rollupRead = std::get<Broker::MemoryRollupReply>(rollup.message).result;
+    EXPECT_TRUE(rollupRead.has_value() || rollupRead.error() == MemoryRollupFailure::Unavailable); // Unavailable: no smaps_rollup
+    const auto firmware = roundTrip(pair.client(), id++, Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable});
+    ASSERT_TRUE(std::holds_alternative<Broker::FirmwareFileReply>(firmware.message));
+    EXPECT_NE(std::get<Broker::FirmwareFileReply>(firmware.message).status, Broker::FirmwareFileStatus::Unreadable); // NotFound: no DMI
+    const auto crashes = roundTrip(pair.client(), id++, Broker::CrashesRequest{});
+    ASSERT_TRUE(std::holds_alternative<Broker::CrashesReply>(crashes.message));
+    EXPECT_FALSE(std::get<Broker::CrashesReply>(crashes.message).info.accessDenied)
+        << std::get<Broker::CrashesReply>(crashes.message).info.unavailableReason;
+
+    expectAction(Broker::SignalRequest{.target = target, .signal = Broker::Signal::Kill}, "kill");
+    EXPECT_EQ(child.terminatingSignal(), SIGKILL);
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
 }
 
 TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)

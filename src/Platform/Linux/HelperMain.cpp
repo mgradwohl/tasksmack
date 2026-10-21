@@ -4,9 +4,13 @@
 // with one end of a socketpair as its stdin. It answers a closed set of BrokerProtocol requests on that
 // socket and exits when TaskSmack closes it, or after a few idle minutes.
 //
-// It links only Platform: no SDL, ImGui, GL or config file. Before it reads a single request it checks
-// that the socket's peer is the process that started it (pkexec execs this in its own place, so that is
-// TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly as the tests do, its own.
+// It links only Platform: no SDL, ImGui, GL or config file. Of the process actions it links only
+// LinuxProcessControl, the half that signals and sets priorities and affinity, not LinuxProcessActions'
+// system call trace and dump files, which start strace, gcore or a terminal (#2640). Before it reads a
+// single request it checks that the socket's peer is the process that started it (pkexec execs this in
+// its own place, so that is TaskSmack), and the user pkexec authenticated (PKEXEC_UID) or, run directly
+// as the tests do, its own. Then it drops every root capability its requests don't need and sets
+// no_new_privs (HelperPrivileges.h, #2640).
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
@@ -14,9 +18,10 @@
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
+#include "Platform/Linux/HelperPrivileges.h"
 #include "Platform/Linux/LinuxCoredumps.h"
-#include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
+#include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/LinuxProcessEnvironmentReader.h"
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
@@ -89,9 +94,15 @@ int main(int argc, char** argv)
         std::fputs("tasksmack-helper: stdin isn't a socket from the process that started this, as its user\n", stderr);
         return EXIT_UNTRUSTED_PEER;
     }
+    // Before any request, reader or thread: keep only what the protocol needs of root (#2640).
+    if (Platform::HelperPrivileges::dropToKeptCapabilities() == Platform::HelperPrivileges::DropResult::Failed)
+    {
+        std::fputs("tasksmack-helper: couldn't drop the capabilities it doesn't need; not serving\n", stderr);
+        return EXIT_FAILED;
+    }
     try
     {
-        Platform::LinuxProcessActions actions;
+        Platform::LinuxProcessControl actions;
         // Process Details' reads of another user's process (#2309).
         Platform::LinuxProcessEnvironmentReader environment;
         Platform::LinuxProcessModulesReader modules;

@@ -23,7 +23,10 @@ cmake --workflow --preset dev
 ### Windows
 
 ```powershell
+# In PowerShell 7; a clean Windows first needs: winget install Git.Git, winget install Microsoft.PowerShell
 pwsh tools/setup-dev.ps1
+# Open a new PowerShell 7 terminal (for PATH and LLVM_ROOT), then from the repository root:
+.venv\Scripts\Activate.ps1
 cmake --workflow --preset win-dev
 ```
 

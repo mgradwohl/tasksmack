@@ -20,7 +20,7 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 - CPU, memory, swap, storage, network, GPU, NPU, and battery histories
 - Per-process CPU, memory, disk I/O, network, GPU, and NPU metrics when the platform exposes them
 - Process termination, forced termination, priority and CPU affinity changes, suspend/resume, dump files, batch actions on several processes, and Linux I/O priority (ionice) and strace actions
-- Services and Startup tabs that list and control services and startup apps, and a System tab of hardware, firmware, network, driver, and crash facts
+- Services and Startup (Windows) tabs that list and control services and startup apps, and a System tab of hardware, firmware, network, driver, and crash facts
 - TOML configuration, 20 bundled themes, user themes, configurable sampling, and bounded history
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
@@ -57,6 +57,10 @@ Published x64 packages are built with default compiler optimizations and run on 
 Every release asset is signed with Sigstore; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
 
 Windows release binaries are to be Authenticode-signed through SignPath Foundation (being set up in [#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); see the [Code signing policy](docs/code-signing-policy.md).
+
+## Building from Source
+
+To build TaskSmack yourself on Linux or Windows, follow the [Quick Start](CONTRIBUTING.md#quick-start) in CONTRIBUTING.md. It covers cloning, the automated setup scripts that install every prerequisite, and the one-command build-and-test workflow.
 
 ## Documentation
 

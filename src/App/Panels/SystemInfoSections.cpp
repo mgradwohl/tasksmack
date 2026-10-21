@@ -1044,6 +1044,40 @@ void appendBitLockerRows(const Platform::PlatformSecurityInfo& security, std::ve
     }
 }
 
+/// One "Disk encryption (nvme0n1p3)" row per open dm-crypt volume (#2585), the Linux counterpart of the
+/// BitLocker rows: "LUKS2: /, /home", or "LUKS2: not mounted". One "Disk encryption" row reading "None"
+/// when there are none, or saying why it's unknown.
+void appendDiskEncryptionRows(const Platform::PlatformSecurityInfo& security, std::vector<Row>& rows)
+{
+    if (!security.encryptedVolumesRead)
+    {
+        rows.push_back(row("Disk encryption", {}, "/sys/block couldn't be read"));
+        return;
+    }
+    if (security.encryptedVolumes.empty())
+    {
+        Row none = row("Disk encryption", "None");
+        none.valueTooltip = "No dm-crypt (LUKS or plain) volume is unlocked";
+        rows.push_back(std::move(none));
+        return;
+    }
+    for (const Platform::EncryptedVolume& volume : security.encryptedVolumes)
+    {
+        std::string mounts;
+        for (const std::string& mountPoint : volume.mountPoints)
+        {
+            mounts += (mounts.empty() ? "" : ", ") + mountPoint;
+        }
+        Row encryption = row("Disk encryption (" + (volume.device.empty() ? volume.name : volume.device) + ")",
+                             volume.type + ": " + (mounts.empty() ? std::string("not mounted") : mounts));
+        if (!volume.name.empty())
+        {
+            encryption.valueTooltip = "Unlocked as /dev/mapper/" + volume.name;
+        }
+        rows.push_back(std::move(encryption));
+    }
+}
+
 } // namespace
 
 Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
@@ -1117,6 +1151,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
         rows.push_back(row("Kernel lockdown",
                            std::move(lockdown),
                            "securityfs (/sys/kernel/security) isn't mounted, or the lockdown module isn't built in"));
+        appendDiskEncryptionRows(security, rows);
     }
 
     if (!security.vulnerabilitiesRead)

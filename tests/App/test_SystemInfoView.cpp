@@ -1724,7 +1724,7 @@ TEST(SystemInfoSectionsTest, WindowsSecurityRows)
     EXPECT_EQ(findRow(section, "L1TF")->value, "Not affected");
     EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced IBRS");
     // The Linux-only rows are left out.
-    for (const std::string_view label : {"Security modules", "SELinux", "AppArmor", "Kernel lockdown"})
+    for (const std::string_view label : {"Security modules", "SELinux", "AppArmor", "Kernel lockdown", "Disk encryption"})
     {
         EXPECT_EQ(findRow(section, label), nullptr) << label;
     }
@@ -1754,6 +1754,41 @@ TEST(SystemInfoSectionsTest, WindowsSecurityUnknownsSayWhy)
     const Section none = SystemInfo::buildSecuritySection(unread);
     EXPECT_EQ(findRow(none, "CPU vulnerabilities")->unavailableReason, "Windows reports none");
     EXPECT_EQ(findRow(none, "BitLocker")->unavailableReason, "No fixed drives");
+}
+
+// #2585: one "Disk encryption" row per open dm-crypt volume on Linux, the counterpart of the BitLocker
+// rows; "None" when there are none, unavailable with the reason when /sys/block couldn't be read.
+TEST(SystemInfoSectionsTest, LinuxDiskEncryptionRows)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Linux;
+    const Section unread = SystemInfo::buildSecuritySection(security);
+    const Row* unknown = findRow(unread, "Disk encryption");
+    ASSERT_NE(unknown, nullptr);
+    EXPECT_FALSE(unknown->available()); // unknown, not "None"
+    EXPECT_EQ(unknown->unavailableReason, "/sys/block couldn't be read");
+
+    security.encryptedVolumesRead = true;
+    const Section none = SystemInfo::buildSecuritySection(security);
+    ASSERT_NE(findRow(none, "Disk encryption"), nullptr);
+    EXPECT_EQ(findRow(none, "Disk encryption")->value, "None");
+    EXPECT_FALSE(findRow(none, "Disk encryption")->valueTooltip.empty());
+
+    security.encryptedVolumes = {
+        {.name = "dm_crypt-0", .type = "LUKS2", .device = "nvme0n1p3", .mountPoints = {"/", "/home"}},
+        {.name = "cryptswap", .type = "Plain", .device = {}, .mountPoints = {}},
+    };
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(findRow(section, "Disk encryption"), nullptr);
+    const Row* root = findRow(section, "Disk encryption (nvme0n1p3)");
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->value, "LUKS2: /, /home");
+    EXPECT_EQ(root->valueTooltip, "Unlocked as /dev/mapper/dm_crypt-0");
+    const Row* swap = findRow(section, "Disk encryption (cryptswap)"); // no device: named by its mapper name
+    ASSERT_NE(swap, nullptr);
+    EXPECT_EQ(swap->value, "Plain: not mounted");
+    EXPECT_EQ(findRow(section, "BitLocker"), nullptr); // Windows-only
 }
 
 // #2584: every BitLocker state Windows reports, one row per fixed drive in the order read; Unknown says why.

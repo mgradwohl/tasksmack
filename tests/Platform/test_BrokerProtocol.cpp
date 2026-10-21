@@ -19,7 +19,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
+#include <set>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -597,6 +601,48 @@ TEST(BrokerProtocolTest, AFirmwareFileIsCappedAtItsLimit)
     const auto* reply = std::get_if<FirmwareFileReply>(&decoded->message);
     ASSERT_NE(reply, nullptr);
     EXPECT_EQ(reply->bytes.size(), MAX_FIRMWARE_FILE_BYTES);
+}
+
+// #2643: fuzz_broker_protocol's seed corpus has a seed for every message kind, and each one still
+// decodes. libFuzzer rarely builds a well-formed nested list reply from nothing, so a kind without a
+// seed is barely fuzzed; a protocol change that breaks a seed, or a new kind, fails here instead.
+TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
+{
+    std::set<MessageKind> seeded;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(TASKSMACK_BROKER_FUZZ_CORPUS_DIR))
+    {
+        std::ifstream file(entry.path(), std::ios::binary);
+        const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        const auto frame = Detail::readFrame(bytes);
+        ASSERT_TRUE(frame.has_value()) << entry.path().filename() << ": " << frame.error();
+        EXPECT_TRUE(decodeRequest(bytes).has_value() || decodeResponse(bytes).has_value()) << entry.path().filename() << " doesn't decode";
+        seeded.insert(frame->kind);
+    }
+    for (const MessageKind kind : {MessageKind::Hello,
+                                   MessageKind::HelloReply,
+                                   MessageKind::Signal,
+                                   MessageKind::SetPriority,
+                                   MessageKind::SetIoPriority,
+                                   MessageKind::SetAffinity,
+                                   MessageKind::ReadEnvironment,
+                                   MessageKind::ReadModules,
+                                   MessageKind::ReadOpenFiles,
+                                   MessageKind::ReadConnections,
+                                   MessageKind::ReadMemoryRollup,
+                                   MessageKind::ReadFirmwareFile,
+                                   MessageKind::ReadCrashes,
+                                   MessageKind::ActionResult,
+                                   MessageKind::EnvironmentResult,
+                                   MessageKind::ModulesResult,
+                                   MessageKind::OpenFilesResult,
+                                   MessageKind::ConnectionsResult,
+                                   MessageKind::MemoryRollupResult,
+                                   MessageKind::FirmwareFileResult,
+                                   MessageKind::CrashesResult,
+                                   MessageKind::Error})
+    {
+        EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
+    }
 }
 
 } // namespace

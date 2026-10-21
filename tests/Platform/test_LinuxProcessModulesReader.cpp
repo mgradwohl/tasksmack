@@ -58,6 +58,28 @@ TEST_F(LinuxProcessModulesReaderTest, ReadsTheProcessesModules)
     ASSERT_EQ(result.modules.size(), 2U);
     EXPECT_EQ(result.modules[0].path, "/usr/bin/server");
     EXPECT_EQ(result.modules[1].path, "/usr/lib/libc.so.6");
+    EXPECT_FALSE(result.truncated);
+}
+
+// #2642: the process being read decides how big its maps is, so the read stops at a cap; the lines
+// before it are parsed, the partial one at the cap dropped, and the result marked truncated.
+TEST_F(LinuxProcessModulesReaderTest, AMapsPastTheCapIsReadThatFarAndMarkedTruncated)
+{
+    constexpr std::string_view FIRST_LINE = "55d0c1a00000-55d0c1a02000 r-xp 00000000 08:01 1311 /usr/bin/server\n";
+    // The cap falls inside the second line (libc's): only the first is whole.
+    LinuxProcessModulesReader reader(m_Proc.path.string(), FIRST_LINE.size() + 20);
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.status, ModulesReadStatus::Ok);
+    ASSERT_EQ(result.modules.size(), 1U);
+    EXPECT_EQ(result.modules[0].path, "/usr/bin/server");
+    EXPECT_TRUE(result.truncated);
+
+    // A cap inside the first line leaves no whole line: no modules, still truncated.
+    LinuxProcessModulesReader tiny(m_Proc.path.string(), 10);
+    const ModulesReadResult none = tiny.readModules(TARGET);
+    ASSERT_EQ(none.status, ModulesReadStatus::Ok);
+    EXPECT_TRUE(none.modules.empty());
+    EXPECT_TRUE(none.truncated);
 }
 
 TEST_F(LinuxProcessModulesReaderTest, RefusesAReusedPidAnUnknownIdentityAndAMissingProcess)

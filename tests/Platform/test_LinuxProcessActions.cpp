@@ -1,5 +1,5 @@
 /// @file test_LinuxProcessActions.cpp
-/// @brief Integration tests for Platform::LinuxProcessActions
+/// @brief Integration tests for Platform::LinuxProcessActions and its process-control half, LinuxProcessControl
 ///
 /// These tests verify the capabilities reporting and error handling
 /// of process actions. We avoid actually terminating processes to keep
@@ -10,6 +10,7 @@
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/LinuxProcessActions.h"
+#include "Platform/Linux/LinuxProcessControl.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
@@ -32,6 +33,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -732,6 +734,48 @@ TEST(LinuxProcessActionsTest, InitAndKernelThreadsAreNotSignalled)
     EXPECT_TRUE(result.errorMessage.contains("kernel thread")) << result.errorMessage;
 }
 
+// #2641: priority, I/O priority and affinity are refused for init and kernel threads, as signals are, so
+// the root helper can't put kswapd or a journal thread in the Idle I/O class. No password helps.
+TEST(LinuxProcessActionsTest, InitAndKernelThreadsKeepTheirPriorityAndAffinity)
+{
+    LinuxProcessActions actions;
+    const auto expectRefused = [&actions](const ProcessTarget& target, std::string_view because)
+    {
+        for (const ProcessActionResult& result : {actions.setPriority(target, 19),
+                                                  actions.setIoPriority(target, IoPriorityClass::Idle, 0),
+                                                  actions.setAffinity(target, CpuAffinity::fromMask(1))})
+        {
+            EXPECT_FALSE(result.success);
+            EXPECT_FALSE(result.permissionDenied) << "no password helps";
+            EXPECT_TRUE(result.errorMessage.contains(because)) << result.errorMessage;
+        }
+    };
+    expectRefused({.pid = 1, .startTimeTicks = 1}, "init");
+
+    const std::optional<ProcessTarget> kernelThread =
+        findProcess([](const ProcParsing::StatFields& fields, long /*uid*/) { return (fields.flags & ProcParsing::PF_KTHREAD_FLAG) != 0; });
+    if (!kernelThread.has_value())
+    {
+        GTEST_SKIP() << "no kernel thread is visible here (a container)";
+    }
+    expectRefused(*kernelThread, "kernel thread");
+}
+
+// #2641: a process never suspends itself: the root helper would stay stopped, out of the user's reach.
+TEST(LinuxProcessActionsTest, ThisProcessIsNotSuspended)
+{
+    std::ifstream stat("/proc/self/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget self{.pid = static_cast<std::int32_t>(::getpid()),
+                             .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+    ASSERT_NE(self.startTimeTicks, 0U);
+    LinuxProcessActions actions;
+    const ProcessActionResult result = actions.stop(self);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_TRUE(result.errorMessage.contains("this process")) << result.errorMessage;
+}
+
 TEST(LinuxProcessActionsTest, OtherFailuresAreNotPermissionRefusals)
 {
     LinuxProcessActions actions;
@@ -1092,6 +1136,38 @@ TEST(LinuxProcessActionsDumpTest, DumpsAreOfferedOnlyWhereGcoreIsInstalled)
     LinuxProcessActions without(SyscallTrace::Tools{});
     const std::stop_source stop;
     const ProcessDumpResult refused = without.createDump(ownTarget(), dir.path, stop.get_token());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
+}
+
+// #2640: tasksmack-helper links only LinuxProcessControl, which starts no other program: no system call
+// trace and no dump files, however the machine is set up, and both refused as unsupported. Everything
+// else it reports as LinuxProcessActions does, with strace, a terminal and gcore all found.
+TEST(LinuxProcessControlTest, OffersNoTraceOrDumpButTheSameControlAsLinuxProcessActions)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_control_caps");
+    SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    tools.coreDumperPath = fakeDumpTools(dir.path, "exit 0\n").coreDumperPath;
+    const ProcessActionCapabilities full = LinuxProcessActions(tools).actionCapabilities();
+    ASSERT_EQ(full.syscallTrace, SyscallTraceAvailability::Available);
+    ASSERT_TRUE(full.canCreateDump);
+
+    LinuxProcessControl control;
+    const ProcessActionCapabilities caps = control.actionCapabilities();
+    EXPECT_EQ(caps.syscallTrace, SyscallTraceAvailability::Unsupported);
+    EXPECT_FALSE(caps.canCreateDump);
+    EXPECT_EQ(caps.canTerminate, full.canTerminate);
+    EXPECT_EQ(caps.canKill, full.canKill);
+    EXPECT_EQ(caps.canStop, full.canStop);
+    EXPECT_EQ(caps.canContinue, full.canContinue);
+    EXPECT_EQ(caps.canSetPriority, full.canSetPriority);
+    EXPECT_EQ(caps.canSetIoPriority, full.canSetIoPriority);
+    EXPECT_EQ(caps.canSetRealtimeIoPriority, full.canSetRealtimeIoPriority);
+    EXPECT_EQ(caps.canSetAffinity, full.canSetAffinity);
+
+    EXPECT_FALSE(control.launchSyscallTrace(ownTarget()).success);
+    const std::stop_source stop;
+    const ProcessDumpResult refused = control.createDump(ownTarget(), dir.path, stop.get_token());
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
 }
@@ -1464,7 +1540,10 @@ TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
     EXPECT_EQ(plan().lastSignal, SIGTERM);
     EXPECT_TRUE(m_Actions.kill(ownTarget()).success);
     EXPECT_EQ(plan().lastSignal, SIGKILL);
-    EXPECT_TRUE(m_Actions.stop(ownTarget()).success);
+    // Not this process: it is never suspended, even through fake system calls (#2641).
+    const SleepingChild other;
+    ASSERT_TRUE(other.started());
+    EXPECT_TRUE(m_Actions.stop(other.target()).success);
     EXPECT_EQ(plan().lastSignal, SIGSTOP);
     EXPECT_TRUE(m_Actions.resume(ownTarget()).success);
     EXPECT_EQ(plan().lastSignal, SIGCONT);
@@ -1515,7 +1594,9 @@ TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
     plan().sendErrno = EPERM;
     EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
     plan().sendErrno = EINVAL;
-    EXPECT_EQ(m_Actions.stop(ownTarget()).errorMessage, "Invalid signal");
+    const SleepingChild other; // not this process, which is never suspended (#2641)
+    ASSERT_TRUE(other.started());
+    EXPECT_EQ(m_Actions.stop(other.target()).errorMessage, "Invalid signal");
     // Anything else: the system's own words for it.
     plan().sendErrno = EIO;
     EXPECT_EQ(m_Actions.resume(ownTarget()).errorMessage, std::system_category().message(EIO));

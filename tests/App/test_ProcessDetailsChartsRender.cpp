@@ -1053,6 +1053,36 @@ TEST_F(ProcessDetailsChartsRenderTest, TheNpuTabExplainsWhyItHasNoCharts)
     }
 }
 
+// #1210, #1487: the GPU tab's "No GPU usage" text names the history window, and the cached text is
+// rebuilt when the window changes (keyed by whole milliseconds, not compared as floats).
+TEST_F(ProcessDetailsChartsRenderTest, TheGpuTabExplainsWhyItHasNoChartsAndFollowsTheWindow)
+{
+    ChartInputs idle(
+        [](std::size_t i)
+        {
+            Detail::ProcessHistoryPoint point = busyPoint(i);
+            point.gpuUtil = 0.0;
+            point.gpuMemory = 0.0;
+            return point;
+        });
+    idle.snapshot.gpuMemoryBytes = 0;
+    idle.snapshot.gpuUtilPercent = 0.0;
+    ProcessDetailsCharts charts;
+    std::string text = tabText([&] { charts.renderGpuTab(idle.ctx); });
+    EXPECT_TRUE(text.contains("No GPU usage")) << text;
+    EXPECT_TRUE(text.contains("This process has not used a GPU in its retained history (up to 5m).")) << text;
+    EXPECT_TRUE(plotsDrawn().empty());
+
+    idle.ctx.maxHistorySeconds = 60.0;
+    text = tabText([&] { charts.renderGpuTab(idle.ctx); });
+    EXPECT_TRUE(text.contains("(up to 1m).")) << text;
+    EXPECT_FALSE(text.contains("(up to 5m)")) << text;
+
+    idle.ctx.maxHistorySeconds = 90.0;
+    text = tabText([&] { charts.renderGpuTab(idle.ctx); });
+    EXPECT_TRUE(text.contains("(up to 1m 30s).")) << text;
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, OneGpuHasNoBreakdownAndNoEncoderRows)
 {
     ChartInputs inputs(busyPoint);

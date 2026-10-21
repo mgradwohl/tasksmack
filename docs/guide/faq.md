@@ -48,7 +48,7 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only ma
 
 **Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
 
-For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). It runs as root, serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
+For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). It runs as root, but keeps only the capabilities its requests need (`CAP_KILL`, `CAP_SYS_NICE`, `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, with `no_new_privs` set), serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
 
 On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
 
@@ -94,8 +94,9 @@ the helper: TaskSmack then doesn't offer the buttons. Everything else works as b
 
 The helper ships only in the Authenticode-signed x64 `.zip`
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
-publisher. The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers
-neither button. If TaskSmack is already running as
+publisher. Signing is still being set up, so until it is in place no release `.zip` carries the helper.
+The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers neither
+button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 
 ---
@@ -160,7 +161,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 Per-process network rates read N/A when the platform cannot attribute traffic.
 
-- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support.
+- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support. A process in another network namespace than TaskSmack's (inside a container, say) reads N/A, since TaskSmack sees only its own namespace's sockets.
 - **Windows:** TCP EStats collection requires administrator privileges.
 
 System-wide and per-interface throughput should still appear.
