@@ -47,6 +47,7 @@ class DragTracker
         m_LastAppliedY = windowY;
         m_PendingRestore = maximized;
         m_MaximizedWindowX = windowX;
+        m_MaximizedWindowY = windowY;
         m_MaximizedWindowWidth = maximized ? maximizedWidth : 0;
     }
 
@@ -72,18 +73,26 @@ class DragTracker
         return {.kind = Step::Kind::Move, .x = targetX, .y = targetY};
     }
 
-    /// After a Restore: where to put the restored window, @p restoredWidth wide at @p restoredY, so the
-    /// pointer keeps its proportion across it (computeRestoreFromMaximizedDragX()). The drag goes on
-    /// from there, still relative to the original press.
-    [[nodiscard]] std::pair<int, int> rebaseAfterRestore(int restoredWidth, int restoredY) noexcept
+    /// After a Restore, with the pointer now at (@p mouseX, @p mouseY): where to put the restored
+    /// window, @p restoredWidth wide, so the pointer keeps its place on the title bar: its proportion
+    /// across (computeRestoreFromMaximizedDragX()) and its distance below the top
+    /// (computeRestoreFromMaximizedDragY(), kept at or below the maximized window's top, which is the
+    /// work area's) (#2715). The drag goes on from there, still relative to the original press.
+    [[nodiscard]] std::pair<int, int> rebaseAfterRestore(int restoredWidth, int mouseX, int mouseY) noexcept
     {
-        const int adjustedX = computeRestoreFromMaximizedDragX(m_StartMouseX, m_MaximizedWindowX, m_MaximizedWindowWidth, restoredWidth);
-        m_StartWindowX = adjustedX;
-        m_StartWindowY = restoredY;
+        const int dx = mouseX - m_StartMouseX;
+        const int dy = mouseY - m_StartMouseY;
+        const int adjustedX =
+            computeRestoreFromMaximizedDragX(m_StartMouseX, m_MaximizedWindowX, m_MaximizedWindowWidth, restoredWidth) + dx;
+        const int adjustedY = computeRestoreFromMaximizedDragY(m_StartMouseY, m_MaximizedWindowY, mouseY, m_MaximizedWindowY);
+        // Later moves add the pointer's offset from the press to the start, so the start is this
+        // position less that offset: another sample at this pointer position is not a move.
+        m_StartWindowX = adjustedX - dx;
+        m_StartWindowY = adjustedY - dy;
         m_LastAppliedX = adjustedX;
-        m_LastAppliedY = restoredY;
+        m_LastAppliedY = adjustedY;
         m_PendingRestore = false;
-        return {adjustedX, restoredY};
+        return {adjustedX, adjustedY};
     }
 
     [[nodiscard]] bool pendingRestore() const noexcept
@@ -100,6 +109,7 @@ class DragTracker
     int m_LastAppliedY = 0;
     bool m_PendingRestore = false;
     int m_MaximizedWindowX = 0;
+    int m_MaximizedWindowY = 0;
     int m_MaximizedWindowWidth = 0;
 };
 

@@ -17,6 +17,7 @@
 #include "App/TitleBarButtons.h"
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
+#include "App/WindowInteraction.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -43,16 +44,20 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1066,6 +1071,362 @@ TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress
     {
         EXPECT_TRUE(observed.movedByDrag);
         EXPECT_GE(observed.pressRetries, 1) << "the lost drag was pressed again";
+    }
+}
+
+/// What the drag-geometry driver saw (#2715).
+struct DragGeometryObserved
+{
+    bool positionsApply = true; ///< False under SDL's offscreen driver, which keeps a window where it was made.
+    int checks = 0;             ///< Pointer positions checked against where the window ended up
+    std::vector<std::string> failures;
+    bool widenedByResize = false;
+    std::array<bool, 2> maximizedBeforeDrag{}; ///< For the press near the left end, then the right
+    std::array<bool, 2> clickKeptMaximized{};  ///< A move inside the threshold leaves it maximized
+    std::array<bool, 2> restoredByDrag{};
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: drives the title bar through its own test seams --
+/// SDL_PushEvent() for the press and TitleBarLayer::setMouseStateQueryForTesting() for the held
+/// pointer -- and checks where the window lands, never moving the OS pointer. In order:
+/// - a plain drag: the window follows the pointer 1:1;
+/// - a resize from the right edge: the window widens and its left and top edges stay put;
+/// - twice, pressing near the title bar's left end and then near its right end: maximize, press,
+///   move inside DRAG_THRESHOLD_PX (still maximized), then past it and on: the window is restored
+///   with the pointer at the same fraction across it and the same distance below its top (#2715).
+/// Each position waits for the window to reach it, up to WAIT_LIMIT frames (a window manager applies
+/// moves some frames later on X11), then the miss is recorded.
+class DragGeometryDriverLayer : public Core::Layer
+{
+  public:
+    DragGeometryDriverLayer(DragGeometryObserved& observed, App::TitleBarLayer& titleBar)
+        : Layer("DragGeometryDriver"), m_Observed(observed), m_TitleBar(titleBar)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const auto [x, y] = window.getPosition();
+        const bool maximized = window.isMaximized();
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const bool waiting = frame < m_Deadline;
+        switch (m_Phase)
+        {
+        case Phase::BeginPlainDrag:
+        {
+            const char* driver = SDL_GetCurrentVideoDriver();
+            m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
+            m_Start = {x, y};
+            press(x, y, width / 2, TITLE_Y);
+            m_Sample = 0;
+            holdAt(PLAIN_OFFSETS[0], frame);
+            next(Phase::AwaitPlainDrag, 1);
+            break;
+        }
+        case Phase::AwaitPlainDrag:
+        {
+            const auto [dx, dy] = PLAIN_OFFSETS.at(m_Sample);
+            const int errorX = x - (m_Start.first + dx);
+            const int errorY = y - (m_Start.second + dy);
+            if (!within(errorX, errorY) && m_Observed.positionsApply && waiting)
+            {
+                next(Phase::AwaitPlainDrag, 1);
+                break;
+            }
+            check(within(errorX, errorY), std::format("plain drag by ({}, {}): window off by ({}, {})", dx, dy, errorX, errorY));
+            if (++m_Sample < PLAIN_OFFSETS.size())
+            {
+                holdAt(PLAIN_OFFSETS.at(m_Sample), frame);
+                next(Phase::AwaitPlainDrag, 1);
+                break;
+            }
+            release();
+            next(Phase::BeginResize, STEP);
+            break;
+        }
+        case Phase::BeginResize:
+            m_Start = {x, y};
+            m_StartWidth = width;
+            press(x, y, width - 2, height / 2);
+            holdAt({WIDEN_BY, 0}, frame);
+            next(Phase::AwaitResize, 1);
+            break;
+        case Phase::AwaitResize:
+        {
+            const bool widened = std::abs(width - (m_StartWidth + WIDEN_BY)) <= TOLERANCE_PX;
+            if (!widened && waiting)
+            {
+                next(Phase::AwaitResize, 1);
+                break;
+            }
+            m_Observed.widenedByResize = width > m_StartWidth;
+            const int errorX = x - m_Start.first;
+            const int errorY = y - m_Start.second;
+            check(within(errorX, errorY), std::format("right-edge resize moved the left/top edges by ({}, {})", errorX, errorY));
+            release();
+            m_End = 0;
+            next(Phase::Maximize, STEP);
+            break;
+        }
+        case Phase::Maximize:
+            pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), true, 2); // double-click
+            pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), false, 2);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
+            break;
+        case Phase::AwaitMaximized:
+        {
+            m_Observed.maximizedBeforeDrag.at(m_End) = maximized;
+            if (!maximized && waiting)
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
+            // Near one end of the title bar, clear of the icon and the buttons.
+            // Near the top of the title bar for the left end, three quarters of the way down it for
+            // the right (a maximized window has no resize border to avoid).
+            m_PressLocalY = m_End == 0 ? TITLE_Y_NEAR_TOP : static_cast<int>(App::TitleBarLayer::height() * 0.75F);
+            const int localX = clearPressX(width, m_PressLocalY, m_End == 0);
+            m_Fraction = static_cast<double>(localX) / static_cast<double>(width);
+            press(x, y, localX, m_PressLocalY);
+            holdAt({INSIDE_THRESHOLD, INSIDE_THRESHOLD}, frame);
+            next(Phase::CheckStillMaximized, STEP);
+            break;
+        }
+        case Phase::CheckStillMaximized:
+            m_Observed.clickKeptMaximized.at(m_End) = maximized;
+            m_Sample = 0;
+            holdAt(RESTORE_OFFSETS[0], frame);
+            next(Phase::AwaitRestoreSample, 1);
+            break;
+        case Phase::AwaitRestoreSample:
+        {
+            const auto [dx, dy] = RESTORE_OFFSETS.at(m_Sample);
+            const int pointerX = m_Press.first + dx;
+            const int pointerY = m_Press.second + dy;
+            // Where the pointer is on the window, against where it was on the maximized one.
+            const int errorX = static_cast<int>(std::lround(static_cast<double>(pointerX - x) - (m_Fraction * width)));
+            const int errorY = (pointerY - y) - m_PressLocalY;
+            const bool placed = !maximized && within(errorX, errorY);
+            if (!placed && (m_Observed.positionsApply || maximized) && waiting)
+            {
+                next(Phase::AwaitRestoreSample, 1);
+                break;
+            }
+            if (m_Sample == 0)
+            {
+                m_Observed.restoredByDrag.at(m_End) = !maximized;
+            }
+            check(within(errorX, errorY),
+                  std::format("{} end, pointer moved by ({}, {}): {:.3f} across a {}-wide window, {} px down; pointer off by ({}, {})",
+                              m_End == 0 ? "left" : "right",
+                              dx,
+                              dy,
+                              m_Fraction,
+                              width,
+                              m_PressLocalY,
+                              errorX,
+                              errorY));
+            if (++m_Sample < RESTORE_OFFSETS.size())
+            {
+                holdAt(RESTORE_OFFSETS.at(m_Sample), frame);
+                next(Phase::AwaitRestoreSample, 1);
+                break;
+            }
+            release();
+            if (m_End == 0)
+            {
+                m_End = 1;
+                next(Phase::Maximize, STEP);
+                break;
+            }
+            next(Phase::Stop, STEP);
+            break;
+        }
+        case Phase::Stop:
+            m_TitleBar.setMouseStateQueryForTesting({});
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    [[nodiscard]] static bool within(int errorX, int errorY) noexcept
+    {
+        return std::abs(errorX) <= TOLERANCE_PX && std::abs(errorY) <= TOLERANCE_PX;
+    }
+
+    /// One position checked; a miss is recorded only where SDL can place windows.
+    void check(bool ok, std::string message)
+    {
+        if (!m_Observed.positionsApply)
+        {
+            return;
+        }
+        ++m_Observed.checks;
+        if (!ok)
+        {
+            m_Observed.failures.push_back(std::move(message));
+        }
+    }
+
+    /// The first x from one end at which a CLEAR_SPAN-wide run of the title bar at @p localY is clear
+    /// of the icon and the buttons, plus half that run.
+    [[nodiscard]] int clearPressX(int width, int localY, bool fromLeft) const
+    {
+        int clear = 0;
+        for (int i = END_MARGIN; i < width / 2; ++i)
+        {
+            const int localX = fromLeft ? i : width - 1 - i;
+            clear = m_TitleBar.isPointInControlArea(static_cast<float>(localX), static_cast<float>(localY)) ? 0 : clear + 1;
+            if (clear == CLEAR_SPAN)
+            {
+                return fromLeft ? localX - (CLEAR_SPAN / 2) : localX + (CLEAR_SPAN / 2);
+            }
+        }
+        return width / 2;
+    }
+
+    /// A left-button press at window-local (@p localX, @p localY) of the window at (@p windowX, @p windowY).
+    void press(int windowX, int windowY, int localX, int localY)
+    {
+        m_Press = {windowX + localX, windowY + localY};
+        pushButton(static_cast<float>(localX), static_cast<float>(localY), true, 1);
+    }
+
+    /// The pointer @p offset from the press with the left button down, until release(), waiting up to
+    /// WAIT_LIMIT frames from @p frame for its effect.
+    void holdAt(std::pair<int, int> offset, int frame)
+    {
+        const int globalX = m_Press.first + offset.first;
+        const int globalY = m_Press.second + offset.second;
+        m_TitleBar.setMouseStateQueryForTesting([globalX, globalY]
+                                                { return std::tuple<int, int, SDL_MouseButtonFlags>{globalX, globalY, SDL_BUTTON_LMASK}; });
+        m_Deadline = frame + WAIT_LIMIT;
+    }
+
+    /// The button up: the next update sees no button held and ends the interaction.
+    void release()
+    {
+        m_TitleBar.setMouseStateQueryForTesting([] { return std::tuple<int, int, SDL_MouseButtonFlags>{0, 0, 0U}; });
+    }
+
+    static void pushButton(float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    enum class Phase : std::uint8_t
+    {
+        BeginPlainDrag,
+        AwaitPlainDrag,
+        BeginResize,
+        AwaitResize,
+        Maximize,
+        AwaitMaximized,
+        CheckStillMaximized,
+        AwaitRestoreSample,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 300;
+    static constexpr int MAX_FRAMES = 4000;
+    static constexpr int TOLERANCE_PX = 2;
+    static constexpr int TITLE_Y = 16;         // window-local y of a press: inside the title bar, below the resize border
+    static constexpr int TITLE_Y_NEAR_TOP = 3; // a press near the top of a maximized window's title bar
+    static constexpr int END_MARGIN = 4;       // px from the window's side where the search for a press starts
+    static constexpr int CLEAR_SPAN = 16;
+    static constexpr int WIDEN_BY = 60;
+    static constexpr int INSIDE_THRESHOLD = App::DragTracker::DRAG_THRESHOLD_PX - 2;
+    static constexpr std::array<std::pair<int, int>, 3> PLAIN_OFFSETS{{{40, 30}, {75, 55}, {-20, 90}}};
+    static constexpr std::array<std::pair<int, int>, 4> RESTORE_OFFSETS{{{0, 40}, {15, 90}, {-30, 140}, {10, 180}}};
+
+    DragGeometryObserved& m_Observed;
+    App::TitleBarLayer& m_TitleBar;
+    Phase m_Phase = Phase::BeginPlainDrag;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
+    std::size_t m_Sample = 0;
+    std::size_t m_End = 0; ///< 0: the press near the left end; 1: near the right
+    std::pair<int, int> m_Start;
+    int m_StartWidth = 0;
+    std::pair<int, int> m_Press; ///< Global
+    int m_PressLocalY = 0;
+    double m_Fraction = 0.0;
+};
+
+// #2715: a plain title-bar drag follows the pointer 1:1, a right-edge resize keeps the left edge, and
+// a drag that restores a maximized window keeps the pointer where it pressed on the title bar, across
+// and down, pressed near either end.
+TEST(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayDragGeometryTest";
+    spec.VSync = false;
+    DragGeometryObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<DragGeometryDriverLayer>(observed, titleBar);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.widenedByResize);
+    for (std::size_t end = 0; end < 2; ++end)
+    {
+        SCOPED_TRACE(end == 0 ? "pressed near the left end" : "pressed near the right end");
+        EXPECT_TRUE(observed.maximizedBeforeDrag.at(end));
+        EXPECT_TRUE(observed.clickKeptMaximized.at(end)) << "a move inside the threshold restored the window";
+        EXPECT_TRUE(observed.restoredByDrag.at(end));
+    }
+    if (observed.positionsApply)
+    {
+        EXPECT_EQ(observed.checks, 12); // 3 plain-drag positions, the resize, 4 restore positions per end
+    }
+    for (const std::string& failure : observed.failures)
+    {
+        ADD_FAILURE() << failure;
     }
 }
 

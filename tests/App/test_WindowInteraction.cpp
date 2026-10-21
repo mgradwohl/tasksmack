@@ -72,17 +72,57 @@ TEST(DragTrackerTest, TheRestoredWindowKeepsThePointerInProportionAndTheDragGoes
     drag.begin(1440, 10, 0, 0, true, 1920);
     ASSERT_EQ(drag.step(1450, 10).kind, DragKind::Restore);
 
-    // Restored to 800 wide at y = 40: three quarters across is 600 px in, so its left edge is at 840.
-    const auto [x, y] = drag.rebaseAfterRestore(800, 40);
-    EXPECT_EQ(x, computeRestoreFromMaximizedDragX(1440, 0, 1920, 800));
-    EXPECT_EQ(x, 840);
-    EXPECT_EQ(y, 40);
+    // Restored to 800 wide: three quarters across is 600 px in, so for the press its left edge is at
+    // 840, and with the pointer now 10 px right of the press, at 850. The press was 10 px down the
+    // title bar, so the top is 10 px above the pointer, whatever the window's saved restore Y (#2715).
+    const auto [x, y] = drag.rebaseAfterRestore(800, 1450, 10);
+    EXPECT_EQ(x, computeRestoreFromMaximizedDragX(1440, 0, 1920, 800) + 10);
+    EXPECT_EQ(x, 850);
+    EXPECT_EQ(y, 0);
     EXPECT_FALSE(drag.pendingRestore());
+
+    // The same pointer position again is not a move.
+    EXPECT_EQ(drag.step(1450, 10).kind, DragKind::None);
 
     // From then on the window follows the pointer, still measured from the original press.
     const DragTracker::Step step = drag.step(1460, 30);
     EXPECT_EQ(step.kind, DragKind::Move);
     EXPECT_EQ(step.x, 860);
+    EXPECT_EQ(step.y, 20);
+}
+
+TEST(DragTrackerTest, TheRestoredWindowKeepsThePointerAsFarDownTheTitleBarAsThePress)
+{
+    // A maximized window at (0, 40), say below a top taskbar, pressed 28 px down its title bar and
+    // dragged 200 px straight down: the restored top is 28 px above the pointer.
+    DragTracker drag;
+    drag.begin(960, 68, 0, 40, true, 1920);
+    ASSERT_EQ(drag.step(960, 268).kind, DragKind::Restore);
+    const auto [x, y] = drag.rebaseAfterRestore(1000, 960, 268);
+    EXPECT_EQ(x, 460);
+    EXPECT_EQ(y, 240);
+
+    // The drag goes on with the pointer at that spot.
+    const DragTracker::Step step = drag.step(970, 300);
+    EXPECT_EQ(step.kind, DragKind::Move);
+    EXPECT_EQ(step.x, 470);
+    EXPECT_EQ(step.y, 272);
+}
+
+TEST(DragTrackerTest, TheRestoredWindowsTopStaysInTheWorkArea)
+{
+    // Pressed 20 px down the title bar of a window maximized at y = 40, then moved up 10 px and
+    // sideways past the threshold: the top would be at 30, above the work area, so it is held at 40.
+    DragTracker drag;
+    drag.begin(960, 60, 0, 40, true, 1920);
+    ASSERT_EQ(drag.step(1000, 50).kind, DragKind::Restore);
+    const auto [x, y] = drag.rebaseAfterRestore(1000, 1000, 50);
+    EXPECT_EQ(x, 500);
+    EXPECT_EQ(y, 40);
+
+    // Moving down from there moves the window down with the pointer, at the clamped offset.
+    const DragTracker::Step step = drag.step(1000, 70);
+    EXPECT_EQ(step.kind, DragKind::Move);
     EXPECT_EQ(step.y, 60);
 }
 

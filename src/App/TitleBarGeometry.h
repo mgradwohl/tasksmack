@@ -711,6 +711,23 @@ struct WindowRect
     return startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
 }
 
+/// Pure geometry, the vertical twin of computeRestoreFromMaximizedDragX(): the top edge for a window
+/// just restored mid-drag from maximized, with the pointer now at mouseGlobalY, so the pointer sits as
+/// far below the restored window's top as the press (startMouseGlobalY) was below the maximized
+/// window's top (maximizedWindowY) -- the same spot down the title bar (#2715). Without it the
+/// restored window kept its saved restore Y, often hundreds of pixels below the pointer. A press above
+/// the maximized window's top counts as an offset of 0. The result is clamped to workAreaTop so the
+/// title bar stays reachable when the pointer has moved up from the press; a maximized window fills
+/// its monitor's work area, so the caller passes the maximized window's top.
+[[nodiscard]] constexpr auto computeRestoreFromMaximizedDragY(const int startMouseGlobalY,
+                                                              const int maximizedWindowY,
+                                                              const int mouseGlobalY,
+                                                              const int workAreaTop) noexcept -> int
+{
+    const int offsetIntoTitleBar = std::max(startMouseGlobalY - maximizedWindowY, 0);
+    return std::max(mouseGlobalY - offsetIntoTitleBar, workAreaTop);
+}
+
 /// Decision for the empty title-bar drag area specifically (once the point is known to be
 /// in the title-bar row, not a resize border, and not a button). Pure/header-only, like
 /// computeResizeGeometry above, so it's directly unit-testable without live SDL_Window or
