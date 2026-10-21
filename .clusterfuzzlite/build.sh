@@ -85,6 +85,12 @@ build_fuzzer fuzz_broker_protocol
 seed_corpus fuzz_broker_protocol tests/fuzz/corpus/fuzz_broker_protocol/*
 cp tests/fuzz/fuzz_broker_protocol.dict "$OUT/"
 
+# The privileged helper's frame reassembly (#2643): BrokerSocket::receiveFrame() over a real socketpair,
+# joining a frame's SEQPACKET packets by its length prefix. Seeded with one-, two- and three-packet frames,
+# frames cut short, run past their length or the message limit, an oversized packet and empty ones.
+build_fuzzer fuzz_broker_socket src/Platform/Linux/BrokerSocket.cpp
+seed_corpus fuzz_broker_socket tests/fuzz/corpus/fuzz_broker_socket/*
+
 # The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
 # buffers and udev partition type strings.
 build_fuzzer fuzz_partition_layout

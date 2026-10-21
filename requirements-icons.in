@@ -3,4 +3,4 @@
 # Regenerate with:
 #   python -m pip install --require-hashes -r requirements-dev-tools.txt
 #   pip-compile --generate-hashes --output-file=requirements-icons.txt requirements-icons.in
-pillow==12.3.0
+pillow==13.0.0
