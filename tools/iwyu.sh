@@ -636,6 +636,39 @@ if grep -q "should add these lines:" "$IWYU_OUTPUT" || \
     HAS_ISSUES=1
 fi
 
+# Every translation unit asked for must have a result: IWYU that crashes or fails on one (an
+# assertion, a compile error) prints no suggestions for it, and its exit status is ignored above, so
+# without this check the TU would count as clean (#2666). A result is IWYU's "has correct" line or
+# its "full include-list" line. Headers aren't database entries, so they're analyzed through the TUs
+# that include them and aren't expected here.
+if ! UNANALYZED_OUTPUT=$(python3 -c "
+import json, os, re, sys
+compdb, output, root, *sources = sys.argv[1:]
+with open(compdb, encoding='utf-8') as f:
+    in_db = {os.path.realpath(os.path.join(e.get('directory', ''), e['file'])) for e in json.load(f)}
+result = re.compile(r'^(?:\((.+) has correct #includes/fwd-decls\)|The full include-list for (.+):)\$')
+analyzed = set()
+with open(output, encoding='utf-8', errors='replace') as f:
+    for line in f:
+        match = result.match(line.rstrip('\r\n'))
+        if match:
+            analyzed.add(os.path.realpath(match.group(1) or match.group(2)))
+missing = []
+for source in sources:
+    path = os.path.realpath(source)
+    if path in in_db and path not in analyzed and path not in missing:
+        missing.append(path)
+for path in missing:
+    print(os.path.relpath(path, os.path.realpath(root)))
+" "$COMPILE_COMMANDS" "$IWYU_OUTPUT" "$PROJECT_ROOT" "${SOURCE_FILES[@]}"); then
+    echo "Error: could not check which translation units IWYU analyzed." >&2
+    exit 1
+fi
+UNANALYZED=()
+if [[ -n "$UNANALYZED_OUTPUT" ]]; then
+    mapfile -t UNANALYZED <<< "$UNANALYZED_OUTPUT"
+fi
+
 # Apply fixes if requested
 if $FIX && [[ $HAS_ISSUES -ne 0 ]]; then
     echo ""
@@ -669,12 +702,28 @@ if [[ $HAS_ISSUES -ne 0 ]]; then
     if ! $FIX; then
         echo "Run with --fix to apply suggested changes."
     fi
-    if $REPORT_ONLY; then
-        echo "(Report-only mode: not failing)"
-        exit 0
+fi
+if [[ ${#UNANALYZED[@]} -gt 0 ]]; then
+    echo "IWYU did not analyze ${#UNANALYZED[@]} translation unit(s); it crashed or failed on them (see its output above):"
+    printf '  %s\n' "${UNANALYZED[@]}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        {
+            echo "### IWYU did not analyze ${#UNANALYZED[@]} translation unit(s)"
+            echo ""
+            echo "It crashed or failed on these, so they have no results below:"
+            echo ""
+            # shellcheck disable=SC2016 # literal Markdown backticks, not a command substitution
+            printf -- '- `%s`\n' "${UNANALYZED[@]}"
+            echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
     fi
-    exit 1
-else
+fi
+if [[ $HAS_ISSUES -eq 0 ]] && [[ ${#UNANALYZED[@]} -eq 0 ]]; then
     echo "IWYU completed successfully - no issues found."
     exit 0
 fi
+if $REPORT_ONLY; then
+    echo "(Report-only mode: not failing)"
+    exit 0
+fi
+exit 1
