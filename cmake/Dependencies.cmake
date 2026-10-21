@@ -299,7 +299,7 @@ endif()
 FetchContent_Declare(
     freetype
     GIT_REPOSITORY https://github.com/freetype/freetype.git
-    GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7  # VER-2-14-3 - pinned to SHA for supply chain security
+    GIT_TAG 37515cf56ba3349656049edbed89ffc6f6466f2d  # VER-2-15-0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/freetype-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/freetype-subbuild"  # per-host sub-build (#2253)
