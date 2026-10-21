@@ -757,7 +757,9 @@ TEST(UiLayersOnDisplayTest, AboutOpensWithItsIconAndTitleFont)
 /// What the drag-and-resize driver saw.
 struct WindowDragObserved
 {
-    bool positionsApply = true; ///< False under SDL's offscreen driver, which keeps a window where it was made.
+    /// False under SDL's offscreen driver, which keeps a window where it was made, and on a desktop
+    /// whose window manager ignored a direct setPosition() after the drag didn't move the window (#2707).
+    bool positionsApply = true;
     bool movedByDrag = false;
     bool widenedByResize = false;
     bool maximizedBeforeDrag = false;
@@ -859,6 +861,27 @@ class WindowDragDriverLayer : public Core::Layer
                 break;
             }
             release();
+            if (!m_Observed.movedByDrag && m_Observed.positionsApply && !TestSupport::displayRequired())
+            {
+                // The drag didn't move the window. WSLg's window manager (Weston's XWM) sometimes
+                // ignores client moves altogether (#2707), as SetAndGetPositionRoundTrip skips for: ask
+                // for a move directly, and only if that lands is the drag at fault. CI
+                // (TASKSMACK_REQUIRE_DISPLAY=1, no window manager) always asserts the drag.
+                m_Position = {x, y};
+                Core::Application::get().getWindow().setPosition(x + DRAG_X, y + DRAG_Y);
+                m_Deadline = frame + WAIT_LIMIT;
+                next(Phase::AwaitProbeMove, 1);
+                break;
+            }
+            next(Phase::BeginResize, STEP);
+            break;
+        case Phase::AwaitProbeMove:
+            if (std::pair{x, y} == m_Position && waiting())
+            {
+                next(Phase::AwaitProbeMove, 1);
+                break;
+            }
+            m_Observed.positionsApply = std::pair{x, y} != m_Position;
             next(Phase::BeginResize, STEP);
             break;
         case Phase::BeginResize:
@@ -971,6 +994,7 @@ class WindowDragDriverLayer : public Core::Layer
     {
         BeginDrag,
         AwaitMoved,
+        AwaitProbeMove,
         BeginResize,
         AwaitWidened,
         Maximize,
@@ -981,10 +1005,10 @@ class WindowDragDriverLayer : public Core::Layer
 
     static constexpr int SETTLE = 10;
     static constexpr int STEP = 10;
-    static constexpr int WAIT_LIMIT = 300; // frames to wait for an effect before going on
-    static constexpr int RETRY_EVERY = 30; // frames before a press with no effect is made again
-    static constexpr int MAX_FRAMES = 1500;
-    static constexpr int DRAG_X = 40; // past DragTracker::DRAG_THRESHOLD_PX
+    static constexpr int WAIT_LIMIT = 300;  // frames to wait for an effect before going on
+    static constexpr int RETRY_EVERY = 30;  // frames before a press with no effect is made again
+    static constexpr int MAX_FRAMES = 1800; // room for every wait, the direct-move probe's included, to run out
+    static constexpr int DRAG_X = 40;       // past DragTracker::DRAG_THRESHOLD_PX
     static constexpr int DRAG_Y = 30;
     static constexpr int WIDEN_BY = 60;
 
