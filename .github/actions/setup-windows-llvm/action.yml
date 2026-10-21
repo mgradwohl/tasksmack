@@ -98,8 +98,8 @@ runs:
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
-        WOA64_VERSION: '22.1.7'
-        WOA64_SHA256: 58a24275fdf10297a6cd794ec6a0ffd752dcf900ef33afdc9b7e91ff9041b65e
+        WOA64_VERSION: '22.1.8'
+        WOA64_SHA256: 76f44ef1ba6eeb5a65904e9500f042f588fade49952778ce48f0374daa934396
       run: |
         $ErrorActionPreference = 'Stop'
         if ($env:LLVM_VERSION -ne $env:WOA64_VERSION) {
