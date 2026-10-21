@@ -200,7 +200,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG fa2c02bb6e21974a89ea9824bc53c9932abe5f9c  # release-3.4.16 - pinned to SHA for supply chain security
+    GIT_TAG 829a65d769d935c4852f8159e964312c0957260a  # release-3.4.18 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/sdl3-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/sdl3-subbuild"  # per-host sub-build (#2253)
