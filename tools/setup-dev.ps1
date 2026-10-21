@@ -38,7 +38,7 @@ param(
     # release binary), so this pins the latest version winget actually has available.
     [string]$CMakeVersion = "3.31.6",
     [string]$NinjaVersion = "1.13.2",
-    [string]$CcacheVersion = "4.14",
+    [string]$CcacheVersion = "4.14.2",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
     # (the winget --id, Resolve-Python's install-path probing, and Initialize-Venv's log text)
     # derives from it instead of hardcoding "3.14"/"314" a second time, so a version bump can't
