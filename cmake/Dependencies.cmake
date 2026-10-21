@@ -334,7 +334,7 @@ endif()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23  # v1.92.9b-docking - pinned to SHA for supply chain security
+    GIT_TAG b916186e66aa3c02b72c6ca17455516512ed8049  # v1.93.0-docking - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImGui
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/imgui-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/imgui-subbuild"  # per-host sub-build (#2253)
