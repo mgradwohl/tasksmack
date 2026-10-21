@@ -5,9 +5,9 @@ description: >-
   image Ninja, and add LLVM to PATH. ccache comes from hendrikmuhs/ccache-action.
 inputs:
   llvm-version:
-    description: 'Full LLVM semver version to install (e.g. 22.1.7)'
+    description: 'Full LLVM semver version to install (e.g. 22.1.8)'
     required: false
-    default: '22.1.7'
+    default: '22.1.8'
   ninja-version:
     description: >-
       Ninja version the windows-2025 runner image must ship (verified, not installed). Ninja is

@@ -20,7 +20,7 @@ on:
         description: Windows LLVM semantic version
         required: false
         type: string
-        default: '22.1.7'
+        default: '22.1.8'
       build_benchmarks:
         description: >-
           Linux only: after the tests, reconfigure with TASKSMACK_BUILD_BENCHMARKS=ON and build
