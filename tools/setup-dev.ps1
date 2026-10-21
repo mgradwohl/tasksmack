@@ -36,7 +36,7 @@ param(
     # .github/actions/setup-windows-llvm/action.yml). ccache has no CI-side winget equivalent
     # to mirror (CI gets it from hendrikmuhs/ccache-action's own pinned, checksum-verified
     # release binary), so this pins the latest version winget actually has available.
-    [string]$CMakeVersion = "3.31.6",
+    [string]$CMakeVersion = "3.31.12",
     [string]$NinjaVersion = "1.13.2",
     [string]$CcacheVersion = "4.14",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
