@@ -599,6 +599,98 @@ TEST(BrokerPipeTest, AFrameDeclaredTooLargeIsRefusedBeforeItIsRead)
     EXPECT_LT(since(start), WAIT) << "refused on its length, not waited for";
 }
 
+TEST(BrokerPipeTest, AFrameDeclaredOneByteOverTheCapIsRefusedBeforeItIsRead)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    // The cap is on the whole frame, prefix included, so the largest body is MAX_MESSAGE_BYTES - 4.
+    ASSERT_TRUE(send(pair.client.get(), lengthPrefix(static_cast<std::uint32_t>(Broker::MAX_MESSAGE_BYTES - 3))));
+    const auto start = std::chrono::steady_clock::now();
+    const auto received = BrokerPipe::receiveFrame(pair.server.get(), WAIT, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed);
+    EXPECT_LT(since(start), WAIT) << "refused on its length, not waited for";
+}
+
+TEST(BrokerPipeTest, AFrameDeclaredExactlyAtTheCapArrivesWhole)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    constexpr std::size_t BODY = Broker::MAX_MESSAGE_BYTES - 4;
+    std::vector<std::uint8_t> frame = lengthPrefix(static_cast<std::uint32_t>(BODY));
+    frame.reserve(Broker::MAX_MESSAGE_BYTES);
+    for (std::size_t i = 0; i < BODY; ++i)
+    {
+        frame.push_back(static_cast<std::uint8_t>(i * 31U));
+    }
+    auto sent = std::async(std::launch::async,
+                           [&]
+                           {
+                               std::string error;
+                               return BrokerPipe::sendFrame(pair.server.get(), frame, WAIT, {}, error);
+                           });
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    EXPECT_TRUE(sent.get());
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(received->size(), Broker::MAX_MESSAGE_BYTES);
+    EXPECT_EQ(*received, frame);
+}
+
+TEST(BrokerPipeTest, AFrameOfLengthZeroIsAFrameNotAClose)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    ASSERT_TRUE(send(pair.server.get(), lengthPrefix(0)));
+    const std::vector<std::uint8_t> next = Broker::encodeResponse(3, Broker::HelloReply{.accepted = true});
+    ASSERT_TRUE(send(pair.server.get(), next));
+
+    const auto empty = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    ASSERT_TRUE(empty.has_value());
+    EXPECT_EQ(*empty, lengthPrefix(0)) << "the prefix alone, and no body read for it";
+    const auto after = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    ASSERT_TRUE(after.has_value()) << "the pipe is still in step";
+    EXPECT_EQ(*after, next);
+}
+
+TEST(BrokerPipeTest, ALengthWrittenInTwoPartsArrivesWhole)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    const std::vector<std::uint8_t> frame = Broker::encodeResponse(5, Broker::HelloReply{.accepted = true});
+    ASSERT_GT(frame.size(), 4U);
+    auto received = std::async(std::launch::async, [pipe = pair.client.get()] { return BrokerPipe::receiveFrame(pipe, WAIT, {}); });
+
+    // One byte of the length, a pause the reader waits through, then the rest of the length and the body.
+    const std::span<const std::uint8_t> whole(frame);
+    ASSERT_TRUE(send(pair.server.get(), whole.first(1)));
+    std::this_thread::sleep_for(100ms);
+    EXPECT_EQ(received.wait_for(0ms), std::future_status::timeout) << "a length cut short is waited for, not taken";
+    ASSERT_TRUE(send(pair.server.get(), whole.subspan(1, 3)));
+    std::this_thread::sleep_for(100ms);
+    ASSERT_TRUE(send(pair.server.get(), whole.subspan(4)));
+
+    ASSERT_EQ(received.wait_for(WAIT), std::future_status::ready);
+    const auto frameReceived = received.get();
+    ASSERT_TRUE(frameReceived.has_value());
+    EXPECT_EQ(*frameReceived, frame);
+}
+
 TEST(BrokerPipeTest, AFrameTooLargeOrForAGonePeerIsNotSent)
 {
     if (const auto why = brokerRefusesThisUser())
@@ -631,6 +723,24 @@ TEST(BrokerPipeTest, AFrameCutShortByAClosedPipeIsAFailure)
     const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
     ASSERT_FALSE(received.has_value());
     EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed) << "cut off partway, not a clean close";
+}
+
+TEST(BrokerPipeTest, AFrameOneByteShortWhenThePipeClosesIsAFailure)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    constexpr std::uint32_t BODY = 100;
+    std::vector<std::uint8_t> partial = lengthPrefix(BODY);
+    partial.resize(partial.size() + BODY - 1, 0x5A);
+    ASSERT_TRUE(send(pair.server.get(), partial));
+    pair.server.reset();
+    const auto received = BrokerPipe::receiveFrame(pair.client.get(), WAIT, {});
+    ASSERT_FALSE(received.has_value());
+    EXPECT_EQ(received.error(), BrokerPipe::ReceiveEnd::Failed) << "not a frame one byte short, and not a clean close";
 }
 
 TEST(BrokerPipeTest, AFrameCutShortByTheTimeoutIsAFailure)
@@ -850,6 +960,33 @@ TEST(BrokerPipeServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGo
     std::vector<std::uint8_t> garbage = lengthPrefix(3);
     garbage.insert(garbage.end(), {0xFF, 0xFF, 0xFF});
     ASSERT_TRUE(send(pair.client.get(), garbage));
+    const auto error = receiveResponse(pair.client.get());
+    ASSERT_TRUE(error.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(error->message));
+
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(2, Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Kill})));
+    const auto action = receiveResponse(pair.client.get());
+    ASSERT_TRUE(action.has_value());
+    EXPECT_TRUE(std::holds_alternative<Broker::ActionResult>(action->message));
+
+    pair.client.reset();
+    ASSERT_EQ(served.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(served.get(), BrokerPipeServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerPipeServeTest, AFrameOfLengthZeroAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    PipePair pair = connectedPair();
+    ASSERT_TRUE(pair.server && pair.client);
+    auto served = serveAsync(pair.server.get(), CountingHandler{}.handler(), WAIT);
+    ASSERT_TRUE(send(pair.client.get(), Broker::encodeRequest(1, Broker::Hello{})));
+    ASSERT_TRUE(receiveResponse(pair.client.get()).has_value());
+
+    ASSERT_TRUE(send(pair.client.get(), lengthPrefix(0)));
     const auto error = receiveResponse(pair.client.get());
     ASSERT_TRUE(error.has_value());
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(error->message));
