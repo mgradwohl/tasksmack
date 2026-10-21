@@ -26,7 +26,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_SEMVER_VERSION: '22.1.8'
   # IWYU tracks LLVM's major version via its own "clang_<N>" branches, but a branch ref is
   # mutable -- pin to the exact commit this branch pointed to instead, matching every other
   # SHA-pinned dependency/action in this repo. Verified compatible with LLVM 22 directly: this

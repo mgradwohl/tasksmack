@@ -29,16 +29,16 @@ param(
     # installs on Windows 10 and Windows 11 before 24H2; 10.0.26100.7705's requires 24H2. The
     # headers and libraries install to Windows Kits\10\{Include,Lib}\10.0.26100.0 either way.
     [string]$WindowsSdkVersion = "10.0.26100.7463",
-    [string]$LlvmVersion = "22.1.7",
+    [string]$LlvmVersion = "22.1.8",
     # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
     # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
     # setup and CI land on the same versions (CI verifies the image's ninja version in
     # .github/actions/setup-windows-llvm/action.yml). ccache has no CI-side winget equivalent
     # to mirror (CI gets it from hendrikmuhs/ccache-action's own pinned, checksum-verified
     # release binary), so this pins the latest version winget actually has available.
-    [string]$CMakeVersion = "3.31.6",
+    [string]$CMakeVersion = "3.31.12",
     [string]$NinjaVersion = "1.13.2",
-    [string]$CcacheVersion = "4.14",
+    [string]$CcacheVersion = "4.14.2",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
     # (the winget --id, Resolve-Python's install-path probing, and Initialize-Venv's log text)
     # derives from it instead of hardcoding "3.14"/"314" a second time, so a version bump can't

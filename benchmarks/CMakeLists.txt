@@ -7,7 +7,7 @@ include(FetchContent)
 FetchContent_Declare(
     benchmark
     GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG 192ef10025eb2c4cdd392bc502f0c852196baa48  # v1.9.5 - pinned to SHA for supply chain security
+    GIT_TAG a6b4a9f00b36c19af9997d68a1cf6e0b5b3d032c  # v1.10.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/benchmark-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/benchmark-subbuild"  # per-host sub-build (#2253)

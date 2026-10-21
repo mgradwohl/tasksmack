@@ -21,7 +21,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_SEMVER_VERSION: '22.1.8'
 
 permissions: {}
 

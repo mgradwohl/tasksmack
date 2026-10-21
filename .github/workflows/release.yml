@@ -23,7 +23,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_SEMVER_VERSION: '22.1.8'
   # Exact apt.llvm.org package version currently served for clang-22 (noble).
   # apt.llvm.org does not retain old snapshots per major version -- it only
   # ever serves the latest build for a given major -- so this pin cannot

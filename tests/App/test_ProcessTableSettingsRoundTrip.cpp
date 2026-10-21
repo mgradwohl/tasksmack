@@ -126,8 +126,8 @@ class HeadlessImGui
 
 /// Runs a session with the default layout -- or with `change` applied to it -- and returns the
 /// table's section as captureTableLayout() stores it: extracted, then with the default order made
-/// explicit. `rawOut`, if given, receives the section as extracted, before that last step.
-std::string captureSession(const std::function<void(ImGuiTable&)>& change = {}, std::string* rawOut = nullptr)
+/// explicit.
+std::string captureSession(const std::function<void(ImGuiTable&)>& change = {})
 {
     const HeadlessImGui imgui;
     std::uint32_t tableId = 0;
@@ -137,12 +137,7 @@ std::string captureSession(const std::function<void(ImGuiTable&)>& change = {}, 
     }
     std::size_t size = 0;
     const char* ini = ImGui::SaveIniSettingsToMemory(&size);
-    std::string raw = ProcessTableSettings::extractTableSection(std::string_view(ini, size), tableId);
-    if (rawOut != nullptr)
-    {
-        *rawOut = raw;
-    }
-    return ProcessTableSettings::withExplicitOrder(raw);
+    return ProcessTableSettings::withExplicitOrder(ProcessTableSettings::extractTableSection(std::string_view(ini, size), tableId));
 }
 
 /// The display order a fresh context shows after loading `stored` the way `prepare` hands it over.
@@ -182,19 +177,22 @@ std::string withExplicitOrder(std::string_view stored)
     return ProcessTableSettings::withExplicitOrder(stored);
 }
 
-// The harness reproduces the report: ImGui saves only the sorted column's line, and loading that
-// as it is moves the sorted column to the front.
+/// The table's section as ImGui 1.92 and earlier saved the default layout: no column but the sorted
+/// one has a line, and that line has no Order=. ImGui 1.93 writes every column with its Order=, so
+/// a session can no longer produce this; layouts saved by older versions still hold it.
+std::string sortOnlySection()
+{
+    const HeadlessImGui imgui;
+    const std::uint32_t tableId = imgui.frame();
+    return std::format("[Table][0x{:08X},{}]\nRefScale=13\nColumn {}  Sort=0^\n", tableId, COLUMN_COUNT, SORTED_COLUMN);
+}
+
+// The report: loading a sort-only section as it is moves the sorted column to the front.
 TEST(ProcessTableSettingsRoundTripTest, ASortOnlySectionLoadedAsItIsMovesTheSortedColumnFirst)
 {
-    std::string raw;
-    (void) captureSession({}, &raw);
-    ASSERT_FALSE(raw.empty());
-    EXPECT_FALSE(raw.contains("Order=")) << raw;
-    EXPECT_TRUE(raw.contains(std::format("Column {}  Sort=0^", SORTED_COLUMN))) << raw;
-
     int sortOrder = 0;
     int sortDirection = 0;
-    const std::vector<int> order = restoreSession(raw, &sanitizeOnly, sortOrder, sortDirection);
+    const std::vector<int> order = restoreSession(sortOnlySection(), &sanitizeOnly, sortOrder, sortDirection);
     ASSERT_EQ(order.size(), static_cast<std::size_t>(COLUMN_COUNT));
     EXPECT_EQ(order.front(), SORTED_COLUMN);
 }
@@ -210,14 +208,12 @@ TEST(ProcessTableSettingsRoundTripTest, TheDefaultLayoutComesBackInItsOwnOrderWi
     EXPECT_EQ(sortDirection, static_cast<int>(ImGuiSortDirection_Descending));
 }
 
-// A layout an older version saved -- the raw sort-only section -- is repaired on restore.
+// A sort-only section saved by an older version is repaired on restore.
 TEST(ProcessTableSettingsRoundTripTest, ASortOnlySectionSavedByAnOlderVersionIsRestoredInOrder)
 {
-    std::string raw;
-    (void) captureSession({}, &raw);
     int sortOrder = -1;
     int sortDirection = -1;
-    EXPECT_EQ(restoreSession(raw, &withExplicitOrder, sortOrder, sortDirection), identityOrder());
+    EXPECT_EQ(restoreSession(sortOnlySection(), &withExplicitOrder, sortOrder, sortDirection), identityOrder());
     EXPECT_EQ(sortOrder, 0);
     EXPECT_EQ(sortDirection, static_cast<int>(ImGuiSortDirection_Descending));
 }
