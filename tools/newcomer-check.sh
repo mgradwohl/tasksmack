@@ -479,8 +479,10 @@ step_check_prereqs() {
 step_dev_workflow() {
     cd "${CLONE_DIR}" || return 1
     cite CONTRIBUTING.md "cmake --workflow --preset dev"
+    # How to cap the build's jobs (#2684): a FINDING, through cite(), if CONTRIBUTING stops saying it.
+    cite CONTRIBUTING.md "export CMAKE_BUILD_PARALLEL_LEVEL="
     echo "CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
-    note "builds with CMAKE_BUILD_PARALLEL_LEVEL=${JOBS}; CONTRIBUTING does not say how to cap build jobs"
+    note "builds with CMAKE_BUILD_PARALLEL_LEVEL=${JOBS}, as CONTRIBUTING says to cap the jobs"
     if ! run cmake --workflow --preset dev; then
         fail "cmake --workflow --preset dev failed"
         return 1
