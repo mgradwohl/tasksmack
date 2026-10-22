@@ -774,6 +774,40 @@ the untested logic needs OS handles or not:
    file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
+### Documentation screenshots
+
+`tools/screenshots.sh` (Linux; under Xvfb when `$DISPLAY` is unset) and `tools/screenshots.ps1`
+(Windows) regenerate `docs/images/screenshots/<os>/` (#2827): one launch of the built app per shot,
+sequentially, with no injected input. Each run gets its own `TASKSMACK_CONFIG_DIR` with a generated
+`config.toml` (theme, medium font, 1 s sampling, a 1440x900 window, the Processes table's Command
+column off, since command lines name the machine's users and paths), the startup hooks from the next
+section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
+matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
+`monochrome-light`), Processes and System Information in the first dark and the first light theme,
+Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
+`<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
+sequence. `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
+webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
+print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
+
+Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
+
+```bash
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+cmake --preset release && cmake --build --preset release
+tools/screenshots.sh --webp --hostname tasksmack-demo
+```
+
+```powershell
+# Windows: in a Windows Sandbox (its own processes, user and host name) with the win-release build,
+# and Mesa's llvmpipe opengl32.dll beside TaskSmack.exe when the Sandbox has no vGPU
+.\tools\screenshots.ps1 -WebP -Exe C:\shots\TaskSmack.exe -Out C:\shots\out
+```
+
+The images show the machine they were taken on. Before committing, look at every one for a user name,
+host name or process you would not publish: the Processes User column, System Information and the
+hostname tab are the usual places.
+
 ### Visual validation without input (Process Details)
 
 Agents must not inject clicks or keys, so five test-only environment variables (#1559, #172), read
