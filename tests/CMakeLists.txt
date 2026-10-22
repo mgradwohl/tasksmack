@@ -310,6 +310,8 @@ set(COMMON_TEST_SOURCES
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
     UI/test_NowBarsRender.cpp
+    # ImPlot lines sample ImGui's baked line texture (#2744)
+    UI/test_PlotLineTexture.cpp
     UI/test_ChartWidgetsEdgeCases.cpp
     UI/test_HistoryCsv.cpp
     UI/test_HistoryChartCsvRender.cpp

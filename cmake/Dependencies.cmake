@@ -366,11 +366,18 @@ target_compile_definitions(imgui_lib PUBLIC
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 
-# ImPlot v1.0 (requires ImGui docking branch)
+# ImPlot master after v1.0, "1.1 WIP" (requires ImGui docking branch). v1.0 reads ImGui 1.93's
+# TexUvLines in the 1.92 layout, so its anti-aliased lines sampled the wrong atlas texels (#2744);
+# 7eeb9168 ("fix: use ImDrawList::_SelectLineTexture()") fixes that, and the seven commits between
+# v1.0 and it are ImGui 1.93 API updates (AddRect/AddPolyline argument order, AddLineH/AddLineV)
+# plus two marker types and two legend/scatter colour fixes. tests/UI/test_PlotLineTexture.cpp
+# holds the line UVs to ImGui's own. Renovate only tracks this pin while its comment reads "# vX.Y"
+# (see .github/renovate.json5), so it leaves this untagged pin alone; move back to a tag (v1.1)
+# once one includes the fix.
 FetchContent_Declare(
     implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG 524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39  # v1.0 - pinned to SHA for supply chain security
+    GIT_TAG 7eeb9168d2e5e6b14e266d8782ecf7e649dfc3a4  # master after v1.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImPlot
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/implot-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/implot-subbuild"  # per-host sub-build (#2253)
