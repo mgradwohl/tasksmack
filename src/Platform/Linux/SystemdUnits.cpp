@@ -168,6 +168,7 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
         {
             units.push_back({.name = name,
                              .description = (description != nullptr) ? description : "",
+                             .loadState = (loadState != nullptr) ? loadState : "",
                              .activeState = (activeState != nullptr) ? activeState : "",
                              .subState = (subState != nullptr) ? subState : "",
                              .objectPath = (path != nullptr) ? path : ""});
@@ -425,7 +426,10 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
     bool answering = true;
     for (const SystemdServices::Unit& unit : read.listing.units)
     {
-        if (unit.objectPath.empty())
+        // A unit that isn't loaded -- referenced but not installed (not-found), masked, or failing to
+        // parse -- still answers the Service interface, with an empty User, Type and ExecStart that would
+        // read as "runs as root" (#2750). It has no configuration to show, so none is asked for.
+        if (unit.objectPath.empty() || unit.loadState != "loaded")
         {
             continue;
         }
