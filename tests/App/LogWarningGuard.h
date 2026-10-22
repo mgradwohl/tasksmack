@@ -9,6 +9,8 @@
 // runs. When the test ends, any recorded line that no ALLOWED_WARNINGS entry matches fails it, listing
 // the lines. A test that swaps in its own default logger (to check its own messages) bypasses this.
 
+#include "Core/EnvRead.h"
+
 #include <gtest/gtest.h>
 #include <spdlog/common.h>
 #include <spdlog/details/log_msg.h>
@@ -18,7 +20,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cstdlib>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -73,7 +74,7 @@ inline constexpr std::array ALLOWED_WARNINGS{
 /// Whether the tests run under SDL's offscreen driver (TestSupport::tryEnableOffscreenVideoDriver() sets it).
 [[nodiscard]] inline bool offscreenVideoDriver()
 {
-    const char* driver = std::getenv("SDL_VIDEODRIVER"); // NOLINT(concurrency-mt-unsafe) - read between tests; only test setup writes it
+    const char* driver = Core::readEnv("SDL_VIDEODRIVER");
     return driver != nullptr && std::string_view(driver) == "offscreen";
 }
 
