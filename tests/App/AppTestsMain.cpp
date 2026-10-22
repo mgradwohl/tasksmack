@@ -3,19 +3,23 @@
 /// PathService and UserConfig read TASKSMACK_CONFIG_DIR once per process, on first use. Pointing it at
 /// a fresh temporary directory before any test runs means nothing these tests save (ShellLayer's
 /// onDetach() writes config.toml) can reach the user's own config. The directory is removed afterwards.
+/// Every test also fails on a warning or error it didn't expect (LogWarningGuard.h, #2718).
 
 #include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
+#include "LogWarningGuard.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <random>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace
 {
@@ -43,11 +47,47 @@ std::filesystem::path makeTempDir()
 
 } // namespace
 
+// The allow-list filter behind the unexpected-warning check (#2718), tested here, where it is used.
+namespace TestSupport
+{
+namespace
+{
+
+TEST(LogWarningGuardTest, OnlyLinesNoEntryMatchesAreUnexpected)
+{
+    constexpr std::array allowed{AllowedWarning{.contains = "synthetic machine", .why = "test"}};
+    const std::vector<std::string> logged{
+        "warning: TASKSMACK_SYNTHETIC is set: showing a synthetic machine, not this one",
+        "error: Couldn't open the GPU device",
+        "warning: synthetic machine again",
+    };
+    EXPECT_EQ(unexpectedWarnings(logged, allowed), (std::vector<std::string>{"error: Couldn't open the GPU device"}));
+}
+
+TEST(LogWarningGuardTest, NothingLoggedIsNothingUnexpected)
+{
+    EXPECT_TRUE(unexpectedWarnings({}, ALLOWED_WARNINGS).empty());
+}
+
+TEST(LogWarningGuardTest, EveryAllowedEntrySaysWhy)
+{
+    for (const AllowedWarning& entry : ALLOWED_WARNINGS)
+    {
+        EXPECT_FALSE(entry.contains.empty());
+        EXPECT_FALSE(entry.why.empty()) << entry.contains;
+    }
+}
+
+} // namespace
+} // namespace TestSupport
+
 int main(int argc, char** argv)
 {
     try
     {
         ::testing::InitGoogleTest(&argc, argv);
+        // A test that logs a warning or error it doesn't expect fails (#2718).
+        TestSupport::LogWarningGuard::install();
         const std::filesystem::path configDir = makeTempDir();
         if (configDir.empty())
         {
