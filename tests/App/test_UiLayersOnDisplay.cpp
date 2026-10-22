@@ -1084,7 +1084,9 @@ struct DragGeometryObserved
     std::array<bool, 2> maximizedBeforeDrag{}; ///< For the press near the left end, then the right
     std::array<bool, 2> clickKeptMaximized{};  ///< A move inside the threshold leaves it maximized
     std::array<bool, 2> restoredByDrag{};
+    bool maximizeUnavailable = false; ///< The window never maximized: the restore checks were skipped
     int frames = 0;
+    int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
     bool timedOut = false;
 };
 
@@ -1136,7 +1138,7 @@ class DragGeometryDriverLayer : public Core::Layer
             const char* driver = SDL_GetCurrentVideoDriver();
             m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
             m_Start = {x, y};
-            press(x, y, width / 2, TITLE_Y);
+            press(x, y, width / 2, TITLE_Y, frame);
             m_Sample = 0;
             holdAt(PLAIN_OFFSETS[0], frame);
             next(Phase::AwaitPlainDrag, 1);
@@ -1144,6 +1146,14 @@ class DragGeometryDriverLayer : public Core::Layer
         }
         case Phase::AwaitPlainDrag:
         {
+            // Still where the last position put it: the drag was lost (see retryDue()), so the press
+            // is made again where the pointer was.
+            const std::pair<int, int> previous = m_Sample == 0 ? std::pair{0, 0} : PLAIN_OFFSETS.at(m_Sample - 1);
+            if (within(x - (m_Start.first + previous.first), y - (m_Start.second + previous.second)) && m_Observed.positionsApply &&
+                waiting && retryDue(frame))
+            {
+                retryPress(x, y, width, maximized, previous, PLAIN_OFFSETS.at(m_Sample), frame);
+            }
             const auto [dx, dy] = PLAIN_OFFSETS.at(m_Sample);
             const int errorX = x - (m_Start.first + dx);
             const int errorY = y - (m_Start.second + dy);
@@ -1166,12 +1176,17 @@ class DragGeometryDriverLayer : public Core::Layer
         case Phase::BeginResize:
             m_Start = {x, y};
             m_StartWidth = width;
-            press(x, y, width - 2, height / 2);
+            press(x, y, width - 2, height / 2, frame);
             holdAt({WIDEN_BY, 0}, frame);
             next(Phase::AwaitResize, 1);
             break;
         case Phase::AwaitResize:
         {
+            // Not widened at all: the press was lost (see retryDue()), so it is made again.
+            if (width == m_StartWidth && waiting && retryDue(frame))
+            {
+                retryPress(x, y, width, maximized, {0, 0}, {WIDEN_BY, 0}, frame);
+            }
             const bool widened = std::abs(width - (m_StartWidth + WIDEN_BY)) <= TOLERANCE_PX;
             if (!widened && waiting)
             {
@@ -1188,26 +1203,54 @@ class DragGeometryDriverLayer : public Core::Layer
             break;
         }
         case Phase::Maximize:
-            pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), true, 2); // double-click
-            pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), false, 2);
+            // A double-click toggles, so it is only sent to a window that isn't maximized already.
+            if (!maximized)
+            {
+                pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), true, 2); // double-click
+                pushButton(static_cast<float>(width) * 0.5F, static_cast<float>(TITLE_Y), false, 2);
+            }
             m_Deadline = frame + WAIT_LIMIT;
             next(Phase::AwaitMaximized, 1);
             break;
         case Phase::AwaitMaximized:
-        {
             m_Observed.maximizedBeforeDrag.at(m_End) = maximized;
             if (!maximized && waiting)
             {
                 next(Phase::AwaitMaximized, 1);
                 break;
             }
-            // Near one end of the title bar, clear of the icon and the buttons.
-            // Near the top of the title bar for the left end, three quarters of the way down it for
-            // the right (a maximized window has no resize border to avoid).
+            if (!maximized)
+            {
+                // This display can't maximize the window (the test skips this part, not the rest).
+                m_Observed.maximizeUnavailable = true;
+                next(Phase::Stop, STEP);
+                break;
+            }
+            m_Geometry = {};
+            m_StableFrames = 0;
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximizedSettled, 1);
+            break;
+        case Phase::AwaitMaximizedSettled:
+        {
+            // The maximized flag can lead the window's new position and size by some frames (X11
+            // reports the configure later), and a press read from the old geometry lands somewhere
+            // else on the window: wait until the geometry has held for SETTLED_FRAMES.
+            const std::array<int, 4> geometry{x, y, width, height};
+            m_StableFrames = geometry == m_Geometry ? m_StableFrames + 1 : 0;
+            m_Geometry = geometry;
+            if (m_StableFrames < SETTLED_FRAMES && waiting)
+            {
+                next(Phase::AwaitMaximizedSettled, 1);
+                break;
+            }
+            // Near one end of the title bar, clear of the icon and the buttons: near the top of the
+            // title bar for the left end, three quarters of the way down it for the right (a
+            // maximized window has no resize border to avoid).
             m_PressLocalY = m_End == 0 ? TITLE_Y_NEAR_TOP : static_cast<int>(App::TitleBarLayer::height() * 0.75F);
-            const int localX = clearPressX(width, m_PressLocalY, m_End == 0);
-            m_Fraction = static_cast<double>(localX) / static_cast<double>(width);
-            press(x, y, localX, m_PressLocalY);
+            m_PressLocalX = clearPressX(width, m_PressLocalY, m_End == 0);
+            m_Fraction = static_cast<double>(m_PressLocalX) / static_cast<double>(width);
+            press(x, y, m_PressLocalX, m_PressLocalY, frame);
             holdAt({INSIDE_THRESHOLD, INSIDE_THRESHOLD}, frame);
             next(Phase::CheckStillMaximized, STEP);
             break;
@@ -1220,12 +1263,25 @@ class DragGeometryDriverLayer : public Core::Layer
             break;
         case Phase::AwaitRestoreSample:
         {
-            const auto [dx, dy] = RESTORE_OFFSETS.at(m_Sample);
-            const int pointerX = m_Press.first + dx;
-            const int pointerY = m_Press.second + dy;
             // Where the pointer is on the window, against where it was on the maximized one.
-            const int errorX = static_cast<int>(std::lround(static_cast<double>(pointerX - x) - (m_Fraction * width)));
-            const int errorY = (pointerY - y) - m_PressLocalY;
+            const auto pointerError = [&](std::pair<int, int> offset)
+            {
+                const int pointerX = m_Press.first + offset.first;
+                const int pointerY = m_Press.second + offset.second;
+                return std::pair{static_cast<int>(std::lround(static_cast<double>(pointerX - x) - (m_Fraction * width))),
+                                 (pointerY - y) - m_PressLocalY};
+            };
+            // Still maximized well after the pointer passed the threshold, or still where the last
+            // position put it: the press or the drag was lost (see retryDue()), so the press is made
+            // again where the pointer was.
+            const std::pair<int, int> previous = m_Sample == 0 ? std::pair{0, 0} : RESTORE_OFFSETS.at(m_Sample - 1);
+            const bool lost = m_Sample == 0 ? maximized : !maximized && within(pointerError(previous).first, pointerError(previous).second);
+            if (lost && waiting && retryDue(frame))
+            {
+                retryPress(x, y, width, maximized, previous, RESTORE_OFFSETS.at(m_Sample), frame);
+            }
+            const auto [dx, dy] = RESTORE_OFFSETS.at(m_Sample);
+            const auto [errorX, errorY] = pointerError({dx, dy});
             const bool placed = !maximized && within(errorX, errorY);
             if (!placed && (m_Observed.positionsApply || maximized) && waiting)
             {
@@ -1307,18 +1363,56 @@ class DragGeometryDriverLayer : public Core::Layer
     }
 
     /// A left-button press at window-local (@p localX, @p localY) of the window at (@p windowX, @p windowY).
-    void press(int windowX, int windowY, int localX, int localY)
+    void press(int windowX, int windowY, int localX, int localY, int frame)
     {
         m_Press = {windowX + localX, windowY + localY};
+        m_PointerShift = {0, 0};
         pushButton(static_cast<float>(localX), static_cast<float>(localY), true, 1);
+        m_HeldAt = frame;
+    }
+
+    /// Whether a press with no effect is due to be made again (#2221): TitleBarLayer ends a drag or
+    /// resize on SDL_EVENT_WINDOW_FOCUS_LOST, as it should, and under ctest -j another test's window
+    /// mapping, or the maximize itself, can take the focus between the press and any step.
+    [[nodiscard]] bool retryDue(int frame) const noexcept
+    {
+        return frame - m_HeldAt >= RETRY_EVERY;
+    }
+
+    /// The press made again on the window now at (@p windowX, @p windowY), where the pointer was at
+    /// @p previous from the original press, then the pointer moved on to @p offset, within the
+    /// original deadline. A drag goes by the pointer's movement from its press, so the window ends up
+    /// where the original drag would have put it. A drag that restored the window can leave the
+    /// pointer over the icon, a button or the top resize border of the restored one, where a press
+    /// doesn't drag: then it is made in the middle of the title bar instead, and the pointer held that
+    /// far from where it was from then on. The checks still measure from the original press.
+    void
+    retryPress(int windowX, int windowY, int width, bool maximized, std::pair<int, int> previous, std::pair<int, int> offset, int frame)
+    {
+        const int unshiftedLocalX = m_Press.first + previous.first - windowX;
+        const int unshiftedLocalY = m_Press.second + previous.second - windowY;
+        int localX = unshiftedLocalX + m_PointerShift.first;
+        int localY = unshiftedLocalY + m_PointerShift.second;
+        if (!maximized && (localY < TITLE_Y || m_TitleBar.isPointInControlArea(static_cast<float>(localX), static_cast<float>(localY))))
+        {
+            localX = width / 2;
+            localY = TITLE_Y;
+        }
+        m_PointerShift = {localX - unshiftedLocalX, localY - unshiftedLocalY};
+        pushButton(static_cast<float>(localX), static_cast<float>(localY), true, 1);
+        const int deadline = m_Deadline;
+        holdAt(offset, frame);
+        m_Deadline = deadline;
+        ++m_Observed.pressRetries;
     }
 
     /// The pointer @p offset from the press with the left button down, until release(), waiting up to
     /// WAIT_LIMIT frames from @p frame for its effect.
     void holdAt(std::pair<int, int> offset, int frame)
     {
-        const int globalX = m_Press.first + offset.first;
-        const int globalY = m_Press.second + offset.second;
+        m_HeldAt = frame;
+        const int globalX = m_Press.first + m_PointerShift.first + offset.first;
+        const int globalY = m_Press.second + m_PointerShift.second + offset.second;
         m_TitleBar.setMouseStateQueryForTesting([globalX, globalY]
                                                 { return std::tuple<int, int, SDL_MouseButtonFlags>{globalX, globalY, SDL_BUTTON_LMASK}; });
         m_Deadline = frame + WAIT_LIMIT;
@@ -1351,6 +1445,7 @@ class DragGeometryDriverLayer : public Core::Layer
         AwaitResize,
         Maximize,
         AwaitMaximized,
+        AwaitMaximizedSettled,
         CheckStillMaximized,
         AwaitRestoreSample,
         Stop,
@@ -1359,6 +1454,8 @@ class DragGeometryDriverLayer : public Core::Layer
     static constexpr int SETTLE = 10;
     static constexpr int STEP = 10;
     static constexpr int WAIT_LIMIT = 300;
+    static constexpr int RETRY_EVERY = 60;    // frames before a press with no effect is made again
+    static constexpr int SETTLED_FRAMES = 15; // frames a maximized window's geometry holds before the press
     static constexpr int MAX_FRAMES = 4000;
     static constexpr int TOLERANCE_PX = 2;
     static constexpr int TITLE_Y = 16;         // window-local y of a press: inside the title bar, below the resize border
@@ -1379,9 +1476,14 @@ class DragGeometryDriverLayer : public Core::Layer
     std::size_t m_End = 0; ///< 0: the press near the left end; 1: near the right
     std::pair<int, int> m_Start;
     int m_StartWidth = 0;
-    std::pair<int, int> m_Press; ///< Global
+    std::pair<int, int> m_Press;        ///< Global: where the pointer was pressed, which the checks measure from
+    std::pair<int, int> m_PointerShift; ///< How far the held pointer is from m_Press + offset after a lower re-press
+    int m_HeldAt = 0;                   ///< The frame the pointer was last pressed or moved
+    int m_PressLocalX = 0;
     int m_PressLocalY = 0;
     double m_Fraction = 0.0;
+    std::array<int, 4> m_Geometry{}; ///< x, y, width, height on the last frame, while waiting for them to settle
+    int m_StableFrames = 0;
 };
 
 // #2715: a plain title-bar drag follows the pointer 1:1, a right-edge resize keeps the left edge, and
@@ -1411,8 +1513,18 @@ TEST(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
         FAIL() << "Application failed after the display probe passed: " << e.what();
     }
 
+    RecordProperty("pressRetries", observed.pressRetries);
     EXPECT_FALSE(observed.timedOut);
     EXPECT_TRUE(observed.widenedByResize);
+    for (const std::string& failure : observed.failures)
+    {
+        ADD_FAILURE() << failure;
+    }
+    if (observed.maximizeUnavailable)
+    {
+        // The plain drag and the resize were checked above; only the restore part is skipped.
+        GTEST_SKIP() << "The window never maximized on this display, so the drag-to-restore checks were skipped";
+    }
     for (std::size_t end = 0; end < 2; ++end)
     {
         SCOPED_TRACE(end == 0 ? "pressed near the left end" : "pressed near the right end");
@@ -1423,10 +1535,6 @@ TEST(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
     if (observed.positionsApply)
     {
         EXPECT_EQ(observed.checks, 12); // 3 plain-drag positions, the resize, 4 restore positions per end
-    }
-    for (const std::string& failure : observed.failures)
-    {
-        ADD_FAILURE() << failure;
     }
 }
 
