@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -32,8 +34,9 @@ namespace TestSupport
 /// A warning the test environment produces whatever the product does, matched as a substring.
 struct AllowedWarning
 {
-    std::string_view contains; ///< Text the logged line contains
-    std::string_view why;      ///< Why it is expected in tests (kept with the entry, not elsewhere)
+    std::string_view contains;  ///< Text the logged line contains
+    std::string_view why;       ///< Why it is expected in tests (kept with the entry, not elsewhere)
+    bool offscreenOnly = false; ///< Expected only under SDL's offscreen driver, the headless fallback
 };
 
 /// Every expected warning, in one place. Add an entry only for the environment, never to hide a
@@ -46,7 +49,33 @@ inline constexpr std::array ALLOWED_WARNINGS{
                    .why = "the composed shell in tests has no GPU probe on machines and runners without a GPU"},
     AllowedWarning{.contains = "icon from resource",
                    .why = "on Windows the icon resource is linked into TaskSmack.exe only, not the test binary (#2039)"},
+    // The offscreen driver (the ASan+UBSan job, a machine without a display) has no hit testing, system
+    // cursors or VideoBackend entry; on a real display each of these is a product problem.
+    AllowedWarning{.contains = "Failed to set window hit test callback",
+                   .why = "SDL's offscreen driver doesn't support hit testing",
+                   .offscreenOnly = true},
+    AllowedWarning{
+        .contains = "resize-cursor shapes failed to create", .why = "SDL's offscreen driver has no system cursors", .offscreenOnly = true},
+    AllowedWarning{
+        .contains = "Unknown video driver: offscreen", .why = "VideoBackend knows only the drivers the app runs on", .offscreenOnly = true},
 };
+
+/// The entries of @p allowed that apply now: all of them under the offscreen driver (@p offscreen),
+/// else those not marked offscreenOnly.
+[[nodiscard]] inline std::vector<AllowedWarning> applicableWarnings(std::span<const AllowedWarning> allowed, bool offscreen)
+{
+    std::vector<AllowedWarning> applicable;
+    std::ranges::copy_if(
+        allowed, std::back_inserter(applicable), [offscreen](const AllowedWarning& entry) { return offscreen || !entry.offscreenOnly; });
+    return applicable;
+}
+
+/// Whether the tests run under SDL's offscreen driver (TestSupport::tryEnableOffscreenVideoDriver() sets it).
+[[nodiscard]] inline bool offscreenVideoDriver()
+{
+    const char* driver = std::getenv("SDL_VIDEODRIVER"); // NOLINT(concurrency-mt-unsafe) - read between tests; only test setup writes it
+    return driver != nullptr && std::string_view(driver) == "offscreen";
+}
 
 /// The lines of @p logged that no entry of @p allowed matches.
 [[nodiscard]] inline std::vector<std::string> unexpectedWarnings(const std::vector<std::string>& logged,
@@ -138,7 +167,7 @@ class LogWarningGuard final : public ::testing::EmptyTestEventListener
             logged = std::exchange(m_State->lines, {});
             expected = std::exchange(m_State->expected, {});
         }
-        std::vector<AllowedWarning> allowed(ALLOWED_WARNINGS.begin(), ALLOWED_WARNINGS.end());
+        std::vector<AllowedWarning> allowed = applicableWarnings(ALLOWED_WARNINGS, offscreenVideoDriver());
         for (const std::string& text : expected)
         {
             allowed.push_back({.contains = text, .why = "declared by the test with expectLogWarning()"});

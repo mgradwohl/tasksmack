@@ -69,6 +69,18 @@ TEST(LogWarningGuardTest, NothingLoggedIsNothingUnexpected)
     EXPECT_TRUE(unexpectedWarnings({}, ALLOWED_WARNINGS).empty());
 }
 
+TEST(LogWarningGuardTest, OffscreenOnlyEntriesApplyOnlyUnderTheOffscreenDriver)
+{
+    constexpr std::array allowed{
+        AllowedWarning{.contains = "everywhere", .why = "test"},
+        AllowedWarning{.contains = "headless", .why = "test", .offscreenOnly = true},
+    };
+    const std::vector<std::string> logged{"warning: headless"};
+    EXPECT_EQ(unexpectedWarnings(logged, applicableWarnings(allowed, false)), logged);
+    EXPECT_TRUE(unexpectedWarnings(logged, applicableWarnings(allowed, true)).empty());
+    EXPECT_EQ(applicableWarnings(allowed, false).size(), 1U);
+}
+
 TEST(LogWarningGuardTest, EveryAllowedEntrySaysWhy)
 {
     for (const AllowedWarning& entry : ALLOWED_WARNINGS)
