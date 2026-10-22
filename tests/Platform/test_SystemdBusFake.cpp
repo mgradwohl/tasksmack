@@ -967,6 +967,73 @@ class SystemdBusFakeServiceConfigTest : public SystemdBusFakeServicesTest
     static constexpr const char* APT_PATH = "/org/freedesktop/systemd1/unit/apt_2ddaily_2eservice";
 };
 
+// #2750: ListUnits also lists services that are referenced but not installed (not-found) and masked ones.
+// systemd still answers their Service interface, with User, Type and ExecStart empty, which would read as
+// a root service with no command. Their configuration isn't read, and the list leaves those columns empty.
+TEST_F(SystemdBusFakeServicesTest, AServiceThatIsntLoadedHasNoAccountCommandOrTypeAndIsntAsked)
+{
+    constexpr const char* GHOST_PATH = "/org/freedesktop/systemd1/unit/connman_2eservice";
+    constexpr const char* MASKED_PATH = "/org/freedesktop/systemd1/unit/console_2dgetty_2eservice";
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnits",
+        []() -> MethodAnswer
+        {
+            TestSupport::UnitRow ghost = unit("connman.service", "connman.service", "inactive", "dead", GHOST_PATH);
+            ghost.loadState = "not-found";
+            TestSupport::UnitRow masked = unit("console-getty.service", "console-getty.service", "inactive", "dead", MASKED_PATH);
+            masked.loadState = "masked";
+            return {.path = std::nullopt,
+                    .errorName = {},
+                    .units = std::vector<TestSupport::UnitRow>{
+                        unit("cron.service", "Regular background program processing daemon", "active", "running", CRON_PATH),
+                        ghost,
+                        masked,
+                    }};
+        });
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnitFiles",
+        []() -> MethodAnswer
+        { return {.path = std::nullopt, .errorName = {}, .unitFiles = std::vector<std::pair<std::string, std::string>>{}}; });
+    auto& props = m_Bus.properties();
+    for (const char* path : {CRON_PATH, GHOST_PATH, MASKED_PATH})
+    {
+        props[path][SYSTEMD_SERVICE]["User"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["DynamicUser"] = false;
+        props[path][SYSTEMD_SERVICE]["Type"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{};
+        props[path][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
+    }
+    props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.configs.size(), 1U) << "only the loaded service's configuration";
+    for (const char* path : {GHOST_PATH, MASKED_PATH})
+    {
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "User"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "ExecStart"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "Type"), 0) << path;
+    }
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(read.listing);
+    for (const char* name : {"connman.service", "console-getty.service"})
+    {
+        const auto info = std::ranges::find(services, std::string(name), &ServiceInfo::name);
+        ASSERT_NE(info, services.end()) << name << " is still listed";
+        EXPECT_TRUE(info->account.empty()) << name;
+        EXPECT_TRUE(info->binaryPath.empty()) << name;
+        EXPECT_TRUE(info->serviceType.empty()) << name;
+    }
+    const auto cron = std::ranges::find(services, std::string("cron.service"), &ServiceInfo::name);
+    ASSERT_NE(cron, services.end());
+    EXPECT_EQ(cron->account, "root") << "a loaded service with an empty User still runs as root";
+}
+
 TEST_F(SystemdBusFakeServiceConfigTest, EachServicesUserCommandAndTypeAreRead)
 {
     serveConfigs();

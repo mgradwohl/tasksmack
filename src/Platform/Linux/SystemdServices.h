@@ -34,11 +34,12 @@ namespace Platform::SystemdServices
 /// One loaded unit, as ListUnits reports it.
 struct Unit
 {
-    std::string name;        ///< "cron.service"
-    std::string description; ///< "Regular background program processing daemon"
-    std::string activeState; ///< "active", "inactive", "activating", "deactivating", "failed", "reloading"...
-    std::string subState;    ///< "running", "exited", "dead"...
-    std::string objectPath;  ///< The unit's object, for its MainPID and configuration
+    std::string name;                 ///< "cron.service"
+    std::string description;          ///< "Regular background program processing daemon"
+    std::string loadState = "loaded"; ///< or "not-found", "masked", "error"... with no configuration to read (#2750)
+    std::string activeState;          ///< "active", "inactive", "activating", "deactivating", "failed", "reloading"...
+    std::string subState;             ///< "running", "exited", "dead"...
+    std::string objectPath;           ///< The unit's object, for its MainPID and configuration
 };
 
 /// A loaded service's configuration (#2590): the org.freedesktop.systemd1.Service properties User,
