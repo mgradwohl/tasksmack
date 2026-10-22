@@ -42,6 +42,15 @@ only composition root allowed to call `Platform::make*Probe()`/`Platform::makePr
 construction/`onAttach`, never in render loops; the panels' real-or-synthetic platform objects all come from
 `App/PanelPlatforms.cpp`, wired by `App/ShellPanels`). OpenGL calls confined to `Core`/`UI`.
 
+Sampling and drawing are separate (maintainer decision, #2731):
+- **Settings interval:** every metric is sampled at the refresh interval the user chose in Settings, always. Nothing
+  rescales it: not tab visibility, not interaction or resizing, not a minimized window, not the frame rate.
+- **The UI thread:** only reads published, immutable snapshots, then formats and draws. It never calls a probe,
+  makes a blocking syscall or does file I/O. Probes are built and seeded on their sampler thread, not in `onAttach`.
+- **Separate cadences:** each data domain samples on its own worker, so one slow source can't delay another.
+  Slow-changing facts run at a fixed constant from `src/Domain/SamplingConfig.h` (battery details, device
+  rescans). Nothing counts frames to time work.
+
 Feature parity: a metric with a system-wide tab should usually also get a Process Details tab for the
 selected process and a Processes-table column (off by default unless common). And anything the Processes
 table shows for a process should also be on its Process Details tab; one missing there is probably a bug.

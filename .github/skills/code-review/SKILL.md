@@ -36,6 +36,24 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Verify mutex usage and `std::atomic` correctness in `BackgroundSampler` and snapshot publication paths.
 - Snapshots published to UI must be immutable and versioned; flag shared mutable state crossed between sampler threads and render code.
 
+### Timing and cadence (#2731)
+
+- **The Settings interval rules:** data is sampled at the refresh interval the user set in Settings. Flag anything
+  that rescales or pauses that interval from UI state: tab visibility, interaction, resizing, a minimized window,
+  or the frame rate.
+- **The UI thread draws, it doesn't sample:**
+  - flag any probe call, blocking syscall, registry or file read, PDH/WMI/COM query or file write in `onUpdate` or
+    render paths;
+  - flag probe construction or seed sampling in `onAttach`: probes are built and seeded on their sampler thread.
+- **Locks:** flag a lock that a sampler holds across I/O when the UI thread also takes it. The UI may only wait for
+  a pointer swap.
+- **Separate cadences:**
+  - unrelated data domains must not share one sampler thread when one of them can stall (GPU/NVML/DXGI, disk PDH);
+  - slow facts use a named constant in `SamplingConfig.h`;
+  - flag timing that counts frames instead of using a clock.
+- **Tests:** new timed work needs a test that its period doesn't depend on UI state or frame rate, and that a stalled
+  sampler doesn't delay frames.
+
 ## 5. Conventions
 
 - Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants, `PascalCase` enumerators.
