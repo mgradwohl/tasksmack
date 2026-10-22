@@ -27,6 +27,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
+#include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -1675,6 +1676,7 @@ struct FirstRunObserved
     float unitScale = 0.0F;
     bool maximized = true;
     std::optional<SDL_Rect> usable; // the usable bounds (work area) of the display the window is on
+    bool canMoveWindows = false;    // the video driver can move a window (not SDL's offscreen one)
     // The shell on that frame.
     bool systemTabSelected = false; // the first tab, the machine's, is the default (tasksmack.md, ShellLayer)
     bool titleBarShown = false;
@@ -1746,6 +1748,7 @@ class FirstRunDriverLayer : public Core::Layer
         {
             m_Observed.usable = bounds;
         }
+        m_Observed.canMoveWindows = Core::Window::supportsPositioning() && Core::VideoBackend::driverName() != "offscreen";
         m_Observed.windowChecked = true;
     }
 
@@ -2002,10 +2005,20 @@ TEST(UiLayersOnDisplayTest, AFirstRunOpensAtTheDefaultsAndSavesTheGoldenConfig)
     EXPECT_FALSE(observed.maximized);
     ASSERT_TRUE(observed.usable.has_value()) << SDL_GetError();
     const SDL_Rect usable = observed.usable.value_or(SDL_Rect{});
-    EXPECT_GE(observed.x, usable.x);
-    EXPECT_GE(observed.y, usable.y);
-    EXPECT_LE(observed.x + observed.width, usable.x + usable.w);
-    EXPECT_LE(observed.y + observed.height, usable.y + usable.h);
+    // SDL's offscreen driver (Linux without a display, as in the ASan+UBSan job) can't move a window:
+    // it has no SetWindowPosition, so SDL_SetWindowPosition() fails and the window stays where SDL
+    // created it, centred at 1280 wide on its 1024-wide display. Only the size is checked there. Where
+    // windows can be moved (Windows, X11 under Xvfb), the window must lie wholly inside the usable
+    // bounds (#2735).
+    if (observed.canMoveWindows)
+    {
+        EXPECT_GE(observed.x, usable.x);
+        EXPECT_GE(observed.y, usable.y);
+        EXPECT_LE(observed.x + observed.width, usable.x + usable.w);
+        EXPECT_LE(observed.y + observed.height, usable.y + usable.h);
+    }
+    EXPECT_LE(observed.width, usable.w);
+    EXPECT_LE(observed.height, usable.h);
     const auto [defaultWidth, defaultHeight] =
         Core::WindowGeometry::rescaleWindowSize(settings.windowWidth, settings.windowHeight, settings.windowScale, observed.unitScale);
     EXPECT_EQ(observed.width, std::min(defaultWidth, usable.w)) << "at scale " << observed.unitScale;
