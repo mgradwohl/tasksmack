@@ -26,6 +26,29 @@ condenses what an agent needs every session; read those for the rest.
 - Treat `.github/workflows/*` edits as needing the maintainer's explicit confirmation before pushing, even though
   the `gh` token has `workflow` scope — CI/CD changes get extra human review on this project.
 
+## Release gating (keeping later work out of a release)
+
+A release is tagged on the **exact candidate commit the maintainer approves** on the release tracker, not on main's
+head. `release.yml` and `changelog.yml` only need the tagged commit to be on main's history, so anything merged after
+the candidate is left out by construction. Two rules decide what may merge before then. Both lanes follow them for
+every merge and every auto-merge they enable, including dependency PRs (Renovate, Dependabot).
+
+- **Before the freeze** (the next release is planned but no candidate is approved yet):
+  - **Merge freely:** PRs on the release's milestone, and any PR that changes no shipped code: docs, tests, agent
+    guidance, test-only CI. "Shipped code" is `src/`, the build and packaging files under `cmake/` and the
+    `CMakeLists.txt` files, and `release.yml`.
+  - **Hold:** product code from a later milestone. Keep it open with auto-merge off until the release is tagged.
+- **During the freeze** (from the maintainer approving a candidate until the tag is pushed): the maintainer sets the
+  repository variable `RELEASE_FREEZE` to the release milestone (`gh variable set RELEASE_FREEZE --body v0.9.0`) and
+  deletes it after tagging.
+  - **Check first:** before merging a PR or enabling auto-merge, run `gh variable get RELEASE_FREEZE`.
+  - **If it's set,** only PRs on that milestone merge. Turn auto-merge off on any other PR whose auto-merge is on,
+    and don't approve Renovate dashboard updates.
+  - **Validation finds a bug:** the fix goes on the release milestone and merges, and the maintainer approves a new
+    candidate commit.
+- **Who controls what:** agents never set, change or delete `RELEASE_FREEZE`, and never move an issue or PR onto
+  the release milestone to get it past the freeze. Both are the maintainer's calls.
+
 ## Code review
 
 The review checklist is [.github/skills/code-review/SKILL.md](.github/skills/code-review/SKILL.md): architecture
