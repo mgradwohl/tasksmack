@@ -131,6 +131,7 @@ set(TASKSMACK_SOURCES
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
+    src/Core/FramebufferCapture.cpp
     src/Core/SaveFileDialog.cpp
     src/Core/X11ConnectionLoss.cpp
     src/Core/X11WindowManager.cpp
@@ -157,6 +158,8 @@ set(TASKSMACK_SOURCES
     src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
     src/App/SelectOverride.cpp
+    src/App/ScreenshotLayer.cpp
+    src/App/ScreenshotOverride.cpp
     src/App/MainTabBarView.cpp
     src/App/ShellHost.cpp
     src/App/ShellLayer.cpp

@@ -66,6 +66,14 @@ class ShellLayer : public Core::Layer
         return m_ProcessesPanel.treeViewEnabled();
     }
 
+    /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
+    /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
+    /// captures only once it is false (#2827).
+    [[nodiscard]] bool startupSelectionPending() const noexcept
+    {
+        return m_StartupTab.pending() || m_ProcessesPanel.startupSelectionPending();
+    }
+
   private:
     /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
     /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().

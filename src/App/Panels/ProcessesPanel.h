@@ -213,6 +213,13 @@ class ProcessesPanel : public Panel
         return m_StartupSelection.takeFiredTab();
     }
 
+    /// Whether the startup selection is still waiting for its process: false once it fired or gave
+    /// up, and when there was none (#2827).
+    [[nodiscard]] bool startupSelectionPending() const noexcept
+    {
+        return m_StartupSelection.pending();
+    }
+
     /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
     /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
     /// bypasses the render cache, so it follows every publish whichever tab is showing.

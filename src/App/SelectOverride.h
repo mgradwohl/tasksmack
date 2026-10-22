@@ -457,7 +457,8 @@ anyTestHookActive(const char* mainTab, const char* pid, const char* name, const 
                                [](const char* value) { return value != nullptr && !Platform::trimAscii(value).empty(); });
 }
 
-/// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR set (#1596).
+/// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR (#1596) or
+/// TASKSMACK_SCREENSHOT (#2827) set.
 [[nodiscard]] bool testHookActive();
 
 /// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.

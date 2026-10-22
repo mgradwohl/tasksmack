@@ -6,6 +6,8 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
+#include "App/ScreenshotLayer.h"
+#include "App/ScreenshotOverride.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/SyntheticScenario.h"
@@ -231,6 +233,10 @@ auto runApp() -> int
     // that replaces the saved one here and is not saved on exit (ShellLayer::onDetach).
     const std::optional<App::WindowOverride::Geometry>& windowOverride = App::WindowOverride::active();
 
+    // TASKSMACK_SCREENSHOT (#2827), likewise read and logged once: a PNG of the window (or a sequence)
+    // once startup has settled, then the normal close. Unset, nothing below is pushed for it.
+    const std::optional<App::ScreenshotOverride::Request>& screenshot = App::ScreenshotOverride::active();
+
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {
         spdlog::warn(
@@ -274,6 +280,7 @@ auto runApp() -> int
         Core::Application::setInstance(nullptr);
     };
 
+    int exitCode = EXIT_SUCCESS;
     try
     {
 
@@ -317,7 +324,8 @@ auto runApp() -> int
 
         // Push shell layer (docking workspace with panels). It hands the title bar the width its
         // panels need, which the title bar folds into the window's minimum size (#1207).
-        appRef.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
+        auto& shell = appRef.pushLayer<App::ShellLayer>();
+        shell.setTitleBar(titleBar);
 
         // The Help window (non-modal, #172) and the dialog layers (modal overlays), opened by
         // OpenHelpEvent, OpenAboutEvent, OpenSettingsEvent and OpenElevationNoticeEvent. The
@@ -327,8 +335,23 @@ auto runApp() -> int
         appRef.pushLayer<App::SettingsLayer>();
         appRef.pushLayer<App::ElevationNoticeLayer>();
 
+        // The screenshot hook's layer (#2827), last, so it sees each frame once every layer above has
+        // drawn into it; it waits for the shell's startup selections before capturing.
+        const App::ScreenshotLayer* screenshotLayer = nullptr;
+        if (screenshot.has_value())
+        {
+            screenshotLayer = &appRef.pushLayer<App::ScreenshotLayer>(*screenshot, &shell);
+        }
+
         // Run the application
         appRef.run();
+
+        // A run that was asked for a screenshot and wrote none failed, whatever else it did: the
+        // script that asked sees it in the exit code.
+        if (screenshotLayer != nullptr && screenshotLayer->outcome() != App::ScreenshotLayer::Outcome::Written)
+        {
+            exitCode = EXIT_FAILURE;
+        }
     }
     catch (...)
     {
@@ -342,7 +365,7 @@ auto runApp() -> int
     }
 
     tearDownApplication();
-    return 0;
+    return exitCode;
 }
 
 /// Runs the app, turning an exception that escapes it into a logged error and a non-zero exit
