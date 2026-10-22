@@ -30,9 +30,11 @@ See [Implemented Features](docs/dev/completed-features.md) for the detailed ship
 
 | Platform | Support |
 |----------|---------|
-| Linux | Supported |
+| Linux, kernel 5.10 or later | Supported |
 | Windows 10 version 1903 or later | Supported |
 | macOS and other operating systems | Not supported |
+
+Linux 5.10 is the first kernel that lets the privileged helper set the Realtime I/O class with only `CAP_SYS_NICE`; every current distribution ships it or newer (Debian 11, Ubuntu 22.04, RHEL 9, and later). See the [User Guide](docs/guide/user-guide.md#operating-system).
 
 Windows 10 version 1903 is the first release that honours the application manifest's UTF-8 process code page (`activeCodePage`), which TaskSmack relies on for UTF-8 text throughout.
 

@@ -64,6 +64,11 @@ if the problem persists, report it per [SECURITY.md](https://github.com/mgradwoh
 
 ## System Requirements
 
+### Operating System
+
+- **Linux:** kernel **5.10 or newer**. TaskSmack's process actions use pidfds (`pidfd_open`, Linux 5.3), and the privileged helper keeps `CAP_SYS_NICE` but not `CAP_SYS_ADMIN`. Linux 5.10 is the first kernel that lets `CAP_SYS_NICE` alone set the Realtime I/O class. Current distributions all ship 5.10 or newer: Debian 11 and later, Ubuntu 22.04 and later (Ubuntu 20.04 with its HWE kernel), RHEL, AlmaLinux and Rocky 9 and later, and current Fedora, Arch and openSUSE. Some metrics need a newer kernel still, and say so where they're described (Intel's NPU counter needs 6.11, for example).
+- **Windows:** Windows 10 version 1903 or later.
+
 ### Graphics
 
 TaskSmack draws its window with OpenGL 3.3 or newer, which every current GPU driver on Windows and Mesa on Linux provide. A Windows PC or virtual machine with no GPU driver installed has only Microsoft's built-in OpenGL 1.1 ("GDI Generic"); there TaskSmack stops at startup with a message naming the OpenGL version it found. Installing the GPU's driver fixes it.
