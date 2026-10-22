@@ -42,7 +42,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.7'
+  LLVM_SEMVER_VERSION: '22.1.8'
   # Floors for LINE coverage (see the "Check coverage threshold" steps, #1543). Linux: 95%, and a
   # drop below it FAILS the coverage job (maintainer, 2026-10-15, closing #1891), set when the nightly
   # run read 95.51% of lines. Windows: 85%, warn-only (maintainer, 2026-10-12, when it read 89.8%;

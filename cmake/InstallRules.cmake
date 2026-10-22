@@ -99,6 +99,12 @@ foreach(_ts_dep_license IN ITEMS
     endif()
     install(FILES "${_ts_dep_file}" DESTINATION ${_ts_license_dir}/${_ts_dep_name})
 endforeach()
+# What each of those is, at its pinned version, and the patch TaskSmack applies to toml++ (#2490).
+include(${CMAKE_CURRENT_LIST_DIR}/ThirdPartyNotices.cmake)
+ts_write_third_party_notices("${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt")
+install(FILES "${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt"
+              "${CMAKE_SOURCE_DIR}/cmake/patches/tomlplusplus-parse-assertions.patch"
+        DESTINATION ${_ts_license_dir})
 unset(_ts_license_dir)
 unset(_ts_dep_license)
 unset(_ts_dep_name)
@@ -138,6 +144,19 @@ if(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
         RENAME app.tasksmack.TaskSmack.svg
+    )
+endif()
+
+# Windows' elevated helper (#2550; #2517), beside TaskSmack.exe, where TaskSmack starts it from: the
+# "windows_helper" component, which the .zip and the NSIS installer carry only when
+# TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build (cmake/Packaging.cmake). It
+# serves only an install TaskSmack's user can't change (BrokerHelper::checkUnchangeableBy), such as
+# the NSIS installer's Program Files folder; from a portable or per-user copy it refuses, and TaskSmack
+# doesn't offer it.
+if(WIN32 AND TARGET TaskSmackHelper)
+    install(TARGETS TaskSmackHelper
+        RUNTIME DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
+        COMPONENT windows_helper
     )
 endif()
 

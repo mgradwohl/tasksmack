@@ -19,9 +19,6 @@ if(TASKSMACK_ENABLE_FETCHCONTENT_CACHE)
     if(NOT _tasksmack_fetchcontent_cache STREQUAL "")
         file(MAKE_DIRECTORY "${_tasksmack_fetchcontent_cache}")
         set(FETCHCONTENT_BASE_DIR "${_tasksmack_fetchcontent_cache}" CACHE PATH "Base dir for FetchContent downloads" FORCE)
-        if(NOT CPM_SOURCE_CACHE)
-            set(CPM_SOURCE_CACHE "${_tasksmack_fetchcontent_cache}" CACHE PATH "CPM.cmake source cache" FORCE)
-        endif()
         message(STATUS "FetchContent cache enabled: ${FETCHCONTENT_BASE_DIR}")
     endif()
 endif()
@@ -203,7 +200,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG fa2c02bb6e21974a89ea9824bc53c9932abe5f9c  # release-3.4.16 - pinned to SHA for supply chain security
+    GIT_TAG 829a65d769d935c4852f8159e964312c0957260a  # release-3.4.18 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/sdl3-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/sdl3-subbuild"  # per-host sub-build (#2253)
@@ -251,12 +248,6 @@ else()
 endif()
 if(NOT Python3_EXECUTABLE AND EXISTS "${_tasksmack_venv_python}")
     set(Python3_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter")
-    # GLAD's glad_add_library() runs find_package(Python) and generates with Python_EXECUTABLE,
-    # not Python3_EXECUTABLE; point it at the venv too, so generation uses the interpreter the
-    # jinja2 check below verified.
-    if(NOT Python_EXECUTABLE)
-        set(Python_EXECUTABLE "${_tasksmack_venv_python}" CACHE FILEPATH "Python interpreter (GLAD)")
-    endif()
 endif()
 unset(_tasksmack_venv_python)
 
@@ -272,6 +263,14 @@ if(NOT JINJA2_CHECK EQUAL 0)
     message(FATAL_ERROR
         "Python jinja2 module not found. Required for GLAD generation.\n"
         "Install with: pip install jinja2")
+endif()
+# GLAD's glad_add_library() runs its own find_package(Python) and generates with Python_EXECUTABLE,
+# not Python3_EXECUTABLE. Left alone, FindPython takes the newest interpreter on the machine -- a
+# runner image's Python 3.15 without jinja2, while CI passed -DPython3_EXECUTABLE for 3.14 (#2672) --
+# so hand GLAD the interpreter the check above verified, whether it came from the command line, the
+# venv or find_package(), unless the caller chose GLAD's explicitly.
+if(NOT Python_EXECUTABLE)
+    set(Python_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "Python interpreter (GLAD)")
 endif()
 
 # GLAD
@@ -300,7 +299,7 @@ endif()
 FetchContent_Declare(
     freetype
     GIT_REPOSITORY https://github.com/freetype/freetype.git
-    GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7  # VER-2-14-3 - pinned to SHA for supply chain security
+    GIT_TAG 37515cf56ba3349656049edbed89ffc6f6466f2d  # VER-2-15-0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/freetype-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/freetype-subbuild"  # per-host sub-build (#2253)
@@ -335,7 +334,7 @@ endif()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23  # v1.92.9b-docking - pinned to SHA for supply chain security
+    GIT_TAG b916186e66aa3c02b72c6ca17455516512ed8049  # v1.93.0-docking - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImGui
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/imgui-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/imgui-subbuild"  # per-host sub-build (#2253)
@@ -367,11 +366,18 @@ target_compile_definitions(imgui_lib PUBLIC
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 
-# ImPlot v1.0 (requires ImGui docking branch)
+# ImPlot master after v1.0, "1.1 WIP" (requires ImGui docking branch). v1.0 reads ImGui 1.93's
+# TexUvLines in the 1.92 layout, so its anti-aliased lines sampled the wrong atlas texels (#2744);
+# 7eeb9168 ("fix: use ImDrawList::_SelectLineTexture()") fixes that, and the seven commits between
+# v1.0 and it are ImGui 1.93 API updates (AddRect/AddPolyline argument order, AddLineH/AddLineV)
+# plus two marker types and two legend/scatter colour fixes. tests/UI/test_PlotLineTexture.cpp
+# holds the line UVs to ImGui's own. Renovate only tracks this pin while its comment reads "# vX.Y"
+# (see .github/renovate.json5), so it leaves this untagged pin alone; move back to a tag (v1.1)
+# once one includes the fix.
 FetchContent_Declare(
     implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG 524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39  # v1.0 - pinned to SHA for supply chain security
+    GIT_TAG 7eeb9168d2e5e6b14e266d8782ecf7e649dfc3a4  # master after v1.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImPlot
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/implot-build"  # per-preset build tree (#1308)
     SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/implot-subbuild"  # per-host sub-build (#2253)

@@ -2,6 +2,8 @@
 
 <!-- Describe your changes in detail -->
 
+Fixes #<!-- issue number, or "Part of #" -->
+
 ## PR Size
 
 <!-- Aim for small, focused PRs. Guidelines:
@@ -39,9 +41,8 @@ Exclude generated files, vendored code, and lock files from the count. -->
 
 ```bash
 # Commands used to test
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
+cmake --workflow --preset dev       # Linux: configure, build and test
+cmake --workflow --preset win-dev   # Windows
 ```
 
 ## Additional Notes

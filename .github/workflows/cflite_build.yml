@@ -23,6 +23,7 @@ on:
       - 'src/Platform/IProcessModules.h'
       - 'src/Platform/IProcessOpenFiles.h'
       - 'src/Platform/ISystemInfoProbe.h'
+      - 'src/Platform/Linux/BrokerSocket.*'
       - 'src/Platform/Linux/DesktopEntryIcons.h'
       - 'src/Platform/Linux/LinuxCommitPaging.h'
       - 'src/Platform/Linux/LinuxCoredumps.h'
