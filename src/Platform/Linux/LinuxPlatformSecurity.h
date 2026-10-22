@@ -3,11 +3,13 @@
 // The Linux Security section's facts (#1514), read under an injected root ("/" in the app, a fixture
 // tree in tests): Secure Boot from the EFI variable, the TPM from /sys/class/tpm, the active security
 // modules, SELinux and AppArmor state and the lockdown mode from securityfs and sysfs, and the CPU
-// vulnerability list. Only standard-library file access, so the parsing and the fixture tests build
-// and run everywhere. Every file read here is world-readable.
+// vulnerability list, and the open dm-crypt volumes from /sys/block with their mounts (#2585). Only
+// standard-library file access, so the parsing and the fixture tests build and run everywhere. Every
+// file read here is world-readable.
 
 #include "LinuxCommitPaging.h"
 #include "LinuxOsInfo.h"
+#include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace Platform::LinuxPlatformSecurity
@@ -135,6 +138,172 @@ inline constexpr std::string_view SECURE_BOOT_VARIABLE = "SecureBoot-8be4df61-93
     return vulnerabilities;
 }
 
+/// The dm-crypt flavour a device-mapper UUID names (#2585): cryptsetup prefixes it "CRYPT-LUKS2-",
+/// "CRYPT-LUKS1-" or "CRYPT-PLAIN-". Empty for any other device (an LVM volume's "LVM-...", dm-verity's
+/// "CRYPT-VERITY-", which doesn't encrypt, or no UUID at all).
+[[nodiscard]] inline std::string cryptType(std::string_view uuid)
+{
+    if (uuid.starts_with("CRYPT-LUKS2-"))
+    {
+        return "LUKS2";
+    }
+    if (uuid.starts_with("CRYPT-LUKS1-"))
+    {
+        return "LUKS1";
+    }
+    if (uuid.starts_with("CRYPT-PLAIN-"))
+    {
+        return "Plain";
+    }
+    return {};
+}
+
+/// One /sys/block/dm-N, the parts the encryption rows use.
+struct DmDevice
+{
+    std::string kernelName;          ///< "dm-0"
+    std::string name;                ///< dm/name, the /dev/mapper name: "dm_crypt-0", "ubuntu--vg-ubuntu--lv"
+    std::string uuid;                ///< dm/uuid: "CRYPT-LUKS2-<uuid>-dm_crypt-0", "LVM-<vg><lv>"
+    std::string device;              ///< dev: "252:0"
+    std::vector<std::string> slaves; ///< slaves/: what it's built on, "nvme0n1p3" or another "dm-0"
+};
+
+/// Every /sys/block/dm-* under @p root, in dm-N order; @p read set when /sys/block was listed.
+[[nodiscard]] inline std::vector<DmDevice> readDmDevices(const std::filesystem::path& root, bool& read)
+{
+    std::vector<DmDevice> devices;
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(root / "sys/block", ec);
+    read = !ec;
+    // Incremented with an error code: a range-for would throw if the listing failed part-way.
+    for (; !ec && entries != std::filesystem::directory_iterator{}; entries.increment(ec))
+    {
+        const std::filesystem::path block = entries->path();
+        std::string kernelName = block.filename().string();
+        if (!kernelName.starts_with("dm-"))
+        {
+            continue;
+        }
+        DmDevice device{
+            .kernelName = std::move(kernelName),
+            .name = LinuxOsInfo::readLine(block / "dm/name"),
+            .uuid = LinuxOsInfo::readLine(block / "dm/uuid"),
+            .device = LinuxOsInfo::readLine(block / "dev"),
+            .slaves = {},
+        };
+        std::error_code slavesEc;
+        std::filesystem::directory_iterator slaves(block / "slaves", slavesEc);
+        for (; !slavesEc && slaves != std::filesystem::directory_iterator{}; slaves.increment(slavesEc))
+        {
+            device.slaves.push_back(slaves->path().filename().string());
+        }
+        std::ranges::sort(device.slaves);
+        devices.push_back(std::move(device));
+    }
+    // "dm-2" before "dm-10": shorter names first, then by name.
+    std::ranges::sort(devices,
+                      [](const DmDevice& a, const DmDevice& b)
+                      {
+                          return std::pair(a.kernelName.size(), std::string_view(a.kernelName)) <
+                                 std::pair(b.kernelName.size(), std::string_view(b.kernelName));
+                      });
+    return devices;
+}
+
+/// The open dm-crypt volumes among @p devices (#2585), each with what it encrypts and the mount points of
+/// @p mounts on it or on a device stacked on it (an LVM volume on a LUKS physical volume, Ubuntu's
+/// encrypted install). @p mounts are real file systems (not isPseudoFileSystem()) whose device is the
+/// block device's major:minor (LinuxStorage::blockDeviceOf()); one also matches by its source,
+/// /dev/mapper/<name> or /dev/dm-N.
+[[nodiscard]] inline std::vector<EncryptedVolume> encryptedVolumes(const std::vector<DmDevice>& devices,
+                                                                   const std::vector<LinuxStorage::MountEntry>& mounts)
+{
+    const auto byKernelName = [&devices](std::string_view kernelName)
+    {
+        return std::ranges::find(devices, kernelName, &DmDevice::kernelName);
+    };
+
+    std::vector<EncryptedVolume> volumes;
+    for (const DmDevice& crypt : devices)
+    {
+        std::string type = cryptType(crypt.uuid);
+        if (type.empty())
+        {
+            continue;
+        }
+        EncryptedVolume volume{.name = crypt.name, .type = std::move(type), .device = {}, .mountPoints = {}};
+        for (const std::string& slave : crypt.slaves)
+        {
+            const auto dm = byKernelName(slave);
+            const std::string& shown = (dm != devices.end() && !dm->name.empty()) ? dm->name : slave;
+            volume.device += (volume.device.empty() ? "" : ", ") + shown;
+        }
+
+        // The crypt device and every device stacked on it, however deep (LVM on LUKS, LUKS on LUKS).
+        std::vector<const DmDevice*> stack{&crypt};
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            for (const DmDevice& candidate : devices)
+            {
+                if (std::ranges::find(stack, &candidate) != stack.end())
+                {
+                    continue;
+                }
+                const bool onStack = std::ranges::any_of(
+                    candidate.slaves,
+                    [&stack](const std::string& slave)
+                    { return std::ranges::any_of(stack, [&slave](const DmDevice* member) { return member->kernelName == slave; }); });
+                if (onStack)
+                {
+                    stack.push_back(&candidate);
+                    grew = true;
+                }
+            }
+        }
+
+        for (const LinuxStorage::MountEntry& mount : mounts)
+        {
+            const bool onVolume = std::ranges::any_of(stack,
+                                                      [&mount](const DmDevice* member)
+                                                      {
+                                                          return (!member->device.empty() && mount.device == member->device) ||
+                                                                 (!member->name.empty() && mount.source == "/dev/mapper/" + member->name) ||
+                                                                 mount.source == "/dev/" + member->kernelName;
+                                                      });
+            if (onVolume && std::ranges::find(volume.mountPoints, mount.mountPoint) == volume.mountPoints.end())
+            {
+                volume.mountPoints.push_back(mount.mountPoint);
+            }
+        }
+        volumes.push_back(std::move(volume));
+    }
+    return volumes;
+}
+
+/// The open dm-crypt volumes under @p root (#2585) from /sys/block and /proc/self/mountinfo; @p read set
+/// when /sys/block was listed, so an empty result with it set means there are none. Without mountinfo
+/// the volumes are still listed, their mount points empty.
+[[nodiscard]] inline std::vector<EncryptedVolume> readEncryptedVolumes(const std::filesystem::path& root, bool& read)
+{
+    const std::vector<DmDevice> devices = readDmDevices(root, read);
+    if (std::ranges::none_of(devices, [](const DmDevice& device) { return !cryptType(device.uuid).empty(); }))
+    {
+        return {};
+    }
+    std::vector<LinuxStorage::MountEntry> mounts;
+    for (LinuxStorage::MountEntry& entry : LinuxStorage::parseMountInfo(LinuxOsInfo::readFile(root / "proc/self/mountinfo")))
+    {
+        if (LinuxStorage::isPseudoFileSystem(entry.fileSystem, entry.mountPoint))
+        {
+            continue;
+        }
+        entry.device = LinuxStorage::blockDeviceOf(root, entry); // btrfs names an anonymous device (#2432)
+        mounts.push_back(std::move(entry));
+    }
+    return encryptedVolumes(devices, mounts);
+}
+
 /// The facts under @p root into @p info.
 inline void readPlatformSecurityFacts(const std::filesystem::path& root, PlatformSecurityInfo& info)
 {
@@ -165,6 +334,7 @@ inline void readPlatformSecurityFacts(const std::filesystem::path& root, Platfor
     info.apparmorEnabled = LinuxCommitPaging::parseSysfsBool(LinuxOsInfo::readLine(root / "sys/module/apparmor/parameters/enabled"));
     info.lockdown = LinuxCommitPaging::parseBracketedChoice(LinuxOsInfo::readFile(root / "sys/kernel/security/lockdown"));
     info.vulnerabilities = readVulnerabilities(root, info.vulnerabilitiesRead);
+    info.encryptedVolumes = readEncryptedVolumes(root, info.encryptedVolumesRead);
 }
 
 } // namespace Platform::LinuxPlatformSecurity

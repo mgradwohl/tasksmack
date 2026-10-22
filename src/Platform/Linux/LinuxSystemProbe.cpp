@@ -82,6 +82,13 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot, std::filesyst
 LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
                                    std::filesystem::path sysClassNetRoot,
                                    std::filesystem::path cpuSysfsRoot)
+    : LinuxSystemProbe(std::move(procRoot), std::move(sysClassNetRoot), std::move(cpuSysfsRoot), std::filesystem::path("/"))
+{}
+
+LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
+                                   std::filesystem::path sysClassNetRoot,
+                                   std::filesystem::path cpuSysfsRoot,
+                                   const std::filesystem::path& rootDir)
     : m_ProcRoot(std::move(procRoot)),
       m_SysClassNetRoot(std::move(sysClassNetRoot)),
       m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
@@ -116,9 +123,14 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_CpuModel = "Unknown CPU";
     }
 
+    // Virtualization status (#2592): fixed for the life of the system, so read once here and
+    // stamped onto every read of the details below.
+    m_CpuVirtualization = LinuxCpuDetails::readVirtualization(m_ProcRoot, rootDir);
+
     // The details describe the CPUs /proc/cpuinfo lists now, so a CPU that goes online or offline
     // before the first read() is a change from this set, not the baseline (#809).
     m_CpuDetails.details = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetails.ids);
+    LinuxCpuDetails::applyVirtualization(m_CpuVirtualization, m_CpuDetails.details);
     m_LastCoreCount = m_NumCores;
 
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
@@ -154,7 +166,8 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasLoadAvg = true,
                               .hasCpuFreq = true,
                               .hasNetworkCounters = true,
-                              .hasVirtualizationInfo = false}; // No virtualization/VBS facts on Linux (#809)
+                              .hasVirtualizationInfo = true,           // vmx/svm, /dev/kvm, hypervisor detection (#2592)
+                              .hasVirtualizationSecurityInfo = false}; // VBS and memory integrity are Windows facts (#809)
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -394,6 +407,7 @@ void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
         // Rare: only when the set of online CPUs changes, never every sample
         std::vector<std::size_t> describedIds;
         CpuDetails fresh = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &describedIds);
+        LinuxCpuDetails::applyVirtualization(m_CpuVirtualization, fresh);
         (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
     }
     if (!counters.cpuPerCore.empty())
@@ -563,12 +577,14 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     {
         currentInterfaces.push_back(iface.name);
     }
-    std::vector<std::optional<bool>> isVirtual;
-    const bool interfaceSetChanged = classifyInterfaces(currentInterfaces, isVirtual);
+    std::vector<std::optional<InterfaceClass>> classes;
+    const bool interfaceSetChanged = classifyInterfaces(currentInterfaces, classes);
     for (std::size_t i = 0; i < counters.networkInterfaces.size(); ++i)
     {
-        counters.networkInterfaces[i].isVirtual = isVirtual[i].value_or(false);
-        counters.networkInterfaces[i].isVirtualKnown = isVirtual[i].has_value();
+        const InterfaceClass known = classes[i].value_or(InterfaceClass{});
+        counters.networkInterfaces[i].isVirtual = known.isVirtual;
+        counters.networkInterfaces[i].isVirtualKnown = classes[i].has_value();
+        counters.networkInterfaces[i].kind = known.kind;
     }
 
     // The totals count hardware interfaces only: traffic over a bridge, veth, VPN tunnel or VLAN
@@ -598,9 +614,9 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     }
 }
 
-bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<bool>>& isVirtual)
+bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<InterfaceClass>>& classes)
 {
-    isVirtual.assign(names.size(), std::nullopt);
+    classes.assign(names.size(), std::nullopt);
     std::vector<std::size_t> toLookUp;
     bool setChanged = false;
     {
@@ -608,10 +624,10 @@ bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names,
         setChanged = (names != m_ClassifiedInterfaces);
         for (std::size_t i = 0; i < names.size(); ++i)
         {
-            const auto cached = setChanged ? m_InterfaceIsVirtual.end() : m_InterfaceIsVirtual.find(names[i]);
-            if (cached != m_InterfaceIsVirtual.end())
+            const auto cached = setChanged ? m_InterfaceClass.end() : m_InterfaceClass.find(names[i]);
+            if (cached != m_InterfaceClass.end())
             {
-                isVirtual[i] = cached->second;
+                classes[i] = cached->second;
             }
             else
             {
@@ -627,7 +643,10 @@ bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names,
     // The sysfs lookups run without the lock, like the link-speed reads.
     for (const std::size_t i : toLookUp)
     {
-        isVirtual[i] = isVirtualInterface(m_SysClassNetRoot, names[i]);
+        if (const std::optional<bool> isVirtual = isVirtualInterface(m_SysClassNetRoot, names[i]); isVirtual.has_value())
+        {
+            classes[i] = InterfaceClass{.isVirtual = *isVirtual, .kind = readInterfaceKind(m_SysClassNetRoot, names[i])};
+        }
     }
 
     // Build the cache's entries first and commit its key (the interface set) last, so a cache
@@ -635,11 +654,11 @@ bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names,
     const std::scoped_lock lock(m_InterfaceCacheMutex);
     if (setChanged)
     {
-        std::unordered_map<std::string, bool> rebuilt;
+        std::unordered_map<std::string, InterfaceClass> rebuilt;
         rebuilt.reserve(names.size());
         for (std::size_t i = 0; i < names.size(); ++i)
         {
-            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            if (const std::optional<InterfaceClass>& known = classes[i]; known.has_value())
             {
                 rebuilt.insert_or_assign(names[i], *known);
             }
@@ -647,16 +666,16 @@ bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names,
         // Copy the key before touching either member, then commit both with non-throwing swaps: a
         // throw while copying can no longer leave the old key paired with the new entries.
         auto key = names;
-        m_InterfaceIsVirtual.swap(rebuilt);
+        m_InterfaceClass.swap(rebuilt);
         m_ClassifiedInterfaces.swap(key);
     }
     else if (names == m_ClassifiedInterfaces) // unless another read() changed the set meanwhile
     {
         for (const std::size_t i : toLookUp)
         {
-            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            if (const std::optional<InterfaceClass>& known = classes[i]; known.has_value())
             {
-                m_InterfaceIsVirtual.insert_or_assign(names[i], *known);
+                m_InterfaceClass.insert_or_assign(names[i], *known);
             }
         }
     }
@@ -779,6 +798,121 @@ std::optional<bool> LinuxSystemProbe::isVirtualInterface(const std::filesystem::
         return std::nullopt;
     }
     return false;
+}
+
+namespace
+{
+// The ARPHRD_* numbers <sysClassNetRoot>/<iface>/type holds (linux/if_arp.h), spelled out: older C
+// libraries' <net/if_arp.h> lacks ARPHRD_RAWIP.
+constexpr unsigned ARPHRD_ETHER_TYPE = 1;
+constexpr unsigned ARPHRD_PPP_TYPE = 512;
+constexpr unsigned ARPHRD_RAWIP_TYPE = 519; // A raw-IP WWAN modem (qmi_wwan, mhi_net)
+constexpr unsigned ARPHRD_TUNNEL_TYPE = 768;
+constexpr unsigned ARPHRD_TUNNEL6_TYPE = 769;
+constexpr unsigned ARPHRD_LOOPBACK_TYPE = 772;
+constexpr unsigned ARPHRD_SIT_TYPE = 776;
+constexpr unsigned ARPHRD_IPGRE_TYPE = 778;
+constexpr unsigned ARPHRD_IEEE80211_TYPE = 801;
+constexpr unsigned ARPHRD_IEEE80211_PRISM_TYPE = 802;
+constexpr unsigned ARPHRD_IEEE80211_RADIOTAP_TYPE = 803;
+constexpr unsigned ARPHRD_IP6GRE_TYPE = 823;
+constexpr unsigned ARPHRD_NONE_TYPE = 65534; // tun, WireGuard
+
+/// The link kind a uevent's DEVTYPE names, or nullopt for one that names none (bridge, vlan, bond)
+/// or no DEVTYPE at all.
+[[nodiscard]] std::optional<NetInterfaceKind> kindFromDevType(std::string_view uevent)
+{
+    constexpr std::string_view KEY = "DEVTYPE=";
+    for (const auto line : std::views::split(uevent, '\n'))
+    {
+        const std::string_view entry(line.begin(), line.end());
+        if (!entry.starts_with(KEY))
+        {
+            continue;
+        }
+        const std::string_view devType = entry.substr(KEY.size());
+        if (devType == "wlan")
+        {
+            return NetInterfaceKind::WiFi;
+        }
+        if (devType == "bluetooth")
+        {
+            return NetInterfaceKind::Bluetooth;
+        }
+        if (devType == "wwan")
+        {
+            return NetInterfaceKind::Cellular;
+        }
+        if (devType == "wireguard")
+        {
+            return NetInterfaceKind::Tunnel;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+/// The link kind an ARPHRD_* number stands for.
+[[nodiscard]] constexpr NetInterfaceKind kindFromArpType(unsigned arpType) noexcept
+{
+    switch (arpType)
+    {
+    case ARPHRD_ETHER_TYPE:
+        return NetInterfaceKind::Ethernet;
+    case ARPHRD_LOOPBACK_TYPE:
+        return NetInterfaceKind::Loopback;
+    case ARPHRD_IEEE80211_TYPE:
+    case ARPHRD_IEEE80211_PRISM_TYPE:
+    case ARPHRD_IEEE80211_RADIOTAP_TYPE:
+        return NetInterfaceKind::WiFi;
+    case ARPHRD_RAWIP_TYPE:
+        return NetInterfaceKind::Cellular;
+    case ARPHRD_PPP_TYPE:
+    case ARPHRD_TUNNEL_TYPE:
+    case ARPHRD_TUNNEL6_TYPE:
+    case ARPHRD_SIT_TYPE:
+    case ARPHRD_IPGRE_TYPE:
+    case ARPHRD_IP6GRE_TYPE:
+    case ARPHRD_NONE_TYPE:
+        return NetInterfaceKind::Tunnel;
+    default:
+        return NetInterfaceKind::Other;
+    }
+}
+} // namespace
+
+NetInterfaceKind LinuxSystemProbe::readInterfaceKind(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
+{
+    const auto ifaceDir = sysClassNetRoot / ifaceName;
+
+    // DEVTYPE first: a Bluetooth PAN (bnep) interface reports ARPHRD_ETHER, as Wi-Fi and some WWAN
+    // ones do.
+    std::array<char, 512> uevent{};
+    const std::string ueventPath = (ifaceDir / "uevent").string();
+    const std::size_t ueventLength = readProcFile(ueventPath.c_str(), uevent.data(), uevent.size());
+    if (const auto fromDevType = kindFromDevType(std::string_view(uevent.data(), ueventLength)); fromDevType.has_value())
+    {
+        return *fromDevType;
+    }
+
+    // A Wi-Fi interface whose driver sets no DEVTYPE still has its wireless extensions or its phy.
+    std::error_code ec;
+    if (std::filesystem::is_directory(ifaceDir / "wireless", ec) ||
+        std::filesystem::symlink_status(ifaceDir / "phy80211", ec).type() == std::filesystem::file_type::symlink)
+    {
+        return NetInterfaceKind::WiFi;
+    }
+
+    std::array<char, 16> type{};
+    const std::string typePath = (ifaceDir / "type").string();
+    const std::size_t typeLength = readProcFile(typePath.c_str(), type.data(), type.size());
+    unsigned arpType = 0;
+    const char* typeEnd = type.data() + typeLength;
+    if (typeLength == 0 || std::from_chars(type.data(), typeEnd, arpType).ec != std::errc{})
+    {
+        return NetInterfaceKind::Unknown;
+    }
+    return kindFromArpType(arpType);
 }
 
 bool LinuxSystemProbe::readInterfaceOperState(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)

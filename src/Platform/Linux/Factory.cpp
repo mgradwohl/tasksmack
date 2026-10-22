@@ -61,7 +61,7 @@ std::unique_ptr<IProcessActions> makeProcessActions()
     return std::make_unique<LinuxProcessActions>();
 }
 
-std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker()
+std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* /*ownerWindow*/)
 {
     // Root needs no helper, and a refusal to root is nothing an administrator can cure. Without the
     // installed helper polkit has no action for it, so nothing is offered (#2308).

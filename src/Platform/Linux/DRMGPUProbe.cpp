@@ -3,6 +3,7 @@
 #include "AmdApu.h"
 #include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
+#include "Platform/AsciiTrim.h"
 #include "Platform/GPUTypes.h"
 #include "PosixGuards.h"
 
@@ -102,23 +103,11 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
     return target.filename().string();
 }
 
-/// `text` without leading and trailing spaces, tabs and CRs.
-[[nodiscard]] std::string_view trimmed(std::string_view text)
-{
-    constexpr std::string_view SPACE = " \t\r";
-    const auto first = text.find_first_not_of(SPACE);
-    if (first == std::string_view::npos)
-    {
-        return {};
-    }
-    return text.substr(first, text.find_last_not_of(SPACE) - first + 1);
-}
-
 /// The leading unsigned number of an fdinfo value (" 1234 ns" -> 1234), or nullopt if it has none or
 /// the number runs straight into other text.
 [[nodiscard]] std::optional<std::uint64_t> leadingUint64(std::string_view value)
 {
-    value = trimmed(value);
+    value = trimAscii(value);
     std::uint64_t number = 0;
     const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
     if (ec != std::errc{} || ptr == value.data() || (ptr != value.data() + value.size() && *ptr != ' ' && *ptr != '\t'))
@@ -815,7 +804,7 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
         }
         else if (key == "drm-pdev")
         {
-            info.pdev = std::string(trimmed(value));
+            info.pdev = std::string(trimAscii(value));
         }
         else if (key.starts_with(CAPACITY_PREFIX))
         {

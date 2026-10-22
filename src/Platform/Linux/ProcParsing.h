@@ -13,6 +13,9 @@
 
 #include <array>
 #include <cerrno>
+#include <expected>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include <fcntl.h>
@@ -78,6 +81,7 @@ namespace Platform::ProcParsing
     {
         return 0;
     }
+    // NOLINTNEXTLINE(misc-include-cleaner) - ssize_t is POSIX (<sys/types.h> via <unistd.h>)
     ssize_t n = ::read(fd, buf, bufSize);
     while (n < 0 && errno == EINTR)
     {
@@ -128,6 +132,40 @@ namespace Platform::ProcParsing
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
     return buf;
+}
+
+/// The file @p name in the directory @p dirFd, read to EOF or until at least @p maxBytes have come (a
+/// /proc/[pid] file the caller caps), or the errno of the open or of a read that failed. EINTR is retried.
+/// The one copy of what the Process Details readers each had of their own (#2501).
+[[nodiscard]] inline std::expected<std::string, int>
+readWholeFileAt(int dirFd, const char* name, std::size_t maxBytes = std::numeric_limits<std::size_t>::max())
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const Posix::FdGuard fd(::openat(dirFd, name, O_RDONLY | O_CLOEXEC));
+    if (fd.get() < 0)
+    {
+        return std::unexpected(errno);
+    }
+    std::string contents;
+    std::array<char, 8192> chunk{};
+    while (contents.size() < maxBytes)
+    {
+        const auto n = ::read(fd.get(), chunk.data(), chunk.size());
+        if (n == 0)
+        {
+            break;
+        }
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by a signal: retry
+            }
+            return std::unexpected(errno);
+        }
+        contents.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+    return contents;
 }
 
 /// readProcFileFullAt() for an ordinary path.

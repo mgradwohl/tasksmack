@@ -14,6 +14,7 @@
 //   the disk's ID_PART_TABLE_TYPE, and the mount point from the mountinfo volumes, matched by major:minor.
 // All unprivileged; nothing is spawned.
 
+#include "Platform/AsciiTrim.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
@@ -179,15 +180,10 @@ struct MountEntry
     return {};
 }
 
-/// @p text without leading and trailing whitespace (sysfs pads SCSI model names).
+/// @p text without leading and trailing whitespace (sysfs pads SCSI model names), as trimAscii() trims it.
 [[nodiscard]] inline std::string trimmed(std::string_view text)
 {
-    const std::size_t first = text.find_first_not_of(" \t\r\n");
-    if (first == std::string_view::npos)
-    {
-        return {};
-    }
-    return std::string(text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1));
+    return std::string(trimAscii(text));
 }
 
 /// A disk's bus from its kernel name and udev's ID_BUS: "NVMe", "MMC", "virtio", "SATA" (ata), "USB", ...

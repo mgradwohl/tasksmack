@@ -26,7 +26,8 @@ class LinuxServiceProbe final : public IServiceProbe
 
     [[nodiscard]] ServiceCapabilities capabilities() const override;
     [[nodiscard]] ServiceEnumeration enumerate() override;
-    /// Forgets the cached unit files, so a start type just set shows on the next enumerate() (#2125).
+    /// Forgets the cached unit files and service configurations, so a start type just set shows on the
+    /// next enumerate() (#2125, #2590).
     void forgetCachedConfig() override;
 
     /// Why there is no service list here, or empty when there is one.
