@@ -849,8 +849,12 @@ jobs:
         # tasksmack-helper runs as root, so it is built with full RELRO, immediate binding and CET
         # (x86-64) or BTI/PAC (AArch64) (#2640, cmake/CompilerOptions.cmake's
         # tasksmack_apply_privileged_hardening()). A toolchain or flag change that silently drops
-        # one fails here. The CET note survives only when every linked object has it, so it's
-        # checked on the packaged binary, not assumed (both notes confirmed on a release dry run).
+        # one fails here. The CET/BTI note survives only when every linked object has it, so it's
+        # checked on the packaged binary, not assumed (the CET note is confirmed on release dry
+        # runs). On arm64 a missing BTI/PAC note is a warning, not a failure, until #2786: the
+        # LLVM 22 AArch64 static runtimes from apt.llvm.org (libc++, libc++abi, compiler-rt
+        # builtins) don't carry branch protection, so lld drops the note from the whole helper
+        # and no arm64 helper has shipped with it (#2784). RELRO and BIND_NOW stay fatal there.
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -870,19 +874,25 @@ jobs:
             failed=1
           fi
           notes=$(readelf -n "$HELPER")
+          summary="full RELRO, BIND_NOW and the CPU control-flow note as expected"
           if [[ "$ARCH" == "x64" ]]; then
             if ! grep -Eq 'x86 feature: IBT, SHSTK' <<<"$notes"; then
               echo "$HELPER: no x86 IBT/SHSTK property note (CET)" >&2
               failed=1
             fi
           elif ! grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
-            echo "$HELPER: no AArch64 BTI/PAC property note" >&2
-            failed=1
+            # A warning, not a failure, until #2786 gets the note for real (see the step comment).
+            msg="$HELPER has no AArch64 BTI/PAC property note: the LLVM 22 AArch64 static runtimes"
+            msg+=" from apt.llvm.org (libc++, libc++abi, compiler-rt builtins) don't carry branch"
+            msg+=" protection, so lld drops the note from the whole helper. Fatal again once #2786"
+            msg+=" (v0.9.1) gets the note for real."
+            echo "::warning title=arm64 tasksmack-helper has no BTI/PAC note::$msg"
+            summary="full RELRO and BIND_NOW as expected; no AArch64 BTI/PAC note (warned, #2786)"
           fi
           if [[ "$failed" -ne 0 ]]; then
             exit 1
           fi
-          echo "$HELPER: full RELRO, BIND_NOW and the CPU control-flow note as expected."
+          echo "$HELPER: $summary."
 
       - name: Install mesa software rendering
         # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
