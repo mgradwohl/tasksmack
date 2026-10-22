@@ -11,6 +11,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -69,18 +70,24 @@ constexpr DWORD LONGEST_PATH = 32'768;
 {
     const std::wstring commandLine = std::format(L"\"{}\" {}", HELPER_FILE_NAME, parameters);
     int count = 0;
-    LPWSTR* argv = CommandLineToArgvW(commandLine.c_str(), &count);
-    if (argv == nullptr)
+    struct Free
+    {
+        void operator()(void* memory) const noexcept
+        {
+            LocalFree(memory);
+        }
+    };
+    const std::unique_ptr<LPWSTR, Free> argv(CommandLineToArgvW(commandLine.c_str(), &count));
+    if (!argv)
     {
         return std::nullopt;
     }
-    const std::span<LPWSTR> all(argv, static_cast<std::size_t>(count));
+    const std::span<LPWSTR> all(argv.get(), static_cast<std::size_t>(count));
     std::vector<std::wstring> split;
     if (!all.empty())
     {
         split.assign(all.begin() + 1, all.end());
     }
-    LocalFree(static_cast<HLOCAL>(argv));
     return split;
 }
 
