@@ -11,23 +11,24 @@ name: ARM64
 # unchanged.
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     types: [opened, synchronize, reopened, labeled]
   schedule:
     # Nightly, an hour after ci.yml's nightly, so the two don't queue against each other.
     - cron: '0 7 * * *'
   workflow_dispatch:
 
-# Like ci.yml: one group per commit on main (never cancelled), otherwise a newer run of the same
-# ref cancels the older one. A `labeled` event for some other label can't run anything here (see
-# the jobs' `if:`), so it gets a group of its own instead of cancelling a real run in progress.
+# Like ci.yml: one group per commit on main or a release/* branch (never cancelled), otherwise a
+# newer run of the same ref cancels the older one. A `labeled` event for some other label can't run
+# anything here (see the jobs' `if:`), so it gets a group of its own instead of cancelling a real
+# run in progress.
 concurrency:
   group: >-
-    arm64-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}${{
+    arm64-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}${{
     github.event.action == 'labeled' && github.event.label.name != 'ci:arm64' && format('-{0}', github.run_id) || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 permissions: {}
 

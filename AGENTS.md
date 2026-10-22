@@ -26,7 +26,39 @@ condenses what an agent needs every session; read those for the rest.
 - Treat `.github/workflows/*` edits as needing the maintainer's explicit confirmation before pushing, even though
   the `gh` token has `workflow` scope — CI/CD changes get extra human review on this project.
 
+## Branches and backports (#2741)
+
+Release branches from v0.9 on. Once the first one exists this replaces the freeze under "Release gating" below:
+`main` is never frozen again, and `RELEASE_FREEZE` stays unset.
+
+| Branch | What lands there | Milestones | Releases |
+|---|---|---|---|
+| `main` | all development: every PR targets it | the next minor (`v0.10.0`) | none directly: the maintainer cuts `release/0.10` from the approved candidate commit and tags `v0.10.0` there |
+| `release/X.Y` | cherry-picks of fixes already merged to `main`, plus release mechanics only (version bumps, release-notes fixes) | that line's patch releases (`v0.9.1`, `v0.9.2`, ...) | `vX.Y.0` at the cut, then each `vX.Y.N` on the branch's head |
+
+- **Upstream first:** every fix merges to `main` by the normal PR and is backported from there, so `main` is always
+  a superset of every release branch. Never open a product-code PR against `release/*` directly.
+- **The backport label:** put `backport:X.Y` (`backport:0.9`) on the `main` PR, before or after it merges. On the
+  merge, `.github/workflows/backport.yml` opens the cherry-pick PR against `release/X.Y`, titled
+  `<original title> [backport X.Y]`, with the original's labels and the open `vX.Y.*` milestone. For a label added
+  after the merge, or a retry, comment `/backport` on the merged PR. A conflict fails that backport and the action's
+  comment says how to cherry-pick by hand (`git cherry-pick -x <squash SHA>` onto `release/X.Y`, then a PR against
+  it); the lane that owns the fix resolves it. A backport PR merges like any other: CI green, review threads resolved.
+- **Which fixes:** an issue on a patch milestone (`v0.9.x`) gets the label on its `main` PR; a `v0.10.0` item doesn't.
+  Security bumps get it like any fix. Renovate and Dependabot target `main` only.
+- **Who cuts branches:** the maintainer creates `release/X.Y` from the approved candidate commit and pushes every
+  tag; agents never create, delete or force-push a `release/*` branch. The "Main Builds" ruleset covers `release/*`
+  with the same required checks as `main`, and CI, CodeQL, OSV, pre-commit, dependency review, ARM64, Sanitizers,
+  Heavy Checks and main-health run on `release/*` pushes and pull requests too.
+- **Changelog:** `changelog.yml` opens one `CHANGELOG.md` PR against the tag's release branch and one against `main`
+  (the canonical, complete file); merge both. Never edit `CHANGELOG.md` by hand.
+- **Branch life:** a release branch retires once the next minor ships, unless the maintainer keeps it for security
+  fixes.
+
 ## Release gating (keeping later work out of a release)
+
+**Only until `release/0.9` exists** (the maintainer cuts it right after v0.9.0, #2741); from then on "Branches and
+backports" above applies and `main` is never frozen.
 
 A release is tagged on the **exact candidate commit the maintainer approves** on the release tracker, not on main's
 head. `release.yml` and `changelog.yml` only need the tagged commit to be on main's history, so anything merged after
