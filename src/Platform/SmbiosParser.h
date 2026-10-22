@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -469,12 +470,19 @@ inline constexpr std::uint8_t BIOS_VIRTUAL_MACHINE_BIT = 0x10;
         return false;
     }
     constexpr std::string_view METAL = "metal";
-    const std::string_view size = systemNames.substr(dot + 1);
+    // The size after the dot, without substr(), which may throw (libc++) and this is noexcept: dot + 1 is
+    // at most the length, so remove_prefix() is in bounds.
+    std::string_view size = systemNames;
+    size.remove_prefix(dot + 1);
+    if (size.size() < METAL.size())
+    {
+        return false;
+    }
     const auto lower = [](char c)
     {
         return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
     };
-    return size.size() >= METAL.size() && std::ranges::equal(size.substr(0, METAL.size()), METAL, {}, lower) &&
+    return std::ranges::equal(size | std::views::take(METAL.size()), METAL, {}, lower) &&
            (size.size() == METAL.size() || size[METAL.size()] == '-');
 }
 
