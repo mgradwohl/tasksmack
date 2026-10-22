@@ -3,9 +3,10 @@
 # Dependencies.cmake, so a Renovate bump can't leave it stale; installed beside the licence files by
 # InstallRules.cmake.
 #
-# ts_write_third_party_notices(<output file>) writes it. Each dependency's licence identifier and
-# notes are listed here; a FetchContent_Declare() in Dependencies.cmake that isn't fails the configure,
-# so a new dependency can't ship without a notice.
+# ts_write_third_party_notices(<output file> [<dependencies file>]) writes it, from Dependencies.cmake
+# unless another file is given (a test's). Each dependency's licence identifier and notes are listed
+# here; a FetchContent_Declare() in Dependencies.cmake that isn't fails the configure, and so does one
+# not in the shape read below (#2753), so a new dependency can't ship without a notice.
 
 set(_TS_NOTICE_LICENSES
     "spdlog|MIT"
@@ -18,12 +19,28 @@ set(_TS_NOTICE_LICENSES
     "implot|MIT")
 
 function(ts_write_third_party_notices output)
-    file(READ "${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake" _deps)
+    set(_deps_file "${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake")
+    if(ARGC GREATER 1)
+        set(_deps_file "${ARGV1}")
+    endif()
+    file(READ "${_deps_file}" _deps)
     string(REGEX MATCHALL
            "FetchContent_Declare\\(\n +[A-Za-z0-9_]+\n +GIT_REPOSITORY [^\n]+\n +GIT_TAG [0-9a-f]+[^\n]*"
            _declares "${_deps}")
     if(NOT _declares)
-        message(FATAL_ERROR "ThirdPartyNotices: no pinned FetchContent_Declare() found in Dependencies.cmake")
+        message(FATAL_ERROR "ThirdPartyNotices: no pinned FetchContent_Declare() found in ${_deps_file}")
+    endif()
+    # Every call, not only those in that shape (#2753): one written another way (a URL source, the name
+    # on the same line, a tag name for GIT_TAG) would otherwise be left out of the notices unnoticed.
+    # A call is one at the start of a line, so the comments that name FetchContent_Declare() don't count.
+    string(REGEX MATCHALL "(^|\n)[ \t]*FetchContent_Declare[ \t]*\\(" _calls "${_deps}")
+    list(LENGTH _calls _call_count)
+    list(LENGTH _declares _parsed_count)
+    if(NOT _call_count EQUAL _parsed_count)
+        message(FATAL_ERROR "ThirdPartyNotices: ${_deps_file} has ${_call_count} FetchContent_Declare() calls, "
+                            "but only ${_parsed_count} are in the shape this reads: the name, then GIT_REPOSITORY, "
+                            "then GIT_TAG with a commit, one per line. Give the new one that shape, or teach "
+                            "${CMAKE_CURRENT_FUNCTION_LIST_FILE} to read it, so it can't ship without a notice.")
     endif()
 
     set(_text "Third-party software in TaskSmack ${PROJECT_VERSION}\n")

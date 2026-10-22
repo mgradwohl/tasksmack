@@ -119,6 +119,18 @@ if(WIN32)
     endif()
 endif()
 
+# THIRD_PARTY_NOTICES.txt's generator (#2753): a notice for each dependency in Dependencies.cmake, and a
+# FetchContent_Declare() in a shape it can't read fails the configure rather than being left out.
+add_test(NAME ThirdPartyNoticesScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-real
+            -DTS_CASE=real -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-unparsed
+            -DTS_CASE=unparsed -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+# CMake wraps the message, so any run of spaces and line breaks may separate the words.
+set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
+    PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
+
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
 if(WIN32)
