@@ -324,6 +324,24 @@ TEST(WindowGeometryTest, FitIsUsableInConstantExpressions)
     EXPECT_EQ(fitted.x, 0);
 }
 
+// ---- moveInside (#2735) ----
+
+TEST(WindowGeometryTest, AWindowWithNoSavedPositionIsMovedWhollyOntoTheDisplay)
+{
+    // Created centred at 1280 x 720 on a 1024 x 768 display with a 48 px taskbar, then shrunk to fit:
+    // it kept x = -128, and its bottom edge sat 24 px under the taskbar.
+    constexpr Rect workArea{.x = 0, .y = 0, .width = 1024, .height = 720};
+    static_assert(moveInside(Rect{.x = -128, .y = 24, .width = 1024, .height = 720}, workArea) == workArea);
+    // Larger than the display: shrunk as well, at the display's origin.
+    EXPECT_EQ(moveInside(Rect{.x = -128, .y = 24, .width = 1280, .height = 800}, workArea), workArea);
+    // Already inside: unchanged. Off the far edges, on a second display: moved back by as little as it takes.
+    constexpr Rect second{.x = 1920, .y = 0, .width = 1920, .height = 1040};
+    EXPECT_EQ(moveInside(Rect{.x = 2000, .y = 100, .width = 1280, .height = 720}, second),
+              (Rect{.x = 2000, .y = 100, .width = 1280, .height = 720}));
+    EXPECT_EQ(moveInside(Rect{.x = 3000, .y = 500, .width = 1280, .height = 720}, second),
+              (Rect{.x = 2560, .y = 320, .width = 1280, .height = 720}));
+}
+
 // ---- rescaleWindowSize / targetDisplayIndex (#1168) ----
 
 TEST(WindowGeometryTest, SizeSavedAtOneScaleKeepsItsApparentSizeAtAnother)

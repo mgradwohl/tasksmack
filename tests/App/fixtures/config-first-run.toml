@@ -31,9 +31,6 @@ size = 'medium'
 [metrics]
 max_sane_rate_bps = 12500000000.0
 
-[process_columns]
-npu_percent = false
-
 [process_meters]
 cpu_percent = 'bar'
 gpu_memory = 'off'

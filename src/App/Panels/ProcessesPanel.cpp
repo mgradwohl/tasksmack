@@ -2477,6 +2477,14 @@ bool ProcessesPanel::applyColumnRequests()
     {
         return false;
     }
+    // Not on a frame ImGui initializes the table (created, or its saved layout loaded): it sets every
+    // column's visibility from its flags or that layout when the layout locks, after this, and the
+    // request would be lost -- the next frame would then take the difference for the user's own toggle
+    // and mark the column chosen (#2736). Kept for the next frame, and still no sync on this one.
+    if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && (table->IsInitializing || table->IsSettingsRequestLoad))
+    {
+        return true;
+    }
     // TableSetColumnEnabled(false) ignores a column's NoHide flag, so PID and Name are kept shown
     // here whatever the request says (#1209).
     m_RequestedColumns->keepUnhideableColumnsVisible();

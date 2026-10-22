@@ -555,4 +555,23 @@ inline constexpr float MAX_WINDOW_SCALE = 16.0F;
     return centred;
 }
 
+/// @p rect moved, by as little as it takes, to lie wholly inside @p display, and shrunk first to fit
+/// it. For a window with no saved position (#2735): the system placed it at its created size, and a
+/// first launch must not open partly off the display or under the taskbar.
+[[nodiscard]] constexpr auto moveInside(const Rect& rect, const Rect& display) -> Rect
+{
+    const auto clampAxis = [](int pos, int length, int start, int span)
+    {
+        const std::int64_t lo = start;
+        const std::int64_t hi = static_cast<std::int64_t>(start) + span - length; // >= lo: length <= span
+        return static_cast<int>(std::clamp<std::int64_t>(pos, lo, hi));
+    };
+    Rect inside = rect;
+    inside.width = std::min(rect.width, display.width);
+    inside.height = std::min(rect.height, display.height);
+    inside.x = clampAxis(rect.x, inside.width, display.x, display.width);
+    inside.y = clampAxis(rect.y, inside.height, display.y, display.height);
+    return inside;
+}
+
 } // namespace Core::WindowGeometry

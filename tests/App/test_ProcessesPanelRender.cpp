@@ -1103,6 +1103,26 @@ TEST_F(ProcessesPanelRenderTest, NpuPercentIsShownByDefaultOnceTheNpuIsKnown)
     panel->onDetach();
 }
 
+// #1870, #2736: the NPU listed before the table is first drawn -- the Processes tab opened after the GPU
+// sampler's first sample, as on a first launch, which opens on the machine's tab. NPU % is shown, and
+// it stays a default. Its new default was applied on the frame ImGui created the table, which then set
+// every column from its flags and lost it; the next frame took the difference for the user's own toggle
+// and saved npu_percent = false.
+TEST_F(ProcessesPanelRenderTest, NpuPercentListedBeforeTheTableIsFirstDrawnIsShownAndNotChosen)
+{
+    const auto gpu = gpuModel(/*withNpu=*/true);
+    const auto panel = attachedPanel({}, gpu);
+    gpu->refresh(); // Listed before the panel's first frame
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("NPU %")) << after;
+    const ProcessColumnSettings& saved = UserConfig::get().settings().processColumns;
+    EXPECT_TRUE(saved.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(saved.isChosen(ProcessColumn::NpuPercent));
+    panel->onDetach();
+}
+
 // #1870: a choice made in the Columns menu before the NPU is known is not overridden when it is.
 TEST_F(ProcessesPanelRenderTest, AColumnsMenuChoiceMadeBeforeTheNpuIsKnownIsKept)
 {
