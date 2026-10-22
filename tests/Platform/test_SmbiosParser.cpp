@@ -379,6 +379,30 @@ TEST(SmbiosParserTest, VirtualMachineVendorsFromSystemNames)
     EXPECT_EQ(virtualMachineVendor(" "), "");
 }
 
+// EC2's bare-metal instance types, "<family>.metal" and "<family>.metal-<n>xl", carry the "Amazon EC2"
+// manufacturer too but are real hardware (#2771); every other size is a VM.
+TEST(SmbiosParserTest, AmazonBareMetalIsNotAVirtualMachineVendor)
+{
+    EXPECT_TRUE(isAmazonBareMetal("Amazon EC2 m6g.metal"));
+    EXPECT_TRUE(isAmazonBareMetal("Amazon EC2 c5.metal "));                    // trailing space, as DMI may keep it
+    EXPECT_TRUE(isAmazonBareMetal(std::string("Amazon EC2 c5.metal") + '\0')); // or a NUL
+    EXPECT_TRUE(isAmazonBareMetal("Amazon EC2 C5.METAL"));
+    EXPECT_TRUE(isAmazonBareMetal("Amazon EC2 m7i.metal-24xl"));
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 m6g.large"));
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 m6g.metallic")); // not a bare-metal size
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2 metal"));        // no instance-type size
+    EXPECT_FALSE(isAmazonBareMetal("Amazon EC2"));
+    EXPECT_FALSE(isAmazonBareMetal("Contoso foo.metal")); // the convention is EC2's alone
+    EXPECT_FALSE(isAmazonBareMetal(""));
+
+    EXPECT_EQ(virtualMachineVendor("Amazon EC2 m6g.metal"), "");
+    EXPECT_EQ(virtualMachineVendor("Amazon EC2 c5.metal "), "");
+    EXPECT_EQ(virtualMachineVendor("Amazon EC2 m7i.metal-24xl"), "");
+    EXPECT_EQ(virtualMachineVendor("Amazon EC2 m6g.large"), "Amazon EC2");
+    EXPECT_EQ(virtualMachineVendor("Contoso foo.metal"), "");
+    EXPECT_EQ(virtualMachineVendor("QEMU foo.metal"), "QEMU");
+}
+
 TEST(SmbiosParserTest, VirtualMachineHintFromTheBiosBitOrTheSystemNames)
 {
     const auto bios = [](std::uint8_t extension2)
@@ -415,6 +439,32 @@ TEST(SmbiosParserTest, VirtualMachineHintFromTheBiosBitOrTheSystemNames)
     const VirtualMachineHint nameOnly = nameOnlyHint.value_or(VirtualMachineHint{});
     EXPECT_TRUE(nameOnly.virtualMachine);
     EXPECT_EQ(nameOnly.vendor, "Parallels");
+
+    // Amazon EC2 names its bare-metal instances too (#2771): a ".metal" product is real hardware, so only
+    // the bit can say otherwise; every other instance type is a VM, and other vendors' ".metal" is nothing
+    const auto hintOfSystem = [&](std::string_view manufacturer, std::string_view product)
+    {
+        const auto hint = hintOf(bios(0x22), system(manufacturer, product));
+        EXPECT_TRUE(hint.has_value()) << product;
+        return hint.value_or(VirtualMachineHint{});
+    };
+    const VirtualMachineHint metal = hintOfSystem("Amazon EC2", "m6g.metal");
+    EXPECT_FALSE(metal.virtualMachine);
+    EXPECT_TRUE(metal.vendor.empty());
+    EXPECT_FALSE(hintOfSystem("Amazon EC2", "c5.metal ").virtualMachine); // trailing space
+    EXPECT_FALSE(hintOfSystem("Amazon EC2", "m7i.metal-24xl").virtualMachine);
+    const VirtualMachineHint instance = hintOfSystem("Amazon EC2", "m6g.large");
+    EXPECT_TRUE(instance.virtualMachine);
+    EXPECT_EQ(instance.vendor, "Amazon EC2");
+    const VirtualMachineHint otherMetal = hintOfSystem("Contoso", "foo.metal");
+    EXPECT_FALSE(otherMetal.virtualMachine);
+    EXPECT_TRUE(otherMetal.vendor.empty());
+    const VirtualMachineHint qemuMetal = hintOfSystem("QEMU", "foo.metal");
+    EXPECT_TRUE(qemuMetal.virtualMachine);
+    EXPECT_EQ(qemuMetal.vendor, "QEMU");
+    const auto metalWithBitHint = hintOf(bios(0x22 | BIOS_VIRTUAL_MACHINE_BIT), system("Amazon EC2", "m6g.metal"));
+    ASSERT_TRUE(metalWithBitHint.has_value());
+    EXPECT_TRUE(metalWithBitHint.value_or(VirtualMachineHint{}).virtualMachine);
 
     // A type 0 from before SMBIOS 2.4 has no extension byte 2: no bit, not an error
     const ByteVector shortBios = makeStructure(TYPE_BIOS, 0x12, {{0x04, 1}}, {"Contoso"});
