@@ -3,6 +3,7 @@
 /// whitespace around it (" \t\v" before, "\r\n" after, as from a Windows .env file) as it parses the
 /// value alone. The table must have a row per listed hook, so a new hook gets one.
 
+#include "App/DemoOverride.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
@@ -45,9 +46,9 @@ struct HookParser
                        result.warnings.size());
 }
 
-const std::array<HookParser, 12>& hookParsers()
+const std::array<HookParser, 13>& hookParsers()
 {
-    static const std::array<HookParser, 12> parsers{
+    static const std::array<HookParser, 13> parsers{
         HookParser{.name = "TASKSMACK_CONFIG_DIR",
                    .value = "/tmp/tasksmack config",
                    .parse =
@@ -110,6 +111,14 @@ const std::array<HookParser, 12>& hookParsers()
                        const auto parsed = App::ScreenshotOverride::parse(value);
                        return (parsed.request ? App::ScreenshotOverride::describe(*parsed.request) : std::string("none")) + "|" +
                               parsed.warning;
+                   }},
+        HookParser{.name = "TASKSMACK_DEMO",
+                   .value = "1:tab=processes,2.5:theme=dracula",
+                   .parse =
+                       [](const char* value)
+                   {
+                       const auto parsed = App::DemoOverride::parse(value);
+                       return (parsed.steps ? App::DemoOverride::describe(*parsed.steps) : std::string("none")) + "|" + parsed.warning;
                    }},
         HookParser{.name = "TASKSMACK_LOCALE",
                    .value = "de_DE",

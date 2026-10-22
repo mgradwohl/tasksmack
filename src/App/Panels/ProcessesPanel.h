@@ -206,6 +206,12 @@ class ProcessesPanel : public Panel
     /// Set once by ShellLayer.
     void requestStartupSelection(std::optional<SelectOverride::Target> target, bool showDetails);
 
+    /// A selection asked for while running (TASKSMACK_DEMO's select=, #2827): the first snapshot that
+    /// holds @p target's process selects it like a click, as the startup selection does, but Process
+    /// Details is not brought forward and startupSelectionPending() does not count it, so the screenshot
+    /// hook never waits for it. A new request replaces one still waiting for its process.
+    void requestSelection(SelectOverride::Target target);
+
     /// The Process Details tab the startup selection asks for, once, after it fired; never when it
     /// gave up (TASKSMACK_DETAILS_TAB, #1559).
     [[nodiscard]] std::optional<SelectOverride::DetailsTab> takeStartupDetailsTab() noexcept
@@ -532,8 +538,9 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
-    SelectOverride::Pending m_StartupSelection; // TASKSMACK_SELECT_PID/_NAME (#1559); idle once fired
-    bool m_StartupSelectionShowsDetails = true; // false when TASKSMACK_TAB picks the tab instead
+    SelectOverride::Pending m_StartupSelection;   // TASKSMACK_SELECT_PID/_NAME (#1559); idle once fired
+    bool m_StartupSelectionShowsDetails = true;   // false when TASKSMACK_TAB picks the tab instead
+    SelectOverride::Pending m_RequestedSelection; // TASKSMACK_DEMO's select= (#2827); idle once fired
     // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
     Platform::ProcessCapabilities m_CachedCapabilities;
     // The GPU support m_CachedRenderSnapshots' GPU fields were read under (#1210), copied with them:
@@ -626,8 +633,9 @@ class ProcessesPanel : public Panel
     /// nothing while the pane is frozen by a held Ctrl (#928), except to load the first generation.
     void adoptNewerSnapshots();
 
-    /// Offers the adopted generation to m_StartupSelection; selects its process when it appears.
-    void applyStartupSelection();
+    /// Offers the adopted generation to @p pending (the startup or the requested selection); selects its
+    /// process when it appears and, with @p showDetails, opens Process Details. @p what names it in the log.
+    void applyPendingSelection(SelectOverride::Pending& pending, bool showDetails, std::string_view what);
 
     /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
     /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.

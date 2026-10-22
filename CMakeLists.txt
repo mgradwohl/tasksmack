@@ -148,6 +148,8 @@ set(TASKSMACK_SOURCES
     src/UI/IconTextureCache.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
+    src/App/DemoLayer.cpp
+    src/App/DemoOverride.cpp
     src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp

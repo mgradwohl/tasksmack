@@ -494,6 +494,7 @@ set(COMMON_TEST_SOURCES
     App/test_KeyboardInputRender.cpp
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
+    App/test_DemoOverride.cpp
     App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
@@ -664,7 +665,7 @@ set(THEME_REAL_TEST_SOURCES
 # Tests that need the whole app, built into TaskSmackAppTests below (#1395)
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
-    App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT end to end (#2827)
+    App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
 set(APP_REAL_LINUX_TEST_SOURCES

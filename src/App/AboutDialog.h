@@ -11,7 +11,7 @@ namespace App::AboutDialog
 inline constexpr const char* POPUP_ID = "About TaskSmack";
 
 /// Draw the About dialog for this frame: open it when @p openRequested is set (and clear it), then
-/// draw it while it is open. OK or Escape closes it.
+/// draw it while it is open. OK, Escape or @p closeRequested (cleared here too) closes it.
 ///
 /// Split out of AboutLayer, which keeps only the event wiring and the icon's texture, so the dialog
 /// can be rendered headless in the tests (CONTRIBUTING.md, "Testing App/UI code that needs a live
@@ -22,10 +22,12 @@ inline constexpr const char* POPUP_ID = "About TaskSmack";
 ///
 /// @param openRequested  Set by an OpenAboutEvent (the title bar's "i", Help's "About TaskSmack..."
 ///                       link, Settings); cleared here.
+/// @param closeRequested Set by a CloseDialogEvent (TASKSMACK_DEMO's close=dialog, #2827); cleared
+///                       here, whether or not the dialog was open.
 /// @param icon           The application icon; an invalid texture leaves its space empty.
 /// @return The URL of the link the user activated this frame, for the caller to open with the system
 ///         handler; empty when none was. Returned rather than opened here so the tests can press a
 ///         link without launching a browser.
-[[nodiscard]] std::string_view render(bool& openRequested, const UI::Texture& icon);
+[[nodiscard]] std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon);
 
 } // namespace App::AboutDialog

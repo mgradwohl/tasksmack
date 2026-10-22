@@ -434,17 +434,40 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
                 // Its charts share their plot edges, with or without a right-hand axis (#1206).
                 const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
                 renderBasicInfo(cachedSnapshot());
+                // A section asked for (requestSection(), TASKSMACK_DEMO's section=, #2827) is drawn open
+                // this frame through ImGui's own open state, as a click on its header would: SetNextItemOpen()
+                // applies to the very next item, each view's CollapsingHeader(), so it is set only for a
+                // section the view will draw. Taken here, so a request made while another tab shows waits.
+                const std::optional<SelectOverride::DetailsSection> section = std::exchange(m_RequestedSection, std::nullopt);
+                const auto openIfRequested = [section](const SelectOverride::DetailsSection which, const bool drawn)
+                {
+                    if (section == which && drawn)
+                    {
+                        ImGui::SetNextItemOpen(true);
+                    }
+                };
                 // Collapsed by default, and hidden where the platform cannot read environments (#179)
+                openIfRequested(SelectOverride::DetailsSection::Environment, m_HasEnvironment);
                 m_EnvironmentView.render(m_HasEnvironment);
                 // Likewise collapsed by default, and hidden where the platform cannot list sockets (#799)
+                openIfRequested(SelectOverride::DetailsSection::Connections, m_HasConnections);
                 m_ConnectionsView.render(m_HasConnections);
                 // Likewise collapsed by default; hidden only in synthetic runs (#802)
+                openIfRequested(SelectOverride::DetailsSection::Modules, m_HasModules);
                 m_ModulesView.render(m_HasModules);
                 // Likewise collapsed by default; hidden only in synthetic runs (#1526)
+                openIfRequested(SelectOverride::DetailsSection::Security, m_HasSecurity);
                 m_SecurityView.render(m_HasSecurity);
-                // Likewise collapsed by default; hidden only in synthetic runs (#183)
+                // Likewise collapsed by default; hidden only in synthetic runs (#183). Opened on request, its
+                // scan starts too, as its Scan button does: the section lists nothing until a scan.
+                openIfRequested(SelectOverride::DetailsSection::OpenFiles, m_HasOpenFiles);
                 m_OpenFilesView.render(m_HasOpenFiles);
+                if (section == SelectOverride::DetailsSection::OpenFiles && m_HasOpenFiles)
+                {
+                    m_OpenFilesView.requestScan();
+                }
                 // Likewise collapsed by default; only for a process that runs a service (#1886)
+                openIfRequested(SelectOverride::DetailsSection::Services, !cachedSnapshot().services.empty());
                 renderServicesSection(cachedSnapshot());
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick

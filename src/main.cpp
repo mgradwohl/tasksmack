@@ -3,6 +3,8 @@
 #endif
 
 #include "App/AboutLayer.h"
+#include "App/DemoLayer.h"
+#include "App/DemoOverride.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
@@ -237,6 +239,10 @@ auto runApp() -> int
     // once startup has settled, then the normal close. Unset, nothing below is pushed for it.
     const std::optional<App::ScreenshotOverride::Request>& screenshot = App::ScreenshotOverride::active();
 
+    // TASKSMACK_DEMO (#2827), likewise read and logged once: timed UI requests from the moment startup
+    // has settled, for the screenshot to record. Unset, nothing below is pushed for it.
+    const std::optional<std::vector<App::DemoOverride::Step>>& demo = App::DemoOverride::active();
+
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {
         spdlog::warn(
@@ -334,6 +340,13 @@ auto runApp() -> int
         appRef.pushLayer<App::AboutLayer>();
         appRef.pushLayer<App::SettingsLayer>();
         appRef.pushLayer<App::ElevationNoticeLayer>();
+
+        // The demo script's layer (#2827), after the layers its steps make requests of: a step is issued
+        // in its onUpdate(), before any layer renders, so the shell draws it on that same frame.
+        if (demo.has_value())
+        {
+            appRef.pushLayer<App::DemoLayer>(*demo, shell);
+        }
 
         // The screenshot hook's layer (#2827), last, so it sees each frame once every layer above has
         // drawn into it; it waits for the shell's startup selections before capturing.

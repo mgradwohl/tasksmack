@@ -776,12 +776,12 @@ the untested logic needs OS handles or not:
 
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so six test-only environment variables (#1559, #172, #2827), read
-once at startup, select a process, open a tab, open the Help or About window, or write a screenshot of
-the window and quit, by themselves. With `TASKSMACK_SELECT_PID` or
+Agents must not inject clicks or keys, so seven test-only environment variables (#1559, #172, #2827), read
+once at startup, select a process, open a tab, open the Help or About window, replay a timed script of
+such requests, or write a screenshot of the window and quit, by themselves. With `TASKSMACK_SELECT_PID` or
 `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
 click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the six variables, or
+snapshots, one warning is logged and nothing is selected. While any of the seven variables, or
 `TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
 cover the capture. Unset, the variables do nothing.
 
@@ -793,6 +793,7 @@ cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |
+| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `open=<help|about>`; `close=dialog` (closes the Help window and the About dialog); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 | `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only the user's locale `LocaleSetup` builds and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
@@ -811,6 +812,14 @@ $env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $e
 $env:TASKSMACK_SCREENSHOT = "$env:TEMP\details.png;after=3"   # or "showcase.png;frames=30;fps=10" for an animation's frames
 $p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru -Wait   # writes the PNG, then quits; $p.ExitCode is 0 once it did
 Remove-Item -Recurse -Force $env:TASKSMACK_CONFIG_DIR
+```
+
+An animation of the app doing something -- a walk from the Processes table into Process Details, a
+theme switch -- adds `TASKSMACK_DEMO`, whose steps play while the frames are captured:
+
+```powershell
+$env:TASKSMACK_DEMO = "1:tab=processes,3:select=name:explorer.exe,5:details=overview,7:details=network,9:theme=dracula"
+$env:TASKSMACK_SCREENSHOT = "$env:TEMP\walk.png;after=0;frames=120;fps=12"   # the 10 s from the settle point, walk-0001.png ...
 ```
 
 A running instance can still be captured from outside with `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT = 2)`,

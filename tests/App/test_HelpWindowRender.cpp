@@ -55,8 +55,8 @@ class HelpWindowRenderTest : public ::testing::Test
         {
             m_AboutRequested = true;
         }
-        (void) AboutDialog::render(m_AboutRequested, m_Icon);    // No link is pressed here
-        m_AboutOpen = ImGui::IsPopupOpen(AboutDialog::POPUP_ID); // Inside the frame: it needs a current window
+        (void) AboutDialog::render(m_AboutRequested, m_AboutCloseRequested, m_Icon); // No link is pressed here
+        m_AboutOpen = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);                     // Inside the frame: it needs a current window
         ImGui::Render();
     }
 
@@ -108,6 +108,7 @@ class HelpWindowRenderTest : public ::testing::Test
 
     HelpWindow::State m_State;
     bool m_AboutRequested = false;
+    bool m_AboutCloseRequested = false;
     bool m_AboutOpen = false; ///< About's popup was open at the end of the last frame
     UI::Texture m_Icon;       // Invalid: no GL context here
 
