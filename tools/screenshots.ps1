@@ -11,7 +11,8 @@
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
     Process Details (overview, gpu, network) for one process, Services, Startup, About and Help in the
-    first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP.
+    first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP. The
+    overview-* shots get a 60 s history window and are captured after 60 s, so their charts are full.
 
     The shots show the machine they run on (its processes, services, startup items, user and host
     name), so run them in a Windows Sandbox or on a clean account, and review every image for names
@@ -21,7 +22,8 @@
 .PARAMETER Out
     Output directory (default: docs\images\screenshots\windows)
 .PARAMETER After
-    Seconds after startup before each capture (default: 8; the history charts need 5 samples at 1 s)
+    Seconds after startup before each capture (default: 8; the history charts need 5 samples at 1 s).
+    overview-* shots ignore it: 60 s with a 60 s history window, so their charts are full
 .PARAMETER Window
     Window size as WxH (default: 1440x900)
 .PARAMETER Themes
@@ -52,7 +54,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$TimeoutMs = 60000
+$TimeoutAfterCaptureMs = 60000
+# overview-* shots: a 60 s history window, captured at the hook's maximum delay so the charts are full.
+$OverviewHistorySeconds = 60
+$OverviewAfter = 60
 $LiveSeconds = 8
 $LiveFps = 12
 $WebPQuality = 80
@@ -85,18 +90,21 @@ function Invoke-Shot {
     param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "")
     $cfg = Join-Path $Work $Name
     $null = New-Item -ItemType Directory -Force -Path $cfg
-    $toml = "[theme]`nid = '$Theme'`n[font]`nsize = 'medium'`n[sampling]`ninterval_ms = 1000`n" +
+    $overview = $Name -like 'overview-*'
+    $after = if ($overview) { $OverviewAfter } else { $After }
+    $history = if ($overview) { "history_max_seconds = $OverviewHistorySeconds`n" } else { "" }
+    $toml = "[theme]`nid = '$Theme'`n[font]`nsize = 'medium'`n[sampling]`ninterval_ms = 1000`n$history" +
             "[window]`nwidth = $Width`nheight = $Height`n[process_columns]`ncommand = false`n"
     Set-Content -LiteralPath (Join-Path $cfg "config.toml") -Value $toml -Encoding utf8 -NoNewline
     $shot = Join-Path $PngDir "$Name.png"
-    $vars = @{ TASKSMACK_CONFIG_DIR = $cfg; TASKSMACK_WINDOW = $Window; TASKSMACK_SCREENSHOT = "$shot;after=$After$Sequence" } + $Hooks
+    $vars = @{ TASKSMACK_CONFIG_DIR = $cfg; TASKSMACK_WINDOW = $Window; TASKSMACK_SCREENSHOT = "$shot;after=$after$Sequence" } + $Hooks
     foreach ($k in $vars.Keys) { Set-Item -Path "Env:$k" -Value $vars[$k] }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rc = 'none'
     try {
         $p = Start-Process -FilePath $Exe -WorkingDirectory $cfg -PassThru
         $null = $p.Handle   # cache the handle, or ExitCode is empty after the process has gone
-        if ($p.WaitForExit($TimeoutMs)) { $rc = $p.ExitCode } else { $p.Kill(); $rc = 'timeout' }
+        if ($p.WaitForExit($after * 1000 + $TimeoutAfterCaptureMs)) { $rc = $p.ExitCode } else { $p.Kill(); $rc = 'timeout' }
     } finally {
         $sw.Stop()
         foreach ($k in $vars.Keys) { Remove-Item -Path "Env:$k" -ErrorAction SilentlyContinue }

@@ -10,7 +10,8 @@
 #
 # Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
 # Process Details (overview, gpu, network) for one process, Services, Startup, About and Help in the
-# first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP.
+# first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP. The
+# overview-* shots get a 60 s history window and are captured after 60 s, so their charts are full.
 #
 # Requirements: a built TaskSmack; Xvfb when headless (apt install xvfb); for --webp, cwebp and
 # img2webp from libwebp (apt install webp). Identity: --hostname tasksmack-demo runs the shots in a
@@ -30,7 +31,10 @@ PROCESS=""
 WEBP=false
 LIVE=true
 DEMO_HOST=""
-TIMEOUT=60
+TIMEOUT_AFTER_CAPTURE=60
+# overview-* shots: a 60 s history window, captured at the hook's maximum delay so the charts are full.
+OVERVIEW_HISTORY_SECONDS=60
+OVERVIEW_AFTER=60
 LIVE_SECONDS=8
 LIVE_FPS=12
 WEBP_QUALITY=80
@@ -44,7 +48,8 @@ Regenerate the documentation screenshots, one TaskSmack launch per shot (no inpu
 Options:
   --exe PATH        TaskSmack binary (default: build/release/bin/TaskSmack)
   --out DIR         Output directory (default: docs/images/screenshots/linux)
-  --after SECONDS   Seconds after startup before each capture (default: $AFTER; the charts need 5 samples at 1 s)
+  --after SECONDS   Seconds after startup before each capture (default: $AFTER; the charts need 5 samples at 1 s).
+                    overview-* shots ignore it: $OVERVIEW_AFTER s with a $OVERVIEW_HISTORY_SECONDS s history window, so their charts are full
   --window WxH      Window size (default: $WINDOW)
   --themes a,b,c    Theme ids; the first is the dark theme, the first containing "light" the light one
                     (default: $THEMES)
@@ -120,6 +125,11 @@ run_shot() {
     local name="$1" theme="$2" cfg="$WORK/$1" shot="$WORK/png/$1.png"
     shift 2
     mkdir -p "$cfg"
+    local after="$AFTER" history=""
+    if [[ "$name" == overview-* ]]; then
+        after="$OVERVIEW_AFTER"
+        history="history_max_seconds = $OVERVIEW_HISTORY_SECONDS"
+    fi
     cat > "$cfg/config.toml" <<EOF
 [theme]
 id = '$theme'
@@ -127,6 +137,7 @@ id = '$theme'
 size = 'medium'
 [sampling]
 interval_ms = 1000
+$history
 [window]
 width = $WIDTH
 height = $HEIGHT
@@ -135,8 +146,8 @@ command = false
 EOF
     local start rc=0 ms bytes=0
     start=$(date +%s%N)
-    env TASKSMACK_CONFIG_DIR="$cfg" TASKSMACK_WINDOW="$WINDOW" TASKSMACK_SCREENSHOT="$shot;after=$AFTER${SEQUENCE:-}" "$@" \
-        timeout "$TIMEOUT" "$EXE" >"$cfg/stdout.log" 2>&1 || rc=$?
+    env TASKSMACK_CONFIG_DIR="$cfg" TASKSMACK_WINDOW="$WINDOW" TASKSMACK_SCREENSHOT="$shot;after=$after${SEQUENCE:-}" "$@" \
+        timeout "$((after + TIMEOUT_AFTER_CAPTURE))" "$EXE" >"$cfg/stdout.log" 2>&1 || rc=$?
     ms=$(( ($(date +%s%N) - start) / 1000000 ))
     [[ -f "$shot" ]] && bytes=$(stat -c %s "$shot")
     [[ -f "${shot%.png}-0001.png" ]] && bytes=$(stat -c %s "${shot%.png}-0001.png")

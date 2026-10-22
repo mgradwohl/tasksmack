@@ -786,7 +786,9 @@ matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `no
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
 Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
 `<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
-sequence. `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
+sequence. The `overview-*` shots get `[sampling] history_max_seconds = 60` and are captured after 60 s
+(the hook's maximum), so their history charts are full; the other views are captured after 8 s.
+`--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
 webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
 print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
 
