@@ -1113,6 +1113,53 @@ TEST_F(SystemdBusFakeServiceConfigTest, AConfigTimeoutStopsAskingForTheRest)
     EXPECT_EQ(read.listing.mainPids.size(), 2U) << "the rest of the read is unaffected";
 }
 
+// #2773: a timeout ends every property read left in the call, not just that loop's: after an instance's
+// UnitFileState times out, no MainPID or configuration is asked for.
+TEST_F(SystemdBusFakeServiceConfigTest, AnInstanceStateTimeoutEndsTheCallsPropertyReads)
+{
+    m_Bus.failProperty(GETTY_PATH, "org.freedesktop.systemd1.Unit", "UnitFileState", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_EQ(m_Bus.propertyReads(CRON_PATH, SYSTEMD_SERVICE, "MainPID"), 0);
+    EXPECT_TRUE(read.listing.mainPids.empty());
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0);
+}
+
+// #2773: after a MainPID timeout no configuration is read either, even one due again: each service's is
+// the cached one, and the cache is left as it was, not re-filled with every service's main process as 0.
+TEST_F(SystemdBusFakeServiceConfigTest, AMainPidTimeoutLeavesTheCachedConfigurationsAsTheyWere)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const auto now = std::chrono::steady_clock::now();
+    const auto aged = now - SystemdBus::UNIT_CONFIG_TTL - std::chrono::seconds(1);
+    SystemdBus::UnitFileCache cache;
+    for (const char* name : {"cron.service", "getty@tty1.service"})
+    {
+        cache.configs.insert_or_assign(
+            name,
+            SystemdBus::CachedUnitConfig{.config = {.user = std::string("cached"), .dynamicUser = false, .execStart = {}, .type = "simple"},
+                                         .activeState = "active",
+                                         .subState = "running",
+                                         .mainPid = 4242,
+                                         .readAt = aged});
+    }
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices(&cache, now);
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0) << "all due, none asked";
+    ASSERT_EQ(read.listing.configs.size(), 2U) << "the cached ones; apt-daily had none";
+    EXPECT_EQ(read.listing.configs.at("cron.service").user, std::optional<std::string>("cached"));
+    ASSERT_EQ(cache.configs.size(), 2U);
+    for (const auto& [name, cached] : cache.configs)
+    {
+        EXPECT_EQ(cached.mainPid, 4242U) << name;
+        EXPECT_EQ(cached.readAt, aged) << name;
+    }
+}
+
 TEST_F(SystemdBusFakeTest, WithoutSystemdOnTheBusTheServicesSaySo)
 {
     ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
