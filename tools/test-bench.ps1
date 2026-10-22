@@ -528,10 +528,12 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     # field-aware Find-IdentityLeaks, which skips the fields the writer keeps on purpose (#1445
     # review): a user named Release keeps the Release build type, a host named Windows the OS name.
     $identities = @([Environment]::UserName, [Environment]::MachineName, [Environment]::MachineName.Split('.')[0]) | Where-Object { $_.Length -ge 3 }
-    function Get-JsonStrings($Node) {
-        if ($Node -is [string]) { $Node }
-        elseif ($Node -is [System.Management.Automation.PSCustomObject]) { foreach ($property in $Node.PSObject.Properties) { Get-JsonStrings $property.Value } }
-        elseif ($Node -is [System.Collections.IEnumerable]) { foreach ($item in $Node) { Get-JsonStrings $item } }
+    function Find-KeptCategoricalLeaks($Manifest) {
+        # The field-aware check for a user named Release and a host named Windows, over the build
+        # and machine fields only: the ones the writer keeps on purpose. The rest of the manifest is
+        # free text the writer hides only for the real user and host names, and git.branch is the
+        # checkout's own branch, which on release/0.9 holds the token (#2816).
+        Find-IdentityLeaks ([PSCustomObject]@{ build = $Manifest.build; machine = $Manifest.machine }) -Tokens @('Release', 'Windows') -Paths @()
     }
     foreach ($kind in @($presetIdentities.Keys)) {
         $run = $outcomes["preset-$kind"]
@@ -547,9 +549,19 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($presetLeaks.Count -eq 0) "Preset named after the ${kind}: $($presetLeaks -join '; ')"
         # A user named Release, a host named Windows: the field-aware check passes on the fields
         # the writer keeps on purpose, which a plain scan of every string would flag.
-        $kept = Find-IdentityLeaks $presetManifest -Tokens @('Release', 'Windows') -Paths @()
+        $kept = Find-KeptCategoricalLeaks $presetManifest
         Assert-True ($kept.Count -eq 0) "Kept categorical fields reported as leaks: $($kept -join '; ')"
-        Assert-True (@(Get-JsonStrings $presetManifest) -ccontains 'Release') 'The fixture keeps a Release build type, so the case above means something'
+        Assert-True ($presetManifest.build.build_type -ceq 'Release' -and $presetManifest.machine.os_name -ceq 'Windows') "The fixture keeps a Release build type and the Windows OS name, so the case above means something: $($presetManifest.build.build_type) / $($presetManifest.machine.os_name)"
+        # #2816: the same manifest as the writer leaves it on a branch named for a token (the
+        # script failed on release/0.9). The branch is not one of the kept fields, so the checkout
+        # the test runs in must not decide the case.
+        foreach ($branch in @('release/0.9', 'ci/windows')) {
+            $onBranch = $presetManifest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+            $onBranch.git.branch = $branch
+            Assert-True ((Find-IdentityLeaks $onBranch -Tokens @('Release', 'Windows') -Paths @()).Count -gt 0) "A scan of every field must report the branch '$branch', or this case proves nothing"
+            $branchLeaks = Find-KeptCategoricalLeaks $onBranch
+            Assert-True ($branchLeaks.Count -eq 0) "On branch '$branch' the kept categorical fields are reported as leaks: $($branchLeaks -join '; ')"
+        }
     }
 
     # ── #1445 review: a bare -BenchmarkBinary is the file in the location, not one on PATH ─────
