@@ -1,6 +1,7 @@
 #include "WindowsProcessIdentity.h"
 
 #include "Platform/IProcessActions.h"
+#include "WindowsConversions.h"
 #include "WindowsHandles.h"
 
 // clang-format off
@@ -59,8 +60,7 @@ openProcessVerified(const ProcessIdentityFunctions& fns, const ProcessTarget& ta
     {
         return std::unexpected(IdentityFailure{.kind = IdentityFailureKind::TimesFailed, .win32Error = GetLastError()});
     }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
+    const std::uint64_t actualTicks = fileTimeTicks(creation);
     if (actualTicks != target.startTimeTicks)
     {
         return std::unexpected(

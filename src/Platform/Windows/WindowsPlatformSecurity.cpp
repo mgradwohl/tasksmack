@@ -1,5 +1,7 @@
 #include "WindowsPlatformSecurity.h"
 
+#include "ComPtr.h"
+#include "ComScope.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcAddress.h"
@@ -13,14 +15,22 @@
 #endif
 #include <windows.h>
 #include <tbs.h>
+#include <objbase.h>
+#include <propsys.h>
+#include <shobjidl_core.h> // SHGetPropertyStoreFromParsingName
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "uuid.lib") // IID_IPropertyStore
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
+#include <vector>
 
 namespace Platform::WindowsPlatformSecurity
 {
@@ -96,6 +106,77 @@ using TbsiGetDeviceInfoFn = TBS_RESULT(WINAPI*)(UINT32 size, PVOID info);
     return query(infoClass, buffer.data(), static_cast<ULONG>(buffer.size()), nullptr);
 }
 
+/// The drive letters GetLogicalDrives can report.
+constexpr int DRIVE_LETTERS = 26;
+
+[[nodiscard]] std::optional<std::vector<std::string>> fixedVolumes()
+{
+    const DWORD drives = GetLogicalDrives();
+    if (drives == 0)
+    {
+        return std::nullopt;
+    }
+    std::vector<std::string> volumes;
+    for (int letter = 0; letter < DRIVE_LETTERS; ++letter)
+    {
+        if ((drives & (1U << static_cast<unsigned>(letter))) == 0)
+        {
+            continue;
+        }
+        const auto drive = static_cast<wchar_t>(L'A' + letter);
+        const std::wstring root{drive, L':', L'\\'};
+        if (GetDriveTypeW(root.c_str()) == DRIVE_FIXED)
+        {
+            volumes.push_back(std::string{static_cast<char>('A' + letter), ':'});
+        }
+    }
+    return volumes;
+}
+
+// System.Volume.BitLockerProtection: not in the SDK's propkey.h, so spelled out as PSGetPropertyKeyFromName
+// returns it for that name.
+constexpr PROPERTYKEY BITLOCKER_PROTECTION_KEY{
+    .fmtid = {.Data1 = 0x2d15a9a1, .Data2 = 0xa556, .Data3 = 0x4189, .Data4 = {0x91, 0xad, 0x02, 0x74, 0x58, 0xf1, 0x1a, 0x07}},
+    .pid = 1717,
+};
+
+/// COM is initialised (apartment-threaded, as the shell expects) for the call, on the reading thread.
+[[nodiscard]] std::optional<std::uint32_t> bitLockerProtection(const std::string& volume)
+{
+    const ComScope com;
+    if (!com.usable())
+    {
+        return std::nullopt;
+    }
+    std::wstring root(volume.begin(), volume.end());
+    root += L'\\';
+    ComPtr<IPropertyStore> store;
+    if (FAILED(SHGetPropertyStoreFromParsingName(
+            root.c_str(), nullptr, GPS_DEFAULT, IID_IPropertyStore, reinterpret_cast<void**>(store.releaseAndGetAddressOf()))) ||
+        !store)
+    {
+        return std::nullopt;
+    }
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    std::optional<std::uint32_t> protection;
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt is checked first
+    if (SUCCEEDED(store->GetValue(BITLOCKER_PROTECTION_KEY, &value)))
+    {
+        if (value.vt == VT_I4 && value.lVal >= 0)
+        {
+            protection = static_cast<std::uint32_t>(value.lVal);
+        }
+        else if (value.vt == VT_UI4)
+        {
+            protection = static_cast<std::uint32_t>(value.ulVal);
+        }
+    }
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    PropVariantClear(&value);
+    return protection;
+}
+
 } // namespace
 
 Functions systemFunctions()
@@ -105,6 +186,8 @@ Functions systemFunctions()
         .bootedWithUefi = &bootedWithUefi,
         .tpmDeviceInfo = &tpmDeviceInfo,
         .querySystemInformation = &querySystemInformation,
+        .fixedVolumes = &fixedVolumes,
+        .bitLockerProtection = &bitLockerProtection,
     };
 }
 

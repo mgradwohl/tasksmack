@@ -17,7 +17,6 @@
 #include <security.h>
 #include <powerbase.h> // PowerDeterminePlatformRoleEx (powrprof)
 #include <setupapi.h>
-#include <devpropdef.h>
 #include <cfgmgr32.h>
 #include <objbase.h>
 #include <shlobj.h> // SHGetKnownFolderPath(FOLDERID_Profile) (#2197)
@@ -57,6 +56,7 @@
 #include "WinString.h"
 #include "WindowsBootPerformance.h"
 #include "WindowsCommitPaging.h"
+#include "WindowsConversions.h"
 #include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
 #include "WindowsDriverNodes.h"
@@ -236,22 +236,7 @@ void readTimeZone(const SystemInfoFunctions& fns, OsInfo& info)
     return table;
 }
 
-// DEVPKEY_Device_DriverDate and _DriverVersion (devpkey.h), GUID_DEVCLASS_DISPLAY (devguid.h) and
 // GUID_DEVINTERFACE_MONITOR (ntddvdeo.h), spelled out so no translation unit needs <initguid.h>.
-constexpr GUID DRIVER_PROPERTY_GUID{
-    .Data1 = 0xa8b865dd,
-    .Data2 = 0x2e3d,
-    .Data3 = 0x4094,
-    .Data4 = {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6},
-};
-constexpr DEVPROPKEY DRIVER_DATE_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 2};
-constexpr DEVPROPKEY DRIVER_VERSION_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 3};
-constexpr GUID DISPLAY_CLASS_GUID{
-    .Data1 = 0x4d36e968,
-    .Data2 = 0xe325,
-    .Data3 = 0x11ce,
-    .Data4 = {0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18},
-};
 constexpr GUID MONITOR_INTERFACE_GUID{
     .Data1 = 0xe6f07b5f,
     .Data2 = 0xee97,
@@ -317,11 +302,7 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
     static auto* const create = [] -> D3D12CreateDeviceFn
     {
         HMODULE module = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (module == nullptr)
-        {
-            return nullptr;
-        }
-        return reinterpret_cast<D3D12CreateDeviceFn>(GetProcAddress(module, "D3D12CreateDevice"));
+        return Windows::getProcAddress<D3D12CreateDeviceFn>(module, "D3D12CreateDevice");
     }();
     return create;
 }
@@ -398,54 +379,7 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
 /// Every present display-class device node's hardware id, PCI location and driver version and date.
 [[nodiscard]] std::vector<WindowsGraphics::DriverNode> listDisplayDriverNodes()
 {
-    std::vector<WindowsGraphics::DriverNode> nodes;
-    HDEVINFO devices = SetupDiGetClassDevsW(&DISPLAY_CLASS_GUID, nullptr, nullptr, DIGCF_PRESENT);
-    if (devices == INVALID_HANDLE_VALUE)
-    {
-        return nodes;
-    }
-    SP_DEVINFO_DATA device{};
-    device.cbSize = sizeof(device);
-    for (DWORD index = 0; SetupDiEnumDeviceInfo(devices, index, &device) != FALSE; ++index)
-    {
-        WindowsGraphics::DriverNode node;
-        std::array<wchar_t, 512> text{}; // the last element stays 0
-        constexpr auto TEXT_BYTES = static_cast<DWORD>((512 - 1) * sizeof(wchar_t));
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr) != FALSE)
-        {
-            node.hardwareId = WinString::wideToUtf8(text.data()); // a REG_MULTI_SZ's first string
-        }
-        DWORD value = 0;
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
-        {
-            node.bus = value;
-        }
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_ADDRESS, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
-        {
-            node.address = value;
-        }
-        DEVPROPTYPE type = 0;
-        text.fill(L'\0');
-        if (SetupDiGetDevicePropertyW(
-                devices, &device, &DRIVER_VERSION_KEY, &type, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr, 0) != FALSE &&
-            type == DEVPROP_TYPE_STRING)
-        {
-            node.driverVersion = WinString::wideToUtf8(text.data());
-        }
-        FILETIME date{};
-        if (SetupDiGetDevicePropertyW(
-                devices, &device, &DRIVER_DATE_KEY, &type, reinterpret_cast<PBYTE>(&date), sizeof(date), nullptr, 0) != FALSE &&
-            type == DEVPROP_TYPE_FILETIME)
-        {
-            node.driverDate = date;
-        }
-        nodes.push_back(std::move(node));
-    }
-    SetupDiDestroyDeviceInfoList(devices);
-    return nodes;
+    return WindowsGraphics::listDriverNodes(&WindowsGraphics::DISPLAY_CLASS_GUID, nullptr, DIGCF_PRESENT);
 }
 
 /// The EDID of the monitor on DXGI output @p outputDeviceName ("\\.\DISPLAY1"): the monitor's device
@@ -895,7 +829,7 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
     }
     constexpr unsigned HIGH_SHIFT = 32;
     return WindowsDrivers::FileStamp{
-        .lastWriteTime = (std::uint64_t{data.ftLastWriteTime.dwHighDateTime} << HIGH_SHIFT) | data.ftLastWriteTime.dwLowDateTime,
+        .lastWriteTime = Windows::fileTimeTicks(data.ftLastWriteTime),
         .size = (std::uint64_t{data.nFileSizeHigh} << HIGH_SHIFT) | data.nFileSizeLow,
     };
 }

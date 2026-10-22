@@ -33,6 +33,7 @@
 #include "PerfProviderApartment.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
+#include "WindowsConversions.h"
 #include "WindowsNtQuery.h"
 #include "WindowsSystemProbeMath.h"
 
@@ -51,6 +52,8 @@
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <intrin.h> // __cpuid: the hypervisor-present bit (#809); x64 only (64-bit builds only, #2214)
+#else
+#include "Platform/SmbiosParser.h" // ARM64's hypervisor hint without CPUID (#2377)
 #endif
 
 namespace Platform
@@ -58,15 +61,6 @@ namespace Platform
 
 namespace
 {
-
-/// Convert FILETIME to 100-nanosecond intervals (ticks)
-[[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
-{
-    ULARGE_INTEGER uli{};
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-    return uli.QuadPart;
-}
 
 template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value) noexcept -> uint64_t
 {
@@ -180,6 +174,54 @@ template<typename Query>
 constexpr ULONG SystemCodeIntegrityInformationClass = 103;
 constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
 
+#if !defined(_M_X64) && !defined(__x86_64__)
+// SYSTEM_HYPERVISOR_QUERY_INFORMATION's class, which a standard user may query (#2377)
+constexpr ULONG SystemHypervisorInformationClass = 91;
+
+/// Whether the SMBIOS table (GetSystemFirmwareTable('RSMB'), no administrator rights needed) describes
+/// a virtual machine (#2377); nullopt when it can't be read. WindowsSystemInfoProbe reads the same table
+/// for System Information's Firmware section.
+[[nodiscard]] std::optional<bool> readSmbiosVirtualMachine()
+{
+    constexpr DWORD RSMB = 0x52534D42;
+    const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0);
+    if (size == 0)
+    {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> table(size);
+    const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+    if (written == 0 || written > size)
+    {
+        return std::nullopt;
+    }
+    table.resize(written);
+    const std::optional<Smbios::VirtualMachineHint> hint = Smbios::virtualMachineHint(table);
+    if (!hint.has_value())
+    {
+        return std::nullopt;
+    }
+    return hint->virtualMachine;
+}
+
+/// A running hypervisor without CPUID (ARM64, #2377): SystemHypervisorInformation, the secure kernel's
+/// state and the SMBIOS table's virtual-machine hint (hypervisorPresentWithoutCpuid()).
+[[nodiscard]] std::optional<bool> readHypervisorPresentWithoutCpuid(Windows::NtQuerySystemInformationFn ntQuery,
+                                                                    std::optional<bool> vbsRunning)
+{
+    std::optional<bool> kernelReports;
+    if (ntQuery != nullptr)
+    {
+        std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information{};
+        if (ntQuery(SystemHypervisorInformationClass, information.data(), static_cast<ULONG>(information.size()), nullptr) == 0)
+        {
+            kernelReports = hypervisorQueryPresent(information);
+        }
+    }
+    return hypervisorPresentWithoutCpuid(kernelReports, vbsRunning, readSmbiosVirtualMachine());
+}
+#endif
+
 /// Sockets, cores, logical processors and cache sizes from one GetLogicalProcessorInformationEx call
 /// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
 /// processor as the per-core counters do (#1107), for efficiencyClassByCoreId and `activeIds`, which
@@ -264,20 +306,10 @@ void readProcessorTopology(const WindowsSystemProbeFunctions::Cpu& fns,
     CpuTopology::sumCacheInstances(caches, details);
 }
 
-/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
-/// processor-feature flags, CPUID, and two NtQuerySystemInformation classes a standard user may
-/// query -- no WMI, no elevation.
-void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+/// Memory integrity and virtualization-based security (#809), from two NtQuerySystemInformation
+/// classes a standard user may query. Nothing is read without @p ntQuery.
+void readSecureKernelStatus(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
 {
-    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
-    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
-    // CPUID is x64-only; on ARM64 hypervisorPresent stays unknown (#2214).
-#if defined(_M_X64) || defined(__x86_64__)
-    std::array<int, 4> registers{};
-    __cpuid(registers.data(), 1);
-    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
-#endif
-
     if (ntQuery == nullptr)
     {
         return;
@@ -298,6 +330,23 @@ void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails&
     {
         details.vbsRunning = secureKernelRunning(isolatedUserMode[0]);
     }
+}
+
+/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
+/// processor-feature flags, CPUID, and NtQuerySystemInformation classes a standard user may query --
+/// no WMI, no elevation. ARM64 has no CPUID, so it asks Windows and the SMBIOS table instead (#2377).
+void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+{
+    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
+    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
+    readSecureKernelStatus(ntQuery, details);
+#if defined(_M_X64) || defined(__x86_64__)
+    std::array<int, 4> registers{};
+    __cpuid(registers.data(), 1);
+    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
+#else
+    details.hypervisorPresent = readHypervisorPresentWithoutCpuid(ntQuery, details.vbsRunning);
+#endif
 }
 
 /// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof
@@ -458,7 +507,8 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
     // GetSystemTimes returns idle time, kernel time (which includes idle) and user time. The split
     // is processorTimes()', as for each core, so a sample whose idle time exceeds its kernel time
     // reads as no system time rather than wrapping to ~2^64 ticks (#1719).
-    counters.cpuTotal = processorTimes(filetimeToTicks(ftKernel), filetimeToTicks(ftIdle), filetimeToTicks(ftUser), 0, 0);
+    counters.cpuTotal =
+        processorTimes(Windows::fileTimeTicks(ftKernel), Windows::fileTimeTicks(ftIdle), Windows::fileTimeTicks(ftUser), 0, 0);
 
     // Now get per-core CPU via NtQuerySystemInformation
     readPerCoreCpuCounters(counters);
@@ -705,12 +755,13 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasSwap = true,
         .hasCommitCharge = true, // GetPerformanceInfo's CommitTotal/CommitLimit/CommitPeak (#1627)
         .hasUptime = true,
-        .hasIoWait = false,            // Windows doesn't expose iowait
-        .hasSteal = false,             // Windows doesn't expose steal time
-        .hasLoadAvg = false,           // Windows doesn't have load average
-        .hasCpuFreq = true,            // Current clock: rated base x % Processor Performance (#1184, #1530)
-        .hasNetworkCounters = true,    // Via GetIfTable2 (64-bit counters, Unicode names)
-        .hasVirtualizationInfo = true, // Firmware/SLAT/hypervisor/VBS status (#809)
+        .hasIoWait = false,                    // Windows doesn't expose iowait
+        .hasSteal = false,                     // Windows doesn't expose steal time
+        .hasLoadAvg = false,                   // Windows doesn't have load average
+        .hasCpuFreq = true,                    // Current clock: rated base x % Processor Performance (#1184, #1530)
+        .hasNetworkCounters = true,            // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasVirtualizationInfo = true,         // Firmware/SLAT/hypervisor status (#809)
+        .hasVirtualizationSecurityInfo = true, // VBS and memory integrity (#809)
     };
 }
 
@@ -727,6 +778,16 @@ static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
 static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
 static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
 static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
+// And networkRowKind()'s (#2568).
+static_assert(IF_TYPE_ETHERNET == IF_TYPE_ETHERNET_CSMACD);
+static_assert(IF_TYPE_PPP_LINK == IF_TYPE_PPP);
+static_assert(IF_TYPE_LOOPBACK == IF_TYPE_SOFTWARE_LOOPBACK);
+static_assert(IF_TYPE_VIRTUAL == IF_TYPE_PROP_VIRTUAL);
+static_assert(IF_TYPE_WIFI == IF_TYPE_IEEE80211);
+static_assert(IF_TYPE_TUNNEL_LINK == IF_TYPE_TUNNEL);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN == NdisPhysicalMediumWirelessLan);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN == NdisPhysicalMediumWirelessWan);
+static_assert(NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 == NdisPhysicalMediumNative802_11);
 
 namespace
 {
@@ -735,27 +796,12 @@ namespace
 constexpr const wchar_t* NETWORK_CLASS_KEY = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
 constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
 
-[[nodiscard]] std::wstring guidText(const GUID& guid)
-{
-    return std::format(L"{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                       guid.Data1,
-                       guid.Data2,
-                       guid.Data3,
-                       guid.Data4[0],
-                       guid.Data4[1],
-                       guid.Data4[2],
-                       guid.Data4[3],
-                       guid.Data4[4],
-                       guid.Data4[5],
-                       guid.Data4[6],
-                       guid.Data4[7]);
-}
-
 // The adapter's PnP device instance id from the registry, or empty when the interface has none
 // (Teredo, 6to4) or it cannot be read.
 [[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid)
 {
-    const std::wstring keyPath = std::wstring(NETWORK_CLASS_KEY) + guidText(interfaceGuid) + L"\\Connection";
+    const std::wstring keyPath =
+        std::wstring(NETWORK_CLASS_KEY) + WinString::utf8ToWide(Windows::guidText(interfaceGuid)) + L"\\Connection";
     DWORD bytes = 0;
     if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, nullptr, &bytes) !=
             ERROR_SUCCESS ||
@@ -911,7 +957,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         const bool hardware =
             isHardwareNetworkRow(row.InterfaceAndOperStatusFlags.HardwareInterface != 0, row.Type, row.PhysicalMediumType);
         ifaceCounters.isVirtual = !hardware;
-        ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.isVirtualKnown = true;                                   // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.kind = networkRowKind(row.Type, row.PhysicalMediumType); // The Type icon's link kind (#2568)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)

@@ -181,12 +181,12 @@ BootPerformanceInfo BrokeredSystemInfoProbe::readBootPerformance()
 
 bool BrokeredSystemInfoProbe::canReadAuthorized() const
 {
-    return m_Broker != nullptr;
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
 }
 
 bool BrokeredSystemInfoProbe::authorize(const std::stop_token& stopToken)
 {
-    return m_Broker != nullptr && (m_Broker->connected() || m_Broker->connect(stopToken).has_value());
+    return canReadAuthorized() && (m_Broker->connected() || m_Broker->connect(stopToken).has_value());
 }
 
 std::optional<Broker::FirmwareFileReply> BrokeredSystemInfoProbe::fetch(Broker::FirmwareFile file) const

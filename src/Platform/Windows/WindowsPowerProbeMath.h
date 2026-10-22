@@ -198,13 +198,6 @@ inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
     return known ? static_cast<double>(capacity) / 1000.0 : 0.0;
 }
 
-/// PowerCounters::healthPercent of one battery: batteryHealthPercent() (BatteryCapacity.h) of its
-/// capacities, so -1 unless both are known (capacityWh() > 0).
-[[nodiscard]] inline int healthPercentFromCapacity(std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities) noexcept
-{
-    return batteryHealthPercent(capacityWh(fullCharged, capabilities), capacityWh(designed, capabilities));
-}
-
 /// One battery's BATTERY_INFORMATION capacity fields, as combineBatteryCapacities() takes them.
 struct BatteryCapacityReading
 {

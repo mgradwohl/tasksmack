@@ -111,7 +111,4 @@ void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns, bool i
 /// empty for one not known.
 [[nodiscard]] std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz);
 
-/// A GUID in the registry form of an adapter's AdapterName ("{4D36E972-E325-11CE-BFC1-08002BE10318}").
-[[nodiscard]] std::string guidText(const GUID& guid);
-
 } // namespace Platform::WindowsNetworkAdapters

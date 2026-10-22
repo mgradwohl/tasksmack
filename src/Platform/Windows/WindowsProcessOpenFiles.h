@@ -33,6 +33,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/Windows/WindowsNtQuery.h"
 
 #include <atomic>
 #include <chrono>
@@ -79,7 +80,6 @@ inline constexpr ULONG SYSTEM_EXTENDED_HANDLE_INFORMATION = 64;
 /// The calls WindowsProcessOpenFilesReader makes: the system's, or a test's fakes.
 struct ProcessOpenFilesFunctions
 {
-    using NtQuerySystemInformationFn = LONG(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
     using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
@@ -90,7 +90,7 @@ struct ProcessOpenFilesFunctions
     using CreateFileFn = HANDLE(WINAPI*)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
     using GetCurrentProcessIdFn = DWORD(WINAPI*)();
 
-    NtQuerySystemInformationFn ntQuerySystemInformation = nullptr; ///< ntdll's, looked up when null
+    Windows::NtQuerySystemInformationFn ntQuerySystemInformation = nullptr; ///< ntdll's, looked up when null
     OpenProcessFn openProcess = &::OpenProcess;
     CloseHandleFn closeHandle = &::CloseHandle;
     GetProcessTimesFn getProcessTimes = &::GetProcessTimes;

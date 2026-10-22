@@ -32,6 +32,7 @@
 #undef min
 
 #include "WinString.h"
+#include "WindowsConversions.h"
 #include "WindowsElevation.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
@@ -67,32 +68,6 @@ namespace Platform
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
-
-/// Convert FILETIME to 100-nanosecond intervals (ticks)
-[[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
-{
-    ULARGE_INTEGER uli{};
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-    return uli.QuadPart;
-}
-
-/// Convert 100-nanosecond intervals since January 1, 1601 UTC to Unix epoch seconds
-/// Unix epoch is seconds since January 1, 1970 UTC
-/// The difference is 11644473600 seconds (369 years)
-[[nodiscard]] uint64_t ticksToUnixEpoch(uint64_t windowsTicks)
-{
-    constexpr uint64_t WINDOWS_TICKS_PER_SECOND = 10'000'000;
-    constexpr uint64_t WINDOWS_EPOCH_TO_UNIX_EPOCH = 11644473600ULL;
-
-    // Convert 100-nanosecond intervals to seconds and adjust for epoch difference
-    const std::uint64_t windowsSeconds = windowsTicks / WINDOWS_TICKS_PER_SECOND;
-    if (windowsSeconds < WINDOWS_EPOCH_TO_UNIX_EPOCH)
-    {
-        return 0; // Invalid time (before Unix epoch)
-    }
-    return windowsSeconds - WINDOWS_EPOCH_TO_UNIX_EPOCH;
-}
 
 using ProcessFunctions = WindowsProcessProbeFunctions::Process;
 using SystemFunctions = WindowsProcessProbeFunctions::System;
@@ -922,9 +897,10 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         counters.userTime = static_cast<std::uint64_t>(info->userTime.QuadPart);
         counters.systemTime = static_cast<std::uint64_t>(info->kernelTime.QuadPart);
         counters.startTimeTicks = static_cast<std::uint64_t>(info->createTime.QuadPart);
-        counters.startTimeEpoch = ticksToUnixEpoch(counters.startTimeTicks);
+        counters.startTimeEpoch = Windows::fileTimeToUnixSeconds(counters.startTimeTicks);
 
-        // Memory is the private working set and Virtual the commit size, as Task Manager shows them (#1184)
+        // Memory is the private working set and Virtual the commit size, as Task Manager shows them (#1184);
+        // Shared the rest of the working set, its shareable pages (#2583)
         const WindowsProcessMemory memory = windowsProcessMemory({
             .workingSetPrivateSize = info->workingSetPrivateSize.QuadPart,
             .workingSetSize = info->workingSetSize,
@@ -933,6 +909,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
             .pagefileUsage = info->pagefileUsage,
         });
         counters.rssBytes = memory.rssBytes;
+        counters.sharedBytes = memory.sharedBytes;
         counters.peakRssBytes = memory.peakRssBytes;
         counters.virtualBytes = memory.virtualBytes;
         counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(info->pageFaultCount, std::uint64_t{0});
@@ -1316,7 +1293,8 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasReducedPrivileges = denial.reducedPrivileges,
         // Elevated + EStats access-denied: blocked by policy or a driver; elevating can't help (#1358).
         .networkCountersBlocked = denial.blocked,
-        .hasSharedMemory = false,
+        // The shareable working set: WorkingSetSize - WorkingSetPrivateSize, from the same entry (#2583)
+        .hasSharedMemory = true,
         // hasPrivateBytes and hasSwapBytes stay false (#1879): Windows' private bytes (PrivatePageCount)
         // are the commit charge, already the Virtual column, and Windows doesn't report how much of one
         // process is in the pagefile.
@@ -1351,7 +1329,7 @@ uint64_t WindowsProcessProbe::readTotalCpuTime()
     }
 
     // Total = kernel + user (kernel includes idle time)
-    return filetimeToTicks(ftKernel) + filetimeToTicks(ftUser);
+    return Windows::fileTimeTicks(ftKernel) + Windows::fileTimeTicks(ftUser);
 }
 
 long WindowsProcessProbe::ticksPerSecond() const

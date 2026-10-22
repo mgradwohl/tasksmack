@@ -5,7 +5,6 @@
 #include "PDHGPUProbe.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/WindowsDriverNodes.h"
-#include "WinString.h"
 #include "WindowsGPUProbeMath.h"
 
 #include <spdlog/spdlog.h>
@@ -19,10 +18,8 @@
 #endif
 #include <windows.h>
 #include <setupapi.h>
-#include <devpropdef.h>
 // clang-format on
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -40,63 +37,13 @@ namespace Platform
 namespace
 {
 
-// DEVPKEY_Device_DriverVersion (devpkey.h), spelled out so no translation unit needs <initguid.h>.
-constexpr DEVPROPKEY PNP_DRIVER_VERSION_KEY{
-    .fmtid = {.Data1 = 0xa8b865dd, .Data2 = 0x2e3d, .Data3 = 0x4094, .Data4 = {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6}},
-    .pid = 3,
-};
-
 /// Every present PCI device node's first hardware id, bus location and driver version, whatever its
 /// class: a GPU is a Display device and an NPU a ComputeAccelerator one, and a compute accelerator
-/// may be in another class again (#1799). Read from the PnP manager's records, so no device is woken.
-// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - SetupAPI byte buffers
+/// may be in another class again (#1799).
 [[nodiscard]] std::vector<WindowsGraphics::DriverNode> listPciDriverNodes()
 {
-    std::vector<WindowsGraphics::DriverNode> nodes;
-    HDEVINFO devices = SetupDiGetClassDevsW(nullptr, L"PCI", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
-    if (devices == INVALID_HANDLE_VALUE)
-    {
-        return nodes;
-    }
-    SP_DEVINFO_DATA device{};
-    device.cbSize = sizeof(device);
-    DWORD index = 0;
-    while (SetupDiEnumDeviceInfo(devices, index, &device) != FALSE)
-    {
-        ++index;
-        WindowsGraphics::DriverNode node;
-        std::array<wchar_t, 512> text{}; // the last element stays 0
-        constexpr auto TEXT_BYTES = static_cast<DWORD>((512 - 1) * sizeof(wchar_t));
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr) != FALSE)
-        {
-            node.hardwareId = WinString::wideToUtf8(text.data()); // a REG_MULTI_SZ's first string
-        }
-        DWORD value = 0;
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
-        {
-            node.bus = value;
-        }
-        if (SetupDiGetDeviceRegistryPropertyW(
-                devices, &device, SPDRP_ADDRESS, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
-        {
-            node.address = value;
-        }
-        DEVPROPTYPE type = 0;
-        text.fill(L'\0');
-        if (SetupDiGetDevicePropertyW(
-                devices, &device, &PNP_DRIVER_VERSION_KEY, &type, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr, 0) != FALSE &&
-            type == DEVPROP_TYPE_STRING)
-        {
-            node.driverVersion = WinString::wideToUtf8(text.data());
-        }
-        nodes.push_back(std::move(node));
-    }
-    SetupDiDestroyDeviceInfoList(devices);
-    return nodes;
+    return WindowsGraphics::listDriverNodes(nullptr, L"PCI", DIGCF_PRESENT | DIGCF_ALLCLASSES);
 }
-// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
 } // namespace
 

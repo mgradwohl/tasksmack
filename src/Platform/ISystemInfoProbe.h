@@ -324,6 +324,40 @@ enum class SecurityFeatureState : std::uint8_t
     NotSupported, ///< The machine can't have it (Secure Boot on a legacy BIOS boot, no TPM).
 };
 
+/// A volume's BitLocker protection status (#2584), as Explorer reads and shows it: the shell's
+/// System.Volume.BitLockerProtection property, which needs no administrator.
+enum class BitLockerState : std::uint8_t
+{
+    Unknown,              ///< Windows didn't report it for this volume.
+    On,                   ///< Encrypted and protected.
+    Off,                  ///< Not encrypted.
+    Encrypting,           ///< Encryption is under way.
+    Decrypting,           ///< Decryption is under way.
+    Suspended,            ///< Encrypted, but protection is suspended (the key is stored in the clear).
+    Locked,               ///< Encrypted and locked: not unlocked yet.
+    NotEncryptable,       ///< BitLocker can't encrypt this volume.
+    WaitingForActivation, ///< Encrypted with a clear key, waiting for a protector to be added (device encryption).
+};
+
+/// One fixed volume's BitLocker state (#2584).
+struct BitLockerVolume
+{
+    std::string volume; ///< The drive, "C:".
+    BitLockerState state = BitLockerState::Unknown;
+};
+
+/// One open (unlocked) dm-crypt volume (#2585), the Linux counterpart of a BitLocker volume: a
+/// /sys/block/dm-N whose dm/uuid starts CRYPT-LUKS1-, CRYPT-LUKS2- or CRYPT-PLAIN-.
+struct EncryptedVolume
+{
+    std::string name;   ///< The device-mapper name, as under /dev/mapper: "dm_crypt-0", "luks-<uuid>".
+    std::string type;   ///< "LUKS2", "LUKS1" or "Plain".
+    std::string device; ///< What it encrypts: "nvme0n1p3", or an LV's mapper name; ", "-joined; empty when unknown.
+    /// The file systems on it, directly or on an LVM volume on top of it (Ubuntu's encrypted install: / on
+    /// an LV on a LUKS physical volume), in mountinfo order. Empty when nothing on it is mounted.
+    std::vector<std::string> mountPoints;
+};
+
 /// One CPU vulnerability as the kernel reports it: the file name under
 /// /sys/devices/system/cpu/vulnerabilities and its one-line status.
 struct CpuVulnerability
@@ -353,6 +387,11 @@ struct PlatformSecurityInfo
 
     std::optional<bool> memoryIntegrity;     ///< Windows: HVCI (kernel-mode code integrity enforced by the hypervisor) is on.
     std::optional<bool> kernelDmaProtection; ///< Windows: the DMA guard policy (Kernel DMA Protection) is on.
+    bool bitLockerRead = false;              ///< Windows: the fixed volumes were listed.
+    std::vector<BitLockerVolume> bitLocker;  ///< Windows: one per fixed volume, in drive-letter order.
+
+    bool encryptedVolumesRead = false;             ///< Linux: /sys/block was listed (#2585).
+    std::vector<EncryptedVolume> encryptedVolumes; ///< Linux: the open dm-crypt volumes, in dm-N order.
 };
 
 /// What a sensor measures (#1522).

@@ -1,8 +1,11 @@
 // TaskSmackHelper.exe: TaskSmack's privileged broker on Windows (#2517; #2181). TaskSmack's UI never runs
 // elevated for this. When the user chooses an action TaskSmack can't do itself, TaskSmack starts this
 // through ShellExecuteExW("runas"), so Windows asks for consent (or an administrator's password), and
-// it runs elevated. It answers a closed set of BrokerProtocol requests on a named pipe only that
-// TaskSmack may open, and exits when TaskSmack closes the pipe or exits, or after a few idle minutes.
+// it runs elevated. It serves only the TaskSmack.exe beside it that started it, and only from an
+// install TaskSmack's user can't change (BrokerHelper::checkParentIsTaskSmack). It answers a closed set
+// of BrokerProtocol requests on a named pipe only that TaskSmack may open, and exits when TaskSmack
+// closes the pipe or exits, or after a few idle minutes; an over-the-shoulder elevation, as another
+// account, after its one action (BrokerHelper::sessionPolicy, #2550).
 //
 // It links only Platform: no SDL, ImGui, GL or config file. Its command line is untrusted, so
 // BrokerHelper parses it exactly and decides whom to let in from TaskSmack's process handle and token,
@@ -17,6 +20,8 @@
 #include "Platform/Windows/WindowsProcessConnections.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Platform/Windows/WindowsProcessOpenFiles.h"
+
+#include <spdlog/spdlog.h>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -60,6 +65,20 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
     // TaskSmack may have unpacked somewhere its user can write. The imports are covered by the linker's
     // /DEPENDENTLOADFLAG (CMakeLists.txt).
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // And the process mitigations (#2557), before anything else runs. One this Windows doesn't know is
+    // only logged: the helper still works without it.
+    try
+    {
+        const std::vector<std::string_view> refused =
+            Helper::applyMitigations([](PROCESS_MITIGATION_POLICY policy, void* value, std::size_t size)
+                                     { return SetProcessMitigationPolicy(policy, value, size) != FALSE; });
+        for (const std::string_view name : refused)
+        {
+            spdlog::warn("TaskSmackHelper: Windows refused the {} mitigation", name);
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - out of memory listing them: the helper runs without the log
+    {}
 
     int count = 0;
     LPWSTR* argv = nullptr;
@@ -73,6 +92,13 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
 
     try
     {
+        // What TaskSmack must be (the TaskSmack.exe beside this) and who started this, that the parent
+        // named is checked against (#2549).
+        const auto self = Helper::readSelf();
+        if (!self.has_value())
+        {
+            return static_cast<int>(Helper::Exit::NoParent);
+        }
         // As an elevated TaskSmack does (#2128): without it, services' processes refuse an administrator.
         static_cast<void>(Platform::Windows::enableDebugPrivilegeIfElevated());
         Platform::WindowsProcessActions actions;
@@ -93,8 +119,8 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
             return Platform::BrokerServer::handleRequest(request, actions, readers);
         };
         const std::stop_source never;
-        return static_cast<int>(
-            Helper::run(*parsed, handler, Helper::IDLE_TIMEOUT, Platform::Windows::BrokerPipeServer::ACCEPT_TIMEOUT, never.get_token()));
+        return static_cast<int>(Helper::run(
+            *parsed, *self, handler, Helper::IDLE_TIMEOUT, Platform::Windows::BrokerPipeServer::ACCEPT_TIMEOUT, never.get_token()));
     }
     catch (...) // an allocation failure or the like: TaskSmack sees the pipe close
     {

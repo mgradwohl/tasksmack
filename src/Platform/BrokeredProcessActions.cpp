@@ -207,12 +207,12 @@ EnvironmentReadResult BrokeredEnvironmentReader::readEnvironment(const ProcessTa
 
 bool BrokeredEnvironmentReader::canReadAuthorized() const
 {
-    return m_Broker != nullptr;
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
 }
 
 EnvironmentReadResult BrokeredEnvironmentReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
-    if (m_Broker == nullptr)
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
         return m_Inner->readEnvironment(target);
     }
@@ -278,12 +278,12 @@ ModulesReadResult BrokeredModulesReader::readModules(const ProcessTarget& target
 
 bool BrokeredModulesReader::canReadAuthorized() const
 {
-    return m_Broker != nullptr;
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
 }
 
 ModulesReadResult BrokeredModulesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
-    if (m_Broker == nullptr)
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
         return m_Inner->readModules(target);
     }
@@ -336,12 +336,12 @@ OpenFilesReadResult BrokeredOpenFilesReader::readOpenFiles(const ProcessTarget& 
 
 bool BrokeredOpenFilesReader::canReadAuthorized() const
 {
-    return m_Broker != nullptr;
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
 }
 
 OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
-    if (m_Broker == nullptr)
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
         return m_Inner->readOpenFiles(target);
     }
@@ -404,12 +404,12 @@ ConnectionsReadResult BrokeredConnectionsReader::readConnections(const ProcessTa
 
 bool BrokeredConnectionsReader::canReadAuthorized() const
 {
-    return m_Broker != nullptr;
+    return m_Broker != nullptr && m_Broker->readsOtherUsers();
 }
 
 ConnectionsReadResult BrokeredConnectionsReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
-    if (m_Broker == nullptr)
+    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
         return m_Inner->readConnections(target);
     }

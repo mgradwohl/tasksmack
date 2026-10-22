@@ -10,6 +10,22 @@
 namespace Platform
 {
 
+/// What kind of link a network interface is, as the platform reports it (#2568): Windows from the
+/// interface's IANA ifType and NDIS physical medium, Linux from its sysfs ARPHRD type, uevent DEVTYPE
+/// and wireless directory. Whether it is virtual is a separate question (InterfaceCounters::isVirtual):
+/// a Hyper-V vEthernet adapter is an Ethernet link that is virtual.
+enum class NetInterfaceKind : std::uint8_t
+{
+    Unknown,   ///< The platform couldn't tell (no sysfs entry, a synthetic interface): the UI goes by its name.
+    Ethernet,  ///< Wired Ethernet, or anything that presents itself as Ethernet (vEthernet, TAP, veth).
+    WiFi,      ///< 802.11 Wi-Fi.
+    Bluetooth, ///< A Bluetooth PAN link (Windows' Bluetooth medium, Linux's bnep).
+    Cellular,  ///< Mobile broadband (WWAN): Windows' WWAN ifTypes, Linux's wwan DEVTYPE or raw-IP modems.
+    Loopback,  ///< The loopback interface.
+    Tunnel,    ///< A tunnel or point-to-point link: VPN, PPP, GRE, SIT, IP-in-IP, tun, WireGuard.
+    Other,     ///< Classified, but none of the above (InfiniBand, FireWire, CAN, ...).
+};
+
 /// Raw CPU counters from OS (cumulative ticks/jiffies).
 /// Probes populate this; domain computes deltas and percentages.
 struct CpuCounters
@@ -122,6 +138,8 @@ struct SystemCounters
         // couldn't, e.g. no sysfs entry, and isVirtual is false by default). The UI falls back to a
         // name heuristic only then (#1260).
         bool isVirtualKnown = false;
+        // The link's kind, for the Interface Status table's Type icon (#2568).
+        NetInterfaceKind kind = NetInterfaceKind::Unknown;
     };
     std::vector<InterfaceCounters> networkInterfaces;
 
@@ -147,9 +165,13 @@ struct SystemCapabilities
     bool hasLoadAvg = false;
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
-    // CpuDetails' virtualization fields mean something here (Windows). Elsewhere the CPU Details
-    // block leaves those rows out rather than showing them as unknown (#809).
+    // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,
+    // and Linux since #2592). Elsewhere the CPU Details block leaves those rows out rather than
+    // showing them as unknown (#809).
     bool hasVirtualizationInfo = false;
+    // CpuDetails' virtualization-based security and memory integrity fields mean something here
+    // (Windows only, #809); without it those two rows are left out (#2592).
+    bool hasVirtualizationSecurityInfo = false;
 };
 
 } // namespace Platform

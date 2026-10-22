@@ -66,7 +66,9 @@ struct ProcessCounters
     // (PrivateUsage), as Task Manager shows it; its VirtualSize counts reservations, terabytes for
     // any process using Control Flow Guard.
     std::uint64_t virtualBytes = 0;
-    std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
+    // Shared memory: the resident shared pages (statm) on Linux; on Windows the shareable working set,
+    // WorkingSetSize - WorkingSetPrivateSize: pages that can be shared with other processes (#2583).
+    std::uint64_t sharedBytes = 0;
 
     // Optional fields (check capabilities)
     std::uint64_t readBytes = 0;
@@ -221,7 +223,7 @@ struct ProcessCapabilities
     // denied (a policy or a driver, #1358). Never true together with hasNetworkCounters or
     // hasReducedPrivileges. Linux: always false (its gaps are hasReducedPrivileges).
     bool networkCountersBlocked = false;
-    bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; Windows: shareable working set)
     // Which permissions are missing, as MissingPrivilege bits (#2303), so the Limited Data notice and the
     // status bar can say what each one blocks. Linux only; 0 elsewhere (Windows keeps its own notice).
     std::uint8_t missingPrivileges = 0;

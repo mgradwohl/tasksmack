@@ -1,19 +1,24 @@
 #include "PipeBroker.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <expected>
 #include <format>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 
@@ -24,17 +29,57 @@ namespace
 {
 
 constexpr const char* HELPER_TIMED_OUT = "the helper didn't answer in time";
-constexpr const char* ALREADY_STARTING = "already starting the administrator helper";
+constexpr const char* CANCELLED = "cancelled";
+constexpr const char* PROMPT_TIMED_OUT = "the administrator's consent wasn't given in time";
 
 } // namespace
 
-PipeBroker::PipeBroker(Launcher launcher) : m_Launcher(std::move(launcher))
+/// One run of the launcher, shared by its thread and the connect waiting for it: whichever is last lets
+/// go of it, the helper's handle with it.
+struct PipeBroker::Launch
+{
+    std::wstring pipeName; // the pipe the helper is told to serve
+    std::mutex mutex;
+    std::condition_variable_any done;
+    std::optional<std::expected<UniqueHandle, std::string>> result; // set once, when the launcher returns
+
+    [[nodiscard]] bool finished()
+    {
+        const std::scoped_lock lock(mutex);
+        return result.has_value();
+    }
+
+    /// The helper this launch started, if it returned one that is still running: a prompt approved after
+    /// its connect gave up, whose helper still waits for its client (#2572 review, finding 2). Taken
+    /// once; nothing otherwise.
+    [[nodiscard]] UniqueHandle takeLiveHelper()
+    {
+        const std::scoped_lock lock(mutex);
+        if (!result.has_value() || !result->has_value() || !(*result)->valid() || WaitForSingleObject((*result)->get(), 0) != WAIT_TIMEOUT)
+        {
+            return {};
+        }
+        return std::move(**result);
+    }
+};
+
+PipeBroker::PipeBroker(Launcher launcher, bool readsOtherUsers)
+    : m_ReadsOtherUsers(readsOtherUsers), m_Launcher(std::make_shared<const Launcher>(std::move(launcher)))
 {}
 
 PipeBroker::~PipeBroker()
 {
     try
     {
+        // A connect in progress gives up at once: every wait it makes ends on m_Closing, and a UAC prompt
+        // it is waiting for is left on its own thread (launch()). Its end is waited for only so the
+        // members outlive it; it holds nothing long but m_Mutex, which a call holds for CALL_TIMEOUT at most.
+        m_Closing.request_stop();
+        const std::shared_ptr<ConnectState> state = m_ConnectState;
+        {
+            std::unique_lock lock(state->mutex);
+            state->done.wait(lock, [&state] { return !state->active; });
+        }
         const std::scoped_lock lock(m_Mutex);
         closeLocked(); // the helper sees its pipe close and exits
     }
@@ -70,15 +115,23 @@ std::expected<void, std::string> PipeBroker::connectWithin(const std::stop_token
         return {};
     }
     // One start at a time (#2391): a second request while a UAC prompt is up says so at once, rather
-    // than queue behind the lock, deaf to its stop token, and raise another prompt after it.
-    if (m_Connecting.exchange(true))
+    // than queue, deaf to its stop token, and raise another prompt after it. The flag is in memory this
+    // connect shares, so the guard's last touch, which the destructor waits for, isn't of a member.
+    const std::shared_ptr<ConnectState> state = m_ConnectState;
     {
-        return std::unexpected(std::string(ALREADY_STARTING));
+        const std::scoped_lock lock(state->mutex);
+        if (state->active)
+        {
+            return std::unexpected(std::string(ALREADY_ASKING));
+        }
+        state->active = true;
     }
+    m_Connecting = true;
     struct ConnectingGuard
     {
         std::atomic<bool>& connecting;
-        explicit ConnectingGuard(std::atomic<bool>& flag) noexcept : connecting(flag)
+        std::shared_ptr<ConnectState> state;
+        ConnectingGuard(std::atomic<bool>& flag, std::shared_ptr<ConnectState> shared) noexcept : connecting(flag), state(std::move(shared))
         {}
         ConnectingGuard(const ConnectingGuard&) = delete;
         ConnectingGuard& operator=(const ConnectingGuard&) = delete;
@@ -86,65 +139,182 @@ std::expected<void, std::string> PipeBroker::connectWithin(const std::stop_token
         ConnectingGuard& operator=(ConnectingGuard&&) = delete;
         ~ConnectingGuard()
         {
-            connecting = false;
+            connecting = false; // the last touch of the broker: the destructor is waiting for what follows
+            {
+                const std::scoped_lock lock(state->mutex);
+                state->active = false;
+            }
+            state->done.notify_all();
         }
-    } const guard(m_Connecting);
-    const std::scoped_lock lock(m_Mutex);
+    } const guard(m_Connecting, state);
     if (m_Connected.load())
     {
-        return {};
+        return {}; // another connect finished as this one began
     }
-    closeLocked();
+    // A launch given up on earlier (its prompt still up) is waited out, not stacked with a second one.
+    // Once it has returned, a helper it started that still waits for its client is used, not wasted for
+    // a second prompt (#2572 review, finding 2).
+    UniqueHandle adopted;
+    std::wstring pipeName;
+    if (m_Pending != nullptr)
+    {
+        if (!m_Pending->finished())
+        {
+            return std::unexpected(std::string(ALREADY_ASKING));
+        }
+        adopted = m_Pending->takeLiveHelper();
+        if (adopted)
+        {
+            pipeName = m_Pending->pipeName;
+        }
+        m_Pending.reset();
+    }
+    {
+        const std::scoped_lock lock(m_Mutex);
+        closeLocked(); // what is left of a session that ended
+    }
 
-    auto pipeName = BrokerPipe::makePipeName();
-    if (!pipeName.has_value())
+    // Ends this connect's waits on the caller's stop token, or when the broker is destroyed.
+    std::stop_source giveUp;
+    const std::stop_callback onStop(stopToken, [&giveUp] { giveUp.request_stop(); });
+    const std::stop_callback onClose(m_Closing.get_token(), [&giveUp] { giveUp.request_stop(); });
+
+    if (!adopted)
     {
-        return std::unexpected(std::move(pipeName.error()));
+        auto name = BrokerPipe::makePipeName();
+        if (!name.has_value())
+        {
+            return std::unexpected(std::move(name.error()));
+        }
+        pipeName = std::move(*name);
+        // Outside m_Mutex: the UAC prompt has no time limit (#2549).
+        auto helper = launch(pipeName, giveUp.get_token(), timeout);
+        if (!helper.has_value())
+        {
+            return std::unexpected(std::move(helper.error()));
+        }
+        if (!helper->valid())
+        {
+            return std::unexpected(std::string("the helper started without a process to check"));
+        }
+        adopted = std::move(*helper);
     }
-    auto helper = m_Launcher(*pipeName, stopToken);
-    if (!helper.has_value())
+    const std::scoped_lock lock(m_Mutex);
+    // The helper's process stays open from here to closeLocked(), so its PID can't name another process
+    // while the pipe's server is checked against it.
+    m_Helper = std::move(adopted);
+    if (auto connected = handshakeLocked(pipeName, giveUp.get_token(), timeout); !connected.has_value())
     {
-        return std::unexpected(std::move(helper.error()));
+        closeLocked();
+        return connected;
     }
-    if (!helper->valid())
+    m_Connected = true;
+    return {};
+}
+
+std::expected<UniqueHandle, std::string>
+PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, std::chrono::milliseconds timeout)
+{
+    // This launch's own stop: stopped with @p giveUp, and whenever this stops waiting for it, so a
+    // launcher that waits on its token is let go once nobody waits for it (#2572 review, finding 3).
+    std::stop_source launchStop;
+    const std::stop_callback link(giveUp, [&launchStop] { launchStop.request_stop(); });
+    struct StopOnReturn
     {
-        return std::unexpected(std::string("the helper started without a process to check"));
+        std::stop_source& source;
+        explicit StopOnReturn(std::stop_source& stop) noexcept : source(stop)
+        {}
+        StopOnReturn(const StopOnReturn&) = delete;
+        StopOnReturn& operator=(const StopOnReturn&) = delete;
+        StopOnReturn(StopOnReturn&&) = delete;
+        StopOnReturn& operator=(StopOnReturn&&) = delete;
+        ~StopOnReturn()
+        {
+            source.request_stop();
+        }
+    } const stopOnReturn(launchStop);
+
+    std::shared_ptr<Launch> pending;
+    try
+    {
+        pending = std::make_shared<Launch>();
+        pending->pipeName = pipeName;
+        // Made before the thread, so recording a result there allocates nothing: a launch always ends
+        // with one, or m_Pending would hold every later connect off.
+        std::expected<UniqueHandle, std::string> fallback = std::unexpected(std::string("the helper couldn't be started"));
+        // Detached: a prompt can't be taken down, so nothing could join this thread in time. It owns all
+        // it touches, the launcher included.
+        std::thread(
+            [pending, launcher = m_Launcher, token = launchStop.get_token(), result = std::move(fallback)]() mutable
+            {
+                try
+                {
+                    result = (*launcher)(pending->pipeName, token);
+                }
+                catch (...) // NOLINT(bugprone-empty-catch) - the fallback says so
+                {}
+                try
+                {
+                    const std::scoped_lock lock(pending->mutex);
+                    pending->result = std::move(result);
+                }
+                catch (...) // NOLINT(bugprone-empty-catch) - the mutex failed: the connect gives up at its timeout
+                {}
+                pending->done.notify_all();
+            })
+            .detach();
     }
-    const DWORD helperPid = GetProcessId(helper->get());
+    catch (const std::exception& error)
+    {
+        return std::unexpected(std::format("couldn't start the helper: {}", error.what()));
+    }
+    std::unique_lock lock(pending->mutex);
+    if (!pending->done.wait_for(lock, giveUp, timeout, [&pending] { return pending->result.has_value(); }))
+    {
+        lock.unlock();
+        m_Pending = std::move(pending);
+        return std::unexpected(std::string(giveUp.stop_requested() ? CANCELLED : PROMPT_TIMED_OUT));
+    }
+    return std::move(*pending->result);
+}
+
+std::expected<void, std::string>
+PipeBroker::handshakeLocked(const std::wstring& pipeName, const std::stop_token& giveUp, std::chrono::milliseconds timeout)
+{
+    const DWORD helperPid = GetProcessId(m_Helper.get());
     if (helperPid == 0)
     {
         return std::unexpected(std::string("couldn't tell the helper's process ID"));
     }
-    // The helper's process stays open from here to closeLocked(), so its PID can't name another process
-    // while the pipe's server is checked against it.
-    m_Helper = std::move(*helper);
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    auto pipe = BrokerPipe::connectToServer(*pipeName, helperPid, m_Helper.get(), timeout, stopToken);
+    auto pipe = BrokerPipe::connectToServer(pipeName, helperPid, m_Helper.get(), timeout, giveUp);
     if (!pipe.has_value())
     {
-        closeLocked();
+        // A helper that refused to serve says why in its exit status (BrokerHelper::Exit).
+        DWORD code = 0;
+        if (WaitForSingleObject(m_Helper.get(), 0) == WAIT_OBJECT_0 && GetExitCodeProcess(m_Helper.get(), &code) != FALSE)
+        {
+            return std::unexpected(std::format("{}: {}", pipe.error(), BrokerHelper::exitMeaning(code)));
+        }
         return std::unexpected(std::move(pipe.error()));
     }
     m_Pipe = std::move(*pipe);
 
     const auto left = std::max(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()),
                                std::chrono::milliseconds{0});
-    const auto reply = roundTrip(Broker::Hello{}, left, stopToken);
+    const auto reply = roundTrip(Broker::Hello{}, left, giveUp);
     if (!reply.has_value())
     {
-        closeLocked();
         return std::unexpected(reply.error());
     }
     const auto* const hello = std::get_if<Broker::HelloReply>(&*reply);
     if (hello == nullptr || !hello->accepted)
     {
-        closeLocked();
         return std::unexpected(
             hello == nullptr
                 ? std::string("the helper didn't answer the handshake")
                 : std::format("the helper speaks protocol version {}, TaskSmack {}", hello->version, Broker::PROTOCOL_VERSION));
     }
-    m_Connected = true;
     return {};
 }
 
@@ -156,6 +326,12 @@ void PipeBroker::disconnect()
 
 std::expected<Broker::Response, std::string> PipeBroker::call(const Broker::Request& request, const std::stop_token& stopToken)
 {
+    // Not connected (a connect may be waiting for its UAC prompt): said at once, never after waiting
+    // for the lock (#2549).
+    if (!m_Connected.load())
+    {
+        return std::unexpected(std::string("not connected"));
+    }
     const std::scoped_lock lock(m_Mutex);
     if (!m_Connected.load())
     {
@@ -171,6 +347,11 @@ std::expected<Broker::Response, std::string> PipeBroker::call(const Broker::Requ
 
 std::expected<Broker::Response, std::string> PipeBroker::callIfIdle(const Broker::Request& request, std::chrono::milliseconds timeout)
 {
+    if (!m_Connected.load())
+    {
+        // A connect in progress is "busy", as PkexecBroker's, whose connect holds its lock, is.
+        return std::unexpected(std::string(m_Connecting.load() ? "busy" : "not connected"));
+    }
     const std::unique_lock lock(m_Mutex, std::try_to_lock);
     if (!lock.owns_lock())
     {
@@ -264,7 +445,7 @@ PipeBroker::roundTrip(const Broker::Request& request, std::chrono::milliseconds 
                 m_Unanswered = id;
                 return std::unexpected(std::string(HELPER_TIMED_OUT));
             case BrokerPipe::ReceiveEnd::Stopped:
-                return std::unexpected(std::string("cancelled"));
+                return std::unexpected(std::string(CANCELLED));
             case BrokerPipe::ReceiveEnd::Failed:
                 break;
             }

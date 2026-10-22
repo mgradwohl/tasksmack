@@ -39,6 +39,16 @@ class IPrivilegedBroker
     /// helper isn't installed, it didn't answer).
     [[nodiscard]] virtual std::expected<void, std::string> connect(const std::stop_token& stopToken) = 0;
 
+    /// Whether the helper, once started, can read processes that aren't TaskSmack's user's own (#2550):
+    /// what "Authenticate to read" is for. False where every elevation runs as another account and the
+    /// helper then reads only the user's own processes (a standard user's Windows TaskSmack, whose UAC
+    /// prompt asks for an administrator's password): the readers then don't offer a prompt that can't
+    /// help. Actions are offered either way. Known before the helper starts; it never changes.
+    [[nodiscard]] virtual bool readsOtherUsers() const noexcept
+    {
+        return true;
+    }
+
     /// Sends @p request and waits for its response, for at most the transport's bounded wait or until
     /// @p stopToken is stopped. Blocking: call it from a worker (ProcessActionRun, #2305), never the
     /// UI thread. The error is why there is no response (not connected, broken channel, timed out).

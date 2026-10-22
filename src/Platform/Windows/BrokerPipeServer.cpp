@@ -38,11 +38,36 @@ namespace
 
 } // namespace
 
+bool isActionWindowsDoes(const Broker::Request& request) noexcept
+{
+    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess).
+    return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
+           std::holds_alternative<Broker::AffinityRequest>(request);
+}
+
+bool isRead(const Broker::Request& request) noexcept
+{
+    // Every kind is sorted into the Hello, an action or a read. One added to Broker::Request must be
+    // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
+    // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
+    static_assert(std::variant_size_v<Broker::Request> == 12, "sort the new request kind into an action or a read");
+    return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
+           std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
+           std::holds_alternative<Broker::MemoryRollupRequest>(request) || std::holds_alternative<Broker::FirmwareFileRequest>(request) ||
+           std::holds_alternative<Broker::CrashesRequest>(request);
+}
+
+bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept
+{
+    return Broker::putsOffTheIdleExit(request) && (std::holds_alternative<Broker::Hello>(request) || isActionWindowsDoes(request));
+}
+
 SessionEnd serve(HANDLE pipe,
                  const RequestHandler& handler,
                  std::chrono::milliseconds idleTimeout,
                  const std::stop_token& stopToken,
-                 const Broker::IdleClock& clock)
+                 const Broker::IdleClock& clock,
+                 Grant grant)
 {
     bool greeted = false;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
@@ -75,6 +100,7 @@ SessionEnd serve(HANDLE pipe,
         Broker::Response response;
         std::uint32_t requestId = 0;
         bool endAfterReply = false;
+        bool actionAnswered = false;
         if (!decoded.has_value())
         {
             response = Broker::ErrorReply{.message = decoded.error()};
@@ -83,7 +109,8 @@ SessionEnd serve(HANDLE pipe,
         else
         {
             requestId = decoded->requestId;
-            if (Broker::putsOffTheIdleExit(decoded->message))
+            const bool greetsAgain = greeted && std::holds_alternative<Broker::Hello>(decoded->message);
+            if (putsOffTheWindowsIdleExit(decoded->message) && (grant != Grant::OneAction || !greetsAgain))
             {
                 lastActivity = Broker::idleNow(clock);
             }
@@ -102,6 +129,8 @@ SessionEnd serve(HANDLE pipe,
             else
             {
                 response = answer(handler, decoded->message);
+                // Fails closed (#2550): anything that isn't a read counts as the one action.
+                actionAnswered = !isRead(decoded->message);
             }
         }
         std::vector<std::uint8_t> reply = Broker::encodeResponse(requestId, response);
@@ -120,6 +149,10 @@ SessionEnd serve(HANDLE pipe,
         if (endAfterReply)
         {
             return SessionEnd::HandshakeFailed;
+        }
+        if (grant == Grant::OneAction && actionAnswered)
+        {
+            return SessionEnd::ActionDone; // the consent was for this one action (#2550)
         }
     }
 }
