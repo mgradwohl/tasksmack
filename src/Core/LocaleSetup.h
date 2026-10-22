@@ -9,7 +9,7 @@
 //            with ".UTF-8", else "C.UTF-8", else "en_US.UTF-8"
 //   Both     then setlocale(LC_NUMERIC, "C")
 //
-// The C++ side builds userLocale(), the user's locale for display, and its userNumberPunctuation()
+// The C++ side builds the user's locale for display and its userNumberPunctuation()
 // (the decimal mark, digit grouping and thousands separator UI::Format prints numbers with, #1648
 // slice E), and installs a global locale built from it. TaskSmack uses NumericFacets::Classic: the
 // global locale keeps the user's collation, ctype and time facets but the classic
@@ -17,8 +17,8 @@
 // formatting never reads the global locale. NumericFacets::User keeps the user's numeric facets in
 // the global locale too; nothing in TaskSmack uses it now.
 //
-// TASKSMACK_LOCALE (a test hook, read only when set) replaces the locale userLocale() and
-// userNumberPunctuation() are built from, e.g. "de-DE" (Windows) or "de_DE" (Linux), so a
+// TASKSMACK_LOCALE (a test hook, read only when set) replaces the user's locale, which
+// userNumberPunctuation() is built from, e.g. "de-DE" (Windows) or "de_DE" (Linux), so a
 // screenshot on an en-US machine can show decimal commas. The C locale and the global C++ locale
 // are not changed by it.
 //
@@ -136,8 +136,8 @@ struct Summary
     unsigned activeCodePage = 0;       ///< GetACP() on Windows (65001 = UTF-8); 0 elsewhere
     std::string cLocale;               ///< setlocale(LC_ALL, nullptr)
     std::string globalLocaleName;      ///< std::locale().name()
-    std::string userLocaleName;        ///< userLocale().name()
-    bool userLocaleOverridden = false; ///< userLocale() came from TASKSMACK_LOCALE
+    std::string userLocaleName;        ///< the user's locale's name()
+    bool userLocaleOverridden = false; ///< the user's locale came from TASKSMACK_LOCALE
     std::vector<std::string> warnings;
 };
 
@@ -146,10 +146,7 @@ struct Summary
 /// Logs nothing, since logging is not up yet: log the result with describe() once it is.
 const Summary& initialize(NumericFacets numerics);
 
-/// The user's locale with a UTF-8 codeset, for display; the classic locale before initialize().
-[[nodiscard]] const std::locale& userLocale() noexcept;
-
-/// userLocale()'s numberPunctuation() with the OS's separators, read once by initialize(): what
+/// The user's locale's numberPunctuation() with the OS's separators, read once by initialize(): what
 /// UI::Format prints displayed numbers with. The classic locale's ('.', no grouping) before it.
 [[nodiscard]] const NumberPunctuation& userNumberPunctuation() noexcept;
 

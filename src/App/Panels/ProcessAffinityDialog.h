@@ -119,9 +119,4 @@ class ProcessAffinityDialog
                                                                 const Platform::CpuAffinity& cpus,
                                                                 const Platform::ProcessActionResult& result);
 
-/// The CPUs to offer for a process whose affinity is @p current, on a machine with @p onlineCpus logical
-/// CPUs (0 when unknown): every online one, and any higher one its affinity already names (one
-/// that went offline since keeps its box). At least one.
-[[nodiscard]] std::size_t affinityDialogCpuCount(const Platform::CpuAffinity& current, std::size_t onlineCpus) noexcept;
-
 } // namespace App

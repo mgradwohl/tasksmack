@@ -56,4 +56,11 @@ class Scenario;
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
                                                                             std::shared_ptr<Platform::IPrivilegedBroker> broker);
 
+namespace Detail
+{
+/// Test seam: @p broker in place of the installed helper's for every panel platform made after it, so a
+/// test sees which ones go through the helper (#2479); null puts the installed one back.
+void setSharedPrivilegedBrokerForTesting(std::shared_ptr<Platform::IPrivilegedBroker> broker);
+} // namespace Detail
+
 } // namespace App

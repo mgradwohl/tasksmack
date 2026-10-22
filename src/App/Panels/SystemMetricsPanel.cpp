@@ -595,6 +595,7 @@ void SystemMetricsPanel::renderOverview()
             .hasCpuFreq = caps.hasCpuFreq,
             .hasUptime = caps.hasUptime,
             .hasVirtualizationInfo = caps.hasVirtualizationInfo,
+            .hasVirtualizationSecurityInfo = caps.hasVirtualizationSecurityInfo,
             .processCount = hasProcesses ? std::optional<std::size_t>{processCount} : std::nullopt,
             .threadCount = (hasProcesses && m_ProcessCapabilities.hasThreadCount) ? lastOf(m_ProcessThreadCountHistory) : std::nullopt,
             .handleCount = (hasProcesses && m_ProcessCapabilities.hasHandleCount) ? lastOf(m_ProcessHandleCountHistory) : std::nullopt,

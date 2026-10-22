@@ -1,5 +1,6 @@
 #include "ProcessActionsView.h"
 
+#include "AuthorizeWording.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
@@ -7,7 +8,6 @@
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDumpView.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -209,11 +209,11 @@ void ProcessActionsView::renderResultFeedback()
     // A permission refusal an administrator could redo (#2308): the shield and the words, never colour alone.
     if (offersAuthenticateAndRetry())
     {
-        if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
         {
             retryAuthorized();
         }
-        ImGui::SetItemTooltip("Asks for an administrator's password, then does it as the administrator");
+        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
     }
     ImGui::Spacing();
 }

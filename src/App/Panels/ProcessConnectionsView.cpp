@@ -1,5 +1,6 @@
 #include "ProcessConnectionsView.h"
 
+#include "AuthorizeWording.h"
 #include "Domain/ProcessConnections.h"
 #include "Platform/IProcessConnections.h"
 #include "UI/CellText.h"
@@ -34,7 +35,7 @@ void ProcessConnectionsView::render(bool hasConnections)
 {
     if (!hasConnections)
     {
-        return; // Windows (for now) and synthetic runs: no section at all
+        return; // Synthetic runs, or a reader without connections: no section at all
     }
     // Collapsed by default: nothing is read until it is opened.
     if (!ImGui::CollapsingHeader(ICON_FA_NETWORK_WIRED "  Connections###ProcessConnections"))
@@ -60,11 +61,11 @@ void ProcessConnectionsView::render(bool hasConnections)
         // Another user's process: an administrator can read it (#2309). The lock and the words.
         if (offersAuthenticateToRead())
         {
-            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate to read"))
+            if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
             {
                 requestAuthorizedRead();
             }
-            ImGui::SetItemTooltip("Asks for an administrator's password, then reads it as the administrator");
+            ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
         }
         return;
     }

@@ -375,9 +375,6 @@ class Theme
     /// Get current color scheme
     [[nodiscard]] auto scheme() const -> const ColorScheme&;
 
-    /// Get theme name
-    [[nodiscard]] auto themeName(std::size_t index) const -> std::string_view;
-
     /// Get accent color by index (wraps around)
     [[nodiscard]] auto accentColor(std::size_t index) const -> ImVec4;
 

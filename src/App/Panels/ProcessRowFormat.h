@@ -260,21 +260,6 @@ template<std::integral T> [[nodiscard]] inline AlignedCellText countCell(T value
     return cell;
 }
 
-[[nodiscard]] inline std::string formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit)
-{
-    return alignedBytesCell(bytes, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedBytesPerSecString(double bytesPerSec, UI::Format::ByteUnit unit)
-{
-    return alignedBytesPerSecCell(bytesPerSec, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedPowerString(double watts)
-{
-    return alignedPowerCell(watts).text;
-}
-
 /// @p engines comma-joined ("3D, Compute"), as the GPU Engine and NPU Engine cells show them; empty for none.
 [[nodiscard]] inline std::string joinEngines(const std::vector<std::string>& engines)
 {
@@ -477,8 +462,8 @@ struct RowFormatCache
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
     fmt.gpuEngines = joinEngines(proc.gpuEngines);
     // The NPU columns (#1799) as the GPU ones: their figures are read with the GPU's, so a failed or
-    // missing GPU read leaves them unread too. Without an NPU or compute accelerator -- every Linux
-    // system until #1827 -- they are not available on this system.
+    // missing GPU read leaves them unread too. Without an NPU or compute accelerator they are not
+    // available on this system.
     if (!(fmt.npuSupported && options.hasPerProcessNpuUtilization))
     {
         fmt.npuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);

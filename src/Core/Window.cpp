@@ -825,6 +825,30 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         }
         setPosition(fitted.x, fitted.y);
     }
+    else if (supportsPositioning())
+    {
+        // No saved position: the window is where the system placed it at its created size, centred
+        // for a first launch. Shrunk to fit, it is moved wholly inside the display's usable bounds, so
+        // it opens neither partly off a display smaller than the default nor under the taskbar (#2735).
+        if (const auto target = WindowGeometry::targetDisplayIndex(fitted, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+            target.has_value())
+        {
+            const WindowGeometry::Rect inside = WindowGeometry::moveInside(fitted, displays[*target]);
+            if (inside.width != fitted.width || inside.height != fitted.height)
+            {
+                setSize(inside.width, inside.height);
+            }
+            if (inside.x != saved.x || inside.y != saved.y) // saved holds where the window is now
+            {
+                spdlog::info("Window::applySavedGeometry: moved from ({}, {}) to ({}, {}) to lie on the display",
+                             saved.x,
+                             saved.y,
+                             inside.x,
+                             inside.y);
+                setPosition(inside.x, inside.y);
+            }
+        }
+    }
 
     // The normal geometry a later maximize from outside the app restores to, until the window is
     // moved or resized (#1250).

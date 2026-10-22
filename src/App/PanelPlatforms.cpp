@@ -1,5 +1,6 @@
 #include "PanelPlatforms.h"
 
+#include "NativeWindow.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
@@ -22,11 +23,24 @@ namespace App
 namespace
 {
 
+/// The broker a test put in place of the installed helper's (Detail::setSharedPrivilegedBrokerForTesting()).
+[[nodiscard]] std::shared_ptr<Platform::IPrivilegedBroker>& brokerForTesting()
+{
+    static std::shared_ptr<Platform::IPrivilegedBroker> broker;
+    return broker;
+}
+
 /// The one privileged broker every real run's IProcessActions shares (#2308): made once, on first use,
-/// and started only when the user first chooses "Authenticate and retry". Null where there is none.
+/// and started only when the user first chooses "Authenticate and retry" ("Retry as administrator" on
+/// Windows). Null where there is none. Its prompt belongs to the main window (#2550), which exists
+/// before any panel asks for this. A test's broker, while one is set, comes first.
 [[nodiscard]] const std::shared_ptr<Platform::IPrivilegedBroker>& sharedPrivilegedBroker()
 {
-    static const std::shared_ptr<Platform::IPrivilegedBroker> broker = Platform::makePrivilegedBroker();
+    if (const std::shared_ptr<Platform::IPrivilegedBroker>& replaced = brokerForTesting(); replaced != nullptr)
+    {
+        return replaced;
+    }
+    static const std::shared_ptr<Platform::IPrivilegedBroker> broker = Platform::makePrivilegedBroker(mainNativeWindow());
     return broker;
 }
 
@@ -103,6 +117,11 @@ std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Syntheti
     }
     // Its own probe: the System tab's model keeps its probe to itself, under its read lock.
     return crashHistoryProbe(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
+}
+
+void Detail::setSharedPrivilegedBrokerForTesting(std::shared_ptr<Platform::IPrivilegedBroker> broker)
+{
+    brokerForTesting() = std::move(broker);
 }
 
 std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,

@@ -65,8 +65,8 @@ using ProcessRowFormat::RowFormatCache;
 
 /// Domain::Priority::getProcessPriorityLabel()'s complete fixed set of possible return values, taken
 /// from Domain rather than duplicated here -- a hand-duplicated copy would silently drift (and make
-/// getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain ever
-/// renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
+/// TextSizeCache::priorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if
+/// Domain ever renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
 /// AlignedCellText: both ProcessesPanel::TextSizeCache (header) and the free helper functions in
 /// ProcessesPanel.cpp's anonymous namespace need to see it, and it must be visible wherever
 /// TextSizeCache::priorityLabelWidths is sized.

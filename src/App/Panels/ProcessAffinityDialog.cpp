@@ -47,21 +47,6 @@ constexpr float GRID_MAX_ROWS = 12.0F;
 
 } // namespace
 
-std::size_t affinityDialogCpuCount(const Platform::CpuAffinity& current, std::size_t onlineCpus) noexcept
-{
-    std::size_t highest = 0;
-    const std::size_t width = current.words().size() * Platform::CpuAffinity::BITS_PER_WORD;
-    for (std::size_t cpu = width; cpu > 0; --cpu)
-    {
-        if (current.test(cpu - 1))
-        {
-            highest = cpu;
-            break;
-        }
-    }
-    return std::max({onlineCpus, highest, std::size_t{1}});
-}
-
 void ProcessAffinityDialog::open(Platform::ProcessTarget target,
                                  std::string name,
                                  const Platform::CpuAffinity& current,

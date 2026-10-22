@@ -75,6 +75,14 @@ constexpr const char* CPU_SYSTEM_LABEL = "System";
 // call one quantity by one name (#1273).
 constexpr const char* MEM_USED_LABEL = "Memory";
 constexpr const char* MEM_SHARED_LABEL = "Shared";
+#ifdef _WIN32
+// Windows' Shared is the shareable working set (#2583), not the pages shared now: its strip entry says so.
+constexpr const char* MEM_SHARED_TOOLTIP = "Shareable working set: the pages of its working set that can be shared with other "
+                                           "processes (DLLs, mapped files), whether or not another process maps them now. "
+                                           "The working set less Memory, the private working set";
+#else
+constexpr const char* MEM_SHARED_TOOLTIP = nullptr;
+#endif
 // A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
 // its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
 constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
@@ -394,6 +402,7 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
                 UI::InlineText::format("{}: {}", MEM_SHARED_LABEL, App::Detail::formatBytesWithRamShare(sharedNow, percentPerByte)),
             .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
             .color = theme.scheme().chartMemoryShared,
+            .stripTooltip = MEM_SHARED_TOOLTIP,
         });
     }
     memoryBars.push_back({.valueText = UI::Format::formatBytes(smoothed.virtualBytes),
@@ -941,8 +950,8 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     const ChartTimeAxis axis = chartTimeAxis(history, ctx.maxHistorySeconds);
     const std::size_t alignedCount = axis.alignedCount;
 
-    // Shared is not reported on Windows; its line, tooltip row and bar are left out there rather than
-    // shown as a permanent 0 (#1035).
+    // Shared's line, tooltip row and bar are left out where the platform doesn't report it, rather than
+    // shown as a permanent 0 (#1035). Windows reports it as the shareable working set (#2583).
     const bool showShared = ctx.hasSharedMemory;
     const MemoryChartData data{
         .used = tailSpan(history.series(ProcessSeries::MemoryUsed), alignedCount),
@@ -1017,7 +1026,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     // Private and Swap, the Processes table's columns (#1885), where the platform reads them: lines
     // without bars, so listed in the strip like Peak, in their lines' colours. Windows fills neither --
     // its private bytes are the commit charge the Virtual line already draws, and it has no per-process
-    // swap -- so both are left out there, as Shared is (#1035, #1879).
+    // swap -- so both are left out there (#1879).
     if (ctx.hasPrivateBytes && ctx.snapshot != nullptr)
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{

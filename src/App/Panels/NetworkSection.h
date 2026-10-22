@@ -61,6 +61,7 @@ struct FrameCache
     /// cells (#1375).
     struct StatusRowText
     {
+        NetInterfaceUtils::InterfaceType type = NetInterfaceUtils::InterfaceType::Other; ///< The Type column's icon (#2568)
         std::string speed;
         NetInterfaceUtils::RateCell sent;
         NetInterfaceUtils::RateCell received;

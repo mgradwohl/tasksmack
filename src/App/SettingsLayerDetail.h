@@ -70,38 +70,6 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 }};
 
 // ========================================
-// Index lookup functions
-// Return the index of the matching value, or a sensible default if not found.
-// ========================================
-
-/// Find the index for a given font size.
-/// @return Index into FONT_SIZE_OPTIONS, or 1 (Medium) if not found.
-[[nodiscard]] inline auto findFontSizeIndex(UI::FontSize size) -> std::size_t
-{
-    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
-    const auto it = std::ranges::find_if(FONT_SIZE_OPTIONS, [size](const auto& opt) { return opt.value == size; });
-    return it != FONT_SIZE_OPTIONS.end() ? static_cast<std::size_t>(it - FONT_SIZE_OPTIONS.begin()) : 1;
-}
-
-/// Find the index for a given refresh rate in milliseconds.
-/// @return Index into REFRESH_RATE_OPTIONS, or 3 (1 second) if not found.
-[[nodiscard]] inline auto findRefreshRateIndex(int ms) -> std::size_t
-{
-    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
-    const auto it = std::ranges::find_if(REFRESH_RATE_OPTIONS, [ms](const auto& opt) { return opt.valueMs == ms; });
-    return it != REFRESH_RATE_OPTIONS.end() ? static_cast<std::size_t>(it - REFRESH_RATE_OPTIONS.begin()) : 3;
-}
-
-/// Find the index for a given history duration in seconds.
-/// @return Index into HISTORY_OPTIONS, or 2 (5 minutes) if not found.
-[[nodiscard]] inline auto findHistoryIndex(int seconds) -> std::size_t
-{
-    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
-    const auto it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
-    return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(it - HISTORY_OPTIONS.begin()) : 2;
-}
-
-// ========================================
 // Combo state and what Save writes (#1120, #1151)
 // ========================================
 

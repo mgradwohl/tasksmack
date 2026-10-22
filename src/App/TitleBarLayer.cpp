@@ -572,13 +572,12 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
     {
         // Threshold crossed: restore, and carry on the drag from where the restored window lands.
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
-        const auto [restoredX, restoredY] = window.getPosition();
-        const auto [restoredWidth, restoredHeight] = window.getSize();
-        const auto [adjustedX, adjustedY] = m_Drag.rebaseAfterRestore(restoredWidth, restoredY);
+        // Only the restored width is used: the saved restore position is replaced by one that keeps the
+        // pointer at the spot on the title bar it pressed, across and down (#2715).
+        const int restoredWidth = window.getSize().first;
+        const auto [adjustedX, adjustedY] = m_Drag.rebaseAfterRestore(restoredWidth, mx, my);
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, adjustedY); });
         Core::Application::get().signalWindowGeometryChanged();
-        (void) restoredX;
-        (void) restoredHeight;
         break;
     }
     case DragTracker::Step::Kind::Move:

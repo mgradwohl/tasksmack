@@ -208,7 +208,7 @@ inline void acceleratorDrawList(const Domain::GPUPublication& publication, std::
 }
 
 /// Whether the machine view shows its NPU tab (#1799): only once @p publication lists an NPU or other
-/// compute accelerator, enumerated or read. Never on Linux yet (#1827), nor before the first publication.
+/// compute accelerator, enumerated or read. Never before the first publication.
 [[nodiscard]] inline bool showAcceleratorTab(const Domain::GPUPublication* publication) noexcept
 {
     return publication != nullptr && (!publication->acceleratorInfo.empty() || !publication->acceleratorSnapshots.empty());

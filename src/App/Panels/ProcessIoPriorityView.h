@@ -46,14 +46,6 @@ namespace Detail
 /// a change made outside TaskSmack (ionice) shows up.
 inline constexpr double IO_PRIORITY_REFRESH_SECONDS = 2.0;
 
-/// The classes the control can set: the default first, the privileged one last.
-inline constexpr std::array<Platform::IoPriorityClass, 4> SETTABLE_IO_PRIORITY_CLASSES = {
-    Platform::IoPriorityClass::None,
-    Platform::IoPriorityClass::BestEffort,
-    Platform::IoPriorityClass::Idle,
-    Platform::IoPriorityClass::Realtime,
-};
-
 /// The class's name.
 [[nodiscard]] constexpr std::string_view ioPriorityClassName(Platform::IoPriorityClass ioClass) noexcept
 {

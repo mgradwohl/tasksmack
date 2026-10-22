@@ -146,6 +146,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_BLUETOOTH "\xef\x8a\x93" // U+f293 - Bluetooth
 #define ICON_FA_ETHERNET "\xef\x9e\x96"  // U+f796 - Ethernet plug
 #define ICON_FA_CLOUD "\xef\x83\x82"     // U+f0c2 - Cloud (for virtual/VPN)
+#define ICON_FA_SIGNAL "\xef\x80\x92"    // U+f012 - Signal bars (for mobile broadband)
 #define ICON_FA_HOUSE "\xef\x80\x95"     // U+f015 - House (for loopback)
 
 // ============================================================================

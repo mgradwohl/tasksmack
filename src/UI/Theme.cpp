@@ -410,15 +410,6 @@ auto Theme::scheme() const -> const ColorScheme&
     return m_LoadedSchemes[m_CurrentThemeIndex];
 }
 
-auto Theme::themeName(std::size_t index) const -> std::string_view
-{
-    if (index >= m_DiscoveredThemes.size())
-    {
-        return "Unknown";
-    }
-    return m_DiscoveredThemes[index].name;
-}
-
 auto Theme::accentColor(std::size_t index) const -> ImVec4
 {
     return scheme().accents[index % accentCount()];

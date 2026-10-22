@@ -59,11 +59,15 @@ namespace Detail
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline bool g_ChartAntiAliasingEnabled = true;
 
-// The frame on which an eased Y axis last asked for full-rate frames (easedChartUpperBound()), or -1.
+// The frame on which an eased Y axis last asked for frames (easedChartUpperBound()), or -1, and how
+// fast the fastest axis eased that frame, in chart heights per second (axisEaseHeightsPerSecond()).
 // The axis is eased before its chart is drawn, so the request is held here and made by the next
-// HistoryChart only if that chart is actually visible (#1125, #1281 review).
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+// HistoryChart only if that chart is actually visible (#1125, #1281 review), at the rate its height
+// turns that speed into (#2626).
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 inline int g_PendingEaseRequestFrame = -1;
+inline double g_PendingEaseHeightsPerSecond = 0.0;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 /// The series of the chart being copied, while it draws (HistoryChart::m_Csv); defined further down.
 struct CsvCapture;
@@ -87,6 +91,7 @@ inline void advanceFrameCacheGeneration() noexcept
 {
     ++g_FrameCacheGeneration;
     g_PendingEaseRequestFrame = -1;
+    g_PendingEaseHeightsPerSecond = 0.0;
     g_CsvRequestPlotId = 0;
     g_CsvRequestFrame = -1;
 }
@@ -173,6 +178,20 @@ inline void assertWithinImGuiFrame() noexcept
 [[nodiscard]] constexpr bool shouldRequestEaseFrames(int pendingFrame, int currentFrame, bool chartVisible) noexcept
 {
     return chartVisible && pendingFrame >= 0 && pendingFrame == currentFrame;
+}
+
+/// How fast an eased Y upper bound that moved from @p before to @p after in @p deltaSeconds rescales
+/// its chart, in chart heights per second: the top of the plotted data moves by about
+/// |after - before| / after of the plot's height (#2626). Times the plot's height in pixels, that is the
+/// on-screen speed Core::AnimationRequest::requestForEasing() paces. An unknown frame time or a bound
+/// that isn't positive and finite gives infinity: ask for the full rate, as every ease did before.
+[[nodiscard]] inline double axisEaseHeightsPerSecond(double before, double after, double deltaSeconds) noexcept
+{
+    if (!(deltaSeconds > 0.0) || !std::isfinite(deltaSeconds) || !(after > 0.0) || !std::isfinite(after) || !std::isfinite(before))
+    {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::abs(after - before) / after / deltaSeconds;
 }
 
 /// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
@@ -1953,9 +1972,6 @@ plotStyledLine(const char* label, const double* xData, const double* yData, int 
 // tooltip and table beside it: "1.5 GB", "45.0 W", "42%", localized (#1202).
 // ============================================================================
 
-/// Minimum character width for Y-axis labels to ensure all charts align
-inline constexpr int AXIS_LABEL_MIN_WIDTH = 8;
-
 namespace Detail
 {
 /// Copy `str` into ImPlot's label buffer; 0 and an empty label if it does not fit. The buffer is
@@ -2216,6 +2232,9 @@ struct NowBar
     /// with no fill (drawUnavailableVerticalBar()) rather than as a zero bar, which would read as a
     /// measured 0 (#1918). value01 is then ignored.
     bool available = true;
+    /// Hover text for the bar's value-strip entry when not null, as ValueStripEntry::tooltip: what the
+    /// series is, where its name alone could mislead (#2583: Shared on Windows). Must outlive the strip call.
+    const char* stripTooltip = nullptr;
 };
 
 /// A chart's NowBars, held in place: built every frame without a heap allocation (#1018). A chart
@@ -2722,16 +2741,29 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
         lastPruneFrame = frame;
         std::erase_if(state, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
     }
-    const double bound = stepEasedBound(state[chartId], target, frame, static_cast<double>(ImGui::GetIO().DeltaTime));
-    // A bound still easing rescales the whole chart every frame: keep the full animation rate until it
-    // settles (easeAxisUpperBound snaps to the target once close), then let the chart idle (#1125) --
-    // but only while the chart is visible.
+    EasedBound& eased = state[chartId];
+    const double before = eased.value;
+    const auto deltaSeconds = static_cast<double>(ImGui::GetIO().DeltaTime);
+    const double bound = stepEasedBound(eased, target, frame, deltaSeconds);
+    // A bound still easing rescales the whole chart every frame: ask for the frames that rescale needs
+    // until it settles (easeAxisUpperBound snaps to the target once close), then let the chart idle
+    // (#1125) -- but only while the chart is visible. The rate follows this frame's step
+    // (axisEaseHeightsPerSecond()), so the slow tail of an ease idles instead of holding the full
+    // animation rate for its last few seconds (#2626).
     // easeAxisUpperBound snaps to the target once close, so "settled" is exact; compared with a
     // tolerance relative to the bound's size rather than with ==.
     // The request is held until the chart is known to be visible: see Detail::g_PendingEaseRequestFrame.
     if (std::abs(bound - target) > 1e-9 * std::max(1.0, std::abs(target)))
     {
+        if (Detail::g_PendingEaseRequestFrame != frame)
+        {
+            Detail::g_PendingEaseHeightsPerSecond = 0.0;
+        }
         Detail::g_PendingEaseRequestFrame = frame;
+        // A second read in the same frame (the NowBars after the axis) returns the same bound and adds
+        // nothing: before == bound gives 0.
+        Detail::g_PendingEaseHeightsPerSecond =
+            std::max(Detail::g_PendingEaseHeightsPerSecond, axisEaseHeightsPerSecond(before, bound, deltaSeconds));
     }
     return bound;
 }
@@ -2901,15 +2933,14 @@ class HistoryChart
         // The plot fills the available width (size.x = -1); its data area is a little narrower (axis
         // labels), so this slightly overstates the scroll speed -- the safe side for pacing.
         const double plotWidthPx = static_cast<double>(ImGui::GetContentRegionAvail().x);
+        // Its height likewise, for an eased axis's rescale speed: a non-positive height fills the
+        // available height, as BeginPlot sizes it.
+        const double plotHeightPx = static_cast<double>((config.height > 0.0F) ? config.height : ImGui::GetContentRegionAvail().y);
         Detail::seriesMarkers().clear();
         m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags));
-        // An axis eased just before this chart asks for full-rate frames only if the chart is visible;
-        // the pending request is consumed either way, so it can't carry to another chart.
-        if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), m_Active))
-        {
-            Core::AnimationRequest::request();
-        }
-        Detail::g_PendingEaseRequestFrame = -1;
+        // An axis eased just before this chart asks for frames only if the chart is visible; the
+        // pending request is consumed either way, so it can't carry to another chart.
+        requestPendingEaseFrames(m_Active, plotHeightPx);
         if (!m_Active)
         {
             return;
@@ -2956,11 +2987,7 @@ class HistoryChart
             // This chart's bound was eased just before it began (easedRateAxisUpperBound()), and the chart
             // is visible (we're past BeginPlot): make its request here rather than leaving it pending for
             // the next chart or frame.
-            if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), true))
-            {
-                Core::AnimationRequest::request();
-            }
-            Detail::g_PendingEaseRequestFrame = -1;
+            requestPendingEaseFrames(true, plotHeightPx);
             ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, upper, ImPlotCond_Always);
             // Round 1-2-5 ticks, at most maxYTicks of them (#1202). Every fixed-limit chart starts
             // at 0 (percent and rate configs); any other lower bound keeps ImPlot's own ticks.
@@ -3035,6 +3062,19 @@ class HistoryChart
     }
 
   private:
+    /// Makes the pending axis-ease request (Detail::g_PendingEaseRequestFrame), if it is from this frame
+    /// and the chart is @p visible: the frames its rescale needs on a plot @p plotHeightPx tall (#2626).
+    /// Clears it either way.
+    static void requestPendingEaseFrames(bool visible, double plotHeightPx) noexcept
+    {
+        if (shouldRequestEaseFrames(Detail::g_PendingEaseRequestFrame, ImGui::GetFrameCount(), visible))
+        {
+            Core::AnimationRequest::requestForEasing(Detail::g_PendingEaseHeightsPerSecond * plotHeightPx);
+        }
+        Detail::g_PendingEaseRequestFrame = -1;
+        Detail::g_PendingEaseHeightsPerSecond = 0.0;
+    }
+
     /// The gathered series to the clipboard. noexcept, as the destructor calling it: a copy that
     /// can't be built (out of memory) is left out, and the chart still ends its plot.
     void copyCsvToClipboard() const noexcept
@@ -3321,7 +3361,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         std::string_view compactHead;
         std::string_view compactTail;
         bool rightAxis = false;         // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
-        std::string_view tooltip;       // An extra's hover text (ValueStripEntry::tooltip)
+        std::string_view tooltip;       // Hover text (ValueStripEntry::tooltip, NowBar::stripTooltip)
         AxisSide side = AxisSide::Left; // The side of the axis the series is read against (#1882)
     };
     static std::vector<Entry> entries; // UI thread only; reused
@@ -3350,7 +3390,7 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .compactHead = label.name,
                            .compactTail = bar.valueText,
                            .rightAxis = label.rightAxis,
-                           .tooltip = {},
+                           .tooltip = (bar.stripTooltip != nullptr) ? std::string_view(bar.stripTooltip) : std::string_view{},
                            .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
     }
     for (const ValueStripEntry& entry : extras)
@@ -3568,7 +3608,9 @@ inline void drawNowBar(const NowBar& bar, float plotHeight, float widthPerBar)
 
 /// Ask the frame loop for the frames a NowBar's easing needs (#1125): the bar's on-screen speed since
 /// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
-/// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
+/// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Paced as
+/// an ease (Core::AnimationRequest::requestForEasing()), so the small settles of an idle machine's bars
+/// stay on the idle path and only a real change asks for more (#2626). Keyed
 /// per bar by @p barId; a bar not drawn last frame (its tab was hidden) starts from rest.
 /// Frame-keyed: see "Frame-keyed caches" above (#1181).
 inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
@@ -3601,7 +3643,7 @@ inline void requestNowBarMotion(ImGuiID barId, double value01, float heightPx)
     LastDrawn& last = state[barId];
     if (last.frame == frame - 1)
     {
-        Core::AnimationRequest::requestForMotion(nowBarMotionPixelsPerSecond(
+        Core::AnimationRequest::requestForEasing(nowBarMotionPixelsPerSecond(
             last.value01, value01, static_cast<double>(heightPx), static_cast<double>(ImGui::GetIO().DeltaTime)));
     }
     last = LastDrawn{.value01 = value01, .frame = frame};

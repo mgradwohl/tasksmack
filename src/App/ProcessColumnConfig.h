@@ -194,7 +194,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // VIRT
         {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory: the commit size on Windows (memory committed for the process, as Task Manager's Commit size), the whole address space (vsize from /proc/[pid]/stat) on Linux"},
         // SHR
-        {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
+        {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory: the shareable working set on Windows (the pages of its working set that can be shared with other processes, such as DLLs and mapped files: the working set less its private working set), the resident shared pages (the shared field of /proc/[pid]/statm) on Linux"},
         // PEAK RES
         {.name="Peak Mem", .menuName="Peak Memory", .configKey="peak_resident", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum): the peak working set on Windows, shared pages included; VmHWM on Linux"},
         // Private (#1885, #1879)
@@ -474,12 +474,6 @@ struct ProcessColumnSettings
     [[nodiscard]] static ProcessColumnSettings defaults()
     {
         return {};
-    }
-
-    /// Whether every column is shown or hidden as it is by default.
-    [[nodiscard]] bool isDefault() const
-    {
-        return visible == defaults().visible;
     }
 
     friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;

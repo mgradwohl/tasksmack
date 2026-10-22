@@ -45,9 +45,10 @@ struct Row
 struct Inputs
 {
     const Domain::SystemSnapshot* snapshot = nullptr;
-    bool hasCpuFreq = false;            ///< Platform::SystemCapabilities::hasCpuFreq
-    bool hasUptime = false;             ///< Platform::SystemCapabilities::hasUptime
-    bool hasVirtualizationInfo = false; ///< Platform::SystemCapabilities::hasVirtualizationInfo
+    bool hasCpuFreq = false;                    ///< Platform::SystemCapabilities::hasCpuFreq
+    bool hasUptime = false;                     ///< Platform::SystemCapabilities::hasUptime
+    bool hasVirtualizationInfo = false;         ///< Platform::SystemCapabilities::hasVirtualizationInfo
+    bool hasVirtualizationSecurityInfo = false; ///< Platform::SystemCapabilities::hasVirtualizationSecurityInfo
     std::optional<std::size_t> processCount;
     std::optional<double> threadCount;
     std::optional<double> handleCount; ///< Handles (Windows) or file descriptors (elsewhere)
@@ -220,7 +221,7 @@ struct Inputs
     cache("L2 cache", cpu.l2CacheBytes);
     cache("L3 cache", cpu.l3CacheBytes);
 
-    // Virtualization (Windows)
+    // Virtualization (Windows, and Linux since #2592)
     if (in.hasVirtualizationInfo)
     {
         if (const auto text = virtualizationText(cpu); text.has_value())
@@ -238,8 +239,17 @@ struct Inputs
             unavailable("Virtualization", "This system did not report it");
         }
         flag("Hypervisor", cpu.hypervisorPresent, "Detected", "Not detected");
-        flag("Virtualization-based security", cpu.vbsRunning, "Running", "Not running");
-        flag("Memory integrity", cpu.hvciEnabled, "On", "Off");
+        // Windows only: Linux has neither (#809), so the rows are left out there, not shown as unknown
+        if (in.hasVirtualizationSecurityInfo)
+        {
+            flag("Virtualization-based security", cpu.vbsRunning, "Running", "Not running");
+            flag("Memory integrity", cpu.hvciEnabled, "On", "Off");
+        }
+        // Linux only (#2592): only a platform that reports it sets it
+        if (cpu.kvmAvailable.has_value())
+        {
+            add("KVM", *cpu.kvmAvailable ? "Available" : "Not available");
+        }
     }
 
     // Installed memory: what the Overview's header line used to show beside the CPU model
@@ -387,19 +397,6 @@ inline void spreadColumns(ColumnLayout& layout, float widthPx) noexcept
         }
         layout.totalWidth = widthPx;
     }
-}
-
-/// fitColumns() at `availableWidthPx`, then spreadColumns() over it: the shallowest layout that fits,
-/// spanning the whole width. The fewer rows, the more height the charts below keep.
-[[nodiscard]] inline ColumnLayout columnLayout(std::span<const float> labelWidthsPx,
-                                               std::span<const float> valueWidthsPx,
-                                               float availableWidthPx,
-                                               float perPairExtraPx) noexcept
-{
-    ColumnLayout layout =
-        fitColumns(labelWidthsPx, valueWidthsPx, {.availableWidthPx = availableWidthPx, .perPairExtraPx = perPairExtraPx});
-    spreadColumns(layout, availableWidthPx);
-    return layout;
 }
 
 } // namespace App::CpuDetailsText

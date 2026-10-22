@@ -1,5 +1,6 @@
 #include "ProcessIoPriorityView.h"
 
+#include "AuthorizeWording.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
@@ -164,11 +165,11 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
         if (offersAuthenticateAndRetry())
         {
-            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
+            if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
             {
                 retryAuthorized();
             }
-            ImGui::SetItemTooltip("Asks for an administrator's password, then sets the I/O priority as the administrator");
+            ImGui::SetItemTooltip("%s", AuthorizeWording::IO_PRIORITY_TOOLTIP);
         }
     }
     else if (!m_ReadError.empty())

@@ -302,48 +302,6 @@ template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) 
     return text;
 }
 
-[[nodiscard]] inline auto toIntSaturated(long value) -> int
-{
-    if (!std::in_range<int>(value))
-    {
-        return std::numeric_limits<int>::max();
-    }
-    return static_cast<int>(value); // Safe: checked by std::in_range
-}
-
-template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent) -> int
-{
-    // NaN (a sample with no reading) would survive std::max and reach std::lround, whose result
-    // is unspecified for it -- "-2,147,483,648%" in practice (#1148). Infinity likewise.
-    if (!(percent > static_cast<T>(0))) // Also catches NaN
-    {
-        return 0;
-    }
-    // Saturate before rounding: std::lround is unspecified outside long's range, which is only
-    // 32 bits on Windows, so a huge finite value (or infinity) must not reach it (#1227 review).
-    constexpr auto INT_LIMIT = static_cast<double>(std::numeric_limits<int>::max());
-    if (static_cast<double>(percent) >= INT_LIMIT)
-    {
-        return std::numeric_limits<int>::max();
-    }
-    return toIntSaturated(std::lround(static_cast<double>(percent)));
-}
-
-/// "42%", or "N/A" for NaN, which marks a sample with no reading.
-template<std::floating_point T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    if (std::isnan(percent))
-    {
-        return "N/A";
-    }
-    return formatIntLocalized(percentToInt(percent)) + '%';
-}
-
-template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    return formatIntLocalized(percent) + '%';
-}
-
 [[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
     return std::format("{}", value);
@@ -900,7 +858,7 @@ struct AlignedBytesParts
 
 /// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
 /// (the same splitPercentForAlignment() rounding and locale decimal point), or "N/A" for NaN. A
-/// process's share of the machine is usually under a few percent, where percentCompact() rounded it
+/// process's share of the machine is usually under a few percent, which a whole-percent format rounded
 /// to "0%" or "1%" (#1195).
 [[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
 {

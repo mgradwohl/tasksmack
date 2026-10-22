@@ -370,8 +370,8 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_DefaultSort, em * 6.0F, static_cast<ImGuiID>(ServiceColumn::State));
     ImGui::TableSetupColumn("Start type", ImGuiTableColumnFlags_None, em * 9.0F, static_cast<ImGuiID>(ServiceColumn::StartType));
     ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_None, em * 4.0F, static_cast<ImGuiID>(ServiceColumn::Pid));
-    // Hidden by default where the platform can't say (Linux, #2006): a column of blanks otherwise. The
-    // header's menu still offers it.
+    // Hidden by default where the platform can't say (#2006): a column of blanks otherwise. The header's
+    // menu still offers it. Windows and Linux (systemd's User=, #2590) both fill it.
     ImGui::TableSetupColumn("Account",
                             capabilities.hasAccount ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide,
                             em * 14.0F,
