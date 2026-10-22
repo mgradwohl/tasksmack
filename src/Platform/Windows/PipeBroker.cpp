@@ -1,6 +1,7 @@
 #include "PipeBroker.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -18,6 +19,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -30,7 +32,34 @@ namespace
 
 constexpr const char* HELPER_TIMED_OUT = "the helper didn't answer in time";
 constexpr const char* CANCELLED = "cancelled";
-constexpr const char* PROMPT_TIMED_OUT = "the administrator's consent wasn't given in time";
+/// A launch's result in place of a helper its connect had timed out on before the prompt was answered
+/// (#2768): the helper is dismissed, so nothing adopts it, and the next connect asks again.
+constexpr const char* APPROVED_TOO_LATE = "the administrator's consent came after TaskSmack had given up waiting for it";
+/// How long a helper started for a launch given up on is given to make its pipe, so it can be
+/// dismissed: what connect() gives one it uses. Its process ending ends the wait sooner.
+constexpr std::chrono::milliseconds DISMISS_TIMEOUT = PipeBroker::CONNECT_TIMEOUT;
+
+/// Ends the session of @p helper, started for a launch nobody waits for any more (#2768): opens the
+/// pipe it serves and closes it again, which it takes as its client's normal close, so it exits at
+/// once rather than wait out BrokerPipeServer::ACCEPT_TIMEOUT. Nothing is sent, so no protocol is
+/// involved. Never throws: it runs on the launch's detached thread.
+void dismissHelper(const std::wstring& pipeName, const UniqueHandle& helper) noexcept
+{
+    try
+    {
+        const DWORD helperPid = GetProcessId(helper.get());
+        if (helperPid == 0)
+        {
+            return;
+        }
+        // The pipe, once open, closes with its handle on return; a helper that never makes it exits on
+        // its own, and an error here (it exited first, or another process took the name) needs no more.
+        [[maybe_unused]] const auto pipe =
+            BrokerPipe::connectToServer(pipeName, helperPid, helper.get(), DISMISS_TIMEOUT, std::stop_token{});
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - nothing to tell: the helper then gives up on its own timeout
+    {}
+}
 
 } // namespace
 
@@ -41,6 +70,7 @@ struct PipeBroker::Launch
     std::wstring pipeName; // the pipe the helper is told to serve
     std::mutex mutex;
     std::condition_variable_any done;
+    bool abandoned = false; // its connect timed out (#2768): a helper it starts is dismissed, not recorded
     std::optional<std::expected<UniqueHandle, std::string>> result; // set once, when the launcher returns
 
     [[nodiscard]] bool finished()
@@ -50,8 +80,8 @@ struct PipeBroker::Launch
     }
 
     /// The helper this launch started, if it returned one that is still running: a prompt approved after
-    /// its connect gave up, whose helper still waits for its client (#2572 review, finding 2). Taken
-    /// once; nothing otherwise.
+    /// its connect was stopped, whose helper still waits for its client (#2572 review, finding 2). Taken
+    /// once; nothing otherwise, a helper dismissed for a connect that timed out included (#2768).
     [[nodiscard]] UniqueHandle takeLiveHelper()
     {
         const std::scoped_lock lock(mutex);
@@ -153,7 +183,8 @@ std::expected<void, std::string> PipeBroker::connectWithin(const std::stop_token
     }
     // A launch given up on earlier (its prompt still up) is waited out, not stacked with a second one.
     // Once it has returned, a helper it started that still waits for its client is used, not wasted for
-    // a second prompt (#2572 review, finding 2).
+    // a second prompt (#2572 review, finding 2); one its thread dismissed, since the connect had timed
+    // out (#2768), leaves nothing to take, and the prompt is raised again.
     UniqueHandle adopted;
     std::wstring pipeName;
     if (m_Pending != nullptr)
@@ -242,25 +273,47 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
         // Made before the thread, so recording a result there allocates nothing: a launch always ends
         // with one, or m_Pending would hold every later connect off.
         std::expected<UniqueHandle, std::string> fallback = std::unexpected(std::string("the helper couldn't be started"));
+        std::expected<UniqueHandle, std::string> tooLate = std::unexpected(std::string(APPROVED_TOO_LATE));
         // Detached: a prompt can't be taken down, so nothing could join this thread in time. It owns all
         // it touches, the launcher included.
         std::thread(
-            [pending, launcher = m_Launcher, token = launchStop.get_token(), result = std::move(fallback)]() mutable
+            [pending,
+             launcher = m_Launcher,
+             token = launchStop.get_token(),
+             result = std::move(fallback),
+             tooLate = std::move(tooLate)]() mutable
             {
+                static_cast<void>(setCurrentThreadName(HELPER_LAUNCH_THREAD_NAME));
                 try
                 {
                     result = (*launcher)(pending->pipeName, token);
                 }
                 catch (...) // NOLINT(bugprone-empty-catch) - the fallback says so
                 {}
+                // A helper for a launch whose connect timed out meanwhile (#2768) isn't recorded for the
+                // next connect to adopt: its action has been reported as failed. It is dismissed instead,
+                // once the result is in, so a connect waiting on it isn't held up by that.
+                UniqueHandle unwanted;
                 try
                 {
                     const std::scoped_lock lock(pending->mutex);
-                    pending->result = std::move(result);
+                    if (pending->abandoned && result.has_value())
+                    {
+                        unwanted = std::move(*result);
+                        pending->result = std::move(tooLate);
+                    }
+                    else
+                    {
+                        pending->result = std::move(result);
+                    }
                 }
                 catch (...) // NOLINT(bugprone-empty-catch) - the mutex failed: the connect gives up at its timeout
                 {}
                 pending->done.notify_all();
+                if (unwanted)
+                {
+                    dismissHelper(pending->pipeName, unwanted);
+                }
             })
             .detach();
     }
@@ -271,9 +324,15 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
     std::unique_lock lock(pending->mutex);
     if (!pending->done.wait_for(lock, giveUp, timeout, [&pending] { return pending->result.has_value(); }))
     {
+        // Timed out: the action is reported as failed now, so a helper the prompt starts later is
+        // dismissed by the launch's thread (#2768), not left waiting for a client. Stopped: the next
+        // connect may still use it (#2572 review, finding 2). Decided under the lock, so the thread
+        // either recorded its helper before this gave up, or sees the decision when it does.
+        const bool stopped = giveUp.stop_requested();
+        pending->abandoned = !stopped;
         lock.unlock();
         m_Pending = std::move(pending);
-        return std::unexpected(std::string(giveUp.stop_requested() ? CANCELLED : PROMPT_TIMED_OUT));
+        return std::unexpected(std::string(stopped ? std::string_view(CANCELLED) : PROMPT_TIMED_OUT));
     }
     return std::move(*pending->result);
 }
