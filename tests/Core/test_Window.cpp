@@ -7,14 +7,20 @@
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -372,6 +378,118 @@ TEST_F(WindowTest, IsMaximizedTracksStateForBorderlessWindow)
         // After restore(), the flag must be cleared.
         window.restore();
         EXPECT_FALSE(window.isMaximized());
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #2722: the client-side maximize (Windows, X11 without a window manager's EWMH maximize) reads the
+// display's usable bounds through a seam, so a test can choose them, or make the read fail.
+constexpr SDL_Rect CHOSEN_USABLE_BOUNDS{.x = 100, .y = 60, .w = 900, .h = 640};
+
+int& usableBoundsReads() noexcept
+{
+    static int reads = 0;
+    return reads;
+}
+
+bool readChosenUsableBounds(SDL_DisplayID /*display*/, SDL_Rect* bounds) noexcept
+{
+    ++usableBoundsReads();
+    *bounds = CHOSEN_USABLE_BOUNDS;
+    return true;
+}
+
+bool failUsableBoundsRead(SDL_DisplayID /*display*/, SDL_Rect* /*bounds*/) noexcept
+{
+    ++usableBoundsReads();
+    return false;
+}
+
+TEST_F(WindowTest, AClientSideMaximizeFillsTheDisplaysUsableBounds)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "UsableBoundsTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setUsableBoundsReader(&readChosenUsableBounds);
+        usableBoundsReads() = 0;
+        window.maximize();
+        if (usableBoundsReads() == 0)
+        {
+            GTEST_SKIP() << "The compositor or window manager maximizes here, not the client";
+        }
+        SDL_SyncWindow(window.getHandle());
+
+        EXPECT_TRUE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{CHOSEN_USABLE_BOUNDS.w, CHOSEN_USABLE_BOUNDS.h}));
+        if (!isOffscreenVideoDriver()) // the offscreen driver keeps a window where it was made
+        {
+            EXPECT_EQ(window.getPosition(), (std::pair{CHOSEN_USABLE_BOUNDS.x, CHOSEN_USABLE_BOUNDS.y}));
+        }
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+/// WindowTest, with the default logger writing to m_Logged for the test.
+class WindowLogTest : public WindowTest
+{
+  protected:
+    void SetUp() override
+    {
+        m_PreviousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("window-log-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(m_Logged)));
+        WindowTest::SetUp();
+    }
+
+    void TearDown() override
+    {
+        WindowTest::TearDown();
+        spdlog::set_default_logger(m_PreviousLogger);
+    }
+
+    std::ostringstream m_Logged;
+
+  private:
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+};
+
+// #865 checked this by hand: when the usable bounds can't be read, maximize() warns and asks SDL to
+// maximize instead, and tracks that as a maximize, so the normal geometry isn't lost (#1121).
+TEST_F(WindowLogTest, AClientSideMaximizeWithoutUsableBoundsWarnsAndAsksSDLInstead)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "UsableBoundsTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setUsableBoundsReader(&failUsableBoundsRead);
+        const std::optional<WindowGeometry::Rect> normal = window.getNormalGeometry();
+        ASSERT_TRUE(normal.has_value());
+        usableBoundsReads() = 0;
+        window.maximize();
+        if (usableBoundsReads() == 0)
+        {
+            GTEST_SKIP() << "The compositor or window manager maximizes here, not the client";
+        }
+
+        EXPECT_TRUE(m_Logged.str().contains("Failed to get display usable bounds for borderless maximize")) << m_Logged.str();
+        if (!isOffscreenVideoDriver()) // the offscreen driver can't maximize, so SDL's fallback fails too
+        {
+            EXPECT_TRUE(window.isMaximized());
+        }
+        EXPECT_EQ(window.getNormalGeometry(), normal);
     }
     catch (const std::exception& e)
     {
