@@ -1010,6 +1010,79 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
     EXPECT_TRUE(config.settings().chartAntiAliasing);
 }
 
+TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocumentedDefault)
+{
+    // #2727: the whole first-run picture, not four settings. Each default is spelled out here (or
+    // named by the constant its comment in UserConfig.h points to), so changing one is deliberate.
+    auto& config = UserConfig::get();
+    ASSERT_FALSE(std::filesystem::exists(config.configPath()));
+    config.load();
+
+    // One name per UserSettings member, in declaration order: a structured binding must name them
+    // all, so a new setting stops this test compiling until its default is asserted below.
+    const auto& [themeId,
+                 fontSize,
+                 processColumns,
+                 processMeters,
+                 processTableLayout,
+                 refreshIntervalMs,
+                 maxHistorySeconds,
+                 socketStatsCacheTtlMs,
+                 udpEventTrace,
+                 maxSaneRateBps,
+                 chartSmoothFactor,
+                 chartTauMsMin,
+                 chartTauMsMax,
+                 chartAntiAliasing,
+                 windowWidth,
+                 windowHeight,
+                 windowScale,
+                 windowPosX,
+                 windowPosY,
+                 windowMaximized,
+                 showPrivilegeNotice,
+                 showProcessIcons,
+                 cpuDetailsExpanded,
+                 dumpFolder,
+                 forceNativeWindowDecorationsOnWayland] = config.settings();
+
+    EXPECT_EQ(themeId, "arctic-fire");
+    EXPECT_EQ(fontSize, UI::FontSize::Medium);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        // The catalogue's defaults, none chosen: the ones this system can't fill follow its
+        // capabilities later (ProcessColumnAvailability), and nothing is written to [process_columns].
+        EXPECT_EQ(processColumns.isVisible(col), getColumnInfo(col).defaultVisible) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(processColumns.isChosen(col)) << getColumnInfo(col).configKey;
+        const ProcessRowMeter::Style meter = ProcessRowMeter::defaultOn(col) ? ProcessRowMeter::Style::Bar : ProcessRowMeter::Style::Off;
+        EXPECT_EQ(processMeters.style(col), meter) << getColumnInfo(col).configKey;
+    }
+    EXPECT_TRUE(processTableLayout.empty()); // ImGui's own default widths, order and sort (CPU %, descending)
+    EXPECT_EQ(refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(refreshIntervalMs, 1000);
+    EXPECT_EQ(maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    EXPECT_EQ(maxHistorySeconds, 300);
+    EXPECT_EQ(socketStatsCacheTtlMs, Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT);
+    EXPECT_FALSE(udpEventTrace);
+    EXPECT_DOUBLE_EQ(maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT);
+    EXPECT_DOUBLE_EQ(chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT);
+    EXPECT_EQ(chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+    EXPECT_EQ(chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+    EXPECT_TRUE(chartAntiAliasing);
+    EXPECT_EQ(windowWidth, 1280);
+    EXPECT_EQ(windowHeight, 720);
+    ASSERT_TRUE(windowScale.has_value()); // the default size is for 100 %, converted to the display's scale
+    EXPECT_FLOAT_EQ(windowScale.value_or(0.0F), 1.0F);
+    EXPECT_FALSE(windowPosX.has_value()); // no position: the window opens where it is created
+    EXPECT_FALSE(windowPosY.has_value());
+    EXPECT_FALSE(windowMaximized);
+    EXPECT_TRUE(showPrivilegeNotice);
+    EXPECT_TRUE(showProcessIcons);
+    EXPECT_TRUE(cpuDetailsExpanded);
+    EXPECT_TRUE(dumpFolder.empty()); // the temp folder
+    EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
+}
+
 // ========== Load: is-loaded guard ==========
 
 TEST_F(UserConfigSaveLoadFixture, LoadIsIdempotentAfterFirstCall)

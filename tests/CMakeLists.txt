@@ -1071,7 +1071,9 @@ add_executable(TaskSmackAppTests
 tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
-target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
+                                                     # test_UiLayersOnDisplay.cpp's first-run golden config.toml (#2727)
+                                                     TASKSMACK_APP_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/App/fixtures")
 # The real-display tests are in this binary: the same assets beside it (see TaskSmackTests above), so
 # building this target alone still runs them with the app's fonts and icon (#1954).
 add_custom_command(TARGET TaskSmackAppTests POST_BUILD

@@ -3,7 +3,8 @@
 /// UILayer brackets, the title bar TitleBarLayer draws into it, and each title-bar button's effect --
 /// Settings, Help and About raise their events, Maximize and Restore change the window's state, and
 /// Close stops the app. Also the minimum window size the bar sets from its contents; and the whole
-/// shell as main.cpp composes it -- its real panels, each main tab, F1 and the config it saves on exit.
+/// shell as main.cpp composes it -- its real panels, each main tab, F1 and the config it saves on exit --
+/// and a first launch from an empty config directory, whose saved config.toml is a golden file (#2727).
 ///
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like the ApplicationTest suite.
@@ -12,6 +13,7 @@
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
+#include "App/ProcessColumnConfig.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarButtons.h"
@@ -24,7 +26,10 @@
 #include "Core/Event.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "Core/Window.h"
+#include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 #include "UI/IconTextureCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
@@ -40,6 +45,7 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
+#include <toml++/toml.hpp>
 
 #include <algorithm>
 #include <array>
@@ -48,11 +54,16 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <ios>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1650,6 +1661,403 @@ TEST(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)
     std::error_code ec;
     EXPECT_TRUE(
         std::filesystem::exists(configDir.value_or(std::filesystem::path{}) / "config.toml", ec)); // saved by ShellLayer::onDetach()
+}
+
+/// What the first-run driver saw (#2727).
+struct FirstRunObserved
+{
+    // The window once the shell has settled, in window units (physical pixels on Windows and X11).
+    bool windowChecked = false;
+    int width = 0;
+    int height = 0;
+    int x = 0;
+    int y = 0;
+    float unitScale = 0.0F;
+    bool maximized = true;
+    std::optional<SDL_Rect> usable; // the usable bounds (work area) of the display the window is on
+    // The shell on that frame.
+    bool systemTabSelected = false; // the first tab, the machine's, is the default (tasksmack.md, ShellLayer)
+    bool titleBarShown = false;
+    bool statusBarShown = false;
+    // The Processes tab once pressed, on the first frame it draws its table.
+    bool processesTabSelected = false;
+    bool processTableFound = false;
+    std::vector<std::string> columnProblems; // each column that isn't at its default, and why
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed last over the whole shell as main.cpp composes it: lets the layout settle, records the window
+/// and the shell as a first launch shows them, presses the Processes tab and records its table once it
+/// is drawn, then presses Close.
+class FirstRunDriverLayer : public Core::Layer
+{
+  public:
+    explicit FirstRunDriverLayer(FirstRunObserved& observed) : Layer("FirstRunDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame == SETTLE)
+        {
+            observeWindow();
+            m_Observed.systemTabSelected = selectedTab() == tabId("###SystemTab");
+            m_Observed.titleBarShown = shownThisFrame("##TitleBar");
+            m_Observed.statusBarShown = shownThisFrame("##StatusBar");
+            ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+        }
+        // The table, once its first samples are in (they can take a while on a loaded runner), or at
+        // WAIT_LIMIT without it, which then fails.
+        else if (frame > SETTLE && m_ObservedFrame == 0 && (findProcessTable() != nullptr || frame >= SETTLE + WAIT_LIMIT))
+        {
+            m_Observed.processesTabSelected = selectedTab() == tabId("###ProcessesTab");
+            observeProcessTable();
+            m_ObservedFrame = frame;
+        }
+        // The unlabelled Close (chrome icon font) on one frame and the labelled one on the next: one
+        // ActivateItemByID() request per frame is kept (#1954).
+        else if (m_ObservedFrame != 0 && frame == m_ObservedFrame + 1)
+        {
+            pressOnTitleBar("##Close");
+        }
+        else if (m_ObservedFrame != 0 && frame == m_ObservedFrame + 2)
+        {
+            pressOnTitleBar(ICON_FA_XMARK "##Close");
+        }
+    }
+
+  private:
+    void observeWindow()
+    {
+        const Core::Window& window = Core::Application::get().getWindow();
+        std::tie(m_Observed.width, m_Observed.height) = window.getSize();
+        std::tie(m_Observed.x, m_Observed.y) = window.getPosition();
+        m_Observed.unitScale = window.getUnitScale();
+        m_Observed.maximized = window.isMaximized();
+        if (SDL_Rect bounds{}; SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window.getHandle()), &bounds))
+        {
+            m_Observed.usable = bounds;
+        }
+        m_Observed.windowChecked = true;
+    }
+
+    void observeProcessTable()
+    {
+        const ImGuiTable* table = findProcessTable();
+        m_Observed.processTableFound = table != nullptr;
+        if (table == nullptr)
+        {
+            return;
+        }
+        for (const App::ProcessColumn col : App::allProcessColumns())
+        {
+            const auto index = static_cast<int>(App::toIndex(col));
+            const ImGuiTableColumn& column = table->Columns[index];
+            const App::ProcessColumnInfo info = App::getColumnInfo(col);
+            const std::string key(info.configKey);
+            // Shown: a default column, unless this system can't fill it (ProcessColumnAvailability,
+            // #1210); the ones that can't be hidden always. Hidden: every other.
+            if (column.IsEnabled && !info.defaultVisible)
+            {
+                m_Observed.columnProblems.push_back(key + " is shown but is not a default column");
+            }
+            if (!column.IsEnabled && !info.canHide)
+            {
+                m_Observed.columnProblems.push_back(key + " can't be hidden but is");
+            }
+            if (column.IsEnabled == ((column.Flags & ImGuiTableColumnFlags_DefaultHide) != 0))
+            {
+                m_Observed.columnProblems.push_back(key + " isn't shown as the panel's default columns say");
+            }
+            if (column.DisplayOrder != index)
+            {
+                m_Observed.columnProblems.push_back(key + " is at position " + std::to_string(column.DisplayOrder));
+            }
+            // Sorted by CPU %, highest first, and by nothing else.
+            const bool sortColumn = col == App::ProcessColumn::CpuPercent;
+            if (sortColumn && (column.SortOrder != 0 || column.SortDirection != ImGuiSortDirection_Descending))
+            {
+                m_Observed.columnProblems.push_back(key + " is not the descending sort");
+            }
+            if (!sortColumn && column.SortOrder != -1)
+            {
+                m_Observed.columnProblems.push_back(key + " is sorted on");
+            }
+        }
+    }
+
+    [[nodiscard]] static ImGuiID tabBarId()
+    {
+        const ImGuiWindow* main = ImGui::FindWindowByName("##MainWindow");
+        return main != nullptr ? ImHashStr("##MainTabBar", 0, main->ID) : 0;
+    }
+
+    [[nodiscard]] static ImGuiID tabId(const char* label)
+    {
+        return ImHashStr(label, 0, tabBarId());
+    }
+
+    [[nodiscard]] static ImGuiID selectedTab()
+    {
+        const ImGuiTabBar* bar = GImGui->TabBars.GetByKey(tabBarId());
+        return bar != nullptr ? bar->SelectedTabId : 0;
+    }
+
+    /// The Processes table: the one whose columns carry ProcessColumn's values as their user data, in
+    /// order (ProcessesPanel's TableSetupColumn() calls), drawn this frame.
+    [[nodiscard]] static const ImGuiTable* findProcessTable()
+    {
+        const int count = GImGui->Tables.GetMapSize();
+        for (int i = 0; i < count; ++i)
+        {
+            const ImGuiTable* table = GImGui->Tables.TryGetMapData(i);
+            if (table == nullptr || std::cmp_not_equal(table->ColumnsCount, App::processColumnCount()) ||
+                table->LastFrameActive != ImGui::GetFrameCount())
+            {
+                continue;
+            }
+            bool ids = true;
+            for (int column = 0; column < table->ColumnsCount; ++column)
+            {
+                ids = ids && std::cmp_equal(table->Columns[column].UserData, column);
+            }
+            if (ids)
+            {
+                return table;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] static bool shownThisFrame(const char* name)
+    {
+        const ImGuiWindow* window = ImGui::FindWindowByName(name);
+        return window != nullptr && window->Active && !window->Hidden;
+    }
+
+    static void pressOnTitleBar(const char* label)
+    {
+        if (const ImGuiWindow* bar = ImGui::FindWindowByName("##TitleBar"); bar != nullptr)
+        {
+            ImGui::ActivateItemByID(ImHashStr(label, 0, bar->ID));
+        }
+    }
+
+    static constexpr int SETTLE = 20;      // the layout and the minimum window size
+    static constexpr int WAIT_LIMIT = 900; // frames to wait for the Processes table
+    static constexpr int MAX_FRAMES = SETTLE + WAIT_LIMIT + 120;
+
+    FirstRunObserved& m_Observed;
+    int m_ObservedFrame = 0; // 0 until observed
+};
+
+/// The config.toml keys that differ from one machine to the next, as section and key (#2727). Their
+/// values are replaced by "<masked>" before the file is compared with the golden one:
+///  - [window] x, y: where the window manager placed it on this display;
+///  - [window] width, height, scale: the default 1280x720 at 100 %, converted to the display's scale
+///    (window units are physical pixels on Windows), and fitted to a display smaller than that;
+///  - [process_table] layout: ImGui's own table settings, whose column widths are measured in the
+///    current font at this display's scale, and whose shown columns follow what this system can fill.
+/// The test checks each of them against the live window and table instead.
+constexpr std::array<std::pair<std::string_view, std::string_view>, 6> MASKED_CONFIG_KEYS{{
+    {"window", "x"},
+    {"window", "y"},
+    {"window", "width"},
+    {"window", "height"},
+    {"window", "scale"},
+    {"process_table", "layout"},
+}};
+
+constexpr std::string_view MASK = "\"<masked>\"";
+
+/// @p text with line endings made LF and each MASKED_CONFIG_KEYS value replaced by MASK, a
+/// multi-line string value included.
+std::string maskMachineDependentKeys(std::string_view text)
+{
+    std::string out;
+    std::string section;
+    std::string_view closing; // the delimiter that ends the masked multi-line string being skipped
+    std::size_t start = 0;
+    while (start < text.size())
+    {
+        const std::size_t end = std::min(text.find('\n', start), text.size());
+        std::string_view line = text.substr(start, end - start);
+        start = end + 1;
+        if (line.ends_with('\r'))
+        {
+            line.remove_suffix(1);
+        }
+        if (!closing.empty())
+        {
+            if (line.contains(closing))
+            {
+                closing = {};
+            }
+            continue;
+        }
+        const std::size_t indent = std::min(line.find_first_not_of(" \t"), line.size());
+        const std::string_view body = line.substr(indent);
+        if (body.starts_with('['))
+        {
+            section = std::string(body.substr(1, body.find(']') - 1));
+        }
+        const auto masked = std::ranges::find_if(
+            MASKED_CONFIG_KEYS,
+            [&](const auto& key)
+            { return key.first == section && body.starts_with(key.second) && body.substr(key.second.size()).starts_with(" = "); });
+        if (masked == MASKED_CONFIG_KEYS.end())
+        {
+            out.append(line).push_back('\n');
+            continue;
+        }
+        const std::string_view value = body.substr(masked->second.size() + 3);
+        for (const std::string_view delimiter : {std::string_view("'''"), std::string_view(R"(""")")})
+        {
+            if (value.starts_with(delimiter) && value.find(delimiter, delimiter.size()) == std::string_view::npos)
+            {
+                closing = delimiter;
+            }
+        }
+        out.append(line.substr(0, indent)).append(masked->second).append(" = ").append(MASK).push_back('\n');
+    }
+    return out;
+}
+
+/// The whole of @p path, or nullopt when it can't be read.
+std::optional<std::string> readWholeFile(const std::filesystem::path& path)
+{
+    const std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return std::nullopt;
+    }
+    std::ostringstream text;
+    text << file.rdbuf();
+    return std::move(text).str();
+}
+
+TEST(UiLayersOnDisplayTest, AFirstRunOpensAtTheDefaultsAndSavesTheGoldenConfig)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    // A first launch: an empty TASKSMACK_CONFIG_DIR (AppTestsMain.cpp's temporary directory, which the
+    // tests before this one may have saved to) and UserConfig back at its defaults.
+    const std::optional<std::filesystem::path>& configOverride = Core::ConfigDirOverride::active();
+    ASSERT_TRUE(configOverride.has_value());
+    const std::filesystem::path configDir = configOverride.value_or(std::filesystem::path{});
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(configDir, ec))
+    {
+        std::filesystem::remove_all(entry.path(), ec);
+    }
+    ASSERT_TRUE(std::filesystem::is_empty(configDir, ec)) << ec.message();
+    App::UserConfig& config = App::UserConfig::get();
+    config.resetConfigPathForTesting(configDir / "config.toml");
+
+    // Composed as main.cpp's runApp() composes it: the size from the loaded settings, the saved
+    // geometry applied, then the same layers in the same order.
+    config.load();
+    const App::UserSettings& settings = config.settings();
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayFirstRunTest";
+    spec.Width = std::clamp(settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    spec.Height = std::clamp(settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    spec.VSync = false;
+    spec.ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
+    ASSERT_FALSE(settings.windowPosX.has_value() || settings.windowPosY.has_value());
+    FirstRunObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.getWindow().applySavedGeometry(std::nullopt, settings.windowMaximized, settings.windowScale);
+        app.pushLayer<UI::UILayer>();
+        App::TitleBarLayer* titleBar = app.getWindow().isBorderless() ? &app.pushLayer<App::TitleBarLayer>() : nullptr;
+        app.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
+        app.pushLayer<App::HelpLayer>();
+        app.pushLayer<App::AboutLayer>();
+        app.pushLayer<App::SettingsLayer>();
+        app.pushLayer<App::ElevationNoticeLayer>();
+        app.pushLayer<FirstRunDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    EXPECT_FALSE(observed.timedOut) << "Close didn't stop the app";
+    ASSERT_TRUE(observed.windowChecked);
+
+    // 1. The window: the default size at this display's scale, wholly inside the display's usable
+    // bounds, and not maximized. A display too small for it gets the default fitted to it (#1128).
+    EXPECT_FALSE(observed.maximized);
+    ASSERT_TRUE(observed.usable.has_value()) << SDL_GetError();
+    const SDL_Rect usable = observed.usable.value_or(SDL_Rect{});
+    EXPECT_GE(observed.x, usable.x);
+    EXPECT_GE(observed.y, usable.y);
+    EXPECT_LE(observed.x + observed.width, usable.x + usable.w);
+    EXPECT_LE(observed.y + observed.height, usable.y + usable.h);
+    const auto [defaultWidth, defaultHeight] =
+        Core::WindowGeometry::rescaleWindowSize(settings.windowWidth, settings.windowHeight, settings.windowScale, observed.unitScale);
+    EXPECT_EQ(observed.width, std::min(defaultWidth, usable.w)) << "at scale " << observed.unitScale;
+    EXPECT_EQ(observed.height, std::min(defaultHeight, usable.h)) << "at scale " << observed.unitScale;
+
+    // 2. The shell: the first tab, the machine's, in front (the default tab: tasksmack.md's ShellLayer,
+    // CONTRIBUTING.md's "overview"), the title bar and the status bar drawn; then, once pressed, the
+    // Processes tab's table at the default columns, order and sort.
+    EXPECT_TRUE(observed.systemTabSelected);
+    EXPECT_TRUE(observed.titleBarShown); // the custom title bar: native decorations are opt-in (#745)
+    EXPECT_TRUE(observed.statusBarShown);
+    EXPECT_TRUE(observed.processesTabSelected);
+    EXPECT_TRUE(observed.processTableFound);
+    for (const std::string& problem : observed.columnProblems)
+    {
+        ADD_FAILURE() << "Processes table: " << problem;
+    }
+
+    // 4. The config saved on Close: the golden file, but for the machine-dependent values
+    // (MASKED_CONFIG_KEYS), which are checked against the live window here instead.
+    const std::filesystem::path savedPath = configDir / "config.toml";
+    const std::optional<std::string> saved = readWholeFile(savedPath);
+    ASSERT_TRUE(saved.has_value()) << "ShellLayer::onDetach() saved no " << Core::pathToUtf8(savedPath);
+    const std::filesystem::path goldenPath = std::filesystem::path(TASKSMACK_APP_TEST_FIXTURES_DIR) / "config-first-run.toml";
+    const std::optional<std::string> golden = readWholeFile(goldenPath);
+    ASSERT_TRUE(golden.has_value()) << "can't read " << Core::pathToUtf8(goldenPath);
+    const std::string masked = maskMachineDependentKeys(saved.value_or(std::string{}));
+    EXPECT_EQ(masked, maskMachineDependentKeys(golden.value_or(std::string{})))
+        << "The first-run config.toml is not " << Core::pathToUtf8(goldenPath)
+        << ". If a default changed on purpose, replace the golden file with this (masked) text:\n"
+        << masked;
+
+    try
+    {
+        const toml::table document = toml::parse(saved.value_or(std::string{}));
+        EXPECT_EQ(document["window"]["width"].value<int>(), observed.width);
+        EXPECT_EQ(document["window"]["height"].value<int>(), observed.height);
+        const std::optional<double> scale = document["window"]["scale"].value<double>();
+        ASSERT_TRUE(scale.has_value());
+        EXPECT_FLOAT_EQ(static_cast<float>(scale.value_or(0.0)), observed.unitScale);
+        if (Core::Window::supportsPositioning())
+        {
+            EXPECT_EQ(document["window"]["x"].value<int>(), observed.x);
+            EXPECT_EQ(document["window"]["y"].value<int>(), observed.y);
+        }
+        // The table's widths, order and sort, as ImGui saves them: not empty once the table was drawn.
+        EXPECT_FALSE(document["process_table"]["layout"].value_or(std::string{}).empty());
+    }
+    catch (const toml::parse_error& e)
+    {
+        FAIL() << "The saved config.toml isn't TOML: " << e.what();
+    }
 }
 
 } // namespace
