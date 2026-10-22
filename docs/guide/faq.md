@@ -80,6 +80,11 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
   system-managed administrator account, never as you. So even an administrator gets the standard user's
   session: one action per prompt, and reads of your own processes only.
 
+The prompt is waited for two minutes. If it isn't answered by then, the action fails with "the
+administrator's consent wasn't given in time", and consent given after that isn't acted on: the helper it
+starts exits at once, and the action has to be chosen again. Windows doesn't let TaskSmack take the
+prompt down, so until it is answered a retry says the prompt is still up.
+
 Nothing else runs with elevated rights. The helper never ends a critical system process (one whose end
 would stop Windows), and it acts only on the process you chose, checked by its start time as well as
 its PID.
