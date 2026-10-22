@@ -310,6 +310,8 @@ set(COMMON_TEST_SOURCES
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
     UI/test_NowBarsRender.cpp
+    # ImPlot lines sample ImGui's baked line texture (#2744)
+    UI/test_PlotLineTexture.cpp
     UI/test_ChartWidgetsEdgeCases.cpp
     UI/test_HistoryCsv.cpp
     UI/test_HistoryChartCsvRender.cpp
@@ -974,6 +976,8 @@ endif()
 # test_ElevationNoticeDialogRender.cpp lays the notice out in the bundled Inter at each font preset (#1986).
 target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
                                                   TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+# test_UserConfigPersistence.cpp loads a config.toml saved by the released v0.8.0 (#2725).
+target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_APP_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/App/fixtures")
 # The app's assets beside the test binaries, as the app has them beside itself (CMakeLists.txt): the
 # real-display tests then run UILayer with the app's fonts, title font, chrome icon font and window icon
 # instead of ImGui's built-in font and no icon ("Failed to load icon ... tests/assets/icons"), so the title

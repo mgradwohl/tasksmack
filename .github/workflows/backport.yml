@@ -1,0 +1,143 @@
+name: Backport
+
+# Opens the cherry-pick pull request a merged pull request's `backport:X.Y` labels ask for (#2741):
+# one PR per label, against release/X.Y, titled "<original title> [backport X.Y]", with the
+# original's other labels and the open vX.Y.* milestone with the lowest patch number. Every fix
+# merges to main first and is backported from there (AGENTS.md "Branches and backports"). A
+# conflict fails that target, and the action's comment on the original PR says how to cherry-pick
+# by hand; the lane that owns the fix resolves it.
+#
+# pull_request_target runs this file from the base branch with write access, as the action's
+# documentation asks, so a label on a PR from a fork works too; nothing from the PR's head is
+# checked out or run. A `/backport` comment by a collaborator on a merged PR runs it again, for a
+# label added after the merge or a retry (korthout/backport-action skips commits the target
+# already carries, so a re-run never duplicates a backport).
+#
+# The branch is pushed and the PR opened with CHANGELOG_TOKEN, the fine-grained PAT changelog.yml
+# uses for the same reason: pushes and PRs made with GITHUB_TOKEN trigger no workflows, so a
+# backport PR opened with it would never get the required CI checks. The backport needs exactly
+# that token's permissions (Contents and Pull requests: read/write), so a second secret would
+# only be a second token to renew.
+on:
+  pull_request_target:
+    types: [closed]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  targets:
+    name: Read backport labels
+    if: >-
+      (github.event_name == 'pull_request_target' && github.event.pull_request.merged) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/backport') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      number: ${{ steps.labels.outputs.number }}
+      versions: ${{ steps.labels.outputs.versions }}
+    steps:
+      - name: List the X.Y of each backport label
+        id: labels
+        # One lookup serves both events: a comment's payload has no labels, and the PR must be
+        # merged either way. Unlabelled merges end here with nothing to do.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '{merged, labels: [.labels[].name]}')
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          if [[ "$(jq -r '.merged' <<<"$pr")" != true ]]; then
+            echo "::notice::#$PR_NUMBER isn't merged; nothing to backport."
+            echo "versions=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          versions=$(jq -c '[.labels[] | capture("^backport:(?<v>[0-9]+\\.[0-9]+)$").v] | sort' <<<"$pr")
+          echo "#$PR_NUMBER backport targets: $versions"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  backport:
+    name: Backport to release/${{ matrix.version }}
+    needs: [targets]
+    if: needs.targets.outputs.versions != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      # One target's conflict must not stop another's backport.
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.targets.outputs.versions) }}
+    # contents/pull-requests: write are only used by the GITHUB_TOKEN fallback; with
+    # CHANGELOG_TOKEN set, the push and the PR use that token instead (see the header).
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check backport token
+        env:
+          HAS_CHANGELOG_TOKEN: ${{ secrets.CHANGELOG_TOKEN != '' }}
+        run: |
+          if [ "$HAS_CHANGELOG_TOKEN" != "true" ]; then
+            echo "::warning title=CHANGELOG_TOKEN not set::Falling back to GITHUB_TOKEN, so required CI will not run on the backport PR and it cannot merge until CI is triggered another way. Add the CHANGELOG_TOKEN repository secret (see CONTRIBUTING.md's Release section)."
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base branch's tree (never the PR's head); the action fetches the target branch and
+          # the merged commits itself. The push below uses these persisted credentials, so they
+          # must be the PAT for the backport PR's CI to run.
+          token: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Open the cherry-pick pull request
+        id: backport
+        uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4.7.0
+        with:
+          github_token: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
+          source_pr_number: ${{ needs.targets.outputs.number }}
+          # Targets come from the labels read above (backport:X.Y names a version, not a branch),
+          # so the action's own label matching is off.
+          label_pattern: ''
+          target_branches: release/${{ matrix.version }}
+          # The repository squash-merges, so the squashed commit is what gets cherry-picked (-x).
+          pull_title: '${pull_title} [backport ${{ matrix.version }}]'
+          pull_description: |-
+            Backport of #${pull_number} to `${target_branch}` (#2741). ${issue_refs}
+
+            Cherry-picked by `.github/workflows/backport.yml` from the `backport:${{ matrix.version }}` label on #${pull_number}; @${pull_author} owns any conflict.
+          # The original's labels minus the backport ones (so a backport PR's own merge never
+          # re-runs this) and the lanes' transient `merging` marker.
+          copy_labels_pattern: '^(?!backport:)(?!merging$).+$'
+          # The milestone is set below: the original may be on the next minor's, and the backport
+          # belongs on the patch release's.
+          copy_milestone: false
+
+      - name: Put the backport on the release's milestone
+        # The open vX.Y.N milestone with the lowest N (the next patch release), when one exists.
+        if: steps.backport.outputs.created_pull_numbers != ''
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ matrix.version }}
+          CREATED: ${{ steps.backport.outputs.created_pull_numbers }}
+        run: |
+          milestone=$(gh api --paginate "repos/$GITHUB_REPOSITORY/milestones?state=open&per_page=100" \
+              --jq '.[] | "\(.number)\t\(.title)"' |
+            awk -F'\t' -v prefix="v$VERSION." 'index($2, prefix) == 1 {
+              patch = substr($2, length(prefix) + 1); if (patch ~ /^[0-9]+$/) print patch "\t" $1 }' |
+            sort -n | head -n1 | cut -f2)
+          if [[ -z "$milestone" ]]; then
+            echo "::notice::No open v$VERSION.N milestone; the backport PR gets none."
+            exit 0
+          fi
+          for pr in $CREATED; do
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$pr" --silent -F milestone="$milestone"
+            echo "#$pr: milestone $milestone"
+          done

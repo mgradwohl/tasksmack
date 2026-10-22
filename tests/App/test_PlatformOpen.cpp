@@ -3,6 +3,7 @@
 /// byte for byte, from a detached grandchild. A fake xdg-open first on PATH records what it was given.
 
 #include "App/PlatformOpen.h"
+#include "LogWarningGuard.h"
 #include "Platform/Linux/DetachedSpawn.h"
 
 #include <gtest/gtest.h>
@@ -128,6 +129,7 @@ TEST_F(PlatformOpenTest, NoXdgOpenIsAFailure)
     // #2138: xdg-open is looked up before anything starts, so a missing one is reported, not lost in a
     // detached grandchild.
     ASSERT_EQ(::setenv("PATH", "/nonexistent-tasksmack-path", 1), 0); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    TestSupport::expectLogWarning("xdg-open isn't installed");        // the failure is logged too (#2718)
     EXPECT_FALSE(openWithSystemHandler(std::string_view{"https://example.invalid/"}));
 }
 

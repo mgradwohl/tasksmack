@@ -1,6 +1,7 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessTableSettings.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <iterator>
 #include <locale>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
@@ -1994,6 +1996,112 @@ TEST_F(UserConfigSaveLoadFixture, LegacyConfigIsParsedWithTheMigrationRule)
     UserSettings versioned;
     ASSERT_TRUE(UserConfig::parseSettings("config_version = 2\n" + legacyFullColumns({ProcessColumn::Virtual}), versioned));
     EXPECT_TRUE(versioned.processColumns.isChosen(ProcessColumn::Power));
+}
+
+// ========== A config.toml saved by the released v0.8.0 (#2725) ==========
+
+/// tests/App/fixtures/config-v0.8.0.toml: saved by v0.8.0 itself (tests/App/fixtures/README.md says
+/// how), not written by hand to look like it.
+[[nodiscard]] std::filesystem::path v080ConfigFixture()
+{
+    return std::filesystem::path(TASKSMACK_APP_TEST_FIXTURES_DIR) / "config-v0.8.0.toml";
+}
+
+/// Every value in the v0.8.0 fixture, as today's TaskSmack should read it.
+void expectV080Settings(const UserSettings& settings)
+{
+    // Changed in v0.8.0's Settings dialog.
+    EXPECT_EQ(settings.themeId, "dracula");
+    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_EQ(settings.refreshIntervalMs, 2000);
+    EXPECT_EQ(settings.maxHistorySeconds, 600);
+    // "Don't show again" on the privilege notice.
+    EXPECT_FALSE(settings.showPrivilegeNotice);
+
+    // The window, resized and moved. v0.8.0 recorded no scale, so the size is restored unconverted (#1168).
+    EXPECT_EQ(settings.windowWidth, 1500);
+    EXPECT_EQ(settings.windowHeight, 860);
+    EXPECT_EQ(settings.windowPosX, std::optional<int>{150});
+    EXPECT_EQ(settings.windowPosY, std::optional<int>{90});
+    EXPECT_FALSE(settings.windowMaximized);
+    EXPECT_FALSE(settings.windowScale.has_value());
+
+    // v0.8.0 listed every column. User was hidden and Threads shown from the header's menu: those two
+    // are the user's choices. Every other column was at its default and keeps following the defaults,
+    // including the ones v0.8.0 didn't have (#1376).
+    const auto& columns = settings.processColumns;
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        if (col == ProcessColumn::User || col == ProcessColumn::Threads)
+        {
+            EXPECT_TRUE(columns.isChosen(col)) << info.configKey;
+            EXPECT_EQ(columns.isVisible(col), col == ProcessColumn::Threads) << info.configKey;
+        }
+        else
+        {
+            EXPECT_FALSE(columns.isChosen(col)) << info.configKey;
+            EXPECT_EQ(columns.isVisible(col), info.defaultVisible) << info.configKey;
+        }
+    }
+
+    // Written by v0.8.0 at their defaults.
+    EXPECT_EQ(settings.socketStatsCacheTtlMs, 500);
+    EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, 12'500'000'000.0);
+    EXPECT_DOUBLE_EQ(settings.chartSmoothFactor, 0.5);
+    EXPECT_EQ(settings.chartTauMsMin, 20);
+    EXPECT_EQ(settings.chartTauMsMax, 400);
+
+    // Settings v0.8.0 didn't have keep today's defaults.
+    const UserSettings defaults;
+    EXPECT_EQ(settings.processMeters, defaults.processMeters);
+    EXPECT_EQ(settings.udpEventTrace, defaults.udpEventTrace);
+    EXPECT_EQ(settings.chartAntiAliasing, defaults.chartAntiAliasing);
+    EXPECT_EQ(settings.showProcessIcons, defaults.showProcessIcons);
+    EXPECT_EQ(settings.cpuDetailsExpanded, defaults.cpuDetailsExpanded);
+    EXPECT_EQ(settings.dumpFolder, defaults.dumpFolder);
+    EXPECT_EQ(settings.forceNativeWindowDecorationsOnWayland, defaults.forceNativeWindowDecorationsOnWayland);
+
+    // v0.8.0 saved no Processes table layout (ImGui's .ini was off, and there was no [process_table]):
+    // the table opens at its default widths, order and sort, and nothing is handed to ImGui.
+    EXPECT_TRUE(settings.processTableLayout.empty());
+    EXPECT_EQ(ProcessTableSettings::withExplicitOrder(settings.processTableLayout), "");
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigSavedByV080LoadsEveryValueAndSavesThemBack)
+{
+    const std::string saved080 = readFile(v080ConfigFixture());
+    ASSERT_FALSE(saved080.empty()) << "can't read " << v080ConfigFixture().string();
+    // v0.8.0 predates config_version: its [process_columns] goes through the migration rule.
+    ASSERT_FALSE(toml::parse(saved080).contains("config_version"));
+
+    std::filesystem::copy_file(v080ConfigFixture(), m_ConfigPath, std::filesystem::copy_options::overwrite_existing);
+    auto& config = UserConfig::get();
+    config.load();
+    expectV080Settings(config.settings());
+
+    // The fuzz seam reads it the same way.
+    UserSettings parsedSettings;
+    ASSERT_TRUE(UserConfig::parseSettings(saved080, parsedSettings));
+    expectV080Settings(parsedSettings);
+
+    // Saved by today's TaskSmack: the current format, only the chosen columns, and the keys v0.8.0
+    // wrote that nothing reads any more gone.
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"threads", "user"}));
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_EQ(document[retired.section][retired.key].node(), nullptr) << retired.section << "." << retired.key;
+    }
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
+    EXPECT_EQ(document["window"]["width"].value<int>(), 1500);
+
+    // Read back, every value holds.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    expectV080Settings(config.settings());
 }
 
 TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
