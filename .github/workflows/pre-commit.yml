@@ -2,12 +2,12 @@ name: Pre-commit
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
 
-# A new push to a PR cancels that PR's superseded run; pushes to main get one group per commit and
-# are never cancelled.
+# A new push to a PR cancels that PR's superseded run; pushes to main or a release branch get one
+# group per commit and are never cancelled.
 concurrency:
   group: pre-commit-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
