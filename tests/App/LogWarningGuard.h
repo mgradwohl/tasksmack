@@ -48,6 +48,9 @@ inline constexpr std::array ALLOWED_WARNINGS{
                    .why = "tests that use the synthetic machine announce it, as the app does for any user who sets it"},
     AllowedWarning{.contains = "No GPU probe provided",
                    .why = "the composed shell in tests has no GPU probe on machines and runners without a GPU"},
+    AllowedWarning{.contains = "BackgroundSampler: a sampling pass took",
+                   .why = "a busy shared CI runner can slow one sampling pass past its interval; the overrun "
+                          "backoff is the product handling that, not a fault the test provoked"},
     AllowedWarning{.contains = "icon from resource",
                    .why = "on Windows the icon resource is linked into TaskSmack.exe only, not the test binary (#2039)"},
     // The offscreen driver (the ASan+UBSan job, a machine without a display) has no hit testing, system
