@@ -404,6 +404,60 @@ TEST(ComputeRestoreFromMaximizedDragXTest, PureFunction_DeterministicAcrossRepea
     EXPECT_EQ(first, second);
 }
 
+// ========== computeRestoreFromMaximizedDragY ==========
+// Restoring a maximized window mid-drag should keep the pointer as far below the restored
+// window's top as the press was below the maximized window's top, not leave the window at its
+// saved restore Y (#2715).
+
+TEST(ComputeRestoreFromMaximizedDragYTest, PressNearTheTopOfTheTitleBar_TopJustAboveThePointer)
+{
+    const int result = computeRestoreFromMaximizedDragY(/*startMouseGlobalY=*/2,
+                                                        /*maximizedWindowY=*/0,
+                                                        /*mouseGlobalY=*/300,
+                                                        /*workAreaTop=*/0);
+    EXPECT_EQ(result, 298);
+}
+
+TEST(ComputeRestoreFromMaximizedDragYTest, PressLowerInTheTitleBar_KeepsThatOffset)
+{
+    // Maximized below a 48 px top taskbar, pressed 30 px down the title bar.
+    const int result = computeRestoreFromMaximizedDragY(/*startMouseGlobalY=*/78,
+                                                        /*maximizedWindowY=*/48,
+                                                        /*mouseGlobalY=*/500,
+                                                        /*workAreaTop=*/48);
+    EXPECT_EQ(result, 470);
+}
+
+TEST(ComputeRestoreFromMaximizedDragYTest, NearTheScreensTop_ClampedToTheWorkArea)
+{
+    // Pressed 30 px down, then the pointer moved up to 10 px below the work area's top: the
+    // unclamped top would be 20 px above the work area.
+    const int result = computeRestoreFromMaximizedDragY(/*startMouseGlobalY=*/30,
+                                                        /*maximizedWindowY=*/0,
+                                                        /*mouseGlobalY=*/10,
+                                                        /*workAreaTop=*/0);
+    EXPECT_EQ(result, 0);
+}
+
+TEST(ComputeRestoreFromMaximizedDragYTest, OnASecondMonitor_ClampedToItsWorkArea)
+{
+    // A monitor above the primary one, its work area starting at y = -1080.
+    const int result = computeRestoreFromMaximizedDragY(/*startMouseGlobalY=*/-1060,
+                                                        /*maximizedWindowY=*/-1080,
+                                                        /*mouseGlobalY=*/-1075,
+                                                        /*workAreaTop=*/-1080);
+    EXPECT_EQ(result, -1080);
+}
+
+TEST(ComputeRestoreFromMaximizedDragYTest, PressAboveTheMaximizedWindow_CountsAsNoOffset)
+{
+    const int result = computeRestoreFromMaximizedDragY(/*startMouseGlobalY=*/-5,
+                                                        /*maximizedWindowY=*/0,
+                                                        /*mouseGlobalY=*/200,
+                                                        /*workAreaTop=*/0);
+    EXPECT_EQ(result, 200);
+}
+
 // ========== computeTitleBarAreaHitTest ==========
 // See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
 // managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE
