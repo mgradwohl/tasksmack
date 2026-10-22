@@ -44,6 +44,8 @@ inline constexpr std::array ALLOWED_WARNINGS{
                    .why = "tests that use the synthetic machine announce it, as the app does for any user who sets it"},
     AllowedWarning{.contains = "No GPU probe provided",
                    .why = "the composed shell in tests has no GPU probe on machines and runners without a GPU"},
+    AllowedWarning{.contains = "icon from resource",
+                   .why = "on Windows the icon resource is linked into TaskSmack.exe only, not the test binary (#2039)"},
 };
 
 /// The lines of @p logged that no entry of @p allowed matches.
