@@ -114,9 +114,10 @@ struct UnitFileCache
 /// MainPID, then each loaded service's User, ExecStart and Type (#2590), in one connection.
 /// Unprivileged. With @p cache, a ListUnitFiles answer younger than UNIT_FILES_TTL at @p now is reused
 /// rather than asked again, and so is a service's configuration while its state and main process are
-/// unchanged and it is younger than UNIT_CONFIG_TTL; without one, every service's is read. A MainPID
-/// read that times out ends the MainPID reads for this call (#2125), and a configuration read that
-/// times out ends those: a stalled systemd costs one call timeout, not one per service.
+/// unchanged and it is younger than UNIT_CONFIG_TTL; without one, every service's is read. A property
+/// read that times out ends every property read left in this call (#2125, #2773), and each service's
+/// configuration is then what the cache holds: a stalled systemd costs one call timeout, not one per
+/// service or per kind of property.
 [[nodiscard]] ServicesRead readServices(UnitFileCache* cache = nullptr,
                                         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
