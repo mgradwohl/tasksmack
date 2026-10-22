@@ -64,6 +64,24 @@ TEST(LazyBackgroundReadTest, DueOnlyWhenDrawnOpenAndAtTheInterval)
     EXPECT_TRUE(read.due(0.5F));
 }
 
+// #2734: rearm() makes the next read due at once, inside the interval, and keeps the drawn-open flag,
+// unlike reset(), so the frame that saw the new target starts its read.
+TEST(LazyBackgroundReadTest, RearmMakesTheNextReadDueAtOnceAndKeepsTheDrawnFlag)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{}; }));
+    static_cast<void>(read.takeFinished(TARGET, true));
+
+    read.markDrawnOpen();
+    read.rearm();
+    EXPECT_TRUE(read.due(0.0F)); // well inside the interval, and the flag set before rearm() still counts
+
+    read.rearm(); // not drawn open: still nothing starts
+    EXPECT_FALSE(read.due(0.0F));
+}
+
 TEST(LazyBackgroundReadTest, DropsAReadForAPreviousSelection)
 {
     Read read(REFRESH_MS, "ts-test-read", &failed);

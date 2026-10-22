@@ -81,6 +81,15 @@ template<typename Result> class LazyBackgroundRead
         m_DrawnOpen = false; // the open frame was the previous process's
     }
 
+    /// The target changed without a selection change (its start time became known, or the shown process
+    /// is another one): the next due() that finds the section drawn open starts a read at once. Unlike
+    /// reset(), this keeps the drawn-open flag, so the read isn't a frame late, and a read in flight is
+    /// left to finish -- takeFinished() drops it, as it was for another target.
+    void rearm() noexcept
+    {
+        m_HasRequested = false;
+    }
+
     /// The read in flight, once it has finished (or, with @p wait, after waiting for it), when it is for
     /// this selection and @p target; nullopt otherwise. A read for another target without a selection
     /// change (the panel's target moved under it) makes the next read due at once.
