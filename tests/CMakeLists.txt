@@ -85,6 +85,10 @@ if(WIN32)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
+        # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
+        # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
+        add_test(NAME SetupDevScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -96,13 +100,14 @@ if(WIN32)
         # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
         # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
-        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript PROPERTIES TIMEOUT 120)
+            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
+            PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript and CheckPrereqsScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript and SetupDevScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
     # executables are refused, by name, before anything could be packaged.
