@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -45,6 +46,7 @@ constexpr LONG STATUS_ACCESS_DENIED_NT = static_cast<LONG>(0xC0000022L);
 constexpr LONG STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<LONG>(0xC0000004L);
 constexpr ULONG PROCESSOR_PERFORMANCE_CLASS = 8;
 constexpr ULONG PAGE_FILE_CLASS = 18;
+constexpr ULONG HYPERVISOR_CLASS = 91; // ARM64's hypervisor read (#2377); x64 asks CPUID instead
 constexpr ULONG CODE_INTEGRITY_CLASS = 103;
 constexpr ULONG ISOLATED_USER_MODE_CLASS = 165;
 constexpr DWORD PAGE_SIZE = 4096;
@@ -92,6 +94,10 @@ struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failCodeIntegrity = false;
     bool failIsolatedUserMode = false;
     ULONG codeIntegrityOptions = CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED;
+    // Where the last SystemHypervisorInformation and SystemIsolatedUserModeInformation queries were
+    // told to write; 0 = not queried. Each structure holds a ULONGLONG the kernel checks alignment for (#2746).
+    std::uintptr_t hypervisorBuffer = 0;
+    std::uintptr_t isolatedUserModeBuffer = 0;
     // Memory
     bool failMemoryStatus = false;
     bool failPerformanceInfo = false;
@@ -306,8 +312,13 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID buffer, ULONG len
         return fillPerformance(buffer, length, returned, fake().activePerGroup[0]);
     case PAGE_FILE_CLASS:
         return pageFileQuery(buffer, length, returned);
+    case HYPERVISOR_CLASS: // Unanswered, as every unknown class is: the probe's SMBIOS fallback stays in use
+        fake().hypervisorBuffer = std::bit_cast<std::uintptr_t>(buffer);
+        return STATUS_ACCESS_DENIED_NT;
     case CODE_INTEGRITY_CLASS:
+        return virtualizationQuery(infoClass, buffer);
     case ISOLATED_USER_MODE_CLASS:
+        fake().isolatedUserModeBuffer = std::bit_cast<std::uintptr_t>(buffer);
         return virtualizationQuery(infoClass, buffer);
     default:
         return STATUS_ACCESS_DENIED_NT;
@@ -654,6 +665,25 @@ TEST_F(WindowsSystemProbeSeamsTest, FailedVirtualizationQueriesLeaveTheirStatusU
     EXPECT_FALSE(counters.cpuDetails.hvciEnabled.has_value());
     EXPECT_FALSE(counters.cpuDetails.vbsRunning.has_value());
     EXPECT_TRUE(counters.cpuDetails.virtualizationFirmwareEnabled.has_value()) << "the feature flags need no query";
+}
+
+TEST_F(WindowsSystemProbeSeamsTest, VirtualizationQueryBuffersAreAlignedForTheirUlonglong)
+{
+    // SYSTEM_ISOLATED_USER_MODE_INFORMATION and SYSTEM_HYPERVISOR_QUERY_INFORMATION each end in a
+    // ULONGLONG, and the kernel rejects a buffer not aligned for it with STATUS_DATATYPE_MISALIGNMENT,
+    // which the probe would read as "unknown" (#2746).
+    auto probe = makeProbe();
+    const SystemCounters counters = probe.read();
+
+    ASSERT_EQ(counters.cpuDetails.vbsRunning, true);
+    ASSERT_NE(fake().isolatedUserModeBuffer, 0U);
+    EXPECT_EQ(fake().isolatedUserModeBuffer % alignof(ULONGLONG), 0U);
+#if defined(_M_X64) || defined(__x86_64__)
+    EXPECT_EQ(fake().hypervisorBuffer, 0U) << "x64 reads CPUID's hypervisor bit, not SystemHypervisorInformation";
+#else
+    ASSERT_NE(fake().hypervisorBuffer, 0U);
+    EXPECT_EQ(fake().hypervisorBuffer % alignof(ULONGLONG), 0U);
+#endif
 }
 
 TEST_F(WindowsSystemProbeSeamsTest, ProcessorGoingOfflineAndBackRereadsTheDetails)

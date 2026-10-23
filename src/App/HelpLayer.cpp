@@ -47,6 +47,13 @@ void HelpLayer::onEvent(Core::Event& event)
             HelpWindow::requestOpen(m_State);
             return false; // Don't consume
         });
+    // TASKSMACK_DEMO's close=dialog (#2827): closes the window as its close button does.
+    dispatcher.dispatch<Core::CloseDialogEvent>(
+        [this](Core::CloseDialogEvent&)
+        {
+            m_State.open = false;
+            return false; // The About dialog closes on it too
+        });
 }
 
 } // namespace App

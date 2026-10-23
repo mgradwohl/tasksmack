@@ -4,6 +4,7 @@
 #include "App/PlatformOpen.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
+#include "App/ThemeChange.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -146,21 +147,14 @@ void SettingsLayer::applySettings()
 {
     auto& config = UserConfig::get();
     auto& settings = config.settings();
-    auto& themeManager = UI::Theme::get();
 
     // Only the combos the user picked are written (#1120, #1151): see Detail::pickedOption.
 
-    // Apply theme
+    // Apply theme: the next frame renders with it; nothing needs notifying or re-sampling (#1178).
+    // The same path TASKSMACK_DEMO's theme= takes (ThemeChange.h, #2827).
     if (m_State.themeChoice.touched && m_State.themeChoice.index.has_value() && *m_State.themeChoice.index < m_State.themes.size())
     {
-        const std::string& newThemeId = m_State.themes[*m_State.themeChoice.index].id;
-        if (newThemeId != settings.themeId)
-        {
-            settings.themeId = newThemeId;
-            // The next frame renders with it; nothing needs notifying or re-sampling (#1178).
-            themeManager.setThemeById(newThemeId);
-            spdlog::info("Theme changed to {}", newThemeId);
-        }
+        static_cast<void>(changeTheme(m_State.themes[*m_State.themeChoice.index].id)); // from the loaded list, so never unknown
     }
 
     // Apply font size

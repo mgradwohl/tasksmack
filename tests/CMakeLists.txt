@@ -259,6 +259,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
+    Core/test_FramebufferCapture.cpp
     Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -493,6 +494,8 @@ set(COMMON_TEST_SOURCES
     App/test_KeyboardInputRender.cpp
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
+    App/test_DemoOverride.cpp
+    App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
@@ -662,6 +665,7 @@ set(THEME_REAL_TEST_SOURCES
 # Tests that need the whole app, built into TaskSmackAppTests below (#1395)
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
+    App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
 set(APP_REAL_LINUX_TEST_SOURCES
@@ -700,6 +704,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    # The screenshot hook's framebuffer read and PNG writer (#2827): test_FramebufferCapture.cpp runs
+    # the row flip and writePng() without a GL context
+    ${CMAKE_SOURCE_DIR}/src/Core/FramebufferCapture.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/SaveFileDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/X11ConnectionLoss.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
@@ -955,6 +962,7 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp # HelperLauncher::availability()
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp # PipeBroker names its launch thread (#2768)
     )
     target_compile_features(TaskSmackHelperTestParent PRIVATE cxx_std_23)
     tasksmack_apply_default_warnings(TaskSmackHelperTestParent)

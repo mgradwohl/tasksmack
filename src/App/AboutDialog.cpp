@@ -17,6 +17,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace App::AboutDialog
 {
@@ -246,11 +247,12 @@ void renderCredits(std::string_view& activatedUrl)
 
 } // namespace
 
-std::string_view render(bool& openRequested, const UI::Texture& icon)
+std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon)
 {
     if (!openRequested && !ImGui::IsPopupOpen(POPUP_ID))
     {
-        return {}; // Nothing to draw when neither open nor requested
+        closeRequested = false; // Nothing to close either
+        return {};              // Nothing to draw when neither open nor requested
     }
 
     if (openRequested)
@@ -296,8 +298,9 @@ std::string_view render(bool& openRequested, const UI::Texture& icon)
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
-    // Escape closes the dialog, as OK does; ImGui's own Escape handling leaves modals open.
-    bool close = UI::Widgets::dialogEscapePressed();
+    // Escape closes the dialog, as OK does; ImGui's own Escape handling leaves modals open. So does a
+    // close request (#2827): a popup can only be closed from inside it.
+    bool close = UI::Widgets::dialogEscapePressed() || std::exchange(closeRequested, false);
 
     // Everything above the OK row scrolls in a child fitted to its content but never taller than
     // leaves room for that row, so the button stays in the dialog at any font size in any window

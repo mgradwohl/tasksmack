@@ -659,6 +659,15 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
     static_cast<void>(renderAndCapture(panel));
     ASSERT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority);
 
+    // The update path after the card was first drawn reads the current I/O priority on its worker
+    // (#2734); taken in here, so the slider below starts from Best-effort 0.
+    panel.updateWithSamples(samples, 1.0F);
+    (void) panel.priorityViewForTesting().updateReads(mock,
+                                                      Platform::ProcessTarget{.pid = PID, .startTimeTicks = START_TICKS},
+                                                      0.0F,
+                                                      /*wait=*/true);
+    ASSERT_EQ(mock->getIoPriorityCount(), 1);
+
     caps.canSetRealtimeIoPriority = true; // The helper connected
     mock->setCapabilities(caps);
     static_cast<void>(renderAndCapture(panel));

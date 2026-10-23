@@ -681,6 +681,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 case NetInterfaceUtils::InterfaceType::Cellular:
                     return theme.accentColor(3);
                 case NetInterfaceUtils::InterfaceType::Other:
+                case NetInterfaceUtils::InterfaceType::Count:
                     break;
                 }
                 return theme.scheme().textPrimary;

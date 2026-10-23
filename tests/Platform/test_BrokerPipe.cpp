@@ -8,6 +8,7 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/PipeBroker.h"
@@ -1367,6 +1368,12 @@ class InProcessHelper
         return m_EndedFuture.wait_for(WAIT) == std::future_status::ready;
     }
 
+    /// Whether the helper's session has ended by now, without waiting for it to.
+    [[nodiscard]] bool endedAlready()
+    {
+        return m_EndedFuture.wait_for(0ms) == std::future_status::ready;
+    }
+
   private:
     void run(const std::wstring& pipeName, const std::stop_token& stopToken)
     {
@@ -1872,7 +1879,10 @@ TEST(PipeBrokerTest, APromptLeftUnansweredTimesOut)
     const auto start = std::chrono::steady_clock::now();
     const auto connected = broker.connectWithin({}, 200ms);
     ASSERT_FALSE(connected.has_value());
-    EXPECT_EQ(connected.error(), "the administrator's consent wasn't given in time");
+    // The prompt stays up, so the user is told what a late answer does (#2768).
+    EXPECT_EQ(connected.error(),
+              "the administrator's consent wasn't given in time; consent given later isn't acted on, so retry the action");
+    EXPECT_EQ(connected.error(), std::string(PipeBroker::PROMPT_TIMED_OUT));
     EXPECT_LT(since(start), WAIT);
     EXPECT_FALSE(broker.connected());
 }
@@ -1893,8 +1903,9 @@ TEST(PipeBrokerTest, TheDestructorDoesntWaitForAPrompt)
     EXPECT_TRUE(prompt.returned());
 }
 
-// #2572 review, finding 2: a prompt approved after its connect gave up isn't wasted. The next connect
-// uses the helper it started, rather than raise a second prompt.
+// #2572 review, finding 2: a prompt approved after its connect was stopped isn't wasted. The next
+// connect uses the helper it started, rather than raise a second prompt. (One approved after its
+// connect timed out is dismissed instead, #2768: the test after the next.)
 TEST(PipeBrokerTest, AHelperApprovedAfterItsConnectGaveUpIsUsedByTheNext)
 {
     if (const auto why = brokerRefusesThisUser())
@@ -1945,8 +1956,74 @@ TEST(PipeBrokerTest, ALaunchGivenUpOnIsStopped)
             return std::unexpected(std::string("stopped"));
         });
     const auto connected = broker.connectWithin({}, 100ms);
-    EXPECT_EQ(connected.error_or(""), "the administrator's consent wasn't given in time");
+    EXPECT_EQ(connected.error_or(""), std::string(PipeBroker::PROMPT_TIMED_OUT));
     EXPECT_EQ(released->get_future().wait_for(WAIT), std::future_status::ready) << "the launcher's token was stopped";
+}
+
+// #2768: a prompt approved after its connect timed out starts a helper nothing will use. The action
+// was reported as failed, and running it minutes later would surprise, so the helper is dismissed as
+// soon as it has made its pipe (its launch thread opens and closes the pipe, which the helper takes as
+// its client's close), never left waiting out its accept timeout for a client that won't come, and the
+// next connect asks again.
+TEST(PipeBrokerTest, AHelperApprovedAfterItsConnectTimedOutIsDismissedAtOnce)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    auto end = std::make_shared<std::atomic<int>>(-1);
+    const CountingHandler counting;
+    InProcessHelper helper(serving(counting.handler(), WAIT, end));
+    PromptUp prompt(helper.launcher());
+    PipeBroker broker(prompt.launcher());
+    const auto connected = broker.connectWithin({}, 200ms);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), std::string(PipeBroker::PROMPT_TIMED_OUT));
+    EXPECT_FALSE(broker.connected());
+    ASSERT_TRUE(prompt.shown()) << "the prompt is still up";
+    EXPECT_FALSE(helper.endedAlready()) << "no helper yet: the prompt is unanswered";
+
+    prompt.answer(); // approved, too late: the helper starts, makes its pipe and waits for its client
+    ASSERT_TRUE(prompt.returned());
+    // Nothing of this test's connects to it: the broker's launch thread does, and closes the pipe again.
+    ASSERT_TRUE(helper.ended()) << "the helper was left waiting for a client";
+    EXPECT_EQ(end->load(), static_cast<int>(BrokerPipeServer::SessionEnd::ClientClosed)) << "dismissed as a client's close, not timed out";
+    EXPECT_EQ(counting.calls->load(), 0) << "nothing was asked of it";
+    EXPECT_FALSE(broker.connected());
+
+    // The next connect asks again, rather than use the dismissed helper.
+    std::expected<void, std::string> again = std::unexpected(std::string(PipeBroker::ALREADY_ASKING));
+    const auto retried = std::chrono::steady_clock::now();
+    while (!again.has_value() && again.error() == std::string(PipeBroker::ALREADY_ASKING) && since(retried) < WAIT)
+    {
+        std::this_thread::sleep_for(10ms); // the launch's result follows its return at once
+        again = broker.connectWithin({}, WAIT);
+    }
+    EXPECT_EQ(again.error_or(""), "asked again");
+    EXPECT_EQ(prompt.runs(), 2) << "a second prompt, not the dismissed helper";
+    EXPECT_FALSE(broker.connected());
+}
+
+// #2768: the launch thread, which may sit behind a UAC prompt for minutes, is named for WPA and the
+// Threads window, as every TaskSmack thread is (Platform/ThreadName.h).
+TEST(PipeBrokerTest, TheLauncherRunsOnANamedThread)
+{
+    static_assert(HELPER_LAUNCH_THREAD_NAME == "ts-uac-launch");
+    static_assert(HELPER_LAUNCH_THREAD_NAME.size() <= MAX_LINUX_THREAD_NAME_LENGTH);
+    auto observed = std::make_shared<std::promise<std::wstring>>();
+    PipeBroker broker(
+        [observed](const std::wstring&, const std::stop_token&) -> std::expected<UniqueHandle, std::string>
+        {
+            PWSTR description = nullptr;
+            const HRESULT read = GetThreadDescription(GetCurrentThread(), &description);
+            observed->set_value(SUCCEEDED(read) && description != nullptr ? std::wstring(description) : std::wstring(L"<error>"));
+            LocalFree(description); // the OS allocated it; null is fine
+            return std::unexpected(std::string("unused"));
+        });
+    EXPECT_EQ(broker.connectWithin({}, WAIT).error_or(""), "unused");
+    auto named = observed->get_future();
+    ASSERT_EQ(named.wait_for(WAIT), std::future_status::ready);
+    EXPECT_EQ(named.get(), L"ts-uac-launch");
 }
 
 } // namespace

@@ -37,15 +37,8 @@ namespace Core::LocaleSetup
 namespace
 {
 
-/// The user's locale, with a UTF-8 codeset, for display: written once by initialize(), before any
-/// other thread. The classic locale until then.
-std::locale& userLocaleStorage()
-{
-    static std::locale locale = std::locale::classic();
-    return locale;
-}
-
-/// The storage behind userNumberPunctuation(), written with userLocaleStorage().
+/// The storage behind userNumberPunctuation(): written once by initialize(), before any other
+/// thread. The classic punctuation until then.
 NumberPunctuation& userPunctuationStorage()
 {
     static NumberPunctuation punctuation;
@@ -416,7 +409,6 @@ const Summary& initialize(const NumericFacets numerics)
             summary.warnings.emplace_back(std::format(R"({}="{}" names no available locale; ignored)", LOCALE_OVERRIDE_ENV, overrideValue));
         }
     }
-    userLocaleStorage() = display;
     userPunctuationStorage() = numberPunctuation(display, displayName);
 
     // std::locale::global() also calls setlocale(LC_ALL, name) when the locale has a name, which
@@ -435,7 +427,7 @@ const Summary& initialize(const NumericFacets numerics)
     const char* cAfter = crt.setLocale(LC_ALL, nullptr);
     summary.cLocale = cAfter != nullptr ? std::string(cAfter) : std::string();
     summary.globalLocaleName = std::locale().name();
-    summary.userLocaleName = userLocaleStorage().name();
+    summary.userLocaleName = display.name();
     return summary;
 }
 

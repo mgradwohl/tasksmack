@@ -10,6 +10,7 @@
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
@@ -103,17 +104,6 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
         }
     }
     return std::nullopt;
-}
-
-/// @p process's image, as a Win32 path.
-[[nodiscard]] std::optional<std::wstring> imageOf(HANDLE process)
-{
-    return readPath(
-        [process](wchar_t* buffer, DWORD size) -> DWORD
-        {
-            DWORD written = size;
-            return QueryFullProcessImageNameW(process, 0, buffer, &written) != FALSE ? written : 0;
-        });
 }
 
 /// The final path of the file at @p path: what it names once "..", short names, links and case are
@@ -251,20 +241,6 @@ constexpr ULONG PROCESS_BASIC_INFORMATION_CLASS = 0; // ProcessBasicInformation
     return static_cast<DWORD>(information.inheritedFromUniqueProcessId);
 }
 
-/// @p process's creation time, in a FILETIME's ticks, or nullopt if it can't be read.
-[[nodiscard]] std::optional<std::uint64_t> startTicksOf(HANDLE process)
-{
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (GetProcessTimes(process, &creation, &exitTime, &kernelTime, &userTime) == FALSE)
-    {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime;
-}
-
 /// Why openProcessVerified() refused the parent, in the helper's words.
 [[nodiscard]] std::string parentRefusal(const IdentityFailure& failure)
 {
@@ -331,6 +307,41 @@ std::expected<UniqueHandle, std::string> openParent(DWORD pid, std::uint64_t sta
         return std::unexpected(parentRefusal(process.error()));
     }
     return UniqueHandle(process->release());
+}
+
+std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn query)
+{
+    return readPath(
+        [process, query](wchar_t* buffer, DWORD size) -> DWORD
+        {
+            DWORD written = size;
+            if (query(process, 0, buffer, &written) != FALSE)
+            {
+                return written;
+            }
+            // A buffer too small fails with ERROR_INSUFFICIENT_BUFFER, not the size needed as
+            // GetModuleFileNameW gives it: the size tried, so readPath() tries the longest (#2770).
+            return GetLastError() == ERROR_INSUFFICIENT_BUFFER ? size : 0;
+        });
+}
+
+std::optional<std::wstring> ownImage(GetModuleFileNameFn getModuleFileName)
+{
+    // A path that doesn't fit comes back truncated, with the size tried: readPath() tries the longest.
+    return readPath([getModuleFileName](wchar_t* buffer, DWORD size) { return getModuleFileName(nullptr, buffer, size); });
+}
+
+std::optional<std::uint64_t> startTicksOf(HANDLE process)
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (GetProcessTimes(process, &creation, &exitTime, &kernelTime, &userTime) == FALSE)
+    {
+        return std::nullopt;
+    }
+    return fileTimeTicks(creation);
 }
 
 std::wstring besidePath(std::wstring_view exePath, std::wstring_view fileName)
@@ -412,7 +423,7 @@ std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::s
 
 std::expected<Self, std::string> readSelf()
 {
-    const auto image = readPath([](wchar_t* buffer, DWORD size) { return GetModuleFileNameW(nullptr, buffer, size); });
+    const auto image = ownImage();
     if (!image.has_value())
     {
         return std::unexpected(std::format("couldn't read the helper's own path: {}", lastErrorText(GetLastError())));

@@ -401,6 +401,44 @@ TEST(SelectOverrideTest, ParsesTheStartupDialog)
     }
 }
 
+// #2827: the names TASKSMACK_DEMO's steps use for the tabs, the Overview's sections and the dialogs, in
+// any case, and written back the same way for a log line.
+TEST(SelectOverrideTest, NamesOfTabsSectionsAndDialogsParseInAnyCaseAndWriteBack)
+{
+    using App::SelectOverride::DetailsSection;
+    using App::SelectOverride::dialogName;
+    using App::SelectOverride::parseDialog;
+    using App::SelectOverride::parseSection;
+    using App::SelectOverride::parseTab;
+    using App::SelectOverride::sectionName;
+    using App::SelectOverride::StartupDialog;
+    using App::SelectOverride::tabName;
+
+    for (const auto& [name, tab] : App::SelectOverride::TAB_NAMES)
+    {
+        EXPECT_EQ(parseTab(name), tab);
+        EXPECT_EQ(tabName(tab), name);
+    }
+    for (const auto& [name, section] : App::SelectOverride::SECTION_NAMES)
+    {
+        EXPECT_EQ(parseSection(name), section);
+        EXPECT_EQ(sectionName(section), name);
+    }
+    for (const auto& [name, dialog] : App::SelectOverride::DIALOG_NAMES)
+    {
+        EXPECT_EQ(parseDialog(name), dialog);
+        EXPECT_EQ(dialogName(dialog), name);
+    }
+    EXPECT_EQ(parseSection("OpenFiles"), DetailsSection::OpenFiles);
+    EXPECT_EQ(parseSection("MODULES"), DetailsSection::Modules);
+    EXPECT_EQ(parseDialog("About"), StartupDialog::About);
+    EXPECT_FALSE(parseSection("files").has_value());
+    EXPECT_FALSE(parseSection("open files").has_value());
+    EXPECT_FALSE(parseSection("").has_value());
+    EXPECT_FALSE(parseDialog("settings").has_value());
+    EXPECT_FALSE(parseTab("memory").has_value());
+}
+
 // #1575: TASKSMACK_TAB resolves to the tab's registered id, never to its position in the list.
 TEST(SelectOverrideTest, MainTabResolvesToTheRegisteredIdNotAnIndex)
 {
