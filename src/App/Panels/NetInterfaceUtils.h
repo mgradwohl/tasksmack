@@ -134,7 +134,10 @@ enum class InterfaceType : std::uint8_t
     Bluetooth,
     Virtual, ///< Virtual adapters, VPNs and tunnels: the cloud.
     Other,   ///< Anything else, or a name that says nothing: the generic network icon.
+    Count,   ///< Not a type: how many there are, for INTERFACE_TYPE_ICONS.
 };
+
+inline constexpr std::size_t INTERFACE_TYPE_COUNT = static_cast<std::size_t>(InterfaceType::Count);
 
 namespace Detail
 {
@@ -223,20 +226,28 @@ namespace Detail
         return ICON_FA_CLOUD;
     case InterfaceType::Other:
         return ICON_FA_NETWORK_WIRED;
+    case InterfaceType::Count:
+        break;
     }
     return ICON_FA_NETWORK_WIRED;
 }
 
-/// Every icon interfaceTypeIcon() can return, so the Type column can be sized for the widest.
-inline constexpr std::array<const char*, 7> INTERFACE_TYPE_ICONS{
-    ICON_FA_HOUSE,
-    ICON_FA_WIFI,
-    ICON_FA_SIGNAL,
-    ICON_FA_ETHERNET,
-    ICON_FA_BLUETOOTH,
-    ICON_FA_CLOUD,
-    ICON_FA_NETWORK_WIRED,
-};
+namespace Detail
+{
+/// interfaceTypeIcon() for the InterfaceType of each index, in order.
+template<std::size_t... Indices>
+[[nodiscard]] constexpr std::array<const char*, sizeof...(Indices)> interfaceTypeIcons(std::index_sequence<Indices...> /*indices*/) noexcept
+{
+    return {interfaceTypeIcon(static_cast<InterfaceType>(Indices))...};
+}
+} // namespace Detail
+
+/// Every icon interfaceTypeIcon() can return, one per InterfaceType in declaration order, so the
+/// Type column can be sized for the widest. Built from interfaceTypeIcon() rather than listed again:
+/// a hand-written list had drifted from the switch once (#966) and nothing tied them since (#2776).
+inline constexpr std::array<const char*, INTERFACE_TYPE_COUNT> INTERFACE_TYPE_ICONS =
+    Detail::interfaceTypeIcons(std::make_index_sequence<INTERFACE_TYPE_COUNT>{});
+static_assert(INTERFACE_TYPE_ICONS.size() == static_cast<std::size_t>(InterfaceType::Count));
 
 /// Sort interfaces: Up first, then by activity, then by speed, then alphabetically
 [[nodiscard]] inline std::vector<Domain::SystemSnapshot::InterfaceSnapshot>
