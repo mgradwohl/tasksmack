@@ -109,6 +109,20 @@ using QueryFullProcessImageNameFn = BOOL(WINAPI*)(HANDLE process, DWORD flags, L
 /// needed, when its buffer is too small (#2770). nullopt when it fails, with GetLastError() saying why.
 [[nodiscard]] std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn query = &::QueryFullProcessImageNameW);
 
+/// GetModuleFileNameW, or a test's stand-in.
+using GetModuleFileNameFn = DWORD(WINAPI*)(HMODULE module, LPWSTR path, DWORD size);
+
+/// This process's own image, as a Win32 path, read through @p getModuleFileName: a MAX_PATH buffer
+/// first, then the longest path's. nullopt when it fails, with GetLastError() saying why. The helper
+/// finds the TaskSmack beside it from this, and TaskSmack the helper beside it (#2772).
+[[nodiscard]] std::optional<std::wstring> ownImage(GetModuleFileNameFn getModuleFileName = &::GetModuleFileNameW);
+
+/// @p process's creation time, in a FILETIME's ticks (Windows::fileTimeTicks()), or nullopt if it
+/// can't be read, with GetLastError() saying why. TaskSmack reads its own through this to name itself
+/// on the helper's command line, and the helper its own to check that against (#2772): one reading,
+/// so the two can't drift apart.
+[[nodiscard]] std::optional<std::uint64_t> startTicksOf(HANDLE process);
+
 /// @p fileName in the folder of @p exePath, an absolute path; empty when @p exePath isn't absolute or
 /// has no folder. TaskSmack finds the helper this way and the helper TaskSmack, never through a search
 /// path or the current directory.
