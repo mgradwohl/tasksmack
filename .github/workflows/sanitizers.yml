@@ -2,15 +2,16 @@ name: Sanitizers
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   workflow_dispatch:
 
-# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
-# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a manual run off another branch) still cancels the run it supersedes.
+# Pushes to main or a release/* branch get one group per commit and are never cancelled, so
+# back-to-back merges each get a complete run and a regression is blamed on the commit that caused
+# it (#1187). A run on any other ref (a manual run off another branch) still cancels the run it
+# supersedes.
 concurrency:
-  group: sanitizers-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: sanitizers-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
   LLVM_VERSION: '22'
@@ -21,9 +22,11 @@ jobs:
   # Keeps the PR ASan+UBSan job's ccache fresh (#1584). That job (ci.yml) restores this key but
   # never saves, and only Heavy Checks' nightly asan-ubsan run used to save it, so by afternoon the
   # entry was a day of merges stale (66% hits, 12.8 min on #1581). A build on every push to main,
-  # no tests -- the PR job already runs them -- saves the cache for the next PR.
+  # no tests -- the PR job already runs them -- saves the cache for the next PR. Main only: a
+  # release/* push could not save it (caches are saved from main alone, #1406), so the build
+  # would be wasted; release-branch PRs restore main's entry like every other PR.
   asan-ubsan-cache:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:

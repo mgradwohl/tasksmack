@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   schedule:
     # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
     # touch; files unchanged since a clean run are skipped, #1785), Linux and Windows release
@@ -17,12 +17,13 @@ on:
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
-# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
-# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, a manual run off another branch) still cancels the run it supersedes.
+# Pushes to main or a release/* branch get one group per commit and are never cancelled, so
+# back-to-back merges each get a complete run and a regression is blamed on the commit that caused
+# it (#1187). A run on any other ref (a PR, a manual run off another branch) still cancels the run
+# it supersedes.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
   LLVM_VERSION: '22'
@@ -134,9 +135,9 @@ jobs:
   # below: clang-tidy runs after the tests on the tree this job configured, so it reuses its LLVM
   # setup, configure and generated headers instead of a separate job doing them all again. PRs
   # check changed files only, the nightly schedule and manual runs everything, and push to main
-  # never (the PR already checked the same tree). The nightly only runs clang-tidy here (no
-  # build). "CI Success" gates on the tidy-outcome output; skipped for docs-only and Windows-only
-  # changes, whose Linux file selection would be empty anyway.
+  # or a release/* branch never (the PR already checked the same tree). The nightly only runs
+  # clang-tidy here (no build). "CI Success" gates on the tidy-outcome output; skipped for
+  # docs-only and Windows-only changes, whose Linux file selection would be empty anyway.
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
@@ -150,7 +151,7 @@ jobs:
       os: ubuntu-24.04
       build_type: debug
       build: ${{ github.event_name != 'schedule' }}
-      clang_tidy: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      clang_tidy: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) }}
 
   # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
   # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
@@ -176,8 +177,9 @@ jobs:
   # Windows debug build and test, plus the Windows clang-tidy run (#1875): one job, so the LLVM
   # restore, configure-check seed, configure and FetchContent restore happen once per PR head
   # instead of twice. clang-tidy runs after the tests (PRs check changed files only, the nightly
-  # schedule and manual runs everything), never on push to main (the PR already checked the same
-  # tree). The nightly only runs clang-tidy here: it builds Windows release instead.
+  # schedule and manual runs everything), never on push to main or a release/* branch (the PR
+  # already checked the same tree). The nightly only runs clang-tidy here: it builds Windows
+  # release instead.
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
@@ -191,7 +193,7 @@ jobs:
       os: windows-2025
       build_type: debug
       build: ${{ github.event_name != 'schedule' }}
-      clang_tidy: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      clang_tidy: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) }}
 
   # Windows release (~12 min) runs nightly and on manual runs, not on every PR or every push to
   # main (#1134, #1406); Linux release above covers the PR gate and every push.
@@ -238,7 +240,8 @@ jobs:
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
   # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
-  # as before: skipped on push to main, for docs-only changes and when every change is Linux-only.
+  # as before: skipped on push to main or a release/* branch, for docs-only changes and when every
+  # change is Linux-only.
   # always(): a failed or cancelled build-windows-debug must fail this check, not skip it (a
   # skipped required check counts as passing).
   static-analysis-windows:
@@ -248,7 +251,7 @@ jobs:
       always() &&
       needs.detect-docs-only.result == 'success' &&
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
+      (github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/'))) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -646,12 +649,13 @@ jobs:
           fi
 
           # clang-tidy (Linux) runs inside build-linux-debug (#2047) on every event but push to
-          # main (the PR already checked the same tree; the nightly runs every file). Its step is
+          # main or a release/* branch (the PR already checked the same tree; the nightly runs
+          # every file). Its step is
           # continue-on-error, so the job result can't show a finding: read the step's outcome.
           # Like the job, it skips docs-only and Windows-only changes; a selection with no
           # translation unit ('none') passes. Anything else -- a finding, or a tidy step that
           # never ran because the job failed or was cancelled first -- fails the gate.
-          if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
+          if [[ "$EVENT_NAME" != 'push' || ("$REF" != 'refs/heads/main' && "$REF" != refs/heads/release/*) ]]; then
             if [[ "$LINUX_RESULT" == 'skipped' && ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true') ]]; then
               echo "✅ clang-tidy (Linux) skipped: no Linux-relevant change."
             elif [[ "$LINUX_TIDY_OUTCOME" == 'success' ]]; then
