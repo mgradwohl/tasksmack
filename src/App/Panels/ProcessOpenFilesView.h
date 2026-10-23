@@ -103,9 +103,9 @@ class ProcessOpenFilesView
     {
         takeFinishedRead(target, false);
         m_ScanProgress = (reader != nullptr && m_Read.inFlight()) ? reader->handlesScanned() : 0;
-        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
                                            [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
@@ -142,13 +142,13 @@ class ProcessOpenFilesView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+        return m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {
-        m_AuthorizeRequested = true;
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
@@ -161,7 +161,6 @@ class ProcessOpenFilesView
     /// button. The sort and the filter are viewing preferences and stay.
     void onSelectionChanged() noexcept
     {
-        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::OpenFilesReadStatus::Ok;
@@ -323,8 +322,6 @@ class ProcessOpenFilesView
     void renderTable();
 
     bool m_HasRead = false;
-    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
-    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::OpenFilesReadStatus m_Status = Platform::OpenFilesReadStatus::Ok;
     std::string m_Detail;
     bool m_Truncated = false;                  // the read listed only the first MAX_OPEN_FILES
@@ -342,7 +339,8 @@ class ProcessOpenFilesView
     std::string m_CountLabel;            // "Open files (42)"
     std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
 
-    // The read in flight and its cadence. Destroying the view waits for at most one read.
+    // The scan in flight, the request for it and the "Authenticate to read" request (#2309). Destroying
+    // the view waits for at most one read.
     Detail::LazyBackgroundRead<Platform::OpenFilesReadResult> m_Read{
         Detail::LazyBackgroundRead<Platform::OpenFilesReadResult>::ON_DEMAND, Platform::OPEN_FILES_READ_THREAD_NAME, &failedRead};
 };

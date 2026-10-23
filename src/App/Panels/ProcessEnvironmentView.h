@@ -133,9 +133,9 @@ class ProcessEnvironmentView
     bool update(Platform::IProcessEnvironmentReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
                                            [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
@@ -160,13 +160,13 @@ class ProcessEnvironmentView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {
-        m_AuthorizeRequested = true;
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
@@ -186,7 +186,6 @@ class ProcessEnvironmentView
     /// in flight for the previous process is dropped when it arrives.
     void onSelectionChanged() noexcept
     {
-        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
@@ -341,8 +340,6 @@ class ProcessEnvironmentView
     }
 
     bool m_HasRead = false;
-    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
-    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
     bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
@@ -351,7 +348,8 @@ class ProcessEnvironmentView
     std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
     std::vector<std::size_t> m_FilteredRows;
     bool m_FilterDirty = true;
-    // Last: destroying it waits for a read in flight, which writes only into its own future.
+    // The read in flight, its cadence and the "Authenticate to read" request (#2309). Last: destroying
+    // it waits for a read in flight, which writes only into its own future.
     Detail::LazyBackgroundRead<Platform::EnvironmentReadResult> m_Read{
         Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, Platform::ENVIRONMENT_READ_THREAD_NAME, &failedRead};
 };
