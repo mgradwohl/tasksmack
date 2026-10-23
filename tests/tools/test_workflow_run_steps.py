@@ -7,7 +7,8 @@
   Markdown code marks, not run as a command substitution (#2532).
 - main-health.yml "Open, update or close the tracking issue": a job only some runs execute (CI's
   weekly unity build) stays red until a run that ran it passes (#2313). `gh` is a stub that answers
-  from fixtures through the step's own jq filters; the script is cut before its first issue call.
+  from fixtures through the step's own jq filters; only the step's `judge_branch` function runs,
+  cut before the issue handling that follows it, for main (#2741 tracks release branches the same way).
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash. Needs bash; the Main Health cases also
@@ -215,8 +216,9 @@ class MainHealthJobTests(unittest.TestCase):
 
         step = find_step(WORKFLOWS / "main-health.yml", "Open, update or close the tracking issue")
         self.env = step.env
-        cut = step.run.index("# REST only:")
-        self.script = step.run[:cut] + f'printf "%s\\n%s" "{RED_MARK}" "$red"\n'
+        # The judging function alone: cut before update_issue(), then judge main and print `red`.
+        cut = step.run.index("update_issue() {")
+        self.script = step.run[:cut] + f'judge_branch main\nprintf "%s\\n%s" "{RED_MARK}" "$red"\n'
 
     def tearDown(self):
         self._tmp.cleanup()

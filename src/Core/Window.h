@@ -3,6 +3,7 @@
 #include "Core/GraphicsHostInfo.h"
 #include "Core/WindowGeometry.h"
 
+#include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_video.h>
 
 #include <optional>
@@ -107,6 +108,9 @@ class Window
     /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
     /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
     [[nodiscard]] auto getNormalGeometryScale() const -> float;
+    /// Whether the window is at its normal geometry right now: not maximized (on any route, including
+    /// a window-manager maximize the tracker hasn't heard of yet), minimized or fullscreen.
+    [[nodiscard]] bool isNormalNow() const;
 
     /// Apply saved geometry at startup: clamp the size to the display, move the window to
     /// @p position when positioning is supported and the position is reachable on a connected
@@ -185,6 +189,14 @@ class Window
     {
         m_ShellRestoreKeysReader = reader;
     }
+    /// Reads a display's usable bounds, for a client-side maximize: SDL_GetDisplayUsableBounds()'s shape.
+    using UsableBoundsReader = auto (*)(SDL_DisplayID display, SDL_Rect* bounds) noexcept -> bool;
+    /// Replace how this window reads the display's usable bounds; nullptr restores SDL's. A test seam:
+    /// no real display fails that read on demand (#2722).
+    void setUsableBoundsReader(UsableBoundsReader reader) noexcept
+    {
+        m_UsableBoundsReader = reader;
+    }
     void restore();
     void minimize() const;
 
@@ -199,9 +211,6 @@ class Window
   private:
     // The live position and size.
     [[nodiscard]] auto liveRect() const -> WindowGeometry::Rect;
-    // Whether the window is at its normal geometry right now: not maximized (on any route),
-    // minimized or fullscreen.
-    [[nodiscard]] bool isNormalNow() const;
     // Hand @p minimum to SDL as the window's minimum size, putting back the size SDL would replace
     // with its stale floating size on native Wayland (#1777). False when SDL rejects it.
     bool applyMinimumSize(std::pair<int, int> minimum);
@@ -223,6 +232,8 @@ class Window
     std::pair<int, int> m_AppliedMinimum{0, 0};
     // See setShellRestoreKeysReader(); nullptr reads the keyboard.
     ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
+    // See setUsableBoundsReader(); nullptr asks SDL.
+    UsableBoundsReader m_UsableBoundsReader = nullptr;
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of

@@ -105,6 +105,12 @@ inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
 // than the sample rate; connections come and go faster than an environment, so faster than that.
 inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
 
+// Process Details' I/O priority control (#803) reads the shown process's I/O priority on a worker while
+// the control is drawn, once when it shows, after the selection changes or an apply, and then at this
+// cadence, so a change made outside TaskSmack (ionice) shows up. Off the UI thread: on Linux each read
+// is a pidfd open, a /proc read and ioprio_get (#2734).
+inline constexpr int PROCESS_IO_PRIORITY_REFRESH_MS = 2000;
+
 // How often Process Details re-reads the selected process's loaded modules (milliseconds) (#802)
 // Read on demand, never in the per-sample enumeration: only for the selected process, only while its
 // Modules section is open, once when it opens or the selection changes and then at this cadence. A

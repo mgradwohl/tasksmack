@@ -105,17 +105,6 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
     return std::nullopt;
 }
 
-/// @p process's image, as a Win32 path.
-[[nodiscard]] std::optional<std::wstring> imageOf(HANDLE process)
-{
-    return readPath(
-        [process](wchar_t* buffer, DWORD size) -> DWORD
-        {
-            DWORD written = size;
-            return QueryFullProcessImageNameW(process, 0, buffer, &written) != FALSE ? written : 0;
-        });
-}
-
 /// The final path of the file at @p path: what it names once "..", short names, links and case are
 /// resolved. nullopt when it can't be opened.
 [[nodiscard]] std::optional<std::wstring> finalPathOf(const std::wstring& path)
@@ -331,6 +320,22 @@ std::expected<UniqueHandle, std::string> openParent(DWORD pid, std::uint64_t sta
         return std::unexpected(parentRefusal(process.error()));
     }
     return UniqueHandle(process->release());
+}
+
+std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn query)
+{
+    return readPath(
+        [process, query](wchar_t* buffer, DWORD size) -> DWORD
+        {
+            DWORD written = size;
+            if (query(process, 0, buffer, &written) != FALSE)
+            {
+                return written;
+            }
+            // A buffer too small fails with ERROR_INSUFFICIENT_BUFFER, not the size needed as
+            // GetModuleFileNameW gives it: the size tried, so readPath() tries the longest (#2770).
+            return GetLastError() == ERROR_INSUFFICIENT_BUFFER ? size : 0;
+        });
 }
 
 std::wstring besidePath(std::wstring_view exePath, std::wstring_view fileName)

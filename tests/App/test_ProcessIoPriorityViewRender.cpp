@@ -90,6 +90,25 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
         runFrame(focused);
     }
 
+    /// One frame of @p view as Process Details runs it (#2734): the update path's I/O priority read
+    /// first (waited for, so the tests are deterministic), then render(). A read starts on the frame
+    /// after the control is first drawn and is taken in the same frame.
+    static void draw(ProcessPriorityView& view,
+                     TestMocks::MockProcessActions& mock,
+                     const Platform::ProcessActionCapabilities& capabilities,
+                     std::optional<std::int32_t> currentNice,
+                     const Platform::ProcessTarget& target)
+    {
+        Platform::IProcessActions* actions = capabilities.canSetIoPriority ? &mock : nullptr;
+        if (view.updateReads(actions, target, FRAME_SECONDS, /*wait=*/true))
+        {
+            (void) view.updateReads(actions, target, 0.0F, /*wait=*/true);
+        }
+        view.render(&mock, capabilities, currentNice, target);
+    }
+
+    static constexpr float FRAME_SECONDS = 1.0F / 60.0F;
+
     static void runFrame(const std::function<void()>& body, float windowWidth = 1600.0F)
     {
         ImGui::NewFrame();
@@ -110,7 +129,7 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
         runFrame(
             [&]
             {
-                view.render(&mock, NICE_AND_IO, NICE, target);
+                draw(view, mock, NICE_AND_IO, NICE, target);
                 const ImVec2 min = ImGui::GetItemRectMin();
                 const ImVec2 max = ImGui::GetItemRectMax();
                 centre = ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F);
@@ -138,17 +157,21 @@ TEST_F(ProcessIoPriorityViewRenderTest, HiddenAndNotReadWithoutTheCapability)
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    runFrame([&] { view.render(&mock, NICE_ONLY, NICE, TARGET_A); });
+    runFrame([&] { draw(view, mock, NICE_ONLY, NICE, TARGET_A); });
     EXPECT_EQ(mock.getIoPriorityCount(), 0);
     EXPECT_FALSE(view.ioPriorityView().currentIoPriority().has_value());
 }
 
-TEST_F(ProcessIoPriorityViewRenderTest, RenderReadsAndShowsTheProcessValue)
+// #2734: render() never reads. The first frame draws the control; the next frame's update path reads the
+// process's value on the worker, and that frame shows it.
+TEST_F(ProcessIoPriorityViewRenderTest, TheFrameAfterTheControlShowsReadsAndShowsTheProcessValue)
 {
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(IDLE);
     ProcessPriorityView view;
     runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    EXPECT_EQ(mock.getIoPriorityCount(), 0); // render() alone reads nothing
+    runFrame([&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
     EXPECT_EQ(view.ioPriorityView().shownIoPriority(), IDLE);
     EXPECT_FALSE(view.ioPriorityView().hasPendingEdit());
@@ -160,7 +183,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsDisabledUntilAnEdit)
     mock.setIoPriorityReadResult(BEST_EFFORT_4);
     ProcessPriorityView view;
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
-    click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    click(apply, [&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_EQ(mock.setPriorityCount(), 0);
@@ -171,12 +194,12 @@ TEST_F(ProcessIoPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedPro
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(BEST_EFFORT_4);
     ProcessPriorityView view;
-    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); }); // Reads the current value
+    runFrame([&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); }); // Reads the current value
     view.ioPriorityView().editIoPriority(IDLE, TARGET_A);
     // Found with the edit shown: Idle has no level slider, so Apply sits further left than for Best-effort.
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
 
-    click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    click(apply, [&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(mock.setPriorityCount(), 0); // The nice control's Apply is a different button
@@ -184,8 +207,8 @@ TEST_F(ProcessIoPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedPro
     EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
     EXPECT_EQ(mock.lastSetIoPriority(), IDLE);
 
-    click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); }); // Disabled again
-    view.update(/*wait=*/true);                                             // the apply runs on its worker (#2305)
+    click(apply, [&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); }); // Disabled again
+    view.update(/*wait=*/true);                                           // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
 
@@ -199,7 +222,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeAp
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
     view.ioPriorityView().editIoPriority(IDLE, TARGET_A);
 
-    click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_B); });
+    click(apply, [&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_B); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_FALSE(view.ioPriorityView().hasPendingEdit());
@@ -214,7 +237,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
     view.ioPriorityView().editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, TARGET_A);
 
-    click(apply, [&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    click(apply, [&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(view.ioPriorityView().error(), "Permission denied");
@@ -235,13 +258,13 @@ TEST_F(ProcessIoPriorityViewRenderTest, ARefusalShowsAuthenticateAndRetryWhichRe
     ProcessPriorityView view;
     const ImVec2 apply = renderAndFindIoApply(view, mock, TARGET_A);
     view.ioPriorityView().editIoPriority(IDLE, TARGET_A);
-    click(apply, [&] { view.render(&mock, AUTHORIZABLE, NICE, TARGET_A); });
+    click(apply, [&] { draw(view, mock, AUTHORIZABLE, NICE, TARGET_A); });
     view.update(/*wait=*/true);
     ASSERT_EQ(view.ioPriorityView().error(), "Permission denied");
     ASSERT_TRUE(view.ioPriorityView().offersAuthenticateAndRetry());
 
     const ImVec2 retry = renderAndFindIoApply(view, mock, TARGET_A); // now the retry button
-    click(retry, [&] { view.render(&mock, AUTHORIZABLE, NICE, TARGET_A); });
+    click(retry, [&] { draw(view, mock, AUTHORIZABLE, NICE, TARGET_A); });
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.runAuthorizedCount(), 1);
     EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetIoPriority);
@@ -255,8 +278,8 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedReadShowsItsMessage)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(std::unexpected(std::string("Couldn't read the I/O priority")));
     ProcessPriorityView view;
-    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
-    runFrame([&] { view.render(&mock, NICE_AND_IO, NICE, TARGET_A); });
+    runFrame([&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
+    runFrame([&] { draw(view, mock, NICE_AND_IO, NICE, TARGET_A); });
     EXPECT_EQ(view.ioPriorityView().readError(), "Couldn't read the I/O priority");
     EXPECT_FALSE(view.ioPriorityView().currentIoPriority().has_value());
     EXPECT_GE(mock.getIoPriorityCount(), 1);
@@ -274,7 +297,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
     runFrame(
         [&]
         {
-            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            draw(view, mock, NICE_AND_IO, NICE, TARGET_A);
             applyWidth = ImGui::GetItemRectSize().x; // The I/O Apply is the last item while no error line shows
             labelWidth = ImGui::CalcTextSize(ICON_FA_CHECK "  Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
         });
@@ -298,7 +321,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)
         float windowRight = 0.0F;
         const auto body = [&]
         {
-            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            draw(view, mock, NICE_AND_IO, NICE, TARGET_A);
             applyRight = ImGui::GetItemRectMax().x;
             windowRight = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x;
         };
@@ -317,7 +340,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, TheSliderStepsAcrossTheClassBands)
     ProcessPriorityView view;
     const auto body = [&]
     {
-        view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+        draw(view, mock, NICE_AND_IO, NICE, TARGET_A);
     };
     runFrame(body); // Reads the current value
     pressOnIoSlider(ImGuiKey_RightArrow, body);
@@ -341,7 +364,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, RealtimeIsOnTheSliderOnlyWithThePrivileg
         ProcessPriorityView view;
         const auto body = [&]
         {
-            view.render(&mock, capabilities, NICE, TARGET_A);
+            draw(view, mock, capabilities, NICE, TARGET_A);
         };
         runFrame(body);
         pressOnIoSlider(ImGuiKey_LeftArrow, body); // Toward the high end, from Best-effort 0
@@ -367,7 +390,7 @@ TEST_F(ProcessIoPriorityViewRenderTest, ResetToDefaultFollowsTheNiceValueAgain)
     ProcessPriorityView view;
     const auto body = [&]
     {
-        view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+        draw(view, mock, NICE_AND_IO, NICE, TARGET_A);
     };
     runFrame(body);
     runFrame(body);

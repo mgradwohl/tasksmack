@@ -58,6 +58,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -99,6 +100,14 @@ struct Arguments
 /// The process @p pid, if it is the one that started at @p startTicks, opened with SYNCHRONIZE and
 /// PROCESS_QUERY_LIMITED_INFORMATION. The handle pins it, so its PID can't be reused while it is held.
 [[nodiscard]] std::expected<UniqueHandle, std::string> openParent(DWORD pid, std::uint64_t startTicks);
+
+/// QueryFullProcessImageNameW, or a test's stand-in.
+using QueryFullProcessImageNameFn = BOOL(WINAPI*)(HANDLE process, DWORD flags, LPWSTR path, PDWORD size);
+
+/// @p process's image, as a Win32 path, read through @p query: a MAX_PATH buffer first, then the
+/// longest path's, since QueryFullProcessImageNameW fails with ERROR_INSUFFICIENT_BUFFER, not the size
+/// needed, when its buffer is too small (#2770). nullopt when it fails, with GetLastError() saying why.
+[[nodiscard]] std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn query = &::QueryFullProcessImageNameW);
 
 /// @p fileName in the folder of @p exePath, an absolute path; empty when @p exePath isn't absolute or
 /// has no folder. TaskSmack finds the helper this way and the helper TaskSmack, never through a search

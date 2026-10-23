@@ -1,22 +1,32 @@
 #include "HelperLauncher.h"
 
+#include "Platform/BrokerProtocol.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/PipeBroker.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 
+#include <spdlog/spdlog.h>
+
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include <objbase.h>
@@ -69,19 +79,60 @@ constexpr DWORD LONGEST_PATH = 32'768;
 {
     const std::wstring commandLine = std::format(L"\"{}\" {}", HELPER_FILE_NAME, parameters);
     int count = 0;
-    LPWSTR* argv = CommandLineToArgvW(commandLine.c_str(), &count);
-    if (argv == nullptr)
+    struct Free
+    {
+        void operator()(void* memory) const noexcept
+        {
+            LocalFree(memory);
+        }
+    };
+    const std::unique_ptr<LPWSTR, Free> argv(CommandLineToArgvW(commandLine.c_str(), &count));
+    if (!argv)
     {
         return std::nullopt;
     }
-    const std::span<LPWSTR> all(argv, static_cast<std::size_t>(count));
+    const std::span<LPWSTR> all(argv.get(), static_cast<std::size_t>(count));
     std::vector<std::wstring> split;
     if (!all.empty())
     {
         split.assign(all.begin() + 1, all.end());
     }
-    LocalFree(static_cast<HLOCAL>(argv));
     return split;
+}
+
+/// Whether @p response is a read the helper refused because it runs as another account than
+/// TaskSmack's user (BrokerHelper::readsOnlyOwnProcesses()): a process read, or a system-wide one
+/// answered with an ErrorReply, that carries BrokerHelper::OTHER_USERS_READ_REFUSED. Its words are then
+/// replaced by OTHER_USERS_READS_UNAVAILABLE. An environment or memory rollup refused the same way
+/// carries no words, so it teaches nothing: both are refused the same way for other reasons too.
+[[nodiscard]] bool refusedForAnotherAccount(Broker::Response& response)
+{
+    const auto reworded = [](std::string& words)
+    {
+        if (words != BrokerHelper::OTHER_USERS_READ_REFUSED)
+        {
+            return false;
+        }
+        words = OTHER_USERS_READS_UNAVAILABLE;
+        return true;
+    };
+    if (auto* const modules = std::get_if<Broker::ModulesReply>(&response))
+    {
+        return reworded(modules->result.detail);
+    }
+    if (auto* const files = std::get_if<Broker::OpenFilesReply>(&response))
+    {
+        return reworded(files->result.detail);
+    }
+    if (auto* const connections = std::get_if<Broker::ConnectionsReply>(&response))
+    {
+        return reworded(connections->result.detail);
+    }
+    if (auto* const error = std::get_if<Broker::ErrorReply>(&response))
+    {
+        return reworded(error->message); // a system-wide read: the firmware, every user's crashes
+    }
+    return false;
 }
 
 } // namespace
@@ -240,6 +291,59 @@ bool readsOtherUsers() noexcept
         return false;
     }
     return readsOtherUsers(type);
+}
+
+LearnedReadsBroker::LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner) : m_Inner(std::move(inner)), m_ReadsOtherUsers(false)
+{
+    if (m_Inner == nullptr)
+    {
+        throw std::invalid_argument("LearnedReadsBroker requires a broker");
+    }
+    m_ReadsOtherUsers.store(m_Inner->readsOtherUsers(), std::memory_order_relaxed);
+}
+
+bool LearnedReadsBroker::connected() const noexcept
+{
+    return m_Inner->connected();
+}
+
+std::expected<void, std::string> LearnedReadsBroker::connect(const std::stop_token& stopToken)
+{
+    return m_Inner->connect(stopToken);
+}
+
+bool LearnedReadsBroker::readsOtherUsers() const noexcept
+{
+    return m_ReadsOtherUsers.load(std::memory_order_relaxed);
+}
+
+std::expected<Broker::Response, std::string> LearnedReadsBroker::call(const Broker::Request& request, const std::stop_token& stopToken)
+{
+    auto response = m_Inner->call(request, stopToken);
+    learnFrom(response);
+    return response;
+}
+
+std::expected<Broker::Response, std::string> LearnedReadsBroker::callIfIdle(const Broker::Request& request,
+                                                                            std::chrono::milliseconds timeout)
+{
+    auto response = m_Inner->callIfIdle(request, timeout);
+    learnFrom(response);
+    return response;
+}
+
+void LearnedReadsBroker::learnFrom(std::expected<Broker::Response, std::string>& response)
+{
+    if (!response.has_value() || !refusedForAnotherAccount(*response))
+    {
+        return;
+    }
+    // The elevation's account doesn't change while TaskSmack runs: learned once, for good.
+    if (m_ReadsOtherUsers.exchange(false, std::memory_order_relaxed))
+    {
+        spdlog::info("The administrator helper runs as another account than TaskSmack's user, so it reads only the user's own "
+                     "processes: \"Read as administrator\" isn't offered again this session (#2769)");
+    }
 }
 
 std::expected<void, std::string> availability()

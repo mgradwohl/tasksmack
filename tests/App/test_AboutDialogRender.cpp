@@ -79,7 +79,7 @@ class AboutDialogRenderTest : public ::testing::Test
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
-        measured.activatedUrl = AboutDialog::render(m_OpenRequested, m_Icon);
+        measured.activatedUrl = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon);
         measured.open = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
@@ -191,6 +191,7 @@ class AboutDialogRenderTest : public ::testing::Test
     static constexpr int SETTLE_FRAMES = 6;
 
     bool m_OpenRequested = false;
+    bool m_CloseRequested = false;
     UI::Texture m_Icon; // Invalid: no GL context here, so the header keeps the icon's space empty
 
   private:

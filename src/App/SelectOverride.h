@@ -8,6 +8,9 @@
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|npu|network)
 //   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
 //
+// TASKSMACK_DEMO (App/DemoOverride.h, #2827) makes the same requests, and more, at given times
+// after startup, through the names and parsers here.
+//
 // The variables are read once, at startup (ShellLayer::onAttach() calls active()). When the PID or
 // name first appears in a process snapshot, ProcessesPanel selects that process exactly as a click
 // and the row menu's Details do, and Process Details brings the requested tab forward. If it has not
@@ -62,6 +65,46 @@ enum class DetailsTab : std::uint8_t
     Network,
 };
 
+/// A collapsed section of Process Details' Overview, in the order the Overview draws them: what
+/// TASKSMACK_DEMO's section= step expands (#2827).
+enum class DetailsSection : std::uint8_t
+{
+    Environment, ///< Linux only
+    Connections,
+    Modules,
+    Security, ///< Linux only
+    OpenFiles,
+    Services, ///< Drawn only for a process that runs a service
+};
+
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+enum class StartupDialog : std::uint8_t
+{
+    Help,
+    About,
+};
+
+/// The names the hooks accept for each tab, section and dialog, lowercase: parseTab(), parseSection()
+/// and parseDialog() match them in any case; tabName(), sectionName() and dialogName() write them.
+inline constexpr std::array<std::pair<std::string_view, DetailsTab>, 4> TAB_NAMES{{
+    {"overview", DetailsTab::Overview},
+    {"gpu", DetailsTab::Gpu},
+    {"npu", DetailsTab::Npu},
+    {"network", DetailsTab::Network},
+}};
+inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECTION_NAMES{{
+    {"environment", DetailsSection::Environment},
+    {"connections", DetailsSection::Connections},
+    {"modules", DetailsSection::Modules},
+    {"security", DetailsSection::Security},
+    {"openfiles", DetailsSection::OpenFiles},
+    {"services", DetailsSection::Services},
+}};
+inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 2> DIALOG_NAMES{{
+    {"help", StartupDialog::Help},
+    {"about", StartupDialog::About},
+}};
+
 /// The process to select: by PID when one is given, else by name.
 struct Target
 {
@@ -90,6 +133,35 @@ namespace Detail
                               { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
 }
 
+/// The value @p text names in @p names (TAB_NAMES and the like), in any case, or nullopt.
+template<typename Value, std::size_t N>
+[[nodiscard]] std::optional<Value> parseName(const std::string_view text,
+                                             const std::array<std::pair<std::string_view, Value>, N>& names) noexcept
+{
+    for (const auto& [name, value] : names)
+    {
+        if (equalsIgnoreCase(text, name))
+        {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+/// The name @p names gives @p value; empty for a value not listed.
+template<typename Value, std::size_t N>
+[[nodiscard]] constexpr std::string_view nameOf(const Value value, const std::array<std::pair<std::string_view, Value>, N>& names) noexcept
+{
+    for (const auto& [name, candidate] : names)
+    {
+        if (candidate == value)
+        {
+            return name;
+        }
+    }
+    return {};
+}
+
 } // namespace Detail
 
 /// A positive PID of digits only that fits an int32, or nullopt.
@@ -111,23 +183,33 @@ namespace Detail
 /// "overview", "gpu", "npu" or "network", in any case, or nullopt.
 [[nodiscard]] inline std::optional<DetailsTab> parseTab(const std::string_view text) noexcept
 {
-    if (Detail::equalsIgnoreCase(text, "overview"))
-    {
-        return DetailsTab::Overview;
-    }
-    if (Detail::equalsIgnoreCase(text, "gpu"))
-    {
-        return DetailsTab::Gpu;
-    }
-    if (Detail::equalsIgnoreCase(text, "npu"))
-    {
-        return DetailsTab::Npu;
-    }
-    if (Detail::equalsIgnoreCase(text, "network"))
-    {
-        return DetailsTab::Network;
-    }
-    return std::nullopt;
+    return Detail::parseName(text, TAB_NAMES);
+}
+
+/// "modules", "openfiles", "connections", "environment", "security" or "services", in any case, or nullopt.
+[[nodiscard]] inline std::optional<DetailsSection> parseSection(const std::string_view text) noexcept
+{
+    return Detail::parseName(text, SECTION_NAMES);
+}
+
+/// "help" or "about", in any case, or nullopt.
+[[nodiscard]] inline std::optional<StartupDialog> parseDialog(const std::string_view text) noexcept
+{
+    return Detail::parseName(text, DIALOG_NAMES);
+}
+
+/// The names parseTab(), parseSection() and parseDialog() accept, for a log line: "gpu", "openfiles", "about".
+[[nodiscard]] constexpr std::string_view tabName(const DetailsTab tab) noexcept
+{
+    return Detail::nameOf(tab, TAB_NAMES);
+}
+[[nodiscard]] constexpr std::string_view sectionName(const DetailsSection section) noexcept
+{
+    return Detail::nameOf(section, SECTION_NAMES);
+}
+[[nodiscard]] constexpr std::string_view dialogName(const StartupDialog dialog) noexcept
+{
+    return Detail::nameOf(dialog, DIALOG_NAMES);
 }
 
 /// Parses the three variables' values (nullptr when unset). Unset or blank values are ignored
@@ -405,15 +487,9 @@ class PendingMainTab
     int m_Frames = 0;
 };
 
-/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog (StartupDialog).
 inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
 static_assert(Core::isKnownEnvHook(OPEN_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
-
-enum class StartupDialog : std::uint8_t
-{
-    Help,
-    About,
-};
 
 /// What TASKSMACK_OPEN asked for.
 struct StartupDialogChoice
@@ -431,15 +507,8 @@ struct StartupDialogChoice
     {
         return choice;
     }
-    if (Detail::equalsIgnoreCase(text, "help"))
-    {
-        choice.dialog = StartupDialog::Help;
-    }
-    else if (Detail::equalsIgnoreCase(text, "about"))
-    {
-        choice.dialog = StartupDialog::About;
-    }
-    else
+    choice.dialog = parseDialog(text);
+    if (!choice.dialog.has_value())
     {
         choice.warning = std::format("{}: '{}' is not help or about; ignored", OPEN_ENV_VAR, text);
     }
@@ -457,7 +526,8 @@ anyTestHookActive(const char* mainTab, const char* pid, const char* name, const 
                                [](const char* value) { return value != nullptr && !Platform::trimAscii(value).empty(); });
 }
 
-/// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR set (#1596).
+/// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR (#1596), TASKSMACK_SCREENSHOT
+/// or TASKSMACK_DEMO (#2827) set.
 [[nodiscard]] bool testHookActive();
 
 /// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.

@@ -38,6 +38,7 @@ SystemInfoModel::SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> pro
         throw std::invalid_argument("SystemInfoModel requires a probe");
     }
     m_Capabilities = m_Probe->capabilities();
+    m_CanReadAuthorized.store(m_Capabilities.canReadAuthorized, std::memory_order_relaxed);
 }
 
 void SystemInfoModel::read(const std::stop_token& stopToken)
@@ -51,7 +52,7 @@ void SystemInfoModel::read(const std::stop_token& stopToken)
     const std::uint64_t crashReadOrder = m_CrashHistory ? m_CrashHistory->beginRead() : 0;
     const auto started = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = started > 0 ? static_cast<std::uint64_t>(started) : 0;
-    if (m_AuthorizationRequested.exchange(false, std::memory_order_relaxed) && m_Capabilities.canReadAuthorized)
+    if (m_AuthorizationRequested.exchange(false, std::memory_order_relaxed) && m_CanReadAuthorized.load(std::memory_order_relaxed))
     {
         // The password prompt, on this (the read's) thread; a dismissed prompt just leaves the facts marked
         static_cast<void>(m_Probe->authorize(stopToken));
@@ -80,6 +81,9 @@ void SystemInfoModel::read(const std::stop_token& stopToken)
             next->publicIp = m_Probe->readPublicIp();
         }
     }
+    // The helper can take "Authenticate to read" back during the reads above, once it has shown it runs
+    // as another account (Windows, #2769): from this read on the page stops offering it.
+    m_CanReadAuthorized.store(m_Probe->canReadAuthorized(), std::memory_order_relaxed);
     m_Sensors.add(next->sensors, steadySeconds());
     next->sensorRanges = m_Sensors.ranges();
     next->sensorHistories = m_Sensors.histories();

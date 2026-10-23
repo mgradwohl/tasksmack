@@ -75,7 +75,7 @@ jobs:
       - name: Report dry run
         if: env.DRY_RUN == 'true'
         run: |
-          echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): the tag, main-ancestry, existing-release and version-equals-tag checks are skipped, and create-release creates and publishes nothing."
+          echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): the tag, branch-ancestry, existing-release and version-equals-tag checks are skipped, and create-release creates and publishes nothing."
 
       - name: Validate ref is an actual tag
         # github.ref_name is just the short name with no "refs/tags/"/"refs/heads/"
@@ -127,23 +127,36 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history is required to resolve the tag SHA and check it
-          # against origin/main below.
+          # Full history (every branch and tag) is required to resolve the tag SHA and check
+          # it against origin/main and origin/release/X.Y below.
           fetch-depth: 0
 
-      - name: Verify tag is on main
-        # A release must publish something that is on main: the tag's commit must be
-        # main's HEAD or an ancestor of it. Ancestry rather than equality, so a merge
-        # landing on main between the tag push and this job can't abort the release.
+      - name: Verify tag is on main or its release branch
+        # A release must publish something that is on main, or on the release branch the tag
+        # names (#2741): vX.Y.Z may be on `release/X.Y`, which the maintainer cuts at the
+        # candidate commit, where vX.Y.0 is tagged on both branches and later patch tags go on
+        # the branch's head after backports. Ancestry rather than equality, so a merge landing
+        # on the branch between the tag push and this job can't abort the release.
         if: env.DRY_RUN != 'true'
         run: |
           TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
-          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+          VERSION="${TAG_NAME#v}"
+          RELEASE_BRANCH="release/${VERSION%.*}"
+          if git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is on main."
+          elif git show-ref --verify --quiet "refs/remotes/origin/$RELEASE_BRANCH" &&
+               git merge-base --is-ancestor "$TAG_SHA" "origin/$RELEASE_BRANCH"; then
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is on $RELEASE_BRANCH."
+          else
             MAIN_SHA=$(git rev-parse origin/main)
-            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not on main (not an ancestor of origin/main, currently ${MAIN_SHA}). Aborting release." >&2
+            if git show-ref --verify --quiet "refs/remotes/origin/$RELEASE_BRANCH"; then
+              BRANCH_STATE="currently $(git rev-parse "origin/$RELEASE_BRANCH")"
+            else
+              BRANCH_STATE="no such branch"
+            fi
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is neither on main (not an ancestor of origin/main, currently ${MAIN_SHA}) nor on ${RELEASE_BRANCH} (${BRANCH_STATE}). Aborting release." >&2
             exit 1
           fi
-          echo "Tag '$TAG_NAME' (${TAG_SHA}) is on main."
 
       - name: Verify tag matches project version
         # Catches a missed version bump before it ships assets whose embedded

@@ -56,13 +56,25 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
                 .unavailableReason = m_HasOs ? std::string{} : std::string{"not here"},
                 .wifiDetailsGated = false,
                 .hasPublicIp = m_PublicIpReads != nullptr,
-                .canReadAuthorized = m_Authorizations != nullptr};
+                .canReadAuthorized = canReadAuthorized()};
     }
 
     /// Offers authorize() (#2310), counting its calls in @p authorizations.
     void offerAuthorization(int* authorizations) noexcept
     {
         m_Authorizations = authorizations;
+    }
+
+    /// The helper authorize() starts turns out to read only the user's own processes (#2769): from
+    /// then on this can't read as an administrator, as BrokeredSystemInfoProbe's answer changes.
+    void takeAuthorizationBackOnAuthorize() noexcept
+    {
+        m_TakeBackOnAuthorize = true;
+    }
+
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Authorizations != nullptr && !m_AuthorizationTakenBack;
     }
 
     bool authorize(const std::stop_token& stopToken) override
@@ -72,6 +84,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         {
             ++*m_Authorizations;
         }
+        m_AuthorizationTakenBack = m_TakeBackOnAuthorize;
         return m_Authorizations != nullptr;
     }
 
@@ -261,6 +274,8 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     int* m_PublicIpReads = nullptr;
     int* m_Authorizations = nullptr;
     bool m_AuthorizeSawStop = false;
+    bool m_TakeBackOnAuthorize = false;
+    bool m_AuthorizationTakenBack = false;
 };
 
 /// The key of the coretemp sensor FakeSystemInfoProbe reads by default.
@@ -409,6 +424,33 @@ TEST(SystemInfoModelTest, TheReadsStopTokenReachesAuthorize)
     EXPECT_FALSE(model.tryRead(stop.get_token()).has_value());
     EXPECT_EQ(authorizations, 1);
     EXPECT_TRUE(fake->authorizeSawStop());
+}
+
+// #2769: a helper that turns out to read only the user's own processes takes "Authenticate to read"
+// back: the page stops offering it from that read on, and no later request asks the prompt again.
+TEST(SystemInfoModelTest, AuthorizationTheHelperTakesBackIsntOfferedOrAskedAgain)
+{
+    int reads = 0;
+    int authorizations = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->offerAuthorization(&authorizations);
+    probe->takeAuthorizationBackOnAuthorize();
+    SystemInfoModel model(std::move(probe));
+    EXPECT_TRUE(model.capabilities().canReadAuthorized);
+    model.read();
+    EXPECT_TRUE(model.capabilities().canReadAuthorized) << "a read without the prompt teaches nothing";
+
+    model.requestAuthorization();
+    model.read();
+    EXPECT_EQ(authorizations, 1);
+    EXPECT_EQ(reads, 2) << "the read goes on after the prompt";
+    EXPECT_FALSE(model.capabilities().canReadAuthorized) << "taken back by the read that learned it";
+
+    model.requestAuthorization();
+    model.read();
+    EXPECT_EQ(authorizations, 1) << "never asked again";
+    EXPECT_EQ(reads, 3);
+    EXPECT_FALSE(model.capabilities().canReadAuthorized);
 }
 
 TEST(SystemInfoModelTest, AuthorizationIsNeverAskedOfAProbeWithoutIt)

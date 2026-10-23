@@ -181,6 +181,15 @@ class ProcessDetailsPanel : public Panel
         m_RequestedTab = tab;
     }
 
+    /// Draws @p section of the Overview open the next time the Overview is drawn, through ImGui's own
+    /// open state, as a click on its header does (TASKSMACK_DEMO's section=, #2827). Kept until then; a
+    /// section this platform hides, or (Services) this process has none of, is left alone. Open files'
+    /// scan is started with it, as its Scan button does, since the section lists nothing until then.
+    void requestSection(SelectOverride::DetailsSection section)
+    {
+        m_RequestedSection = section;
+    }
+
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
     {
@@ -357,6 +366,8 @@ class ProcessDetailsPanel : public Panel
     // The tab to bring forward when the tabs are next drawn: the Overview when F9 asked for the Kill
     // confirm, which shows over the Actions block there; or the test hook's tab (#1559).
     std::optional<SelectOverride::DetailsTab> m_RequestedTab;
+    // The Overview section to draw open when the Overview is next drawn (requestSection(), #2827).
+    std::optional<SelectOverride::DetailsSection> m_RequestedSection;
     ProcessPriorityView m_PriorityView;
     // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
     // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).

@@ -42,7 +42,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     update();
     // An edit made for another process is never shown for, or applied to, this one.
     (void) dropEditIfTargetMoved(target);
-    (void) refreshCurrent(actions, target, ImGui::GetTime());
+    // The current value is read off the UI thread by updateRead(), from the panel's update path (#2734).
+    markDrawn();
     syncToProcess();
 
     // Its own ID scope: the nice control above has an "Apply" button too.

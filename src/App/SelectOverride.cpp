@@ -1,7 +1,10 @@
 #include "SelectOverride.h"
 
+#include "App/DemoOverride.h"
+#include "App/ScreenshotOverride.h"
 #include "Core/ConfigDirOverride.h"
 #include "Core/EnvRead.h"
+#include "Platform/AsciiTrim.h"
 
 #ifdef _WIN32
 #include "Platform/Windows/WinString.h"
@@ -90,8 +93,14 @@ bool testHookActive()
     {
         return Core::readEnv(variable);
     };
-    // TASKSMACK_CONFIG_DIR (#1596) is a test hook too.
-    return Core::ConfigDirOverride::active().has_value() ||
+    // TASKSMACK_CONFIG_DIR (#1596), TASKSMACK_SCREENSHOT and TASKSMACK_DEMO (#2827) are test hooks too:
+    // a screenshot must not be of the notice.
+    const auto set = [&read](const std::string_view variable)
+    {
+        const char* value = read(variable);
+        return value != nullptr && !Platform::trimAscii(value).empty();
+    };
+    return Core::ConfigDirOverride::active().has_value() || set(ScreenshotOverride::ENV_VAR) || set(DemoOverride::ENV_VAR) ||
            anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR), read(OPEN_ENV_VAR));
 }
 
