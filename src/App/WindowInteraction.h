@@ -113,6 +113,79 @@ class DragTracker
     int m_MaximizedWindowWidth = 0;
 };
 
+/// Holds a window dragged off a maximize under the pointer for a moment after the restore (#2761). On
+/// X11 under a window manager, SDL reports the restore at once, but the window manager can move the
+/// window to its own saved restore position a little later (about 150 ms on WSLg), after the drag has
+/// already placed it under the pointer. A moving pointer moves the window again on its own; this covers
+/// the frames when it doesn't, including after the button is released. Only a return to that stale
+/// restore position is undone, never another position the window manager chooses (a clamp below a
+/// panel, a snap). No event says when the window manager is done, so it lasts SETTLE_SECONDS.
+class RestoreSettle
+{
+  public:
+    static constexpr double SETTLE_SECONDS = 1.0;
+    /// How often to ask again while the window is back at the stale position: the move just asked for
+    /// takes a round trip to show up.
+    static constexpr double RETRY_SECONDS = 0.1;
+
+    /// The drag restored the window, which was to restore to (@p staleX, @p staleY), and put it at
+    /// (@p x, @p y) instead, at time @p now.
+    void start(int x, int y, int staleX, int staleY, double now) noexcept
+    {
+        m_TargetX = x;
+        m_TargetY = y;
+        m_StaleX = staleX;
+        m_StaleY = staleY;
+        m_Until = now + SETTLE_SECONDS;
+        m_NextAsk = now + RETRY_SECONDS;
+    }
+
+    /// The drag moved the window on, to (@p x, @p y).
+    void retarget(int x, int y) noexcept
+    {
+        m_TargetX = x;
+        m_TargetY = y;
+    }
+
+    /// Stops holding the window: another drag, a resize, or a maximize takes over.
+    void stop() noexcept
+    {
+        m_Until.reset();
+    }
+
+    [[nodiscard]] bool active() const noexcept
+    {
+        return m_Until.has_value();
+    }
+
+    /// The window's live position at time @p now: where to move it back to, when it's at the stale
+    /// restore position and it's time to ask again. Nothing once SETTLE_SECONDS have passed.
+    [[nodiscard]] std::optional<std::pair<int, int>> check(int liveX, int liveY, double now) noexcept
+    {
+        if (!m_Until.has_value() || now >= *m_Until)
+        {
+            m_Until.reset();
+            return std::nullopt;
+        }
+        const bool atStale = liveX == m_StaleX && liveY == m_StaleY;
+        const bool atTarget = liveX == m_TargetX && liveY == m_TargetY;
+        if (!atStale || atTarget || now < m_NextAsk)
+        {
+            return std::nullopt;
+        }
+        m_NextAsk = now + RETRY_SECONDS;
+        return std::pair{m_TargetX, m_TargetY};
+    }
+
+  private:
+    int m_TargetX = 0;
+    int m_TargetY = 0;
+    int m_StaleX = 0;
+    int m_StaleY = 0;
+    std::optional<double> m_Until; ///< set by start(); check() acts until then
+    double m_NextAsk = 0.0;
+};
+
 /// A resize from a window edge or corner. The position follows every sample; the size is committed at
 /// most every SIZE_COMMIT_INTERVAL_SECONDS, the latest one held back until then (or until the end of
 /// the drag), and dropped if the pointer comes back to the committed size first. A WindowResizedEvent

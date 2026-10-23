@@ -107,6 +107,9 @@ class Window
     /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
     /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
     [[nodiscard]] auto getNormalGeometryScale() const -> float;
+    /// Whether the window is at its normal geometry right now: not maximized (on any route, including
+    /// a window-manager maximize the tracker hasn't heard of yet), minimized or fullscreen.
+    [[nodiscard]] bool isNormalNow() const;
 
     /// Apply saved geometry at startup: clamp the size to the display, move the window to
     /// @p position when positioning is supported and the position is reachable on a connected
@@ -199,9 +202,6 @@ class Window
   private:
     // The live position and size.
     [[nodiscard]] auto liveRect() const -> WindowGeometry::Rect;
-    // Whether the window is at its normal geometry right now: not maximized (on any route),
-    // minimized or fullscreen.
-    [[nodiscard]] bool isNormalNow() const;
     // Hand @p minimum to SDL as the window's minimum size, putting back the size SDL would replace
     // with its stale floating size on native Wayland (#1777). False when SDL rejects it.
     bool applyMinimumSize(std::pair<int, int> minimum);
