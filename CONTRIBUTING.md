@@ -139,7 +139,7 @@ Sandbox options.
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
   - ROCm SMI library (librocm_smi64.so) for AMD GPU support
@@ -182,7 +182,7 @@ sudo apt install libsystemd-dev pkg-config
 - ccache 4.9.1+ (optional, for faster rebuilds; `setup-dev.ps1 -DevTools`)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - git (CMake requires it, and fetches the dependencies with it)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
