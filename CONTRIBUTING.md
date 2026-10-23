@@ -784,13 +784,19 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
-`<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
-sequence. The `overview-*` shots get `[sampling] history_max_seconds = 60` and are captured after 60 s
-(the hook's maximum), so their history charts are full; the other views are captured after 8 s.
+Process Details (overview, GPU, network, and the Overview with its Modules, Open files and
+Connections sections expanded by a one-step `TASKSMACK_DEMO` script: `details-modules`,
+`details-openfiles`, `details-connections`) for one process, Services, Startup, About and Help, named
+`<view>-<theme>.webp`, plus three animated WebPs at 12 fps built from frame sequences:
+`overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
+Processes table, selects the process and brings up its Process Details' Network tab) and
+`themes-live.webp` (9 s: the Overview through the six themes, 1.5 s each). The `overview-*` shots and
+`themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
+maximum), so their history charts are full; the other views are captured after 8 s.
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
-webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
-print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
+webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
+in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
+and exit non-zero if any shot failed.
 
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
@@ -801,9 +807,10 @@ tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
 
 ```powershell
-# Windows: in a Windows Sandbox (its own processes, user and host name) with the win-release build,
-# and Mesa's llvmpipe opengl32.dll beside TaskSmack.exe when the Sandbox has no vGPU
-.\tools\screenshots.ps1 -WebP -Exe C:\shots\TaskSmack.exe -Out C:\shots\out
+# Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
+# inside it (App Control there refuses a binary built on the host), and Mesa's llvmpipe opengl32.dll
+# beside TaskSmack.exe when the Sandbox has no vGPU
+.\tools\screenshots.ps1 -Exe build\win-release\bin\TaskSmack.exe -Out C:\shots\out   # then cwebp/img2webp on the host
 ```
 
 The images show the machine they were taken on. Before committing, look at every one for a user name,
