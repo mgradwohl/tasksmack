@@ -41,6 +41,9 @@ inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name"
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
 /// The worker that reads the crash history Process Details shows (#1675), at most once a minute.
 inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-read";
+/// The one-shot worker that reads the battery device's static facts on Windows (#1523, #2731): at most
+/// every BATTERY_INFO_REFRESH_SECONDS, so a slow ACPI call never stretches a system sample.
+inline constexpr std::string_view BATTERY_READ_THREAD_NAME = "ts-battery-read";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).

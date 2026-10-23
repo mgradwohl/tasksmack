@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -80,6 +81,23 @@ struct WindowsSystemProbeFunctions
         /// Whether the device with that id is in the system (CM_Locate_DevNodeW); Unknown for an empty id.
         DevicePresence (*devicePresence)(const std::wstring& deviceInstanceId) = nullptr;
     } network;
+
+    /// The monotonic clock: read()'s sub-read timing (#2731) and the network adapter cache's retry and
+    /// backstop times. A test's fake clock stands still or jumps.
+    std::chrono::steady_clock::time_point (*now)() noexcept = nullptr;
+};
+
+/// How long WindowsSystemProbe::read() spent in its sub-reads (#2731): the slowest one, by name, and
+/// all of them together. Read it after read(), on the same thread, so an overrun names "pdh-freq" or
+/// "ifTable" rather than "system".
+struct SystemReadTiming
+{
+    /// "cpu" (GetSystemTimes and the per-core NT query), "cpu-details" (the topology re-read, rare),
+    /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo and the page files), "uptime", "pdh-freq"
+    /// (the PDH collect) or "ifTable" (GetIfTable2 and the device lookups); empty before the first read().
+    std::string_view slowestSubRead;
+    std::chrono::steady_clock::duration slowest{};
+    std::chrono::steady_clock::duration total{};
 };
 
 /// Windows implementation of ISystemProbe.
@@ -119,7 +137,31 @@ class WindowsSystemProbe : public ISystemProbe
         return m_BaseCpuMHz;
     }
 
+    /// The last read()'s sub-read timing (#2731); the thread that calls read() reads it.
+    [[nodiscard]] SystemReadTiming lastReadTiming() const noexcept
+    {
+        return m_LastReadTiming;
+    }
+
   private:
+    // The adapter behind a network interface (#1284): its PnP device instance id and, for a down
+    // interface, whether that device is still in the system (#2731). An id once read is kept while the
+    // LUID still names the same interface -- its GUID, held as two halves, is checked, since Windows
+    // can give a freed LUID to a later interface. An empty read -- no value yet, or a failed read -- is
+    // retried no sooner than retryAt, so a value that appears later is still found without a registry
+    // read every sample. The presence, a PnP call, is kept until the interface set or a status changes
+    // (every entry's is dropped), the id is read again, or presenceExpiresAt, the backstop.
+    struct AdapterDevice
+    {
+        std::uint64_t guidLow = 0;
+        std::uint64_t guidHigh = 0;
+        std::wstring id;
+        std::chrono::steady_clock::time_point retryAt;
+        DevicePresence presence = DevicePresence::Unknown;
+        bool presenceKnown = false;
+        std::chrono::steady_clock::time_point presenceExpiresAt;
+    };
+
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
     void readMemoryCounters(SystemCounters& counters) const;
@@ -136,6 +178,13 @@ class WindowsSystemProbe : public ISystemProbe
     void refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore);
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
+    /// The interface's cache entry, its device instance id read from the registry when due (#1284).
+    [[nodiscard]] AdapterDevice&
+    adapterDevice(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now);
+    /// Whether a down interface's adapter device is in the system: the cached answer, or the PnP lookup
+    /// when the cache has none (#2731).
+    [[nodiscard]] DevicePresence
+    adapterDevicePresence(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now);
 
     WindowsSystemProbeFunctions m_Fns; // Every CPU, topology, memory and network call goes through these (#1719)
     std::size_t m_NumCores{0};
@@ -147,19 +196,15 @@ class WindowsSystemProbe : public ISystemProbe
     // model would compare against the all-group sum. Sampler thread only.
     mutable std::optional<CpuCounters> m_LastAllGroupTotal;
 
-    // The PnP device instance id of the adapter behind each network interface, by interface LUID
-    // (#1284). An id once read is kept while the LUID still names the same interface -- its GUID,
-    // held as two halves, is checked, since Windows can give a freed LUID to a later interface. An
-    // empty read -- no value yet, or a failed read -- is retried no sooner than retryAt, so a value
-    // that appears later is still found without a registry read every sample. Sampler thread only.
-    struct AdapterDeviceInstanceId
-    {
-        std::uint64_t guidLow = 0;
-        std::uint64_t guidHigh = 0;
-        std::wstring id;
-        std::chrono::steady_clock::time_point retryAt;
-    };
-    std::unordered_map<std::uint64_t, AdapterDeviceInstanceId> m_AdapterDeviceInstanceIds;
+    // The adapter behind each network interface, by interface LUID (AdapterDevice). Sampler thread only.
+    std::unordered_map<std::uint64_t, AdapterDevice> m_AdapterDevices;
+    // The interfaces and statuses GetIfTable2 listed last pass, sorted, and the scratch this pass's are
+    // collected in (networkInterfacesChanged() swaps them, so neither allocates once grown). Sampler
+    // thread only.
+    std::vector<NetworkInterfaceKey> m_InterfaceKeys;
+    std::vector<NetworkInterfaceKey> m_InterfaceKeysScratch;
+    // The last read()'s sub-read timing (#2731). Sampler thread only.
+    SystemReadTiming m_LastReadTiming;
     // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session
     std::uint64_t m_BaseCpuMHz{0};
     // PDH's "% Processor Performance", which scales the base clock to the current one (#1184); null

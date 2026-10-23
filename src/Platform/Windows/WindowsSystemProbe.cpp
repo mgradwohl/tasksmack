@@ -1,5 +1,6 @@
 #include "WindowsSystemProbe.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 
@@ -13,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 // clang-format off
@@ -379,6 +381,54 @@ readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size
 [[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid);
 [[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId);
 
+// read()'s sub-reads, as SystemReadTiming names them (#2731)
+constexpr std::string_view SUB_READ_CPU = "cpu";
+constexpr std::string_view SUB_READ_CPU_DETAILS = "cpu-details";
+constexpr std::string_view SUB_READ_MEMORY = "memory";
+constexpr std::string_view SUB_READ_UPTIME = "uptime";
+constexpr std::string_view SUB_READ_PDH_FREQ = "pdh-freq";
+constexpr std::string_view SUB_READ_IF_TABLE = "ifTable";
+
+// A sub-read this slow is logged by name (#2731)
+constexpr std::chrono::milliseconds SLOW_SUB_READ{Domain::Sampling::SYSTEM_PROBE_SLOW_SUB_READ_MS};
+
+/// Times read()'s sub-reads on the probe's clock (#2731): lap() closes the sub-read since the previous
+/// lap and keeps the slowest. One clock read per sub-read, nothing allocated.
+class SubReadTimer
+{
+  public:
+    using NowFn = std::chrono::steady_clock::time_point (*)() noexcept;
+
+    explicit SubReadTimer(NowFn now) noexcept : m_Now(now), m_Start(now()), m_Last(m_Start)
+    {}
+
+    void lap(std::string_view name) noexcept
+    {
+        const auto at = m_Now();
+        const auto took = at - m_Last;
+        m_Last = at;
+        // The first lap names the slowest even at zero, so the name is never empty after a read
+        if (m_Timing.slowestSubRead.empty() || took > m_Timing.slowest)
+        {
+            m_Timing.slowest = took;
+            m_Timing.slowestSubRead = name;
+        }
+    }
+
+    [[nodiscard]] SystemReadTiming timing() const noexcept
+    {
+        SystemReadTiming timing = m_Timing;
+        timing.total = m_Last - m_Start;
+        return timing;
+    }
+
+  private:
+    NowFn m_Now;
+    std::chrono::steady_clock::time_point m_Start;
+    std::chrono::steady_clock::time_point m_Last;
+    SystemReadTiming m_Timing;
+};
+
 } // namespace
 
 WindowsSystemProbe::~WindowsSystemProbe() = default;
@@ -411,6 +461,7 @@ WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
     fns.network.freeMibTable = &FreeMibTable;
     fns.network.readAdapterDeviceInstanceId = &readAdapterDeviceInstanceId;
     fns.network.devicePresence = &devicePresence;
+    fns.now = &std::chrono::steady_clock::now;
     return fns;
 }
 
@@ -481,14 +532,32 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz,
 SystemCounters WindowsSystemProbe::read()
 {
     SystemCounters counters{};
+    SubReadTimer timer(m_Fns.now);
 
     readCpuCounters(counters);
+    timer.lap(SUB_READ_CPU);
     refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore);
+    timer.lap(SUB_READ_CPU_DETAILS);
     readMemoryCounters(counters);
+    timer.lap(SUB_READ_MEMORY);
     readUptime(counters);
     readStaticInfo(counters);
+    timer.lap(SUB_READ_UPTIME);
     readCpuFreq(counters);
+    timer.lap(SUB_READ_PDH_FREQ);
     readNetworkCounters(counters);
+    timer.lap(SUB_READ_IF_TABLE);
+
+    // Kept for the caller, and a slow sub-read named here: BackgroundSampler's overrun log can only say
+    // "system" (#2731)
+    m_LastReadTiming = timer.timing();
+    if (m_LastReadTiming.slowest >= SLOW_SUB_READ)
+    {
+        spdlog::debug("WindowsSystemProbe: the {} sub-read took {} ms of a {} ms pass",
+                      m_LastReadTiming.slowestSubRead,
+                      std::chrono::duration_cast<std::chrono::milliseconds>(m_LastReadTiming.slowest).count(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(m_LastReadTiming.total).count());
+    }
 
     return counters;
 }
@@ -842,22 +911,18 @@ constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
     }
 }
 
-// How long an empty device-id read waits before the registry is asked again (#1369 review).
-constexpr std::chrono::seconds ADAPTER_ID_RETRY_INTERVAL{30};
+// How long an empty device-id read waits before the registry is asked again (#1369 review), and how
+// long a device's presence is trusted with no change in the interface table (#2731): the backstop.
+constexpr std::chrono::seconds ADAPTER_DEVICE_CACHE_TTL{Domain::Sampling::NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS};
+} // namespace
 
-// The adapter's device instance id, from @p cache or the registry. A found id is kept for good (an
-// interface's adapter never changes); an empty read is not taken as final -- the value may not be
-// written yet, or the read failed -- and is retried after ADAPTER_ID_RETRY_INTERVAL, so a phantom
-// adapter first seen too early is still recognised later rather than listed until restart.
-template<typename Cache>
-[[nodiscard]] const std::wstring&
-adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::wstring (*readId)(const GUID&))
+WindowsSystemProbe::AdapterDevice&
+WindowsSystemProbe::adapterDevice(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now)
 {
-    const auto now = std::chrono::steady_clock::now();
     std::array<std::uint64_t, 2> guidHalves{};
     static_assert(sizeof(guidHalves) == sizeof(GUID));
     std::memcpy(guidHalves.data(), &interfaceGuid, sizeof(GUID));
-    auto& entry = cache[interfaceLuid];
+    AdapterDevice& entry = m_AdapterDevices[interfaceLuid];
     // Windows can give a freed LUID to a later interface: a different GUID is a different adapter,
     // whose id is read afresh rather than inherited (#1369 review).
     if (entry.guidLow != guidHalves[0] || entry.guidHigh != guidHalves[1])
@@ -866,14 +931,35 @@ adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& i
         entry.guidLow = guidHalves[0];
         entry.guidHigh = guidHalves[1];
     }
+    // A found id is kept for good (an interface's adapter never changes); an empty read is not taken
+    // as final -- the value may not be written yet, or the read failed -- and is retried after
+    // ADAPTER_DEVICE_CACHE_TTL, so a phantom adapter first seen too early is still recognised later
+    // rather than listed until restart. The presence was that of the old id: looked up again.
     if (entry.id.empty() && now >= entry.retryAt)
     {
-        entry.id = readId(interfaceGuid);
-        entry.retryAt = now + ADAPTER_ID_RETRY_INTERVAL;
+        entry.id = m_Fns.network.readAdapterDeviceInstanceId(interfaceGuid);
+        entry.retryAt = now + ADAPTER_DEVICE_CACHE_TTL;
+        entry.presenceKnown = false;
     }
-    return entry.id;
+    return entry;
 }
-} // namespace
+
+DevicePresence
+WindowsSystemProbe::adapterDevicePresence(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now)
+{
+    AdapterDevice& entry = adapterDevice(interfaceLuid, interfaceGuid, now);
+    // CM_Locate_DevNodeW is a PnP call, and a machine with Hyper-V or WSL has several down vEthernet
+    // rows, so asking for every one on every pass stalled the pass during network-stack churn (#2731).
+    // The answer is kept until the interface table changes (readNetworkCounters() drops every entry's),
+    // the id is read again, or the backstop runs out.
+    if (!entry.presenceKnown || now >= entry.presenceExpiresAt)
+    {
+        entry.presence = m_Fns.network.devicePresence(entry.id);
+        entry.presenceKnown = true;
+        entry.presenceExpiresAt = now + ADAPTER_DEVICE_CACHE_TTL;
+    }
+    return entry.presence;
+}
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
@@ -896,6 +982,23 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     };
     const std::unique_ptr<MIB_IF_TABLE2, decltype(freeTable)> table(rawTable, freeTable);
 
+    // An interface added or gone, or one whose status changed, is a PnP or link event after which a
+    // down interface's device may be gone or back: every cached presence is looked up again (#2731).
+    m_InterfaceKeysScratch.clear();
+    for (ULONG i = 0; i < table->NumEntries; ++i)
+    {
+        const MIB_IF_ROW2& row = table->Table[i];
+        m_InterfaceKeysScratch.push_back({.luid = row.InterfaceLuid.Value, .operStatus = static_cast<std::uint32_t>(row.OperStatus)});
+    }
+    if (networkInterfacesChanged(m_InterfaceKeysScratch, m_InterfaceKeys))
+    {
+        for (AdapterDevice& device : m_AdapterDevices | std::views::values)
+        {
+            device.presenceKnown = false;
+        }
+    }
+    const auto now = m_Fns.now();
+
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
         const MIB_IF_ROW2& row = table->Table[i];
@@ -908,11 +1011,9 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         }
         // Adapters removed from the system stay listed; they carry nothing (#1284). A down row's
         // device is looked up: down alone doesn't mean removed.
-        const DevicePresence presence =
-            needsDevicePresence(row.OperStatus)
-                ? m_Fns.network.devicePresence(adapterDeviceInstanceId(
-                      m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid, m_Fns.network.readAdapterDeviceInstanceId))
-                : DevicePresence::Unknown;
+        const DevicePresence presence = needsDevicePresence(row.OperStatus)
+                                          ? adapterDevicePresence(row.InterfaceLuid.Value, row.InterfaceGuid, now)
+                                          : DevicePresence::Unknown;
         if (isNotPresentNetworkRow(row.OperStatus, presence))
         {
             continue;
