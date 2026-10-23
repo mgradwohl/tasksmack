@@ -3,6 +3,7 @@
 #include "Core/GraphicsHostInfo.h"
 #include "Core/WindowGeometry.h"
 
+#include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_video.h>
 
 #include <optional>
@@ -185,6 +186,14 @@ class Window
     {
         m_ShellRestoreKeysReader = reader;
     }
+    /// Reads a display's usable bounds, for a client-side maximize: SDL_GetDisplayUsableBounds()'s shape.
+    using UsableBoundsReader = auto (*)(SDL_DisplayID display, SDL_Rect* bounds) noexcept -> bool;
+    /// Replace how this window reads the display's usable bounds; nullptr restores SDL's. A test seam:
+    /// no real display fails that read on demand (#2722).
+    void setUsableBoundsReader(UsableBoundsReader reader) noexcept
+    {
+        m_UsableBoundsReader = reader;
+    }
     void restore();
     void minimize() const;
 
@@ -223,6 +232,8 @@ class Window
     std::pair<int, int> m_AppliedMinimum{0, 0};
     // See setShellRestoreKeysReader(); nullptr reads the keyboard.
     ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
+    // See setUsableBoundsReader(); nullptr asks SDL.
+    UsableBoundsReader m_UsableBoundsReader = nullptr;
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of

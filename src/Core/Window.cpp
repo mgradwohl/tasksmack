@@ -976,7 +976,9 @@ void Window::maximize()
         if (displayID != 0)
         {
             SDL_Rect usableBounds{};
-            if (SDL_GetDisplayUsableBounds(displayID, &usableBounds))
+            const bool haveBounds = m_UsableBoundsReader != nullptr ? m_UsableBoundsReader(displayID, &usableBounds)
+                                                                    : SDL_GetDisplayUsableBounds(displayID, &usableBounds);
+            if (haveBounds)
             {
                 // Position window at the usable area origin
                 SDL_SetWindowPosition(m_Handle, usableBounds.x, usableBounds.y);
