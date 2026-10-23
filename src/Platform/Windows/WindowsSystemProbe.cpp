@@ -212,7 +212,8 @@ constexpr ULONG SystemHypervisorInformationClass = 91;
     std::optional<bool> kernelReports;
     if (ntQuery != nullptr)
     {
-        std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information{};
+        // Aligned for the ULONGLONG the structure ends with: the kernel rejects a misaligned buffer (#2746).
+        alignas(ULONGLONG) std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information{};
         if (ntQuery(SystemHypervisorInformationClass, information.data(), static_cast<ULONG>(information.size()), nullptr) == 0)
         {
             kernelReports = hypervisorQueryPresent(information);
@@ -324,8 +325,9 @@ void readSecureKernelStatus(Windows::NtQuerySystemInformationFn ntQuery, CpuDeta
     {
         details.hvciEnabled = hvciEnabled(codeIntegrity.CodeIntegrityOptions);
     }
-    // SYSTEM_ISOLATED_USER_MODE_INFORMATION: two flag bytes, six spare bytes and a spare ULONGLONG.
-    std::array<std::uint8_t, 16> isolatedUserMode{};
+    // SYSTEM_ISOLATED_USER_MODE_INFORMATION: two flag bytes, six spare bytes and a spare ULONGLONG, which
+    // the buffer is aligned for: the kernel rejects a misaligned one (#2746).
+    alignas(ULONGLONG) std::array<std::uint8_t, 16> isolatedUserMode{};
     if (ntQuery(SystemIsolatedUserModeInformationClass, isolatedUserMode.data(), static_cast<ULONG>(isolatedUserMode.size()), nullptr) == 0)
     {
         details.vbsRunning = secureKernelRunning(isolatedUserMode[0]);

@@ -139,7 +139,7 @@ Sandbox options.
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
   - ROCm SMI library (librocm_smi64.so) for AMD GPU support
@@ -182,7 +182,7 @@ sudo apt install libsystemd-dev pkg-config
 - ccache 4.9.1+ (optional, for faster rebuilds; `setup-dev.ps1 -DevTools`)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - git (CMake requires it, and fetches the dependencies with it)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
@@ -774,13 +774,50 @@ the untested logic needs OS handles or not:
    file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
+### Documentation screenshots
+
+`tools/screenshots.sh` (Linux; under Xvfb when `$DISPLAY` is unset) and `tools/screenshots.ps1`
+(Windows) regenerate `docs/images/screenshots/<os>/` (#2827): one launch of the built app per shot,
+sequentially, with no injected input. Each run gets its own `TASKSMACK_CONFIG_DIR` with a generated
+`config.toml` (theme, medium font, 1 s sampling, a 1440x900 window, the Processes table's Command
+column off, since command lines name the machine's users and paths), the startup hooks from the next
+section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
+matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
+`monochrome-light`), Processes and System Information in the first dark and the first light theme,
+Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
+`<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
+sequence. The `overview-*` shots get `[sampling] history_max_seconds = 60` and are captured after 60 s
+(the hook's maximum), so their history charts are full; the other views are captured after 8 s.
+`--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
+webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
+print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
+
+Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
+
+```bash
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+cmake --preset release && cmake --build --preset release
+tools/screenshots.sh --webp --hostname tasksmack-demo
+```
+
+```powershell
+# Windows: in a Windows Sandbox (its own processes, user and host name) with the win-release build,
+# and Mesa's llvmpipe opengl32.dll beside TaskSmack.exe when the Sandbox has no vGPU
+.\tools\screenshots.ps1 -WebP -Exe C:\shots\TaskSmack.exe -Out C:\shots\out
+```
+
+The images show the machine they were taken on. Before committing, look at every one for a user name,
+host name or process you would not publish: the Processes User column, System Information and the
+hostname tab are the usual places.
+
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so five test-only environment variables (#1559, #172), read
-once at startup, select a process, open a tab or open the Help or About window by themselves. With `TASKSMACK_SELECT_PID` or
+Agents must not inject clicks or keys, so seven test-only environment variables (#1559, #172, #2827), read
+once at startup, select a process, open a tab, open the Help or About window, replay a timed script of
+such requests, or write a screenshot of the window and quit, by themselves. With `TASKSMACK_SELECT_PID` or
 `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
 click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the five variables, or
+snapshots, one warning is logged and nothing is selected. While any of the seven variables, or
 `TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
 cover the capture. Unset, the variables do nothing.
 
@@ -791,6 +828,8 @@ cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu`, `npu` or `network`. `npu` selects the NPU tab only on a machine that has one. |
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
+| `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |
+| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `open=<help|about>`; `close=dialog` (closes the Help window and the About dialog); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 | `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only the user's locale `LocaleSetup` builds and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
@@ -800,17 +839,27 @@ whichever starts second is told "TaskSmack is already running" and exits (with c
 is dismissed, so a script can tell it never ran), and a test instance that saves overwrites your settings. A per-run temp directory starts each run from default settings and
 lets it run beside your own instance. (`tasksmack-debug.log` stays in the temp directory either way.)
 
-Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
-works while the window is covered):
+Combined with `TASKSMACK_WINDOW` for a fixed size, `TASKSMACK_SCREENSHOT` writes the frame itself and
+exits (no input, no desktop capture, and it works while the window is covered):
 
 ```powershell
 $env:TASKSMACK_CONFIG_DIR = Join-Path $env:TEMP "tasksmack-test-$PID"
 $env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
-$p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
-# Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
-Stop-Process -Id $p.Id -Force
+$env:TASKSMACK_SCREENSHOT = "$env:TEMP\details.png;after=3"   # or "showcase.png;frames=30;fps=10" for an animation's frames
+$p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru -Wait   # writes the PNG, then quits; $p.ExitCode is 0 once it did
 Remove-Item -Recurse -Force $env:TASKSMACK_CONFIG_DIR
 ```
+
+An animation of the app doing something -- a walk from the Processes table into Process Details, a
+theme switch -- adds `TASKSMACK_DEMO`, whose steps play while the frames are captured:
+
+```powershell
+$env:TASKSMACK_DEMO = "1:tab=processes,3:select=name:explorer.exe,5:details=overview,7:details=network,9:theme=dracula"
+$env:TASKSMACK_SCREENSHOT = "$env:TEMP\walk.png;after=0;frames=120;fps=12"   # the 10 s from the settle point, walk-0001.png ...
+```
+
+A running instance can still be captured from outside with `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT = 2)`,
+which also works while the window is covered.
 
 ## VS Code
 
@@ -2514,52 +2563,53 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch.
+- **`ci.yml`**: The primary hub. Runs on pushes and PRs to `main` and `release/*`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch.
   - **Builds:** Linux and Windows Debug on push/PR; Linux Release on the same events plus the nightly schedule, also compiling and linking (but not running) `TaskSmackBenchmarks` so a PR that breaks the benchmark build fails CI (#1348); Windows Release nightly and on dispatch only; the unity build weekly. Docs-only pull requests skip the C++ builds and `clang-tidy`. It also checks Markdown links.
   - **`clang-tidy` (blocking):** runs on Linux and Windows on PRs, the schedule and dispatch, not on pushes to `main`. The Windows run is skipped when every change is Linux-only, and the Linux run when every change is Windows-only. Each run happens inside that OS's debug job, after its tests and on the tree it configured, so LLVM setup and configure happen once per OS per PR head (the nightly runs those jobs in clang-tidy-only mode, without a build). The tidy step is `continue-on-error`, so a finding leaves the build check green and is reported separately: a small `Static Analysis (Windows)` job reports the Windows result under the check name the ruleset requires (#1875), and `CI Success` fails on a Linux finding or on a Linux tidy run that didn't happen, with a `clang-tidy (Linux)` annotation (#2047).
   - **Which files:** on a PR it analyzes only the translation units the change can affect (changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header), and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406). The nightly run analyzes every file.
   - **Other jobs:** a blocking Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs, and IWYU (include analysis) on manual dispatch only.
   - **`CI Success`** is the gate job used for branch protection. When a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
-CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
 
 ### Security & Fuzzing
-- **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
-- **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
+- **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to `main` and `release/*`, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
+- **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes/PRs to `main` and `release/*`, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
-- **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
+- **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
-- **`main-health.yml`**: After every run of the main workflows on `main` (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
+- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene
-- **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
+- **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
-- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip`; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
-- **`changelog.yml`**: Automates changelog generation using `git-cliff` for strict `vMAJOR.MINOR.PATCH` tags.
+- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip`; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
+- **`changelog.yml`**: For a strict `vMAJOR.MINOR.PATCH` tag, generates its `CHANGELOG.md` section with `git-cliff` from the tag's own branch history and opens one pull request against the tag's release branch and one against `main`, the canonical file (see [Changelog](#changelog)).
+- **`backport.yml`**: On a merged PR carrying a `backport:X.Y` label (or a `/backport` comment on it), cherry-picks it with korthout/backport-action into a `<title> [backport X.Y]` PR against `release/X.Y`, copying the labels and setting the open `vX.Y.*` milestone (#2741; see [Branching Strategy](#branching-strategy)).
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast.
 
-Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
-each other. `ci.yml`, `sanitizers.yml` and `heavy-checks.yml` give each `main` commit its
-own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
-that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
+Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` or a
+`release/*` branch never cancel each other. `ci.yml`, `arm64.yml`, `sanitizers.yml` and `heavy-checks.yml` give
+each such commit its own concurrency group, so back-to-back merges each get a complete run and a regression is
+blamed on the commit that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
 `pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
 (via Syft SBOM generated from `CMakeLists.txt`) and all four Python dependency manifests against the
-[OSV vulnerability database](https://osv.dev) on pushes to `main` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+[OSV vulnerability database](https://osv.dev) on pushes to `main` and `release/*` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.txt`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
@@ -2632,23 +2682,42 @@ versions to fetch. Raise one by hand when the project needs a newer feature.
 
 ### Cutting a Release
 
-Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is what triggers both an official TaskSmack
-release (`release.yml`: validates the tag, builds Linux/Windows packages for x64 and ARM64,
-signs every asset with Sigstore and, once enabled, the Windows x64 `.zip` with Authenticode, and publishes a
-GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
-it has no `workflow_dispatch` trigger).
+Releases ship from release branches (#2741; the rules every agent follows are in
+[AGENTS.md](AGENTS.md)'s "Branches and backports"). `main` carries all development and is never
+frozen for a release. The first release of a minor, `vX.Y.0`, is tagged on the candidate commit the
+maintainer approves on `main`, and the maintainer cuts `release/X.Y` from that same commit:
+
+```bash
+git push origin <candidate sha>:refs/heads/release/X.Y
+```
+
+Later patch releases (`vX.Y.1`, `vX.Y.2`, ...) are tagged on `release/X.Y`'s head once the fixes
+approved for them have been backported: every fix merges to `main` first, and a `backport:X.Y`
+label on its PR opens the cherry-pick PR against the branch (see [Branching
+Strategy](#branching-strategy)). Only release mechanics -- the version bump, release-notes fixes --
+go to a release branch without a `main` PR first. A release branch retires once the next minor
+ships, unless the maintainer keeps it for security fixes.
+
+Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` or on the `release/X.Y` branch it names is what
+triggers both an official TaskSmack release (`release.yml`: validates the tag, builds Linux/Windows
+packages for x64 and ARM64, signs every asset with Sigstore and, once enabled, the Windows x64
+`.zip` with Authenticode, and publishes a GitHub Release) and the corresponding `CHANGELOG.md`
+update (`changelog.yml`, tag push only -- it has no `workflow_dispatch` trigger). Both run from the
+workflow files at the tagged commit, so a release branch needs the current `release.yml` and
+`changelog.yml` (backport workflow changes to it like any fix).
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
 tag run (including [Authenticode signing](#windows-code-signing) of the Windows x64 `.zip`, once it's
-switched on), but skips `validate`'s tag, main-ancestry, existing-release and version-equals-tag checks
+switched on), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
 tests and validates the ARM64 packages as well as the x64 ones. No tag is pushed, so
-`changelog.yml` doesn't run. Rehearse the whole pipeline before tagging with:
+`changelog.yml` doesn't run. Rehearse the whole pipeline before tagging, from the branch the tag
+will go on, with:
 
 ```bash
-gh workflow run release.yml --ref main -f dry_run=true
+gh workflow run release.yml --ref release/X.Y -f dry_run=true   # or --ref main for vX.Y.0
 ```
 
 Dispatching with `dry_run=false` against an existing tag ref re-runs a real release (e.g. to retry a
@@ -2657,16 +2726,18 @@ stray dispatch from a branch can't impersonate one.
 
 ```bash
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
-#    get it reviewed, and merge it to main. release.yml's validate job requires this to already
-#    match the tag (see Release Environment below), so it must land *before* step 3.
+#    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
+#    for a patch release. release.yml's validate job requires this to already match the tag (see
+#    Release Environment below), so it must land *before* step 3.
 
-# 2. Make sure you are on main and fully up to date with that merged bump
-git checkout main
+# 2. Check out the branch the tag goes on, fully up to date with that merged bump: main for vX.Y.0
+#    (the maintainer-approved candidate commit), release/X.Y for a patch release
+git checkout release/X.Y
 git pull
 
 # 3. Create and push a strict semver tag matching the version just merged — this is the only trigger
-git tag v1.0.0
-git push origin v1.0.0
+git tag vX.Y.1
+git push origin vX.Y.1
 ```
 
 That single push runs two independent workflows:
@@ -2681,9 +2752,10 @@ That single push runs two independent workflows:
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
-- **`changelog.yml`** regenerates `CHANGELOG.md` and opens a `chore/changelog-vX.Y.Z → main` pull
-  request that must be merged separately -- see [Changelog](#changelog) below. Watch it under
-  **Actions → Changelog**.
+- **`changelog.yml`** generates the tag's `CHANGELOG.md` section from its own branch history and
+  opens a `chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y` pull request and a
+  `chore/changelog-vX.Y.Z-to-main → main` one; each must be merged separately -- see
+  [Changelog](#changelog) below. Watch it under **Actions → Changelog**.
 
 ### Release Artifacts
 
@@ -2795,13 +2867,14 @@ inside afterwards) and then the installer itself.
 ### Release Environment
 
 `release.yml`'s `validate` job rejects a tag before any build/sign/publish work runs if it is not
-strict `vMAJOR.MINOR.PATCH`, does not resolve to a commit on `main` (`main`'s HEAD or an ancestor
-of it, so a merge landing right after the tag push doesn't abort the release), already has a
+strict `vMAJOR.MINOR.PATCH`, does not resolve to a commit on `main` or on the `release/X.Y` branch
+the tag names (either's HEAD or an ancestor of it, so a merge landing right after the tag push
+doesn't abort the release; #2741), already has a
 published (non-draft) GitHub Release (so a re-pushed tag can't silently swap a public release's
 assets), or does not match `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version
 bump fails the release instead of publishing mismatched metadata. Concretely: **bump and merge `CMakeLists.txt`'s
 `project(TaskSmack VERSION ...)` to the target version first**, then tag that merged commit on
-`main` — see step 1 in [Cutting a Release](#cutting-a-release), which creates the same tag that
+`main` or `release/X.Y` — see step 1 in [Cutting a Release](#cutting-a-release), which creates the same tag that
 also triggers this release workflow. Tagging before the version bump lands fails this check
 immediately.
 
@@ -2863,7 +2936,9 @@ Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and sh
 
 [CHANGELOG.md](CHANGELOG.md) is auto-generated by [git-cliff](https://git-cliff.org/) on every `v*.*.*` tag push via the `changelog` workflow. It follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and groups entries by conventional commit type (`feat` → Added, `fix` → Fixed, etc.).
 
-**Do not edit CHANGELOG.md manually.** The `changelog` workflow regenerates the file and opens a pull request that must be merged; it does not push directly to `main`.
+**Do not edit CHANGELOG.md manually.** The `changelog` workflow prepends the release's section and opens pull requests that must be merged; it never pushes to `main` or a release branch directly.
+
+**Which branch owns the file (#2741):** `main`'s `CHANGELOG.md` is the canonical, complete one. Every release's section is forwarded to it, in the order the releases shipped (a `[0.9.2]` cut after `v0.10.0` sits above `[0.10.0]`). A release branch's copy holds only its own line of releases plus the sections it inherited at the cut. Each section comes from the tag's own branch history, so a fix backported to 0.9.1 is listed under both `[0.9.1]` and `[0.10.0]`.
 
 #### Producing a Changelog
 
@@ -2872,23 +2947,24 @@ tag push also triggers `release.yml`. Once pushed, the `changelog` workflow runs
 and:
 
 1. Validates the tag is strict semver (`vMAJOR.MINOR.PATCH`). Tags like `v1.0.0-rc1` or `v1.0.0.4` are rejected.
-2. Verifies the tag's commit is on `main` (its HEAD or an ancestor). Tagging a commit that isn't on `main` aborts the workflow; commits merged after the tag are listed under `[Unreleased]`.
-3. Runs git-cliff (pinned to a fixed version in `changelog.yml`) over the full commit history to generate `CHANGELOG.md`.
-4. Opens a pull request (`chore/changelog-vX.Y.Z → main`) with the updated `CHANGELOG.md`. If the PR can't be created, the workflow fails with an error that links the compare page for opening it by hand.
-5. Merge the PR once CI passes — it will be labeled `documentation` for easy filtering.
+2. Finds the branches that hold the tag's commit: `release/X.Y` when it exists and contains the tag, and `main`, always, as the canonical file's home. A tag on neither aborts the workflow.
+3. Finds the previous `vMAJOR.MINOR.PATCH` tag reachable from the tag on its own history (`v0.9.0` for `v0.9.1` on `release/0.9`, even once `main` carries `v0.10.0`).
+4. Runs git-cliff (pinned to a fixed version in `changelog.yml`, with `main`'s `cliff.toml`) over that range and prepends the `[X.Y.Z]` section after the header of each target branch's current `CHANGELOG.md`, so every branch's copy of the section is identical.
+5. Opens one pull request per target (`chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y`, `chore/changelog-vX.Y.Z-to-main → main`), labeled `documentation`. If a PR can't be created, the workflow fails with an error that links the compare page for opening it by hand. A rerun reuses the open PR, and a target whose `CHANGELOG.md` already carries the section is skipped.
+6. Merge each PR once CI passes. If the release branch is cut after its tag (`release/0.9` was, after `v0.9.0`), label `main`'s changelog PR `backport:X.Y` so the branch gets the section too.
 
 You can watch the progress under **Actions → Changelog** in the GitHub UI.
 
 #### The `CHANGELOG_TOKEN` secret
 
 Pushes and pull requests made with the workflow's own `GITHUB_TOKEN` don't trigger other workflows,
-so a changelog PR opened with it never gets the required CI checks. `changelog.yml` therefore pushes
-the branch and opens the PR with the `CHANGELOG_TOKEN` repository secret: a **fine-grained personal
-access token** limited to this repository, with **Contents: Read and write** and **Pull requests:
-Read and write** (metadata read is implied). Create it under *Settings → Developer settings →
-Fine-grained tokens*, add it under the repository's *Settings → Secrets and variables → Actions*,
-and renew it before it expires. If the secret is missing or empty the workflow falls back to
-`GITHUB_TOKEN` and emits a warning that CI won't run on the PR.
+so a changelog or backport PR opened with it never gets the required CI checks. `changelog.yml` and
+`backport.yml` therefore push the branch and open the PR with the `CHANGELOG_TOKEN` repository
+secret: a **fine-grained personal access token** limited to this repository, with **Contents: Read
+and write** and **Pull requests: Read and write** (metadata read is implied). Create it under
+*Settings → Developer settings → Fine-grained tokens*, add it under the repository's *Settings →
+Secrets and variables → Actions*, and renew it before it expires. If the secret is missing or empty
+the workflows fall back to `GITHUB_TOKEN` and emit a warning that CI won't run on the PR.
 
 #### Writing Commits for Meaningful Changelog Entries
 
@@ -2959,8 +3035,22 @@ gh run download <run-id> -n coverage-report
 
 ## Branching Strategy
 
-Branch from `main` and open a pull request back to `main`. CI runs on pull requests to `main` and on pushes to
-`main`.
+Branch from `main` and open a pull request back to `main`: all development lands there, and it is never frozen for
+a release. Releases ship from `release/X.Y` branches (#2741), which the maintainer cuts from the approved candidate
+commit; see [Cutting a Release](#cutting-a-release). A fix reaches a release branch by backport, upstream first:
+
+1. Merge the fix to `main` by the normal pull request, with the `backport:X.Y` label (for example `backport:0.9`)
+   on it, added before or after the merge.
+2. On the merge, `backport.yml` cherry-picks the squashed commit and opens `<original title> [backport X.Y]`
+   against `release/X.Y`, copying the labels and putting it on the open `vX.Y.*` milestone. For a label added after
+   the merge, or a retry, comment `/backport` on the merged PR.
+3. If the cherry-pick conflicts, that backport fails and the action's comment on the original PR gives the manual
+   steps: `git cherry-pick -x <squash SHA>` onto a branch from `release/X.Y`, resolve, and open the PR yourself.
+4. The backport PR merges like any other: CI green and review threads resolved. Only release mechanics (version
+   bumps, release-notes fixes) go to a release branch without a `main` PR first.
+
+CI runs on pull requests to `main` and `release/*` and on pushes to either; the "Main Builds" ruleset requires the
+same checks on both. Renovate and Dependabot target `main`; a security bump is backported like any fix.
 
 ## Pull Request Process
 

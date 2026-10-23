@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -448,8 +449,46 @@ inline constexpr std::uint8_t BIOS_VIRTUAL_MACHINE_BIT = 0x10;
     return extension.has_value() && (*extension & BIOS_VIRTUAL_MACHINE_BIT) != 0;
 }
 
+/// Whether names saying "Amazon EC2" are one of its bare-metal instances (#2771): the manufacturer is the
+/// same on those, but the product name, the instance type, has a bare-metal size, "metal" or
+/// "metal-<n>xl" ("m6g.metal", "c5.metal", "m7i.metal-24xl"), the ".metal" convention systemd-detect-virt
+/// checks. Every other size ("m7g.large") is a VM. ASCII case-insensitive; trailing spaces and NULs are
+/// ignored, as cleanString() trims them.
+[[nodiscard]] constexpr bool isAmazonBareMetal(std::string_view systemNames) noexcept
+{
+    if (!systemNames.contains("Amazon EC2"))
+    {
+        return false;
+    }
+    while (!systemNames.empty() && (systemNames.back() == ' ' || systemNames.back() == '\0'))
+    {
+        systemNames.remove_suffix(1);
+    }
+    const std::size_t dot = systemNames.rfind('.');
+    if (dot == std::string_view::npos)
+    {
+        return false;
+    }
+    constexpr std::string_view METAL = "metal";
+    // The size after the dot, without substr(), which may throw (libc++) and this is noexcept: dot + 1 is
+    // at most the length, so remove_prefix() is in bounds.
+    std::string_view size = systemNames;
+    size.remove_prefix(dot + 1);
+    if (size.size() < METAL.size())
+    {
+        return false;
+    }
+    const auto lower = [](char c)
+    {
+        return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+    };
+    return std::ranges::equal(size | std::views::take(METAL.size()), METAL, {}, lower) &&
+           (size.size() == METAL.size() || size[METAL.size()] == '-');
+}
+
 /// The hypervisor a system's manufacturer and product name (type 1, or Linux's DMI sys_vendor and
-/// product_name) name: "QEMU", "Hyper-V", "Parallels", ... Empty for a name no known hypervisor sets.
+/// product_name) name: "QEMU", "Hyper-V", "Parallels", ... Empty for a name no known hypervisor sets, and
+/// for an Amazon EC2 bare-metal instance (isAmazonBareMetal()), real hardware under a hypervisor's name.
 /// @p systemNames is the two joined by a space. A vendor's own name wins over Hyper-V's bare "Virtual
 /// Machine", which other products end with too ("Parallels ARM Virtual Machine", "QEMU Virtual Machine").
 [[nodiscard]] constexpr std::string_view virtualMachineVendor(std::string_view systemNames) noexcept
@@ -461,9 +500,13 @@ inline constexpr std::uint8_t BIOS_VIRTUAL_MACHINE_BIT = 0x10;
         {"VirtualBox", "VirtualBox"},
         {"Xen", "Xen"},
         {"Parallels", "Parallels"},
-        {"Amazon EC2", "Amazon EC2"},
+        {"Amazon EC2", "Amazon EC2"},   // but not its bare metal: isAmazonBareMetal()
         {"Virtual Machine", "Hyper-V"}, // Microsoft Corporation's product name
     }};
+    if (isAmazonBareMetal(systemNames))
+    {
+        return {};
+    }
     for (const auto& [needle, vendor] : VENDORS)
     {
         if (systemNames.contains(needle))

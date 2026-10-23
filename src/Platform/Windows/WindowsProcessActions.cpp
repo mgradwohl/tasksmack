@@ -364,6 +364,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .getProcessInformation = &GetProcessInformation,
         .ntSuspendProcess = Windows::ntSuspendProcess(),
         .ntResumeProcess = Windows::ntResumeProcess(),
+        .getCurrentProcessId = &GetCurrentProcessId,
     };
 }
 
@@ -479,8 +480,9 @@ ProcessActionResult WindowsProcessActions::suspendOrResume(const ProcessTarget& 
         }
         // TaskSmack (or, in the elevated helper, the helper) suspended would hang with nothing left to
         // resume it. Checked by PID before anything is opened (isSamePid(): Windows ignores a PID's
-        // low two bits when it looks one up, so PID+1 would open this process too).
-        if (isSamePid(static_cast<std::uint32_t>(target.pid), GetCurrentProcessId()))
+        // low two bits when it looks one up, so PID+1 would open this process too). The own PID is
+        // the table's, so a test can name one that is never its fake target's (#2785).
+        if (isSamePid(static_cast<std::uint32_t>(target.pid), m_Fns.getCurrentProcessId()))
         {
             std::string refusal = selfSuspendRefusal(target.pid);
             spdlog::warn("{}", refusal);

@@ -136,12 +136,8 @@ void ShellLayer::onAttach()
     // The test hook's startup selection (#1559): read once here, applied when the process appears.
     // TASKSMACK_TAB wins over the Details tab the selection would bring forward.
     // An unknown TASKSMACK_TAB is ignored, with one warning, and changes nothing.
-    std::vector<SelectOverride::TabInfo> tabInfos;
-    for (const auto& tab : m_Tabs.tabs())
-    {
-        tabInfos.push_back({.id = tab.eventName, .text = tab.text ? tab.text() : std::string_view{}});
-    }
-    const SelectOverride::MainTabChoice mainTab = SelectOverride::resolveMainTab(Core::readEnv(SelectOverride::MAIN_TAB_ENV_VAR), tabInfos);
+    const SelectOverride::MainTabChoice mainTab =
+        SelectOverride::resolveMainTab(Core::readEnv(SelectOverride::MAIN_TAB_ENV_VAR), tabInfos());
     if (!mainTab.warning.empty())
     {
         spdlog::warn("{}", mainTab.warning);
@@ -185,6 +181,45 @@ void ShellLayer::onAttach()
     {
         m_PendingPrivilegeNotice = true;
     }
+}
+
+std::vector<SelectOverride::TabInfo> ShellLayer::tabInfos() const
+{
+    std::vector<SelectOverride::TabInfo> infos;
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        infos.push_back({.id = tab.eventName, .text = tab.text ? tab.text() : std::string_view{}});
+    }
+    return infos;
+}
+
+bool ShellLayer::requestMainTab(const std::string_view name)
+{
+    // Resolved now, against the tabs as they are (the hostname tab's and the Process Details tab's
+    // texts change), to the registered id the tab bar finds the tab by (#1575).
+    const std::vector<SelectOverride::TabInfo> infos = tabInfos();
+    const std::optional<std::size_t> index = SelectOverride::findTab(name, infos);
+    if (!index.has_value())
+    {
+        return false;
+    }
+    m_DemoTab = SelectOverride::PendingMainTab(std::string(infos[*index].id));
+    return true;
+}
+
+void ShellLayer::requestSelection(const SelectOverride::Target& target)
+{
+    m_ProcessesPanel.requestSelection(target);
+}
+
+void ShellLayer::requestDetailsTab(const SelectOverride::DetailsTab tab)
+{
+    m_ProcessDetailsPanel.requestTab(tab);
+}
+
+void ShellLayer::requestDetailsSection(const SelectOverride::DetailsSection section)
+{
+    m_ProcessDetailsPanel.requestSection(section);
 }
 
 void ShellLayer::applyBaseMinimumWindowSize()
@@ -643,8 +678,8 @@ void ShellLayer::renderTabBar()
 
     updateDetailsTabIcon();
 
-    // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
-    // frame until BeginTabItem() reports it selected (#1575).
+    // TASKSMACK_TAB's tab (and TASKSMACK_DEMO's, #2827) is found by its registered id, not its position,
+    // and asked for on every frame until BeginTabItem() reports it selected (#1575).
     m_TabBarItems.clear();
     for (const auto& tab : m_Tabs.tabs())
     {
@@ -652,7 +687,7 @@ void ShellLayer::renderTabBar()
         m_TabBarItems.push_back({.label = tab.label(),
                                  .selectRequested = (m_ShowDetailsTabRequested && details) ||
                                                     (m_ShowServicesTabRequested && tab.eventName == "Services") ||
-                                                    m_StartupTab.wantsSelected(tab.eventName),
+                                                    m_StartupTab.wantsSelected(tab.eventName) || m_DemoTab.wantsSelected(tab.eventName),
                                  .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
                                  .iconSize = details ? m_DetailsTabIconSize : 0.0F});
     }
@@ -666,6 +701,7 @@ void ShellLayer::renderTabBar()
     for (const auto& tab : m_Tabs.tabs())
     {
         m_StartupTab.onTabSubmitted(tab.eventName, bar.selected == index);
+        m_DemoTab.onTabSubmitted(tab.eventName, bar.selected == index);
         ++index;
     }
     if (bar.selected.has_value())
@@ -680,6 +716,10 @@ void ShellLayer::renderTabBar()
                      SelectOverride::MAIN_TAB_ENV_VAR,
                      *dropped,
                      SelectOverride::MAX_MAIN_TAB_FRAMES);
+    }
+    if (const std::optional<std::string> dropped = m_DemoTab.onFrameEnd(); dropped.has_value())
+    {
+        spdlog::warn("Requested tab '{}' was not selected after {} frames; ignored", *dropped, SelectOverride::MAX_MAIN_TAB_FRAMES);
     }
 
     // Emit ActiveTabChangedEvent when tab selection changes

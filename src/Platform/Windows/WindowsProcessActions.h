@@ -59,6 +59,10 @@ struct WindowsProcessFunctions
     Windows::NtProcessSuspendResumeFn ntSuspendProcess = nullptr;
     /// ntdll's NtResumeProcess (#2582). Null: Resume is unavailable (canContinue false) and refused.
     Windows::NtProcessSuspendResumeFn ntResumeProcess = nullptr;
+    /// GetCurrentProcessId(): the PID Suspend refuses as TaskSmack's own before anything is opened
+    /// (#2582). The real call unless a table says otherwise, so the guard is never left out; a test
+    /// names a PID of its own here, so the guard fires for that PID and for no other (#2785).
+    DWORD(WINAPI* getCurrentProcessId)() = &::GetCurrentProcessId;
 };
 
 /// The real Win32 calls.

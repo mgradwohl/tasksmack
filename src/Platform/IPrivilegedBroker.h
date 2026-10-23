@@ -43,7 +43,9 @@ class IPrivilegedBroker
     /// what "Authenticate to read" is for. False where every elevation runs as another account and the
     /// helper then reads only the user's own processes (a standard user's Windows TaskSmack, whose UAC
     /// prompt asks for an administrator's password): the readers then don't offer a prompt that can't
-    /// help. Actions are offered either way. Known before the helper starts; it never changes.
+    /// help. Actions are offered either way. Known before the helper starts, and it can only turn false
+    /// after: on Windows, once a helper that was expected to run as the user answers a read saying it
+    /// doesn't (#2769). Ask each time, don't cache it.
     [[nodiscard]] virtual bool readsOtherUsers() const noexcept
     {
         return true;
