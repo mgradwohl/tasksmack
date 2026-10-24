@@ -231,6 +231,18 @@ class DRMGPUProbe : public IGPUProbe
     bool m_ClientScanReliable{false};
     // How many client fdinfo files readEngineClients() has opened or tried to, for the tests (#1356).
     std::uint64_t m_FdinfoReads{0};
+
+    /// One card's DRM clients as the last readGPUCounters() read them (#2589): per-process figures come
+    /// from these, so readProcessGPUCounters() walks no fdinfo of its own. A suspended card has none.
+    struct CardClients
+    {
+        std::string gpuId;
+        std::vector<GPUEngineClientCounters> clients;
+    };
+    std::vector<CardClients> m_LastClients;
+    /// Each client's engine counters at the previous readProcessGPUCounters(), by card and client id:
+    /// the baseline its utilization is the change from.
+    std::vector<CardClients> m_ProcessBaseline;
 };
 
 } // namespace Platform
