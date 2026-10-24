@@ -220,6 +220,10 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
     return step > 3 + DRAG_STEPS;
 }
 
+/// Frames between retries of an input whose effect hasn't shown yet: a press can land on a frame that
+/// doesn't take it (a window still taking the focus, a popup still opening).
+constexpr int RETRY_FRAMES = 10;
+
 /// What a step is handed each frame it runs.
 struct StepContext
 {
@@ -364,11 +368,15 @@ Step mainTabStep(std::string name, const char* label)
     return Step{.name = std::move(name),
                 .tick = [label](StepContext& step)
                 {
-                    if (step.frame == 0)
+                    if (selectedTab(mainTabBarId()) == mainTabId(label))
+                    {
+                        return true;
+                    }
+                    if (step.frame % RETRY_FRAMES == 0) // again until it takes
                     {
                         ImGui::ActivateItemByID(mainTabId(label));
                     }
-                    return step.frame > 3 && selectedTab(mainTabBarId()) == mainTabId(label);
+                    return false;
                 }};
 }
 
@@ -382,8 +390,13 @@ std::vector<Step> signOffSteps()
     steps.push_back({.name = "processes-tree",
                      .tick = [](StepContext& step)
                      {
-                         tapKey(step.frame, 0, ImGuiKey_F5); // the List | Tree toggle's key
-                         return step.frame > 3 && step.shell->processesPanelForTesting().treeViewEnabled();
+                         if (step.shell->processesPanelForTesting().treeViewEnabled())
+                         {
+                             return true;
+                         }
+                         // The List | Tree toggle's key, again only once a press has had RETRY_FRAMES to show.
+                         static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_F5));
+                         return false;
                      }});
 
     steps.push_back({.name = "processes-tree-collapsed",
@@ -394,14 +407,21 @@ std::vector<Step> signOffSteps()
                          if (step.frame == 0)
                          {
                              before = panel.collapsedBranchCountForTesting();
-                             if (table != nullptr) // hovered, so the table takes the navigation keys
-                             {
-                                 ImGui::GetIO().AddMousePosEvent(table->OuterRect.GetCenter().x, table->OuterRect.GetCenter().y);
-                             }
                          }
-                         tapKey(step.frame, 2, ImGuiKey_Home); // the first row: a root, with children
-                         tapKey(step.frame, 6, ImGuiKey_LeftArrow);
-                         return step.frame > 8 && panel.collapsedBranchCountForTesting() > before;
+                         else if (panel.collapsedBranchCountForTesting() > before)
+                         {
+                             return true;
+                         }
+                         // Hovered, so the table takes the navigation keys; Home selects the first row, a root
+                         // with children, and Left collapses it. Again every RETRY_FRAMES until it has.
+                         const int cycle = step.frame % RETRY_FRAMES;
+                         if (cycle == 0 && table != nullptr)
+                         {
+                             ImGui::GetIO().AddMousePosEvent(table->OuterRect.GetCenter().x, table->OuterRect.GetCenter().y);
+                         }
+                         static_cast<void>(tapKey(cycle, 2, ImGuiKey_Home));
+                         static_cast<void>(tapKey(cycle, 6, ImGuiKey_LeftArrow));
+                         return false;
                      }});
 
     steps.push_back({.name = "filter-typed",
@@ -466,22 +486,20 @@ std::vector<Step> signOffSteps()
                      .maxFrames = 600});
 
     steps.push_back({.name = "column-reordered",
-                     .tick = [pidFirst = false, from = ImVec2{}, to = ImVec2{}](StepContext& step) mutable
+                     .tick = [pidFirst = false, dragStart = -1, from = ImVec2{}, to = ImVec2{}](StepContext& step) mutable
                      {
-                         tapKey(step.frame, 0, ImGuiKey_Escape); // the row menu closes
                          const ImGuiTable* table = processTable();
-                         if (table == nullptr)
+                         if (dragStart < 0)
                          {
-                             return false;
-                         }
-                         const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
-                         const ImGuiTableColumn& name = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::Name))];
-                         if (step.frame == 3)
-                         {
-                             if (topPopup() != nullptr)
+                             // Escape until the row menu has closed (again every 10 frames, in case a press was
+                             // taken by something else), then the drag starts.
+                             if (topPopup() != nullptr || table == nullptr)
                              {
-                                 return false; // the menu is still closing; the step runs out and fails
+                                 static_cast<void>(tapKey(step.frame % 10, 0, ImGuiKey_Escape));
+                                 return false;
                              }
+                             const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
+                             const ImGuiTableColumn& name = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::Name))];
                              // The later of PID and Name has its header dragged onto the earlier one's.
                              pidFirst = pid.DisplayOrder < name.DisplayOrder;
                              const ImGuiTableColumn& later = pidFirst ? name : pid;
@@ -489,11 +507,14 @@ std::vector<Step> signOffSteps()
                              const float y = table->OuterRect.Min.y + ImGui::GetStyle().CellPadding.y + (ImGui::GetTextLineHeight() * 0.5F);
                              from = ImVec2((later.MinX + later.MaxX) * 0.5F, y);
                              to = ImVec2(earlier.MinX + 2.0F, y);
+                             dragStart = step.frame + 2; // the key's release lands first
                          }
-                         if (step.frame < 3 || !dragFrom(step.frame, 3, from, to))
+                         if (table == nullptr || step.frame < dragStart || !dragFrom(step.frame, dragStart, from, to))
                          {
                              return false;
                          }
+                         const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
+                         const ImGuiTableColumn& name = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::Name))];
                          return (pid.DisplayOrder < name.DisplayOrder) != pidFirst;
                      }});
 
@@ -520,13 +541,17 @@ std::vector<Step> signOffSteps()
     steps.push_back({.name = "details-overview",
                      .tick = [](StepContext& step)
                      {
-                         if (step.frame == 0)
-                         {
-                             ImGui::ActivateItemByID(mainTabId(DETAILS_TAB)); // the row menu's process
-                         }
                          const ImGuiID bar = tabBarWithTab(DETAILS_OVERVIEW_TAB);
-                         return step.frame > 3 && selectedTab(mainTabBarId()) == mainTabId(DETAILS_TAB) && bar != 0 &&
-                                selectedTab(bar) == ImHashStr(DETAILS_OVERVIEW_TAB, 0, bar);
+                         if (selectedTab(mainTabBarId()) == mainTabId(DETAILS_TAB) && bar != 0 &&
+                             selectedTab(bar) == ImHashStr(DETAILS_OVERVIEW_TAB, 0, bar))
+                         {
+                             return true;
+                         }
+                         if (step.frame % RETRY_FRAMES == 0) // the row menu's process, again until it takes
+                         {
+                             ImGui::ActivateItemByID(mainTabId(DETAILS_TAB));
+                         }
+                         return false;
                      }});
 
     steps.push_back({.name = "details-network",
@@ -555,62 +580,114 @@ std::vector<Step> signOffSteps()
     steps.push_back({.name = "help",
                      .tick = [](StepContext& step)
                      {
-                         tapKey(step.frame, 0, ImGuiKey_F1);
-                         return step.frame > 3 && windowShown(App::HelpWindow::WINDOW_ID);
+                         if (windowShown(App::HelpWindow::WINDOW_ID))
+                         {
+                             return true;
+                         }
+                         static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_F1)); // again until it opens
+                         return false;
                      }});
 
     steps.push_back({.name = "about",
                      .tick = [](StepContext& step)
                      {
-                         tapKey(step.frame, 0, ImGuiKey_Escape); // Help closes (it has the focus)
-                         if (step.frame == 4)
+                         if (windowShown(App::HelpWindow::WINDOW_ID))
+                         {
+                             // Escape closes Help while it has the focus; pressed again until it has.
+                             static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_Escape));
+                             return false;
+                         }
+                         if (ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID))
+                         {
+                             return true;
+                         }
+                         if (step.frame % RETRY_FRAMES == 0)
                          {
                              if (const ImGuiWindow* bar = ImGui::FindWindowByName("##TitleBar"); bar != nullptr)
                              {
                                  ImGui::ActivateItemByID(ImHashStr(App::TitleBarButtons::ABOUT_LABEL, 0, bar->ID));
                              }
                          }
-                         return step.frame > 6 && !windowShown(App::HelpWindow::WINDOW_ID) &&
-                                ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID);
+                         return false;
                      }});
 
     steps.push_back({.name = "settings-theme-saved",
-                     .tick = [target = std::string{}](StepContext& step) mutable
+                     .tick =
+                         [target = std::string{}, phase = 0](StepContext& step) mutable
                      {
+                         // 0: About closes and Settings opens; 1: the theme combo opens; 2: the target theme is
+                         // picked, which closes the combo; 3: Save closes the dialog; then the theme applies.
                          const UI::Theme& theme = UI::Theme::get();
-                         if (step.frame == 0)
+                         if (target.empty())
                          {
                              target = theme.currentThemeId() == "dracula" ? "mocha" : "dracula";
                          }
-                         tapKey(step.frame, 0, ImGuiKey_Escape); // About closes
-                         tapKey(step.frame, 4, ImGuiKey_F2);     // Settings opens
+                         const bool settingsOpen = ImGui::IsPopupOpen(App::SettingsDialog::POPUP_ID);
                          const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
-                         if (step.frame == 10 && modal != nullptr)
+                         const ImGuiWindow* top = topPopup();
+                         const bool comboOpen = settingsOpen && top != nullptr && top != modal;
+                         const bool retry = step.frame % RETRY_FRAMES == 0;
+                         switch (phase)
                          {
-                             // The theme combo, in the modal's scrolling body.
-                             for (const ImGuiWindow* window : GImGui->Windows)
+                         case 0:
+                             if (settingsOpen)
                              {
-                                 if (window->ParentWindow == modal && std::string_view{window->Name}.contains("##SettingsBody"))
+                                 phase = 1;
+                             }
+                             else if (ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID))
+                             {
+                                 static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_Escape));
+                             }
+                             else
+                             {
+                                 static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_F2));
+                             }
+                             return false;
+                         case 1:
+                             if (comboOpen)
+                             {
+                                 phase = 2;
+                             }
+                             else if (retry && modal != nullptr)
+                             {
+                                 for (const ImGuiWindow* window : GImGui->Windows)
                                  {
-                                     ImGui::ActivateItemByID(ImHashStr("##Theme", 0, window->ID));
+                                     if (window->ParentWindow == modal && std::string_view{window->Name}.contains("##SettingsBody"))
+                                     {
+                                         ImGui::ActivateItemByID(ImHashStr("##Theme", 0, window->ID));
+                                     }
                                  }
                              }
-                         }
-                         if (step.frame == 14)
-                         {
-                             if (const ImGuiWindow* combo = topPopup(); combo != nullptr)
+                             return false;
+                         case 2:
+                             if (!comboOpen)
                              {
-                                 const std::string name = target == "dracula" ? "Dracula" : "Mocha";
-                                 ImGui::ActivateItemByID(ImHashStr(name.c_str(), 0, ImHashStr(target.c_str(), 0, combo->ID)));
+                                 phase = 3;
                              }
+                             else if (retry)
+                             {
+                                 // Its entries are scoped by theme id.
+                                 const std::string name = target == "dracula" ? "Dracula" : "Mocha";
+                                 ImGui::ActivateItemByID(ImHashStr(name.c_str(), 0, ImHashStr(target.c_str(), 0, top->ID)));
+                             }
+                             return false;
+                         case 3:
+                             if (!settingsOpen)
+                             {
+                                 phase = 4;
+                             }
+                             else if (retry && modal != nullptr)
+                             {
+                                 // Save: a filled button, "##filled" under its label.
+                                 ImGui::ActivateItemByID(
+                                     ImHashStr("##filled", 0, ImHashStr(App::SettingsDialog::SAVE_LABEL, 0, modal->ID)));
+                             }
+                             return false;
+                         default:
+                             return theme.currentThemeId() == target;
                          }
-                         if (step.frame == 18 && modal != nullptr)
-                         {
-                             // Save: a filled button, "##filled" under its label.
-                             ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr(App::SettingsDialog::SAVE_LABEL, 0, modal->ID)));
-                         }
-                         return step.frame > 20 && theme.currentThemeId() == target && !ImGui::IsPopupOpen(App::SettingsDialog::POPUP_ID);
-                     }});
+                     },
+                     .maxFrames = 600});
     return steps;
 }
 
