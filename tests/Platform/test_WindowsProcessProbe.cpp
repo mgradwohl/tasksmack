@@ -62,15 +62,15 @@ TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
     EXPECT_NO_THROW({ const WindowsProcessProbe probe; });
 }
 
-TEST(WindowsProcessProbeTest, PowerIsNotClaimedAndNoEnergyIsInvented)
+TEST(WindowsProcessProbeTest, PowerIsClaimedOnlyWithAPackageEnergyReadingAndNoEnergyIsInvented)
 {
     // Power used to be "available" whenever AC status was known, and was a fabricated 1 J per
-    // sample shared out by CPU time (#1028). It is not claimed now, and no process carries energy.
+    // sample shared out by CPU time (#1028). Now it is the EMI energy meters' package counter (#2587),
+    // claimed only where one exists, and read raw by readPackageEnergy() for Domain to share out:
+    // enumerate() itself never carries energy.
     WindowsProcessProbe probe;
-    const auto caps = probe.capabilities();
-    EXPECT_FALSE(caps.hasPowerUsage);
     // SYSTEM_PROCESS_INFORMATION's PageFaultCount is a 32-bit ULONG that wraps (#1184).
-    EXPECT_EQ(caps.pageFaultCountBits, 32U);
+    EXPECT_EQ(probe.capabilities().pageFaultCountBits, 32U);
 
     for (int sample = 0; sample < 2; ++sample)
     {
@@ -78,6 +78,18 @@ TEST(WindowsProcessProbeTest, PowerIsNotClaimedAndNoEnergyIsInvented)
         {
             EXPECT_EQ(proc.energyMicrojoules, 0ULL) << proc.name;
         }
+    }
+
+    // The meters are opened on a worker, so the claim can turn true during this test, but only
+    // ever false -> true: a claim read first implies a reading read after, and a reading read first
+    // implies a claim read after. Whether this host has an EMI package channel is its own affair.
+    if (probe.capabilities().hasPowerUsage)
+    {
+        EXPECT_TRUE(probe.readPackageEnergy().has_value());
+    }
+    if (probe.readPackageEnergy().has_value())
+    {
+        EXPECT_TRUE(probe.capabilities().hasPowerUsage);
     }
 }
 

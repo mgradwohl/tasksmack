@@ -3,8 +3,8 @@
 // Pure tree-indent sizing extracted from ProcessesPanel::renderProcessRow() (#906), so the rule
 // that keeps the expand/collapse control reachable can be unit-tested directly instead of only
 // indirectly through a live ImGui context. See CONTRIBUTING.md's "extract the pure decision logic
-// into a small header" pattern (also used by ProcessTreeFlatten.h, AdaptiveIntervalUtils.h,
-// TitleBarGeometry.h). This computes widths only -- it makes no ImGui calls -- so there is no
+// into a small header" pattern (also used by ProcessTreeFlatten.h, TitleBarGeometry.h). This
+// computes widths only -- it makes no ImGui calls -- so there is no
 // live-context blocker to testing it.
 
 #include <algorithm>

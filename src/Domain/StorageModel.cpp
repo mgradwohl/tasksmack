@@ -1,5 +1,6 @@
 #include "StorageModel.h"
 
+#include "DeferredProbe.h"
 #include "Domain/StorageSnapshot.h"
 #include "History.h"
 #include "Numeric.h"
@@ -44,6 +45,18 @@ namespace
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe) : m_Probe(std::move(probe))
 {
     applyHistoryCapacity();
+}
+
+StorageModel::StorageModel(DeferredProbeTag /*tag*/)
+{
+    applyHistoryCapacity();
+}
+
+void StorageModel::setProbe(std::unique_ptr<Platform::IDiskProbe> probe)
+{
+    // Serialised with the sampling path, so a probe is never replaced under a sample in progress.
+    const std::scoped_lock writerLock(m_WriterMutex);
+    m_Probe = std::move(probe);
 }
 
 void StorageModel::applyHistoryCapacity()
@@ -544,6 +557,9 @@ void StorageModel::setMaxHistorySeconds(double seconds)
 
 Platform::DiskCapabilities StorageModel::capabilities() const
 {
+    // A test seam, so the writer mutex (which setProbe() and a sample hold) is fine here: it never runs
+    // on the UI thread.
+    const std::scoped_lock writerLock(m_WriterMutex);
     if (m_Probe)
     {
         return m_Probe->capabilities();

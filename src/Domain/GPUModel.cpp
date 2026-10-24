@@ -1,5 +1,6 @@
 #include "GPUModel.h"
 
+#include "DeferredProbe.h"
 #include "GPUSnapshot.h"
 #include "History.h"
 #include "Numeric.h"
@@ -304,15 +305,28 @@ std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::G
     return ordered;
 }
 
-GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
-    : m_Probe(std::move(probe)), m_PrevSampleTime(std::chrono::steady_clock::now()), m_LastFullRescan(m_PrevSampleTime)
+GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe) : GPUModel(DEFERRED_PROBE)
 {
+    setProbe(std::move(probe));
+}
+
+GPUModel::GPUModel(DeferredProbeTag /*tag*/) : m_PrevSampleTime(std::chrono::steady_clock::now()), m_LastFullRescan(m_PrevSampleTime)
+{}
+
+void GPUModel::setProbe(std::unique_ptr<Platform::IGPUProbe> probe)
+{
+    // The probe lock, as rescanGPUs() holds it: a refresh in progress finishes with the probe it has,
+    // and the GPU info and capabilities below are written as a rescan writes them (#2153).
+    const std::scoped_lock probeLock(m_ProbeMutex);
+    m_Probe = std::move(probe);
     if (!m_Probe)
     {
         // No probe (the synthetic scenario has no GPU, #1413) is a known answer, not an unknown one:
         // no per-process GPU data, so the GPU columns explain that they aren't supported
         // instead of waiting for capabilities that never come.
         spdlog::warn("GPUModel: No GPU probe provided; no per-process GPU data");
+        const std::unique_lock lock(m_Mutex);
+        m_Capabilities = {};
         m_CapabilitiesKnown = true;
         m_PerProcessKnownUnsupported.store(true, std::memory_order_release);
         m_PerProcessUtilizationKnownUnsupported.store(true, std::memory_order_release);
@@ -321,33 +335,46 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         return;
     }
 
+    // The probe's answers first, outside the state lock a reader takes: enumerating GPUs (DXGI, NVML)
+    // is slow. Then one exclusive write of what they said.
+    std::optional<Platform::GPUCapabilities> capabilities;
     try
     {
-        m_Capabilities = m_Probe->capabilities();
-        m_CapabilitiesKnown = true;
-        storePerProcessSupport();
+        capabilities = m_Probe->capabilities();
     }
     catch (const std::exception& e)
     {
         spdlog::error("GPUModel: Failed to read capabilities: {}", e.what());
     }
 
-    // Enumerate GPUs at construction; refreshAt() re-enumerates when the probe reports a change.
+    // Enumerate GPUs now; refreshAt() re-enumerates when the probe reports a change.
+    std::optional<std::vector<Platform::GPUInfo>> gpuInfo;
     try
     {
-        m_GPUInfo = m_Probe->enumerateGPUs();
-        m_GPUInfoKnown = true;
-        spdlog::info("GPUModel: Detected {} GPU(s)", m_GPUInfo.size());
+        gpuInfo = m_Probe->enumerateGPUs();
+        spdlog::info("GPUModel: Detected {} GPU(s)", gpuInfo->size());
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::error("GPUModel: Failed to enumerate GPUs: {}", e.what());
+    }
 
+    const std::unique_lock lock(m_Mutex);
+    if (capabilities.has_value())
+    {
+        m_Capabilities = *capabilities;
+        m_CapabilitiesKnown = true;
+        storePerProcessSupport();
+    }
+    if (gpuInfo.has_value())
+    {
+        m_GPUInfo = std::move(*gpuInfo);
+        m_GPUInfoKnown = true;
         // Initialize history buffers for each GPU
         for (const auto& info : m_GPUInfo)
         {
             m_Histories.try_emplace(info.id, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds));
         }
-    }
-    catch (const std::exception& e)
-    {
-        spdlog::error("GPUModel: Failed to enumerate GPUs: {}", e.what());
     }
 }
 

@@ -5,7 +5,14 @@
 //   IOCTL_STORAGE_QUERY_PROPERTY for the device descriptor (model, firmware, serial, bus), the seek
 //   penalty (SSD or HDD) and the temperature, and IOCTL_DISK_GET_DRIVE_GEOMETRY_EX for the size. An NVMe
 //   drive's health log comes from the protocol-specific property; when Windows refuses it to a query-only
-//   handle the row says it requires administrator. TaskSmack never asks for elevation or read access.
+//   handle the row says it requires administrator. TaskSmack never asks for elevation.
+// - ATA and SATA drives' SMART health (#2588; parity with Linux's udisks2 path, #1631): SMART READ DATA,
+//   READ THRESHOLDS and RETURN STATUS through IOCTL_ATA_PASS_THROUGH, after IDENTIFY DEVICE says the drive
+//   supports SMART and has it on, parsed by WindowsStorageSmartMath.h. The pass-through IOCTL needs a
+//   handle with read and write access, which only an administrator gets: a standard user's open fails
+//   with ERROR_ACCESS_DENIED and the row says it requires administrator; the drive's data is never read
+//   or written. The read happens on the System Information worker with the rest of the section, once
+//   per read of it, and nothing is logged per read.
 // - Volumes: every drive letter (GetLogicalDriveStringsW) with its label and file system
 //   (GetVolumeInformationW) and size and free space (GetDiskFreeSpaceExW), under SEM_FAILCRITICALERRORS
 //   so an empty card reader or optical drive fails at once instead of prompting; those are left out.
@@ -21,6 +28,7 @@
 #include "Platform/PartitionTable.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsStorageSmartMath.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,6 +39,7 @@
 #endif
 #include <windows.h>
 #include <winioctl.h>
+#include <ntddscsi.h>
 // clang-format on
 
 #include <algorithm>
@@ -53,6 +62,8 @@ namespace Platform::WindowsStorage
 struct Functions
 {
     Windows::UniqueHandle (*openPhysicalDrive)(int index) = &Windows::openPhysicalDriveQueryOnly;
+    /// The read-write open IOCTL_ATA_PASS_THROUGH needs (#2588); only an ATA or SATA drive's SMART read makes it.
+    Windows::UniqueHandle (*openPhysicalDriveReadWrite)(int index) = &Windows::openPhysicalDriveReadWrite;
     decltype(&DeviceIoControl) deviceIoControl = &DeviceIoControl;
     decltype(&GetLogicalDriveStringsW) getLogicalDriveStrings = &GetLogicalDriveStringsW;
     decltype(&GetDriveTypeW) getDriveType = &GetDriveTypeW;
@@ -241,6 +252,120 @@ queryProperty(const Functions& fns, HANDLE disk, STORAGE_PROPERTY_ID property, s
     return health;
 }
 
+/// How long one ATA command through the pass-through may take before the port driver gives up on it.
+inline constexpr ULONG ATA_COMMAND_TIMEOUT_SECONDS = 5;
+
+/// What one ATA command through IOCTL_ATA_PASS_THROUGH answered: the data it transferred in (as many bytes
+/// as were asked for) and the task file it came back with (AtaSmartMath::TASK_FILE_* index it; the
+/// status register is at TASK_FILE_COMMAND).
+struct AtaReply
+{
+    std::vector<std::byte> data;
+    std::array<std::uint8_t, AtaSmartMath::TASK_FILE_BYTES> taskFile{};
+};
+
+/// Sends @p command with @p feature through IOCTL_ATA_PASS_THROUGH on @p disk, asking for @p dataBytes of
+/// data in (0 for a command that answers in the task file alone), with the SMART signature in LBA mid
+/// and high when @p smart. nullopt when the IOCTL failed or answered less than its own header.
+[[nodiscard]] inline std::optional<AtaReply>
+ataPassThrough(const Functions& fns, HANDLE disk, std::uint8_t command, std::uint8_t feature, bool smart, std::size_t dataBytes)
+{
+    std::vector<std::byte> buffer(sizeof(ATA_PASS_THROUGH_EX) + dataBytes);
+    ATA_PASS_THROUGH_EX request{};
+    request.Length = sizeof(ATA_PASS_THROUGH_EX);
+    request.AtaFlags = static_cast<USHORT>(ATA_FLAGS_DRDY_REQUIRED | (dataBytes > 0 ? ATA_FLAGS_DATA_IN : 0));
+    request.DataTransferLength = static_cast<ULONG>(dataBytes);
+    request.TimeOutValue = ATA_COMMAND_TIMEOUT_SECONDS;
+    request.DataBufferOffset = dataBytes > 0 ? sizeof(ATA_PASS_THROUGH_EX) : 0;
+    request.CurrentTaskFile[AtaSmartMath::TASK_FILE_FEATURES] = feature;
+    request.CurrentTaskFile[AtaSmartMath::TASK_FILE_COUNT] = dataBytes > 0 ? 1 : 0; // one sector of data
+    if (smart)
+    {
+        request.CurrentTaskFile[AtaSmartMath::TASK_FILE_LBA_MID] = AtaSmartMath::SMART_LBA_MID;
+        request.CurrentTaskFile[AtaSmartMath::TASK_FILE_LBA_HIGH] = AtaSmartMath::SMART_LBA_HIGH;
+    }
+    request.CurrentTaskFile[AtaSmartMath::TASK_FILE_DEVICE] = AtaSmartMath::DEVICE_REGISTER;
+    request.CurrentTaskFile[AtaSmartMath::TASK_FILE_COMMAND] = command;
+    std::memcpy(buffer.data(), &request, sizeof(request));
+
+    DWORD returned = 0;
+    const auto size = static_cast<DWORD>(buffer.size());
+    if (fns.deviceIoControl(disk, IOCTL_ATA_PASS_THROUGH, buffer.data(), size, buffer.data(), size, &returned, nullptr) == FALSE ||
+        returned < sizeof(ATA_PASS_THROUGH_EX))
+    {
+        return std::nullopt;
+    }
+    std::memcpy(&request, buffer.data(), sizeof(request));
+    AtaReply reply;
+    std::memcpy(reply.taskFile.data(), request.CurrentTaskFile, reply.taskFile.size());
+    reply.data.assign(buffer.begin() + static_cast<std::ptrdiff_t>(sizeof(ATA_PASS_THROUGH_EX)), buffer.end());
+    return reply;
+}
+
+/// Disk @p index's ATA SMART health into @p info (#2588): its ataHealth, or healthUnavailableReason, and
+/// its temperature from the attributes when the temperature property gave none. Opens the drive read-write
+/// for the pass-through; a standard user is refused that and the row says administrator. IDENTIFY DEVICE
+/// is asked first so a drive without SMART, or with it turned off, says so instead of failing the read; a
+/// drive that won't answer IDENTIFY is still asked for its SMART data. The thresholds and the drive's own
+/// verdict are each optional: a drive that refuses them still gets its attributes shown.
+inline void queryAtaHealth(const Functions& fns, int index, PhysicalDisk& info)
+{
+    namespace Smart = AtaSmartMath;
+    const Windows::UniqueHandle disk = fns.openPhysicalDriveReadWrite(index);
+    if (!disk)
+    {
+        info.healthUnavailableReason =
+            GetLastError() == ERROR_ACCESS_DENIED ? "Requires administrator" : "The drive couldn't be opened for its SMART data";
+        return;
+    }
+    if (const auto identify = ataPassThrough(fns, disk.get(), Smart::IDENTIFY_DEVICE_COMMAND, 0, false, Smart::PAGE_BYTES);
+        identify.has_value() && !Smart::commandFailed(identify->taskFile))
+    {
+        if (const auto support = Smart::parseIdentifySmart(identify->data); support.has_value())
+        {
+            if (!support->supported)
+            {
+                info.healthUnavailableReason = "This drive doesn't support SMART";
+                return;
+            }
+            if (!support->enabled)
+            {
+                info.healthUnavailableReason = "SMART is turned off on this drive";
+                return;
+            }
+        }
+    }
+    const auto page = ataPassThrough(fns, disk.get(), Smart::SMART_COMMAND, Smart::SMART_READ_DATA, true, Smart::PAGE_BYTES);
+    if (!page.has_value() || Smart::commandFailed(page->taskFile))
+    {
+        info.healthUnavailableReason = "The drive didn't return its SMART data";
+        return;
+    }
+    const std::optional<std::vector<Smart::Attribute>> attributes = Smart::parseAttributes(page->data);
+    if (!attributes.has_value())
+    {
+        info.healthUnavailableReason = "The drive's SMART data was malformed";
+        return;
+    }
+    std::optional<Smart::Thresholds> thresholds;
+    if (const auto reply = ataPassThrough(fns, disk.get(), Smart::SMART_COMMAND, Smart::SMART_READ_THRESHOLDS, true, Smart::PAGE_BYTES);
+        reply.has_value() && !Smart::commandFailed(reply->taskFile))
+    {
+        thresholds = Smart::parseThresholds(reply->data);
+    }
+    std::optional<bool> statusFailing;
+    if (const auto reply = ataPassThrough(fns, disk.get(), Smart::SMART_COMMAND, Smart::SMART_RETURN_STATUS, true, 0);
+        reply.has_value() && !Smart::commandFailed(reply->taskFile))
+    {
+        statusFailing = Smart::returnStatusFailing(reply->taskFile[Smart::TASK_FILE_LBA_MID], reply->taskFile[Smart::TASK_FILE_LBA_HIGH]);
+    }
+    info.ataHealth = Smart::toAtaHealth(*attributes, thresholds, statusFailing);
+    if (!info.temperatureCelsius.has_value())
+    {
+        info.temperatureCelsius = Smart::temperatureCelsius(*attributes);
+    }
+}
+
 /// DRIVE_LAYOUT_INFORMATION_EX's first try holds this many entries (a GPT disk has room for 128, but
 /// few use more than a handful); the buffer doubles while the drive says it's too small, up to the cap.
 inline constexpr std::size_t LAYOUT_FIRST_ENTRIES = 16;
@@ -283,6 +408,7 @@ inline void readPartitions(const Functions& fns, HANDLE disk, PhysicalDisk& info
     info.name = std::format("Disk {}", index);
 
     constexpr std::size_t DESCRIPTOR_BYTES = 1024;
+    int busType = BusTypeUnknown;
     if (const auto buffer = queryProperty(fns, disk, StorageDeviceProperty, DESCRIPTOR_BYTES); buffer.has_value())
     {
         if (const std::optional<DeviceDescriptor> descriptor = parseDeviceDescriptor(*buffer); descriptor.has_value())
@@ -291,6 +417,7 @@ inline void readPartitions(const Functions& fns, HANDLE disk, PhysicalDisk& info
             info.firmware = descriptor->firmware;
             info.serial = descriptor->serial;
             info.bus = std::string(busTypeName(descriptor->busType));
+            busType = descriptor->busType;
         }
     }
 
@@ -322,9 +449,13 @@ inline void readPartitions(const Functions& fns, HANDLE disk, PhysicalDisk& info
         info.sizeBytes = static_cast<std::uint64_t>(geometry.DiskSize.QuadPart);
     }
 
-    if (info.bus == "NVMe")
+    if (busType == BusTypeNvme)
     {
         info.health = queryNvmeHealth(fns, disk, info.healthUnavailableReason);
+    }
+    else if (busType == BusTypeAta || busType == BusTypeSata)
+    {
+        queryAtaHealth(fns, index, info);
     }
     readPartitions(fns, disk, info);
     return info;

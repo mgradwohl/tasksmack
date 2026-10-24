@@ -28,10 +28,18 @@ namespace Synthetic
 class Scenario;
 }
 
+/// Makes, on the UI thread, what the panel platforms share and must be made there (#2731): the one
+/// privileged broker (sharedPrivilegedBroker()), whose prompt owner is the main window, an SDL query.
+/// ShellPanels::prepareAttach() calls it before any panel attaches; the Processes and System panels'
+/// factories below then run on their sampler threads and find it made. Nothing in a synthetic run.
+void preparePanelPlatforms(const Synthetic::Scenario* scenario);
+
 /// The Processes panel's probe, actions, UDP collector and icon source: @p scenario's, or the platform's.
+/// Called on the Processes panel's sampler thread, from its start hook (#2731).
 [[nodiscard]] ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario);
 
-/// The System panel's probes: @p scenario's, or the platform's.
+/// The System panel's probes: @p scenario's, or the platform's. Called on the System panel's sampler
+/// thread, from its start hook (#2731): PDH, DXGI and NVML are opened there, in its apartment.
 [[nodiscard]] SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario);
 
 /// Process Details' actions and readers: @p scenario's (its readers say "unsupported", so made-up PIDs
@@ -46,6 +54,9 @@ class Scenario;
 
 /// The System Information tab's probe: the platform's, in every run.
 [[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* scenario);
+/// The System tab's sensor sampler's own probe (#2737), for readSensors() only: unbrokered, and safe to
+/// build off the UI thread (the sampler's first pass builds it).
+[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* scenario);
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);

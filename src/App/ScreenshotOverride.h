@@ -19,10 +19,10 @@
 
 #include "Core/EnvUtils.h"
 #include "Core/Utf8Path.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <filesystem>
@@ -90,12 +90,6 @@ namespace Detail
     return value;
 }
 
-[[nodiscard]] inline bool equalsIgnoreCase(const std::string_view a, const std::string_view lowercase) noexcept
-{
-    return a.size() == lowercase.size() &&
-           std::ranges::equal(a, lowercase, [](const char x, const char y) { return std::tolower(static_cast<unsigned char>(x)) == y; });
-}
-
 } // namespace Detail
 
 /// Parses a TASKSMACK_SCREENSHOT value: "<file.png>[;after=<seconds>][;frames=<N>][;fps=<F>]", the
@@ -145,15 +139,15 @@ namespace Detail
             return invalid(std::format("gives '{}' a value that isn't a whole number", key));
         }
         std::optional<int>* slot = nullptr;
-        if (Detail::equalsIgnoreCase(key, "after"))
+        if (Platform::equalsIgnoreCase(key, "after"))
         {
             slot = &after;
         }
-        else if (Detail::equalsIgnoreCase(key, "frames"))
+        else if (Platform::equalsIgnoreCase(key, "frames"))
         {
             slot = &frames;
         }
-        else if (Detail::equalsIgnoreCase(key, "fps"))
+        else if (Platform::equalsIgnoreCase(key, "fps"))
         {
             slot = &fps;
         }

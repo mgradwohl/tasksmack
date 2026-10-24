@@ -7,12 +7,11 @@
 // parser stays beside the code it configures; each of their name constants is checked against
 // KNOWN_ENV_HOOKS at compile time (isKnownEnvHook()), so a new hook can't be left off the list.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
-#include <cstddef>
 #include <string_view>
 
 namespace Core
@@ -73,24 +72,9 @@ static_assert(isKnownEnvHook(TRACE_RESIZE_PERF_ENV_VAR) && isKnownEnvHook(LOG_LE
         return false;
     }
 
-    // Case-insensitive equality; b must already be lowercase.
-    const auto ciEqual = [](const std::string_view a, const std::string_view b) noexcept
-    {
-        if (a.size() != b.size())
-        {
-            return false;
-        }
-        for (std::size_t i = 0; i < a.size(); ++i)
-        {
-            if (std::tolower(static_cast<unsigned char>(a[i])) != b[i])
-            {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
+    using Platform::equalsIgnoreCase;
+    return !equalsIgnoreCase(text, "0") && !equalsIgnoreCase(text, "false") && !equalsIgnoreCase(text, "off") &&
+           !equalsIgnoreCase(text, "no");
 }
 
 } // namespace Core

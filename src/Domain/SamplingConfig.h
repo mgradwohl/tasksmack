@@ -150,15 +150,9 @@ inline constexpr int PROCESS_SECURITY_REFRESH_MS = 3000;
 // core dumps and their journal entries (Linux), and crashes are rare, so a minute is enough.
 inline constexpr int PROCESS_CRASH_HISTORY_REFRESH_MS = 60000;
 
-// How often the System Information page re-reads its sensors while the tab is drawn (milliseconds)
-// (#1522): a sensors-only read, so each sensor's range and history follow it. Only while the tab shows.
+// How often the sensors were read before they followed the Settings interval (milliseconds) (#1522, #2737):
+// now only the pause a sensor history's line breaks at is derived from it (SENSOR_HISTORY_GAP_MIN_SECONDS).
 inline constexpr int SYSTEM_INFO_SENSOR_REFRESH_MS = 2000;
-
-// The most recent readings each sensor keeps for its row's chart (#1522): the default history window at
-// the shortest refresh interval. The history is cut to HISTORY_SECONDS_DEFAULT of time first, so at the
-// interval in use it holds that window, and a change of interval keeps what it has (#2737).
-inline constexpr std::size_t SENSOR_HISTORY_CAPACITY =
-    static_cast<std::size_t>(HISTORY_SECONDS_DEFAULT) * 1000U / static_cast<std::size_t>(REFRESH_INTERVAL_MIN_MS);
 
 // How often the Services tab re-reads the service list (milliseconds) (#800). Sampled only while the
 // tab is shown; a service changes state far less often than a process's counters do.

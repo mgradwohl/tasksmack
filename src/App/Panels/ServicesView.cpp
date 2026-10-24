@@ -5,6 +5,7 @@
 #include "App/Panels/ServiceActionsView.h"
 #include "Domain/ProcessIconCache.h"
 #include "Domain/ServiceModel.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
@@ -15,7 +16,6 @@
 #include <imgui.h>
 // imgui_stdlib.h extends imgui.h's API for std::string, so it follows it.
 #include <algorithm>
-#include <cctype>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -34,39 +34,26 @@ namespace
 
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
 
-[[nodiscard]] bool containsIgnoringCase(std::string_view text, std::string_view needle)
-{
-    const auto lower = [](unsigned char c)
-    {
-        return std::tolower(c);
-    };
-    return !std::ranges::search(text, needle, {}, lower, lower).empty();
-}
-
-/// Case-insensitive three-way comparison of two strings.
-[[nodiscard]] std::strong_ordering compareIgnoringCase(std::string_view a, std::string_view b)
-{
-    return std::lexicographical_compare_three_way(
-        a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) { return std::tolower(x) <=> std::tolower(y); });
-}
+using Platform::compareIgnoreCase;
+using Platform::containsIgnoreCase;
 
 [[nodiscard]] std::strong_ordering compareBy(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b, ServiceColumn column)
 {
     switch (column)
     {
     case ServiceColumn::DisplayName:
-        return compareIgnoringCase(a.displayName, b.displayName);
+        return compareIgnoreCase(a.displayName, b.displayName);
     case ServiceColumn::State:
         return serviceStateSortRank(a.state) <=> serviceStateSortRank(b.state);
     case ServiceColumn::StartType:
-        return compareIgnoringCase(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
+        return compareIgnoreCase(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
     case ServiceColumn::Pid:
         return a.pid <=> b.pid;
     case ServiceColumn::Account:
-        return compareIgnoringCase(a.account, b.account);
+        return compareIgnoreCase(a.account, b.account);
     case ServiceColumn::Name:
     default:
-        return compareIgnoringCase(a.name, b.name);
+        return compareIgnoreCase(a.name, b.name);
     }
 }
 
@@ -80,11 +67,11 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services.
 /// service name (case-insensitive, then exact), so two services never compare equal by name alone.
 [[nodiscard]] std::strong_ordering compareByListedName(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
 {
-    if (const std::strong_ordering order = compareIgnoringCase(listedName(a), listedName(b)); order != 0)
+    if (const std::strong_ordering order = compareIgnoreCase(listedName(a), listedName(b)); order != 0)
     {
         return order;
     }
-    if (const std::strong_ordering order = compareIgnoringCase(a.name, b.name); order != 0)
+    if (const std::strong_ordering order = compareIgnoreCase(a.name, b.name); order != 0)
     {
         return order;
     }
@@ -256,13 +243,7 @@ std::string_view serviceIconPath(const Platform::ServiceInfo& service) noexcept
     // Built from a pointer and a length, not substr(), which may throw.
     const std::string_view fileName =
         (separator == std::string_view::npos) ? path : std::string_view(path.data() + separator + 1, path.size() - separator - 1);
-    const bool sharedHost =
-        fileName.size() == SHARED_HOST.size() &&
-        std::ranges::equal(fileName,
-                           SHARED_HOST,
-                           [](char a, char b)
-                           { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
-    return sharedHost ? std::string_view{} : path;
+    return Platform::equalsIgnoreCase(fileName, SHARED_HOST) ? std::string_view{} : path;
 }
 
 std::vector<std::size_t>
@@ -272,7 +253,7 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
     rows.reserve(services.size());
     for (std::size_t i = 0; i < services.size(); ++i)
     {
-        if (filter.empty() || containsIgnoringCase(services[i].name, filter) || containsIgnoringCase(services[i].displayName, filter))
+        if (containsIgnoreCase(services[i].name, filter) || containsIgnoreCase(services[i].displayName, filter))
         {
             rows.push_back(i);
         }

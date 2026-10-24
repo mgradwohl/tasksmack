@@ -2,7 +2,6 @@
 
 #include "Domain/CrashHistory.h"
 #include "Domain/PublicationSlot.h"
-#include "Domain/SensorTracker.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <atomic>
@@ -39,10 +38,6 @@ struct SystemInfoSnapshot
     Platform::CrashesInfo crashes;
     Platform::NetworkAdaptersInfo adapters;
     Platform::BootPerformanceInfo boot;
-    /// Each sensor's range over the reads so far (sensorKey()); full reads and readSensors() add to it.
-    std::map<std::string, SensorRange> sensorRanges;
-    /// Each sensor's recent readings, keyed as sensorRanges; appended to by the same reads (#1522).
-    std::map<std::string, SensorHistory> sensorHistories;
     /// This read asked the probe for the Wi-Fi details that can raise a location prompt (#1782).
     bool wifiDetailsIncluded = false;
     /// This read looked the public addresses up (#1518): the user asked, and the probe can.
@@ -70,12 +65,6 @@ class SystemInfoModel
     /// "unknown error" for a throw that isn't a std::exception. Only building that message (bad_alloc)
     /// can still escape.
     [[nodiscard]] std::optional<std::string> tryRead(const std::stop_token& stopToken = {});
-    /// Reads the sensors again and publishes them with every other fact of the newest read unchanged,
-    /// "read at" included, adding to each sensor's range (#1522). Does nothing before the first read() or
-    /// when the probe reads nothing. Thread-safe; serialised with read(). Called off the UI thread.
-    void readSensors();
-    /// readSensors(), for a worker thread, as tryRead() is for read().
-    [[nodiscard]] std::optional<std::string> tryReadSensors();
 
     /// The newest read (an empty version-0 one before the first).
     [[nodiscard]] std::shared_ptr<const SystemInfoSnapshot> snapshot() const noexcept
@@ -143,7 +132,6 @@ class SystemInfoModel
     std::atomic<bool> m_AuthorizationRequested{false};   // set from the UI thread, taken by read() (#2310)
     std::mutex m_ReadMutex;
     std::uint64_t m_LastVersion = 0; // guarded by m_ReadMutex
-    SensorTracker m_Sensors;         // guarded by m_ReadMutex
     PublicationSlot<SystemInfoSnapshot> m_Slot;
 };
 

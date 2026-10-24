@@ -12,8 +12,10 @@
 #include "Platform/Linux/SdBusCall.h"
 #include "Platform/ProcessEnvironment.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -155,6 +157,13 @@ getObjectPath(sd_bus* bus, const char* object, const char* interface, const char
     // Each of these is optional: a value NetworkManager can't give is left at 0 or empty.
     BusError bitrateError;
     (void) sd_bus_get_property_trivial(bus, NM, device.c_str(), NM_WIRELESS, "Bitrate", bitrateError.get(), 'u', &link.bitrateKbps);
+    // NetworkManager's 0-100 % strength of the access point's signal, as Windows' signal quality (#2591).
+    std::uint8_t strength = 0;
+    BusError strengthError;
+    if (sd_bus_get_property_trivial(bus, NM, accessPoint.c_str(), NM_ACCESS_POINT, "Strength", strengthError.get(), 'y', &strength) >= 0)
+    {
+        link.signalQuality = std::min<std::uint32_t>(strength, 100U);
+    }
     BusError frequencyError;
     (void) sd_bus_get_property_trivial(
         bus, NM, accessPoint.c_str(), NM_ACCESS_POINT, "Frequency", frequencyError.get(), 'u', &link.frequencyMhz);
@@ -297,8 +306,10 @@ readDhcpOptions(sd_bus* bus, const char* config, std::string& server, std::strin
     if (config.empty() || config == "/")
     {
         read.error = "Not configured by DHCP";
+        read.dhcp = false; // a static address, or not up: readNetworkAdapterFacts() tells the two apart
         return read;
     }
+    read.dhcp = true;
     std::string server;
     std::string leaseTime;
     std::string expiry;

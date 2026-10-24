@@ -8,6 +8,7 @@
 // line in buildSystemInfoSections() (CONTRIBUTING.md, "Adding a System Information section").
 
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -70,8 +71,9 @@ struct Row
     /// A sensor row's kind (#1522): the row charts its history (sensorKey) in this kind's colour. Empty
     /// for every other row.
     std::optional<Platform::SensorKind> sensorKind;
-    /// A sensor row's key in the snapshot's sensorRanges and sensorHistories (Domain::sensorKey()), not
-    /// its label, which another sensor can share (#2340). Empty for every other row.
+    /// A sensor row's key in the sensor sampler's ranges and histories (Domain::sensorKey(),
+    /// Domain::SensorPublication), not its label, which another sensor can share (#2340). Empty for
+    /// every other row.
     std::string sensorKey;
     RowAction action = RowAction::None; ///< A button the view draws in the value cell.
     /// A tooltip on an available value that needs explaining, such as a CPU vulnerability Windows reports
@@ -110,6 +112,9 @@ struct Row
 };
 
 /// One titled section of rows.
+/// buildSensorsSection()'s title: the one section a new sensor read changes (#2737).
+inline constexpr std::string_view SENSORS_SECTION_TITLE = "Sensors";
+
 struct Section
 {
     std::string title;
@@ -388,10 +393,12 @@ void redactUserPaths(std::span<Section> sections, const Platform::OsInfo& os);
 
 /// The page's sections, in display order, with redactUserPaths() applied to them all. Empty before the
 /// first read. @p host is Core's graphics facts for the Graphics & displays section, captured on the UI
-/// thread; @p capabilities what the probe can read.
+/// thread; @p capabilities what the probe can read; @p sensors the sensor sampler's newest read (#2737),
+/// whose sensors and ranges the Sensors section shows once it has one (the page's own read until then).
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                                            const Core::GraphicsHostInfo& host = {},
-                                                           const Platform::SystemInfoCapabilities& capabilities = {});
+                                                           const Platform::SystemInfoCapabilities& capabilities = {},
+                                                           const Domain::SensorPublication* sensors = nullptr);
 
 /// The sections and rows to draw: hidden identifiers left out, then, with a filter, a section whose
 /// title matches keeps all its rows and otherwise only rows whose shown label or value matches (ASCII

@@ -1,12 +1,14 @@
 /// @file test_SystemMetricsPanelRender.cpp
 /// @brief The System Metrics panel as a whole (#1546), run headless with mock probes through its
-/// probe-factory seam: onAttach() builds its models from the mocks (no platform probe, no synthetic
-/// scenario), the Overview draws its charts from their readings, the tabs switch to their sections, an
-/// inactive panel draws nothing, and a detached one says its model is gone.
+/// probe-factory seam: its sampler thread builds its models' probes from the mocks (no platform probe,
+/// no synthetic scenario; #2731: onAttach() itself calls no factory), the Overview draws its charts from
+/// their readings, the tabs switch to their sections, an inactive panel draws nothing, and a detached one
+/// says its model is gone. Its sampler runs at the refresh setting in every UI state (#2731).
 
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockDiskProbe.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
@@ -24,9 +26,11 @@
 #include <implot_internal.h>
 
 #include <array>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
+#include <latch>
 #include <memory>
 #include <set>
 #include <string>
@@ -44,6 +48,14 @@ constexpr float DISPLAY_WIDTH = 1600.0F;
 constexpr float DISPLAY_HEIGHT = 1200.0F;
 
 using SeriesLabels = std::set<std::string>;
+
+/// onAttach(), then the seed the sampler thread takes (#2731), adopted as the first frame after it
+/// would: the tests below read the models and the hostname as they stand after it.
+void attachAndSeed(SystemMetricsPanel& panel)
+{
+    panel.onAttach();
+    ASSERT_TRUE(panel.waitForFirstSample()) << "the sampler thread did not build the probes and seed the models in time";
+}
 
 /// A mock system probe reading a 4-core machine at 25% CPU and 50% memory; with @p network, network
 /// counters and one interface too: @p interfaceName, linked at @p linkSpeedMbps (0: unknown).
@@ -110,7 +122,7 @@ class SystemMetricsPanelRenderTest : public ::testing::Test
     {
         auto panel = std::make_unique<SystemMetricsPanel>(
             [network] { return SystemMetricsProbes{.system = mockSystem(network), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
-        panel->onAttach();
+        attachAndSeed(*panel);
         return panel;
     }
 
@@ -229,7 +241,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheNetworkTabNeedsNetworkCounters)
             }
             return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     return panel;
 }
 
@@ -332,7 +344,7 @@ TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArri
 {
     auto panel = std::make_unique<SystemMetricsPanel>(
         [] { return SystemMetricsProbes{.system = mockSystem(), .power = mockBattery(), .disk = nullptr, .gpu = nullptr}; });
-    panel->onAttach();
+    attachAndSeed(*panel);
     const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
     panel->setProcessModel(processes);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
@@ -377,7 +389,7 @@ TEST_F(SystemMetricsPanelRenderTest, EachOverviewChartShowsItsTooltipWhenHovered
 {
     auto panel = std::make_unique<SystemMetricsPanel>(
         [] { return SystemMetricsProbes{.system = mockSystem(), .power = mockBattery(), .disk = nullptr, .gpu = nullptr}; });
-    panel->onAttach();
+    attachAndSeed(*panel);
     const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
     panel->setProcessModel(processes);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
@@ -445,7 +457,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheCpuTooltipListsIoWaitWhereItIsReported)
             system->setCapabilities(caps);
             return SystemMetricsProbes{.system = std::move(system), .power = nullptr, .disk = nullptr, .gpu = nullptr};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
     ImGuiStyle& style = ImGui::GetStyle();
     style.HoverStationaryDelay = 0.0F;
@@ -501,7 +513,7 @@ TEST_F(SystemMetricsPanelRenderTest, ThePowerHeadingSaysWhatTheChartShows)
             battery->setCounters(counters);
             return SystemMetricsProbes{.system = mockSystem(), .power = std::move(battery), .disk = nullptr, .gpu = nullptr};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
     panel->setProcessModel(processes);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
@@ -585,7 +597,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheGpuTabMarksReadingsItDoesntHave)
             gpu->withGPUCounters("GPU0", counters);
             return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
     static_cast<void>(renderAndCapture(*panel));
     ASSERT_TRUE(selectTab("GPU"));
@@ -622,7 +634,7 @@ TEST_F(SystemMetricsPanelRenderTest, AGpuMemoryReadingWithoutATotalStillHasItsBa
             gpu->withGPUCounters("GPU0", counters);
             return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
     static_cast<void>(renderAndCapture(*panel));
     ASSERT_TRUE(selectTab("GPU"));
@@ -648,7 +660,7 @@ TEST_F(SystemMetricsPanelRenderTest, AnInterfaceWithoutALinkSpeedSaysSo)
 {
     auto panel = std::make_unique<SystemMetricsPanel>(
         [] { return SystemMetricsProbes{.system = mockSystem(true, "eth1", 0), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
-    panel->onAttach();
+    attachAndSeed(*panel);
     static_cast<void>(renderAndCapture(*panel));
     ASSERT_TRUE(selectTab("Network and I/O"));
     static_cast<void>(renderAndCapture(*panel));
@@ -777,7 +789,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheResourcesChartGivesHandlesTheirOwnAxis)
 #endif
     const auto panel = std::make_unique<SystemMetricsPanel>(
         [] { return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
-    panel->onAttach();
+    attachAndSeed(*panel);
     const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel(SERVER_HANDLES);
     panel->setProcessModel(processes);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
@@ -849,7 +861,7 @@ TEST_F(SystemMetricsPanelRenderTest, AResourceTotalTheProbeCannotCountHasAnUnava
         SCOPED_TRACE(probeCase.missing);
         const auto panel = std::make_unique<SystemMetricsPanel>(
             [] { return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
-        panel->onAttach();
+        attachAndSeed(*panel);
         Platform::ProcessCapabilities caps = countingCapabilities();
         probeCase.drop(caps);
         const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel(40, caps);
@@ -1001,7 +1013,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
             disk->setNextCounters(counters);
             return SystemMetricsProbes{.system = mockSystem(/*network=*/true), .power = nullptr, .disk = std::move(disk), .gpu = nullptr};
         });
-    panel->onAttach();
+    attachAndSeed(*panel);
     panel->setSamplingInterval(std::chrono::milliseconds(100));
     ImGuiStyle& style = ImGui::GetStyle();
     style.HoverStationaryDelay = 0.0F;
@@ -1054,6 +1066,105 @@ TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
     }
     EXPECT_EQ(tooltips, static_cast<int>(rects.size())) << "every chart on the tab shows its tooltip";
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
+}
+
+// #2731: the sampler runs at the refresh setting in every UI state. Settings is the one thing that sets
+// it: this tab being shown or another, frames at any rate, and the slow frames of a minimized window
+// change nothing. (The System sampler once ran at twice the setting while its tab was hidden.)
+TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEveryUiState)
+{
+    const auto panel = attachedPanel();
+    const auto setting = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(panel->samplingInterval(), setting);
+
+    const auto expectThroughEveryUiState = [&panel](std::chrono::milliseconds expected)
+    {
+        // Each main tab shown in turn, with a frame on each: this panel's tab, and the others.
+        for (const char* tab : {"SystemOverview", "Processes", "ProcessDetails", "Services", "Startup", "SystemInfo", "SystemOverview"})
+        {
+            Core::ActiveTabChangedEvent shown(tab);
+            panel->onEvent(shown);
+            panel->onUpdate(1.0F / 60.0F);
+            EXPECT_EQ(panel->samplingInterval(), expected) << tab;
+        }
+        // Frames at the display rate of a resize or move, at 60 Hz, at the 5 Hz of a minimized window,
+        // and after the gap of a window left minimized or covered.
+        for (const float deltaTime : {0.002F, 1.0F / 60.0F, 0.2F, 2.0F})
+        {
+            for (int frame = 0; frame < 20; ++frame)
+            {
+                panel->onUpdate(deltaTime);
+            }
+            EXPECT_EQ(panel->samplingInterval(), expected) << deltaTime;
+        }
+    };
+    expectThroughEveryUiState(setting);
+
+    // Settings changes it, and the new value holds through the same states.
+    Core::RefreshRateChangedEvent faster(250);
+    panel->onEvent(faster);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(250));
+    expectThroughEveryUiState(std::chrono::milliseconds(250));
+
+    Core::RefreshRateChangedEvent slower(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    panel->onEvent(slower);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    expectThroughEveryUiState(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    panel->onDetach();
+}
+
+// #2731: onAttach() builds no probe and takes no read on the thread that calls it. The probe factory
+// runs on the sampler thread, once, and the models are seeded there; the attaching thread finds the
+// models in place (the shell wires them) but empty until the seed is adopted.
+TEST_F(SystemMetricsPanelRenderTest, OnAttachLeavesTheProbeFactoryToTheSamplerThread)
+{
+    std::atomic<int> factoryCalls{0};
+    std::atomic<std::thread::id> factoryThread{};
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [&factoryCalls, &factoryThread]
+        {
+            ++factoryCalls;
+            factoryThread.store(std::this_thread::get_id());
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    EXPECT_NE(panel->gpuModel(), nullptr) << "the models exist from onAttach(), for the shell to wire";
+    EXPECT_EQ(panel->hostname(), "System") << "no read has happened on this thread";
+
+    ASSERT_TRUE(panel->waitForFirstSample());
+    EXPECT_EQ(factoryCalls.load(), 1);
+    EXPECT_NE(factoryThread.load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
+    EXPECT_EQ(panel->hostname(), "testhost") << "the seed, taken on the sampler thread, was adopted";
+    panel->onDetach();
+}
+
+// #2731: a frame drawn before the first publication -- the probes still being built on the sampler
+// thread -- draws the Overview's chart frames with no data, not garbage and not a crash; the charts fill
+// once the seed arrives.
+TEST_F(SystemMetricsPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
+{
+    auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [gate]
+        {
+            gate->wait();
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string before = renderAndCapture(*panel);
+    EXPECT_TRUE(before.contains("Overview")) << before;
+    EXPECT_TRUE(before.contains("CPU Usage")) << before;
+    EXPECT_FALSE(before.contains("CPU Cores")) << "no per-core readings yet: " << before;
+    EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2) << "the chart frames are drawn empty";
+
+    gate->count_down();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("CPU Cores")) << "the seed brought the mock's per-core readings: " << after;
     panel->onDetach();
 }
 

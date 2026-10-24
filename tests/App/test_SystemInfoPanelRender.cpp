@@ -12,6 +12,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Core/SaveFileDialog.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/FakeClipboard.h"
 #include "Mocks/UnsupportedSystemInfoProbe.h"
@@ -928,27 +929,28 @@ TEST_F(SystemInfoPanelRenderTest, NoWifiDetailsButtonWhereThePlatformDoesntGateT
     EXPECT_FALSE(text.contains("location access")) << text;
 }
 
-// #1522: while the tab is drawn the sensors are read again on their own every couple of seconds, without
-// a full read, and the Sensors rows show each sensor's range once it has moved.
-TEST_F(SystemInfoPanelRenderTest, TheSensorsAreReadAgainWhileTheTabShowsAndTheirRangeAppears)
+// #2737: the sensors are a metric, sampled by their own worker at the Settings interval from attach, with the
+// tab never shown and nothing drawn; the page's full read waits for the tab. Once it shows, the Sensors rows
+// show each sensor's range over the samples taken before.
+TEST_F(SystemInfoPanelRenderTest, TheSensorsAreSampledAtTheSettingsIntervalWithoutTheTab)
 {
     m_Log.withSensors = true;
     makePanel(true);
-    showTab();
-    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
-    ASSERT_EQ(m_Log.sensorReads.load(), 1); // with the full read
+    Core::RefreshRateChangedEvent fast(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    m_Panel->onEvent(fast);
 
-    // Within a few seconds, a sensors-only read: the OS wasn't read again, the range shows.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
-    std::string text;
-    while (std::chrono::steady_clock::now() < deadline && m_Log.sensorReads.load() < 2)
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline && m_Log.sensorReads.load() < 3)
     {
-        text = frame();
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    ASSERT_GE(m_Log.sensorReads.load(), 2);
-    EXPECT_TRUE(frameUntil("min ")) << text;
-    EXPECT_EQ(m_Log.reads.load(), 1); // only the sensors were read again
+    ASSERT_GE(m_Log.sensorReads.load(), 3) << "no frame drawn, no tab shown";
+    EXPECT_EQ(m_Log.reads.load(), 0) << "the page's own read waits for the tab";
+
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    EXPECT_TRUE(frameUntil("min ")) << "the range over the samples taken while the tab was hidden";
+    EXPECT_EQ(m_Log.reads.load(), 1);
 }
 
 } // namespace
