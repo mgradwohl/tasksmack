@@ -353,6 +353,7 @@ set(COMMON_TEST_SOURCES
     UI/test_LineLayout.cpp
     UI/test_SeriesLabelAlignment.cpp
     UI/test_IconEncoding.cpp
+    App/test_AccessChoice.cpp  # Standard or Administrator: the notice decision and wording (#2728)
     App/test_DialogGeometry.cpp
     UI/test_ThemeCatalog.cpp
     UI/test_FormatProperties.cpp
