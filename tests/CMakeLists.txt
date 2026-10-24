@@ -687,6 +687,7 @@ set(THEME_REAL_TEST_SOURCES
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
+    App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
 set(APP_REAL_LINUX_TEST_SOURCES
@@ -1117,7 +1118,10 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
 )
-tasksmack_gtest_add_suites(TaskSmackAppTests)
+# The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
+# once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
+tasksmack_gtest_add_suites(TaskSmackAppTests
+    SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

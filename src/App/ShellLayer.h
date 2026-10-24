@@ -67,6 +67,12 @@ class ShellLayer : public Core::Layer
         return m_ProcessesPanel.treeViewEnabled();
     }
 
+    /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
+    [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
+    {
+        return m_ProcessesPanel;
+    }
+
     /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
     /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
     /// captures only once it is false (#2827).

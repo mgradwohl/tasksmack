@@ -699,6 +699,27 @@ Three established ways to get real coverage of such a file's logic:
    `tools/coverage.sh` runs this binary too. Example: `tests/App/test_UiLayersOnDisplay.cpp`, the title
    bar's buttons through `TitleBarLayer`, and the whole shell as `main.cpp` composes it.
 
+   **The UI scenarios** (`tests/App/test_UiScenariosOnDisplay.cpp`, ctest entry `UiScenarioTest`, #2711)
+   drive the whole shell through the steps a UI dependency bump is signed off on:
+   - **The steps:** the Processes list, then its tree and a collapsed branch; typing in the filter; the row
+     menu; a column reordered and resized by dragging; Process Details' Overview and Network and I/O; the
+     machine overview; System Information; Help; About; and a theme picked in Settings and saved.
+   - **How each one works:** a step injects its input through ImGui (mouse and key events, or
+     `ActivateItemByID()` for a button or tab), then waits, frame by frame, until the shell or ImGui shows
+     the effect. It asserts behaviour, never pixels.
+   - **The machine:** the ctest entry sets `TASKSMACK_SYNTHETIC` for its process, so the processes and charts
+     are the same on every runner. System Information still reads the real machine.
+   - **Capturing frames:** with `TASKSMACK_UI_CAPTURE_DIR=<dir>` set, each finished step's frame is saved
+     there as `<NN>-<step>.png`, read back before it is presented. The variable is read by this test only;
+     it isn't one of the app's hooks.
+
+     ```bash
+     TASKSMACK_UI_CAPTURE_DIR=/tmp/ui xvfb-run -a env -u WAYLAND_DISPLAY ctest --preset debug -R UiScenarioTest
+     ```
+
+   - **Adding a step:** add it to `signOffSteps()`. Each step starts where the last one left the shell, and the
+     first step that isn't done within its frame budget fails the test and names itself.
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
