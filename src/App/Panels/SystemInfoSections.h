@@ -8,6 +8,7 @@
 // line in buildSystemInfoSections() (CONTRIBUTING.md, "Adding a System Information section").
 
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 

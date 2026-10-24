@@ -216,6 +216,8 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ServiceModel.cpp
+    src/Domain/SensorModel.cpp
+    src/Domain/SensorTracker.cpp
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
     src/Domain/ProcessIconCache.cpp
@@ -241,6 +243,7 @@ set(PLATFORM_SOURCES_LINUX
     # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
     src/Platform/Linux/BrokerSocket.cpp
     src/Platform/Linux/BrokerServer.cpp
+    src/Platform/Linux/HelperPrivileges.cpp
     src/Platform/Linux/PkexecBroker.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
@@ -420,6 +423,8 @@ set(TASKSMACK_HEADERS
     src/Domain/GPUModel.h
     src/Domain/StartupModel.h
     src/Domain/ServiceModel.h
+    src/Domain/SensorModel.h
+    src/Domain/SensorTracker.h
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
     src/Domain/LruMap.h

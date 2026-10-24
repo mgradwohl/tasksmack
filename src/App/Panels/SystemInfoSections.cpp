@@ -2,6 +2,7 @@
 
 #include "App/Panels/ServicesView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"

@@ -5,6 +5,7 @@
 
 #include "Domain/CrashHistory.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -852,7 +853,6 @@ TEST(SystemInfoModelTest, SensorKeyWithoutIdsStillTellsKindsApart)
 
 TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
 {
-    constexpr double REFRESH = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
     SensorHistory range;
     appendSensorHistory(range, 40.0, 100.0);
     appendSensorHistory(range, 45.0, 100.0); // not after the newest: ignored
@@ -860,11 +860,12 @@ TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
     ASSERT_EQ(range.values.size(), 1U);
     EXPECT_FLOAT_EQ(range.values[0], 40.0F);
 
-    // At the sensor refresh, the history keeps exactly its capacity, oldest dropped first.
+    // At the shortest refresh interval, the history keeps exactly its capacity, oldest dropped first.
+    constexpr double FASTEST = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
     std::size_t index = 1;
     while (index <= Sampling::SENSOR_HISTORY_CAPACITY + 10)
     {
-        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * REFRESH));
+        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * FASTEST), FASTEST);
         ++index;
     }
     EXPECT_EQ(range.values.size(), Sampling::SENSOR_HISTORY_CAPACITY);

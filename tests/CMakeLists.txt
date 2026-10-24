@@ -309,6 +309,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_SensorModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
@@ -832,6 +833,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp

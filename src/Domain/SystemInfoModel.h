@@ -2,11 +2,11 @@
 
 #include "Domain/CrashHistory.h"
 #include "Domain/PublicationSlot.h"
+#include "Domain/SensorTracker.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <atomic>
 #include <cstdint>
-#include <format>
 #include <functional>
 #include <map>
 #include <memory>
@@ -14,7 +14,6 @@
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,57 +22,6 @@ namespace Domain
 
 /// One immutable read of the System Information page's static facts (#1399). Each section's raw
 /// facts are a member; a new section adds one.
-/// The lowest and highest one sensor has read since the page's first read (#1522), or since its device
-/// was plugged in (#2495).
-struct SensorRange
-{
-    double min = 0.0;
-    double max = 0.0;
-    std::uint32_t samples = 0; ///< How many reads it was in.
-
-    [[nodiscard]] bool operator==(const SensorRange&) const = default;
-};
-
-/// One sensor's recent readings, for its row's chart (#1522), oldest first, `values` aligned with
-/// `times`: at most Sampling::SENSOR_HISTORY_CAPACITY of them, none more than
-/// Sampling::HISTORY_SECONDS_DEFAULT older than the newest. A NaN value marks a break where the reads
-/// paused (the tab was hidden).
-struct SensorHistory
-{
-    std::vector<float> values;
-    std::vector<double> times; ///< When each was read, steady_clock seconds (UI::Widgets::historyFrameNowSeconds()'s clock)
-
-    [[nodiscard]] bool operator==(const SensorHistory&) const = default;
-};
-
-/// Appends @p value read at @p nowSeconds to @p history: a NaN break first when the reads paused for
-/// longer than SENSOR_HISTORY_GAP_INTERVALS refreshes, then the oldest dropped past the capacity or the
-/// window. A time not after the newest is ignored, so the history stays in order.
-void appendSensorHistory(SensorHistory& history, double value, double nowSeconds);
-
-/// A pause longer than this many sensor refreshes breaks a sensor's history line.
-inline constexpr double SENSOR_HISTORY_GAP_INTERVALS = 3.0;
-
-/// The device part of sensorKey(): SensorDevice::id, or its name from a source without ids.
-[[nodiscard]] inline std::string_view sensorDeviceKey(const Platform::SensorDevice& device)
-{
-    return device.id.empty() ? std::string_view(device.name) : std::string_view(device.id);
-}
-
-/// A sensor's key in SystemInfoSnapshot::sensorRanges and sensorHistories: its device's and its own
-/// identity (SensorDevice::id, SensorReading::id), never its label, so two channels that share a label
-/// (two "acpitz" zones, a voltage and a current both "VDD_IN") keep their own range and history (#2340).
-/// From a source without ids, the device's name and the reading's kind and label stand in.
-[[nodiscard]] inline std::string sensorKey(const Platform::SensorDevice& device, const Platform::SensorReading& reading)
-{
-    const std::string_view deviceId = sensorDeviceKey(device);
-    if (!reading.id.empty())
-    {
-        return std::format("{}\x1F{}", deviceId, reading.id);
-    }
-    return std::format("{}\x1F{}\x1F{}", deviceId, std::to_underlying(reading.kind), reading.label);
-}
-
 struct SystemInfoSnapshot
 {
     std::uint64_t version = 0;           ///< 0 until the first read.
@@ -194,18 +142,8 @@ class SystemInfoModel
     std::atomic<bool> m_IncludePublicIp{false};          // set from the UI thread, read by read() (#1518)
     std::atomic<bool> m_AuthorizationRequested{false};   // set from the UI thread, taken by read() (#2310)
     std::mutex m_ReadMutex;
-    std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
-    std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex
-    std::map<std::string, SensorHistory> m_SensorHistories; // guarded by m_ReadMutex
-    /// Each device's driver name (without the " #2" that makes it unique on the page) by its
-    /// sensorDeviceKey(), as last read: a new name under the same key is a new device (#2495).
-    std::map<std::string, std::string, std::less<>> m_SensorDeviceNames; // guarded by m_ReadMutex
-
-    /// Adds @p sensors' readings to m_SensorRanges and m_SensorHistories, first dropping what they
-    /// kept for a device that is gone or that another has taken the key of (#2495). Under m_ReadMutex.
-    void addToSensorRanges(const Platform::SensorsInfo& sensors);
-    /// Drops m_SensorRanges' and m_SensorHistories' entries for the device keyed @p deviceKey.
-    void forgetSensorDevice(std::string_view deviceKey);
+    std::uint64_t m_LastVersion = 0; // guarded by m_ReadMutex
+    SensorTracker m_Sensors;         // guarded by m_ReadMutex
     PublicationSlot<SystemInfoSnapshot> m_Slot;
 };
 

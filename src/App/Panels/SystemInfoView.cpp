@@ -3,6 +3,7 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/CellText.h"

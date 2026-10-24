@@ -10,6 +10,7 @@
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/UnsupportedSystemInfoProbe.h"
 #include "Platform/IServiceProbe.h"
