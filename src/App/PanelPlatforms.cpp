@@ -57,6 +57,17 @@ namespace
 
 } // namespace
 
+void preparePanelPlatforms(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return; // a synthetic run uses no helper
+    }
+    // Made now, on the UI thread: its owner window handle is an SDL query (mainNativeWindow()), and the
+    // factories below, which share it, run on the panels' sampler threads from here on (#2731).
+    (void) sharedPrivilegedBroker();
+}
+
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {
     // PSS and USS of another user's process through the helper, once it runs (#2309).

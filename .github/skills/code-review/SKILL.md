@@ -14,7 +14,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Platform probes (`src/Platform/`) must return **raw counters** only (CPU ticks, bytes). Flag any computation of rates, deltas, or percentages in a probe.
 - Domain (`src/Domain/`) must not depend on UI, Core, ImGui/ImPlot, or graphics libraries.
 - UI code must never call Platform directly, include `Platform/Factory.h`, or call `Platform::make*()`. Path access goes through `Core::Application::get().paths()`.
-- App is the composition root: `Platform::make*Probe()` / `Platform::makeProcessActions()` are called only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which panels call at construction/`onAttach` time — never in render loops. Flag `Platform/Factory.h` included anywhere else in `App/` or `UI/`.
+- App is the composition root: `Platform::make*Probe()` / `Platform::makeProcessActions()` are called only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which a panel calls at attach time from its sampler's start hook (`SamplerConfig::onThreadStart`), so probes are built and seeded on their sampler thread, never on the UI thread and never in render loops (#2731). The factory stays the only caller: flag a probe built anywhere else, and `Platform/Factory.h` included anywhere else in `App/` or `UI/`.
 - OpenGL calls belong in `Core/` and `UI/` only.
 
 ## 2. C++23 compliance

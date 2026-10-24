@@ -29,6 +29,7 @@
 #include "UI/Theme.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -42,7 +43,7 @@
 namespace App
 {
 
-/// The probes SystemMetricsPanel::onAttach() builds its models from (#1546). A null disk, power or
+/// The probes SystemMetricsPanel's sampler thread builds its models from (#1546, #2731). A null disk, power or
 /// GPU probe is no disk, battery or GPU, as the models already allow.
 struct SystemMetricsProbes
 {
@@ -71,8 +72,15 @@ class SystemMetricsPanel : public Panel
     SystemMetricsPanel(SystemMetricsPanel&&) = delete;
     SystemMetricsPanel& operator=(SystemMetricsPanel&&) = delete;
 
-    /// Initialize the panel (creates SystemModel and StorageModel).
+    /// Initialize the panel: makes the System, Storage and GPU models and starts their sampler, whose
+    /// thread builds the probes and seeds the models (#2731). Returns without a probe call or a read:
+    /// the charts draw their empty state until onUpdate() adopts the seed.
     void onAttach() override;
+
+    /// Waits until the sampler thread has built the probes and seeded every model, then adopts their
+    /// publications as onUpdate() would (#2731). For tests, which used to find the seed in place when
+    /// onAttach() returned; the app never waits. False on timeout, or before onAttach().
+    [[nodiscard]] bool waitForFirstSample(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
     /// Cleanup.
     void onDetach() override;
@@ -144,6 +152,9 @@ class SystemMetricsPanel : public Panel
     void renderOverview();
 
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+    // Set by the sampler's start hook once the probes are built and every model seeded (#2731); shared
+    // with the hook, so neither side depends on the other's lifetime. waitForFirstSample() polls it.
+    std::shared_ptr<std::atomic<bool>> m_Seeded;
     // shared_ptr (not unique_ptr): BackgroundSampler observes these models via weak_ptr rather
     // than raw pointers, so the sampler thread can never outlive-dereference them regardless of
     // destructor ordering.
@@ -291,6 +302,9 @@ class SystemMetricsPanel : public Panel
     /// Holds the model's latest publication and takes a new chart data generation for it (onAttach()
     /// and onUpdate(), #1180).
     void adoptSystemPublication();
+    /// Adopts whichever of the three models' publications is newer than the one held, and the hostname
+    /// with the system one: onUpdate()'s step, also run by waitForFirstSample() (#2731).
+    void adoptPublications();
     /// The held publication's snapshot, or an empty one before the first publication.
     [[nodiscard]] const Domain::SystemSnapshot& systemSnapshot() const;
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

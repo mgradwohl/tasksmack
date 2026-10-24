@@ -1,5 +1,6 @@
 #include "SystemModel.h"
 
+#include "DeferredProbe.h"
 #include "History.h"
 #include "Numeric.h"
 #include "Platform/IPowerProbe.h"
@@ -99,25 +100,50 @@ findInterface(const std::vector<Platform::SystemCounters::InterfaceCounters>& in
 } // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
-    : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
+    : SystemModel(DEFERRED_PROBE)
 {
-    if (m_Probe)
+    const std::scoped_lock writerLock(m_WriterMutex);
+    installProbes(std::move(probe), std::move(powerProbe));
+}
+
+SystemModel::SystemModel(DeferredProbeTag /*tag*/)
+{
+    applyHistoryCapacity();
+}
+
+void SystemModel::setProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+{
+    // Serialised with the sampling path (updateFromCountersLocked() takes the writer mutex), so a
+    // probe is never replaced under a sample in progress.
+    const std::scoped_lock writerLock(m_WriterMutex);
+    installProbes(std::move(probe), std::move(powerProbe));
+}
+
+void SystemModel::installProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+{
+    // The probes' capabilities are read before any lock a reader takes: a probe may answer slowly.
+    Platform::SystemCapabilities capabilities;
+    Platform::PowerCapabilities powerCapabilities;
+    if (probe)
     {
-        m_Capabilities = m_Probe->capabilities();
-        spdlog::debug("SystemModel: initialized with probe (perCore={}, swap={})", m_Capabilities.hasPerCoreCpu, m_Capabilities.hasSwap);
+        capabilities = probe->capabilities();
+        spdlog::debug("SystemModel: initialized with probe (perCore={}, swap={})", capabilities.hasPerCoreCpu, capabilities.hasSwap);
     }
     else
     {
         spdlog::warn("SystemModel: initialized without probe");
     }
-
-    if (m_PowerProbe)
+    if (powerProbe)
     {
-        m_PowerCapabilities = m_PowerProbe->capabilities();
-        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
+        powerCapabilities = powerProbe->capabilities();
+        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", powerCapabilities.hasBattery);
     }
 
-    applyHistoryCapacity();
+    m_Probe = std::move(probe);
+    m_PowerProbe = std::move(powerProbe);
+    m_PowerCapabilities = powerCapabilities;
+    const std::unique_lock lock(m_Mutex);
+    m_Capabilities = capabilities;
 }
 
 void SystemModel::applyHistoryCapacity()
@@ -585,8 +611,11 @@ void SystemModel::publish()
     m_PublicationVersion = version;
 }
 
-const Platform::SystemCapabilities& SystemModel::capabilities() const
+Platform::SystemCapabilities SystemModel::capabilities() const
 {
+    // By value, under the shared lock: setProbes() can write it from the sampler thread while the UI
+    // reads it (#2731).
+    const std::shared_lock lock(m_Mutex);
     return m_Capabilities;
 }
 

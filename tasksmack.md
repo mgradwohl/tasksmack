@@ -103,9 +103,9 @@ Hard rules:
 
 Sampling is deliberately mixed according to workload:
 
-1. `ProcessesPanel::onAttach()` gets its process probe from `App/PanelPlatforms`, creates `ProcessModel`, performs one synchronous seed read, and adds the model to a `BackgroundSampler` (`ts-sampler-proc`).
-2. `SystemMetricsPanel::onAttach()` creates System, Storage, and GPU models, seeds them, and adds them to its own `BackgroundSampler` (`ts-sampler-sys`), so system work can't delay process enumeration and the two fail independently.
-3. Each `BackgroundSampler` uses `std::jthread`, `std::stop_token`, and a condition variable to call `sample()` at the configured interval and wake immediately for refresh, interval, or stop requests.
+1. `ProcessesPanel::onAttach()` creates `ProcessModel` without a probe (`Domain::DEFERRED_PROBE`), adds it to a `BackgroundSampler` (`ts-sampler-proc`) and starts it. The sampler's start hook (`SamplerConfig::onThreadStart`, #2731), on the sampler thread, gets the platform from `App/PanelPlatforms` (probe, actions, icons, UDP collector), hands the probe to the model (`setProbe()`), performs the seed read, and leaves the UI-owned parts (actions, icons, collector) in a handoff the panel adopts on its next frame.
+2. `SystemMetricsPanel::onAttach()` creates System, Storage, and GPU models the same way and starts its own `BackgroundSampler` (`ts-sampler-sys`), whose start hook builds the probes (PDH, DXGI, NVML), sets them and seeds the models; system work can't delay process enumeration and the two fail independently.
+3. Each `BackgroundSampler` uses `std::jthread`, `std::stop_token`, and a condition variable to call `sample()` at the configured interval and wake immediately for refresh, interval, or stop requests. On Windows the two panels' sampler threads enter the multithreaded COM apartment for their life (`SamplerConfig::multiThreadedApartment`, `Platform::MultiThreadedApartment`), so the COM objects the probes create (PDH's providers, DXGI) never marshal through the UI thread's STA. `onAttach()` therefore returns without a probe call or a read. Until the seed is adopted (`onUpdate()`), a publication is the empty generation: the charts draw no data, the Processes table no rows, `hostname()` is "System" (the shell relabels the tab when the hostname arrives) and `processCapabilities()` the defaults (the column defaults and the startup privilege notice wait for the first generation). Tests that need the seed in place call `waitForFirstSample()`.
 4. Domain models compute deltas under a sampling lock, producing snapshots keyed by PID/time and updating histories.
 5. System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations; ProcessModel publishes a monotonic snapshot version.
    - GPU data has one owner, the GPU model on the system sampler (#1417): each refresh reads the system and the per-process GPU counters together and publishes the per-process ones, stamped with the refresh time. `ProcessModel` merges the newest of those publications and never calls the GPU probe, so a slow driver read can't delay the process list. The two samplers keep their own cadences: one publication can be merged into several process generations, its per-process utilization being a rate over one GPU interval; one older than `PROCESS_GPU_DATA_MAX_AGE_MS` (the GPU sampler has stalled) is shown as a failed read; a process first listed after the read shows as not read yet, even if the read has an entry for its PID (that entry belongs to an exited process that held the PID).
@@ -140,7 +140,7 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 | Layer | May call at construction / `onAttach` | May call at runtime |
 |---|---|---|
 | Platform | OS APIs | OS APIs |
-| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
+| Domain | *(none — receives probes via constructor, or via `setProbe()` from the sampler's start hook, #2731)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
 | Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
 | App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
 | UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |
@@ -150,8 +150,8 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 - `Platform::makePathProvider()` is called **only** inside `Core::PathService` (owned by `Application`).
   All path resolution elsewhere goes through `Core::Application::get().paths()`.
 - `Platform::make*Probe()` and `Platform::makeProcessActions()` are called **only** in `App/PanelPlatforms.cpp`
-  (and `App/SyntheticScenario.cpp`), which panels call from their constructors or `onAttach`, never from UI
-  rendering code or Domain.
+  (and `App/SyntheticScenario.cpp`), which panels call at attach time -- from their sampler's start hook, on
+  the sampler thread (#2731) -- never from UI rendering code or Domain.
 - No new `#include "Platform/Factory.h"` should appear in `UI/` or in `App/` outside those two files.
 
 ## UI Layer Model

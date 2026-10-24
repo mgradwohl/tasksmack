@@ -223,6 +223,7 @@ set(TASKSMACK_SOURCES
     src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
+    src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
