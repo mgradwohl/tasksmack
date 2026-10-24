@@ -2337,15 +2337,19 @@ TEST_F(ProcessesPanelRenderTest, ADeepLongNameIsCutShortWithItsWholeNameAsTheToo
 // #2731: onAttach() builds no probe and takes no read on the thread that calls it. The platform factory
 // runs on the sampler thread, once, and the model is seeded there; the attaching thread finds the model
 // in place (the shell wires it) but no rows, no capabilities and no actions until the seed is adopted.
+// The factory waits on a latch until the attach-time state has been checked: a fast seed could otherwise
+// land before onAttach() adopts the publication and make the check race.
 TEST_F(ProcessesPanelRenderTest, OnAttachLeavesThePlatformFactoryToTheSamplerThread)
 {
-    std::atomic<int> factoryCalls{0};
-    std::atomic<std::thread::id> factoryThread{};
-    auto panel = std::make_unique<ProcessesPanel>(
-        [&factoryCalls, &factoryThread]
+    const auto gate = std::make_shared<std::latch>(1);
+    const auto factoryCalls = std::make_shared<std::atomic<int>>(0);
+    const auto factoryThread = std::make_shared<std::atomic<std::thread::id>>();
+    const auto panel = std::make_unique<ProcessesPanel>(
+        [gate, factoryCalls, factoryThread]
         {
-            ++factoryCalls;
-            factoryThread.store(std::this_thread::get_id());
+            ++*factoryCalls;
+            factoryThread->store(std::this_thread::get_id());
+            gate->wait();
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
             Platform::ProcessCapabilities caps;
@@ -2359,10 +2363,12 @@ TEST_F(ProcessesPanelRenderTest, OnAttachLeavesThePlatformFactoryToTheSamplerThr
     EXPECT_NE(panel->processModel(), nullptr) << "the model exists from onAttach(), for the shell to wire";
     EXPECT_FALSE(panel->firstSnapshotAdopted());
     EXPECT_EQ(panel->processCount(), 0U) << "no read has happened on this thread";
+    EXPECT_FALSE(panel->waitForFirstSample(std::chrono::milliseconds(20))) << "a seed arrived while the factory was held";
 
+    gate->count_down();
     ASSERT_TRUE(panel->waitForFirstSample());
-    EXPECT_EQ(factoryCalls.load(), 1);
-    EXPECT_NE(factoryThread.load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
+    EXPECT_EQ(factoryCalls->load(), 1);
+    EXPECT_NE(factoryThread->load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
     EXPECT_TRUE(panel->firstSnapshotAdopted());
     EXPECT_EQ(panel->processCount(), 1U) << "the seed, taken on the sampler thread, was adopted";
     EXPECT_TRUE(panel->processCapabilities().hasThreadCount) << "the mock's capabilities came with the first generation";

@@ -1303,25 +1303,31 @@ TEST_F(SystemMetricsPanelRenderTest, AStalledStorageProbeDoesNotDelayTheSystemSa
 
 // #2731: onAttach() builds no probe and takes no read on the thread that calls it. The probe factory
 // runs on the sampler thread, once, and the models are seeded there; the attaching thread finds the
-// models in place (the shell wires them) but empty until the seed is adopted.
+// models in place (the shell wires them) but empty until the seed is adopted. The factory waits on a
+// latch until the attach-time state has been checked: a fast seed could otherwise land before
+// onAttach() adopts the publications and make the check race.
 TEST_F(SystemMetricsPanelRenderTest, OnAttachLeavesTheProbeFactoryToTheSamplerThread)
 {
-    std::atomic<int> factoryCalls{0};
-    std::atomic<std::thread::id> factoryThread{};
-    auto panel = std::make_unique<SystemMetricsPanel>(
-        [&factoryCalls, &factoryThread]
+    const auto gate = std::make_shared<std::latch>(1);
+    const auto factoryCalls = std::make_shared<std::atomic<int>>(0);
+    const auto factoryThread = std::make_shared<std::atomic<std::thread::id>>();
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        [gate, factoryCalls, factoryThread]
         {
-            ++factoryCalls;
-            factoryThread.store(std::this_thread::get_id());
+            ++*factoryCalls;
+            factoryThread->store(std::this_thread::get_id());
+            gate->wait();
             return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr};
         });
     panel->onAttach();
     EXPECT_NE(panel->gpuModel(), nullptr) << "the models exist from onAttach(), for the shell to wire";
     EXPECT_EQ(panel->hostname(), "System") << "no read has happened on this thread";
+    EXPECT_FALSE(panel->waitForFirstSample(std::chrono::milliseconds(20))) << "a seed arrived while the factory was held";
 
+    gate->count_down();
     ASSERT_TRUE(panel->waitForFirstSample());
-    EXPECT_EQ(factoryCalls.load(), 1);
-    EXPECT_NE(factoryThread.load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
+    EXPECT_EQ(factoryCalls->load(), 1);
+    EXPECT_NE(factoryThread->load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
     EXPECT_EQ(panel->hostname(), "testhost") << "the seed, taken on the sampler thread, was adopted";
     panel->onDetach();
 }
