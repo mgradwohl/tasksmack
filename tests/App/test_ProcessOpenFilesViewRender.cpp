@@ -404,5 +404,38 @@ TEST(ProcessOpenFilesViewTest, ARefusedScanOffersAuthenticateToRead)
     EXPECT_EQ(view.rows().size(), 3U);
 }
 
+// #2567: the request goes through the read the sections share (LazyBackgroundRead::requestAuthorized()),
+// and one update() takes it: readAuthorized() runs exactly once, however often the button was pressed in
+// the frame, and the frames after it start nothing (an on-demand section reads only on its scan button).
+TEST(ProcessOpenFilesViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
+{
+    ProcessOpenFilesView view;
+    TestMocks::MockProcessOpenFilesReader reader;
+    Platform::OpenFilesReadResult refused;
+    refused.status = Platform::OpenFilesReadStatus::PermissionDenied;
+    reader.setResult(refused);
+    reader.setAuthorizedResult(linuxFiles());
+    view.requestScan();
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    view.requestAuthorizedRead(); // pressed twice in a frame: one request
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::OpenFilesReadStatus::Ok);
+    for (int i = 0; i < 3; ++i)
+    {
+        view.markDrawnOpen();
+        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
+    }
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(reader.readCount(), 1); // the refused scan
+    EXPECT_FALSE(view.scanning());
+}
+
 } // namespace
 } // namespace App

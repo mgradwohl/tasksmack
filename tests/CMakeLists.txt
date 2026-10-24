@@ -85,6 +85,10 @@ if(WIN32)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
+        # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
+        # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
+        add_test(NAME SetupDevScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -96,13 +100,14 @@ if(WIN32)
         # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
         # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
-        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript PROPERTIES TIMEOUT 120)
+            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
+            PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript and CheckPrereqsScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript and SetupDevScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
     # executables are refused, by name, before anything could be packaged.
@@ -118,6 +123,18 @@ if(WIN32)
             TIMEOUT 120)
     endif()
 endif()
+
+# THIRD_PARTY_NOTICES.txt's generator (#2753): a notice for each dependency in Dependencies.cmake, and a
+# FetchContent_Declare() in a shape it can't read fails the configure rather than being left out.
+add_test(NAME ThirdPartyNoticesScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-real
+            -DTS_CASE=real -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-unparsed
+            -DTS_CASE=unparsed -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+# CMake wraps the message, so any run of spaces and line breaks may separate the words.
+set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
+    PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
 
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
@@ -292,6 +309,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_SensorModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
@@ -351,7 +369,6 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
-    App/test_AdaptiveIntervalUtils.cpp
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -407,6 +424,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
+    Platform/test_AsciiCase.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
@@ -511,6 +529,7 @@ set(COMMON_TEST_SOURCES
 # every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
 # a probe, Windows types or fakes of Windows APIs stay in WINDOWS_PLATFORM_TEST_SOURCES.
 set(WINDOWS_MATH_TEST_SOURCES
+    Platform/WindowsMath/test_AdapterPerfDataMath.cpp  # D3DKMT adapter perf data as GPU sensors (#2586)
     Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
     Platform/WindowsMath/test_WindowsEtwNetMath.cpp
@@ -552,6 +571,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
+    Platform/test_WindowsProcessEnvironmentReader.cpp  # the environment block out of a fake process's PEB, and this process's own (#2569)
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
@@ -567,6 +587,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
+    Platform/test_WindowsD3DKMTAdapterPerfData.cpp  # the kernel adapter's perf data through fake D3DKMT calls (#2586)
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbeDXCore.cpp
     Platform/test_WindowsGPURescan.cpp
@@ -815,6 +836,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp

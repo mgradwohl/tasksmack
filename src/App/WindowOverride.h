@@ -21,10 +21,10 @@
 #include "Core/EnvUtils.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <format>
@@ -79,12 +79,6 @@ namespace Detail
     return value;
 }
 
-[[nodiscard]] inline bool equalsIgnoreCase(const std::string_view a, const std::string_view lowercase) noexcept
-{
-    return a.size() == lowercase.size() &&
-           std::ranges::equal(a, lowercase, [](const char x, const char y) { return std::tolower(static_cast<unsigned char>(x)) == y; });
-}
-
 } // namespace Detail
 
 /// Parses a TASKSMACK_WINDOW value: "<width>x<height>" or "<width>x<height>,maximized" ('x' or
@@ -117,7 +111,7 @@ namespace Detail
     if (comma != std::string_view::npos)
     {
         const std::string_view flag = Platform::trimAscii(text.substr(comma + 1));
-        if (!Detail::equalsIgnoreCase(flag, "maximized") && !Detail::equalsIgnoreCase(flag, "maximised"))
+        if (!Platform::equalsIgnoreCase(flag, "maximized") && !Platform::equalsIgnoreCase(flag, "maximised"))
         {
             return invalid();
         }

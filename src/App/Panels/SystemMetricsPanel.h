@@ -77,11 +77,17 @@ class SystemMetricsPanel : public Panel
     /// Cleanup.
     void onDetach() override;
 
-    /// Update logic (refresh cadence is driven by main loop).
+    /// Adopts the samplers' newest publications and runs the per-frame bookkeeping. It never sets the
+    /// sampling cadence: that is the Settings value alone (#2731).
     void onUpdate(float deltaTime) override;
 
-    /// Set the refresh interval (applied by onUpdate cadence checks).
+    /// Set the refresh interval the sampler runs at. It is the Settings value, whatever the UI state
+    /// (#2731): no tab change, resize, move or minimize rescales or pauses it.
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
+
+    /// The interval the sampler runs at: the refresh setting from Settings, in every UI state (#2731);
+    /// before onAttach(), the setting itself.
+    [[nodiscard]] std::chrono::milliseconds samplingInterval() const;
 
     /// Request an immediate refresh.
     void requestRefresh();

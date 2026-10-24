@@ -2,19 +2,26 @@
 /// @brief Platform::Windows::readBatteryInfo() (#1523) and WindowsPowerProbe's battery details,
 /// against fake battery device calls: a normal battery, two batteries summed (#2151),
 /// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once;
-/// and the probe's capabilities following a battery inserted, removed or answering late (#2413).
+/// the probe's capabilities following a battery inserted, removed or answering late (#2413); and the
+/// re-reads running on the ts-battery-read worker, so a battery device that stalls never delays a
+/// sample (#2731).
 
 #include "Platform/PowerTypes.h"
+#include "Platform/ThreadName.h"
 #include "Platform/Windows/WindowsBatteryInfo.h"
 #include "Platform/Windows/WindowsPowerProbe.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace Platform::Windows
@@ -65,9 +72,141 @@ HANDLE fakeDevice()
     return static_cast<HANDLE>(&token);
 }
 
+/// The calling thread's description (GetThreadDescription), or "<error>" if it can't be read.
+[[nodiscard]] std::wstring currentThreadDescription()
+{
+    PWSTR description = nullptr;
+    const HRESULT result = GetThreadDescription(GetCurrentThread(), &description);
+    std::wstring text = (SUCCEEDED(result) && description != nullptr) ? std::wstring(description) : std::wstring(L"<error>");
+    LocalFree(description); // The OS allocated it
+    return text;
+}
+
+/// A gate the fake enumeration waits at while a test holds it shut (#2731): the probe's worker is then
+/// stuck "in SetupAPI", and the test can see that read() doesn't wait for it. Apart from FakeBattery,
+/// whose reset by assignment a mutex can't take part in.
+class EnumerationGate
+{
+  public:
+    void reset()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Shut = false;
+        m_Waiting = 0;
+        m_Passed = 0;
+        m_ThreadDescription.clear();
+    }
+
+    void shut()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Shut = true;
+    }
+
+    void open()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Shut = false;
+        }
+        m_Changed.notify_all();
+    }
+
+    /// An enumeration arrives: it waits here while the gate is shut.
+    void pass()
+    {
+        std::unique_lock lock(m_Mutex);
+        m_ThreadDescription = currentThreadDescription();
+        ++m_Waiting;
+        m_Changed.notify_all();
+        m_Changed.wait(lock, [this] { return !m_Shut; });
+        --m_Waiting;
+        ++m_Passed;
+        m_Changed.notify_all();
+    }
+
+    /// Whether an enumeration is waiting at the shut gate within @p timeout.
+    [[nodiscard]] bool waitForArrival(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, timeout, [this] { return m_Waiting > 0; });
+    }
+
+    /// Whether @p count enumerations have passed the gate within @p timeout.
+    [[nodiscard]] bool waitForPassed(int count, std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, timeout, [this, count] { return m_Passed >= count; });
+    }
+
+    [[nodiscard]] int waiting()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Waiting;
+    }
+
+    [[nodiscard]] int passed()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Passed;
+    }
+
+    /// The thread that last enumerated, by its description.
+    [[nodiscard]] std::wstring threadDescription()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_ThreadDescription;
+    }
+
+  private:
+    std::mutex m_Mutex;
+    std::condition_variable m_Changed;
+    bool m_Shut = false;
+    int m_Waiting = 0;
+    int m_Passed = 0;
+    std::wstring m_ThreadDescription;
+};
+
+EnumerationGate& gate()
+{
+    static EnumerationGate instance;
+    return instance;
+}
+
 std::vector<std::wstring> fakeEnumerate()
 {
+    gate().pass();
     return fake().paths;
+}
+
+/// Opens the gate when the test leaves its scope, so a failed assertion leaves no worker stuck there
+/// for the probe's destructor to join. Declared after the probe, so it runs first.
+class GateOpener
+{
+  public:
+    GateOpener() = default;
+    ~GateOpener()
+    {
+        gate().open();
+    }
+    GateOpener(const GateOpener&) = delete;
+    GateOpener& operator=(const GateOpener&) = delete;
+    GateOpener(GateOpener&&) = delete;
+    GateOpener& operator=(GateOpener&&) = delete;
+};
+
+/// read() until @p done holds for its counters, or five seconds pass: the facts a re-read gives come
+/// from the worker, so they show on a later pass (#2731).
+template<typename Done> [[nodiscard]] PowerCounters readUntil(WindowsPowerProbe& probe, Done done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    PowerCounters counters = probe.read();
+    while (!done(counters) && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        counters = probe.read();
+    }
+    return counters;
 }
 
 HANDLE WINAPI fakeCreateFile(
@@ -158,6 +297,7 @@ class WindowsBatteryInfoTest : public ::testing::Test
     void SetUp() override
     {
         fake() = FakeBattery{};
+        gate().reset();
     }
 
     static BatteryDeviceFunctions fakes()
@@ -315,7 +455,7 @@ TEST_F(WindowsBatteryInfoTest, ProbeRereadsTheStaticFactsWhenThePowerSourceChang
     fake().acLineStatus = 1; // Plugged in: the full-charge capacity is recalibrated across a charge
     fake().batteryFlag = BATTERY_FLAG_CHARGING;
     fake().fullCharged = 50'000;
-    PowerCounters counters = probe.read();
+    PowerCounters counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeFullWh > 49.0; });
     EXPECT_EQ(counters.state, BatteryState::Charging);
     EXPECT_GT(fake().informationQueries, onBattery);
     EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
@@ -324,6 +464,77 @@ TEST_F(WindowsBatteryInfoTest, ProbeRereadsTheStaticFactsWhenThePowerSourceChang
     counters = probe.read();
     EXPECT_EQ(fake().informationQueries, onAc) << "the same source again: no re-read";
     EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeRereadsTheStaticFactsOnAWorkerSoAStalledDeviceNeverDelaysASample)
+{
+    // #2731: the re-read -- SetupAPI's enumeration and the battery IOCTLs, which a slow ACPI call can
+    // stall -- runs on ts-battery-read. The sampling pass only calls GetSystemPowerStatus.
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const GateOpener opener;
+    ASSERT_EQ(gate().passed(), 1) << "the seed, read at construction";
+
+    // The power source changes: a re-read is due, and the battery device stalls
+    gate().shut();
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    fake().fullCharged = 50'000;
+    PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Charging) << "the live state, from GetSystemPowerStatus";
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 47.34) << "the facts known so far";
+    ASSERT_TRUE(gate().waitForArrival(std::chrono::seconds{5})) << "the worker reached the stalled device";
+    EXPECT_EQ(gate().passed(), 1) << "read() had returned without waiting for it";
+    EXPECT_EQ(gate().threadDescription(), L"ts-battery-read");
+    EXPECT_EQ(BATTERY_READ_THREAD_NAME, "ts-battery-read");
+
+    // Every pass meanwhile reports the live state, and starts no second read
+    fake().batteryLifePercent = 81;
+    counters = probe.read();
+    EXPECT_EQ(counters.chargePercent, 81);
+    fake().batteryLifePercent = 82;
+    counters = probe.read();
+    EXPECT_EQ(counters.chargePercent, 82);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 47.34);
+    EXPECT_EQ(gate().passed(), 1);
+    EXPECT_EQ(gate().waiting(), 1);
+
+    // The device answers: a later pass reports the new facts
+    gate().open();
+    counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeFullWh > 49.0; });
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
+    EXPECT_EQ(counters.chargePercent, 82);
+    EXPECT_EQ(gate().passed(), 2);
+    EXPECT_EQ(gate().waiting(), 0);
+}
+
+TEST_F(WindowsBatteryInfoTest, AChangeDuringARereadHasTheDeviceReadOnceMore)
+{
+    // #2731: the re-read in flight may predate the change, so another follows it; nothing is lost and
+    // nothing piles up
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const GateOpener opener;
+
+    gate().shut();
+    fake().acLineStatus = 1; // On AC: a re-read starts and stalls
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    (void) probe.read();
+    ASSERT_TRUE(gate().waitForArrival(std::chrono::seconds{5}));
+
+    fake().acLineStatus = 0; // Back on battery while it runs: due again
+    fake().batteryFlag = BATTERY_FLAG_HIGH;
+    fake().fullCharged = 46'000;
+    (void) probe.read();
+    (void) probe.read();
+    EXPECT_EQ(gate().waiting(), 1) << "one worker at a time";
+
+    gate().open();
+    const PowerCounters counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeFullWh < 47.0; });
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 46.0);
+    EXPECT_TRUE(gate().waitForPassed(3, std::chrono::seconds{5})) << "the seed, the stalled read and the one after it";
+
+    (void) probe.read();
+    (void) probe.read();
+    EXPECT_EQ(gate().passed(), 3) << "the same source again: no further read";
 }
 
 TEST_F(WindowsBatteryInfoTest, ProbeWithNoBatteryReadsNoDeviceFacts)
@@ -353,9 +564,9 @@ TEST_F(WindowsBatteryInfoTest, ProbeOffersABatteryInsertedAfterStart)
     fake().batteryFlag = BATTERY_FLAG_CHARGING;
     fake().batteryLifePercent = 40;
     fake().paths = FakeBattery{}.paths;
-    const PowerCounters counters = probe.read();
+    const PowerCounters counters = readUntil(probe, [](const PowerCounters& c) { return c.chargeDesignWh > 0.0; });
     EXPECT_EQ(counters.state, BatteryState::Charging);
-    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6) << "the new battery is read at once, not in five minutes";
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6) << "the new battery is read at once (on the worker), not in five minutes";
     const PowerCapabilities caps = probe.capabilities();
     EXPECT_TRUE(caps.hasBattery);
     EXPECT_TRUE(caps.hasChargePercent);
@@ -385,7 +596,7 @@ TEST_F(WindowsBatteryInfoTest, ProbeOffersDetailsTheBatteryFirstAnsweredLate)
     fake().failInformation = false;
     fake().acLineStatus = 1;
     fake().batteryFlag = BATTERY_FLAG_CHARGING;
-    (void) probe.read();
+    (void) readUntil(probe, [](const PowerCounters& c) { return c.chargeDesignWh > 0.0; });
     const PowerCapabilities caps = probe.capabilities();
     EXPECT_TRUE(caps.hasDesignCapacity) << "not 'Not reported' for the whole session";
     EXPECT_TRUE(caps.hasHealthPercent);

@@ -1,6 +1,6 @@
 #include "ProcessConnectionsView.h"
 
-#include "AuthorizeWording.h"
+#include "AuthenticateToReadButton.h"
 #include "Domain/ProcessConnections.h"
 #include "Platform/IProcessConnections.h"
 #include "UI/CellText.h"
@@ -58,15 +58,8 @@ void ProcessConnectionsView::render(bool hasConnections)
         ImGui::PushStyleColor(ImGuiCol_Text, color);
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
-        // Another user's process: an administrator can read it (#2309). The lock and the words.
-        if (offersAuthenticateToRead())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
-            {
-                requestAuthorizedRead();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
-        }
+        // Another user's process: an administrator can read it (#2309).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Rows.empty())

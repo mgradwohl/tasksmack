@@ -28,6 +28,8 @@ repos:
       - id: check-added-large-files
         name: Check for large files
         args: [--maxkb=500]
+        # The documentation animations (#2827): the maintainer allowed animated WebPs up to 2 MB each.
+        exclude: '^docs/images/screenshots/[^/]+/[^/]+-live\.webp$'
       - id: check-merge-conflict
         name: Check for merge conflicts
       # Text is UTF-8 without a BOM (#1648; CONTRIBUTING.md "Text encoding and locale").

@@ -427,5 +427,31 @@ TEST(ProcessConnectionsViewTest, ARefusedReadOffersAuthenticateToRead)
     EXPECT_FALSE(view.offersAuthenticateToRead());
 }
 
+// #2567: the request goes through the read the sections share (LazyBackgroundRead::requestAuthorized()),
+// and one update() takes it: readAuthorized() runs exactly once, however often the button was pressed in
+// the frame, and the frames after it start nothing until the refresh is due.
+TEST(ProcessConnectionsViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
+{
+    ProcessConnectionsView view;
+    TestMocks::MockProcessConnectionsReader reader;
+    reader.setResult({.status = Platform::ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
+    reader.setAuthorizedResult(okResult({}));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    view.requestAuthorizedRead(); // pressed twice in a frame: one request
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::ConnectionsReadStatus::Ok);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frame(view, reader, 0.016F, true)) << "frame " << i; // taken: nothing more starts
+    }
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(reader.readCount(), 1); // the refused read; the authorized one restarted the refresh clock
+}
+
 } // namespace
 } // namespace App

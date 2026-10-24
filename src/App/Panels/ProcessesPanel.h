@@ -134,11 +134,7 @@ class ProcessesPanel : public Panel
 
     /// Test seam (#1546): as above, and the events the panel raises (a selection, Details) go to
     /// @p raiseEvent instead of Core::Application, so selection can be driven without an Application.
-    /// With @p interactionRedrawActive, onUpdate() asks it, not Core::Application, whether the window is
-    /// being resized or moved, so onUpdate() runs without an Application too.
-    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform,
-                   std::function<void(Core::Event&)> raiseEvent,
-                   std::function<bool()> interactionRedrawActive = {});
+    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent);
     ~ProcessesPanel() override;
 
     ProcessesPanel(const ProcessesPanel&) = delete;
@@ -152,7 +148,8 @@ class ProcessesPanel : public Panel
     /// Cleanup (stops sampler).
     void onDetach() override;
 
-    /// Update logic (no longer needed for refresh, kept for interface compatibility).
+    /// Adopts the sampler's newest publication and runs the per-frame bookkeeping. It never sets the
+    /// sampling cadence: that is the Settings value alone (#2731).
     void onUpdate(float deltaTime) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
@@ -175,12 +172,9 @@ class ProcessesPanel : public Panel
         return m_Selection.size();
     }
 
-    /// The interval onUpdate() last gave the sampler: the refresh setting, relaxed while no tab on show
-    /// needs process data and while the window is being resized or moved (AdaptiveIntervalUtils).
-    [[nodiscard]] std::chrono::milliseconds appliedSamplingInterval() const noexcept
-    {
-        return m_AppliedSamplerInterval;
-    }
+    /// The interval the sampler runs at: the refresh setting from Settings, in every UI state (#2731);
+    /// before onAttach(), the setting itself.
+    [[nodiscard]] std::chrono::milliseconds samplingInterval() const;
 
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
@@ -237,7 +231,8 @@ class ProcessesPanel : public Panel
         return m_ColumnSettings;
     }
 
-    /// Set the refresh interval (applied by onUpdate cadence checks).
+    /// Set the refresh interval the sampler runs at. It is the Settings value, whatever the UI state
+    /// (#2731): no tab change, resize, move or minimize rescales or pauses it.
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
@@ -347,7 +342,6 @@ class ProcessesPanel : public Panel
   private:
     std::function<ProcessesPanelPlatform()> m_MakePlatform; ///< Set by the test seam only
     std::function<void(Core::Event&)> m_RaiseEvent;         ///< Set by the test seam only; else the Application
-    std::function<bool()> m_InteractionRedrawActive;        ///< Set by the test seam only; else the Application
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.
@@ -383,13 +377,8 @@ class ProcessesPanel : public Panel
     std::int32_t m_OwnPid = 0;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
-    // Whether the active main tab shows any process data, which sets the sampling rate (#1097). True
-    // at start: the default System tab shows process-derived charts.
-    bool m_ProcessDataShown = true;
-    float m_InteractionHoldSeconds = 0.0F;
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;

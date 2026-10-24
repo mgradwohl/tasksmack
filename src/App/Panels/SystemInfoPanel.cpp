@@ -12,9 +12,11 @@
 #include "Core/SaveFileDialog.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
-#include "Domain/SamplingConfig.h"
+#include "Domain/BackgroundSampler.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ThreadName.h"
 #include "UI/Format.h"
 
 #include <spdlog/spdlog.h>
@@ -41,9 +43,6 @@ namespace App
 namespace
 {
 constexpr const char* TAB_EVENT_NAME = "SystemInfo";
-// How often the sensors are read again while the tab is drawn, so their ranges and histories (#1522)
-// follow them.
-constexpr std::chrono::milliseconds SENSOR_REFRESH{Domain::Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS};
 // How many numbered names ("report (2).txt", ...) are tried before giving up on a free one (#2144).
 constexpr int MAX_NUMBERED_REPORT_NAMES = 999;
 
@@ -92,6 +91,38 @@ void SystemInfoPanel::onAttach()
     // An injected factory (tests, #1395) replaces the platform's.
     m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoPanelProbe(Synthetic::activeScenario()),
                                                         m_CrashHistory);
+
+    if (!m_Model->capabilities().hasOs)
+    {
+        return; // the page shows only that it's unsupported: no sensors to draw
+    }
+    // The sensors' own probe, built by the sampler's first pass on its own thread (#2731, #2737).
+    std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> makeSensorProbe = m_MakeProbe;
+    if (!makeSensorProbe)
+    {
+        makeSensorProbe = [scenario = Synthetic::activeScenario()]
+        {
+            return App::makeSensorProbe(scenario);
+        };
+    }
+    m_Sensors = std::make_shared<Domain::SensorModel>(
+        [makeSensorProbe = std::move(makeSensorProbe)]() -> Domain::SensorModel::Reader
+        {
+            std::shared_ptr<Platform::ISystemInfoProbe> probe = makeSensorProbe();
+            if (!probe)
+            {
+                return {};
+            }
+            return [probe = std::move(probe)]
+            {
+                return probe->readSensors();
+            };
+        },
+        m_RefreshInterval);
+    m_SensorSampler = std::make_unique<Domain::BackgroundSampler>(Domain::SamplerConfig{
+        .interval = m_RefreshInterval, .firstSampleAfterInterval = false, .threadName = std::string(Platform::SENSOR_SAMPLER_THREAD_NAME)});
+    m_SensorSampler->addSamplable(m_Sensors, "sensors");
+    m_SensorSampler->start();
 }
 
 void SystemInfoPanel::onDetach()
@@ -100,6 +131,14 @@ void SystemInfoPanel::onDetach()
     finishRead(true);        // the one place a read is waited for
     m_Snapshot.reset();
     m_Model.reset();
+    if (m_SensorSampler)
+    {
+        m_SensorSampler->stop();
+        m_SensorSampler.reset();
+    }
+    m_SensorPublication.reset();
+    m_Sensors.reset();
+    m_ViewState = {}; // a later attach's models count their versions from 1 again
 }
 
 void SystemInfoPanel::onEvent(Core::Event& event)
@@ -115,23 +154,35 @@ void SystemInfoPanel::onEvent(Core::Event& event)
             }
             return false;
         });
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            // The sensors follow the Settings interval, as every metric does (#2737).
+            m_RefreshInterval = std::chrono::milliseconds(e.getIntervalMs());
+            if (m_SensorSampler)
+            {
+                m_SensorSampler->setInterval(m_RefreshInterval);
+            }
+            if (m_Sensors)
+            {
+                m_Sensors->setInterval(m_RefreshInterval);
+            }
+            return false;
+        });
 }
 
-void SystemInfoPanel::startRead(bool sensorsOnly)
+void SystemInfoPanel::startRead()
 {
     if (m_Pending.busy() || !m_Model || !m_Model->capabilities().hasOs)
     {
         return;
     }
     // A failed read comes back as its message, copied on the worker (SystemInfoModel::tryRead()).
-    if (const auto failed = m_Pending.start([model = m_Model, sensorsOnly](const std::stop_token& stop)
-                                            { return sensorsOnly ? model->tryReadSensors() : model->tryRead(stop); }))
+    if (const auto failed = m_Pending.start([model = m_Model](const std::stop_token& stop) { return model->tryRead(stop); }))
     {
         spdlog::warn("System Information: couldn't start a read: {}", failed->value_or(std::string()));
         return;
     }
-    m_PendingSensorsOnly = sensorsOnly;
-    m_LastReadStart = std::chrono::steady_clock::now();
 }
 
 void SystemInfoPanel::finishRead(bool wait)
@@ -255,17 +306,15 @@ void SystemInfoPanel::renderContent()
             }
         }
     }
-    // While the tab is drawn, the sensors are read again every SENSOR_REFRESH so their ranges follow them
-    // (#1522); not where there are none to read, and never over another read.
-    if (!m_Pending.busy() && m_Snapshot->version != 0 && !m_Snapshot->sensors.devices.empty() &&
-        std::chrono::steady_clock::now() - m_LastReadStart >= SENSOR_REFRESH)
+    // The sensor sampler's newest read, adopted by pointer when there's a new one (#2737).
+    if (m_Sensors && (!m_SensorPublication || m_SensorPublication->version != m_Sensors->version()))
     {
-        startRead(/*sensorsOnly=*/true);
+        m_SensorPublication = m_Sensors->publication();
     }
-    // A sensors-only read is quiet: the page doesn't show "reading" for it.
-    const bool reading = m_Pending.busy() && !m_PendingSensorsOnly;
+    const bool reading = m_Pending.busy();
     finishSaveReport(); // before drawing, so its note shows this frame
-    const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState);
+    const SystemInfoViewResult result =
+        renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState, m_SensorPublication.get());
     if (result.refreshRequested)
     {
         startRead();
@@ -277,7 +326,7 @@ void SystemInfoPanel::renderContent()
     if (result.wifiDetailsRequested)
     {
         // Every read from now on asks for the Wi-Fi details, which can raise a Windows location prompt
-        // (#1782); this one starts as soon as no other read is in flight (a quiet sensors read may be).
+        // (#1782); this one starts as soon as no other read is in flight.
         m_Model->includeWifiDetails();
         m_OptInReadDue = true;
     }

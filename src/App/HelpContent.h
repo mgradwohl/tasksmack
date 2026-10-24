@@ -6,6 +6,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/ProcessColumnConfig.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
@@ -45,23 +46,6 @@ inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{{
 /// Which SHORTCUT_HELP entries a filter keeps, by index.
 using ShortcutMask = std::array<bool, KeyboardShortcuts::SHORTCUT_HELP.size()>;
 
-namespace Detail
-{
-
-[[nodiscard]] constexpr char lowerAscii(char c) noexcept
-{
-    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
-/// Whether @p text contains @p needle, ignoring ASCII case. An empty needle is in everything.
-[[nodiscard]] constexpr bool containsIgnoreCase(std::string_view text, std::string_view needle) noexcept
-{
-    // std::ranges::search, not substr(): nothing here can throw.
-    return needle.empty() || !std::ranges::search(text, needle, [](char a, char b) { return lowerAscii(a) == lowerAscii(b); }).empty();
-}
-
-} // namespace Detail
-
 /// The shortcuts @p filter keeps: those whose keys, description or area name contain it, ignoring
 /// case and surrounding blanks. A blank filter keeps every one. Allocation-free, so the window can
 /// recompute it on each edit of the box.
@@ -73,9 +57,9 @@ namespace Detail
                            mask.begin(),
                            [needle](const KeyboardShortcuts::ShortcutHelpEntry& entry)
                            {
-                               return Detail::containsIgnoreCase(entry.keys, needle) ||
-                                      Detail::containsIgnoreCase(entry.description, needle) ||
-                                      Detail::containsIgnoreCase(KeyboardShortcuts::areaLabel(entry.area), needle);
+                               return Platform::containsIgnoreCase(entry.keys, needle) ||
+                                      Platform::containsIgnoreCase(entry.description, needle) ||
+                                      Platform::containsIgnoreCase(KeyboardShortcuts::areaLabel(entry.area), needle);
                            });
     return mask;
 }

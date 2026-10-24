@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
-#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/BatteryDetailsText.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
@@ -286,6 +285,11 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval,
     }
 }
 
+std::chrono::milliseconds SystemMetricsPanel::samplingInterval() const
+{
+    return m_Sampler ? m_Sampler->interval() : m_RefreshInterval;
+}
+
 void SystemMetricsPanel::requestRefresh()
 {
     if (m_Sampler)
@@ -350,13 +354,9 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         return;
     }
 
-    // Do not throttle the background sampler just because the user is resizing the UI.
-    const auto effectiveInterval = AdaptiveIntervalUtils::chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
-    if (m_Sampler && m_Sampler->interval() != effectiveInterval)
-    {
-        m_Sampler->setInterval(effectiveInterval);
-    }
-
+    // The sampler's interval is not touched here: it is the refresh setting, set by setSamplingInterval()
+    // alone, whether or not this tab is the one shown and whatever the window is doing (#2731). Sampling
+    // and drawing are separate.
     if (m_ForceRefresh)
     {
         if (m_Sampler)

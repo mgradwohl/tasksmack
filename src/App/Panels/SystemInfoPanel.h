@@ -6,7 +6,10 @@
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Core/SaveFileDialog.h"
+#include "Domain/BackgroundSampler.h"
 #include "Domain/CrashHistory.h"
+#include "Domain/SamplingConfig.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ThreadName.h"
@@ -34,7 +37,9 @@ class SystemInfoPanel : public Panel
     /// Test seam (#1395): onAttach() takes its probe from @p makeProbe, and each new read's graphics
     /// facts come from @p queryHost, instead of the platform's probe and Core's window (tests: a fake
     /// probe and no window). The App layer stays the only place the platform's probe is made, still at
-    /// onAttach().
+    /// onAttach(). @p makeProbe is called twice per attach, for the page's probe on the UI thread and for
+    /// the sensor sampler's (#2737) on that thread, so it must make a new probe each time and be safe to
+    /// call from either.
     SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> makeProbe,
                     std::function<Core::GraphicsHostInfo()> queryHost);
     ~SystemInfoPanel() override;
@@ -67,9 +72,8 @@ class SystemInfoPanel : public Panel
     void renderContent() override;
 
   private:
-    /// Starts a read on a worker thread, unless one is already in flight: every section, or with
-    /// @p sensorsOnly just the sensors (their ranges, #1522), quietly, without the page's "reading" state.
-    void startRead(bool sensorsOnly = false);
+    /// Starts a read of every section on a worker thread, unless one is already in flight.
+    void startRead();
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
     /// Save report... (#1866): asks where to save the page as it shows now.
@@ -97,12 +101,15 @@ class SystemInfoPanel : public Panel
 
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
     BackgroundTask<std::optional<std::string>> m_Pending{Platform::SYSTEM_INFO_READ_THREAD_NAME, &failedRead, "unknown error"};
-    bool m_PendingSensorsOnly = false; // the read in flight is a sensors-only one
     // "Show Wi-Fi details" (#1782) or "Show public IP" (#1518) was clicked and its read hasn't started yet
     // (another read was in flight).
     bool m_OptInReadDue = false;
-    // When the last read started: the sensors are read again SENSOR_REFRESH after it, while the tab shows.
-    std::chrono::steady_clock::time_point m_LastReadStart;
+    // The sensors are a metric (#2737): read by a sampler of their own from attach to detach, at the
+    // Settings refresh interval, whether or not the tab shows; the page draws their newest read.
+    std::shared_ptr<Domain::SensorModel> m_Sensors;
+    std::unique_ptr<Domain::BackgroundSampler> m_SensorSampler;
+    std::shared_ptr<const Domain::SensorPublication> m_SensorPublication;
+    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
     SaveFileDialog m_SaveFileDialog; ///< Set by the test seam only

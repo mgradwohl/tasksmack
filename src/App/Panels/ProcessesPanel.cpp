@@ -3,7 +3,6 @@
 #include "App/KeyboardInput.h"
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
-#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
@@ -99,8 +98,6 @@ namespace
 // out of its cell, which would make a deep parent impossible to toggle (#906). The indent gives
 // way first, because depth is also conveyed by the expander column alignment and the PPID column,
 // whereas a truncated name has no other source (#906, #913).
-
-constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
 // The units the mixed-unit columns can show, exactly as their cells print them. Each column's unit
 // slot is as wide as the widest of its units, measured in the current font (#1201).
@@ -922,13 +919,8 @@ ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatf
     : Panel("Processes"), m_MakePlatform(std::move(makePlatform))
 {}
 
-ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform,
-                               std::function<void(Core::Event&)> raiseEvent,
-                               std::function<bool()> interactionRedrawActive)
-    : Panel("Processes"),
-      m_MakePlatform(std::move(makePlatform)),
-      m_RaiseEvent(std::move(raiseEvent)),
-      m_InteractionRedrawActive(std::move(interactionRedrawActive))
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent)
+    : Panel("Processes"), m_MakePlatform(std::move(makePlatform)), m_RaiseEvent(std::move(raiseEvent))
 {}
 
 void ProcessesPanel::raiseEvent(Core::Event& event)
@@ -952,7 +944,6 @@ ProcessesPanel::~ProcessesPanel()
         m_Sampler->stop();
         m_Sampler.reset();
     }
-    this->m_InteractionHoldSeconds = 0.0F;
     m_ProcessModel.reset();
 }
 
@@ -965,8 +956,6 @@ void ProcessesPanel::onAttach()
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
-    m_AppliedSamplerInterval = m_RefreshInterval;
-    this->m_InteractionHoldSeconds = 0.0F;
     m_ForceRefresh = false;
 
     // Create probe and transfer it to the ProcessModel. The model itself is then
@@ -1016,9 +1005,8 @@ void ProcessesPanel::onAttach()
 
     // Wire sampler: polls the ProcessModel on each interval tick.
     // Seeded synchronously above, so the first background sample waits a full interval (#1102).
-    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval,
-                                           .firstSampleAfterInterval = true,
-                                           .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
+    Domain::SamplerConfig const samplerCfg{
+        .interval = m_RefreshInterval, .firstSampleAfterInterval = true, .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel, "processes");
     m_Sampler->start();
@@ -1038,7 +1026,7 @@ void ProcessesPanel::onAttach()
     m_RequestedColumns = m_ColumnSettings;
     m_TableShowsColumnSettings = false;
 
-    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
+    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_RefreshInterval.count());
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
@@ -1048,12 +1036,16 @@ void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, boo
         return;
     }
     m_RefreshInterval = interval;
-    m_AppliedSamplerInterval = interval;
     if (m_Sampler)
     {
-        m_Sampler->setInterval(m_AppliedSamplerInterval);
+        m_Sampler->setInterval(interval);
     }
     m_ForceRefresh = m_ForceRefresh || forceSample;
+}
+
+std::chrono::milliseconds ProcessesPanel::samplingInterval() const
+{
+    return m_Sampler ? m_Sampler->interval() : m_RefreshInterval;
 }
 
 void ProcessesPanel::requestRefresh()
@@ -1077,7 +1069,6 @@ void ProcessesPanel::onDetach()
         m_Sampler->stop();
         m_Sampler.reset();
     }
-    this->m_InteractionHoldSeconds = 0.0F;
     // A dump still being written is cancelled and waited for, while its actions are still here (#807).
     m_DumpView.shutdown();
     // So is a batch still running (#2142): stopped before its next process.
@@ -1114,18 +1105,11 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            const bool wasShown = m_ProcessDataShown;
+            // Only the drawing follows the tab: the sampler runs at the refresh setting whichever tab
+            // is shown (#2731), so there is no relaxed cadence to catch up from on coming back.
             m_IsActiveTab = (e.tabName() == "Processes");
-            m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
             // A freeze belongs to the pane being looked at; leaving it must not leave it frozen (#928).
             m_DisplayFreeze.reset();
-            if (!wasShown && m_ProcessDataShown)
-            {
-                // Catch up straight away when coming back from a tab that showed no process data,
-                // where the sampler was relaxed. Between tabs that all show it the sampler ran at
-                // the full rate, and an extra sample would land just after the last one (#1102).
-                m_ForceRefresh = true;
-            }
             return false;
         });
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
@@ -1177,28 +1161,9 @@ void ProcessesPanel::onUpdate(float deltaTime)
         return;
     }
 
-    const bool interactionRedrawActive =
-        m_InteractionRedrawActive ? m_InteractionRedrawActive() : Core::Application::get().isInteractionRedrawActive();
-    if (interactionRedrawActive)
-    {
-        this->m_InteractionHoldSeconds = INTERACTION_INTERVAL_HOLD_SECONDS;
-    }
-    else if (this->m_InteractionHoldSeconds > 0.0F)
-    {
-        const float clampedDeltaTime = std::max(0.0F, deltaTime);
-        this->m_InteractionHoldSeconds = std::max(0.0F, this->m_InteractionHoldSeconds - clampedDeltaTime);
-    }
-
-    // Only the sampling interval is throttled during interaction: the GPU merge is a read of the GPU
-    // sampler's publication now, cheap enough not to need its own throttle (#1417).
-    const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
-    const auto desiredInterval =
-        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_ProcessDataShown, throttleForInteraction);
-    if (desiredInterval != m_AppliedSamplerInterval)
-    {
-        m_AppliedSamplerInterval = desiredInterval;
-        m_Sampler->setInterval(m_AppliedSamplerInterval);
-    }
+    // The sampler's interval is not touched here: it is the refresh setting, set by setSamplingInterval()
+    // alone, whatever the frame rate and whether the window is being resized, moved or minimized (#2731).
+    // Sampling and drawing are separate.
 
     // Force-refresh: ask the background sampler to run an extra enumeration immediately.
     if (m_ForceRefresh)

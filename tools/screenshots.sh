@@ -4,14 +4,19 @@
 # One TaskSmack launch per shot, sequentially and without injected input: each run gets its own
 # TASKSMACK_CONFIG_DIR with a generated config.toml (theme, medium font, 1 s sampling, window size,
 # the Command column off: command lines name the machine's users and paths),
-# the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _SELECT_NAME, _DETAILS_TAB, _OPEN) and
-# TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
-# without input"). Without $DISPLAY the shots run under Xvfb. Same matrix and names as screenshots.ps1.
+# the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _SELECT_NAME, _DETAILS_TAB, _OPEN, and
+# TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and TASKSMACK_SCREENSHOT, which
+# writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation without input"). Without
+# $DISPLAY the shots run under Xvfb. Same matrix and names as screenshots.ps1.
 #
 # Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
-# Process Details (overview, gpu, network) for one process, Services, Startup, About and Help in the
-# first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP. The
-# overview-* shots get a 60 s history window and are captured after 60 s, so their charts are full.
+# Process Details (overview, gpu, network, and the Overview with its Modules, Open files and
+# Connections sections expanded) for one process, Services, Startup, About and Help in the first
+# theme; and three frame sequences written as animated WebPs: overview-live (8 s of the Overview),
+# walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
+# themes-live (9 s: the Overview through every theme, 1.5 s each), all at 12 fps. The overview-*
+# shots and themes-live get a 60 s history window and are captured after 60 s, so their charts are
+# full.
 #
 # Requirements: a built TaskSmack; Xvfb when headless (apt install xvfb); for --webp, cwebp and
 # img2webp from libwebp (apt install webp). Identity: --hostname tasksmack-demo runs the shots in a
@@ -32,11 +37,14 @@ WEBP=false
 LIVE=true
 DEMO_HOST=""
 TIMEOUT_AFTER_CAPTURE=60
-# overview-* shots: a 60 s history window, captured at the hook's maximum delay so the charts are full.
+# Full shots (FULL=1): a 60 s history window, captured at the hook's maximum delay so the charts are full.
 OVERVIEW_HISTORY_SECONDS=60
 OVERVIEW_AFTER=60
-LIVE_SECONDS=8
 LIVE_FPS=12
+LIVE_SECONDS=8
+WALK_SECONDS=10
+# themes-live: each theme for this many tenths of a second, the config's theme first.
+THEME_STEP_TENTHS=15
 WEBP_QUALITY=80
 
 usage() {
@@ -49,13 +57,13 @@ Options:
   --exe PATH        TaskSmack binary (default: build/release/bin/TaskSmack)
   --out DIR         Output directory (default: docs/images/screenshots/linux)
   --after SECONDS   Seconds after startup before each capture (default: $AFTER; the charts need 5 samples at 1 s).
-                    overview-* shots ignore it: $OVERVIEW_AFTER s with a $OVERVIEW_HISTORY_SECONDS s history window, so their charts are full
+                    overview-* shots and themes-live ignore it: $OVERVIEW_AFTER s with a $OVERVIEW_HISTORY_SECONDS s history window, so their charts are full
   --window WxH      Window size (default: $WINDOW)
   --themes a,b,c    Theme ids; the first is the dark theme, the first containing "light" the light one
                     (default: $THEMES)
   --process NAME    Process for the Process Details and Processes shots (default: systemd, else bash)
-  --webp            Convert each PNG to WebP (cwebp -q $WEBP_QUALITY) and the sequence to an animated WebP
-  --no-live         Skip the overview-live frame sequence ($LIVE_SECONDS s at $LIVE_FPS fps)
+  --webp            Convert each PNG to WebP (cwebp -q $WEBP_QUALITY) and each sequence to an animated WebP
+  --no-live         Skip the frame sequences (overview-live, walk-live, themes-live; $LIVE_FPS fps)
   --hostname NAME   Run the shots under unshare -r -u with this host name (no real host or user name)
   -h, --help        Show this help
 EOF
@@ -118,7 +126,8 @@ DARK="${THEME_LIST[0]}"
 LIGHT=""
 for t in "${THEME_LIST[@]}"; do [[ "$t" == *light* || "$t" == latte ]] && { LIGHT="$t"; break; }; done
 
-# One shot: name theme [KEY=VALUE hooks...]; frames= is added for the live sequence by its caller.
+# One shot: name theme [KEY=VALUE hooks...]; SEQUENCE=";frames=N;fps=F" is set by run_live, and
+# FULL=1 gives the shot the 60 s history window and the 60 s wait.
 FAILED=0
 printf '%-30s %5s %8s %10s\n' name exit seconds bytes
 run_shot() {
@@ -126,7 +135,7 @@ run_shot() {
     shift 2
     mkdir -p "$cfg"
     local after="$AFTER" history=""
-    if [[ "$name" == overview-* ]]; then
+    if [[ -n "${FULL:-}" ]]; then
         after="$OVERVIEW_AFTER"
         history="history_max_seconds = $OVERVIEW_HISTORY_SECONDS"
     fi
@@ -166,8 +175,24 @@ EOF
     fi
 }
 
+# A frame sequence: name theme seconds [KEY=VALUE hooks...] (TASKSMACK_DEMO among them plays while the
+# frames are captured; its times count from the settle point, as the capture's `after` does), joined
+# into <name>.webp when --webp and img2webp are there; otherwise the frames stay in the work dir.
+run_live() {
+    local name="$1" theme="$2" seconds="$3"
+    shift 3
+    SEQUENCE=";frames=$((seconds * LIVE_FPS));fps=$LIVE_FPS" run_shot "$name" "$theme" "$@"
+    local frames=("$WORK"/png/"$name"-*.png)
+    if $WEBP && command -v img2webp >/dev/null && [[ -f "${frames[0]}" ]]; then
+        img2webp -loop 0 -mixed -d "$((1000 / LIVE_FPS))" -q "$WEBP_QUALITY" "${frames[@]}" -o "$OUT/$name.webp" >/dev/null
+        echo "$name.webp: ${#frames[@]} frames, $(stat -c %s "$OUT/$name.webp") bytes"
+    else
+        echo "$name frames left in $WORK/png (img2webp -loop 0 -d $((1000 / LIVE_FPS)) ... builds the animation)"
+    fi
+}
+
 for t in "${THEME_LIST[@]}"; do
-    run_shot "overview-$t" "$t" TASKSMACK_TAB=overview
+    FULL=1 run_shot "overview-$t" "$t" TASKSMACK_TAB=overview
 done
 for t in "$DARK" "$LIGHT"; do
     [[ -n "$t" ]] || continue
@@ -177,20 +202,33 @@ done
 for tab in overview gpu network; do
     run_shot "details-$tab-$DARK" "$DARK" TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB="$tab"
 done
+# The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
+# startup selection has settled.
+for section in modules openfiles connections; do
+    run_shot "details-$section-$DARK" "$DARK" TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB=overview TASKSMACK_DEMO="1:section=$section"
+done
 run_shot "services-$DARK" "$DARK" TASKSMACK_TAB=Services
 run_shot "startup-$DARK" "$DARK" TASKSMACK_TAB=Startup
 run_shot "about-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_OPEN=about
 run_shot "help-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_OPEN=help
 
 if $LIVE; then
-    SEQUENCE=";frames=$((LIVE_SECONDS * LIVE_FPS));fps=$LIVE_FPS" run_shot overview-live "$DARK" TASKSMACK_TAB=overview
-    frames=("$WORK"/png/overview-live-*.png)
-    if $WEBP && command -v img2webp >/dev/null && [[ -f "${frames[0]}" ]]; then
-        img2webp -loop 0 -mixed -d "$((1000 / LIVE_FPS))" -q "$WEBP_QUALITY" "${frames[@]}" -o "$OUT/overview-live.webp" >/dev/null
-        echo "overview-live.webp: ${#frames[@]} frames, $(stat -c %s "$OUT/overview-live.webp") bytes"
-    else
-        echo "overview-live frames left in $WORK/png (img2webp -loop 0 -d $((1000 / LIVE_FPS)) ... builds the animation)"
-    fi
+    FULL=1 run_live overview-live "$DARK" "$LIVE_SECONDS" TASKSMACK_TAB=overview
+    # From the Overview: the Processes table 1 s into the capture, the process selected 2 s later,
+    # its Process Details' Network tab 3 s after that.
+    run_live walk-live "$DARK" "$WALK_SECONDS" TASKSMACK_TAB=overview \
+        TASKSMACK_DEMO="$((AFTER + 1)):tab=processes,$((AFTER + 3)):select=name:$PROCESS,$((AFTER + 6)):details=network"
+    # The Overview in the first theme, then each of the others for THEME_STEP_TENTHS tenths of a second.
+    steps=""
+    tenths=$((OVERVIEW_AFTER * 10))
+    for t in "${THEME_LIST[@]:1}"; do
+        tenths=$((tenths + THEME_STEP_TENTHS))
+        steps="${steps:+$steps,}$((tenths / 10)).$((tenths % 10)):theme=$t"
+    done
+    themes_seconds=$(( (${#THEME_LIST[@]} * THEME_STEP_TENTHS + 9) / 10 ))
+    demo=()
+    [[ -n "$steps" ]] && demo=(TASKSMACK_DEMO="$steps")
+    FULL=1 run_live themes-live "$DARK" "$themes_seconds" TASKSMACK_TAB=overview "${demo[@]}"
 fi
 
 echo ""

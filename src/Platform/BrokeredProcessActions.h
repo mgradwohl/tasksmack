@@ -12,8 +12,8 @@
 //   (actionCapabilities().canAuthorizeInteractively), which calls runAuthorized(): that asks for the
 //   password, starts the helper, and sends the action through it.
 //
-// The helper re-checks every target by PID and start time as root, so a retried action never reaches a
-// process other than the one the in-process attempt was for. A failure from the helper (running as root)
+// The helper re-checks every target by PID and start time with its capabilities, so a retried action never reaches a
+// process other than the one the in-process attempt was for. A failure from the helper (running with its capabilities)
 // is never permissionDenied, so nothing is retried twice. App composes one per IProcessActions, all over
 // the one broker, and only where the helper is installed and TaskSmack isn't already an administrator.
 
@@ -88,7 +88,7 @@ class BrokeredProcessActions final : public IProcessActions
 /// Process Details' environment read that an administrator can finish (#2309), as
 /// BrokeredProcessActions does for the actions: read in-process first; a PermissionDenied read goes
 /// through the helper at once while it runs, and otherwise is returned for the UI to offer
-/// "Authenticate to read" (readAuthorized()). The helper reads as root, with the same identity check.
+/// "Authenticate to read" (readAuthorized()). The helper reads with its capabilities, with the same identity check.
 class BrokeredEnvironmentReader final : public IProcessEnvironmentReader
 {
   public:

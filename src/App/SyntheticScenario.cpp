@@ -6,6 +6,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
@@ -30,7 +31,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -59,7 +59,7 @@ constexpr std::chrono::milliseconds PRELOAD_INTERVAL{Sampling::REFRESH_INTERVAL_
 [[nodiscard]] std::string lower(std::string_view text)
 {
     std::string result(text);
-    std::ranges::transform(result, result.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+    std::ranges::transform(result, result.begin(), Platform::foldAscii);
     return result;
 }
 

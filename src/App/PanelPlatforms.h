@@ -46,6 +46,9 @@ class Scenario;
 
 /// The System Information tab's probe: the platform's, in every run.
 [[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* scenario);
+/// The System tab's sensor sampler's own probe (#2737), for readSensors() only: unbrokered, and safe to
+/// build off the UI thread (the sampler's first pass builds it).
+[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* scenario);
 
 /// The probe the shared crash history reads (#1675), or null in a synthetic run: no crash history.
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario);

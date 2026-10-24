@@ -109,6 +109,13 @@ std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synth
     return Platform::withPrivilegedBroker(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
 }
 
+std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* /*scenario*/)
+{
+    // Unbrokered: reading sensors needs no privilege, and this runs on the sensor sampler's thread (#2737),
+    // where the shared broker (UI-thread state) mustn't be touched.
+    return Platform::makeSystemInfoProbe();
+}
+
 std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario)
 {
     if (scenario != nullptr)

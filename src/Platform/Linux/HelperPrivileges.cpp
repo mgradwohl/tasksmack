@@ -4,10 +4,12 @@
 #include <cerrno>
 #include <cstdint>
 
+#include <grp.h>
 #include <linux/capability.h>
 #include <linux/prctl.h> // PR_* (sys/prctl.h includes it; named for include-cleaner)
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 namespace Platform::HelperPrivileges
@@ -68,10 +70,44 @@ struct CapabilitySets
     return ::syscall(SYS_capset, &header, data.data()) == 0;
 }
 
+/// Become @p runAs, keeping the permitted capabilities: no supplementary groups, then the GID, then the
+/// UID with PR_SET_KEEPCAPS (setresuid() from UID 0 would otherwise clear the permitted set). Its effective
+/// set is cleared on the way; dropToKeptCapabilities() sets it again. Read back, every ID must be @p runAs.
+[[nodiscard]] bool becomeIdentity(Identity runAs) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - prctl(2) is variadic
+    if (::setgroups(0, nullptr) != 0 || ::setresgid(runAs.gid, runAs.gid, runAs.gid) != 0 ||
+        ::prctl(PR_SET_KEEPCAPS, 1UL, 0UL, 0UL, 0UL) != 0 || ::setresuid(runAs.uid, runAs.uid, runAs.uid) != 0)
+    {
+        return false;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - prctl(2) is variadic
+    if (::prctl(PR_SET_KEEPCAPS, 0UL, 0UL, 0UL, 0UL) != 0)
+    {
+        return false;
+    }
+    uid_t realUid = 0;
+    uid_t effectiveUid = 0;
+    uid_t savedUid = 0;
+    gid_t realGid = 0;
+    gid_t effectiveGid = 0;
+    gid_t savedGid = 0;
+    if (::getresuid(&realUid, &effectiveUid, &savedUid) != 0 || ::getresgid(&realGid, &effectiveGid, &savedGid) != 0)
+    {
+        return false;
+    }
+    return realUid == runAs.uid && effectiveUid == runAs.uid && savedUid == runAs.uid && realGid == runAs.gid &&
+           effectiveGid == runAs.gid && savedGid == runAs.gid && ::getgroups(0, nullptr) == 0;
+}
+
 } // namespace
 
-DropResult dropToKeptCapabilities() noexcept
+DropResult dropToKeptCapabilities(Identity runAs) noexcept
 {
+    if (runAs.uid == 0 || runAs.gid == 0)
+    {
+        return DropResult::Failed; // becoming root isn't stopping being root
+    }
     // First, so that even a failure below leaves nothing an exec could raise.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - prctl(2) is variadic
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) != 0)
@@ -83,7 +119,19 @@ DropResult dropToKeptCapabilities() noexcept
     {
         return DropResult::Failed;
     }
-    if (current.permitted == 0 && current.effective == 0 && current.inheritable == 0)
+    // Root in any of its IDs (#2752): a saved UID 0 alone could be switched back to without a capability.
+    uid_t realUid = 0;
+    uid_t effectiveUid = 0;
+    uid_t savedUid = 0;
+    gid_t realGid = 0;
+    gid_t effectiveGid = 0;
+    gid_t savedGid = 0;
+    if (::getresuid(&realUid, &effectiveUid, &savedUid) != 0 || ::getresgid(&realGid, &effectiveGid, &savedGid) != 0)
+    {
+        return DropResult::Failed;
+    }
+    const bool root = realUid == 0 || effectiveUid == 0 || savedUid == 0 || realGid == 0 || effectiveGid == 0 || savedGid == 0;
+    if (!root && current.permitted == 0 && current.effective == 0 && current.inheritable == 0)
     {
         return DropResult::NotPrivileged;
     }
@@ -107,6 +155,19 @@ DropResult dropToKeptCapabilities() noexcept
     // The ambient set (Linux 4.3+; EINVAL before it, when there's none to clear).
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - prctl(2) is variadic
     if (::prctl(PR_CAP_AMBIENT, static_cast<unsigned long>(PR_CAP_AMBIENT_CLEAR_ALL), 0UL, 0UL, 0UL) != 0 && errno != EINVAL)
+    {
+        return DropResult::Failed;
+    }
+
+    // No longer root (#2752): never UID 0 or GID 0, and not dumpable, so no other process running as
+    // runAs can ptrace it or read its memory.
+    // Root without CAP_SETUID and CAP_SETGID can't do this, and fails: never served as root.
+    if (root && !becomeIdentity(runAs))
+    {
+        return DropResult::Failed;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - prctl(2) is variadic
+    if (::prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL) != 0)
     {
         return DropResult::Failed;
     }

@@ -885,12 +885,24 @@ TEST(TasksmackHelperTest, SetsNoNewPrivsBeforeServing)
     EXPECT_EQ(helper.exitCode(), 0);
 }
 
-/// The user the root test's target runs as: nobody.
-constexpr uid_t OTHER_USER = 65534;
+// #2752: becoming root isn't stopping being root. Asked to run as UID or GID 0, the drop fails before it
+// changes anything -- this test process is left without no_new_privs.
+TEST(HelperPrivilegesTest, RefusesToRunAsRoot)
+{
+    const std::string noNewPrivsBefore = statusField(::getpid(), "NoNewPrivs");
+    EXPECT_EQ(HelperPrivileges::dropToKeptCapabilities({.uid = 0, .gid = 65534}), HelperPrivileges::DropResult::Failed);
+    EXPECT_EQ(HelperPrivileges::dropToKeptCapabilities({.uid = 65534, .gid = 0}), HelperPrivileges::DropResult::Failed);
+    EXPECT_EQ(statusField(::getpid(), "NoNewPrivs"), noNewPrivsBefore);
+}
+
+/// The user the root test's target runs as: neither root nor nobody, which the helper itself becomes
+/// (#2752), so only its capabilities let it act on the target. No passwd entry is needed to setuid().
+constexpr uid_t OTHER_USER = 61234;
 
 // #2640, run as root only (`sudo build/debug/tests/TaskSmackTests --gtest_filter='TasksmackHelperRootTest.*'`):
 // the helper started as root, as pkexec starts it, keeps only HelperPrivileges::KEPT_CAPABILITIES -- in
-// every set, with no_new_privs -- and that is enough for every request on another user's process.
+// every set, with no_new_privs -- and stops being root, running as nobody with no supplementary groups
+// (#2752); that is enough for every request on another user's process.
 TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAnotherUsersProcess)
 {
     if (::geteuid() != 0)
@@ -902,7 +914,7 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     ::usleep(100'000); // let it reach setuid()
     const ProcessTarget target = child.target();
     ASSERT_NE(target.startTimeTicks, 0U);
-    ASSERT_EQ(statusField(target.pid, "Uid").substr(0, 5), "65534");
+    ASSERT_EQ(statusField(target.pid, "Uid").substr(0, 5), "61234");
 
     SocketPair pair;
     ASSERT_TRUE(pair.valid());
@@ -920,6 +932,13 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     EXPECT_EQ(capabilitySet(helper.pid(), "CapInh"), 0U);
     EXPECT_EQ(capabilitySet(helper.pid(), "CapAmb"), 0U);
     EXPECT_EQ(statusField(helper.pid(), "NoNewPrivs"), "1");
+
+    // Who it runs as (#2752): nobody, in every ID, with no supplementary groups.
+    const std::string uid = "65534"; // nobody and nogroup, written out rather than taken from the helper's constant
+    const std::string gid = "65534";
+    EXPECT_EQ(statusField(helper.pid(), "Uid"), uid + '\t' + uid + '\t' + uid + '\t' + uid);
+    EXPECT_EQ(statusField(helper.pid(), "Gid"), gid + '\t' + gid + '\t' + gid + '\t' + gid);
+    EXPECT_EQ(statusField(helper.pid(), "Groups"), "");
 
     const auto expectAction = [&](const Broker::Request& request, const char* what)
     {

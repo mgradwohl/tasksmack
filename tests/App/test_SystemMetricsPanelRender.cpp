@@ -2,11 +2,13 @@
 /// @brief The System Metrics panel as a whole (#1546), run headless with mock probes through its
 /// probe-factory seam: onAttach() builds its models from the mocks (no platform probe, no synthetic
 /// scenario), the Overview draws its charts from their readings, the tabs switch to their sections, an
-/// inactive panel draws nothing, and a detached one says its model is gone.
+/// inactive panel draws nothing, and a detached one says its model is gone. Its sampler runs at the
+/// refresh setting in every UI state (#2731).
 
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockDiskProbe.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
@@ -1054,6 +1056,51 @@ TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
     }
     EXPECT_EQ(tooltips, static_cast<int>(rects.size())) << "every chart on the tab shows its tooltip";
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
+}
+
+// #2731: the sampler runs at the refresh setting in every UI state. Settings is the one thing that sets
+// it: this tab being shown or another, frames at any rate, and the slow frames of a minimized window
+// change nothing. (The System sampler once ran at twice the setting while its tab was hidden.)
+TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEveryUiState)
+{
+    const auto panel = attachedPanel();
+    const auto setting = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(panel->samplingInterval(), setting);
+
+    const auto expectThroughEveryUiState = [&panel](std::chrono::milliseconds expected)
+    {
+        // Each main tab shown in turn, with a frame on each: this panel's tab, and the others.
+        for (const char* tab : {"SystemOverview", "Processes", "ProcessDetails", "Services", "Startup", "SystemInfo", "SystemOverview"})
+        {
+            Core::ActiveTabChangedEvent shown(tab);
+            panel->onEvent(shown);
+            panel->onUpdate(1.0F / 60.0F);
+            EXPECT_EQ(panel->samplingInterval(), expected) << tab;
+        }
+        // Frames at the display rate of a resize or move, at 60 Hz, at the 5 Hz of a minimized window,
+        // and after the gap of a window left minimized or covered.
+        for (const float deltaTime : {0.002F, 1.0F / 60.0F, 0.2F, 2.0F})
+        {
+            for (int frame = 0; frame < 20; ++frame)
+            {
+                panel->onUpdate(deltaTime);
+            }
+            EXPECT_EQ(panel->samplingInterval(), expected) << deltaTime;
+        }
+    };
+    expectThroughEveryUiState(setting);
+
+    // Settings changes it, and the new value holds through the same states.
+    Core::RefreshRateChangedEvent faster(250);
+    panel->onEvent(faster);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(250));
+    expectThroughEveryUiState(std::chrono::milliseconds(250));
+
+    Core::RefreshRateChangedEvent slower(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    panel->onEvent(slower);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    expectThroughEveryUiState(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
     panel->onDetach();
 }
 

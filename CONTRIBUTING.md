@@ -784,13 +784,19 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
-`<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
-sequence. The `overview-*` shots get `[sampling] history_max_seconds = 60` and are captured after 60 s
-(the hook's maximum), so their history charts are full; the other views are captured after 8 s.
+Process Details (overview, GPU, network, and the Overview with its Modules, Open files and
+Connections sections expanded by a one-step `TASKSMACK_DEMO` script: `details-modules`,
+`details-openfiles`, `details-connections`) for one process, Services, Startup, About and Help, named
+`<view>-<theme>.webp`, plus three animated WebPs at 12 fps built from frame sequences:
+`overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
+Processes table, selects the process and brings up its Process Details' Network tab) and
+`themes-live.webp` (9 s: the Overview through the six themes, 1.5 s each). The `overview-*` shots and
+`themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
+maximum), so their history charts are full; the other views are captured after 8 s.
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
-webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
-print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
+webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
+in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
+and exit non-zero if any shot failed.
 
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
@@ -801,14 +807,29 @@ tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
 
 ```powershell
-# Windows: in a Windows Sandbox (its own processes, user and host name) with the win-release build,
-# and Mesa's llvmpipe opengl32.dll beside TaskSmack.exe when the Sandbox has no vGPU
-.\tools\screenshots.ps1 -WebP -Exe C:\shots\TaskSmack.exe -Out C:\shots\out
+# Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
+# inside it (App Control there refuses a binary built on the host), and Mesa's llvmpipe opengl32.dll
+# beside TaskSmack.exe when the Sandbox has no vGPU
+.\tools\screenshots.ps1 -Exe build\win-release\bin\TaskSmack.exe -Out C:\shots\out   # then cwebp/img2webp on the host
 ```
 
 The images show the machine they were taken on. Before committing, look at every one for a user name,
 host name or process you would not publish: the Processes User column, System Information and the
 hostname tab are the usual places.
+
+The user guide (`docs/guide/user-guide.md`) and `README.md` embed the images by these fixed names
+(`docs/images/screenshots/windows/processes-windows-dark.webp`, `.../linux/overview-live.webp`, and so
+on), so a regeneration that keeps the matrix replaces every picture in place and needs no doc edit.
+Renaming a shot or dropping one from the matrix is a doc change too: `tools/md-link-audit.sh` (the
+"Audit markdown links" step in `ci.yml`) fails on a Markdown image whose file is missing, so run it
+after the new set is in. The guide uses the Windows image wherever the Linux set has no
+counterpart of the same name; once the Linux set has one, switch the guide to it in the same PR.
+
+**At a minor release** (the `vX.Y.0` candidate, see [Cutting a Release](#cutting-a-release)):
+regenerate both sets from the candidate's build (the Linux set under Xvfb in WSL, the Windows set in a
+Windows Sandbox, as above), review every image for identity, and merge them in one docs PR to `main`
+with the `backport:X.Y` label so `release/X.Y` carries the same pictures. Images are documentation, so
+the PR merges under release gating without waiting for the tag.
 
 ### Visual validation without input (Process Details)
 
@@ -1125,6 +1146,10 @@ code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touchi
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
 `check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
+A release candidate's campaign gives each target 600 seconds instead (#2783):
+`gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
+summary line (targets, total and per-target seconds) in the release's fuzzing record.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
@@ -2670,8 +2695,12 @@ opens PRs; the same CI gate applies before merge.
     `tools/setup-dev.sh`. Update by hand in the same PR: the "3.14" in this guide's setup commands and in
     `requirements.txt`'s header.
   - **CMake, Ninja and ccache** pins in `tools/setup-dev.ps1` (`$CMakeVersion`, `$NinjaVersion`,
-    `$CcacheVersion`). CMake and Ninja match the `windows-2025` runner image. WinGet's feed lags upstream
-    and no CI job runs this script, so confirm WinGet has the version before approving.
+    `$CcacheVersion`). Ninja matches the `windows-2025` runner image; CMake is the newest version WinGet
+    carries, since its catalog dropped every 3.x, the image's 3.31.x included (#2844). WinGet's feed lags
+    upstream, keeps only recent versions, and no CI job installs with this script, so confirm WinGet has
+    the version before approving. A pin WinGet no longer carries doesn't stop the script: it installs
+    WinGet's newest version with a warning that names the pin to move, so a stale pin shows up on a
+    clean machine as that warning, not as a failed setup.
 - *Tier 3, manual:* tools that ride the OS, runner or SDK rather than their own releases (`wpr`, `xperf`,
   `wpa`, CPack's NSIS/dpkg/rpmbuild, `gh`, `xvfb`), and optional local-only tools (Inkscape, heaptrack,
   FlameGraph, hotspot).
@@ -2725,6 +2754,11 @@ failed run without creating a new tag); `validate` still checks that the ref rea
 stray dispatch from a branch can't impersonate one.
 
 ```bash
+# 0. For vX.Y.0 only: regenerate the documentation screenshots from the candidate's build with
+#    tools/screenshots.sh (Linux) and tools/screenshots.ps1 (Windows), review them for identity, and
+#    merge them to main with the backport:X.Y label. The guide and README reference the images by
+#    fixed names, so this is an image-only PR (see "Documentation screenshots" under Test).
+
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
 #    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
 #    for a patch release. release.yml's validate job requires this to already match the tag (see

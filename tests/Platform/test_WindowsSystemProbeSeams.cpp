@@ -1,10 +1,12 @@
 /// @file test_WindowsSystemProbeSeams.cpp
 /// @brief WindowsSystemProbe against fake Win32/NT calls (#1719): each CPU, memory, page-file and
 /// topology query failing on its own, the per-core fallbacks, several processor groups and a
-/// processor going on- or offline, none of which the real APIs can be made to show. The fakes are
-/// side-effect free; the probe's own hostname, registry, power and network reads stay real (the network
-/// is faked in test_WindowsSystemProbeNetwork.cpp).
+/// processor going on- or offline, none of which the real APIs can be made to show; and read()'s
+/// sub-read timing (#2731) on a fake clock the fakes advance. The fakes are side-effect free; the
+/// probe's own hostname, registry, power and network reads stay real (the network is faked in
+/// test_WindowsSystemProbeNetwork.cpp).
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -104,12 +107,27 @@ struct FakeSystem // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failPageFile = false;
     bool pageFileMismatchFirst = false;
     bool noPageFile = false;
+    // How far the fakes below advance the probe's clock (#2731), in place of the real calls' time
+    std::chrono::milliseconds systemTimesTake{0};
+    std::chrono::milliseconds memoryStatusTake{0};
 };
 
 FakeSystem& fake()
 {
     static FakeSystem state;
     return state;
+}
+
+/// The probe's clock (#2731). Apart from FakeSystem so reading it cannot throw.
+std::chrono::steady_clock::time_point& fakeClock() noexcept
+{
+    static std::chrono::steady_clock::time_point now;
+    return now;
+}
+
+std::chrono::steady_clock::time_point fakeNow() noexcept
+{
+    return fakeClock();
 }
 
 void setFileTime(FILETIME& ft, std::uint64_t ticks)
@@ -122,6 +140,7 @@ void setFileTime(FILETIME& ft, std::uint64_t ticks)
 
 BOOL WINAPI fakeGetSystemTimes(PFILETIME idle, PFILETIME kernel, PFILETIME user)
 {
+    fakeClock() += fake().systemTimesTake;
     if (fake().failSystemTimes)
     {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -339,6 +358,7 @@ LONG NTAPI fakeNtQuerySystemInformationEx(ULONG infoClass, PVOID input, ULONG /*
 
 BOOL WINAPI fakeGlobalMemoryStatusEx(LPMEMORYSTATUSEX status)
 {
+    fakeClock() += fake().memoryStatusTake;
     if (fake().failMemoryStatus)
     {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -378,6 +398,7 @@ BOOL WINAPI fakeGetPerformanceInfo(PPERFORMANCE_INFORMATION info, DWORD /*size*/
     fns.memory.globalMemoryStatusEx = &fakeGlobalMemoryStatusEx;
     fns.memory.getPerformanceInfo = &fakeGetPerformanceInfo;
     fns.network = WindowsSystemProbe::systemFunctions().network; // Faked in test_WindowsSystemProbeNetwork.cpp
+    fns.now = &fakeNow;
     return fns;
 }
 
@@ -394,6 +415,7 @@ class WindowsSystemProbeSeamsTest : public ::testing::Test
     void SetUp() override
     {
         fake() = FakeSystem{};
+        fakeClock() = std::chrono::steady_clock::time_point{} + std::chrono::hours{1};
     }
 
     void TearDown() override
@@ -731,9 +753,45 @@ TEST_F(WindowsSystemProbeSeamsTest, TopologyThatDisagreesWithTheSampleKeepsThePr
     EXPECT_EQ(fake().topologyReads, readsAtStart + static_cast<int>(CpuTopology::MAX_INCONSISTENT_CPU_DETAIL_READS));
 }
 
+// #2731: each sub-read of a pass is timed on the probe's clock, and the slowest is kept by name, so an
+// overrun can name "pdh-freq" or "ifTable" rather than "system". The fakes advance the clock in place of
+// the real calls' time.
+
+TEST_F(WindowsSystemProbeSeamsTest, TheSlowestSubReadIsNamedWithItsDuration)
+{
+    fake().memoryStatusTake = std::chrono::milliseconds{40};
+    auto probe = makeProbe();
+    EXPECT_TRUE(probe.lastReadTiming().slowestSubRead.empty()) << "nothing read yet";
+
+    (void) probe.read();
+    SystemReadTiming timing = probe.lastReadTiming();
+    EXPECT_EQ(timing.slowestSubRead, "memory");
+    EXPECT_EQ(timing.slowest, std::chrono::milliseconds{40});
+    EXPECT_EQ(timing.total, std::chrono::milliseconds{40}) << "the other sub-reads take no fake time";
+
+    // The next pass stands on its own: the CPU read is now the slow one
+    fake().systemTimesTake = std::chrono::milliseconds{150};
+    (void) probe.read();
+    timing = probe.lastReadTiming();
+    EXPECT_EQ(timing.slowestSubRead, "cpu");
+    EXPECT_EQ(timing.slowest, std::chrono::milliseconds{150});
+    EXPECT_EQ(timing.total, std::chrono::milliseconds{190});
+    EXPECT_GE(timing.slowest, std::chrono::milliseconds{Domain::Sampling::SYSTEM_PROBE_SLOW_SUB_READ_MS}) << "and is logged by name";
+
+    // A pass with no time taken still names a sub-read, so the timing never reads as unset
+    fake().systemTimesTake = std::chrono::milliseconds{0};
+    fake().memoryStatusTake = std::chrono::milliseconds{0};
+    (void) probe.read();
+    timing = probe.lastReadTiming();
+    EXPECT_FALSE(timing.slowestSubRead.empty());
+    EXPECT_EQ(timing.slowest, std::chrono::steady_clock::duration{0});
+    EXPECT_EQ(timing.total, std::chrono::steady_clock::duration{0});
+}
+
 TEST_F(WindowsSystemProbeSeamsTest, SystemFunctionsAreAllSet)
 {
     const WindowsSystemProbeFunctions fns = WindowsSystemProbe::systemFunctions();
+    EXPECT_NE(fns.now, nullptr);
     EXPECT_NE(fns.cpu.getSystemTimes, nullptr);
     EXPECT_NE(fns.cpu.getActiveProcessorGroupCount, nullptr);
     EXPECT_NE(fns.cpu.getActiveProcessorCount, nullptr);

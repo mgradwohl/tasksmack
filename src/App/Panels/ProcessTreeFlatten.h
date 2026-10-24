@@ -3,7 +3,7 @@
 // Pure tree-flattening logic extracted from ProcessesPanel::renderTreeView() (perf-plan #843
 // phase 1), so it can be unit-tested directly instead of only indirectly through a live ImGui
 // context. See CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern
-// (also used by AdaptiveIntervalUtils.h, TitleBarGeometry.h). Unlike most of ProcessesPanel.cpp,
+// (also used by TitleBarGeometry.h). Unlike most of ProcessesPanel.cpp,
 // this traversal makes no ImGui calls at all -- it only walks process-snapshot indices and
 // sets -- so there is no live-context blocker to extracting and testing it directly.
 

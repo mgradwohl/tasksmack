@@ -22,6 +22,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ThreadName.h"
@@ -83,20 +84,6 @@ environmentCellNeedsTooltip(std::size_t shownBytes, std::size_t totalBytes, floa
     return shownBytes < totalBytes || textWidth > availableWidth;
 }
 
-/// Whether @p haystack contains @p needle, ignoring ASCII case. An empty needle matches everything.
-[[nodiscard]] inline bool containsIgnoringCase(std::string_view haystack, std::string_view needle) noexcept
-{
-    const auto lower = [](char c) noexcept
-    {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    if (needle.empty())
-    {
-        return true;
-    }
-    return !std::ranges::search(haystack, needle, [&lower](char a, char b) { return lower(a) == lower(b); }).empty();
-}
-
 } // namespace Detail
 
 /// The Environment section for the process Process Details shows.
@@ -121,8 +108,8 @@ class ProcessEnvironmentView
     using RowKeyView = std::pair<std::string_view, std::size_t>;
 
     /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
-    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (the platform
-    /// cannot read environments: Windows, synthetic runs).
+    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (no reader can
+    /// read environments: synthetic runs).
     void render(bool hasEnvironment);
 
     /// The panel's per-frame update: takes in a read that has finished, then starts @p target's on a
@@ -133,9 +120,9 @@ class ProcessEnvironmentView
     bool update(Platform::IProcessEnvironmentReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
                                            [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
@@ -160,13 +147,13 @@ class ProcessEnvironmentView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {
-        m_AuthorizeRequested = true;
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
@@ -186,10 +173,10 @@ class ProcessEnvironmentView
     /// in flight for the previous process is dropped when it arrives.
     void onSelectionChanged() noexcept
     {
-        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
+        m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
         m_Revealed.clear();
@@ -205,6 +192,7 @@ class ProcessEnvironmentView
     {
         m_HasRead = true;
         m_Status = result.status;
+        m_Detail = std::move(result.detail);
         m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
@@ -280,6 +268,12 @@ class ProcessEnvironmentView
         return m_Status;
     }
 
+    /// Why the last read Failed, when its reader said (EnvironmentReadResult::detail); else empty.
+    [[nodiscard]] const std::string& detail() const noexcept
+    {
+        return m_Detail;
+    }
+
     /// The last read's variables, sorted by name.
     [[nodiscard]] std::span<const Row> rows() const noexcept
     {
@@ -303,8 +297,8 @@ class ProcessEnvironmentView
             for (std::size_t i = 0; i < m_Rows.size(); ++i)
             {
                 const Row& row = m_Rows[i];
-                if (Detail::containsIgnoringCase(row.name, m_Filter) ||
-                    (!isMasked(row) && Detail::containsIgnoringCase(row.value, m_Filter)))
+                if (Platform::containsIgnoreCase(row.name, m_Filter) ||
+                    (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter)))
                 {
                     m_FilteredRows.push_back(i);
                 }
@@ -332,8 +326,9 @@ class ProcessEnvironmentView
         }
     }
 
-    /// The Failed result for a read that threw, or one no worker could be started for. The detail is
-    /// not kept: the status line says "Could not be read" (and a value must never be logged, #179).
+    /// The Failed result for a read that threw, or one no worker could be started for. That detail is
+    /// not kept (an exception's text could quote a value, which must never be shown or logged, #179):
+    /// the status line says "Could not be read"; only a reader's own detail is drawn after it.
     // NOLINTNEXTLINE(performance-unnecessary-value-param) - the signature LazyBackgroundRead::FailedResultFn takes
     [[nodiscard]] static Platform::EnvironmentReadResult failedRead(std::string /*detail*/)
     {
@@ -341,9 +336,8 @@ class ProcessEnvironmentView
     }
 
     bool m_HasRead = false;
-    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
-    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
+    std::string m_Detail;     // why it Failed, when the reader said (the Windows reader does, #2569)
     bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
@@ -351,7 +345,8 @@ class ProcessEnvironmentView
     std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
     std::vector<std::size_t> m_FilteredRows;
     bool m_FilterDirty = true;
-    // Last: destroying it waits for a read in flight, which writes only into its own future.
+    // The read in flight, its cadence and the "Authenticate to read" request (#2309). Last: destroying
+    // it waits for a read in flight, which writes only into its own future.
     Detail::LazyBackgroundRead<Platform::EnvironmentReadResult> m_Read{
         Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, Platform::ENVIRONMENT_READ_THREAD_NAME, &failedRead};
 };

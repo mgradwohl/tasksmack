@@ -30,13 +30,17 @@ param(
     # headers and libraries install to Windows Kits\10\{Include,Lib}\10.0.26100.0 either way.
     [string]$WindowsSdkVersion = "10.0.26100.7463",
     [string]$LlvmVersion = "22.1.8",
-    # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
-    # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
-    # setup and CI land on the same versions (CI verifies the image's ninja version in
-    # .github/actions/setup-windows-llvm/action.yml). ccache has no CI-side winget equivalent
-    # to mirror (CI gets it from hendrikmuhs/ccache-action's own pinned, checksum-verified
-    # release binary), so this pins the latest version winget actually has available.
-    [string]$CMakeVersion = "3.31.12",
+    # Ninja pinned to match what the windows-2025 GitHub Actions runner image ships (confirmed
+    # against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box setup and CI land
+    # on the same version (CI verifies the image's ninja version in
+    # .github/actions/setup-windows-llvm/action.yml). CMake was pinned the same way until winget's
+    # catalog dropped every 3.x, the image's 3.31.x included (#2844); it now pins the newest
+    # version winget carries (the project needs 3.29+, CMakeLists.txt). ccache has no CI-side
+    # winget equivalent to mirror (CI gets it from hendrikmuhs/ccache-action's own pinned,
+    # checksum-verified release binary), so this pins the latest version winget actually has
+    # available. winget keeps only recent versions of a package, so a pin it no longer carries
+    # installs its newest version instead, with a warning (Install-WinGetPackage below).
+    [string]$CMakeVersion = "4.4.4",
     [string]$NinjaVersion = "1.13.2",
     [string]$CcacheVersion = "4.14.2",
     # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
@@ -72,9 +76,20 @@ $WinGetAlreadyInstalledCodes = @(0x8A15002B, 0x8A150061)
 # 0x8A15010D APPINSTALLER_CLI_ERROR_INSTALL_ALREADY_INSTALLED -- another version is already installed.
 # Not fatal, but the installed version is not the pinned one; check-prereqs.ps1 reports which it is.
 $WinGetOtherVersionInstalledCode = 0x8A15010D
+# 0x8A150017 APPINSTALLER_CLI_ERROR_NO_MANIFEST_FOUND ("No version found matching: <pin>") -- the
+# package exists but the catalog no longer carries the pinned version; Install-WinGetPackage falls
+# back to the newest it has (#2844).
+$WinGetNoManifestFoundCode = 0x8A150017
+# The switches every install here uses: the winget source only (not msstore), silent, and both
+# agreements accepted up front so nothing prompts.
+$WinGetInstallSwitches = @('--source', 'winget', '--silent', '--accept-package-agreements', '--accept-source-agreements')
 
+# Run winget, as the user sees it. A nonzero exit code throws, except the already-installed codes
+# above (not an error on a re-run) and any in -ReturnCodes, on which the function returns with
+# the code left in $LASTEXITCODE for the caller to look at.
 function Invoke-WinGet {
     param(
+        [int[]]$ReturnCodes = @(),
         [Parameter(Position = 0, ValueFromRemainingArguments)]
         [string[]]$Arguments
     )
@@ -85,7 +100,7 @@ function Invoke-WinGet {
 
     winget @Arguments
     $exitCode = $LASTEXITCODE
-    if ($exitCode -eq 0) {
+    if ($exitCode -eq 0 -or $ReturnCodes -contains $exitCode) {
         return
     }
     $hexCode = '0x{0:X8}' -f $exitCode
@@ -98,6 +113,62 @@ function Invoke-WinGet {
         return
     }
     throw "winget failed with exit code $hexCode ($exitCode): winget $($Arguments -join ' ')"
+}
+
+# The installed version of a winget package as `winget list` reports it, or $null when that can't
+# be read. The package's row holds its Id and then its version; only the headers are localized.
+# No --exact: it makes the Id case-sensitive, and the ids here follow the catalog's spelling loosely.
+function Get-WinGetInstalledVersion {
+    param([Parameter(Mandatory)][string]$Id)
+    $lines = @(winget list --id $Id --source winget --accept-source-agreements --disable-interactivity 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    foreach ($line in $lines) {
+        $tokens = @(($line -split '\s+') | Where-Object { $_ })
+        for ($i = 0; $i -lt $tokens.Count - 1; $i++) {
+            if ($tokens[$i] -ieq $Id) {
+                return $tokens[$i + 1]
+            }
+        }
+    }
+    return $null
+}
+
+# Install a winget package, at its pinned version when -Version is given. winget's catalog keeps
+# only recent versions of a package, so a pin that was right when written stops installing after a
+# while (CMake 3.31.12 was gone by 2026-10, with every other 3.x), and the script used to stop on the
+# first such tool (#2844). The pin stays the preferred version, for a setup that matches the
+# documented one; when the catalog no longer has it (0x8A150017), this warns, installs the newest
+# version winget has instead, and prints the version that got installed. -Arguments are further
+# winget install switches (--override), after the common ones.
+function Install-WinGetPackage {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [string]$Version,
+        [string[]]$Arguments = @()
+    )
+    if (-not $Version) {
+        Invoke-WinGet install --id $Id @WinGetInstallSwitches @Arguments
+        return
+    }
+    Invoke-WinGet -ReturnCodes $WinGetNoManifestFoundCode install --id $Id --version $Version @WinGetInstallSwitches @Arguments
+    if ($DryRun) {
+        Write-Host "[dry-run]   (if $Version is no longer in the winget catalog: a warning, then the same install without --version)"
+        return
+    }
+    if ($LASTEXITCODE -ne $WinGetNoManifestFoundCode) {
+        return
+    }
+    Write-Warning "winget 0x8A150017: $Id $Version is no longer in the winget catalog; installing the newest version winget has instead (#2844). Move the pin in tools/setup-dev.ps1 to a version the catalog carries: winget show --id $Id --source winget --versions"
+    Invoke-WinGet install --id $Id @WinGetInstallSwitches @Arguments
+    $installed = Get-WinGetInstalledVersion -Id $Id
+    if ($installed) {
+        Write-Host "  $Id $installed is installed (the pin was $Version)."
+    }
+    else {
+        Write-Host "  $Id installed (the pin was $Version); run pwsh tools/check-prereqs.ps1 to see which version is in use."
+    }
 }
 
 function Resolve-Python {
@@ -196,7 +267,7 @@ if ($isArm64) {
 }
 $vsAdd = ($vsComponents | ForEach-Object { "--add $_" }) -join ' '
 Write-Host "==> Installing Visual Studio C++ Build Tools (MSVC libraries only)..."
-Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --norestart $vsAdd"
+Install-WinGetPackage -Id Microsoft.VisualStudio.2022.BuildTools -Arguments @('--override', "--wait --passive --norestart $vsAdd")
 
 # The Windows SDK, standalone and with only the desktop C++ headers and libraries for this
 # machine's architecture (#2661). Visual Studio's Windows11SDK component can't pick SDK features:
@@ -241,7 +312,7 @@ else {
     # what tools/newcomer-check.ps1's evidence step counts the SDK's packages from.
     $sdkLog = Join-Path ([IO.Path]::GetTempPath()) 'tasksmack-winsdksetup.log'
     $sdkStart = Get-Date
-    Invoke-WinGet install --id "Microsoft.WindowsSDK.$sdkBuild" --version $WindowsSdkVersion --source winget --silent --accept-package-agreements --accept-source-agreements --override "/features $sdkFeature /quiet /norestart /ceip off /log `"$sdkLog`""
+    Install-WinGetPackage -Id "Microsoft.WindowsSDK.$sdkBuild" -Version $WindowsSdkVersion -Arguments @('--override', "/features $sdkFeature /quiet /norestart /ceip off /log `"$sdkLog`"")
     if (-not $DryRun) {
         $missingSdkFiles = @(Get-MissingWindowsSdkFile)
         if ($missingSdkFiles.Count -gt 0) {
@@ -252,13 +323,13 @@ else {
 }
 
 Write-Host "==> Installing CMake $CMakeVersion..."
-Invoke-WinGet install --id Kitware.CMake --version $CMakeVersion --source winget --silent --accept-package-agreements --accept-source-agreements
+Install-WinGetPackage -Id Kitware.CMake -Version $CMakeVersion
 
 Write-Host "==> Installing Ninja $NinjaVersion..."
-Invoke-WinGet install --id Ninja-build.Ninja --version $NinjaVersion --source winget --silent --accept-package-agreements --accept-source-agreements
+Install-WinGetPackage -Id Ninja-build.Ninja -Version $NinjaVersion
 
 Write-Host "==> Installing Python $PythonVersion..."
-Invoke-WinGet install --id "Python.Python.$PythonVersion" --source winget --silent --accept-package-agreements --accept-source-agreements
+Install-WinGetPackage -Id "Python.Python.$PythonVersion"
 if (-not $DryRun) {
     $script:PythonExecutable = Resolve-Python
 }
@@ -266,7 +337,7 @@ if (-not $DryRun) {
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing LLVM $LlvmVersion..."
-Invoke-WinGet install --id LLVM.LLVM --version $LlvmVersion --source winget --silent --accept-package-agreements --accept-source-agreements
+Install-WinGetPackage -Id LLVM.LLVM -Version $LlvmVersion
 
 Write-Host ""
 Write-Host "==> Setting LLVM_ROOT environment variable..."
@@ -299,7 +370,7 @@ if ($DevTools) {
     # ── Step 4 (-DevTools): optional developer tools ───────────────────────
     Write-Host ""
     Write-Host "==> Installing ccache $CcacheVersion (optional: faster rebuilds)..."
-    Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winget --silent --accept-package-agreements --accept-source-agreements
+    Install-WinGetPackage -Id ccache.ccache -Version $CcacheVersion
 
     Write-Host ""
     Write-Host "==> Installing development Python dependencies (pre-commit and others)..."

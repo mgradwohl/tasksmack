@@ -29,6 +29,7 @@
 
 #include "App/SelectOverride.h"
 #include "Core/EnvUtils.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
@@ -181,7 +182,7 @@ namespace Detail
 /// The action @p key names with @p value (both trimmed), or why it doesn't.
 [[nodiscard]] inline std::expected<Action, std::string> parseAction(const std::string_view key, const std::string_view value)
 {
-    using SelectOverride::Detail::equalsIgnoreCase;
+    using Platform::equalsIgnoreCase;
     if (value.empty())
     {
         return std::unexpected(std::format("gives '{}' no value", key));
