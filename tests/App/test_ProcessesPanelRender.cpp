@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <latch>
 #include <map>
 #include <memory>
 #include <optional>
@@ -70,6 +71,14 @@ namespace
 
 constexpr float DISPLAY_WIDTH = 1600.0F;
 constexpr float DISPLAY_HEIGHT = 1200.0F;
+
+/// onAttach(), then the seed the sampler thread takes (#2731), adopted as the first frame after it
+/// would: the tests below read the rows, actions and capabilities as they stand after it.
+void attachAndSeed(ProcessesPanel& panel)
+{
+    panel.onAttach();
+    ASSERT_TRUE(panel.waitForFirstSample()) << "the sampler thread did not build the platform and seed the model in time";
+}
 
 class ProcessesPanelRenderTest : public ::testing::Test
 {
@@ -115,7 +124,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
             },
             std::move(raiseEvent));
         panel->setGpuModel(gpuModel);
-        panel->onAttach();
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
@@ -140,7 +149,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
             std::move(raiseEvent));
-        panel->onAttach();
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
@@ -393,7 +402,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
                     .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
             },
             [](Core::Event& /*event*/) {}); // selection events, which these tests do not read
-        panel->onAttach();
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < count; ++frame)
@@ -628,7 +637,7 @@ TEST_F(ProcessesPanelRenderTest, CopyNameAndCopyCommandLinePutThemOnTheClipboard
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -707,7 +716,7 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -832,7 +841,7 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -918,7 +927,7 @@ TEST_F(ProcessesPanelRenderTest, ARowActionRunsOffTheFrameAndShowsItsProgress)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -1269,7 +1278,7 @@ TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         std::function<void(Core::Event&)>{});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -1300,7 +1309,7 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         std::function<void(Core::Event&)>{});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -2322,6 +2331,72 @@ TEST_F(ProcessesPanelRenderTest, ADeepLongNameIsCutShortWithItsWholeNameAsTheToo
         }
     }
     EXPECT_TRUE(shown);
+    panel->onDetach();
+}
+
+// #2731: onAttach() builds no probe and takes no read on the thread that calls it. The platform factory
+// runs on the sampler thread, once, and the model is seeded there; the attaching thread finds the model
+// in place (the shell wires it) but no rows, no capabilities and no actions until the seed is adopted.
+TEST_F(ProcessesPanelRenderTest, OnAttachLeavesThePlatformFactoryToTheSamplerThread)
+{
+    std::atomic<int> factoryCalls{0};
+    std::atomic<std::thread::id> factoryThread{};
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&factoryCalls, &factoryThread]
+        {
+            ++factoryCalls;
+            factoryThread.store(std::this_thread::get_id());
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            Platform::ProcessCapabilities caps;
+            caps.hasThreadCount = true; // off by default: its arrival shows the probe's capabilities came through
+            probe->setCapabilities(caps);
+            auto actions = std::make_unique<TestMocks::MockProcessActions>();
+            actions->setCapabilities({.canTerminate = true, .canKill = true});
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(actions), .icons = nullptr};
+        });
+    panel->onAttach();
+    EXPECT_NE(panel->processModel(), nullptr) << "the model exists from onAttach(), for the shell to wire";
+    EXPECT_FALSE(panel->firstSnapshotAdopted());
+    EXPECT_EQ(panel->processCount(), 0U) << "no read has happened on this thread";
+
+    ASSERT_TRUE(panel->waitForFirstSample());
+    EXPECT_EQ(factoryCalls.load(), 1);
+    EXPECT_NE(factoryThread.load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
+    EXPECT_TRUE(panel->firstSnapshotAdopted());
+    EXPECT_EQ(panel->processCount(), 1U) << "the seed, taken on the sampler thread, was adopted";
+    EXPECT_TRUE(panel->processCapabilities().hasThreadCount) << "the mock's capabilities came with the first generation";
+    panel->onDetach();
+}
+
+// #2731: a frame drawn before the first publication -- the platform still being built on the sampler
+// thread -- draws the toolbar and an empty table, not a crash; the rows appear once the seed arrives.
+TEST_F(ProcessesPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
+{
+    auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
+    auto panel = std::make_unique<ProcessesPanel>(
+        [gate]
+        {
+            gate->wait();
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string before = renderAndCapture(*panel);
+    EXPECT_FALSE(before.contains("server")) << "no generation yet: " << before;
+    EXPECT_TRUE(before.contains("Columns")) << "the toolbar is drawn: " << before;
+
+    gate->count_down();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("server")) << after;
     panel->onDetach();
 }
 

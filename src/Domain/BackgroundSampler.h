@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,14 +26,30 @@ struct SamplerConfig
 {
     std::chrono::milliseconds interval{1000}; // 1 second default
 
-    /// The owner has just taken a sample itself (a synchronous seed before start()), so wait one
-    /// interval before the first background sample. Sampling again straight away gave deltas over a
-    /// few ms: 0% CPU and 0 B/s points at every startup (#1102).
+    /// The owner has just taken a sample itself (a synchronous seed before start(), or one in
+    /// onThreadStart), so wait one interval before the first background sample. Sampling again straight
+    /// away gave deltas over a few ms: 0% CPU and 0 B/s points at every startup (#1102).
     bool firstSampleAfterInterval = false;
 
     /// OS name of the sampler thread, so per-thread tools (pidstat -t, top -H, perf, WPA) can tell
     /// the process and system samplers apart. Linux keeps the first 15 bytes.
     std::string threadName{Platform::SAMPLER_THREAD_NAME};
+
+    /// The start hook (#2731): run once per start(), on the sampler thread, after it is named and in
+    /// its apartment (multiThreadedApartment) and before its first pass. The owner builds its probes
+    /// and seeds its models here, so the UI thread never constructs a probe or blocks on a first read,
+    /// and what a probe creates (PDH's providers, DXGI) belongs to the sampler thread. The hook runs
+    /// with the sampler already running: stop() waits for it, requestRefresh() and setInterval() are
+    /// taken after it. One that throws is logged and sampling goes on, with whatever it managed to set
+    /// up; a model it left without a probe samples nothing.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::function<void()> onThreadStart{};
+
+    /// Windows: the sampler thread joins the multithreaded COM apartment for its life
+    /// (Platform::MultiThreadedApartment), so the COM objects its probes create live there, not in the
+    /// UI thread's STA where every later call would marshal through the UI's message loop (#2731).
+    /// Elsewhere nothing. Off for samplers whose probes bring their own apartment (a ComScope).
+    bool multiThreadedApartment = false;
 };
 
 /// How long samples take, for one samplable or for a whole sampling pass (#1416).
@@ -130,6 +147,9 @@ class BackgroundSampler
         std::size_t suppressedCount = 0;
     };
 
+    /// Runs the owner's start hook (SamplerConfig::onThreadStart), if any, on the sampler thread before
+    /// its first pass, timing it and containing what it throws (#2731). Never throws.
+    static void runStartHook(const std::function<void()>& hook, std::string_view threadName) noexcept;
     void samplerLoop(const std::stop_token& stopToken);
     /// One sampling pass: every samplable's sample() (each failure caught and logged), then the pass's
     /// metrics. Throws (std::bad_alloc) only from the pass's own bookkeeping, which samplerLoop()

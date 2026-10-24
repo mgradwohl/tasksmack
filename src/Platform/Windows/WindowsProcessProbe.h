@@ -31,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -45,6 +46,7 @@
 #include <mstcpip.h>
 // clang-format on
 
+#include "WindowsEnergyMeter.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 
@@ -126,6 +128,11 @@ struct WindowsProcessProbeFunctions
         /// IsWow64Process2), read once per process for its architecture (#2394). Nullable: not read.
         std::uint16_t (*processMachine)(HANDLE) = nullptr;
     } process;
+
+    /// The EMI energy meter device calls behind per-process power (#2587), opened on the probe's
+    /// one-shot opener thread. Nullable (nullopt): no energy meter is looked for, and power is not
+    /// claimed, so a test's fake probe starts no thread and touches no device.
+    std::optional<Windows::EnergyMeterFunctions> energyMeter = std::nullopt;
 };
 
 /// Windows implementation of IProcessProbe.
@@ -133,6 +140,12 @@ struct WindowsProcessProbeFunctions
 /// (PIDs, names, CPU times, memory, I/O, handle/thread counts, thread states), plus TTL-cached
 /// per-process details (owner, command line, publisher, classification, priority) refreshed via
 /// short-lived handles.
+/// Per-process power (#2587) is the CPU packages' energy from the EMI energy meters
+/// (WindowsEnergyMeter.h), read raw each sample by readPackageEnergy() and shared out by CPU time
+/// in Domain, as Linux's RAPL counter is. The meters are enumerated and opened once, on the
+/// ts-emi-open worker started at construction (SetupAPI can stall on a slow ACPI call, so never on
+/// the thread that builds the probe); hasPowerUsage turns true once it finds a package channel, and
+/// stays false where there is none.
 class WindowsProcessProbe : public IProcessProbe
 {
   public:
@@ -164,6 +177,12 @@ class WindowsProcessProbe : public IProcessProbe
     /// While the opt-in UDP collector (#1492) delivers, a complete reading also carries each
     /// process's UDP bytes as one synthetic connection (EtwNet::appendUdpSamples()).
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
+
+    /// The CPU packages' cumulative energy from the EMI meters (#2587), with the busy CPU ticks read
+    /// alongside, or nullopt while no package channel is open (none found, or the opener still running).
+    /// A read that fails (a meter gone) is a reading with no energy, so the interval reads as 0 W and
+    /// the baseline restarts, as on Linux; it is logged once, not per sample.
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
 
     /// The opt-in UDP collector (#1492), which App starts and stops; may be null.
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
@@ -264,6 +283,9 @@ class WindowsProcessProbe : public IProcessProbe
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
+    /// The system-wide CPU time spent running processes (kernel less idle, plus user), in FILETIME
+    /// ticks: the energy attribution's share denominator (#2587). nullopt if GetSystemTimes failed.
+    [[nodiscard]] static std::optional<std::uint64_t> readBusyCpuTicks();
     // The highest total totalCpuTime() has returned, so it never steps backwards (#1303).
     mutable std::atomic<std::uint64_t> m_HighestTotalCpuTime{0};
 
@@ -299,6 +321,16 @@ class WindowsProcessProbe : public IProcessProbe
     std::chrono::steady_clock::time_point m_NextActiveMasksRead;
     bool m_ThreadsMaySpanGroups = true;      // threadsMaySpanGroups() for this Windows build
     std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
+
+    // The EMI package energy meters (#2587). The opener thread stores the opened meter under the
+    // mutex and then raises m_HasPackageEnergy; readPackageEnergy() (const, on the sampler thread)
+    // reads under the same mutex, so both are mutable. capabilities() reads only the atomic.
+    mutable std::mutex m_EnergyMeterMutex;
+    mutable Windows::EnergyMeter m_EnergyMeter;           // Guarded by m_EnergyMeterMutex
+    mutable std::vector<std::uint64_t> m_PackageEnergyUj; // Guarded by m_EnergyMeterMutex; reused scratch
+    mutable std::atomic<bool> m_HasPackageEnergy{false};
+    mutable std::atomic<bool> m_PackageEnergyReadFailed{false}; // A failed measurement read was logged
+    std::jthread m_EnergyMeterOpener;                           // Last: joined first, while the meter and the mutex are alive
 };
 
 } // namespace Platform

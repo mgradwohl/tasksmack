@@ -34,12 +34,14 @@
 #include "Platform/ProcessTypes.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -142,8 +144,23 @@ class ProcessesPanel : public Panel
     ProcessesPanel(ProcessesPanel&&) = delete;
     ProcessesPanel& operator=(ProcessesPanel&&) = delete;
 
-    /// Initialize the panel (creates ProcessModel and starts sampler).
+    /// Initialize the panel: makes the ProcessModel and starts its sampler, whose thread builds the
+    /// platform (probe, actions, icons, UDP collector) and seeds the model (#2731). Returns without a
+    /// probe call or a read: the table has no rows until onUpdate() adopts the seed.
     void onAttach() override;
+
+    /// Waits until the sampler thread has built the platform and seeded the model, then adopts the
+    /// platform and the seed generation as onUpdate() would (#2731). For tests, which used to find the
+    /// seed in place when onAttach() returned; the app never waits. False on timeout, or before onAttach().
+    [[nodiscard]] bool waitForFirstSample(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+
+    /// Whether a snapshot generation has been adopted yet: false until the first frame after the seed
+    /// (#2731). Until then processCapabilities() is the defaults, so a reader that acts on them once at
+    /// startup (the privilege notice) waits for this.
+    [[nodiscard]] bool firstSnapshotAdopted() const noexcept
+    {
+        return m_CachedSnapshotVersion != std::numeric_limits<std::uint64_t>::max();
+    }
 
     /// Cleanup (stops sampler).
     void onDetach() override;
@@ -347,6 +364,32 @@ class ProcessesPanel : public Panel
     // destructor ordering.
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+
+    /// What the sampler thread's start hook built besides the probe (#2731), on its way to this panel:
+    /// the row menu's actions, the UDP collector and the icon source are the UI thread's to own, so the
+    /// hook leaves them here and adoptPlatform() takes them on the next frame. Shared between the hook
+    /// and the panel, so neither depends on the other's lifetime.
+    struct PlatformHandoff
+    {
+        struct Contents
+        {
+            std::unique_ptr<Platform::IProcessActions> actions;
+            Platform::ProcessActionCapabilities actionCapabilities; ///< actions->actionCapabilities(), asked on the hook's thread
+            std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector;
+            std::unique_ptr<Platform::IProcessIconSource> icons;
+        };
+        std::mutex mutex;
+        std::optional<Contents> contents; ///< guarded by mutex; empty once taken
+        std::atomic<bool> seeded{false};  ///< set last: the probe is in place and the model has its seed
+    };
+    std::shared_ptr<PlatformHandoff> m_Handoff;
+    /// The hook's contents, once: empty when nothing is waiting or it was taken already.
+    [[nodiscard]] std::optional<PlatformHandoff::Contents> takePlatformHandoff();
+    /// Takes the hook's contents into this panel (actions, collector, icon view). UI thread.
+    void adoptPlatform();
+    /// The column defaults for this system's capabilities, from the first generation adopted (#1210, #2731).
+    void applyStartupColumnDefaults();
+    bool m_ColumnDefaultsApplied = false;
     // ImGui's ID for the process table, recorded when it is rendered; 0 until then. Needed to pick
     // this table's section out of ImGui's settings text (#952).
     std::uint32_t m_TableId = 0;

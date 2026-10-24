@@ -46,6 +46,9 @@ inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-rea
 /// The one-shot worker that reads the battery device's static facts on Windows (#1523, #2731): at most
 /// every BATTERY_INFO_REFRESH_SECONDS, so a slow ACPI call never stretches a system sample.
 inline constexpr std::string_view BATTERY_READ_THREAD_NAME = "ts-battery-read";
+/// The one-shot worker that enumerates and opens the EMI energy meters on Windows (#2587), so the
+/// SetupAPI enumeration, which a slow ACPI call can stall, never runs on the UI thread or in a sample.
+inline constexpr std::string_view ENERGY_METER_OPEN_THREAD_NAME = "ts-emi-open";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).
