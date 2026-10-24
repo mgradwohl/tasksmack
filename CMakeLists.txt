@@ -256,6 +256,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/SystemdUnits.cpp
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
+    src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)
     src/Platform/Linux/NetworkdResolved.cpp
     src/Platform/Linux/LinuxServiceActions.cpp
     src/Platform/Linux/LinuxServiceProbe.cpp

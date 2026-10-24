@@ -13,6 +13,7 @@
 #include "LinuxPublicIp.h"
 #include "LinuxSensors.h"
 #include "LinuxStorage.h"
+#include "Nl80211.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "ProcPrivileges.h"
 #include "SystemdBus.h"
@@ -307,6 +308,10 @@ NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters(bool /*includeWifi
         readers.linkDns = SystemdBus::makeLinkDnsReader();
         readers.dhcpLease = SystemdBus::makeDhcpLeaseReader();
         readers.networkdLease = SystemdBus::makeNetworkdLeaseReader();
+        readers.wifiStation = [](int ifindex)
+        {
+            return Nl80211::readStation(static_cast<std::uint32_t>(ifindex));
+        };
     }
     LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root, info, m_Root == "/" ? &listAdapterAddresses : nullptr, readers);
     return info;
