@@ -733,6 +733,8 @@ Three established ways to get real coverage of such a file's logic:
        dependency it pins at the same commit. The bumped one is downloaded.
      - **Reading the numbers:** live values (CPU %, times) and System Information's real-machine facts move a
        little between runs, so a small change on every step is normal. Look at the diffs.
+     - **Where it runs:** under Xvfb with `WAYLAND_DISPLAY` unset, as CI runs it, even when a desktop is up,
+       because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
      - **Requirements:** both refs need the scenario suite.
 
 Before writing any of these tests, check whether the logic already exists as a shared, tested

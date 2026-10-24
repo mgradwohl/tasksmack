@@ -15,8 +15,9 @@
 # Dependencies: each worktree reuses this checkout's FetchContent sources (.cache/fetchcontent, or
 # --seed) read-only, through FETCHCONTENT_SOURCE_DIR_<NAME>, for every dependency whose GIT_TAG in that
 # ref matches the seed's checkout; a dependency the ref pins differently, such as the one being bumped,
-# is downloaded into that worktree's own cache as a normal configure would. Without $DISPLAY the
-# scenarios run under Xvfb (apt install xvfb).
+# is downloaded into that worktree's own cache as a normal configure would. The scenarios run under Xvfb
+# (apt install xvfb) with WAYLAND_DISPLAY unset, as in CI, even when a desktop is up: on a real display
+# the pointer's own moves would mix with the scenarios' injected ones; --use-display runs them there.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +27,7 @@ OUT=""
 SEED="$PROJECT_ROOT/.cache/fetchcontent"
 WORK=""
 KEEP=false
+USE_DISPLAY=false
 JOBS=4
 
 usage() {
@@ -39,6 +41,7 @@ Options:
   --seed DIR    FetchContent sources to reuse (default: $SEED)
   --work DIR    Where the scratch worktrees go (default: a new directory under \${TMPDIR:-/tmp})
   --keep        Keep the worktrees and their builds afterwards
+  --use-display Run the scenarios on the current display instead of Xvfb (keep the pointer off the window)
   -h, --help    Show this help
 EOF
 }
@@ -50,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
     --keep) KEEP=true; shift ;;
+    --use-display) USE_DISPLAY=true; shift ;;
     -h | --help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *) REFS+=("$1"); shift ;;
@@ -58,6 +62,10 @@ done
 if [[ ${#REFS[@]} -ne 2 ]]; then
     usage >&2
     exit 2
+fi
+if [[ "$USE_DISPLAY" == false ]] && ! command -v xvfb-run >/dev/null; then
+    echo "xvfb-run not found (apt install xvfb), or pass --use-display" >&2
+    exit 1
 fi
 
 slug() { tr -c 'A-Za-z0-9._-' '-' <<<"$1" | sed 's/-*$//'; }
@@ -127,8 +135,8 @@ run_side() {
     rm -rf "${OUT:?}/$side"
     mkdir -p "$OUT/$side"
     local runner=()
-    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        runner=(xvfb-run -a)
+    if [[ "$USE_DISPLAY" == false ]]; then
+        runner=(xvfb-run -a env -u WAYLAND_DISPLAY)
     fi
     # -V: the suite's whole log, warnings included, whether it passes or not.
     if ! (cd "$tree" && TASKSMACK_UI_CAPTURE_DIR="$OUT/$side" "${runner[@]}" ctest --preset debug -R '^UiScenarioTest$' -V \
