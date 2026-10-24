@@ -150,30 +150,43 @@ namespace
 {
 
 /// The one-factory test seam shared out to the three samplers (#2731): @p makeProbes runs once, on
-/// whichever sampler thread reaches it first (the others wait on the once_flag), and each sampler's
-/// factory then moves its own probes out of the one result. The members each takes are distinct, and
-/// call_once orders every taker after the run, so the moves never race.
+/// whichever sampler thread reaches it first, and each sampler's factory then moves its own probes out
+/// of the one result. One mutex covers the run and every take, so the run happens-before each take, and
+/// a probe's first use on its taker's thread (the move itself, then GPUModel::setProbe()'s virtual
+/// calls) comes after a lock that thread acquired. It was std::call_once, the same order in the
+/// language, but libc++'s call_once completes inside libc++.so, which ThreadSanitizer doesn't
+/// instrument, so TSan reported the moves and the first virtual calls on probes another thread built as
+/// data races (the Sanitizers leg went red on main after #2877). A mutex is a synchronization it sees.
 [[nodiscard]] SystemMetricsProbeFactories splitProbeFactory(std::function<SystemMetricsProbes()> makeProbes)
 {
     struct Shared
     {
-        std::once_flag once;
-        SystemMetricsProbes probes;
+        std::mutex mutex;
+        std::function<SystemMetricsProbes()> makeProbes; ///< guarded by mutex; empty once it has run
+        SystemMetricsProbes probes;                      ///< guarded by mutex; each member emptied by its taker
     };
-    auto shared = std::make_shared<Shared>();
-    const auto made = [shared, makeProbes = std::move(makeProbes)] -> SystemMetricsProbes&
+    const auto shared = std::make_shared<Shared>();
+    shared->makeProbes = std::move(makeProbes);
+    // Runs the factory if no taker has yet (one that throws stays, as under call_once, for the next taker
+    // to retry; the sampler's start hook logs the failure), then hands @p take the result, still locked.
+    const auto made = [shared](auto take)
     {
-        std::call_once(shared->once, [&] { shared->probes = makeProbes(); });
-        return shared->probes;
+        const std::scoped_lock lock(shared->mutex);
+        if (shared->makeProbes)
+        {
+            shared->probes = shared->makeProbes();
+            shared->makeProbes = nullptr;
+        }
+        return take(shared->probes);
     };
     return {.system =
                 [made]
             {
-                SystemMetricsProbes& probes = made();
-                return SystemModelProbes{.system = std::move(probes.system), .power = std::move(probes.power)};
+                return made([](SystemMetricsProbes& probes)
+                            { return SystemModelProbes{.system = std::move(probes.system), .power = std::move(probes.power)}; });
             },
-            .disk = [made] { return std::move(made().disk); },
-            .gpu = [made] { return std::move(made().gpu); }};
+            .disk = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.disk); }); },
+            .gpu = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.gpu); }); }};
 }
 
 } // namespace
