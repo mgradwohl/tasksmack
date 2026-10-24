@@ -146,6 +146,11 @@ std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Syntheti
     return crashHistoryProbe(Platform::makeSystemInfoProbe(), sharedPrivilegedBroker());
 }
 
+std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::Scenario* scenario)
+{
+    return scenario != nullptr ? nullptr : sharedPrivilegedBroker();
+}
+
 void Detail::setSharedPrivilegedBrokerForTesting(std::shared_ptr<Platform::IPrivilegedBroker> broker)
 {
     brokerForTesting() = std::move(broker);

@@ -507,6 +507,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_ProcessAffinityDialog.cpp
     App/test_AboutDialogRender.cpp
+    App/test_AccessNoticeDialogRender.cpp  # Standard or Administrator, headless (#2728)
     App/test_ElevationNoticeDialogRender.cpp
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
@@ -830,6 +831,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/AboutLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/AccessNoticeDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
