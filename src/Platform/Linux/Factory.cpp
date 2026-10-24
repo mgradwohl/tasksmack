@@ -14,6 +14,7 @@
 #include "LinuxProcessSecurityReader.h"
 #include "LinuxServiceActions.h"
 #include "LinuxServiceProbe.h"
+#include "LinuxStartup.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "PkexecBroker.h"
@@ -104,14 +105,14 @@ std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader()
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
-    // XDG autostart (~/.config/autostart, /etc/xdg/autostart) isn't supported on Linux yet.
-    return std::make_unique<UnsupportedStartupProbe>();
+    // XDG autostart: ~/.config/autostart, then /etc/xdg/autostart (#2541).
+    return std::make_unique<LinuxStartupProbe>();
 }
 
 std::unique_ptr<IStartupActions> makeStartupActions()
 {
-    // Toggling XDG autostart entries (Hidden=true) isn't supported on Linux yet.
-    return std::make_unique<UnsupportedStartupActions>();
+    // A user copy in ~/.config/autostart with Hidden set (#2541).
+    return std::make_unique<LinuxStartupActions>();
 }
 
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()

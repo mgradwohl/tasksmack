@@ -1,5 +1,6 @@
 #include "ProcessModel.h"
 
+#include "DeferredProbe.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - GPUModel.h used for m_GPUModel method calls
 #include "GPUModel.h"
 #include "History.h"
@@ -272,40 +273,55 @@ void appendUnique(std::vector<std::string>& into, const std::vector<std::string>
 
 } // namespace
 
-ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now)
-    : m_Probe(std::move(probe)), m_Now(std::move(now))
+ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now) : ProcessModel(DEFERRED_PROBE, std::move(now))
+{
+    setProbe(std::move(probe));
+}
+
+ProcessModel::ProcessModel(DeferredProbeTag /*tag*/, NowFunction now) : m_Now(std::move(now))
 {
     // Reserve capacity upfront to avoid rehashing as processes are discovered on the
     // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
     m_PerProcessState.reserve(512);
 
     applyHistoryCapacity();
+}
 
-    if (m_Probe)
+void ProcessModel::setProbe(std::unique_ptr<Platform::IProcessProbe> probe)
+{
+    // Serialised with refresh(), so a probe is never replaced under a sample in progress; the
+    // published copy of the capabilities is written under m_Mutex, as refresh() writes it (#1254).
+    const std::scoped_lock samplingLock(m_SamplingMutex);
+    m_Probe = std::move(probe);
+    if (!m_Probe)
     {
-        m_Capabilities = m_Probe->capabilities();
-        m_PublishedCapabilities = m_Capabilities;
-        m_TicksPerSecond = m_Probe->ticksPerSecond();
-        m_SystemTotalMemory = m_Probe->systemTotalMemory();
-        spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
-                     "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
-                     "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
-                     m_Capabilities.hasIoCounters,
-                     m_Capabilities.hasThreadCount,
-                     m_Capabilities.hasUserSystemTime,
-                     m_Capabilities.hasStartTime,
-                     m_Capabilities.hasUser,
-                     m_Capabilities.hasCommand,
-                     m_Capabilities.hasNice,
-                     m_Capabilities.hasPageFaults,
-                     m_Capabilities.hasPeakRss,
-                     m_Capabilities.hasCpuAffinity,
-                     m_Capabilities.hasNetworkCounters,
-                     m_Capabilities.hasPowerUsage);
-        spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
-                      m_TicksPerSecond,
-                      Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
+        return;
     }
+    m_Capabilities = m_Probe->capabilities();
+    m_TicksPerSecond = m_Probe->ticksPerSecond();
+    m_SystemTotalMemory = m_Probe->systemTotalMemory();
+    {
+        const std::unique_lock lock(m_Mutex);
+        m_PublishedCapabilities = m_Capabilities;
+    }
+    spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
+                 "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
+                 "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
+                 m_Capabilities.hasIoCounters,
+                 m_Capabilities.hasThreadCount,
+                 m_Capabilities.hasUserSystemTime,
+                 m_Capabilities.hasStartTime,
+                 m_Capabilities.hasUser,
+                 m_Capabilities.hasCommand,
+                 m_Capabilities.hasNice,
+                 m_Capabilities.hasPageFaults,
+                 m_Capabilities.hasPeakRss,
+                 m_Capabilities.hasCpuAffinity,
+                 m_Capabilities.hasNetworkCounters,
+                 m_Capabilities.hasPowerUsage);
+    spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
+                  m_TicksPerSecond,
+                  Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
 }
 
 void ProcessModel::refresh()

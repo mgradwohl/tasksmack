@@ -10,11 +10,9 @@
 /// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484);
 /// the primary row of a selection, the one Process Details shows, is marked (#1926).
 /// The startup selection (TASKSMACK_SELECT, #1559) selects its process, by PID or by name, once it is
-/// listed, and opens Details and its tab when asked to. onUpdate() gives the sampler the refresh setting,
-/// slowed while the window is resized or moved and for a moment after, and relaxed on a tab with no
-/// process data.
+/// listed, and opens Details and its tab when asked to. The sampler runs at the refresh setting in every
+/// UI state (#2731): tab changes and the frame rate never change it.
 
-#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDumpView.h"
@@ -55,6 +53,7 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <latch>
 #include <map>
 #include <memory>
 #include <optional>
@@ -72,6 +71,14 @@ namespace
 
 constexpr float DISPLAY_WIDTH = 1600.0F;
 constexpr float DISPLAY_HEIGHT = 1200.0F;
+
+/// onAttach(), then the seed the sampler thread takes (#2731), adopted as the first frame after it
+/// would: the tests below read the rows, actions and capabilities as they stand after it.
+void attachAndSeed(ProcessesPanel& panel)
+{
+    panel.onAttach();
+    ASSERT_TRUE(panel.waitForFirstSample()) << "the sampler thread did not build the platform and seed the model in time";
+}
 
 class ProcessesPanelRenderTest : public ::testing::Test
 {
@@ -100,9 +107,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
     }
 
     /// An attached panel reading three processes: init (1), server (100) and its child worker (101). The
-    /// events it raises go to @p raiseEvent, when given; onUpdate() is told no interaction redraw is on.
-    /// Its GPU model, which says whether per-process GPU data and an NPU are there, is @p gpuModel, or
-    /// none.
+    /// events it raises go to @p raiseEvent, when given. Its GPU model, which says whether per-process GPU
+    /// data and an NPU are there, is @p gpuModel, or none.
     [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel(std::function<void(Core::Event&)> raiseEvent = {},
                                                                        const std::shared_ptr<const Domain::GPUModel>& gpuModel = nullptr)
     {
@@ -116,10 +122,9 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 return ProcessesPanelPlatform{
                     .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
             },
-            std::move(raiseEvent),
-            [] { return false; });
+            std::move(raiseEvent));
         panel->setGpuModel(gpuModel);
-        panel->onAttach();
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
@@ -143,9 +148,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 actions = mock.get();
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
-            std::move(raiseEvent),
-            [] { return false; });
-        panel->onAttach();
+            std::move(raiseEvent));
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
@@ -397,9 +401,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 return ProcessesPanelPlatform{
                     .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
             },
-            [](Core::Event& /*event*/) {}, // selection events, which these tests do not read
-            [] { return false; });
-        panel->onAttach();
+            [](Core::Event& /*event*/) {}); // selection events, which these tests do not read
+        attachAndSeed(*panel);
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < count; ++frame)
@@ -634,7 +637,7 @@ TEST_F(ProcessesPanelRenderTest, CopyNameAndCopyCommandLinePutThemOnTheClipboard
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -713,7 +716,7 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -838,7 +841,7 @@ TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
-    panel->onAttach();
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -923,9 +926,8 @@ TEST_F(ProcessesPanelRenderTest, ARowActionRunsOffTheFrameAndShowsItsProgress)
             actions = mock.get();
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
-        [](Core::Event&) {},
-        [] { return false; });
-    panel->onAttach();
+        [](Core::Event&) {});
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
@@ -1275,9 +1277,8 @@ TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
             return ProcessesPanelPlatform{
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
-        std::function<void(Core::Event&)>{},
-        [] { return false; });
-    panel->onAttach();
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -1307,9 +1308,8 @@ TEST_F(ProcessesPanelRenderTest, TheArchitectureColumnShowsEachProcesssArchitect
             return ProcessesPanelPlatform{
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
-        std::function<void(Core::Event&)>{},
-        [] { return false; });
-    panel->onAttach();
+        std::function<void(Core::Event&)>{});
+    attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
     renderUntilLoaded(*panel);
@@ -1601,53 +1601,49 @@ TEST_F(ProcessesPanelRenderTest, TheStartupSelectionFindsAProcessByName)
     panel->onDetach();
 }
 
-TEST_F(ProcessesPanelRenderTest, TheSamplingIntervalFollowsInteractionAndTheTabOnShow)
+// #2731: the sampler runs at the refresh setting in every UI state. Settings is the one thing that sets
+// it. A tab change (to a tab with process data or without), frames at any rate, and the slow frames of
+// a minimized window change nothing. Nor can a resize or move: onUpdate() no longer asks whether one is
+// on, so there is no state through which it could.
+TEST_F(ProcessesPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEveryUiState)
 {
-    bool interacting = false;
-    auto panel = std::make_unique<ProcessesPanel>(
-        []
+    const auto panel = attachedPanel();
+    const auto setting = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(panel->samplingInterval(), setting);
+
+    const auto expectThroughEveryUiState = [&panel](std::chrono::milliseconds expected)
+    {
+        // Each main tab shown in turn, with a frame on each: tabs with process data and tabs without.
+        for (const char* tab : {"Processes", "SystemInfo", "SystemOverview", "Services", "ProcessDetails", "Startup", "Processes"})
         {
-            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
-            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
-            return ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
-        },
-        [](Core::Event&) {},
-        [&interacting] { return interacting; });
-    panel->onAttach();
-    Core::ActiveTabChangedEvent shown("Processes");
-    panel->onEvent(shown);
-    const auto base = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
-    const auto normal = AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, true, false);
-    const auto throttled = AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, true, true);
-    ASSERT_GT(throttled, normal);
+            Core::ActiveTabChangedEvent shown(tab);
+            panel->onEvent(shown);
+            panel->onUpdate(1.0F / 60.0F);
+            EXPECT_EQ(panel->samplingInterval(), expected) << tab;
+        }
+        // Frames at the display rate of a resize or move, at 60 Hz, at the 5 Hz of a minimized window,
+        // and after the gap of a window left minimized or covered.
+        for (const float deltaTime : {0.002F, 1.0F / 60.0F, 0.2F, 2.0F})
+        {
+            for (int frame = 0; frame < 20; ++frame)
+            {
+                panel->onUpdate(deltaTime);
+            }
+            EXPECT_EQ(panel->samplingInterval(), expected) << deltaTime;
+        }
+    };
+    expectThroughEveryUiState(setting);
 
-    panel->onUpdate(0.016F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
+    // Settings changes it, and the new value holds through the same states.
+    Core::RefreshRateChangedEvent faster(250);
+    panel->onEvent(faster);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(250));
+    expectThroughEveryUiState(std::chrono::milliseconds(250));
 
-    // A resize or move slows sampling while it lasts...
-    interacting = true;
-    panel->onUpdate(0.016F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), throttled);
-
-    // ...and for a moment after, so a drag that pauses doesn't flap the interval...
-    interacting = false;
-    panel->onUpdate(0.1F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), throttled);
-
-    // ...then the setting comes back.
-    panel->onUpdate(0.5F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
-
-    // A tab that shows no process data relaxes it; coming back restores it.
-    Core::ActiveTabChangedEvent away("SystemInfo");
-    panel->onEvent(away);
-    panel->onUpdate(0.016F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, false, false));
-    EXPECT_GT(panel->appliedSamplingInterval(), normal);
-    panel->onEvent(shown);
-    panel->onUpdate(0.016F);
-    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
+    Core::RefreshRateChangedEvent slower(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    panel->onEvent(slower);
+    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    expectThroughEveryUiState(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
     panel->onDetach();
 }
 
@@ -2335,6 +2331,72 @@ TEST_F(ProcessesPanelRenderTest, ADeepLongNameIsCutShortWithItsWholeNameAsTheToo
         }
     }
     EXPECT_TRUE(shown);
+    panel->onDetach();
+}
+
+// #2731: onAttach() builds no probe and takes no read on the thread that calls it. The platform factory
+// runs on the sampler thread, once, and the model is seeded there; the attaching thread finds the model
+// in place (the shell wires it) but no rows, no capabilities and no actions until the seed is adopted.
+TEST_F(ProcessesPanelRenderTest, OnAttachLeavesThePlatformFactoryToTheSamplerThread)
+{
+    std::atomic<int> factoryCalls{0};
+    std::atomic<std::thread::id> factoryThread{};
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&factoryCalls, &factoryThread]
+        {
+            ++factoryCalls;
+            factoryThread.store(std::this_thread::get_id());
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            Platform::ProcessCapabilities caps;
+            caps.hasThreadCount = true; // off by default: its arrival shows the probe's capabilities came through
+            probe->setCapabilities(caps);
+            auto actions = std::make_unique<TestMocks::MockProcessActions>();
+            actions->setCapabilities({.canTerminate = true, .canKill = true});
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(actions), .icons = nullptr};
+        });
+    panel->onAttach();
+    EXPECT_NE(panel->processModel(), nullptr) << "the model exists from onAttach(), for the shell to wire";
+    EXPECT_FALSE(panel->firstSnapshotAdopted());
+    EXPECT_EQ(panel->processCount(), 0U) << "no read has happened on this thread";
+
+    ASSERT_TRUE(panel->waitForFirstSample());
+    EXPECT_EQ(factoryCalls.load(), 1);
+    EXPECT_NE(factoryThread.load(), std::this_thread::get_id()) << "the factory ran on the attaching thread";
+    EXPECT_TRUE(panel->firstSnapshotAdopted());
+    EXPECT_EQ(panel->processCount(), 1U) << "the seed, taken on the sampler thread, was adopted";
+    EXPECT_TRUE(panel->processCapabilities().hasThreadCount) << "the mock's capabilities came with the first generation";
+    panel->onDetach();
+}
+
+// #2731: a frame drawn before the first publication -- the platform still being built on the sampler
+// thread -- draws the toolbar and an empty table, not a crash; the rows appear once the seed arrives.
+TEST_F(ProcessesPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
+{
+    auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
+    auto panel = std::make_unique<ProcessesPanel>(
+        [gate]
+        {
+            gate->wait();
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string before = renderAndCapture(*panel);
+    EXPECT_FALSE(before.contains("server")) << "no generation yet: " << before;
+    EXPECT_TRUE(before.contains("Columns")) << "the toolbar is drawn: " << before;
+
+    gate->count_down();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("server")) << after;
     panel->onDetach();
 }
 

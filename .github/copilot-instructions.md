@@ -83,7 +83,7 @@ OS APIs (Linux: /proc/*, Windows: NtQuery*)
 - **Platform** (`src/Platform/`): Stateless probes returning raw counters (CPU ticks, bytes). No computation.
 - **Domain** (`src/Domain/`): Computes deltas/rates from counters, maintains history, publishes immutable snapshots.
 - **UI** (`src/UI/`): Renders snapshots via ImGui. Never calls Platform directly.
-- **App** (`src/App/`): Panels and shell; the composition root. The panels' real-or-synthetic platform objects all come from `App/PanelPlatforms.cpp` (the only App file besides `App/SyntheticScenario.cpp` that calls `Platform::make*()`), called at construction/`onAttach` and wired by `App/ShellPanels`.
+- **App** (`src/App/`): Panels and shell; the composition root. The panels' real-or-synthetic platform objects all come from `App/PanelPlatforms.cpp` (the only App file besides `App/SyntheticScenario.cpp` that calls `Platform::make*()`), called at attach time -- from the panel's sampler start hook, on the sampler thread (#2731) -- and wired by `App/ShellPanels`.
 - **Core** (`src/Core/`): Application lifecycle, windowing, event dispatch.
 - OpenGL calls confined to `Core/` and `UI/` only. Domain/Platform are graphics-agnostic.
 - Domain and Platform never depend on UI, Core, or graphics libraries.
@@ -134,8 +134,8 @@ struct ProcessCapabilities {
 
 ### Panel Lifecycle
 ```cpp
-void onAttach() override { /* get platform objects from App/PanelPlatforms (or an injected factory), create model, seed it, start its BackgroundSampler */ }
-void onDetach() override { /* stop the sampler, release the model */ }
+void onAttach() override { /* create the model without a probe (Domain::DEFERRED_PROBE), start its BackgroundSampler with an onThreadStart hook that, on the sampler thread, gets the platform objects from App/PanelPlatforms (or an injected factory), hands the probe to the model (setProbe()) and seeds it (#2731); return without a probe call */ }
+void onDetach() override { /* stop the sampler (which waits for its hook), release the model */ }
 void onUpdate(float deltaTime) override { /* per-frame bookkeeping (sampler interval, finished background tasks); the sampler, not onUpdate, calls refresh() */ }
 void renderContent() override { /* draw into ShellLayer's tab (no ImGui::Begin/End), render version-cached snapshots */ }
 ```

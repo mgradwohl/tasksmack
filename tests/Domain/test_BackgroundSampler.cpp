@@ -33,7 +33,18 @@
 #include <type_traits>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <objbase.h> // CoGetApartmentType: which apartment the start hook runs in (#2731)
+// clang-format on
+#else
 #include <pthread.h>
 #endif
 
@@ -342,6 +353,149 @@ TEST(BackgroundSamplerTest, SeededSamplerWaitsAnIntervalBeforeItsFirstSample)
     // while still catching a sampler that waits several intervals.
     EXPECT_GE(firstSampleAfter, 290ms);
     EXPECT_LT(firstSampleAfter, 1000ms);
+}
+
+namespace
+{
+
+/// Records, at its first sample, which thread sampled and how many times the start hook had run by then.
+class HookObservingSamplable : public MockSamplable
+{
+  public:
+    explicit HookObservingSamplable(const std::atomic<int>& hookRuns) : m_HookRuns(hookRuns)
+    {}
+
+    void sample() override
+    {
+        if (!m_Sampled.exchange(true))
+        {
+            m_HookRunsAtFirstSample.store(m_HookRuns.load());
+            m_FirstSampleThread.store(std::this_thread::get_id());
+        }
+        MockSamplable::sample();
+    }
+
+    [[nodiscard]] int hookRunsAtFirstSample() const
+    {
+        return m_HookRunsAtFirstSample.load();
+    }
+
+    [[nodiscard]] std::thread::id firstSampleThread() const
+    {
+        return m_FirstSampleThread.load();
+    }
+
+  private:
+    const std::atomic<int>& m_HookRuns;
+    std::atomic<bool> m_Sampled{false};
+    std::atomic<int> m_HookRunsAtFirstSample{-1};
+    std::atomic<std::thread::id> m_FirstSampleThread;
+};
+
+} // namespace
+
+// #2731: the start hook runs once per start(), on the sampler thread, before its first sample -- the
+// owner builds its probes and seeds its models there, never on the thread that called start().
+TEST(BackgroundSamplerTest, StartHookRunsOnceOnTheSamplerThreadBeforeTheFirstSample)
+{
+    std::atomic<int> hookRuns{0};
+    std::atomic<std::thread::id> hookThread{};
+    auto samplable = std::make_shared<HookObservingSamplable>(hookRuns);
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    config.onThreadStart = [&hookRuns, &hookThread]
+    {
+        hookThread.store(std::this_thread::get_id());
+        ++hookRuns;
+    };
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+
+    sampler.start();
+    samplable->waitForSamples(1);
+    sampler.stop();
+
+    EXPECT_EQ(hookRuns.load(), 1);
+    EXPECT_NE(hookThread.load(), std::this_thread::get_id()) << "the hook ran on the thread that called start()";
+    EXPECT_EQ(hookThread.load(), samplable->firstSampleThread()) << "the hook and the samples run on different threads";
+    EXPECT_EQ(samplable->hookRunsAtFirstSample(), 1) << "the first sample ran before the hook";
+
+    // A restart is a new run of the sampler, so the hook runs again: once per start().
+    sampler.start();
+    samplable->waitForSamples(2);
+    sampler.stop();
+    EXPECT_EQ(hookRuns.load(), 2);
+}
+
+// #2731: a hook that throws (a probe that could not be built) is logged and sampling goes on, so the
+// sampler still stops and reports like any other; the owner notices through its models.
+TEST(BackgroundSamplerTest, AStartHookThatThrowsIsContainedAndSamplingGoesOn)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    config.onThreadStart = []
+    {
+        throw std::runtime_error("no probes today");
+    };
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+
+    sampler.start();
+    samplable->waitForSamples(2);
+    EXPECT_TRUE(sampler.isRunning());
+    sampler.stop();
+    EXPECT_GE(samplable->getSampleCount(), 2);
+}
+
+namespace
+{
+
+/// Whether the calling thread is in COM's multithreaded apartment: false where there is no COM (Linux),
+/// so the test below reads the same answer on every platform.
+[[nodiscard]] bool currentThreadInMta()
+{
+#if defined(_WIN32)
+    APTTYPE type = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
+    return SUCCEEDED(CoGetApartmentType(&type, &qualifier)) && type == APTTYPE_MTA;
+#else
+    return false;
+#endif
+}
+
+} // namespace
+
+// #2731: a sampler asked for the multithreaded apartment runs its hook, and so its probes' construction,
+// in the MTA, so PDH's providers and DXGI never belong to the UI thread's STA. The flag off: no apartment.
+TEST(BackgroundSamplerTest, TheStartHookRunsInTheMultiThreadedApartmentWhenAsked)
+{
+    for (const bool wanted : {true, false})
+    {
+        std::atomic<bool> inMta{false};
+        std::atomic<bool> hookRan{false};
+        auto samplable = std::make_shared<MockSamplable>();
+        Domain::SamplerConfig config;
+        config.interval = 100ms;
+        config.multiThreadedApartment = wanted;
+        config.onThreadStart = [&inMta, &hookRan]
+        {
+            inMta.store(currentThreadInMta());
+            hookRan.store(true);
+        };
+        Domain::BackgroundSampler sampler(config);
+        sampler.addSamplable(samplable);
+        sampler.start();
+        samplable->waitForSamples(1);
+        sampler.stop();
+
+        EXPECT_TRUE(hookRan.load());
+#if defined(_WIN32)
+        EXPECT_EQ(inMta.load(), wanted) << "multiThreadedApartment = " << wanted;
+#else
+        EXPECT_FALSE(inMta.load()); // no COM: nothing to enter
+#endif
+    }
 }
 
 TEST(BackgroundSamplerTest, SetIntervalWhileStopped)

@@ -9,7 +9,7 @@ namespace Platform
 
 /// Where a startup entry is registered (#801). The Windows registry keys are under
 /// Software\Microsoft\Windows\CurrentVersion; the folders are the Start menu's Startup folders; a packaged
-/// app's startup task is declared in its package manifest (#1798).
+/// app's startup task is declared in its package manifest (#1798). On Linux, an XDG autostart file (#2541).
 enum class StartupLocation : std::uint8_t
 {
     RunUser,             ///< HKCU ...\Run
@@ -20,6 +20,9 @@ enum class StartupLocation : std::uint8_t
     StartupFolderUser,   ///< The user's Startup folder
     StartupFolderCommon, ///< The all-users Startup folder
     PackagedApp,         ///< A packaged (MSIX / Store) app's windows.startupTask, for the current user
+    XdgAutostartUser,    ///< Linux: a file in ~/.config/autostart only (#2541)
+    XdgAutostartSystem,  ///< Linux: a file in /etc/xdg/autostart (or another $XDG_CONFIG_DIRS), which the
+                         ///< user's copy of the same name, when there is one, switches
 };
 
 /// Whether an entry starts for the current user only or for every user of the machine.
@@ -70,6 +73,9 @@ struct StartupEntry
     /// Whether an administrator or group policy sets the enabled state (a packaged task's
     /// EnabledByPolicy or DisabledByPolicy), so the user can't change it.
     bool setByPolicy = false;
+    /// Why its enabled state can't be changed here, when the platform knows a reason of its own (Linux: an
+    /// autostart entry for another desktop, "Starts only in KDE"). Empty otherwise.
+    std::string notSwitchableReason;
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
     std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.
     StartupTargetState target = StartupTargetState::Unresolved;
@@ -107,8 +113,8 @@ class IStartupProbe
     [[nodiscard]] virtual std::vector<StartupEntry> enumerate() = 0;
 };
 
-/// The probe for a platform without a startup implementation yet (Linux until XDG autostart support
-/// lands): no entries, and canEnumerate false so the UI can say so.
+/// The probe for a platform without a startup implementation (and the synthetic runs' stand-in): no
+/// entries, and canEnumerate false so the UI can say so.
 class UnsupportedStartupProbe final : public IStartupProbe
 {
   public:

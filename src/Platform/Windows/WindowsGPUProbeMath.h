@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/AsciiCase.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/PDHGPUProbe.h"
@@ -42,7 +43,7 @@ namespace Platform
         }
         else
         {
-            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            normalized += Platform::foldAscii(c);
             lastWasSpace = false;
         }
     }

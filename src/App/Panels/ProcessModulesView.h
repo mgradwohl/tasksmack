@@ -20,6 +20,7 @@
 #include "Domain/ProcessModules.h"
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/ThreadName.h"
@@ -212,7 +213,7 @@ class ProcessModulesView
             m_FilteredRows.clear();
             for (std::size_t i = 0; i < m_Rows.size(); ++i)
             {
-                if (Detail::containsIgnoringCase(m_Rows[i].name, m_Filter) || Detail::containsIgnoringCase(m_Rows[i].module.path, m_Filter))
+                if (Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].module.path, m_Filter))
                 {
                     m_FilteredRows.push_back(i);
                 }
@@ -266,27 +267,17 @@ class ProcessModulesView
         switch (column)
         {
         case Detail::ModulesColumn::Name:
-            return compareIgnoringCase(a.name, b.name);
+            return Platform::compareIgnoreCase(a.name, b.name);
         case Detail::ModulesColumn::Version:
             return a.module.version <=> b.module.version; // none sorts first
         case Detail::ModulesColumn::Size:
             return a.module.sizeBytes <=> b.module.sizeBytes;
         case Detail::ModulesColumn::Path:
-            return compareIgnoringCase(a.module.path, b.module.path);
+            return Platform::compareIgnoreCase(a.module.path, b.module.path);
         case Detail::ModulesColumn::Base:
             break;
         }
         return a.module.baseAddress <=> b.module.baseAddress;
-    }
-
-    [[nodiscard]] static std::strong_ordering compareIgnoringCase(std::string_view a, std::string_view b) noexcept
-    {
-        const auto lower = [](char c) noexcept
-        {
-            return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-        };
-        return std::lexicographical_compare_three_way(
-            a.begin(), a.end(), b.begin(), b.end(), [&lower](char x, char y) { return lower(x) <=> lower(y); });
     }
 
     void sortRows()

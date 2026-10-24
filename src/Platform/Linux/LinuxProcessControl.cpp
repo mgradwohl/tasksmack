@@ -91,22 +91,42 @@ struct StatIdentity
     return stat.has_value() ? std::optional<std::uint64_t>(stat->startTime) : std::nullopt;
 }
 
+/// A process TaskSmack and the root helper don't act on, whatever the action (#2447, #2641, #2774).
+enum class ProtectedProcess : std::uint8_t
+{
+    Init,         ///< PID 1
+    KernelThread, ///< PF_KTHREAD in /proc/<pid>/stat
+};
+
+/// Whether `pid` is one TaskSmack doesn't act on, and why. The one rule both guards below word their
+/// own messages for, so signals and scheduling changes always refuse the same processes.
+[[nodiscard]] std::optional<ProtectedProcess> protectedProcess(std::int32_t pid)
+{
+    if (pid == 1)
+    {
+        return ProtectedProcess::Init;
+    }
+    const std::optional<StatIdentity> stat = readStatIdentity(pid);
+    if (stat.has_value() && (stat->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
+    {
+        return ProtectedProcess::KernelThread;
+    }
+    return std::nullopt;
+}
+
 /// Why a signal to `pid` would do nothing, or nullopt. As root (the helper, #2308) the kernel accepts a
 /// signal to a kernel thread or to init and drops it, so TaskSmack would report an action that never
 /// happened (#2447): kernel threads ignore signals, and init drops SIGKILL and SIGSTOP and anything it
 /// has no handler for (systemd re-executes itself on SIGTERM). An error, not a refusal: no password helps.
 [[nodiscard]] std::optional<std::string> signalWouldDoNothing(std::int32_t pid)
 {
-    if (pid == 1)
+    const std::optional<ProtectedProcess> reason = protectedProcess(pid);
+    if (!reason.has_value())
     {
-        return std::string("PID 1 is init, which TaskSmack doesn't end, suspend or resume");
+        return std::nullopt;
     }
-    const std::optional<StatIdentity> stat = readStatIdentity(pid);
-    if (stat.has_value() && (stat->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
-    {
-        return std::format("PID {} is a kernel thread, which can't be ended, suspended or resumed", pid);
-    }
-    return std::nullopt;
+    return *reason == ProtectedProcess::Init ? std::string("PID 1 is init, which TaskSmack doesn't end, suspend or resume")
+                                             : std::format("PID {} is a kernel thread, which can't be ended, suspended or resumed", pid);
 }
 
 /// Why a priority, I/O priority or affinity change is refused before it's tried (#2641), as a signal is
@@ -115,16 +135,14 @@ struct StatIdentity
 /// reclaim or the journal for the whole machine. Through the helper they would otherwise succeed.
 [[nodiscard]] std::optional<std::string> schedulingChangeRefused(std::int32_t pid)
 {
-    if (pid == 1)
+    const std::optional<ProtectedProcess> reason = protectedProcess(pid);
+    if (!reason.has_value())
     {
-        return std::string("PID 1 is init, whose priority and CPU affinity TaskSmack doesn't change");
+        return std::nullopt;
     }
-    const std::optional<StatIdentity> stat = readStatIdentity(pid);
-    if (stat.has_value() && (stat->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
-    {
-        return std::format("PID {} is a kernel thread, whose priority and CPU affinity TaskSmack doesn't change", pid);
-    }
-    return std::nullopt;
+    return *reason == ProtectedProcess::Init
+             ? std::string("PID 1 is init, whose priority and CPU affinity TaskSmack doesn't change")
+             : std::format("PID {} is a kernel thread, whose priority and CPU affinity TaskSmack doesn't change", pid);
 }
 
 /// Error text shared by every action refused because pidfds are unavailable.

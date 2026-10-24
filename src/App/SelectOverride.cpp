@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 #include "Platform/Windows/WinString.h"
+#else
+#include "Platform/AsciiCase.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -64,7 +66,7 @@ bool tabNamesEqual(const std::string_view a, const std::string_view b)
 #ifdef _WIN32
     return equalsOrdinalIgnoreCase(a, b);
 #else
-    return Detail::equalsIgnoreCase(a, b);
+    return Platform::equalsIgnoreCase(a, b);
 #endif
 }
 

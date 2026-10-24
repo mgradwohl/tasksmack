@@ -14,6 +14,14 @@
 
 TaskSmack is a C++23 system monitor and task manager for Linux and Windows, built with Dear ImGui, ImPlot, SDL3, and OpenGL.
 
+![TaskSmack on Windows: the machine tab's Overview with the CPU Details block above the CPU Usage and Memory and Swap history charts, in the Windows Dark theme](docs/images/screenshots/windows/overview-windows-dark.webp)
+
+*The machine tab's Overview on Windows, in the Windows Dark theme.*
+
+![Animation of TaskSmack on Linux: the machine tab's Overview with its CPU, memory, battery and thread charts advancing as new samples arrive](docs/images/screenshots/linux/overview-live.webp)
+
+*The same Overview on Linux, live: every chart advances one sample at the update interval.*
+
 ## Highlights
 
 - Sortable, filterable process table with tree view, multi-select, configurable columns, and process details (environment, connections, modules, open files, security context)
@@ -25,6 +33,16 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
 See [Implemented Features](docs/dev/completed-features.md) for the detailed shipped-feature inventory.
+
+## Screenshots
+
+| The Processes tab (Windows) | Process Details (Windows) |
+|---|---|
+| ![The Processes tab on Windows: the process table sorted by CPU % with its default columns, filter box and the Columns, List and Tree buttons](docs/images/screenshots/windows/processes-windows-dark.webp) | ![Process Details on Windows: the Identity and Runtime cards, the Actions card and the Priority slider for the selected process](docs/images/screenshots/windows/details-overview-windows-dark.webp) |
+| **The Processes tab (Linux, Ubuntu Light theme)** | **The System tab (Windows)** |
+| ![The Processes tab on Linux in the Ubuntu Light theme: the process table sorted by CPU %](docs/images/screenshots/linux/processes-ubuntu-light.webp) | ![The System tab on Windows: the Operating system and Firmware and board sections of label/value rows, with Copy all, Save report and Refresh buttons](docs/images/screenshots/windows/system-windows-dark.webp) |
+
+The [User Guide](docs/guide/user-guide.md#feature-overview) has a screenshot of every tab, the Process Details sections, and the [theme gallery](docs/guide/user-guide.md#themes-and-configuration).
 
 ## Supported Platforms
 

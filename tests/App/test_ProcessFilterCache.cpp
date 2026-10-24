@@ -6,6 +6,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/AsciiCase.h"
 
 #include <gtest/gtest.h>
 
@@ -73,13 +74,15 @@ TEST(ProcessFilterCacheTest, AGenerationPublishedBeforeAdoptionMakesTheIndicesSt
     EXPECT_TRUE(isStale(adoptedVersion, filterVersion, "", ""));
 }
 
-// The filter's match (#838): the name or the command line, ASCII case aside, never allocating.
-static_assert(App::ProcessFilterCache::containsIgnoreCase("Microsoft Edge", "EDGE"));
+// The filter's match (#838): the name or the command line, ASCII case aside, never allocating. The
+// fold itself is Platform::containsIgnoreCase (#2566), tested in tests/Platform/test_AsciiCase.cpp;
+// these check the filter's contract through it.
+static_assert(Platform::containsIgnoreCase("Microsoft Edge", "EDGE"));
 static_assert(App::ProcessFilterCache::matches("msedge.exe", R"("C:\Program Files\msedge.exe" --type=renderer)", "renderer"));
 
 TEST(ProcessFilterMatchTest, ContainsIgnoresAsciiCaseAnywhereInTheText)
 {
-    using App::ProcessFilterCache::containsIgnoreCase;
+    using Platform::containsIgnoreCase;
     EXPECT_TRUE(containsIgnoreCase("rust-analyzer", "Analyzer"));
     EXPECT_TRUE(containsIgnoreCase("rust-analyzer", "RUST"));
     EXPECT_TRUE(containsIgnoreCase("rust-analyzer", "rust-analyzer"));
@@ -91,8 +94,8 @@ TEST(ProcessFilterMatchTest, ContainsIgnoresAsciiCaseAnywhereInTheText)
 
 TEST(ProcessFilterMatchTest, AnEmptyTermMatchesEverything)
 {
-    using App::ProcessFilterCache::containsIgnoreCase;
     using App::ProcessFilterCache::matches;
+    using Platform::containsIgnoreCase;
     EXPECT_TRUE(containsIgnoreCase("", ""));
     EXPECT_TRUE(containsIgnoreCase("bash", ""));
     EXPECT_TRUE(matches("", "", ""));
@@ -100,7 +103,7 @@ TEST(ProcessFilterMatchTest, AnEmptyTermMatchesEverything)
 
 TEST(ProcessFilterMatchTest, OnlyAsciiLettersFold)
 {
-    using App::ProcessFilterCache::containsIgnoreCase;
+    using Platform::containsIgnoreCase;
     EXPECT_TRUE(containsIgnoreCase("Résumé.exe", "RéSUMé"));          // the ASCII letters fold, é matches itself
     EXPECT_FALSE(containsIgnoreCase("Résumé.exe", "RÉSUMÉ"));         // É is not folded to é
     EXPECT_TRUE(containsIgnoreCase("C:\\Tools\\[x]_1.exe", "[X]_1")); // punctuation and digits as they are
