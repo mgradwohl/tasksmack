@@ -251,12 +251,14 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxProcessModulesReader.cpp
+    src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
+    src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)
     src/Platform/Linux/NetworkdResolved.cpp
     src/Platform/Linux/LinuxServiceActions.cpp
     src/Platform/Linux/LinuxServiceProbe.cpp
@@ -522,6 +524,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsInstalledMemory.h
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
+        src/Platform/Windows/WindowsStorageSmartMath.h
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDriverNodes.h
         src/Platform/Windows/WindowsDevices.h

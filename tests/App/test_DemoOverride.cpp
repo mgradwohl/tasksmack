@@ -21,6 +21,7 @@ using App::DemoOverride::CloseDialogAction;
 using App::DemoOverride::describe;
 using App::DemoOverride::DetailsAction;
 using App::DemoOverride::formatSeconds;
+using App::DemoOverride::MachineAction;
 using App::DemoOverride::MAX_STEP_SECONDS;
 using App::DemoOverride::OpenAction;
 using App::DemoOverride::parse;
@@ -31,6 +32,7 @@ using App::DemoOverride::TabAction;
 using App::DemoOverride::ThemeAction;
 using App::SelectOverride::DetailsSection;
 using App::SelectOverride::DetailsTab;
+using App::SelectOverride::MachineTab;
 using App::SelectOverride::StartupDialog;
 
 [[nodiscard]] Step step(const int timeMs, Action action)
@@ -71,7 +73,7 @@ TEST(DemoOverrideParseTest, UnsetAndBlankGiveNoScriptAndNoWarning)
 TEST(DemoOverrideParseTest, ParsesEveryActionAndKeepsTheStepsInOrder)
 {
     const auto result = parse("1:tab=processes,3:select=name:explorer.exe,3:select=pid:42,5:details=network,6:open=help,"
-                              "7:close=dialog,8:theme=dracula,9:section=modules");
+                              "7:close=dialog,8:theme=dracula,9:section=modules,10:machine=cores");
     ASSERT_TRUE(result.steps.has_value()) << result.warning;
     EXPECT_TRUE(result.warning.empty()) << result.warning;
     const std::vector<Step> steps = result.steps.value_or(std::vector<Step>{});
@@ -84,11 +86,12 @@ TEST(DemoOverrideParseTest, ParsesEveryActionAndKeepsTheStepsInOrder)
         step(7000, CloseDialogAction{}),
         step(8000, ThemeAction{.id = "dracula"}),
         step(9000, SectionAction{.section = DetailsSection::Modules}),
+        step(10000, MachineAction{.tab = MachineTab::Cores}),
     };
     EXPECT_EQ(steps, expected);
     EXPECT_EQ(describe(steps),
               "1:tab=processes, 3:select=name:explorer.exe, 3:select=pid:42, 5:details=network, 6:open=help, 7:close=dialog, "
-              "8:theme=dracula, 9:section=modules");
+              "8:theme=dracula, 9:section=modules, 10:machine=cores");
 }
 
 TEST(DemoOverrideParseTest, KeywordsParseInAnyCaseWithSpacesAroundEveryPart)
@@ -96,15 +99,18 @@ TEST(DemoOverrideParseTest, KeywordsParseInAnyCaseWithSpacesAroundEveryPart)
     // The action, the select kind and each keyword value in any case; a tab name and a theme id are
     // kept as given, since they are resolved when the step runs.
     EXPECT_EQ(parsed(" 1 : TAB = Processes , 2 : Select = Name : Explorer.EXE ,2:SELECT=PID: 7 , 3 : Details = GPU , 4:Open=ABOUT, "
-                     "5:Close=DIALOG, 6:Theme=Dracula, 7:Section=OpenFiles"),
+                     "5:Close=DIALOG, 6:Theme=Dracula, 7:Section=OpenFiles, 8 : Machine = GPU , 9:MACHINE=Network"),
               "1:tab=Processes, 2:select=name:Explorer.EXE, 2:select=pid:7, 3:details=gpu, 4:open=about, 5:close=dialog, "
-              "6:theme=Dracula, 7:section=openfiles");
+              "6:theme=Dracula, 7:section=openfiles, 8:machine=gpu, 9:machine=network");
 }
 
 TEST(DemoOverrideParseTest, EveryDetailsTabDialogAndSectionIsAccepted)
 {
     EXPECT_EQ(parsed("0:details=overview,0:details=gpu,0:details=npu,0:details=network"),
               "0:details=overview, 0:details=gpu, 0:details=npu, 0:details=network");
+    // #2869: the machine tab's sub-tabs, TASKSMACK_MACHINE_TAB's names.
+    EXPECT_EQ(parsed("0:machine=overview,0:machine=cores,0:machine=gpu,0:machine=npu,0:machine=network"),
+              "0:machine=overview, 0:machine=cores, 0:machine=gpu, 0:machine=npu, 0:machine=network");
     EXPECT_EQ(parsed("0:open=help,0:open=about"), "0:open=help, 0:open=about");
     EXPECT_EQ(parsed("0:section=modules,0:section=openfiles,0:section=connections,0:section=environment,0:section=security,"
                      "0:section=services"),
@@ -187,6 +193,9 @@ TEST(DemoOverrideParseTest, InvalidScriptsAreIgnoredWholeWithAWarningNamingTheSt
              Case{.value = "1:select=name:", .step = "step 1"},
              Case{.value = "1:select=user:bob", .step = "step 1"},
              Case{.value = "1:details=memory", .step = "step 1"},
+             Case{.value = "1:machine=memory", .step = "step 1"},
+             Case{.value = "1:machine=cpu cores", .step = "step 1"},
+             Case{.value = "1:machine=", .step = "step 1"},
              Case{.value = "1:open=settings", .step = "step 1"},
              Case{.value = "1:close=window", .step = "step 1"},
              Case{.value = "1:section=files", .step = "step 1"},
@@ -210,6 +219,7 @@ TEST(DemoOverrideParseTest, TheWarningSaysWhatIsWrong)
     EXPECT_NE(parse("3601:tab=a").warning.find("past 3600 s"), std::string::npos);
     EXPECT_NE(parse("1:select=pid:x").warning.find("isn't a positive PID"), std::string::npos);
     EXPECT_NE(parse("1:details=memory").warning.find("not overview, gpu, npu or network"), std::string::npos);
+    EXPECT_NE(parse("1:machine=memory").warning.find("not overview, cores, gpu, npu or network, as the machine tab"), std::string::npos);
     EXPECT_NE(parse("1:open=x").warning.find("not help or about"), std::string::npos);
     EXPECT_NE(parse("1:close=x").warning.find("not dialog"), std::string::npos);
     EXPECT_NE(parse("1:section=x").warning.find("not modules, openfiles, connections, environment, security or services"),
@@ -262,7 +272,7 @@ TEST(DemoOverrideTest, FormatSecondsWritesWholeSecondsAndTrimmedDecimals)
 TEST(DemoOverrideTest, DescribeRoundTripsThroughParse)
 {
     const char* script = "0.5:tab=machine, 1:select=pid:1234, 1.25:details=npu, 2:open=about, 2:close=dialog, 3:theme=nord-light, "
-                         "4:section=connections";
+                         "4:section=connections, 5:machine=npu";
     EXPECT_EQ(parsed(script), script);
     EXPECT_EQ(describe(std::vector<Step>{}), "");
 }

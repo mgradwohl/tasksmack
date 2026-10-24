@@ -217,7 +217,7 @@ The UI never runs as root for this. With the `.deb` (or a locally built `.rpm`) 
 | Processes and CPU | `NtQuerySystemInformation` and process APIs |
 | Memory | Windows memory and process-information APIs |
 | Network | interface tables, TCP EStats, and an opt-in ETW kernel network session for UDP (`WindowsEtwNetCollector`) |
-| Storage and power | Windows system APIs; per-process power from the Energy Meter Interface (EMI) devices' CPU package channels (`WindowsEnergyMeter`, #2587) |
+| Storage and power | Windows system APIs; per-process power from the Energy Meter Interface (EMI) devices' CPU package channels (`WindowsEnergyMeter`, #2587); System Information's disk health is the NVMe health log through `IOCTL_STORAGE_QUERY_PROPERTY` and, for ATA and SATA drives, SMART READ DATA, READ THRESHOLDS and RETURN STATUS through `IOCTL_ATA_PASS_THROUGH` (#2588; administrators only, since the IOCTL needs a read-write disk handle), parsed by the pure `WindowsStorageSmartMath.h` |
 | GPU and NPU | DXGI and DXCore, NVML, PDH, and the kernel graphics adapter's performance data (`D3DKMTQueryAdapterInfo`, `KMTQAITYPE_ADAPTERPERFDATA`) for the temperature, clock and fan of GPUs NVML doesn't cover (#2586) |
 | Process actions | `TerminateProcess`, priority classes, affinity APIs, `PssCaptureSnapshot` + `MiniDumpWriteDump` (dump files, #807, #2001), `IFileOpenDialog` (the dump folder, #2001) |
 

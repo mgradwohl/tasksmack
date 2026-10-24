@@ -14,7 +14,7 @@
 namespace Domain
 {
 
-void appendSensorHistory(SensorHistory& history, double value, double nowSeconds, double intervalSeconds)
+void appendSensorHistory(SensorHistory& history, double value, double nowSeconds, double intervalSeconds, double windowSeconds)
 {
     if (!history.times.empty() && nowSeconds <= history.times.back())
     {
@@ -30,9 +30,10 @@ void appendSensorHistory(SensorHistory& history, double value, double nowSeconds
     history.times.push_back(nowSeconds);
     history.values.push_back(static_cast<float>(value));
 
-    const double cutoff = nowSeconds - static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT);
-    std::size_t drop =
-        history.times.size() > Sampling::SENSOR_HISTORY_CAPACITY ? history.times.size() - Sampling::SENSOR_HISTORY_CAPACITY : 0;
+    const double window = Sampling::clampHistorySeconds(windowSeconds);
+    const double cutoff = nowSeconds - window;
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(window);
+    std::size_t drop = history.times.size() > capacity ? history.times.size() - capacity : 0;
     while (drop < history.times.size() && history.times[drop] < cutoff)
     {
         ++drop;
@@ -71,7 +72,7 @@ void SensorTracker::forgetDevice(std::string_view deviceKey)
     std::erase_if(m_Histories, inDevice);
 }
 
-void SensorTracker::add(const Platform::SensorsInfo& sensors, double nowSeconds, double intervalSeconds)
+void SensorTracker::add(const Platform::SensorsInfo& sensors, double nowSeconds, double intervalSeconds, double windowSeconds)
 {
     if (sensors.listed)
     {
@@ -111,7 +112,7 @@ void SensorTracker::add(const Platform::SensorsInfo& sensors, double nowSeconds,
             range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
             range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);
             ++range.samples;
-            appendSensorHistory(m_Histories[key], reading.value, nowSeconds, intervalSeconds);
+            appendSensorHistory(m_Histories[key], reading.value, nowSeconds, intervalSeconds, windowSeconds);
         }
     }
 }

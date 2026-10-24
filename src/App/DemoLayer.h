@@ -4,9 +4,10 @@
 // nothing), after the dialog layers and before ScreenshotLayer. It replays the script's steps on the
 // app clock, each through the request path the UI or a startup hook would take: the shell's tab
 // request (as TASKSMACK_TAB), a selection waiting for its process (as TASKSMACK_SELECT_PID/_NAME,
-// then as a click), the ShowProcessDetailsEvent the row menu's Details raises, the Open*Event the
-// title bar's buttons raise, the theme change Settings makes, and a Process Details section drawn open
-// through ImGui's own open state. Nothing is injected as input.
+// then as a click), the ShowProcessDetailsEvent the row menu's Details raises, the machine tab's
+// sub-tab request (as TASKSMACK_MACHINE_TAB, #2869), the Open*Event the title bar's buttons raise, the
+// theme change Settings makes, and a Process Details section drawn open through ImGui's own open
+// state. Nothing is injected as input.
 //
 // The clock starts at the settle point: the first frame on which the shell reports no startup
 // selection pending, read in onPostRender() as ScreenshotLayer reads it, so the two layers agree on

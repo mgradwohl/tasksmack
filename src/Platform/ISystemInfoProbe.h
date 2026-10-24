@@ -191,7 +191,7 @@ struct NvmeHealth
     std::uint64_t mediaErrors = 0;          ///< Unrecovered data integrity errors (the low 64 bits)
 };
 
-/// An ATA drive's SMART health (#1631): Linux, through udisks2.
+/// An ATA drive's SMART health: Linux through udisks2 (#1631), Windows through ATA pass-through (#2588).
 struct AtaHealth
 {
     bool failing = false;                      ///< The drive's own SMART assessment predicts failure
@@ -231,9 +231,10 @@ struct PhysicalDisk
     std::string firmware; ///< The firmware revision
     std::string serial;   ///< An identifier
     std::optional<int> temperatureCelsius;
-    std::optional<NvmeHealth> health;    ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
-    std::optional<AtaHealth> ataHealth;  ///< Linux: ATA drives' SMART status, through udisks2 (#1631)
-    std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
+    std::optional<NvmeHealth> health; ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
+    std::optional<AtaHealth>
+        ataHealth; ///< ATA drives' SMART status: Linux through udisks2 (#1631), Windows through ATA pass-through (#2588)
+    std::string healthUnavailableReason;                     ///< Why health is missing; empty when it isn't read for this disk at all
     PartitionStyle partitionStyle = PartitionStyle::Unknown; ///< #1632
     bool partitionsRead = false;                             ///< The layout was read: an empty partitions means none
     std::vector<Partition> partitions;                       ///< In the OS's order (by number)
@@ -591,10 +592,9 @@ struct WifiLink
 
     /// 0-100 %: Windows' own measure of the signal; Linux: NetworkManager's strength of the access point (#2591).
     std::optional<std::uint32_t> signalQuality;
-    // Windows only so far: Linux leaves these empty (nl80211, #2591).
-    std::string phy;                 ///< The standard: "802.11ax (Wi-Fi 6)"
-    std::uint32_t channel = 0;       ///< The channel when frequencyMhz isn't known; 0 when unknown
-    std::uint32_t rxBitrateKbps = 0; ///< The current receive rate in kbit/s; 0 when unknown
+    std::string phy;                 ///< The standard: "802.11ax (Wi-Fi 6)"; Linux: from nl80211's rates (#2591)
+    std::uint32_t channel = 0;       ///< Windows: the channel when frequencyMhz isn't known; 0 when unknown
+    std::uint32_t rxBitrateKbps = 0; ///< The current receive rate in kbit/s; 0 when unknown; Linux: nl80211
 };
 
 /// An adapter's IPv4 DHCP lease (#1518): who gave the address, for how long, and until when.
