@@ -214,7 +214,7 @@ The UI never runs as root for this. With the `.deb` (or a locally built `.rpm`) 
 | Memory | Windows memory and process-information APIs |
 | Network | interface tables, TCP EStats, and an opt-in ETW kernel network session for UDP (`WindowsEtwNetCollector`) |
 | Storage and power | Windows system APIs |
-| GPU and NPU | DXGI and DXCore, NVML, and PDH |
+| GPU and NPU | DXGI and DXCore, NVML, PDH, and the kernel graphics adapter's performance data (`D3DKMTQueryAdapterInfo`, `KMTQAITYPE_ADAPTERPERFDATA`) for the temperature, clock and fan of GPUs NVML doesn't cover (#2586) |
 | Process actions | `TerminateProcess`, priority classes, affinity APIs, `PssCaptureSnapshot` + `MiniDumpWriteDump` (dump files, #807, #2001), `IFileOpenDialog` (the dump folder, #2001) |
 
 Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Without them no process's network bytes are read, so each process reports them unavailable (N/A) rather than 0; handle counts and I/O bytes come from the bulk snapshot and are read for every process (#1285). Windows does not expose Linux concepts such as load average or CPU steal time. Suspend and Resume, SIGSTOP and SIGCONT on Linux, are ntdll's `NtSuspendProcess`/`NtResumeProcess` on a start-time-checked handle (#2582); PID 4, critical and protected processes, and TaskSmack itself are never suspended.

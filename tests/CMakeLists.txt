@@ -529,6 +529,7 @@ set(COMMON_TEST_SOURCES
 # every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
 # a probe, Windows types or fakes of Windows APIs stay in WINDOWS_PLATFORM_TEST_SOURCES.
 set(WINDOWS_MATH_TEST_SOURCES
+    Platform/WindowsMath/test_AdapterPerfDataMath.cpp  # D3DKMT adapter perf data as GPU sensors (#2586)
     Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
     Platform/WindowsMath/test_WindowsEtwNetMath.cpp
@@ -586,6 +587,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
+    Platform/test_WindowsD3DKMTAdapterPerfData.cpp  # the kernel adapter's perf data through fake D3DKMT calls (#2586)
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbeDXCore.cpp
     Platform/test_WindowsGPURescan.cpp
