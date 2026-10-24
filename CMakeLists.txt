@@ -250,6 +250,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxProcessModulesReader.cpp
+    src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp

@@ -31,11 +31,15 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
     {
         return "Set by your administrator or group policy";
     }
+    if (!entry.notSwitchableReason.empty())
+    {
+        return entry.notSwitchableReason;
+    }
     if (!Platform::hasSwitchableState(entry.location))
     {
         return "Run-once entries run at the next sign-in only and have no enabled state";
     }
-    if (entry.scope == Platform::StartupScope::Machine && !caps.elevated)
+    if (entry.scope == Platform::StartupScope::Machine && caps.machineEntriesNeedElevation && !caps.elevated)
     {
         return "Requires administrator";
     }
@@ -54,11 +58,18 @@ std::string confirmTitle(const StartupActionRequest& request)
 
 std::string confirmQuestion(const StartupActionRequest& request)
 {
-    return std::format("Disable {}? It won't start when you sign in until it is enabled again. {}",
-                       request.entry.name,
-                       request.entry.location == Platform::StartupLocation::PackagedApp
-                           ? "The app and its startup task are kept, so nothing is removed."
-                           : "Its registry entry or shortcut is kept, so nothing is removed.");
+    using enum Platform::StartupLocation;
+    const Platform::StartupLocation location = request.entry.location;
+    std::string_view kept = "Its registry entry or shortcut is kept, so nothing is removed.";
+    if (location == PackagedApp)
+    {
+        kept = "The app and its startup task are kept, so nothing is removed.";
+    }
+    else if (location == XdgAutostartUser || location == XdgAutostartSystem)
+    {
+        kept = "Its autostart file is kept (a system one is switched off by a copy in ~/.config/autostart), so nothing is removed.";
+    }
+    return std::format("Disable {}? It won't start when you sign in until it is enabled again. {}", request.entry.name, kept);
 }
 
 std::string progressText(const StartupActionRequest& request)

@@ -33,8 +33,11 @@ struct StartupActionResult
 struct StartupActionCapabilities
 {
     bool canSetEnabled = false;
-    /// Whether TaskSmack runs elevated: an all-users (Machine scope) entry can be changed only then.
+    /// Whether TaskSmack runs elevated: an all-users (Machine scope) entry can be changed only then...
     bool elevated = false;
+    /// ...where changing one writes the machine's own setting (Windows). False where a user's switch for
+    /// it is the user's own file (Linux's XDG autostart, #2541).
+    bool machineEntriesNeedElevation = true;
 };
 
 /// Whether an entry registered at @p location has an enabled state that can be changed: RunOnce entries
@@ -45,10 +48,11 @@ struct StartupActionCapabilities
     return location != StartupLocation::RunOnceUser && location != StartupLocation::RunOnceMachine;
 }
 
-/// Whether @p entry's enabled state can be changed: its location has one, and no policy sets it.
-[[nodiscard]] constexpr bool hasSwitchableState(const StartupEntry& entry) noexcept
+/// Whether @p entry's enabled state can be changed: its location has one, no policy sets it, and the
+/// platform names no reason it can't.
+[[nodiscard]] inline bool hasSwitchableState(const StartupEntry& entry) noexcept
 {
-    return hasSwitchableState(entry.location) && !entry.setByPolicy;
+    return hasSwitchableState(entry.location) && !entry.setByPolicy && entry.notSwitchableReason.empty();
 }
 
 /// Changes startup entries' enabled state. Every call is self-contained and quick (a registry write or
@@ -70,7 +74,7 @@ class IStartupActions
     [[nodiscard]] virtual StartupActionResult setEnabled(const StartupEntry& entry, bool enabled) = 0;
 };
 
-/// The actions for a platform without them (Linux until XDG autostart lands): every capability false,
+/// The actions for a platform without them: every capability false,
 /// every action refused.
 class UnsupportedStartupActions final : public IStartupActions
 {
