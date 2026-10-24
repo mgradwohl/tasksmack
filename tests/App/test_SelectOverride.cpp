@@ -380,7 +380,7 @@ TEST(SelectOverrideTest, NoHooksMeansNoTestHook)
     EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "", " ", "\r\n")); // blank counts as unset
 }
 
-// #172: TASKSMACK_OPEN opens the Help window or the About dialog at startup.
+// #172: TASKSMACK_OPEN opens the Help window, the About dialog or (#2827) the Settings dialog at startup.
 TEST(SelectOverrideTest, ParsesTheStartupDialog)
 {
     using App::SelectOverride::parseStartupDialog;
@@ -389,11 +389,16 @@ TEST(SelectOverrideTest, ParsesTheStartupDialog)
     EXPECT_EQ(parseStartupDialog("help").dialog, StartupDialog::Help);
     EXPECT_EQ(parseStartupDialog(" HELP ").dialog, StartupDialog::Help);
     EXPECT_EQ(parseStartupDialog("About").dialog, StartupDialog::About);
+    EXPECT_EQ(parseStartupDialog("settings").dialog, StartupDialog::Settings);
+    EXPECT_EQ(parseStartupDialog(" SETTINGS\t").dialog, StartupDialog::Settings);
     EXPECT_TRUE(parseStartupDialog("help").warning.empty());
+    EXPECT_TRUE(parseStartupDialog("Settings").warning.empty());
 
-    const auto unknown = parseStartupDialog("settings");
+    const auto unknown = parseStartupDialog("preferences");
     EXPECT_FALSE(unknown.dialog.has_value());
     EXPECT_FALSE(unknown.warning.empty());
+    EXPECT_NE(unknown.warning.find("not help, about or settings"), std::string::npos) << unknown.warning;
+    EXPECT_FALSE(parseStartupDialog("setting").dialog.has_value()); // no prefix matching
 
     for (const char* blank : {static_cast<const char*>(nullptr), "", "  "})
     {
@@ -451,10 +456,12 @@ TEST(SelectOverrideTest, NamesOfTabsSectionsAndDialogsParseInAnyCaseAndWriteBack
     EXPECT_EQ(parseSection("OpenFiles"), DetailsSection::OpenFiles);
     EXPECT_EQ(parseSection("MODULES"), DetailsSection::Modules);
     EXPECT_EQ(parseDialog("About"), StartupDialog::About);
+    EXPECT_EQ(parseDialog("Settings"), StartupDialog::Settings);
     EXPECT_FALSE(parseSection("files").has_value());
     EXPECT_FALSE(parseSection("open files").has_value());
     EXPECT_FALSE(parseSection("").has_value());
-    EXPECT_FALSE(parseDialog("settings").has_value());
+    EXPECT_FALSE(parseDialog("preferences").has_value());
+    EXPECT_FALSE(parseDialog("").has_value());
     EXPECT_FALSE(parseTab("memory").has_value());
 }
 

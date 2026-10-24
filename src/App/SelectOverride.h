@@ -6,7 +6,7 @@
 //   TASKSMACK_SELECT_PID=1234 ./TaskSmack                 the process with PID 1234
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|npu|network)
-//   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
+//   TASKSMACK_OPEN=help                                   the Help window (help|about|settings, #172)
 //   TASKSMACK_MACHINE_TAB=gpu                             the machine tab's GPU sub-tab
 //                                                         (overview|cores|gpu|npu|network, #2869)
 //
@@ -82,11 +82,13 @@ enum class DetailsSection : std::uint8_t
     Services, ///< Drawn only for a process that runs a service
 };
 
-/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog, "settings" the
+/// Settings dialog (#2827).
 enum class StartupDialog : std::uint8_t
 {
     Help,
     About,
+    Settings, ///< Opened as the title bar's gear and F2 open it
 };
 
 /// A sub-tab of the machine (hostname) tab, in the order SystemMetricsPanel draws them: what
@@ -124,9 +126,10 @@ inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECT
     {"openfiles", DetailsSection::OpenFiles},
     {"services", DetailsSection::Services},
 }};
-inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 2> DIALOG_NAMES{{
+inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 3> DIALOG_NAMES{{
     {"help", StartupDialog::Help},
     {"about", StartupDialog::About},
+    {"settings", StartupDialog::Settings},
 }};
 
 /// The process to select: by PID when one is given, else by name.
@@ -207,7 +210,7 @@ template<typename Value, std::size_t N>
     return Detail::parseName(text, SECTION_NAMES);
 }
 
-/// "help" or "about", in any case, or nullopt.
+/// "help", "about" or "settings", in any case, or nullopt.
 [[nodiscard]] inline std::optional<StartupDialog> parseDialog(const std::string_view text) noexcept
 {
     return Detail::parseName(text, DIALOG_NAMES);
@@ -604,7 +607,8 @@ class PendingMachineTab
     int m_Frames = 0;
 };
 
-/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog (StartupDialog).
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog, "settings" the
+/// Settings dialog (StartupDialog).
 inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
 static_assert(Core::isKnownEnvHook(OPEN_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
@@ -615,7 +619,7 @@ struct StartupDialogChoice
     std::string warning;                 ///< set when a nonblank value names no dialog
 };
 
-/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help" or "about", in any case.
+/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help", "about" or "settings", in any case.
 [[nodiscard]] inline StartupDialogChoice parseStartupDialog(const char* value)
 {
     StartupDialogChoice choice;
@@ -627,7 +631,7 @@ struct StartupDialogChoice
     choice.dialog = parseDialog(text);
     if (!choice.dialog.has_value())
     {
-        choice.warning = std::format("{}: '{}' is not help or about; ignored", OPEN_ENV_VAR, text);
+        choice.warning = std::format("{}: '{}' is not help, about or settings; ignored", OPEN_ENV_VAR, text);
     }
     return choice;
 }

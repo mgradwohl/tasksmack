@@ -8,12 +8,14 @@
     the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _MACHINE_TAB, _SELECT_NAME,
     _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
-    without input"). Same matrix and names as screenshots.sh.
+    without input"). Same matrix and names as screenshots.sh, less the Environment and Security
+    sections, which TaskSmack reads on Linux only.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
     the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
     Details (overview, gpu, network, and the Overview with its Modules, Open files and Connections
-    sections expanded) for one process, Services, Startup, About and Help in the first theme; and three
+    sections expanded, each at -SectionWindow) for one process, Services, Startup, Settings, About and
+    Help in the first theme; and three
     frame sequences written as animated WebPs: overview-live (8 s of the Overview),
     walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
     themes-live (9 s: the Overview through every theme, 1.5 s each), all at 12 fps. The overview-*
@@ -32,6 +34,9 @@
     overview-* shots and themes-live ignore it: 60 s with a 60 s history window, so their charts are full
 .PARAMETER Window
     Window size as WxH (default: 1440x900)
+.PARAMETER SectionWindow
+    Window size for the details-<section> shots (default: -Window; screenshots.sh uses 1440x1200, since on
+    Linux the taller Actions and Priority cards push the Overview's sections below a 900 px fold)
 .PARAMETER Themes
     Theme ids; the first is the dark theme, the first containing "light" the light one
 .PARAMETER Process
@@ -51,6 +56,7 @@ param(
     [string]$Out = (Join-Path $PSScriptRoot "..\docs\images\screenshots\windows"),
     [int]$After = 8,
     [string]$Window = "1440x900",
+    [string]$SectionWindow = "",
     [string[]]$Themes = @("windows-dark", "ubuntu-light", "dracula", "nord-light", "gruvbox", "monochrome-light"),
     [string]$Process = "explorer.exe",
     [switch]$WebP,
@@ -80,7 +86,7 @@ if ($WebP -and -not (Get-Command cwebp -ErrorAction SilentlyContinue)) {
     Write-Error "-WebP needs cwebp and img2webp from libwebp: winget install Google.Libwebp"
     exit 1
 }
-$Width, $Height = $Window -split 'x', 2
+if (-not $SectionWindow) { $SectionWindow = $Window }
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) "tasksmack-shots-$PID"
 $PngDir = Join-Path $Work "png"
 $null = New-Item -ItemType Directory -Force -Path $Out, $PngDir
@@ -95,18 +101,20 @@ Write-Host ("{0,-30} {1,5} {2,8} {3,10}" -f 'name', 'exit', 'seconds', 'bytes')
 
 # One shot: its own config dir, the hooks in $Hooks, TASKSMACK_SCREENSHOT with $Sequence appended
 # (";frames=N;fps=F" for a live sequence), then wait for TaskSmack to quit by itself. -Full gives
-# the shot the 60 s history window and the 60 s wait.
+# the shot the 60 s history window and the 60 s wait; -ShotWindow a window other than -Window.
 function Invoke-Shot {
-    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "", [switch]$Full)
+    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "", [switch]$Full, [string]$ShotWindow = "")
     $cfg = Join-Path $Work $Name
     $null = New-Item -ItemType Directory -Force -Path $cfg
+    $window = if ($ShotWindow) { $ShotWindow } else { $Window }
+    $width, $height = $window -split 'x', 2
     $after = if ($Full) { $OverviewAfter } else { $After }
     $history = if ($Full) { "history_max_seconds = $OverviewHistorySeconds`n" } else { "" }
     $toml = "[theme]`nid = '$Theme'`n[font]`nsize = 'medium'`n[sampling]`ninterval_ms = 1000`n$history" +
-            "[window]`nwidth = $Width`nheight = $Height`n[process_columns]`ncommand = false`n"
+            "[window]`nwidth = $width`nheight = $height`n[process_columns]`ncommand = false`n"
     Set-Content -LiteralPath (Join-Path $cfg "config.toml") -Value $toml -Encoding utf8 -NoNewline
     $shot = Join-Path $PngDir "$Name.png"
-    $vars = @{ TASKSMACK_CONFIG_DIR = $cfg; TASKSMACK_WINDOW = $Window; TASKSMACK_SCREENSHOT = "$shot;after=$after$Sequence" } + $Hooks
+    $vars = @{ TASKSMACK_CONFIG_DIR = $cfg; TASKSMACK_WINDOW = $window; TASKSMACK_SCREENSHOT = "$shot;after=$after$Sequence" } + $Hooks
     foreach ($k in $vars.Keys) { Set-Item -Path "Env:$k" -Value $vars[$k] }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rc = 'none'
@@ -160,8 +168,7 @@ foreach ($t in $Themes) {
 }
 foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "processes-$t" $t @{ TASKSMACK_TAB = 'Processes'; TASKSMACK_SELECT_NAME = $Process }
-    # By id: the machine tab is labelled "System" until the first sample brings the hostname, so the
-    # System Information tab's label would race it at startup (#2886).
+    # By its id, SystemInfo, the more robust form: a tab's id never changes, its label may.
     Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
 }
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
@@ -172,12 +179,14 @@ foreach ($tab in 'overview', 'gpu', 'network') {
     Invoke-Shot "details-$tab-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = $tab }
 }
 # The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
-# startup selection has settled.
+# startup selection has settled. The Environment and Security sections are read on Linux only (#179,
+# #1526), so screenshots.sh alone takes details-environment and details-security.
 foreach ($section in 'modules', 'openfiles', 'connections') {
-    Invoke-Shot "details-$section-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }
+    Invoke-Shot "details-$section-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" } -ShotWindow $SectionWindow
 }
 Invoke-Shot "services-$Dark" $Dark @{ TASKSMACK_TAB = 'Services' }
 Invoke-Shot "startup-$Dark" $Dark @{ TASKSMACK_TAB = 'Startup' }
+Invoke-Shot "settings-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'settings' }
 Invoke-Shot "about-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'about' }
 Invoke-Shot "help-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'help' }
 

@@ -7,12 +7,15 @@
 # the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _MACHINE_TAB, _SELECT_NAME,
 # _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
 # TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
-# without input"). Without $DISPLAY the shots run under Xvfb. Same matrix and names as screenshots.ps1.
+# without input"). Without $DISPLAY the shots run under Xvfb. Same matrix and names as screenshots.ps1,
+# plus the Environment and Security sections, which TaskSmack reads on Linux only.
 #
 # Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
 # the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
-# Details (overview, gpu, network, and the Overview with its Modules, Open files and Connections
-# sections expanded) for one process, Services, Startup, About and Help in the first theme; and three
+# Details (overview, gpu, network, and the Overview with its Modules, Open files, Connections,
+# Environment and Security sections expanded, each at --section-window: 1440x1200, since the Actions
+# and Priority cards push the sections below a 900 px fold) for one process, Services, Startup,
+# Settings, About and Help in the first theme; and three
 # frame sequences written as animated WebPs: overview-live (8 s of the Overview),
 # walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
 # themes-live (9 s: the Overview through every theme, 1.5 s each), all at 12 fps. The overview-*
@@ -32,6 +35,8 @@ EXE="$PROJECT_ROOT/build/release/bin/TaskSmack"
 OUT="$PROJECT_ROOT/docs/images/screenshots/linux"
 AFTER=8
 WINDOW=1440x900
+# The expanded-section shots' window: taller, so every section of the Overview is above the fold.
+SECTION_WINDOW=1440x1200
 THEMES=windows-dark,ubuntu-light,dracula,nord-light,gruvbox,monochrome-light
 PROCESS=""
 WEBP=false
@@ -60,6 +65,9 @@ Options:
   --after SECONDS   Seconds after startup before each capture (default: $AFTER; the charts need 5 samples at 1 s).
                     overview-* shots and themes-live ignore it: $OVERVIEW_AFTER s with a $OVERVIEW_HISTORY_SECONDS s history window, so their charts are full
   --window WxH      Window size (default: $WINDOW)
+  --section-window WxH
+                    Window size for the details-<section> shots (default: $SECTION_WINDOW; the Actions and
+                    Priority cards push the Overview's sections below a 900 px fold)
   --themes a,b,c    Theme ids; the first is the dark theme, the first containing "light" the light one
                     (default: $THEMES)
   --process NAME    Process for the Process Details and Processes shots (default: systemd, else bash)
@@ -78,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --out) OUT="$2"; shift 2 ;;
         --after) AFTER="$2"; shift 2 ;;
         --window) WINDOW="$2"; shift 2 ;;
+        --section-window) SECTION_WINDOW="$2"; shift 2 ;;
         --themes) THEMES="$2"; shift 2 ;;
         --process) PROCESS="$2"; shift 2 ;;
         --webp) WEBP=true; shift ;;
@@ -96,14 +105,17 @@ fi
 [[ -n "$PROCESS" ]] || { [[ "$(ps -o comm= -p 1 2>/dev/null)" == systemd ]] && PROCESS=systemd || PROCESS=bash; }
 WIDTH="${WINDOW%x*}"
 HEIGHT="${WINDOW#*x}"
+# The screen must hold either window.
+SCREEN_WIDTH=$(( WIDTH > ${SECTION_WINDOW%x*} ? WIDTH : ${SECTION_WINDOW%x*} ))
+SCREEN_HEIGHT=$(( HEIGHT > ${SECTION_WINDOW#*x} ? HEIGHT : ${SECTION_WINDOW#*x} ))
 
-# Headless: start Xvfb on a free display, large enough for the window, and stop it on exit.
+# Headless: start Xvfb on a free display, large enough for the windows, and stop it on exit.
 XVFB_PID=""
 if [[ -z "${DISPLAY:-}" ]]; then
     command -v Xvfb >/dev/null || { echo "Error: no DISPLAY and no Xvfb (sudo apt install xvfb)" >&2; exit 1; }
     display=99
     while [[ -e "/tmp/.X${display}-lock" ]]; do display=$((display + 1)); done
-    Xvfb ":$display" -screen 0 "$((WIDTH + 160))x$((HEIGHT + 100))x24" -nolisten tcp >/dev/null 2>&1 &
+    Xvfb ":$display" -screen 0 "$((SCREEN_WIDTH + 160))x$((SCREEN_HEIGHT + 100))x24" -nolisten tcp >/dev/null 2>&1 &
     XVFB_PID=$!
     export DISPLAY=":$display"
     for _ in $(seq 1 50); do [[ -S "/tmp/.X11-unix/X$display" ]] && break; sleep 0.1; done
@@ -127,15 +139,17 @@ DARK="${THEME_LIST[0]}"
 LIGHT=""
 for t in "${THEME_LIST[@]}"; do [[ "$t" == *light* || "$t" == latte ]] && { LIGHT="$t"; break; }; done
 
-# One shot: name theme [KEY=VALUE hooks...]; SEQUENCE=";frames=N;fps=F" is set by run_live, and
-# FULL=1 gives the shot the 60 s history window and the 60 s wait.
+# One shot: name theme [KEY=VALUE hooks...]; SEQUENCE=";frames=N;fps=F" is set by run_live,
+# FULL=1 gives the shot the 60 s history window and the 60 s wait, and SHOT_WINDOW=WxH a window other
+# than --window's.
 FAILED=0
 printf '%-30s %5s %8s %10s\n' name exit seconds bytes
 run_shot() {
     local name="$1" theme="$2" cfg="$WORK/$1" shot="$WORK/png/$1.png"
     shift 2
     mkdir -p "$cfg"
-    local after="$AFTER" history=""
+    local window="${SHOT_WINDOW:-$WINDOW}" after="$AFTER" history=""
+    local width="${window%x*}" height="${window#*x}"
     if [[ -n "${FULL:-}" ]]; then
         after="$OVERVIEW_AFTER"
         history="history_max_seconds = $OVERVIEW_HISTORY_SECONDS"
@@ -149,14 +163,14 @@ size = 'medium'
 interval_ms = 1000
 $history
 [window]
-width = $WIDTH
-height = $HEIGHT
+width = $width
+height = $height
 [process_columns]
 command = false
 EOF
     local start rc=0 ms bytes=0
     start=$(date +%s%N)
-    env TASKSMACK_CONFIG_DIR="$cfg" TASKSMACK_WINDOW="$WINDOW" TASKSMACK_SCREENSHOT="$shot;after=$after${SEQUENCE:-}" "$@" \
+    env TASKSMACK_CONFIG_DIR="$cfg" TASKSMACK_WINDOW="$window" TASKSMACK_SCREENSHOT="$shot;after=$after${SEQUENCE:-}" "$@" \
         timeout "$((after + TIMEOUT_AFTER_CAPTURE))" "$EXE" >"$cfg/stdout.log" 2>&1 || rc=$?
     ms=$(( ($(date +%s%N) - start) / 1000000 ))
     [[ -f "$shot" ]] && bytes=$(stat -c %s "$shot")
@@ -198,8 +212,7 @@ done
 for t in "$DARK" "$LIGHT"; do
     [[ -n "$t" ]] || continue
     run_shot "processes-$t" "$t" TASKSMACK_TAB=Processes TASKSMACK_SELECT_NAME="$PROCESS"
-    # By id: the machine tab is labelled "System" until the first sample brings the hostname, so the
-    # System Information tab's label would race it at startup (#2886).
+    # By its id, SystemInfo, the more robust form: a tab's id never changes, its label may.
     run_shot "system-$t" "$t" TASKSMACK_TAB=SystemInfo
 done
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
@@ -210,12 +223,15 @@ for tab in overview gpu network; do
     run_shot "details-$tab-$DARK" "$DARK" TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB="$tab"
 done
 # The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
-# startup selection has settled.
-for section in modules openfiles connections; do
-    run_shot "details-$section-$DARK" "$DARK" TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB=overview TASKSMACK_DEMO="1:section=$section"
+# startup selection has settled, in the taller window. Environment and Security are read on Linux only
+# (#179, #1526), so screenshots.ps1 has no counterpart for those two.
+for section in modules openfiles connections environment security; do
+    SHOT_WINDOW="$SECTION_WINDOW" run_shot "details-$section-$DARK" "$DARK" \
+        TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB=overview TASKSMACK_DEMO="1:section=$section"
 done
 run_shot "services-$DARK" "$DARK" TASKSMACK_TAB=Services
 run_shot "startup-$DARK" "$DARK" TASKSMACK_TAB=Startup
+run_shot "settings-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_OPEN=settings
 run_shot "about-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_OPEN=about
 run_shot "help-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_OPEN=help
 
