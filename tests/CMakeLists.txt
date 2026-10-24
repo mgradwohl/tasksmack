@@ -536,6 +536,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsPathProviderMath.cpp
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
+    Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
@@ -583,6 +584,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
+    Platform/test_WindowsEnergyMeter.cpp  # the EMI package energy through fake device calls, and the probe's reading (#2587)
     Platform/test_WindowsNVMLGPUProbe.cpp
     Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp

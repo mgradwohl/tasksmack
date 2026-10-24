@@ -308,6 +308,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
+    src/Platform/Windows/WindowsEnergyMeter.cpp # the EMI energy meters' CPU package channels: per-process power (#2587)
     src/Platform/Windows/WindowsGPUProbe.cpp
     src/Platform/Windows/WindowsDriverNodes.cpp # the SetupAPI driver-node lister the GPU probe and System Information share (#2565)
     src/Platform/Windows/DXGIGPUProbe.cpp
@@ -504,6 +505,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsDiskProbe.h
         src/Platform/Windows/WindowsBatteryInfo.h
         src/Platform/Windows/WindowsPowerProbe.h
+        src/Platform/Windows/WindowsEnergyMeter.h
+        src/Platform/Windows/WindowsEnergyMeterMath.h
         src/Platform/Windows/WindowsGPUProbe.h
         src/Platform/Windows/DXGIGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
@@ -638,7 +641,7 @@ function(tasksmack_apply_windows_platform target)
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-        setupapi # WindowsBatteryInfo: the battery devices (#1523)
+        setupapi # WindowsBatteryInfo: the battery devices (#1523); WindowsEnergyMeter: the EMI energy meters (#2587)
         wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
         wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
         crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)

@@ -133,7 +133,7 @@ Each process's name has its program's icon beside it, as in Task Manager, and so
 - **Handles** (hidden by default) — open handles on Windows, open file descriptors on Linux
 - **GDI** (Windows, hidden by default) — GDI objects the process holds
 - **Started** (hidden by default) — when the process started
-- **Power** (shown by default where it can be read: Linux only, where the CPU package's RAPL energy counter is readable, which usually needs root) — the package's power shared out by each process's CPU time. Windows has no per-process power reading, so there the column is unavailable.
+- **Power** (shown by default where it can be read) — the CPU package's power shared out by each process's CPU time, from the package's energy counter: on Linux the RAPL counter in `/sys/class/powercap`, which is readable by root only on current kernels; on Windows the Energy Meter Interface (EMI) device the CPU's energy meter driver exposes, which needs no administrator rights but exists only on machines whose firmware and driver provide one (most Intel laptops and desktops of recent years; some AMD and Arm machines have none). Where there is no readable counter, the column is unavailable and hidden.
 - **Page Faults** (hidden by default) — cumulative page faults. Windows keeps this count in 32 bits, so on a long-lived process it can wrap back to a small number; the page-fault rate counts through the wrap.
 - **Command** — full command line. On Windows, a process whose command line can't be read (System, Registry, isolated processes such as LsaIso.exe) shows its executable's path, or its name in brackets.
 - **I/O Read / I/O Write** (hidden by default) — disk read and write bytes per second
@@ -683,6 +683,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Process I/O counters | ✅ (other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (no elevated privileges needed) |
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Per-process UDP network | ❌ | Opt-in (**Count UDP traffic per process**; ETW kernel network events; administrator required) |
+| Per-process power (Power column, Process Details, the System tab's Power chart) | ✅ (the CPU package's RAPL energy counter in `/sys/class/powercap`, shared out by CPU time; readable by root only on current kernels) | ✅ (the CPU package channel of the Energy Meter Interface (EMI) device, shared out by CPU time; no administrator needed; only on machines whose CPU driver provides an energy meter, otherwise hidden) |
 | Thread count per process | ✅ | ✅ |
 | Process priority | ✅ (nice value, −20 … 19) | ✅ (priority class: High, Above Normal, Normal, Below Normal, Idle; Realtime shown but not settable) |
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |

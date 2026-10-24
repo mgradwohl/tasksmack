@@ -4,7 +4,10 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "Platform/ThreadName.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
+#include "WindowsEnergyMeter.h"
+#include "WindowsEnergyMeterMath.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -51,6 +54,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -779,6 +783,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .getThreadGroupAffinity = &GetThreadGroupAffinity,
                 .processMachine = &Windows::processMachine,
             },
+        .energyMeter = Windows::EnergyMeterFunctions{},
     };
 }
 
@@ -810,10 +815,39 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
     calculateDetailTTLsFromTotalRAM(m_LightDetailTTL, m_HeavyDetailTTL);
     spdlog::debug(
         "Detail cache TTLs tuned for total physical RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
+
+    // The EMI energy meters behind per-process power (#2587), enumerated and opened once, on their own
+    // one-shot worker: the SetupAPI enumeration can stall on a slow ACPI call, which must hold up
+    // neither the thread building this probe nor a sample. Last in the constructor: the worker reads
+    // only its own copy of the API table and the two energy members, and the destructor joins it first.
+    if (functions.energyMeter.has_value())
+    {
+        m_EnergyMeterOpener = std::jthread(
+            [this, api = *functions.energyMeter]
+            {
+                setCurrentThreadName(ENERGY_METER_OPEN_THREAD_NAME);
+                Windows::EnergyMeter meter;
+                try
+                {
+                    meter = Windows::EnergyMeter::open(api);
+                }
+                catch (const std::exception& e)
+                {
+                    spdlog::warn("WindowsProcessProbe: opening the EMI energy meters failed: {}", e.what());
+                }
+                const bool hasPackages = meter.hasPackageChannels();
+                {
+                    const std::scoped_lock lock(m_EnergyMeterMutex);
+                    m_EnergyMeter = std::move(meter);
+                }
+                m_HasPackageEnergy.store(hasPackages, std::memory_order_release);
+            });
+    }
 }
 
-// m_IphlpModule (a UniqueModule) frees iphlpapi.dll, if this probe loaded it, after the members
-// declared after it are destroyed.
+// m_EnergyMeterOpener, the last member, is joined first, so the meter it writes outlives it; then the
+// meter closes its devices. m_IphlpModule (a UniqueModule) frees iphlpapi.dll, if this probe loaded
+// it, after the members declared after it are destroyed.
 WindowsProcessProbe::~WindowsProcessProbe() = default;
 
 std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
@@ -936,6 +970,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
             }
             counters.state = deriveProcessState(threads, pid == 0);
         }
+        counters.cpuTimeIsIdle = (pid == 0); // The Idle pseudo-process's time is the CPUs' idle time (#2587)
 
         std::wstring_view imageName;
         if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)
@@ -1273,10 +1308,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // TCP only by default: Windows has no user-mode per-process UDP byte counters (#1258). With
         // the opt-in UDP event trace (#1492) running and delivering, readSocketTraffic() adds UDP.
         .hasUdpNetworkCounters = hasNetworkCounters && udpDelivering,
-        // Not measured on Windows. A fabricated figure (a fixed 1 J per sample shared out by CPU
-        // time) used to stand in for it, which read ~2 W regardless of load and depended only on
-        // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
-        .hasPowerUsage = false,
+        // The CPU packages' energy from the EMI energy meters, shared out by CPU time in Domain as
+        // Linux's RAPL counter is (#2587); false where no meter has a package channel. (A fabricated
+        // figure, 1 J per sample shared out by CPU time, once stood in for it: #1028.)
+        .hasPowerUsage = m_HasPackageEnergy.load(std::memory_order_acquire),
         .hasStatus = true,       // Extended basic information (Suspended) and power throttling (Efficiency Mode)
         .hasPublisher = true,    // From GetFileVersionInfo on process image path
         .hasContainer = false,   // cgroup containers are Linux's
@@ -1326,6 +1361,53 @@ uint64_t WindowsProcessProbe::readTotalCpuTime()
 
     // Total = kernel + user (kernel includes idle time)
     return Windows::fileTimeTicks(ftKernel) + Windows::fileTimeTicks(ftUser);
+}
+
+std::optional<std::uint64_t> WindowsProcessProbe::readBusyCpuTicks()
+{
+    FILETIME ftIdle{};
+    FILETIME ftKernel{};
+    FILETIME ftUser{};
+    if (GetSystemTimes(&ftIdle, &ftKernel, &ftUser) == 0)
+    {
+        return std::nullopt;
+    }
+    return Windows::busyCpuTicks(Windows::fileTimeTicks(ftIdle), Windows::fileTimeTicks(ftKernel), Windows::fileTimeTicks(ftUser));
+}
+
+std::optional<PackageEnergyReading> WindowsProcessProbe::readPackageEnergy() const
+{
+    if (!m_HasPackageEnergy.load(std::memory_order_acquire))
+    {
+        return std::nullopt; // No package channel (or the opener hasn't finished): no attribution
+    }
+    // Raw reads only: ProcessModel shares the energy out between processes per interval (#1093).
+    // The EMI counters are 64-bit cumulative picowatt-hours the driver keeps across the hardware
+    // counter's wraps, so no wrap point is known (maxRangeUj 0): a counter that steps back (a driver
+    // restart) credits that one interval nothing, and the next interval starts from the new value.
+    PackageEnergyReading reading{.energyUj = std::nullopt, .maxRangeUj = 0, .busyCpuTicks = readBusyCpuTicks(), .otherPackages = {}};
+    const std::scoped_lock lock(m_EnergyMeterMutex);
+    if (!m_EnergyMeter.readPackageEnergyUj(m_PackageEnergyUj))
+    {
+        // Once, not per sample: a meter that went away (a driver update, a sleep) fails every read.
+        if (!m_PackageEnergyReadFailed.exchange(true, std::memory_order_relaxed))
+        {
+            spdlog::warn("EMI energy measurement failed (error {}); per-process power reads 0 W until it succeeds",
+                         m_EnergyMeter.lastReadError());
+        }
+        return reading;
+    }
+    if (m_PackageEnergyReadFailed.exchange(false, std::memory_order_relaxed))
+    {
+        spdlog::info("EMI energy measurement succeeded again");
+    }
+    reading.energyUj = m_PackageEnergyUj.front();
+    reading.otherPackages.reserve(m_PackageEnergyUj.size() - 1);
+    for (std::size_t i = 1; i < m_PackageEnergyUj.size(); ++i)
+    {
+        reading.otherPackages.push_back(EnergyCounterReading{.energyUj = m_PackageEnergyUj[i], .maxRangeUj = 0});
+    }
+    return reading;
 }
 
 long WindowsProcessProbe::ticksPerSecond() const
