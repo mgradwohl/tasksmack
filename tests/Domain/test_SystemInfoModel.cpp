@@ -855,19 +855,39 @@ TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
     ASSERT_EQ(range.values.size(), 1U);
     EXPECT_FLOAT_EQ(range.values[0], 40.0F);
 
-    // At the shortest refresh interval, the history keeps exactly its capacity, oldest dropped first.
-    constexpr double FASTEST = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+    // Readings faster than the shortest refresh interval: the capacity, not the window, bounds it, oldest
+    // dropped first (#2796).
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_DEFAULT);
+    constexpr double BURST = 0.001;
     std::size_t index = 1;
-    while (index <= Sampling::SENSOR_HISTORY_CAPACITY + 10)
+    while (index <= capacity + 10)
     {
-        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * FASTEST), FASTEST);
+        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * BURST), BURST);
         ++index;
     }
-    EXPECT_EQ(range.values.size(), Sampling::SENSOR_HISTORY_CAPACITY);
+    EXPECT_EQ(range.values.size(), capacity);
     EXPECT_EQ(range.times.size(), range.values.size());
-    EXPECT_FLOAT_EQ(range.values.back(), 40.0F + static_cast<float>(Sampling::SENSOR_HISTORY_CAPACITY + 10));
+    EXPECT_FLOAT_EQ(range.values.back(), 40.0F + static_cast<float>(capacity + 10));
     EXPECT_FLOAT_EQ(range.values.front(), 40.0F + 11.0F);
     EXPECT_LE(range.times.back() - range.times.front(), static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT));
+}
+
+// #2796: the window is the Settings history duration, clamped as the other models clamp it.
+TEST(SystemInfoModelTest, SensorHistoryFollowsItsWindow)
+{
+    const auto readingsKept = [](double windowSeconds)
+    {
+        SensorHistory history;
+        for (int second = 0; second < 2000; ++second)
+        {
+            appendSensorHistory(history, 40.0, 1000.0 + second, 1.0, windowSeconds);
+        }
+        return history.values.size();
+    };
+    EXPECT_EQ(readingsKept(60.0), 61U); // the window's worth, plus the reading at its very start
+    EXPECT_EQ(readingsKept(600.0), 601U);
+    EXPECT_EQ(readingsKept(1.0), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MIN) + 1U);
+    EXPECT_EQ(readingsKept(100000.0), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MAX) + 1U);
 }
 
 TEST(SystemInfoModelTest, APauseBreaksTheSensorHistoryAndOldReadingsAgeOut)

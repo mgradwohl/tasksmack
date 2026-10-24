@@ -56,6 +56,9 @@ class Attributor
     /// A process seen for the first time is credited nothing (its CPU time so far may predate the
     /// interval) but its CPU time still counts toward the interval's total, so its share is left
     /// unattributed rather than given to the others; processes that have exited are forgotten.
+    /// A pseudo-process whose CPU time is the CPUs' idle time (ProcessCounters::cpuTimeIsIdle:
+    /// Windows' System Idle Process, #2587) is neither credited nor counted: idle time isn't work,
+    /// and Linux lists no such process, so the two platforms share the same energy the same way.
     ///
     /// `busyCpuTicks` is the system-wide busy CPU counter read with the energy (see
     /// PackageEnergyReading). When known for both samples, the interval's share denominator is the
@@ -85,6 +88,10 @@ class Attributor
         std::uint64_t totalCpuDelta = 0;
         for (std::size_t i = 0; i < processes.size(); ++i)
         {
+            if (processes[i].cpuTimeIsIdle)
+            {
+                continue; // Idle time, not work: neither credited nor in the denominator
+            }
             const auto it = m_State.find(keyOf(processes[i]));
             const std::uint64_t cpuTime = processes[i].userTime + processes[i].systemTime;
             if (it == m_State.end())
@@ -115,7 +122,7 @@ class Attributor
             const Key key = keyOf(processes[i]);
             const auto it = m_State.find(key);
             double accumulatedUj = (it != m_State.end()) ? it->second.accumulatedUj : 0.0;
-            if (totalCpuDelta > 0 && m_CpuDeltas[i] > 0)
+            if (totalCpuDelta > 0 && m_CpuDeltas[i] > 0 && !processes[i].cpuTimeIsIdle)
             {
                 accumulatedUj +=
                     static_cast<double>(intervalEnergyUj) * static_cast<double>(m_CpuDeltas[i]) / static_cast<double>(totalCpuDelta);

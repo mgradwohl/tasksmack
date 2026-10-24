@@ -62,6 +62,26 @@ TEST(ProcessEnergyTest, IdleLongLivedProcessIsChargedNothing)
     EXPECT_EQ(second[1].energyMicrojoules, 1'000U);
 }
 
+TEST(ProcessEnergyTest, TheIdlePseudoProcessIsNeitherCreditedNorCounted)
+{
+    // Windows lists the System Idle Process (PID 0), whose CPU time is the CPUs' idle time (#2587).
+    // It takes no share and dilutes no one's: the energy goes to the processes that worked, as it
+    // does on Linux, which lists no such process.
+    Attributor attributor;
+    Platform::ProcessCounters idle = process(0, 10'000, 0);
+    idle.cpuTimeIsIdle = true;
+    std::vector<Platform::ProcessCounters> first{idle, process(1, 100), process(2, 100)};
+    attributor.attribute(first, 0, 0);
+
+    idle.userTime = 10'900; // 900 ticks idle: three times the processes' work
+    std::vector<Platform::ProcessCounters> second{idle, process(1, 300), process(2, 100)};
+    attributor.attribute(second, 9'000, 0);
+
+    EXPECT_EQ(second[0].energyMicrojoules, 0U);
+    EXPECT_EQ(second[1].energyMicrojoules, 9'000U);
+    EXPECT_EQ(second[2].energyMicrojoules, 0U);
+}
+
 TEST(ProcessEnergyTest, IntervalEnergyIsSharedByIntervalCpuAndSumsToTheDelta)
 {
     Attributor attributor;

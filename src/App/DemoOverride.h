@@ -17,6 +17,8 @@
 //   select=name:<process name>    the process to select in the Processes table, as a click does
 //   select=pid:<n>                (when it next appears in a snapshot); the tab does not change
 //   details=<overview|gpu|npu|network>   Process Details brought forward, with that tab
+//   machine=<overview|cores|gpu|npu|network>   the machine (hostname) tab brought forward, with
+//                                 that sub-tab (as TASKSMACK_MACHINE_TAB names one, #2869)
 //   open=<help|about>             the Help window or the About dialog
 //   close=dialog                  closes them
 //   theme=<id>                    a loaded theme, applied as Settings applies one
@@ -83,6 +85,14 @@ struct DetailsAction
     [[nodiscard]] bool operator==(const DetailsAction&) const = default;
 };
 
+/// machine=<overview|cores|gpu|npu|network>: the machine tab brought forward, with that sub-tab (#2869).
+struct MachineAction
+{
+    SelectOverride::MachineTab tab = SelectOverride::MachineTab::Overview;
+
+    [[nodiscard]] bool operator==(const MachineAction&) const = default;
+};
+
 /// open=<help|about>
 struct OpenAction
 {
@@ -113,7 +123,8 @@ struct SectionAction
     [[nodiscard]] bool operator==(const SectionAction&) const = default;
 };
 
-using Action = std::variant<TabAction, SelectAction, DetailsAction, OpenAction, CloseDialogAction, ThemeAction, SectionAction>;
+using Action =
+    std::variant<TabAction, SelectAction, DetailsAction, MachineAction, OpenAction, CloseDialogAction, ThemeAction, SectionAction>;
 
 /// One step: what to request, and when.
 struct Step
@@ -227,6 +238,14 @@ namespace Detail
         }
         return std::unexpected(std::format("names '{}', not overview, gpu, npu or network, as the details tab", value));
     }
+    if (equalsIgnoreCase(key, "machine"))
+    {
+        if (const std::optional<SelectOverride::MachineTab> tab = SelectOverride::parseMachineTab(value); tab.has_value())
+        {
+            return MachineAction{.tab = *tab};
+        }
+        return std::unexpected(std::format("names '{}', not overview, cores, gpu, npu or network, as the machine tab", value));
+    }
     if (equalsIgnoreCase(key, "open"))
     {
         if (const std::optional<SelectOverride::StartupDialog> dialog = SelectOverride::parseDialog(value); dialog.has_value())
@@ -304,6 +323,10 @@ struct Describe
     [[nodiscard]] std::string operator()(const DetailsAction& action) const
     {
         return std::format("details={}", SelectOverride::tabName(action.tab));
+    }
+    [[nodiscard]] std::string operator()(const MachineAction& action) const
+    {
+        return std::format("machine={}", SelectOverride::machineTabName(action.tab));
     }
     [[nodiscard]] std::string operator()(const OpenAction& action) const
     {

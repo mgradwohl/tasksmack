@@ -4,7 +4,8 @@
 /// memory modules and installed/usable memory (#1515), real and through a faked function table; and commit,
 /// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
 /// the Storage section's disks and volumes (#1517), real and through a faked function table, with each
-/// disk's partitions and the drive letters on them (#1632); and the Graphics & displays adapters, drivers
+/// disk's partitions and the drive letters on them (#1632) and a SATA drive's SMART health through a faked
+/// ATA pass-through (#2588); and the Graphics & displays adapters, drivers
 /// and monitors (#1519), real and faked; and the Devices section's USB link speeds from faked hubs (#1642);
 /// and the driver images' signatures (#1661).
 
@@ -23,6 +24,7 @@
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsInstalledMemory.h"
 #include "Platform/Windows/WindowsStorage.h"
+#include "Platform/Windows/WindowsStorageSmartMath.h"
 #include "Platform/Windows/WindowsSystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -38,6 +40,7 @@
 #include <winternl.h>
 #include <psapi.h>
 #include <winioctl.h>
+#include <ntddscsi.h>
 #include <cfgmgr32.h>
 #include <usbspec.h>
 // clang-format on
@@ -568,15 +571,30 @@ TEST(WindowsSystemInfoProbeTest, ParsesDeviceDescriptorsAndHealthLogs)
     EXPECT_EQ(WindowsStorage::splitDriveStrings(drives), (std::vector<std::wstring>{L"C:\\", L"D:\\"}));
 }
 
-// The fake machine: Disk 0 is an NVMe SSD with a temperature and a health log; Disk 2 a SATA HDD that
-// reports no temperature; the rest don't exist. Drives C: (fixed), D: (an empty optical drive), E:
-// (removable, with media) and Z: (a network drive, which must never be queried).
+// The fake machine: Disk 0 is an NVMe SSD with a temperature and a health log; Disk 2 a SATA HDD whose
+// temperature property fails but whose SMART attributes carry one (#2588); the rest don't exist. Drives
+// C: (fixed), D: (an empty optical drive), E: (removable, with media) and Z: (a network drive, which must
+// never be queried).
 HANDLE g_Nvme = nullptr;                           // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 bool g_HealthDenied = false;                       // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 DWORD g_LayoutError = ERROR_SUCCESS;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::pair<HANDLE, wchar_t>> g_Volumes; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::wstring> g_Queried;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<DWORD> g_ErrorModes;                   // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// How the SATA drive's SMART reads go (#2588).
+enum class SmartMode : std::uint8_t
+{
+    Healthy,          ///< RETURN STATUS fine, every attribute above its threshold
+    StatusFailing,    ///< RETURN STATUS says a threshold is exceeded, and the sectors show it
+    AttributeFailing, ///< RETURN STATUS still fine, but pre-fail attribute 5 has reached its threshold
+    Off,              ///< IDENTIFY DEVICE says SMART is supported but turned off
+};
+SmartMode g_SmartMode = SmartMode::Healthy; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+DWORD g_SmartOpenError = ERROR_SUCCESS;     // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): the read-write open fails with it
+bool g_SmartIoctlFails = false;             // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): IOCTL_ATA_PASS_THROUGH fails
+int g_ReadWriteOpens = 0;                   // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+int g_AtaCommands = 0;                      // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 Windows::UniqueHandle openFakeDrive(int index)
 {
@@ -590,6 +608,114 @@ Windows::UniqueHandle openFakeDrive(int index)
     return handle;
 }
 
+/// The read-write open the ATA pass-through needs: only the SATA drive is ever opened this way.
+Windows::UniqueHandle openFakeDriveReadWrite(int index)
+{
+    EXPECT_EQ(index, 2); // the NVMe drive stays on its health log
+    ++g_ReadWriteOpens;
+    if (g_SmartOpenError != ERROR_SUCCESS)
+    {
+        SetLastError(g_SmartOpenError);
+        return {};
+    }
+    return Windows::UniqueHandle(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+}
+
+/// One SMART attribute entry in @p page's @p slot, as a drive lays it out.
+void putSmartAttribute(
+    std::span<std::byte> page, std::size_t slot, std::uint8_t id, std::uint16_t flags, std::uint8_t current, std::uint64_t raw)
+{
+    namespace Smart = AtaSmartMath;
+    const std::size_t at = Smart::ATTRIBUTE_TABLE_OFFSET + (slot * Smart::ATTRIBUTE_BYTES);
+    page[at] = std::byte{id};
+    page[at + 1] = static_cast<std::byte>(flags & 0xFFU);
+    page[at + 2] = static_cast<std::byte>(flags >> 8U);
+    page[at + 3] = std::byte{current};
+    page[at + 4] = std::byte{current};
+    std::size_t index = 0;
+    while (index < Smart::RAW_VALUE_BYTES)
+    {
+        page[at + 5 + index] = static_cast<std::byte>((raw >> (8U * index)) & 0xFFU);
+        ++index;
+    }
+}
+
+/// The SATA drive's ATA pass-through (#2588): IDENTIFY DEVICE (SMART supported, enabled unless Off), SMART
+/// READ DATA with attributes 5, 9, 194 and 197, READ THRESHOLDS (5 at 10), and RETURN STATUS answering in
+/// the task file. Checks the request is built the way the port driver needs it.
+BOOL fakeAtaPassThrough(LPVOID in, DWORD inSize, LPVOID out, DWORD outSize, LPDWORD returned)
+{
+    namespace Smart = AtaSmartMath;
+    ++g_AtaCommands;
+    if (g_SmartIoctlFails)
+    {
+        SetLastError(ERROR_INVALID_FUNCTION);
+        return FALSE;
+    }
+    EXPECT_EQ(in, out); // one buffer in and out, as METHOD_BUFFERED allows
+    EXPECT_GE(inSize, sizeof(ATA_PASS_THROUGH_EX));
+    EXPECT_GE(outSize, sizeof(ATA_PASS_THROUGH_EX));
+    ATA_PASS_THROUGH_EX request{};
+    std::memcpy(&request, in, sizeof(request));
+    EXPECT_EQ(request.Length, sizeof(ATA_PASS_THROUGH_EX));
+    EXPECT_EQ(request.TimeOutValue, WindowsStorage::ATA_COMMAND_TIMEOUT_SECONDS);
+    EXPECT_NE(request.AtaFlags & ATA_FLAGS_DRDY_REQUIRED, 0);
+    const std::uint8_t command = request.CurrentTaskFile[Smart::TASK_FILE_COMMAND];
+    const std::uint8_t feature = request.CurrentTaskFile[Smart::TASK_FILE_FEATURES];
+    std::array<std::byte, Smart::PAGE_BYTES> page{};
+    const bool failing = g_SmartMode == SmartMode::StatusFailing;
+    if (command == Smart::IDENTIFY_DEVICE_COMMAND)
+    {
+        page[Smart::IDENTIFY_SMART_SUPPORTED_OFFSET] = std::byte{0x01};
+        page[Smart::IDENTIFY_SMART_ENABLED_OFFSET] = g_SmartMode == SmartMode::Off ? std::byte{0x00} : std::byte{0x01};
+    }
+    else
+    {
+        EXPECT_EQ(command, Smart::SMART_COMMAND);
+        EXPECT_EQ(request.CurrentTaskFile[Smart::TASK_FILE_LBA_MID], Smart::SMART_LBA_MID);
+        EXPECT_EQ(request.CurrentTaskFile[Smart::TASK_FILE_LBA_HIGH], Smart::SMART_LBA_HIGH);
+        if (feature == Smart::SMART_READ_DATA)
+        {
+            const bool badSectors = g_SmartMode != SmartMode::Healthy && g_SmartMode != SmartMode::Off;
+            putSmartAttribute(page, 0, Smart::ATTRIBUTE_REALLOCATED_SECTORS, 0x0033, badSectors ? 5 : 100, badSectors ? 24 : 0);
+            putSmartAttribute(page, 1, Smart::ATTRIBUTE_POWER_ON_HOURS, 0x0032, 75, 18'340);
+            putSmartAttribute(page, 2, Smart::ATTRIBUTE_TEMPERATURE, 0x0022, 35, 0x001E'001B'0023);
+            putSmartAttribute(page, 3, Smart::ATTRIBUTE_PENDING_SECTORS, 0x0032, 200, badSectors ? 2 : 0);
+        }
+        else if (feature == Smart::SMART_READ_THRESHOLDS)
+        {
+            page[Smart::ATTRIBUTE_TABLE_OFFSET] = std::byte{Smart::ATTRIBUTE_REALLOCATED_SECTORS};
+            page[Smart::ATTRIBUTE_TABLE_OFFSET + 1] = std::byte{10};
+        }
+        else if (feature == Smart::SMART_RETURN_STATUS)
+        {
+            EXPECT_EQ(request.DataTransferLength, 0U);
+            EXPECT_EQ(request.AtaFlags & ATA_FLAGS_DATA_IN, 0);
+            request.CurrentTaskFile[Smart::TASK_FILE_LBA_MID] = failing ? Smart::SMART_FAILING_LBA_MID : Smart::SMART_LBA_MID;
+            request.CurrentTaskFile[Smart::TASK_FILE_LBA_HIGH] = failing ? Smart::SMART_FAILING_LBA_HIGH : Smart::SMART_LBA_HIGH;
+        }
+        else
+        {
+            ADD_FAILURE() << "unexpected SMART feature " << static_cast<int>(feature);
+            return FALSE;
+        }
+    }
+    request.CurrentTaskFile[Smart::TASK_FILE_COMMAND] = 0x50; // the status register: DRDY | DSC, no ERR
+    auto* bytes = static_cast<std::byte*>(out);
+    std::memcpy(bytes, &request, sizeof(request));
+    if (request.DataTransferLength > 0)
+    {
+        EXPECT_NE(request.AtaFlags & ATA_FLAGS_DATA_IN, 0);
+        EXPECT_EQ(request.DataTransferLength, Smart::PAGE_BYTES);
+        EXPECT_EQ(request.DataBufferOffset, sizeof(ATA_PASS_THROUGH_EX));
+        EXPECT_EQ(request.CurrentTaskFile[Smart::TASK_FILE_COUNT], 1); // one sector
+        EXPECT_GE(outSize, sizeof(ATA_PASS_THROUGH_EX) + Smart::PAGE_BYTES);
+        std::memcpy(bytes + request.DataBufferOffset, page.data(), page.size());
+    }
+    *returned = static_cast<DWORD>(sizeof(ATA_PASS_THROUGH_EX) + request.DataTransferLength);
+    return TRUE;
+}
+
 template<typename T> BOOL answer(const T& value, LPVOID out, DWORD outSize, LPDWORD returned)
 {
     if (outSize < sizeof(T))
@@ -601,10 +727,14 @@ template<typename T> BOOL answer(const T& value, LPVOID out, DWORD outSize, LPDW
     return TRUE;
 }
 
-BOOL WINAPI fakeIoControl(
-    HANDLE disk, DWORD code, LPVOID in, DWORD /*inSize*/, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
+BOOL WINAPI
+fakeIoControl(HANDLE disk, DWORD code, LPVOID in, DWORD inSize, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
 {
     const bool nvme = disk == g_Nvme;
+    if (code == IOCTL_ATA_PASS_THROUGH)
+    {
+        return fakeAtaPassThrough(in, inSize, out, outSize, returned);
+    }
     if (code == IOCTL_DISK_GET_DRIVE_LAYOUT_EX)
     {
         // Disk 0 is the Windows install disk (GPT), Disk 2 an MBR data disk.
@@ -792,6 +922,7 @@ Windows::UniqueHandle openFakeVolume(wchar_t letter)
 {
     return {
         .openPhysicalDrive = &openFakeDrive,
+        .openPhysicalDriveReadWrite = &openFakeDriveReadWrite,
         .deviceIoControl = &fakeIoControl,
         .getLogicalDriveStrings = &fakeDriveStrings,
         .getDriveType = &fakeDriveType,
@@ -808,6 +939,11 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     g_Volumes.clear();
     g_ErrorModes.clear();
     g_HealthDenied = false;
+    g_SmartMode = SmartMode::Healthy;
+    g_SmartOpenError = ERROR_SUCCESS;
+    g_SmartIoctlFails = false;
+    g_ReadWriteOpens = 0;
+    g_AtaCommands = 0;
     StorageInfo info;
     WindowsStorage::readStorage(info, fakeStorage());
     EXPECT_TRUE(info.available);
@@ -829,9 +965,17 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     EXPECT_EQ(hdd.model, "WDC WD20EZRZ-00Z5HB0");
     EXPECT_EQ(hdd.bus, "SATA");
     EXPECT_EQ(hdd.media, DiskMedia::Hdd);
-    EXPECT_FALSE(hdd.temperatureCelsius.has_value());
-    EXPECT_FALSE(hdd.health.has_value());
-    EXPECT_TRUE(hdd.healthUnavailableReason.empty()); // not NVMe: no health row at all
+    EXPECT_EQ(hdd.temperatureCelsius, 35); // the temperature property failed: SMART attribute 194's low byte
+    EXPECT_FALSE(hdd.health.has_value());  // not NVMe: no health log
+    // SATA: SMART through the ATA pass-through (#2588), the same row Linux builds from udisks2.
+    const AtaHealth sata = hdd.ataHealth.value_or(AtaHealth{.failing = true, .badSectors = {}, .powerOnHours = {}});
+    EXPECT_TRUE(hdd.ataHealth.has_value());
+    EXPECT_FALSE(sata.failing);
+    EXPECT_EQ(sata.badSectors, std::optional<std::uint64_t>{0});
+    EXPECT_EQ(sata.powerOnHours, std::optional<std::uint64_t>{18'340});
+    EXPECT_TRUE(hdd.healthUnavailableReason.empty());
+    EXPECT_EQ(g_ReadWriteOpens, 1); // the SATA drive only; the NVMe drive is never opened read-write
+    EXPECT_EQ(g_AtaCommands, 4);    // IDENTIFY, READ DATA, READ THRESHOLDS, RETURN STATUS
 
     ASSERT_TRUE(info.volumesRead);
     ASSERT_EQ(info.volumes.size(), 3U); // the empty optical drive is left out
@@ -886,6 +1030,69 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     ASSERT_FALSE(unsupported.disks.empty());
     EXPECT_EQ(unsupported.disks[0].partitionsUnavailableReason, "The drive didn't return its partition layout");
     g_LayoutError = ERROR_SUCCESS;
+}
+
+/// The fake machine's SATA drive after one readStorage() in the current SMART mode.
+[[nodiscard]] PhysicalDisk readSataDrive()
+{
+    g_Volumes.clear();
+    g_ReadWriteOpens = 0;
+    g_AtaCommands = 0;
+    StorageInfo info;
+    WindowsStorage::readStorage(info, fakeStorage());
+    return info.disks.size() == 2 ? info.disks[1] : PhysicalDisk{};
+}
+
+TEST(WindowsSystemInfoProbeTest, SataSmartThroughTheAtaPassThrough)
+{
+    g_HealthDenied = false;
+    g_SmartOpenError = ERROR_SUCCESS;
+    g_SmartIoctlFails = false;
+    const AtaHealth unread{.failing = false, .badSectors = {}, .powerOnHours = {}};
+
+    // The drive's own verdict says a threshold is exceeded: failing, with the sectors that show it.
+    g_SmartMode = SmartMode::StatusFailing;
+    PhysicalDisk disk = readSataDrive();
+    EXPECT_TRUE(disk.ataHealth.has_value());
+    EXPECT_TRUE(disk.ataHealth.value_or(unread).failing);
+    EXPECT_EQ(disk.ataHealth.value_or(unread).badSectors, std::optional<std::uint64_t>{26}); // 24 reallocated + 2 pending
+    EXPECT_TRUE(disk.healthUnavailableReason.empty());
+
+    // The verdict lags: RETURN STATUS still fine, but pre-fail attribute 5 is at its threshold of 10.
+    g_SmartMode = SmartMode::AttributeFailing;
+    disk = readSataDrive();
+    EXPECT_TRUE(disk.ataHealth.value_or(unread).failing);
+
+    // SMART turned off: IDENTIFY DEVICE says so, and the SMART commands are never sent.
+    g_SmartMode = SmartMode::Off;
+    disk = readSataDrive();
+    EXPECT_FALSE(disk.ataHealth.has_value());
+    EXPECT_EQ(disk.healthUnavailableReason, "SMART is turned off on this drive");
+    EXPECT_FALSE(disk.temperatureCelsius.has_value());
+    EXPECT_EQ(g_AtaCommands, 1);
+    g_SmartMode = SmartMode::Healthy;
+
+    // A standard user: the read-write open is refused, the row says administrator, no command is sent.
+    g_SmartOpenError = ERROR_ACCESS_DENIED;
+    disk = readSataDrive();
+    EXPECT_FALSE(disk.ataHealth.has_value());
+    EXPECT_EQ(disk.healthUnavailableReason, "Requires administrator");
+    EXPECT_EQ(g_ReadWriteOpens, 1);
+    EXPECT_EQ(g_AtaCommands, 0);
+    g_SmartOpenError = ERROR_FILE_NOT_FOUND; // the drive went away between the two opens
+    disk = readSataDrive();
+    EXPECT_EQ(disk.healthUnavailableReason, "The drive couldn't be opened for its SMART data");
+    g_SmartOpenError = ERROR_SUCCESS;
+
+    // A port driver without the pass-through: the row says the drive didn't answer, the disk's other
+    // facts are untouched.
+    g_SmartIoctlFails = true;
+    disk = readSataDrive();
+    EXPECT_FALSE(disk.ataHealth.has_value());
+    EXPECT_EQ(disk.healthUnavailableReason, "The drive didn't return its SMART data");
+    EXPECT_EQ(disk.model, "WDC WD20EZRZ-00Z5HB0");
+    EXPECT_TRUE(disk.partitionsRead);
+    g_SmartIoctlFails = false;
 }
 
 /// A drive with 40 partitions: more than the first try's buffer holds.

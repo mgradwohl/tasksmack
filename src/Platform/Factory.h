@@ -68,12 +68,12 @@ namespace Platform
 /// process token on Windows.
 [[nodiscard]] std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader();
 
-/// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an
-/// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.
+/// Creates the platform-appropriate IStartupProbe implementation (#801): the Run keys, Startup folders and
+/// packaged startup tasks on Windows; the XDG autostart entries on Linux (#2541).
 [[nodiscard]] std::unique_ptr<IStartupProbe> makeStartupProbe();
 
-/// Creates the platform-appropriate IStartupActions implementation (#801, phase 2). Linux returns an
-/// UnsupportedStartupActions (every capability false) until XDG autostart support lands.
+/// Creates the platform-appropriate IStartupActions implementation (#801, phase 2); on Linux, a user copy
+/// of the autostart file with Hidden set (#2541).
 [[nodiscard]] std::unique_ptr<IStartupActions> makeStartupActions();
 
 /// Creates the platform-appropriate ISystemInfoProbe, the System Information page's static facts (#1399).

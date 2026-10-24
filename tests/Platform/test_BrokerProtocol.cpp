@@ -66,6 +66,7 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 0x0123456789ABCDEF
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
+    EXPECT_EQ(roundTrip(Request{Hello{.forSession = true}}), Request{Hello{.forSession = true}});
     for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
@@ -99,12 +100,29 @@ TEST(BrokerProtocolTest, EveryResponseRoundTrips)
 TEST(BrokerProtocolTest, TheFrameIsLittleEndianWithItsLengthVersionKindAndId)
 {
     const std::vector<std::uint8_t> bytes = encodeRequest(0x01020304, Request{Hello{}});
-    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 2U);
-    EXPECT_EQ(bytes[0], HEADER_BYTES + 2U); // length, low byte first
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 3U); // a Hello's payload: the version, then forSession
+    EXPECT_EQ(bytes[0], HEADER_BYTES + 3U);          // length, low byte first
     EXPECT_EQ(bytes[4], PROTOCOL_VERSION & 0xFFU);
     EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::Hello));
     EXPECT_EQ(bytes[8], 0x04U); // request id, little-endian
     EXPECT_EQ(bytes[11], 0x01U);
+}
+
+TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)
+{
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{Hello{.forSession = true}});
+    ASSERT_EQ(bytes.back(), 1U);
+    bytes.back() = 2;
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
+TEST(BrokerProtocolTest, ATransportWithoutASessionHelperRefusesToHoldOne)
+{
+    // Windows' Administrator restarts TaskSmack elevated (#2728); only the Linux helper is held.
+    Mocks::FakeBroker broker;
+    const auto held = broker.holdForSession(std::stop_token{});
+    EXPECT_FALSE(held.has_value());
+    EXPECT_FALSE(broker.heldForSession());
 }
 
 TEST(BrokerProtocolTest, RefusesAnythingButExactlyAKnownFrame)
