@@ -4,7 +4,7 @@
 # the CI Test step.
 #
 #   tasksmack_gtest_add_suites(<target>
-#       [DISCOVERY_TIMEOUT <seconds>]               # for `<binary> --gtest_list_tests`; default 30
+#       [DISCOVERY_TIMEOUT <seconds>]               # for `<binary> --gtest_list_tests`; default 120
 #       [SHARDS <Suite>=<n> ...]                    # split a slow suite into n entries
 #       [ISOLATE <Suite> ...]                       # one entry, and process, per case, as before
 #       [PROPERTIES <name> <value> ...]             # set on every entry
@@ -32,7 +32,7 @@ function(tasksmack_gtest_add_suites target)
         message(FATAL_ERROR "tasksmack_gtest_add_suites: unknown arguments ${arg_UNPARSED_ARGUMENTS}")
     endif()
     if(NOT arg_DISCOVERY_TIMEOUT)
-        set(arg_DISCOVERY_TIMEOUT 30)
+        set(arg_DISCOVERY_TIMEOUT 120)
     endif()
     # The shard variables go in ENVIRONMENT; a caller's own ENVIRONMENT would replace them.
     if(arg_SHARDS AND ("ENVIRONMENT" IN_LIST arg_PROPERTIES OR "ENVIRONMENT" IN_LIST arg_SUITE_PROPERTIES))

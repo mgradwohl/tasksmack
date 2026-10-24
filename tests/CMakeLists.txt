@@ -136,6 +136,14 @@ add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
 set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
     PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
 
+# The DISCOVERY_TIMEOUT default tasksmack_gtest_add_suites() emits for its discovery step
+# (#2838): a drop back to the 30 s that failed --gtest_list_tests on loaded runners fails here,
+# at configure time, instead of in the next CI Build step.
+add_test(NAME GTestSuitesTimeoutScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GTestSuitesTimeoutCheck.cmake)
+set_tests_properties(GTestSuitesTimeoutScript PROPERTIES TIMEOUT 120)
+
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
 if(WIN32)
