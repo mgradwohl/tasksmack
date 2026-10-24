@@ -28,6 +28,7 @@
 #include "App/TitleBarLayer.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
+#include "Core/EnvRead.h"
 #include "Core/FramebufferCapture.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
@@ -79,8 +80,8 @@ bool hasDisplay()
 /// Where each step's frame is saved: TASKSMACK_UI_CAPTURE_DIR, created if need be; nullopt when unset.
 std::optional<std::filesystem::path> captureDir()
 {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
-    const char* value = std::getenv("TASKSMACK_UI_CAPTURE_DIR");
+    // SDL_getenv(): UTF-8 on Windows too, and no CRT deprecation there.
+    const char* value = Core::readEnv("TASKSMACK_UI_CAPTURE_DIR");
     if (value == nullptr || *value == '\0')
     {
         return std::nullopt;
