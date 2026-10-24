@@ -19,8 +19,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -352,17 +352,16 @@ TEST(NetInterfaceUtilsTest, InterfaceTypeIconMapsEveryType)
     EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Bluetooth), ICON_FA_BLUETOOTH);
     EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Virtual), ICON_FA_CLOUD);
     EXPECT_STREQ(interfaceTypeIcon(InterfaceType::Other), ICON_FA_NETWORK_WIRED);
-    // The Type column is sized for every icon it can hold.
-    for (const InterfaceType type : {InterfaceType::Loopback,
-                                     InterfaceType::WiFi,
-                                     InterfaceType::Cellular,
-                                     InterfaceType::Ethernet,
-                                     InterfaceType::Bluetooth,
-                                     InterfaceType::Virtual,
-                                     InterfaceType::Other})
+}
+
+// #2776: the Type column is sized from INTERFACE_TYPE_ICONS and each row's glyph comes from
+// interfaceTypeIcon(), so the array holds the function's icon for every type, in enum order.
+TEST(NetInterfaceUtilsTest, InterfaceTypeIconsListsEveryTypesIconInOrder)
+{
+    for (std::size_t index = 0; index < INTERFACE_TYPE_COUNT; ++index)
     {
-        const std::string_view icon = interfaceTypeIcon(type);
-        EXPECT_TRUE(std::ranges::any_of(INTERFACE_TYPE_ICONS, [icon](const char* listed) { return icon == listed; })) << icon;
+        const auto type = static_cast<InterfaceType>(index);
+        EXPECT_STREQ(INTERFACE_TYPE_ICONS[index], interfaceTypeIcon(type)) << "InterfaceType " << index;
     }
 }
 

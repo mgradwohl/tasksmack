@@ -139,7 +139,7 @@ Sandbox options.
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
   - ROCm SMI library (librocm_smi64.so) for AMD GPU support
@@ -182,7 +182,7 @@ sudo apt install libsystemd-dev pkg-config
 - ccache 4.9.1+ (optional, for faster rebuilds; `setup-dev.ps1 -DevTools`)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - git (CMake requires it, and fetches the dependencies with it)
-- FreeType: nothing to install; the build always fetches and builds it (2.14.3, pinned in `cmake/Dependencies.cmake`) and links it statically
+- FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
@@ -784,42 +784,74 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-Process Details (overview, GPU, network) for one process, Services, Startup, About and Help, named
-`<view>-<theme>.webp`, plus `overview-live.webp`, an 8 s / 12 fps animated WebP built from a frame
-sequence. The `overview-*` shots get `[sampling] history_max_seconds = 60` and are captured after 60 s
-(the hook's maximum), so their history charts are full; the other views are captured after 8 s.
+the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+`TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
+Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
+`details-modules`, `details-openfiles`, `details-connections`) for one process, Services, Startup, About
+and Help, named `<view>-<theme>.webp`, plus three animated WebPs at 12 fps built from frame sequences:
+`overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
+Processes table, selects the process and brings up its Process Details' Network tab) and
+`themes-live.webp` (9 s: the Overview through the six themes, 1.5 s each). The `overview-*` shots and
+`themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
+maximum), so their history charts are full; the other views are captured after 8 s (the GPU and
+network charts need a few samples).
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
-webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied instead. Both scripts
-print a table of exit code, seconds and bytes per shot and exit non-zero if any shot failed.
+webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
+in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
+and exit non-zero if any shot failed.
 
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
 ```bash
-# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images.
+# SDL_VIDEO_X11_SCALING_FACTOR=1.75 renders at the Windows set's 175 % scale (SDL reads that hint,
+# Xft.dpi or GDK_SCALE, never Xvfb's -dpi); the three expanded-section shots need --window 1440x1200
+# on Linux, where the Actions and Priority cards are taller and push the sections below a 900 px fold.
 cmake --preset release && cmake --build --preset release
-tools/screenshots.sh --webp --hostname tasksmack-demo
+SDL_VIDEO_X11_SCALING_FACTOR=1.75 tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
 
+Under Xvfb, SDL warps the pointer to the window's centre at startup, which hovers a chart and draws its
+tooltip into the shot: keep the pointer parked outside the window for the run (python-xlib's
+`root.warp_pointer()` to a screen corner, repeated every quarter second). The selected process's command
+line is shown in Process Details, so run the binary from a path that names no user (a bind mount of the
+build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
+
 ```powershell
-# Windows: in a Windows Sandbox (its own processes, user and host name) with the win-release build,
-# and Mesa's llvmpipe opengl32.dll beside TaskSmack.exe when the Sandbox has no vGPU
-.\tools\screenshots.ps1 -WebP -Exe C:\shots\TaskSmack.exe -Out C:\shots\out
+# Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
+# inside it (App Control there refuses a binary built on the host), and Mesa's llvmpipe opengl32.dll
+# beside TaskSmack.exe when the Sandbox has no vGPU
+.\tools\screenshots.ps1 -Exe build\win-release\bin\TaskSmack.exe -Out C:\shots\out   # then cwebp/img2webp on the host
 ```
 
 The images show the machine they were taken on. Before committing, look at every one for a user name,
 host name or process you would not publish: the Processes User column, System Information and the
 hostname tab are the usual places.
 
+The user guide (`docs/guide/user-guide.md`) and `README.md` embed the images by these fixed names
+(`docs/images/screenshots/windows/processes-windows-dark.webp`, `.../linux/overview-live.webp`, and so
+on), so a regeneration that keeps the matrix replaces every picture in place and needs no doc edit.
+Renaming a shot or dropping one from the matrix is a doc change too: `tools/md-link-audit.sh` (the
+"Audit markdown links" step in `ci.yml`) fails on a Markdown image whose file is missing, so run it
+after the new set is in. The guide uses the Windows image wherever the Linux set has no
+counterpart of the same name; once the Linux set has one, switch the guide to it in the same PR.
+
+**At a minor release** (the `vX.Y.0` candidate, see [Cutting a Release](#cutting-a-release)):
+regenerate both sets from the candidate's build (the Linux set under Xvfb in WSL, the Windows set in a
+Windows Sandbox, as above), review every image for identity, and merge them in one docs PR to `main`
+with the `backport:X.Y` label so `release/X.Y` carries the same pictures. Images are documentation, so
+the PR merges under release gating without waiting for the tag.
+
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so seven test-only environment variables (#1559, #172, #2827), read
-once at startup, select a process, open a tab, open the Help or About window, replay a timed script of
-such requests, or write a screenshot of the window and quit, by themselves. With `TASKSMACK_SELECT_PID` or
-`TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
-click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the seven variables, or
-`TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
-cover the capture. Unset, the variables do nothing.
+Agents must not inject clicks or keys, so eight test-only environment variables (#1559, #172, #2827,
+#2869), read once at startup, select a process, open a tab or a sub-tab, open the Help or About window,
+replay a timed script of such requests, or write a screenshot of the window and quit, by themselves. With
+`TASKSMACK_SELECT_PID` or `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a
+snapshot, exactly as a click and the row menu's **Details** do, and Process Details opens. If it has not
+appeared after 20 snapshots, one warning is logged and nothing is selected. While any of the eight
+variables, or `TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since
+it would cover the capture. Unset, the variables do nothing.
 
 | Variable | Value |
 |---|---|
@@ -827,9 +859,10 @@ cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu`, `npu` or `network`. `npu` selects the NPU tab only on a machine that has one. |
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
+| `TASKSMACK_MACHINE_TAB` | The machine (hostname) tab's sub-tab to bring forward (#2869): `overview`, `cores` (CPU Cores), `gpu`, `npu` or `network` (Network and I/O). Case-insensitive; any other value logs one warning and is ignored. It picks the sub-tab only; the main tab stays `TASKSMACK_TAB`'s (or the default, the machine tab). The sub-tab is asked for until it shows, so a request made before the first sample (CPU Cores and Network and I/O exist only once it is in) still takes effect; one for a sub-tab this machine never draws (`npu` without an accelerator, `network` without network counters) is dropped with one warning after 120 frames drawn with a sample. `TASKSMACK_SCREENSHOT` does not wait for it: give `after` a few seconds, as the screenshot scripts do. |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |
-| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `open=<help|about>`; `close=dialog` (closes the Help window and the About dialog); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
+| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `machine=<overview|cores|gpu|npu|network>` (brings the machine tab forward with that sub-tab, as `TASKSMACK_TAB=machine` with `TASKSMACK_MACHINE_TAB` does, #2869); `open=<help|about>`; `close=dialog` (closes the Help window and the About dialog); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 | `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only the user's locale `LocaleSetup` builds and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
@@ -1125,6 +1158,10 @@ code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touchi
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
 `check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
+A release candidate's campaign gives each target 600 seconds instead (#2783):
+`gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
+summary line (targets, total and per-target seconds) in the release's fuzzing record.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
@@ -2056,8 +2093,9 @@ Get-Help tools/measure-idle.ps1 -Full
 
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
-are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
-`ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
+are readable: the background samplers are `ts-sampler-proc` (process enumeration),
+`ts-sampler-sys` (CPU, memory, network, power), `ts-sampler-disk` (disks) and `ts-sampler-gpu`
+(GPUs and NPUs; one thread per domain, #2731), plus `ts-sampler-svc` (the Services tab's list, created
 the first time that tab is shown) and `ts-sampler-auto` (the Startup tab's list, while it's shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
@@ -2670,8 +2708,12 @@ opens PRs; the same CI gate applies before merge.
     `tools/setup-dev.sh`. Update by hand in the same PR: the "3.14" in this guide's setup commands and in
     `requirements.txt`'s header.
   - **CMake, Ninja and ccache** pins in `tools/setup-dev.ps1` (`$CMakeVersion`, `$NinjaVersion`,
-    `$CcacheVersion`). CMake and Ninja match the `windows-2025` runner image. WinGet's feed lags upstream
-    and no CI job runs this script, so confirm WinGet has the version before approving.
+    `$CcacheVersion`). Ninja matches the `windows-2025` runner image; CMake is the newest version WinGet
+    carries, since its catalog dropped every 3.x, the image's 3.31.x included (#2844). WinGet's feed lags
+    upstream, keeps only recent versions, and no CI job installs with this script, so confirm WinGet has
+    the version before approving. A pin WinGet no longer carries doesn't stop the script: it installs
+    WinGet's newest version with a warning that names the pin to move, so a stale pin shows up on a
+    clean machine as that warning, not as a failed setup.
 - *Tier 3, manual:* tools that ride the OS, runner or SDK rather than their own releases (`wpr`, `xperf`,
   `wpa`, CPack's NSIS/dpkg/rpmbuild, `gh`, `xvfb`), and optional local-only tools (Inkscape, heaptrack,
   FlameGraph, hotspot).
@@ -2725,6 +2767,11 @@ failed run without creating a new tag); `validate` still checks that the ref rea
 stray dispatch from a branch can't impersonate one.
 
 ```bash
+# 0. For vX.Y.0 only: regenerate the documentation screenshots from the candidate's build with
+#    tools/screenshots.sh (Linux) and tools/screenshots.ps1 (Windows), review them for identity, and
+#    merge them to main with the backport:X.Y label. The guide and README reference the images by
+#    fixed names, so this is an image-only PR (see "Documentation screenshots" under Test).
+
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
 #    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
 #    for a patch release. release.yml's validate job requires this to already match the tag (see

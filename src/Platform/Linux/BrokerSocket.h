@@ -4,8 +4,9 @@
 // SOCK_SEQPACKET socket. A frame goes in packets of at most MAX_PACKET_BYTES, since a packet can't be
 // larger than the socket's send buffer (#2367); the receiver joins them by the frame's length prefix.
 // The client makes a socketpair and hands the helper one end as its stdin (pkexec keeps fds 0-2);
-// there is no socket on the filesystem for anyone else to connect to. Each side checks the other's
-// credentials (SO_PEERCRED) before it trusts a frame.
+// there is no socket on the filesystem for anyone else to connect to. The helper checks its peer's
+// credentials (SO_PEERCRED) before it trusts a frame; the client trusts the end it made the socketpair
+// for and handed to the process it started, which nothing else can hold (#2752).
 
 #include "Platform/BrokerProtocol.h"
 

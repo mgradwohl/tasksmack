@@ -1,8 +1,10 @@
 // tasksmack-helper: TaskSmack's privileged broker on Linux (#2307; #2181). TaskSmack's UI never runs as
 // root. When the user authenticates for an action the UI can't do itself, TaskSmack starts this with
-// pkexec, which asks for the password (polkit action app.tasksmack.TaskSmack.helper) and runs it as root
-// with one end of a socketpair as its stdin. It answers a closed set of BrokerProtocol requests on that
-// socket and exits when TaskSmack closes it, or after a few idle minutes.
+// pkexec, which asks for the password (polkit action app.tasksmack.TaskSmack.helper) and starts it as root
+// with one end of a socketpair as its stdin; once its peer checks out it stops being root, running as
+// nobody with only the capabilities its requests need (HelperPrivileges.h). It answers a closed set of BrokerProtocol requests on that
+// socket and exits when TaskSmack closes it, or after a few idle minutes unless the user chose
+// Administrator for the session (#2728).
 //
 // It links only Platform: no SDL, ImGui, GL or config file. Of the process actions it links only
 // LinuxProcessControl, the half that signals and sets priorities and affinity, not LinuxProcessActions'
@@ -95,7 +97,8 @@ int main(int argc, char** argv)
         return EXIT_UNTRUSTED_PEER;
     }
     // Before any request, reader or thread: keep only what the protocol needs of root (#2640).
-    if (Platform::HelperPrivileges::dropToKeptCapabilities() == Platform::HelperPrivileges::DropResult::Failed)
+    if (Platform::HelperPrivileges::dropToKeptCapabilities(Platform::HelperPrivileges::NOBODY) ==
+        Platform::HelperPrivileges::DropResult::Failed)
     {
         std::fputs("tasksmack-helper: couldn't drop the capabilities it doesn't need; not serving\n", stderr);
         return EXIT_FAILED;

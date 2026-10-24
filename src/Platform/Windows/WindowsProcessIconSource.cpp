@@ -17,13 +17,13 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IconImageFile.h"
 #include "WinString.h"
 #include "WindowsPackageLogoMath.h"
 #include "WindowsProcessIconMath.h"
 
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -51,21 +51,8 @@ constexpr std::size_t MAX_LOGO_FOLDER_ENTRIES = 4096;
 [[nodiscard]] bool isPngPath(std::string_view path) noexcept
 {
     constexpr std::string_view PNG = ".png";
-    if (path.size() < PNG.size())
-    {
-        return false;
-    }
-    const std::string_view extension = path.substr(path.size() - PNG.size());
-    std::size_t index = 0;
-    while (index < PNG.size())
-    {
-        if (std::tolower(static_cast<unsigned char>(extension[index])) != PNG[index])
-        {
-            return false;
-        }
-        ++index;
-    }
-    return true;
+    // substr() at a position within the text never throws.
+    return path.size() >= PNG.size() && Platform::equalsIgnoreCase(path.substr(path.size() - PNG.size()), PNG);
 }
 
 /// QueryFullProcessImageNameW's buffer: MAX_PATH first, then the long-path limit once.

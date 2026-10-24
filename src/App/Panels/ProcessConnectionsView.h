@@ -131,9 +131,9 @@ class ProcessConnectionsView
     bool update(Platform::IProcessConnectionsReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
                                            [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
@@ -158,13 +158,13 @@ class ProcessConnectionsView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+        return m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {
-        m_AuthorizeRequested = true;
+        m_Read.requestAuthorized();
     }
 
     /// Whether a read is running on its worker.
@@ -185,7 +185,6 @@ class ProcessConnectionsView
     /// result is dropped when it arrives. The sort column is a viewing preference and stays.
     void onSelectionChanged() noexcept
     {
-        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::ConnectionsReadStatus::Ok;
@@ -331,16 +330,15 @@ class ProcessConnectionsView
 
     void renderTable();
 
-    bool m_HasRead = false;            // a read was taken in since the selection changed
-    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
-    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
+    bool m_HasRead = false; // a read was taken in since the selection changed
     Platform::ConnectionsReadStatus m_Status = Platform::ConnectionsReadStatus::Ok;
     std::string m_Detail;
     std::vector<Row> m_Rows;
     Detail::ConnectionsColumn m_SortColumn = Detail::ConnectionsColumn::State; // by state, then remote
     bool m_SortAscending = true;
 
-    // The read in flight and its cadence. Destroying the view waits for at most one (bounded) read.
+    // The read in flight, its cadence and the "Authenticate to read" request (#2309). Destroying the
+    // view waits for at most one (bounded) read.
     Detail::LazyBackgroundRead<Platform::ConnectionsReadResult> m_Read{
         Domain::Sampling::PROCESS_CONNECTIONS_REFRESH_MS, Platform::CONNECTIONS_READ_THREAD_NAME, &failedRead};
 };

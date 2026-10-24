@@ -157,6 +157,17 @@ using InjectableHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, Injected
     return UniqueHandle(CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
 }
 
+/// Opens \\.\PhysicalDrive@p index for reading and writing (#2588): what IOCTL_ATA_PASS_THROUGH needs
+/// (its code asks for FILE_READ_ACCESS | FILE_WRITE_ACCESS), which only an administrator gets. The Storage
+/// section's ATA SMART read is the one caller; a standard user's open fails with ERROR_ACCESS_DENIED and
+/// the row says so. Empty when there is no such drive or it can't be opened; GetLastError() says why.
+[[nodiscard]] inline UniqueHandle openPhysicalDriveReadWrite(int index)
+{
+    const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index);
+    return UniqueHandle(
+        CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+}
+
 /// Opens the volume on drive @p letter (\\.\C:) query-only (#1632), like openPhysicalDriveQueryOnly():
 /// desired access 0, for IOCTL_STORAGE_GET_DEVICE_NUMBER. Empty when it can't be opened.
 [[nodiscard]] inline UniqueHandle openVolumeQueryOnly(wchar_t letter)

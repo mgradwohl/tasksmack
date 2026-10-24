@@ -1,6 +1,6 @@
 #include "ProcessEnvironmentView.h"
 
-#include "AuthorizeWording.h"
+#include "AuthenticateToReadButton.h"
 #include "Platform/IProcessEnvironment.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <span>
+#include <string>
 #include <string_view>
 
 #include <misc/cpp/imgui_stdlib.h>
@@ -79,7 +80,7 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
 {
     if (!hasEnvironment)
     {
-        return; // Windows and synthetic runs: no section at all
+        return; // synthetic runs: no section at all
     }
     // Collapsed by default: nothing is read until it is opened.
     if (!ImGui::CollapsingHeader(ICON_FA_LIST "  Environment###ProcessEnvironment"))
@@ -96,21 +97,19 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
     }
     if (m_Status != Platform::EnvironmentReadStatus::Ok)
     {
-        // Not an empty table: an empty one would read as "this process has no environment".
-        const std::string_view text = Detail::environmentStatusText(m_Status);
+        // Not an empty table: an empty one would read as "this process has no environment". A Failed
+        // read's reason follows, when its reader gave one (the Windows reader's, #2569); never a value.
+        std::string text(Detail::environmentStatusText(m_Status));
+        if (m_Status == Platform::EnvironmentReadStatus::Failed && !m_Detail.empty())
+        {
+            text += ": " + m_Detail;
+        }
         const ImVec4 color = (m_Status == Platform::EnvironmentReadStatus::PermissionDenied) ? scheme.textWarning : scheme.textMuted;
         ImGui::PushStyleColor(ImGuiCol_Text, color);
-        ImGui::TextUnformatted(text.data(), text.data() + text.size());
+        ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
-        // Another user's process: an administrator can read it (#2309). The lock and the words.
-        if (offersAuthenticateToRead())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
-            {
-                requestAuthorizedRead();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
-        }
+        // Another user's process: an administrator can read it (#2309).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Truncated)

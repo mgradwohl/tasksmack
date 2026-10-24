@@ -103,6 +103,18 @@ struct nvmlUtilization_t
     unsigned int memory;
 };
 
+/// One sample nvmlDeviceGetProcessUtilization writes (#2589): a process's share of the GPU's SMs, memory
+/// interface and video engines over the driver's sampling period, in percent, at timeStamp (microseconds).
+struct nvmlProcessUtilizationSample_t
+{
+    unsigned int pid;
+    unsigned long long timeStamp;
+    unsigned int smUtil;
+    unsigned int memUtil;
+    unsigned int encUtil;
+    unsigned int decUtil;
+};
+
 /// Opaque element type of the array nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}
 /// write (#1306). Which struct each entry is depends on the symbol: the legacy unversioned export
 /// writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte nvmlProcessInfo_v2_t ones

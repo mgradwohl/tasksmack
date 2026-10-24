@@ -8,9 +8,11 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/Panels/StorageSection.h"
+#include "App/SelectOverride.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
+#include "Domain/ISamplable.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
@@ -29,12 +31,14 @@
 #include "UI/Theme.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -42,8 +46,27 @@
 namespace App
 {
 
-/// The probes SystemMetricsPanel::onAttach() builds its models from (#1546). A null disk, power or
-/// GPU probe is no disk, battery or GPU, as the models already allow.
+/// The System model's probes (#2731): the system counters and the power state, read together on the
+/// system sampler. A null power probe is no battery, as the model already allows.
+struct SystemModelProbes
+{
+    std::unique_ptr<Platform::ISystemProbe> system;
+    std::unique_ptr<Platform::IPowerProbe> power;
+};
+
+/// The probe factories SystemMetricsPanel's three samplers build their models from (#1546, #2731), one per
+/// data domain: each runs once, on its own sampler thread, from that sampler's start hook. A null disk or
+/// GPU probe is no disk or GPU, as the models already allow, and so is a factory a test leaves empty. The
+/// panel's default constructor uses the composition root's (App/PanelPlatforms) instead.
+struct SystemMetricsProbeFactories
+{
+    std::function<SystemModelProbes()> system;
+    std::function<std::unique_ptr<Platform::IDiskProbe>()> disk;
+    std::function<std::unique_ptr<Platform::IGPUProbe>()> gpu;
+};
+
+/// All four probes at once: the one-factory test seam (#1546). The panel shares its result out to the
+/// three samplers (whichever sampler thread reaches it first runs it, once).
 struct SystemMetricsProbes
 {
     std::unique_ptr<Platform::ISystemProbe> system;
@@ -61,8 +84,13 @@ class SystemMetricsPanel : public Panel
     /// the platform's (Synthetic::make*Probe()).
     SystemMetricsPanel();
 
-    /// Test seam (#1546): onAttach() takes its probes from @p makeProbes instead (tests: mocks), with no
-    /// synthetic scenario. The App layer stays the only place the platform's probes are made.
+    /// Test seam (#1546): the samplers take their probes from @p factories instead (tests: mocks), one
+    /// factory per sampler thread, with no synthetic scenario. The App layer stays the only place the
+    /// platform's probes are made.
+    explicit SystemMetricsPanel(SystemMetricsProbeFactories factories);
+
+    /// The one-factory test seam (#1546): @p makeProbes runs once, on whichever sampler thread reaches it
+    /// first, and each sampler takes its own probes from the result.
     explicit SystemMetricsPanel(std::function<SystemMetricsProbes()> makeProbes);
     ~SystemMetricsPanel() override;
 
@@ -71,17 +99,41 @@ class SystemMetricsPanel : public Panel
     SystemMetricsPanel(SystemMetricsPanel&&) = delete;
     SystemMetricsPanel& operator=(SystemMetricsPanel&&) = delete;
 
-    /// Initialize the panel (creates SystemModel and StorageModel).
+    /// Initialize the panel: makes the System, Storage and GPU models and starts a sampler for each
+    /// (#2731): three threads, so a stalled disk rescan or GPU enumeration never delays the CPU and memory
+    /// samples. Each sampler's thread builds its model's probe(s) and seeds it. Returns without a probe
+    /// call or a read: the charts draw their empty state until onUpdate() adopts the seeds.
     void onAttach() override;
+
+    /// Waits until every sampler thread has built its probes and seeded its model, then adopts their
+    /// publications as onUpdate() would (#2731). For tests, which used to find the seed in place when
+    /// onAttach() returned; the app never waits. False on timeout, or before onAttach().
+    [[nodiscard]] bool waitForFirstSample(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
     /// Cleanup.
     void onDetach() override;
 
-    /// Update logic (refresh cadence is driven by main loop).
+    /// Adopts the samplers' newest publications and runs the per-frame bookkeeping. It never sets the
+    /// sampling cadence: that is the Settings value alone (#2731).
     void onUpdate(float deltaTime) override;
 
-    /// Set the refresh interval (applied by onUpdate cadence checks).
+    /// Set the refresh interval all three samplers run at. It is the Settings value, whatever the UI
+    /// state (#2731): no tab change, resize, move or minimize rescales or pauses it.
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
+
+    /// The interval the system sampler runs at: the refresh setting from Settings, in every UI state
+    /// (#2731); before onAttach(), the setting itself. samplerIntervals() has all three.
+    [[nodiscard]] std::chrono::milliseconds samplingInterval() const;
+
+    /// The interval each of the three samplers runs at (#2731). All three are the refresh setting, in
+    /// every UI state; before onAttach(), the setting itself. For the tests that check that.
+    struct SamplerIntervals
+    {
+        std::chrono::milliseconds system;
+        std::chrono::milliseconds storage;
+        std::chrono::milliseconds gpu;
+    };
+    [[nodiscard]] SamplerIntervals samplerIntervals() const;
 
     /// Request an immediate refresh.
     void requestRefresh();
@@ -133,11 +185,54 @@ class SystemMetricsPanel : public Panel
         return m_GPUModel;
     }
 
+    /// Brings @p tab forward, asked for on every frame the sub-tabs are drawn until ImGui shows it
+    /// selected: the test hooks' TASKSMACK_MACHINE_TAB and TASKSMACK_DEMO's machine= (#2869). A request
+    /// outlives frames on which the sub-tab is not drawn (another main tab shown, or the first sample
+    /// not yet in), and is dropped, with one warning, after MAX_MACHINE_TAB_FRAMES frames drawn with a
+    /// snapshot that never had it (npu without an accelerator, network without counters). A new request
+    /// replaces one still waiting.
+    void requestTab(SelectOverride::MachineTab tab) noexcept
+    {
+        m_RequestedTab = SelectOverride::PendingMachineTab(tab);
+    }
+
+    /// Whether a requestTab() request is still waiting for its sub-tab to show.
+    [[nodiscard]] bool requestedTabPending() const noexcept
+    {
+        return m_RequestedTab.pending();
+    }
+
   private:
-    std::function<SystemMetricsProbes()> m_MakeProbes; ///< Set by the test seam only
+    SystemMetricsProbeFactories m_Factories; ///< Set by the test seams only; empty: the composition root's
     void renderOverview();
 
-    std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+    /// Which models their sampler's start hook has seeded (#2731). Shared with the hooks, so neither side
+    /// depends on the other's lifetime; waitForFirstSample() polls it.
+    struct Seeds
+    {
+        std::atomic<bool> system{false};
+        std::atomic<bool> storage{false};
+        std::atomic<bool> gpu{false};
+
+        [[nodiscard]] bool all() const noexcept
+        {
+            return system.load(std::memory_order_acquire) && storage.load(std::memory_order_acquire) && gpu.load(std::memory_order_acquire);
+        }
+    };
+
+    /// A sampler for one model on its own named thread (#2731), started: @p hook builds the model's
+    /// probe(s) and seeds it there, before the first pass.
+    [[nodiscard]] std::unique_ptr<Domain::BackgroundSampler> startSampler(std::string_view threadName,
+                                                                          const std::shared_ptr<Domain::ISamplable>& model,
+                                                                          std::string name,
+                                                                          std::function<void()> hook) const;
+
+    // One sampler per data domain (#2731): CPU, memory, network and power; the disks; the GPUs and NPUs.
+    // A slow source holds up only its own thread, and each model publishes with its own timestamp.
+    std::unique_ptr<Domain::BackgroundSampler> m_SystemSampler;
+    std::unique_ptr<Domain::BackgroundSampler> m_StorageSampler;
+    std::unique_ptr<Domain::BackgroundSampler> m_GpuSampler;
+    std::shared_ptr<Seeds> m_Seeds;
     // shared_ptr (not unique_ptr): BackgroundSampler observes these models via weak_ptr rather
     // than raw pointers, so the sampler thread can never outlive-dereference them regardless of
     // destructor ordering.
@@ -204,6 +299,8 @@ class SystemMetricsPanel : public Panel
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
+    // The sub-tab requestTab() asked for, until ImGui shows it selected (#2869).
+    SelectOverride::PendingMachineTab m_RequestedTab;
 
     // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
     UI::Widgets::PlotFillState m_OverviewFill;
@@ -285,6 +382,9 @@ class SystemMetricsPanel : public Panel
     /// Holds the model's latest publication and takes a new chart data generation for it (onAttach()
     /// and onUpdate(), #1180).
     void adoptSystemPublication();
+    /// Adopts whichever of the three models' publications is newer than the one held, and the hostname
+    /// with the system one: onUpdate()'s step, also run by waitForFirstSample() (#2731).
+    void adoptPublications();
     /// The held publication's snapshot, or an empty one before the first publication.
     [[nodiscard]] const Domain::SystemSnapshot& systemSnapshot() const;
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

@@ -10,6 +10,7 @@
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsConversions.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
@@ -240,20 +241,6 @@ constexpr ULONG PROCESS_BASIC_INFORMATION_CLASS = 0; // ProcessBasicInformation
     return static_cast<DWORD>(information.inheritedFromUniqueProcessId);
 }
 
-/// @p process's creation time, in a FILETIME's ticks, or nullopt if it can't be read.
-[[nodiscard]] std::optional<std::uint64_t> startTicksOf(HANDLE process)
-{
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (GetProcessTimes(process, &creation, &exitTime, &kernelTime, &userTime) == FALSE)
-    {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime;
-}
-
 /// Why openProcessVerified() refused the parent, in the helper's words.
 [[nodiscard]] std::string parentRefusal(const IdentityFailure& failure)
 {
@@ -338,6 +325,25 @@ std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn 
         });
 }
 
+std::optional<std::wstring> ownImage(GetModuleFileNameFn getModuleFileName)
+{
+    // A path that doesn't fit comes back truncated, with the size tried: readPath() tries the longest.
+    return readPath([getModuleFileName](wchar_t* buffer, DWORD size) { return getModuleFileName(nullptr, buffer, size); });
+}
+
+std::optional<std::uint64_t> startTicksOf(HANDLE process)
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (GetProcessTimes(process, &creation, &exitTime, &kernelTime, &userTime) == FALSE)
+    {
+        return std::nullopt;
+    }
+    return fileTimeTicks(creation);
+}
+
 std::wstring besidePath(std::wstring_view exePath, std::wstring_view fileName)
 {
     const std::filesystem::path exe(exePath);
@@ -417,7 +423,7 @@ std::expected<void, std::string> checkUnchangeableByParent(HANDLE parent, std::s
 
 std::expected<Self, std::string> readSelf()
 {
-    const auto image = readPath([](wchar_t* buffer, DWORD size) { return GetModuleFileNameW(nullptr, buffer, size); });
+    const auto image = ownImage();
     if (!image.has_value())
     {
         return std::unexpected(std::format("couldn't read the helper's own path: {}", lastErrorText(GetLastError())));

@@ -2,11 +2,14 @@
 
 #include "Platform/GPUTypes.h"
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -41,6 +44,38 @@ namespace Platform
 [[nodiscard]] inline std::string luidToPdhFormat(uint32_t luidHighPart, uint32_t luidLowPart)
 {
     return std::format("GPU_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
+}
+
+/// The LUID's high and low parts back out of luidToPdhFormat()'s "GPU_0x{HighPart}_0x{LowPart}"
+/// (GPUInfo::luidId), or nullopt for a string of any other shape. The Windows probe opens an
+/// adapter's kernel adapter by its LUID after enumeration, when its GPUInfo is all it has (#2586).
+[[nodiscard]] inline std::optional<std::pair<std::uint32_t, std::uint32_t>> luidFromPdhFormat(std::string_view luidId)
+{
+    constexpr std::string_view PREFIX{"GPU_0x"};
+    constexpr std::string_view SEPARATOR{"_0x"};
+    constexpr std::size_t HEX_DIGITS = 8;
+    if (luidId.size() != PREFIX.size() + HEX_DIGITS + SEPARATOR.size() + HEX_DIGITS || !luidId.starts_with(PREFIX) ||
+        luidId.substr(PREFIX.size() + HEX_DIGITS, SEPARATOR.size()) != SEPARATOR)
+    {
+        return std::nullopt;
+    }
+    const auto parseHex = [](std::string_view digits) -> std::optional<std::uint32_t>
+    {
+        std::uint32_t value = 0;
+        const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), value, 16);
+        if (error != std::errc{} || end != digits.data() + digits.size())
+        {
+            return std::nullopt;
+        }
+        return value;
+    };
+    const auto high = parseHex(luidId.substr(PREFIX.size(), HEX_DIGITS));
+    const auto low = parseHex(luidId.substr(PREFIX.size() + HEX_DIGITS + SEPARATOR.size(), HEX_DIGITS));
+    if (!high.has_value() || !low.has_value())
+    {
+        return std::nullopt;
+    }
+    return std::pair{*high, *low};
 }
 
 /// The id of an adapter at this PCI location: "PCI_{bus}:{device}.{function}_{vendor id}:{device id}",

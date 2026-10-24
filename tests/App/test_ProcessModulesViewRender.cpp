@@ -302,5 +302,34 @@ TEST(ProcessModulesViewTest, ARefusedReadOffersAuthenticateToRead)
     EXPECT_FALSE(view.offersAuthenticateToRead());
 }
 
+// #2567: the request goes through the read the sections share (LazyBackgroundRead::requestAuthorized()),
+// and one update() takes it: readAuthorized() runs exactly once, however often the button was pressed in
+// the frame, and the frames after it start nothing until the refresh is due.
+TEST(ProcessModulesViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
+{
+    ProcessModulesView view;
+    TestMocks::MockProcessModulesReader reader;
+    reader.setResult({.status = Platform::ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    reader.setAuthorizedResult({.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}});
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    view.requestAuthorizedRead(); // pressed twice in a frame: one request
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::ModulesReadStatus::Ok);
+    for (int i = 0; i < 3; ++i)
+    {
+        view.markDrawnOpen();
+        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
+    }
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(reader.readCount(), 1); // the refused read; the authorized one restarted the refresh clock
+}
+
 } // namespace
 } // namespace App

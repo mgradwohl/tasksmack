@@ -4,6 +4,7 @@
 #include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/NVMLProcessUtilization.h"
 #include "Platform/NVMLTypes.h"
 
 #include <spdlog/spdlog.h>
@@ -13,7 +14,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -129,6 +132,14 @@ struct NVMLGPUProbe::Impl
     // Optional: the video engines' utilization (#1477). Without them the encoder/decoder series isn't drawn.
     NVMLGPUProbeMath::EngineUtilizationFn nvmlDeviceGetEncoderUtilization = nullptr;
     NVMLGPUProbeMath::EngineUtilizationFn nvmlDeviceGetDecoderUtilization = nullptr;
+    // Optional: each process's utilization (#2589). Without it processes have memory and engines only.
+    nvmlReturn_t (*nvmlDeviceGetProcessUtilization)(nvmlDevice_t,
+                                                    nvmlProcessUtilizationSample_t*,
+                                                    unsigned int*,
+                                                    unsigned long long) = nullptr;
+    /// The newest per-process utilization sample read from each device, by its id: the next read asks
+    /// for samples after it.
+    std::map<std::string, unsigned long long, std::less<>> processUtilizationSeen;
     const char* (*nvmlErrorString)(nvmlReturn_t) = nullptr;
 
     /// Whether the device is runtime-suspended now, so must not be queried (#1117).
@@ -283,6 +294,8 @@ bool NVMLGPUProbe::Impl::loadSymbols()
     // Without these the probe reports no encoder/decoder utilization (#1477).
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetEncoderUtilization);
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetDecoderUtilization);
+    // Without it the probe reports no per-process utilization (#2589).
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetProcessUtilization);
     // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - dlsym returns void* by POSIX definition
     nvmlDeviceGetPciInfo = reinterpret_cast<decltype(nvmlDeviceGetPciInfo)>(dlsym(nvmlHandle, "nvmlDeviceGetPciInfo_v3"));
     if (nvmlDeviceGetPciInfo == nullptr)
@@ -893,6 +906,21 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             continue;
         }
+        // Each process's newest utilization sample since the last read (#2589); one with none since is idle.
+        NVMLProcessUtilization::Query utilization;
+        if (m_Impl->nvmlDeviceGetProcessUtilization != nullptr)
+        {
+            auto& seen = m_Impl->processUtilizationSeen[dev.id];
+            utilization =
+                NVMLProcessUtilization::query([fn = m_Impl->nvmlDeviceGetProcessUtilization, handle = dev.handle](
+                                                  nvmlProcessUtilizationSample_t* samples, unsigned int* count, unsigned long long lastSeen)
+                                              { return fn(handle, samples, count, lastSeen); },
+                                              seen);
+            if (utilization.ok)
+            {
+                seen = utilization.newestTimeStamp;
+            }
+        }
         // One row per process on this device, combined from both lists (instances under MIG summed).
         for (const auto& usage : NVMLGPUProbeMath::combineRunningProcesses(runningProcesses(m_Impl->computeProcesses, dev.handle),
                                                                            runningProcesses(m_Impl->graphicsProcesses, dev.handle)))
@@ -901,6 +929,12 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
             counter.pid = static_cast<std::int32_t>(usage.pid);
             counter.gpuId = dev.id;
             counter.gpuMemoryBytes = usage.memoryBytes;
+            if (const auto share = utilization.byPid.find(usage.pid); share != utilization.byPid.end())
+            {
+                counter.gpuUtilPercent = share->second.smPercent;
+                counter.encoderUtilPercent = share->second.encoderPercent;
+                counter.decoderUtilPercent = share->second.decoderPercent;
+            }
             if (usage.compute)
             {
                 counter.activeEngines.emplace_back("Compute");
@@ -973,8 +1007,8 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
         caps.hasFanSpeed = true;
         caps.hasPerProcessMetrics = true;
         // readProcessGPUCounters() fills each process's memory and engines from the running-process
-        // lists, not its utilization (#1210).
-        caps.hasPerProcessUtilization = false;
+        // lists, and its utilization where the library has nvmlDeviceGetProcessUtilization (#1210, #2589).
+        caps.hasPerProcessUtilization = m_Impl->nvmlDeviceGetProcessUtilization != nullptr;
         caps.supportsMultiGPU = true;
         caps.hasEngineUtilization = true; // Via activeEngines in ProcessGPUCounters
         // When the library has either video-engine query; each device's own answer is in its

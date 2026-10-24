@@ -6,6 +6,7 @@
 
 #include "App/Panels/SystemInfoSections.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/CellText.h"
@@ -109,8 +110,10 @@ struct SystemInfoViewState
     Core::GraphicsHostInfo host;
 
     std::vector<SystemInfo::Section> sections;
-    std::uint64_t sectionsVersion = 0;
-    std::string readAtText; ///< "Read at HH:MM:SS", with the sections.
+    std::uint64_t sectionsVersion = 0;        ///< The page read the sections were built from
+    std::uint64_t sectionsSensorsVersion = 0; ///< The sensor read they were built from (#2737)
+    std::uint64_t sectionsGeneration = 0;     ///< Counts rebuilds, for the visible rows
+    std::string readAtText;                   ///< "Read at HH:MM:SS", with the sections.
     /// How the toolbar showed the read time last frame (#1922): shortened or wrapped when the row is narrow.
     SystemInfo::ReadAtForm readAtForm = SystemInfo::ReadAtForm::Full;
 
@@ -157,9 +160,12 @@ struct SystemInfoViewResult
 /// Draws the page into the current window.
 /// @param snapshot Null is treated as no read yet.
 /// @param reading  A read is in flight: Refresh is disabled.
+/// @param sensors  The sensor sampler's newest read (#2737): the Sensors section's readings, ranges and
+///                 charts. Null, or version 0, for none yet.
 SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snapshot,
                                           const Platform::SystemInfoCapabilities& capabilities,
                                           bool reading,
-                                          SystemInfoViewState& state);
+                                          SystemInfoViewState& state,
+                                          const Domain::SensorPublication* sensors = nullptr);
 
 } // namespace App

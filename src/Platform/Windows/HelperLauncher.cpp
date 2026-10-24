@@ -13,7 +13,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -36,43 +35,6 @@ namespace Platform::Windows::HelperLauncher
 
 namespace
 {
-
-/// The longest path GetModuleFileNameW returns, in characters (an extended-length path).
-constexpr DWORD LONGEST_PATH = 32'768;
-
-/// This executable's full path, from @p getModuleFileName: MAX_PATH first, then the longest path.
-[[nodiscard]] std::optional<std::wstring> ownImage(Functions::GetModuleFileNameFn getModuleFileName)
-{
-    for (const DWORD size : {DWORD{MAX_PATH}, LONGEST_PATH})
-    {
-        std::wstring path(size, L'\0');
-        const DWORD written = getModuleFileName(nullptr, path.data(), size);
-        if (written == 0)
-        {
-            return std::nullopt;
-        }
-        if (written < size)
-        {
-            path.resize(written);
-            return path;
-        }
-    }
-    return std::nullopt;
-}
-
-/// This process's creation time, in a FILETIME's ticks: what the helper checks TaskSmack's against.
-[[nodiscard]] std::optional<std::uint64_t> ownStartTicks()
-{
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime) == FALSE)
-    {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime;
-}
 
 /// @p parameters split as the helper's CommandLineToArgvW will split its command line, after its path.
 [[nodiscard]] std::optional<std::vector<std::wstring>> splitAsTheHelperWill(const std::wstring& parameters)
@@ -192,7 +154,7 @@ launch(const std::wstring& pipeName, const std::stop_token& stopToken, const Fun
     {
         return std::unexpected(std::string("cancelled"));
     }
-    const auto image = ownImage(functions.getModuleFileName);
+    const auto image = BrokerHelper::ownImage(functions.getModuleFileName);
     if (!image.has_value())
     {
         return std::unexpected(
@@ -203,7 +165,8 @@ launch(const std::wstring& pipeName, const std::stop_token& stopToken, const Fun
     {
         return std::unexpected(std::string("couldn't tell where TaskSmack is"));
     }
-    const auto ticks = ownStartTicks();
+    // What the helper checks TaskSmack's against, read as the helper reads it (#2772).
+    const auto ticks = BrokerHelper::startTicksOf(GetCurrentProcess());
     if (!ticks.has_value())
     {
         return std::unexpected(std::string("couldn't read TaskSmack's start time"));
@@ -348,7 +311,7 @@ void LearnedReadsBroker::learnFrom(std::expected<Broker::Response, std::string>&
 
 std::expected<void, std::string> availability()
 {
-    const auto image = ownImage(&::GetModuleFileNameW);
+    const auto image = BrokerHelper::ownImage();
     if (!image.has_value())
     {
         return std::unexpected(std::string("couldn't tell where TaskSmack is"));

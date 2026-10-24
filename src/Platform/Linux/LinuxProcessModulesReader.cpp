@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <expected>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -71,7 +72,9 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     {
         return failure(ESRCH); // gone, or the PID now names another process
     }
-    const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps", m_MaxMapsBytes);
+    // One byte past the cap, so a maps exactly the cap long reads whole and isn't called cut short (#2749).
+    const std::size_t readLimit = m_MaxMapsBytes == std::numeric_limits<std::size_t>::max() ? m_MaxMapsBytes : m_MaxMapsBytes + 1;
+    const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps", readLimit);
     if (!maps.has_value())
     {
         return failure(maps.error());
@@ -81,9 +84,9 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     {
         return failure(ESRCH);
     }
-    // The read stopped at the cap (#2642): parse only the whole lines before it.
+    // The read went past the cap (#2642): parse only the whole lines within it.
     std::string_view text = *maps;
-    const bool truncated = text.size() >= m_MaxMapsBytes;
+    const bool truncated = text.size() > m_MaxMapsBytes;
     if (truncated)
     {
         const std::size_t lastNewline = text.substr(0, m_MaxMapsBytes).rfind('\n');

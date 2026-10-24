@@ -105,6 +105,9 @@ class TitleBarLayer : public Core::Layer
     void handleTitleBarDoubleClick(const SDL_Event& event) const;
     void updateWindowInteraction();
     void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
+    /// Moves a window dragged off a maximize back under the pointer if the window manager's late
+    /// restore moved it away (RestoreSettle, #2761). @p setPositionMs accumulates the move's time.
+    void settleRestore(Core::Window& window, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
 
@@ -148,6 +151,8 @@ class TitleBarLayer : public Core::Layer
     // The drag or resize under way (WindowInteraction.h); reset by endWindowInteraction().
     DragTracker m_Drag;
     ResizeTracker m_Resize;
+    // Keeps a window dragged off a maximize under the pointer for a moment; outlives the drag (#2761).
+    RestoreSettle m_RestoreSettle;
 
     // Smallest size the window may be resized to, from the title bar's own content and the display
     // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn and handed to

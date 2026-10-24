@@ -47,8 +47,8 @@ namespace Platform::Broker
 
 /// Bumped on every change to a message's fields: the helper and TaskSmack ship together, and a Hello of
 /// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
-/// their list was cut to fit a frame (#2403).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 2;
+/// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 3;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -103,6 +103,11 @@ enum class Signal : std::uint8_t
 struct Hello
 {
     std::uint16_t version = PROTOCOL_VERSION;
+    /// The user chose Administrator for this session (#2728): the Linux helper drops its idle exit and
+    /// serves until TaskSmack closes the socket. A Hello again mid-session can set it, so a helper an
+    /// "Authenticate and retry" started needs no second prompt. Windows restarts elevated instead, and
+    /// its pipe helper ignores it.
+    bool forSession = false;
     friend bool operator==(const Hello&, const Hello&) = default;
 };
 
@@ -142,7 +147,7 @@ struct AffinityRequest
     friend bool operator==(const AffinityRequest&, const AffinityRequest&) = default;
 };
 
-/// Read a process's environment (#2309): the helper reads it as root, after the same identity check.
+/// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
 struct EnvironmentRequest
 {
     ProcessTarget target;
@@ -173,7 +178,7 @@ struct EnvironmentReply
     }
 };
 
-/// List a process's loaded modules (#2309), as the helper reads them as root.
+/// List a process's loaded modules (#2309), as the helper reads them with its capabilities.
 struct ModulesRequest
 {
     ProcessTarget target;
@@ -197,7 +202,7 @@ struct ModulesReply
     }
 };
 
-/// List a process's open files (#2309), as the helper reads them as root.
+/// List a process's open files (#2309), as the helper reads them with its capabilities.
 struct OpenFilesRequest
 {
     ProcessTarget target;
@@ -221,7 +226,7 @@ struct OpenFilesReply
     }
 };
 
-/// List a process's TCP and UDP sockets (#2309), as the helper reads them as root.
+/// List a process's TCP and UDP sockets (#2309), as the helper reads them with its capabilities.
 struct ConnectionsRequest
 {
     ProcessTarget target;
@@ -249,7 +254,7 @@ struct ConnectionsReply
     }
 };
 
-/// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup as root.
+/// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup with its capabilities.
 struct MemoryRollupRequest
 {
     ProcessTarget target;
@@ -287,7 +292,7 @@ enum class FirmwareFile : std::uint8_t
     BoardSerial,      ///< /sys/class/dmi/id/board_serial
 };
 
-/// Read one of the firmware files (#2310), as the helper reads it as root.
+/// Read one of the firmware files (#2310), as the helper reads it with its capabilities.
 struct FirmwareFileRequest
 {
     FirmwareFile file = FirmwareFile::SmbiosTable;
@@ -309,7 +314,7 @@ struct FirmwareFileReply
     friend bool operator==(const FirmwareFileReply&, const FirmwareFileReply&) = default;
 };
 
-/// Read System Information's Recent crashes (#2310) as the helper reads them as root: systemd-coredump's
+/// Read System Information's Recent crashes (#2310) as the helper reads them with its capabilities: systemd-coredump's
 /// journal entries and core files of every user, not only this one's.
 struct CrashesRequest
 {
@@ -661,6 +666,7 @@ template<typename Message>
     if (const auto* hello = std::get_if<Hello>(&request))
     {
         writer.u16(hello->version);
+        writer.u8(hello->forSession ? 1 : 0);
     }
     else if (const auto* signal = std::get_if<SignalRequest>(&request))
     {
@@ -831,7 +837,7 @@ namespace Detail
     switch (frame->kind)
     {
     case MessageKind::Hello:
-        return Detail::finish<Request>(reader, id, Hello{.version = reader.u16()});
+        return Detail::finish<Request>(reader, id, Hello{.version = reader.u16(), .forSession = reader.flag()});
     case MessageKind::Signal:
         return Detail::finish<Request>(reader, id, Detail::decodeSignalRequest(reader));
     case MessageKind::SetPriority:

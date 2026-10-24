@@ -1,7 +1,8 @@
 /// @file test_WindowInteraction.cpp
 /// @brief The custom title bar's drag and resize sessions (#1547), without SDL: a drag follows the
 /// pointer and moves only on a change; a maximized window is restored only past the drag threshold,
-/// then rebased so the pointer keeps its place across it; a resize moves on every sample but commits
+/// then rebased so the pointer keeps its place across it, and held there for a moment if a window
+/// manager's late restore moves it away (#2761); a resize moves on every sample but commits
 /// the size at most every SIZE_COMMIT_INTERVAL_SECONDS, holds the latest back and drops it when the
 /// pointer returns, and raises a resize event only for a new pixel size, at most every
 /// RESIZE_EVENT_INTERVAL_SECONDS.
@@ -133,6 +134,90 @@ TEST(DragTrackerTest, BeginStartsAFreshDrag)
     drag.begin(100, 10, 50, 50, false, 0);
     EXPECT_FALSE(drag.pendingRestore());
     EXPECT_EQ(drag.step(110, 10).kind, DragKind::Move);
+}
+
+// ---- Restore settle (#2761) -------------------------------------------------------------------
+
+constexpr double RETRY = RestoreSettle::RETRY_SECONDS;
+
+// The drag puts the restored window at (850, 0); it was to restore to (940, 730).
+RestoreSettle settled()
+{
+    RestoreSettle settle;
+    settle.start(850, 0, 940, 730, 0.0);
+    return settle;
+}
+
+TEST(RestoreSettleTest, AWindowManagersLateRestoreIsMovedBackUnderThePointer)
+{
+    // The order seen on WSLg: the window still reads at the maximized origin, then the window manager's
+    // own restore puts it at its old restore position.
+    RestoreSettle settle = settled();
+    EXPECT_FALSE(settle.check(0, 0, 0.05).has_value());
+    EXPECT_EQ(settle.check(940, 730, 0.15), std::make_optional(std::pair{850, 0}));
+
+    // Not asked again until RETRY_SECONDS later, while the window still reads there...
+    EXPECT_FALSE(settle.check(940, 730, 0.15 + (RETRY / 2)).has_value());
+    // ...then asked again if it hasn't moved (a window manager that dropped the request)...
+    EXPECT_EQ(settle.check(940, 730, 0.15 + RETRY), std::make_optional(std::pair{850, 0}));
+    // ...and left alone once it's there.
+    EXPECT_FALSE(settle.check(850, 0, 0.5).has_value());
+    EXPECT_TRUE(settle.active());
+}
+
+TEST(RestoreSettleTest, AWindowThatStaysWhereTheDragPutItIsLeftAlone)
+{
+    RestoreSettle settle = settled();
+    constexpr int SAMPLES = 40; // every quarter retry interval through the settle time
+    for (int i = 0; i < SAMPLES; ++i)
+    {
+        const double now = RestoreSettle::SETTLE_SECONDS * i / SAMPLES;
+        EXPECT_FALSE(settle.check(850, 0, now).has_value()) << now;
+    }
+}
+
+TEST(RestoreSettleTest, OnlyTheStaleRestorePositionIsUndone)
+{
+    // Anywhere else is the window manager's choice, kept: a clamp below a top panel, a snap, a move of
+    // the drag's own still on its way.
+    RestoreSettle settle = settled();
+    EXPECT_FALSE(settle.check(850, 40, 0.2).has_value());
+    EXPECT_FALSE(settle.check(0, 0, 0.3).has_value());
+    EXPECT_FALSE(settle.check(939, 730, 0.4).has_value());
+}
+
+TEST(RestoreSettleTest, TheWindowIsMovedBackToWhereTheDragMovedItSince)
+{
+    RestoreSettle settle = settled();
+    settle.retarget(860, 20);
+    EXPECT_EQ(settle.check(940, 730, 0.2), std::make_optional(std::pair{860, 20}));
+}
+
+TEST(RestoreSettleTest, ADragBackToTheOldPositionIsLeftThere)
+{
+    RestoreSettle settle = settled();
+    settle.retarget(940, 730);
+    EXPECT_FALSE(settle.check(940, 730, 0.2).has_value());
+}
+
+TEST(RestoreSettleTest, AfterTheSettleTimeTheWindowIsLeftWhereItIs)
+{
+    RestoreSettle settle = settled();
+    EXPECT_FALSE(settle.check(940, 730, RestoreSettle::SETTLE_SECONDS).has_value());
+    EXPECT_FALSE(settle.active());
+    EXPECT_FALSE(settle.check(940, 730, 0.2).has_value()); // over for good, not just for that sample
+}
+
+TEST(RestoreSettleTest, StopEndsItAndNothingHappensBeforeAStart)
+{
+    RestoreSettle settle;
+    EXPECT_FALSE(settle.active());
+    EXPECT_FALSE(settle.check(0, 0, 0.2).has_value());
+
+    settle = settled();
+    settle.stop();
+    EXPECT_FALSE(settle.active());
+    EXPECT_FALSE(settle.check(940, 730, 0.2).has_value());
 }
 
 // ---- Resize -----------------------------------------------------------------------------------

@@ -46,9 +46,9 @@ struct HookParser
                        result.warnings.size());
 }
 
-const std::array<HookParser, 13>& hookParsers()
+const std::array<HookParser, 14>& hookParsers()
 {
-    static const std::array<HookParser, 13> parsers{
+    static const std::array<HookParser, 14> parsers{
         HookParser{.name = "TASKSMACK_CONFIG_DIR",
                    .value = "/tmp/tasksmack config",
                    .parse =
@@ -94,6 +94,14 @@ const std::array<HookParser, 13>& hookParsers()
                            App::SelectOverride::TabInfo{.id = "services", .text = "Services"}};
                        const auto choice = App::SelectOverride::resolveMainTab(value, TABS);
                        return choice.id.value_or("none") + "|" + choice.warning;
+                   }},
+        HookParser{.name = "TASKSMACK_MACHINE_TAB",
+                   .value = "cores",
+                   .parse =
+                       [](const char* value)
+                   {
+                       const auto choice = App::SelectOverride::parseStartupMachineTab(value);
+                       return std::format("{}|{}", choice.tab ? static_cast<int>(*choice.tab) : -1, choice.warning);
                    }},
         HookParser{.name = "TASKSMACK_OPEN",
                    .value = "about",

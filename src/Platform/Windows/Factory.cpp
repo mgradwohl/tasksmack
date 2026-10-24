@@ -31,6 +31,7 @@
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessConnections.h"
+#include "WindowsProcessEnvironmentReader.h"
 #include "WindowsProcessIconSource.h"
 #include "WindowsProcessModules.h"
 #include "WindowsProcessOpenFiles.h"
@@ -91,9 +92,8 @@ std::unique_ptr<IProcessIconSource> makeProcessIconSource()
 
 std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
 {
-    // Windows has no environment reader yet: reading another process's environment needs
-    // ReadProcessMemory on its PEB (#2569). Until then the Environment section is hidden.
-    return std::make_unique<UnsupportedProcessEnvironmentReader>();
+    // The target's environment block, read out of its PEB with ReadProcessMemory (#2569).
+    return std::make_unique<Windows::WindowsProcessEnvironmentReader>();
 }
 
 std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()

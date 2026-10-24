@@ -9,6 +9,8 @@
 // DHCP leases and the Wi-Fi network name come over D-Bus, through the readers below (#1518).
 
 #include "LinuxOsInfo.h"
+#include "LinuxStorage.h"
+#include "Nl80211.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -142,12 +144,19 @@ using AddressLister = std::vector<ListedAddress> (*)();
     return out;
 }
 
-/// The IPv4 default route in /proc/net/route ("Iface Destination Gateway Flags RefCnt Use Metric Mask
-/// ..."): the gateway and its adapter, from the lowest-metric route to 0.0.0.0/0. Empty when there is none.
-[[nodiscard]] inline std::pair<std::string, std::string> parseDefaultRouteV4(std::string_view text)
+/// One default route: its gateway (next hop), the adapter it leaves by, and its metric.
+struct DefaultRoute
 {
-    std::pair<std::string, std::string> best;
-    std::uint64_t bestMetric = UINT64_MAX;
+    std::string gateway;
+    std::string adapter;
+    std::uint64_t metric = 0;
+};
+
+/// The IPv4 default routes in /proc/net/route ("Iface Destination Gateway Flags RefCnt Use Metric Mask
+/// ..."): each route to 0.0.0.0/0 with a gateway, in file order.
+[[nodiscard]] inline std::vector<DefaultRoute> defaultRoutesV4(std::string_view text)
+{
+    std::vector<DefaultRoute> routes;
     for (const std::string_view line : lines(text))
     {
         const std::vector<std::string_view> f = fields(line);
@@ -157,22 +166,20 @@ using AddressLister = std::vector<ListedAddress> (*)();
         }
         std::uint64_t metric = 0;
         std::from_chars(f[6].data(), f[6].data() + f[6].size(), metric, 10);
-        if (const std::string gateway = formatRouteIpv4(f[2]); !gateway.empty() && metric < bestMetric)
+        if (std::string gateway = formatRouteIpv4(f[2]); !gateway.empty())
         {
-            bestMetric = metric;
-            best = {gateway, std::string(f[0])};
+            routes.push_back({.gateway = std::move(gateway), .adapter = std::string(f[0]), .metric = metric});
         }
     }
-    return best;
+    return routes;
 }
 
-/// The IPv6 default route in /proc/net/ipv6_route ("dest destLen src srcLen nextHop metric refCnt use
-/// flags iface", hex): the next hop and its adapter, from the lowest-metric route to ::/0 with a next hop.
-[[nodiscard]] inline std::pair<std::string, std::string> parseDefaultRouteV6(std::string_view text)
+/// The IPv6 default routes in /proc/net/ipv6_route ("dest destLen src srcLen nextHop metric refCnt use
+/// flags iface", hex): each route to ::/0 with a next hop, in file order.
+[[nodiscard]] inline std::vector<DefaultRoute> defaultRoutesV6(std::string_view text)
 {
     constexpr std::string_view ZERO = "00000000000000000000000000000000";
-    std::pair<std::string, std::string> best;
-    std::uint64_t bestMetric = UINT64_MAX;
+    std::vector<DefaultRoute> routes;
     for (const std::string_view line : lines(text))
     {
         const std::vector<std::string_view> f = fields(line);
@@ -182,13 +189,68 @@ using AddressLister = std::vector<ListedAddress> (*)();
         }
         std::uint64_t metric = 0;
         std::from_chars(f[5].data(), f[5].data() + f[5].size(), metric, 16);
-        if (const std::string gateway = formatIpv6Hex(f[4]); !gateway.empty() && metric < bestMetric)
+        if (std::string gateway = formatIpv6Hex(f[4]); !gateway.empty())
         {
-            bestMetric = metric;
-            best = {gateway, std::string(f[9])};
+            routes.push_back({.gateway = std::move(gateway), .adapter = std::string(f[9]), .metric = metric});
         }
     }
-    return best;
+    return routes;
+}
+
+/// The lowest-metric route of @p routes (the first of equals) as its gateway and adapter; empty when none.
+[[nodiscard]] inline std::pair<std::string, std::string> bestRoute(const std::vector<DefaultRoute>& routes)
+{
+    const auto best = std::ranges::min_element(routes, {}, &DefaultRoute::metric);
+    return best == routes.end() ? std::pair<std::string, std::string>{} : std::pair{best->gateway, best->adapter};
+}
+
+/// The IPv4 default route: the gateway and its adapter, from the lowest-metric route to 0.0.0.0/0.
+[[nodiscard]] inline std::pair<std::string, std::string> parseDefaultRouteV4(std::string_view text)
+{
+    return bestRoute(defaultRoutesV4(text));
+}
+
+/// The IPv6 default route: the next hop and its adapter, from the lowest-metric route to ::/0.
+[[nodiscard]] inline std::pair<std::string, std::string> parseDefaultRouteV6(std::string_view text)
+{
+    return bestRoute(defaultRoutesV6(text));
+}
+
+/// The gateways of @p adapter's own default routes (#2591): IPv4 then IPv6, each by metric, no repeats.
+[[nodiscard]] inline std::vector<std::string>
+adapterGateways(std::string_view adapter, std::vector<DefaultRoute> v4, std::vector<DefaultRoute> v6)
+{
+    std::vector<std::string> gateways;
+    for (std::vector<DefaultRoute>* routes : {&v4, &v6})
+    {
+        std::ranges::stable_sort(*routes, {}, &DefaultRoute::metric);
+        for (DefaultRoute& route : *routes)
+        {
+            if (route.adapter == adapter && std::ranges::find(gateways, route.gateway) == gateways.end())
+            {
+                gateways.push_back(std::move(route.gateway));
+            }
+        }
+    }
+    return gateways;
+}
+
+/// An adapter's hardware, from its udev database file (/run/udev/data/n<ifindex>, #2591): the hwdata
+/// vendor and model ("Intel Corporation Wi-Fi 6E(802.11ax) AX210/AX1675* 2x2 [Typhoon Peak]"); the model
+/// alone when it already starts with the vendor or the vendor is unknown. Empty when udev named neither.
+[[nodiscard]] inline std::string adapterDescription(std::string_view udevText)
+{
+    std::string vendor = LinuxStorage::udevProperty(udevText, "ID_VENDOR_FROM_DATABASE");
+    std::string model = LinuxStorage::udevProperty(udevText, "ID_MODEL_FROM_DATABASE");
+    if (model.empty())
+    {
+        return vendor;
+    }
+    if (vendor.empty() || model.starts_with(vendor))
+    {
+        return model;
+    }
+    return vendor + " " + model;
 }
 
 /// The "nameserver" and "search" lines of a resolv.conf, in file order.
@@ -245,6 +307,10 @@ struct ResolverConfig
     return std::nullopt;
 }
 
+/// Reads a Wi-Fi adapter's station (its access point's rates) by interface index: Nl80211::readStation(), or
+/// a fake in tests. Nullopt when there is none to read.
+using WifiStationReader = std::function<std::optional<Nl80211::Station>(int ifindex)>;
+
 /// A Wi-Fi adapter's link as a WifiLinkReader read it: the link, or why there is none.
 struct WifiLinkRead
 {
@@ -297,6 +363,9 @@ struct DhcpLeaseRead
 {
     std::optional<DhcpLease> lease;
     std::string error; ///< Why not, when !lease: no DHCP on it, not managed, no NetworkManager.
+    /// Whether the manager configures the adapter's IPv4 by DHCP (#2591): NetworkManager knows either way
+    /// for a device it manages; a systemd-networkd lease says yes. Unset when the reader can't tell.
+    std::optional<bool> dhcp;
 };
 
 /// Reads an adapter's IPv4 DHCP lease by its name. SystemdBus::makeDhcpLeaseReader() asks
@@ -331,6 +400,7 @@ struct AdapterReaders
     LinkDnsReader linkDns;                ///< Each adapter's own DNS servers and search domains.
     DhcpLeaseReader dhcpLease;            ///< Each adapter's IPv4 DHCP lease (NetworkManager).
     IndexedDhcpLeaseReader networkdLease; ///< The same from systemd-networkd, asked when the first has none.
+    WifiStationReader wifiStation;        ///< Each connected Wi-Fi adapter's rates (nl80211, #2591).
 };
 
 /// The facts under @p root into @p info, with the addresses from @p listAddresses and what @p readers
@@ -368,6 +438,9 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
         {
             adapter.driver = driver.filename().string();
         }
+        int ifindex = 0;
+        const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
+        std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
         adapter.wireless = std::filesystem::is_directory(dir / "wireless", linkError);
         if (adapter.wireless)
         {
@@ -378,22 +451,40 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
                 adapter.wifiLink = std::move(read.link);
                 adapter.wifiLinkUnavailable = std::move(read.error);
             }
+            // The standard and the receive rate, which NetworkManager doesn't give (#2591).
+            if (adapter.wifiLink && readers.wifiStation && ifindex > 0)
+            {
+                if (const std::optional<Nl80211::Station> station = readers.wifiStation(ifindex))
+                {
+                    WifiLink& link = *adapter.wifiLink;
+                    link.phy = Nl80211::standardName(*station, link.frequencyMhz);
+                    link.rxBitrateKbps = station->rx ? station->rx->kbps : 0;
+                    if (link.bitrateKbps == 0 && station->tx)
+                    {
+                        link.bitrateKbps = station->tx->kbps;
+                    }
+                }
+            }
         }
-        int ifindex = 0;
-        if (readers.linkDns || readers.networkdLease)
+        if (ifindex > 0)
         {
-            const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
-            std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
+            adapter.description = adapterDescription(LinuxOsInfo::readFile(root / "run/udev/data" / ("n" + std::to_string(ifindex))));
         }
         // The lease from whichever manages the adapter: NetworkManager, else systemd-networkd. No lease
         // (a static address, an unmanaged adapter) just leaves the row out.
         if (readers.dhcpLease)
         {
-            adapter.dhcpLease = readers.dhcpLease(adapter.name).lease;
+            DhcpLeaseRead read = readers.dhcpLease(adapter.name);
+            adapter.dhcpLease = std::move(read.lease);
+            adapter.dhcpEnabled = read.dhcp;
         }
         if (!adapter.dhcpLease && readers.networkdLease && ifindex > 0)
         {
-            adapter.dhcpLease = readers.networkdLease(ifindex).lease;
+            if (DhcpLeaseRead read = readers.networkdLease(ifindex); read.lease)
+            {
+                adapter.dhcpLease = std::move(read.lease);
+                adapter.dhcpEnabled = true;
+            }
         }
         if (readers.linkDns && ifindex > 0)
         {
@@ -420,8 +511,20 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
         }
     }
 
-    std::tie(info.gatewayV4, info.gatewayV4Adapter) = parseDefaultRouteV4(LinuxOsInfo::readFile(root / "proc/net/route"));
-    std::tie(info.gatewayV6, info.gatewayV6Adapter) = parseDefaultRouteV6(LinuxOsInfo::readFile(root / "proc/net/ipv6_route"));
+    const std::vector<DefaultRoute> routesV4 = defaultRoutesV4(LinuxOsInfo::readFile(root / "proc/net/route"));
+    const std::vector<DefaultRoute> routesV6 = defaultRoutesV6(LinuxOsInfo::readFile(root / "proc/net/ipv6_route"));
+    std::tie(info.gatewayV4, info.gatewayV4Adapter) = bestRoute(routesV4);
+    std::tie(info.gatewayV6, info.gatewayV6Adapter) = bestRoute(routesV6);
+    for (NetworkAdapter& adapter : info.adapters)
+    {
+        adapter.gateways = adapterGateways(adapter.name, routesV4, routesV6);
+        // "No DHCP" means a static address only when there is one: an adapter NetworkManager hasn't
+        // brought up has no DHCP config either, and isn't static.
+        if (adapter.dhcpEnabled == false && std::ranges::none_of(adapter.addresses, [](const AdapterAddress& a) { return !a.v6; }))
+        {
+            adapter.dhcpEnabled.reset();
+        }
+    }
 
     // systemd-resolved keeps the real upstream servers in its own file; /etc/resolv.conf then names only
     // its local stub. Either file alone is used as it is.

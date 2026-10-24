@@ -174,7 +174,7 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     m_Fd = fds[0];
     m_Child = child;
 
-    const auto reply = roundTrip(Broker::Hello{}, timeout, stopToken);
+    const auto reply = roundTrip(Broker::Hello{.forSession = m_ForSession.load()}, timeout, stopToken);
     if (!reply.has_value())
     {
         // A launcher that closed the socket, or never read it, has exited and says why; one still
@@ -202,6 +202,39 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     }
     m_Connected = true;
     return {};
+}
+
+std::expected<void, std::string> PkexecBroker::holdForSession(const std::stop_token& stopToken)
+{
+    // Set first, so the Hello that starts a helper asks to be held; put back if no helper comes of it.
+    const bool wasHeld = m_ForSession.exchange(true);
+    {
+        const std::scoped_lock lock(m_Mutex);
+        if (m_Connected.load())
+        {
+            // A helper an earlier "Authenticate and retry" started is held by a Hello again: no prompt.
+            const auto reply = roundTrip(Broker::Hello{.forSession = true}, CALL_TIMEOUT, stopToken);
+            const auto* const hello = reply.has_value() ? std::get_if<Broker::HelloReply>(&*reply) : nullptr;
+            if (hello != nullptr && hello->accepted)
+            {
+                return {};
+            }
+            closeLocked(); // a channel that failed once isn't trusted again
+            m_ForSession = wasHeld;
+            return std::unexpected(reply.has_value() ? std::string("the helper didn't answer the handshake") : reply.error());
+        }
+    }
+    auto connectedNow = connect(stopToken);
+    if (!connectedNow.has_value())
+    {
+        m_ForSession = wasHeld;
+    }
+    return connectedNow;
+}
+
+bool PkexecBroker::heldForSession() const noexcept
+{
+    return m_ForSession.load() && connected();
 }
 
 void PkexecBroker::disconnect()

@@ -7,11 +7,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -305,6 +307,27 @@ enum class DevicePresence : std::uint8_t
 [[nodiscard]] constexpr bool isNotPresentNetworkRow(std::uint32_t operStatus, DevicePresence presence) noexcept
 {
     return operStatus == IF_OPER_STATUS_NOT_PRESENT || presence == DevicePresence::Absent;
+}
+
+/// One interface GetIfTable2 listed, as the probe tells one pass's table from the last one's (#2731).
+struct NetworkInterfaceKey
+{
+    std::uint64_t luid = 0;       ///< MIB_IF_ROW2::InterfaceLuid.Value
+    std::uint32_t operStatus = 0; ///< MIB_IF_ROW2::OperStatus
+    [[nodiscard]] constexpr auto operator<=>(const NetworkInterfaceKey&) const noexcept = default;
+};
+
+/// Whether this pass's interface table lists a different set of interfaces, or a different status for
+/// one, than the last pass's (#2731): a PnP or link event, after which a down interface's device may be
+/// gone or back, so the probe drops every cached device presence. @p current, this pass's keys in any
+/// order, is sorted and becomes @p previous; @p previous's storage becomes @p current's, so once grown
+/// neither allocates. The first pass, against no previous table, counts as a change.
+[[nodiscard]] inline bool networkInterfacesChanged(std::vector<NetworkInterfaceKey>& current, std::vector<NetworkInterfaceKey>& previous)
+{
+    std::ranges::sort(current);
+    const bool changed = current != previous;
+    std::swap(current, previous);
+    return changed;
 }
 
 /// Whether a counted GetIfTable2 row is a hardware link of its own rather than software whose traffic

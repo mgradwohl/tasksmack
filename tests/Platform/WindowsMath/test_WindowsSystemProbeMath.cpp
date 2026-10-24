@@ -433,6 +433,38 @@ TEST(WindowsSystemProbeMathTest, OnlyRowsThatAreNeitherUpNorNotPresentAreLookedU
     EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DORMANT));
 }
 
+// #2731: the device-presence cache is dropped when the interface table changes
+
+TEST(WindowsSystemProbeMathTest, InterfaceTableChangeIsAnInterfaceOrAStatusNotTheOrder)
+{
+    std::vector<NetworkInterfaceKey> previous;
+    std::vector<NetworkInterfaceKey> current{{.luid = 2, .operStatus = IF_OPER_STATUS_DOWN}, {.luid = 1, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "the first table, against none";
+    EXPECT_EQ(previous.size(), 2U);
+    EXPECT_EQ(previous[0].luid, 1U) << "kept sorted";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 2, .operStatus = IF_OPER_STATUS_DOWN}};
+    EXPECT_FALSE(networkInterfacesChanged(current, previous)) << "the same interfaces in another order";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 2, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "a status changed";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP},
+               {.luid = 2, .operStatus = IF_OPER_STATUS_UP},
+               {.luid = 3, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "an interface added";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 3, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "an interface gone";
+    current = previous;
+    EXPECT_FALSE(networkInterfacesChanged(current, previous));
+
+    current.clear();
+    EXPECT_TRUE(networkInterfacesChanged(current, previous));
+    current.clear();
+    EXPECT_FALSE(networkInterfacesChanged(current, previous)) << "no interfaces, twice";
+}
+
 TEST(WindowsSystemProbeMathTest, BluetoothPanIsAHardwareLink)
 {
     // Windows reports the Bluetooth PAN adapter as Ethernet without HardwareInterface; a phone

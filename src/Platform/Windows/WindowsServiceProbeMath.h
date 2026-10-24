@@ -4,10 +4,10 @@
 // Platform enums, and the svchost group from a service's command line. No Windows header, so the
 // tests build on every platform (tests/Platform/WindowsMath/).
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -132,8 +132,7 @@ inline constexpr std::string_view ARGUMENT_SEPARATORS = " \t";
     for (std::size_t i = 0; (i + EXE.size()) <= commandLine.size(); ++i)
     {
         const std::size_t after = i + EXE.size();
-        const bool isExe = std::ranges::equal(
-            commandLine.substr(i, EXE.size()), EXE, [](unsigned char a, unsigned char b) { return std::tolower(a) == b; });
+        const bool isExe = Platform::equalsIgnoreCase(commandLine.substr(i, EXE.size()), EXE);
         if (isExe && (after == commandLine.size() || ARGUMENT_SEPARATORS.contains(commandLine[after])))
         {
             end = after;
@@ -152,15 +151,10 @@ inline constexpr std::string_view ARGUMENT_SEPARATORS = " \t";
 /// program, including one whose name merely contains "svchost".
 [[nodiscard]] inline std::string svchostGroup(std::string_view commandLine)
 {
-    const auto equalsIgnoringCase = [](std::string_view a, std::string_view b)
-    {
-        return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
-    };
-
     const auto [program, args] = splitProgram(commandLine);
     const auto slash = program.find_last_of("\\/");
     const std::string_view basename = (slash == std::string_view::npos) ? program : program.substr(slash + 1);
-    if (!equalsIgnoringCase(basename, "svchost.exe"))
+    if (!Platform::equalsIgnoreCase(basename, "svchost.exe"))
     {
         return {};
     }
@@ -176,7 +170,7 @@ inline constexpr std::string_view ARGUMENT_SEPARATORS = " \t";
         {
             return std::string(word);
         }
-        afterFlag = equalsIgnoringCase(word, "-k");
+        afterFlag = Platform::equalsIgnoreCase(word, "-k");
         rest.remove_prefix(length);
     }
     return {};

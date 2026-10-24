@@ -3,10 +3,11 @@
 // TaskSmack's PipeBroker::Launcher (#2549; #2517 step c): starts TaskSmackHelper.exe elevated with
 // ShellExecuteExW("runas"), so Windows asks for consent, or an administrator's password, first.
 //   - The helper is the TaskSmackHelper.exe beside TaskSmack.exe, by the full path GetModuleFileNameW
-//     gives TaskSmack's own image: never looked for on a search path or in the current directory.
+//     gives TaskSmack's own image (BrokerHelper::ownImage()): never looked for on a search path or in
+//     the current directory.
 //   - Its parameters are BrokerHelper::commandLine() for the pipe, TaskSmack's PID and TaskSmack's own
-//     creation time. They are checked to read back exactly, as the helper will split and parse them,
-//     before anything is started.
+//     creation time, read by BrokerHelper::startTicksOf() as the helper reads its own (#2772). They are
+//     checked to read back exactly, as the helper will split and parse them, before anything is started.
 //   - A dismissed prompt (ERROR_CANCELLED) is PROMPT_DISMISSED, which callers take as a refusal, as a
 //     dismissed pkexec prompt is on Linux; a missing helper is HELPER_MISSING.
 //   - ShellExecuteExW blocks while the prompt is up, with no time limit: PipeBroker calls this on a
@@ -69,10 +70,9 @@ BOOL WINAPI shellExecuteWithCom(SHELLEXECUTEINFOW* info);
 struct Functions
 {
     using ShellExecuteExFn = BOOL(WINAPI*)(SHELLEXECUTEINFOW*);
-    using GetModuleFileNameFn = DWORD(WINAPI*)(HMODULE, LPWSTR, DWORD);
 
     ShellExecuteExFn shellExecuteEx = &shellExecuteWithCom;
-    GetModuleFileNameFn getModuleFileName = &::GetModuleFileNameW;
+    BrokerHelper::GetModuleFileNameFn getModuleFileName = &::GetModuleFileNameW;
 };
 
 /// @p arguments as the helper's parameters: BrokerHelper::commandLine(), once it is checked that

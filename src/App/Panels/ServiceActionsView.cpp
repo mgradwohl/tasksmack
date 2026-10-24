@@ -2,6 +2,7 @@
 
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ServicesView.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/IconsFontAwesome6.h"
@@ -11,7 +12,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <format>
 #include <memory>
@@ -91,11 +91,6 @@ constexpr std::string_view SYSTEM_NAME = "Windows";
 constexpr std::string_view SYSTEM_NAME = "the system";
 #endif
 
-[[nodiscard]] bool equalsIgnoringCase(std::string_view a, std::string_view b)
-{
-    return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
-}
-
 [[nodiscard]] std::string_view verb(ServiceActionKind kind)
 {
     switch (kind)
@@ -142,7 +137,8 @@ dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request
 bool isCriticalService(std::string_view name, std::string_view serviceType)
 {
     return serviceType == "Driver" ||
-           std::ranges::any_of(CRITICAL_SERVICES, [name](std::string_view critical) { return equalsIgnoringCase(name, critical); }) ||
+           std::ranges::any_of(CRITICAL_SERVICES,
+                               [name](std::string_view critical) { return Platform::equalsIgnoreCase(name, critical); }) ||
            std::ranges::find(CRITICAL_UNITS, name) != CRITICAL_UNITS.end() ||
            (name.ends_with(".service") &&
             std::ranges::any_of(CRITICAL_UNIT_TEMPLATES, [name](std::string_view prefix) { return name.starts_with(prefix); }));

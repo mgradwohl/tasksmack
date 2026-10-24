@@ -441,5 +441,31 @@ TEST(ProcessEnvironmentViewTest, ASelectionChangeWithdrawsAnAuthenticatedReadNot
     EXPECT_EQ(reader.authorizedReadCount(), 0);
 }
 
+// #2567: the request goes through the read the sections share (LazyBackgroundRead::requestAuthorized()),
+// and one update() takes it: readAuthorized() runs exactly once, however often the button was pressed in
+// the frame, and the frames after it start nothing until the refresh is due.
+TEST(ProcessEnvironmentViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult({.status = Platform::EnvironmentReadStatus::PermissionDenied, .variables = {}});
+    reader.setAuthorizedResult(okResult({{.name = "HOME", .value = "/root"}}));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+
+    view.requestAuthorizedRead();
+    view.requestAuthorizedRead(); // pressed twice in a frame: one request
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.status(), Platform::EnvironmentReadStatus::Ok);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frame(view, reader, 0.016F, true)) << "frame " << i; // taken: nothing more starts
+    }
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(reader.readCount(), 1); // the refused read; the authorized one restarted the refresh clock
+}
+
 } // namespace
 } // namespace App

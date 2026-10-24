@@ -18,8 +18,12 @@ namespace Platform
 {
 
 LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevicesRoot, std::string accelClassRoot)
+    : LinuxGPUProbe(std::make_unique<DRMGPUProbe>(std::move(drmBasePath)), pciDevicesRoot, std::move(accelClassRoot))
+{}
+
+LinuxGPUProbe::LinuxGPUProbe(std::unique_ptr<DRMGPUProbe> drmProbe, const std::string& pciDevicesRoot, std::string accelClassRoot)
     : m_NVMLProbe(std::make_unique<NVMLGPUProbe>(pciDevicesRoot)),
-      m_DRMProbe(std::make_unique<DRMGPUProbe>(std::move(drmBasePath))),
+      m_DRMProbe(std::move(drmProbe)),
       m_ROCmProbe(std::make_unique<ROCmGPUProbe>(pciDevicesRoot)),
       m_AccelProbe(std::make_unique<AccelNpuProbe>(std::move(accelClassRoot)))
 {
@@ -143,7 +147,14 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
         counters.insert(counters.end(), nvmlCounters.begin(), nvmlCounters.end());
     }
 
-    // Phase 5: DRM per-process metrics (not available via sysfs)
+    // Phase 5: DRM per-process metrics for Intel GPUs, from the clients' fdinfo the last readGPUCounters()
+    // read (#2589, #2892)
+    if (m_DRMProbe && m_DRMProbe->isAvailable())
+    {
+        auto drmCounters = m_DRMProbe->readProcessGPUCounters();
+        counters.insert(counters.end(), drmCounters.begin(), drmCounters.end());
+    }
+
     // Phase 6: ROCm per-process metrics (not available via ROCm SMI)
     if (m_ROCmProbe && m_ROCmProbe->isAvailable())
     {

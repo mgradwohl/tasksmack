@@ -1178,9 +1178,10 @@ class ReducedPointsCache
 }
 
 /// How many of a series' own sample intervals its last reading is held out to "now" for
-/// (holdLastValueToNow(), #1147). Above 3 because the samplers slow to 3x the refresh interval while
-/// the window is being resized or dragged (AdaptiveIntervalUtils), and the next reading also waits
-/// for its publish.
+/// (holdLastValueToNow(), #1147). A few, so a sampler pass that overruns its interval (a stalled
+/// probe), plus the publish the next reading waits for, doesn't drop the line before the reading
+/// lands. A drawing margin only: the samplers themselves run at the Settings interval in every UI
+/// state (#2731).
 inline constexpr double HOLD_MAX_SAMPLE_INTERVALS = 4.0;
 /// The shortest hold limit, in seconds, so a fast refresh (100 ms) doesn't make the line flicker
 /// between held and not held on ordinary sampling jitter.
@@ -1193,8 +1194,8 @@ inline constexpr double HOLD_FALLBACK_SECONDS =
 /// The longest a series' last reading is held out to "now" (holdLastValueToNow()), in seconds, from
 /// its time axis @p x (seconds before now, oldest first): HOLD_MAX_SAMPLE_INTERVALS of the interval
 /// between its last two samples, at least HOLD_MIN_SECONDS. Taken from the data rather than from the
-/// refresh setting, so it follows the samplers' adaptive slow-downs and needs no plumbing; a stall
-/// shows because the interval before it was an ordinary one (#1147).
+/// refresh setting, so it follows each sampler's own cadence and needs no plumbing; a stall shows
+/// because the interval before it was an ordinary one (#1147).
 template<typename T> [[nodiscard]] inline double maxHoldSecondsForAxis(const T* x, int count) noexcept
 {
     if (x == nullptr || count < 2)

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -195,6 +196,33 @@ TEST(HelperLauncherTest, TheHelperBesideThisExecutableIsStartedElevatedForThisPr
     EXPECT_EQ(read->pipeName, name);
     EXPECT_EQ(read->parentPid, GetCurrentProcessId());
     EXPECT_EQ(read->parentStartTicks, startTicksOf(GetCurrentProcess())) << "this process's own creation time";
+}
+
+/// @p path in lower case: two spellings of one path compare equal, as NTFS compares names.
+[[nodiscard]] std::wstring lowerCased(std::wstring path)
+{
+    std::ranges::transform(path, path.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    return path;
+}
+
+// #2772: what TaskSmack says of itself is what the helper reads of it. Its image is the one
+// BrokerHelper::imageOf() reads from its process, and its start time is BrokerHelper::startTicksOf()'s
+// reading, the same number the helper checks the command line against.
+TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
+{
+    const FakeShell& fake = resetFakeShell();
+    const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
+    ASSERT_TRUE(helper.has_value()) << helper.error();
+
+    const auto image = BrokerHelper::imageOf(GetCurrentProcess());
+    ASSERT_TRUE(image.has_value());
+    EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(*image, L"TaskSmackHelper.exe")));
+
+    const auto read = readAsTheHelper(fake.parameters);
+    ASSERT_TRUE(read.has_value()) << read.error();
+    const auto ticks = BrokerHelper::startTicksOf(GetCurrentProcess());
+    ASSERT_TRUE(ticks.has_value());
+    EXPECT_EQ(read->parentStartTicks, *ticks);
 }
 
 TEST(HelperLauncherTest, TheParametersAreTheHelpersCommandLineAndReadBackExactly)

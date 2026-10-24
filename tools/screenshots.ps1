@@ -5,14 +5,20 @@
     One TaskSmack launch per shot, sequentially and without injected input: each run gets its own
     TASKSMACK_CONFIG_DIR with a generated config.toml (theme, medium font, 1 s sampling, window size,
     the Command column off: command lines name the machine's users and paths),
-    the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _SELECT_NAME, _DETAILS_TAB, _OPEN) and
+    the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _MACHINE_TAB, _SELECT_NAME,
+    _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
     without input"). Same matrix and names as screenshots.sh.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
-    Process Details (overview, gpu, network) for one process, Services, Startup, About and Help in the
-    first theme; and overview-live, an 8 s / 12 fps frame sequence written as an animated WebP. The
-    overview-* shots get a 60 s history window and are captured after 60 s, so their charts are full.
+    the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
+    Details (overview, gpu, network, and the Overview with its Modules, Open files and Connections
+    sections expanded) for one process, Services, Startup, About and Help in the first theme; and three
+    frame sequences written as animated WebPs: overview-live (8 s of the Overview),
+    walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
+    themes-live (9 s: the Overview through every theme, 1.5 s each), all at 12 fps. The overview-*
+    shots and themes-live get a 60 s history window and are captured after 60 s, so their charts are
+    full.
 
     The shots show the machine they run on (its processes, services, startup items, user and host
     name), so run them in a Windows Sandbox or on a clean account, and review every image for names
@@ -23,7 +29,7 @@
     Output directory (default: docs\images\screenshots\windows)
 .PARAMETER After
     Seconds after startup before each capture (default: 8; the history charts need 5 samples at 1 s).
-    overview-* shots ignore it: 60 s with a 60 s history window, so their charts are full
+    overview-* shots and themes-live ignore it: 60 s with a 60 s history window, so their charts are full
 .PARAMETER Window
     Window size as WxH (default: 1440x900)
 .PARAMETER Themes
@@ -31,9 +37,9 @@
 .PARAMETER Process
     Process for the Process Details and Processes shots (default: explorer.exe)
 .PARAMETER WebP
-    Convert each PNG to WebP (cwebp -q 80) and the sequence to an animated WebP
+    Convert each PNG to WebP (cwebp -q 80) and each sequence to an animated WebP
 .PARAMETER NoLive
-    Skip the overview-live frame sequence
+    Skip the frame sequences (overview-live, walk-live, themes-live)
 .EXAMPLE
     .\tools\screenshots.ps1 -WebP
 .EXAMPLE
@@ -55,11 +61,14 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $TimeoutAfterCaptureMs = 60000
-# overview-* shots: a 60 s history window, captured at the hook's maximum delay so the charts are full.
+# -Full shots: a 60 s history window, captured at the hook's maximum delay so the charts are full.
 $OverviewHistorySeconds = 60
 $OverviewAfter = 60
-$LiveSeconds = 8
 $LiveFps = 12
+$LiveSeconds = 8
+$WalkSeconds = 10
+# themes-live: each theme for this many tenths of a second, the config's theme first.
+$ThemeStepTenths = 15
 $WebPQuality = 80
 
 if (-not (Test-Path -LiteralPath $Exe)) {
@@ -85,14 +94,14 @@ $script:Failed = 0
 Write-Host ("{0,-30} {1,5} {2,8} {3,10}" -f 'name', 'exit', 'seconds', 'bytes')
 
 # One shot: its own config dir, the hooks in $Hooks, TASKSMACK_SCREENSHOT with $Sequence appended
-# (";frames=N;fps=F" for the live sequence), then wait for TaskSmack to quit by itself.
+# (";frames=N;fps=F" for a live sequence), then wait for TaskSmack to quit by itself. -Full gives
+# the shot the 60 s history window and the 60 s wait.
 function Invoke-Shot {
-    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "")
+    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [string]$Sequence = "", [switch]$Full)
     $cfg = Join-Path $Work $Name
     $null = New-Item -ItemType Directory -Force -Path $cfg
-    $overview = $Name -like 'overview-*'
-    $after = if ($overview) { $OverviewAfter } else { $After }
-    $history = if ($overview) { "history_max_seconds = $OverviewHistorySeconds`n" } else { "" }
+    $after = if ($Full) { $OverviewAfter } else { $After }
+    $history = if ($Full) { "history_max_seconds = $OverviewHistorySeconds`n" } else { "" }
     $toml = "[theme]`nid = '$Theme'`n[font]`nsize = 'medium'`n[sampling]`ninterval_ms = 1000`n$history" +
             "[window]`nwidth = $Width`nheight = $Height`n[process_columns]`ncommand = false`n"
     Set-Content -LiteralPath (Join-Path $cfg "config.toml") -Value $toml -Encoding utf8 -NoNewline
@@ -127,15 +136,45 @@ function Invoke-Shot {
     }
 }
 
+# A frame sequence of $Seconds at $LiveFps, with TASKSMACK_DEMO playing $Demo (its times count from
+# the settle point, as the capture's `after` does), joined into <Name>.webp when -WebP and img2webp
+# are there; otherwise the frames stay in the work dir for img2webp to join later.
+function Invoke-Live {
+    param([string]$Name, [string]$Theme, [hashtable]$Hooks, [int]$Seconds, [string]$Demo = "", [switch]$Full)
+    if ($Demo) { $Hooks = $Hooks + @{ TASKSMACK_DEMO = $Demo } }
+    Invoke-Shot $Name $Theme $Hooks -Sequence ";frames=$($Seconds * $LiveFps);fps=$LiveFps" -Full:$Full
+    $frames = @(Get-ChildItem -LiteralPath $PngDir -Filter "$Name-*.png" | Sort-Object Name | ForEach-Object { $_.FullName })
+    $img2webp = Get-Command img2webp -ErrorAction SilentlyContinue
+    if ($WebP -and $img2webp -and $frames.Count -gt 0) {
+        $anim = Join-Path $Out "$Name.webp"
+        & $img2webp.Source -loop 0 -mixed -d ([int](1000 / $LiveFps)) -q $WebPQuality @frames -o $anim | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Error "img2webp failed with exit code $LASTEXITCODE" }
+        Write-Host "$Name.webp: $($frames.Count) frames, $((Get-Item -LiteralPath $anim).Length) bytes"
+    } else {
+        Write-Host "$Name frames left in $PngDir (img2webp -loop 0 -d $([int](1000 / $LiveFps)) ... builds the animation)"
+    }
+}
+
 foreach ($t in $Themes) {
-    Invoke-Shot "overview-$t" $t @{ TASKSMACK_TAB = 'overview' }
+    Invoke-Shot "overview-$t" $t @{ TASKSMACK_TAB = 'overview' } -Full
 }
 foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "processes-$t" $t @{ TASKSMACK_TAB = 'Processes'; TASKSMACK_SELECT_NAME = $Process }
-    Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'System' }
+    # By id: the machine tab is labelled "System" until the first sample brings the hostname, so the
+    # System Information tab's label would race it at startup (#2886).
+    Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
+}
+# The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
+foreach ($sub in 'cores', 'gpu', 'network') {
+    Invoke-Shot "$sub-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_MACHINE_TAB = $sub }
 }
 foreach ($tab in 'overview', 'gpu', 'network') {
     Invoke-Shot "details-$tab-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = $tab }
+}
+# The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
+# startup selection has settled.
+foreach ($section in 'modules', 'openfiles', 'connections') {
+    Invoke-Shot "details-$section-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }
 }
 Invoke-Shot "services-$Dark" $Dark @{ TASKSMACK_TAB = 'Services' }
 Invoke-Shot "startup-$Dark" $Dark @{ TASKSMACK_TAB = 'Startup' }
@@ -143,17 +182,19 @@ Invoke-Shot "about-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 
 Invoke-Shot "help-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'help' }
 
 if (-not $NoLive) {
-    Invoke-Shot 'overview-live' $Dark @{ TASKSMACK_TAB = 'overview' } -Sequence ";frames=$($LiveSeconds * $LiveFps);fps=$LiveFps"
-    $frames = @(Get-ChildItem -LiteralPath $PngDir -Filter 'overview-live-*.png' | Sort-Object Name | ForEach-Object { $_.FullName })
-    $img2webp = Get-Command img2webp -ErrorAction SilentlyContinue
-    if ($WebP -and $img2webp -and $frames.Count -gt 0) {
-        $anim = Join-Path $Out "overview-live.webp"
-        & $img2webp.Source -loop 0 -mixed -d ([int](1000 / $LiveFps)) -q $WebPQuality @frames -o $anim | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Error "img2webp failed with exit code $LASTEXITCODE" }
-        Write-Host "overview-live.webp: $($frames.Count) frames, $((Get-Item -LiteralPath $anim).Length) bytes"
-    } else {
-        Write-Host "overview-live frames left in $PngDir (img2webp -loop 0 -d $([int](1000 / $LiveFps)) ... builds the animation)"
+    Invoke-Live 'overview-live' $Dark @{ TASKSMACK_TAB = 'overview' } -Seconds $LiveSeconds -Full
+    # From the Overview: the Processes table 1 s into the capture, the process selected 2 s later,
+    # its Process Details' Network tab 3 s after that.
+    $walk = "$($After + 1):tab=processes,$($After + 3):select=name:$Process,$($After + 6):details=network"
+    Invoke-Live 'walk-live' $Dark @{ TASKSMACK_TAB = 'overview' } -Seconds $WalkSeconds -Demo $walk
+    # The Overview in the first theme, then each of the others for $ThemeStepTenths tenths of a second.
+    $steps = @(); $tenths = $OverviewAfter * 10
+    foreach ($t in @($Themes | Select-Object -Skip 1)) {
+        $tenths += $ThemeStepTenths
+        $steps += "$([math]::Floor($tenths / 10)).$($tenths % 10):theme=$t"
     }
+    $themesSeconds = [math]::Ceiling($Themes.Count * $ThemeStepTenths / 10)
+    Invoke-Live 'themes-live' $Dark @{ TASKSMACK_TAB = 'overview' } -Seconds $themesSeconds -Demo ($steps -join ',') -Full
 }
 
 Write-Host ""
