@@ -694,6 +694,7 @@ set(THEME_REAL_TEST_SOURCES
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
+    App/test_AccessNoticeOnDisplay.cpp # the startup notice in a real application (#2728)
     App/test_SettingsThemeApply.cpp  # a theme picked in Settings applies on Save, not before (#2713)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
