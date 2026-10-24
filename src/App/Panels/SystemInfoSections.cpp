@@ -4,6 +4,7 @@
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
@@ -54,14 +55,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
     };
 }
 
-[[nodiscard]] bool containsIgnoringCase(std::string_view text, std::string_view needle)
-{
-    const auto lower = [](unsigned char c)
-    {
-        return std::tolower(c);
-    };
-    return !std::ranges::search(text, needle, {}, lower, lower).empty();
-}
+using Platform::containsIgnoreCase;
 
 void appendRowsWindows(const Platform::OsInfo& os, std::vector<Row>& rows)
 {
@@ -1283,7 +1277,7 @@ std::string formatDeviceName(const Platform::Device& device)
 {
     const std::string_view vendorWord = std::string_view(device.vendor).substr(0, device.vendor.find(' '));
     const bool nameHasVendor = !vendorWord.empty() && device.name.size() >= vendorWord.size() &&
-                               containsIgnoringCase(std::string_view(device.name).substr(0, vendorWord.size()), vendorWord);
+                               containsIgnoreCase(std::string_view(device.name).substr(0, vendorWord.size()), vendorWord);
     std::string text = joinNonEmpty({nameHasVendor ? std::string_view{} : std::string_view(device.vendor), device.name}, " ");
     if (text.empty())
     {
@@ -1486,7 +1480,7 @@ std::string formatDriverValue(const Platform::KernelDriver& driver)
             },
             ", ");
     }
-    const bool sameName = containsIgnoringCase(driver.displayName, driver.name) && driver.displayName.size() == driver.name.size();
+    const bool sameName = Platform::equalsIgnoreCase(driver.displayName, driver.name);
     const std::string_view startType = serviceStartTypeLabel(driver.startType);
     const std::string start = startType.empty() ? std::string{} : std::string(startType) + " start";
     const bool running = driver.state == Platform::ServiceState::Running || driver.state == Platform::ServiceState::Unknown;
@@ -1535,13 +1529,9 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     {
         sorted.push_back(&driver);
     }
-    const auto lower = [](unsigned char c)
-    {
-        return std::tolower(c);
-    };
     std::ranges::stable_sort(sorted,
-                             [&](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
-                             { return std::ranges::lexicographical_compare(a->name, b->name, {}, lower, lower); });
+                             [](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
+                             { return Platform::compareIgnoreCase(a->name, b->name) < 0; });
     if (windows)
     {
         addDriverProblemRows(rows, drivers.listed, sorted);
@@ -2272,14 +2262,9 @@ namespace
     return at >= text.size() || isPathSeparator(text[at]) || ENDS.contains(text[at]);
 }
 
-[[nodiscard]] constexpr char lowerAscii(char c) noexcept
-{
-    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
 [[nodiscard]] bool namesEqual(std::string_view a, std::string_view b, bool ignoreCase) noexcept
 {
-    return ignoreCase ? std::ranges::equal(a, b, {}, lowerAscii, lowerAscii) : a == b;
+    return ignoreCase ? Platform::equalsIgnoreCase(a, b) : a == b;
 }
 
 /// Whether the component that ends at the separator @p separator is "Users" (Windows' profile folders).
@@ -2350,7 +2335,7 @@ namespace
     }
     constexpr auto fold = [](char c) noexcept
     {
-        return isPathSeparator(c) ? '/' : lowerAscii(c);
+        return isPathSeparator(c) ? '/' : Platform::foldAscii(c);
     };
     return std::ranges::equal(a, b, {}, fold, fold);
 }
@@ -2520,7 +2505,7 @@ std::vector<VisibleSection> visibleSections(std::span<const Section> sections, s
     for (std::size_t s = 0; s < sections.size(); ++s)
     {
         const Section& section = sections[s];
-        const bool titleMatches = filter.empty() || containsIgnoringCase(section.title, filter);
+        const bool titleMatches = containsIgnoreCase(section.title, filter);
         VisibleSection entry{.section = s, .rows = {}};
         for (std::size_t r = 0; r < section.rows.size(); ++r)
         {
@@ -2529,8 +2514,8 @@ std::vector<VisibleSection> visibleSections(std::span<const Section> sections, s
             {
                 continue;
             }
-            if (titleMatches || containsIgnoringCase(item.shownLabel(showIdentifiers), filter) ||
-                containsIgnoringCase(item.shownValue(showIdentifiers), filter))
+            if (titleMatches || containsIgnoreCase(item.shownLabel(showIdentifiers), filter) ||
+                containsIgnoreCase(item.shownValue(showIdentifiers), filter))
             {
                 entry.rows.push_back(r);
             }
@@ -2690,7 +2675,7 @@ ReportFormat reportFormatFor(std::string_view path, int filter)
     if (dot != std::string_view::npos && dot != 0)
     {
         std::string extension(name.substr(dot + 1));
-        std::ranges::transform(extension, extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::ranges::transform(extension, extension.begin(), Platform::foldAscii);
         if (extension == "json")
         {
             return ReportFormat::Json;

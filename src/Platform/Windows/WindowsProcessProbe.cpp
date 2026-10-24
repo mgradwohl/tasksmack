@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
@@ -44,7 +45,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -553,11 +553,7 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     if (!imagePath.empty())
     {
         std::string lowerPath(imagePath);
-        for (auto& c : lowerPath)
-        {
-            // Cast to unsigned char before tolower to avoid UB on signed char values.
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
+        std::ranges::transform(lowerPath, lowerPath.begin(), Platform::foldAscii);
 
         // Anchor to the drive root: check that the path starts with <letter>:\windows\
         // so that a user directory that happens to contain the word "windows" (e.g.

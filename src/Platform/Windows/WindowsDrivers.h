@@ -14,6 +14,7 @@
 // No driver is started, stopped or changed. Every call goes through an injectable table;
 // WindowsSystemInfoProbe.cpp supplies the real one, tests substitute fakes.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Windows/WindowsServiceProbeMath.h"
@@ -261,10 +262,7 @@ class SignatureCache
 {
     const auto startsWithIgnoringCase = [](std::string_view text, std::string_view prefix)
     {
-        return text.size() >= prefix.size() &&
-               std::ranges::equal(text.substr(0, prefix.size()),
-                                  prefix,
-                                  [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
+        return text.size() >= prefix.size() && Platform::equalsIgnoreCase(text.substr(0, prefix.size()), prefix);
     };
     std::string dir(windowsDir);
     while (!dir.empty() && (dir.back() == '\\' || dir.back() == '/'))

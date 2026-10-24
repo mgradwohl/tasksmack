@@ -22,6 +22,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ThreadName.h"
@@ -81,20 +82,6 @@ inline constexpr std::size_t ENVIRONMENT_TABLE_MAX_VISIBLE_ROWS = 12;
 environmentCellNeedsTooltip(std::size_t shownBytes, std::size_t totalBytes, float textWidth, float availableWidth) noexcept
 {
     return shownBytes < totalBytes || textWidth > availableWidth;
-}
-
-/// Whether @p haystack contains @p needle, ignoring ASCII case. An empty needle matches everything.
-[[nodiscard]] inline bool containsIgnoringCase(std::string_view haystack, std::string_view needle) noexcept
-{
-    const auto lower = [](char c) noexcept
-    {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    if (needle.empty())
-    {
-        return true;
-    }
-    return !std::ranges::search(haystack, needle, [&lower](char a, char b) { return lower(a) == lower(b); }).empty();
 }
 
 } // namespace Detail
@@ -302,8 +289,8 @@ class ProcessEnvironmentView
             for (std::size_t i = 0; i < m_Rows.size(); ++i)
             {
                 const Row& row = m_Rows[i];
-                if (Detail::containsIgnoringCase(row.name, m_Filter) ||
-                    (!isMasked(row) && Detail::containsIgnoringCase(row.value, m_Filter)))
+                if (Platform::containsIgnoreCase(row.name, m_Filter) ||
+                    (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter)))
                 {
                     m_FilteredRows.push_back(i);
                 }

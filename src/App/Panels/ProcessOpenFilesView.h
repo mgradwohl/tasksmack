@@ -18,6 +18,7 @@
 
 #include "Domain/ProcessOpenFiles.h"
 #include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
@@ -237,7 +238,7 @@ class ProcessOpenFilesView
             m_FilteredRows.clear();
             for (std::size_t i = 0; i < m_Rows.size(); ++i)
             {
-                if (Detail::containsIgnoringCase(m_Rows[i].path, m_Filter) || Detail::containsIgnoringCase(m_Rows[i].type, m_Filter))
+                if (Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter))
                 {
                     m_FilteredRows.push_back(i);
                 }

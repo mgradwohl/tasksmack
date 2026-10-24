@@ -4,9 +4,9 @@
 // architecture can dump the process's (#2152), and what each failure says. Win32 error codes come in as plain integers and are compared
 // against this header's own constants, so it reaches no Windows header and its tests build and run on every platform (#1133).
 
+#include "Platform/AsciiCase.h"
 #include "WindowsProcessMachineMath.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -70,11 +70,7 @@ struct DumpTime
         imageName.remove_prefix(slash + 1);
     }
     constexpr std::string_view EXE = ".exe";
-    const auto asciiLower = [](char c)
-    {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>((c - 'A') + 'a') : c;
-    };
-    if (imageName.size() > EXE.size() && std::ranges::equal(imageName.substr(imageName.size() - EXE.size()), EXE, {}, asciiLower))
+    if (imageName.size() > EXE.size() && Platform::equalsIgnoreCase(imageName.substr(imageName.size() - EXE.size()), EXE))
     {
         imageName.remove_suffix(EXE.size());
     }

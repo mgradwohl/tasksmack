@@ -425,6 +425,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
+    Platform/test_AsciiCase.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)

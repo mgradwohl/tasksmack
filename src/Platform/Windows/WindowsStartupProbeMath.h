@@ -5,11 +5,11 @@
 // time is in WindowsConversions.h). No Windows header, so the tests build on every platform
 // (tests/Platform/WindowsMath/).
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "WindowsConversions.h"
 
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -200,12 +200,7 @@ encodeStartupApproved(std::span<const std::uint8_t> existing, bool enabled, std:
             {
                 continue;
             }
-            bool matches = true;
-            for (std::size_t i = 0; i < extension.size(); ++i)
-            {
-                matches = matches && std::tolower(static_cast<unsigned char>(commandLine[pos + i])) == extension[i];
-            }
-            if (matches)
+            if (Platform::equalsIgnoreCase(commandLine.substr(pos, extension.size()), extension))
             {
                 return std::string(commandLine.substr(0, pos + extension.size()));
             }
@@ -300,14 +295,9 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
     {
         return {};
     }
-    std::size_t index = 0;
-    while (index < SCHEME.size())
+    if (!Platform::equalsIgnoreCase(value.substr(0, SCHEME.size()), SCHEME))
     {
-        if (std::tolower(static_cast<unsigned char>(value[index])) != SCHEME[index])
-        {
-            return {};
-        }
-        ++index;
+        return {};
     }
     const std::string_view rest = value.substr(SCHEME.size());
     if (rest.empty())
