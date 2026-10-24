@@ -731,23 +731,73 @@ struct WindowRect
 /// Decision for the empty title-bar drag area specifically (once the point is known to be
 /// in the title-bar row, not a resize border, and not a button). Pure/header-only, like
 /// computeResizeGeometry above, so it's directly unit-testable without live SDL_Window or
-/// TitleBarLayer state. See #744.
-[[nodiscard]] inline auto computeTitleBarAreaHitTest(const bool isInControlArea, const bool isNativeWayland) -> SDL_HitTestResult
+/// TitleBarLayer state. @p systemDrag is whether the OS or compositor runs the drag from a
+/// DRAGGABLE answer (Core::VideoBackend::usesSystemDrag(): native Wayland, #744, and Windows,
+/// #2716); otherwise the press is delivered to the app and TitleBarLayer drags client-side.
+[[nodiscard]] inline auto computeTitleBarAreaHitTest(const bool isInControlArea, const bool systemDrag) -> SDL_HitTestResult
 {
     if (isInControlArea)
     {
         return SDL_HITTEST_NORMAL;
     }
-    return isNativeWayland ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
+    return systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
 }
 
-/// Full non-Windows hit-test decision tree, given already-queried SDL/TitleBarLayer state.
-/// Pure/header-only, like computeResizeGeometry and computeTitleBarAreaHitTest above, so the
-/// *ordering* itself is directly unit-testable without live SDL_Window/TitleBarLayer state: a
-/// title-bar button can sit within resizeBorderThickness of a window edge (the close button's
-/// rightmost pixels reach the window's right edge; the icon's top pixels sit inside the top
-/// resize strip), so the control-area check below must run before any resize-border branch, or
-/// SDL would consume the click as a resize instead of delivering it to the app (see #750 review).
+/// The SDL hit-test answer that hands a resize on @p edge to the OS or window manager.
+[[nodiscard]] constexpr auto hitTestResultForEdge(const ResizeEdge edge) noexcept -> SDL_HitTestResult
+{
+    switch (edge)
+    {
+    case ResizeEdge::Left:
+        return SDL_HITTEST_RESIZE_LEFT;
+    case ResizeEdge::Right:
+        return SDL_HITTEST_RESIZE_RIGHT;
+    case ResizeEdge::Top:
+        return SDL_HITTEST_RESIZE_TOP;
+    case ResizeEdge::Bottom:
+        return SDL_HITTEST_RESIZE_BOTTOM;
+    case ResizeEdge::TopLeft:
+        return SDL_HITTEST_RESIZE_TOPLEFT;
+    case ResizeEdge::TopRight:
+        return SDL_HITTEST_RESIZE_TOPRIGHT;
+    case ResizeEdge::BottomLeft:
+        return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+    case ResizeEdge::BottomRight:
+        return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+    case ResizeEdge::None:
+        break;
+    }
+    return SDL_HITTEST_NORMAL;
+}
+
+/// Whether the empty title bar hands a drag to the OS or compositor right now (#2716): on a backend
+/// that runs the drag itself (Core::VideoBackend::usesSystemDrag()), unless the window is maximized
+/// on a backend that maximizes client-side (Core::VideoBackend::supportsClientSideMaximize(); Windows,
+/// #1208). To the OS such a window is a normal one the size of the work area, so its move loop would
+/// drag it around at that size instead of restoring it under the pointer; the client-side drag does
+/// that (DragTracker's threshold and rebase, #2715), so that press is kept for the app. The
+/// compositor knows a native Wayland window is maximized and handles the drag itself.
+[[nodiscard]] constexpr bool
+computeSystemDragApplies(const bool usesSystemDrag, const bool clientSideMaximize, const bool isMaximized) noexcept
+{
+    return usesSystemDrag && !(isMaximized && clientSideMaximize);
+}
+
+/// Full hit-test decision tree, given already-queried SDL/TitleBarLayer state. Pure/header-only,
+/// like computeResizeGeometry and computeTitleBarAreaHitTest above, so the *ordering* itself is
+/// directly unit-testable without live SDL_Window/TitleBarLayer state: a title-bar button can sit
+/// within resizeBorderThickness of a window edge (the close button's rightmost pixels reach the
+/// window's right edge; the icon's top pixels sit inside the top resize strip), so the control-area
+/// check below must run before any resize-border branch, or SDL would consume the click as a resize
+/// instead of delivering it to the app (see #750 review).
+///
+/// The resize strips are found with computeDetectResizeEdge(), the same decision the client-side
+/// resize starts from, so the two cannot disagree about where an edge is. @p systemResize says who
+/// serves a strip: the OS or window manager (SDL_HITTEST_RESIZE_*; X11/XWayland and native Wayland)
+/// or the app (SDL_HITTEST_NORMAL, so the press is delivered to TitleBarLayer; Windows, see
+/// Core::VideoBackend::usesSystemResize()). Either way a strip is never DRAGGABLE: the top strip
+/// crosses the title bar, and a drag answer there would take the press from the client-side resize.
+/// @p systemDrag is computeSystemDragApplies() for the backend and the window's state.
 [[nodiscard]] inline auto computeWindowHitTest(const float x,
                                                const float y,
                                                const int windowWidth,
@@ -756,61 +806,67 @@ struct WindowRect
                                                const float resizeBorderThickness,
                                                const bool isMaximized,
                                                const bool isInControlArea,
-                                               const bool isNativeWayland) -> SDL_HitTestResult
+                                               const bool systemDrag,
+                                               const bool systemResize) -> SDL_HitTestResult
 {
     if (isInControlArea)
     {
         return SDL_HITTEST_NORMAL;
     }
 
-    if (!isMaximized)
+    // None while maximized: a maximized window has no resize borders, whoever would serve them.
+    if (const ResizeEdge edge = computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, resizeBorderThickness);
+        edge != ResizeEdge::None)
     {
-        if (y >= static_cast<float>(windowHeight) - resizeBorderThickness)
-        {
-            if (x < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            }
-            if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_BOTTOM;
-        }
-
-        if (x < resizeBorderThickness)
-        {
-            if (y < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_TOPLEFT;
-            }
-            return SDL_HITTEST_RESIZE_LEFT;
-        }
-        if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
-        {
-            if (y < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_TOPRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_RIGHT;
-        }
-
-        if (y < resizeBorderThickness)
-        {
-            return SDL_HITTEST_RESIZE_TOP;
-        }
+        return systemResize ? hitTestResultForEdge(edge) : SDL_HITTEST_NORMAL;
     }
 
     // titleBarHeight is an exclusive upper bound: ShellLayer::onRender() positions the
     // content window's top edge at exactly y == titleBarHeight, so that row already belongs
-    // to content, not the title bar -- treat it as such here too, or native Wayland would
+    // to content, not the title bar -- treat it as such here too, or a system drag would
     // make it DRAGGABLE and steal its clicks from the content/tab area.
     if (y >= titleBarHeight)
     {
         return SDL_HITTEST_NORMAL;
     }
 
-    return computeTitleBarAreaHitTest(/*isInControlArea=*/false, isNativeWayland);
+    return computeTitleBarAreaHitTest(/*isInControlArea=*/false, systemDrag);
+}
+
+/// Everything the window's hit test is decided from, as TitleBarLayer has it at the moment SDL asks:
+/// the window's size and state, the bar's height and resize border at the display's scale, where
+/// the buttons and the icon were last drawn (the same bounds the bar drew them at, so a point that
+/// answers NORMAL is a point the drawn control takes), and the backend's policy. Valid outside an
+/// ImGui frame, which SDL's callback needs.
+struct WindowHitTestInput
+{
+    int windowWidth = 0;
+    int windowHeight = 0;
+    float titleBarHeightPx = 0.0F;
+    float resizeBorderPx = 0.0F;    ///< computeResizeBorderThickness() at the display's scale
+    TitleBarButtonLayout buttons{}; ///< The six right-hand buttons; default-constructed before the first frame
+    ButtonBounds icon{};            ///< The app icon; default-constructed until it is drawn
+    bool isMaximized = false;
+    bool systemDrag = false;   ///< computeSystemDragApplies() for the backend and this state
+    bool systemResize = false; ///< Core::VideoBackend::usesSystemResize()
+};
+
+/// What the SDL hit-test callback answers for window-local (@p x, @p y): the buttons and the icon are
+/// the control area, then computeWindowHitTest() decides. The one function the callback forwards to,
+/// so a test over a WindowHitTestInput exercises exactly what the real window answers.
+[[nodiscard]] inline auto computeWindowHitTestAt(const float x, const float y, const WindowHitTestInput& input) -> SDL_HitTestResult
+{
+    const bool isInControlArea = computeIsPointInBounds(x, y, input.icon) || computeIsPointOnTitleBarButton(x, y, input.buttons);
+    return computeWindowHitTest(x,
+                                y,
+                                input.windowWidth,
+                                input.windowHeight,
+                                input.titleBarHeightPx,
+                                input.resizeBorderPx,
+                                input.isMaximized,
+                                isInControlArea,
+                                input.systemDrag,
+                                input.systemResize);
 }
 
 /// Outcome of computeResizeCursorUpdate: what TitleBarLayer::updateResizeCursor() should do

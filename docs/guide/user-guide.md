@@ -643,6 +643,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |
 | Border resize cursors with custom title bar | ✅ (app-managed client-side cursors, same as Windows) | ✅ (app-managed client-side cursors) |
+| Snap by dragging the title bar to a screen edge | Native Wayland: the compositor's own (the drag is handed to it); X11/XWayland: no (the app moves the window itself) | ✅ Aero Snap, with the snap preview and drag-to-the-top to maximize; Snap Layouts on the maximize button is not available |
 | Double-click title bar to maximize/restore | Works on X11/XWayland; not on native Wayland (use the maximize button there instead) | ✅ |
 | Native OS window decorations instead of custom title bar | Opt-in, native Wayland only (Settings > Advanced) | Not available (custom title bar always used) |
 
