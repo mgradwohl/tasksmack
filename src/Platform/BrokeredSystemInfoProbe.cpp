@@ -152,7 +152,7 @@ CrashesInfo BrokeredSystemInfoProbe::readCrashes()
     {
         return info;
     }
-    // Every user's crashes, as the helper reads them as root
+    // Every user's crashes, as the helper reads them with its capabilities
     const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::CrashesRequest{}, std::stop_token{});
     if (response.has_value())
     {

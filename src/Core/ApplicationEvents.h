@@ -192,6 +192,16 @@ class OpenHelpEvent : public Event
     EVENT_CLASS_TYPE(OpenHelp)
 };
 
+/// Close request for the Help window and the About dialog, whichever is open (TASKSMACK_DEMO's
+/// close=dialog, #2827): each layer closes its own as its close button would and lets the event on.
+class CloseDialogEvent : public Event
+{
+  public:
+    CloseDialogEvent() = default;
+
+    EVENT_CLASS_TYPE(CloseDialog)
+};
+
 /// Elevation notice dialog request event - emitted at startup when running without elevated privileges.
 /// Carries the missing permissions (Platform::MissingPrivilege bits, #2303) the Linux text names; 0 elsewhere.
 class OpenElevationNoticeEvent : public Event

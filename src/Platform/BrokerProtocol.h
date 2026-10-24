@@ -142,7 +142,7 @@ struct AffinityRequest
     friend bool operator==(const AffinityRequest&, const AffinityRequest&) = default;
 };
 
-/// Read a process's environment (#2309): the helper reads it as root, after the same identity check.
+/// Read a process's environment (#2309): the helper reads it with its capabilities, after the same identity check.
 struct EnvironmentRequest
 {
     ProcessTarget target;
@@ -173,7 +173,7 @@ struct EnvironmentReply
     }
 };
 
-/// List a process's loaded modules (#2309), as the helper reads them as root.
+/// List a process's loaded modules (#2309), as the helper reads them with its capabilities.
 struct ModulesRequest
 {
     ProcessTarget target;
@@ -197,7 +197,7 @@ struct ModulesReply
     }
 };
 
-/// List a process's open files (#2309), as the helper reads them as root.
+/// List a process's open files (#2309), as the helper reads them with its capabilities.
 struct OpenFilesRequest
 {
     ProcessTarget target;
@@ -221,7 +221,7 @@ struct OpenFilesReply
     }
 };
 
-/// List a process's TCP and UDP sockets (#2309), as the helper reads them as root.
+/// List a process's TCP and UDP sockets (#2309), as the helper reads them with its capabilities.
 struct ConnectionsRequest
 {
     ProcessTarget target;
@@ -249,7 +249,7 @@ struct ConnectionsReply
     }
 };
 
-/// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup as root.
+/// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup with its capabilities.
 struct MemoryRollupRequest
 {
     ProcessTarget target;
@@ -287,7 +287,7 @@ enum class FirmwareFile : std::uint8_t
     BoardSerial,      ///< /sys/class/dmi/id/board_serial
 };
 
-/// Read one of the firmware files (#2310), as the helper reads it as root.
+/// Read one of the firmware files (#2310), as the helper reads it with its capabilities.
 struct FirmwareFileRequest
 {
     FirmwareFile file = FirmwareFile::SmbiosTable;
@@ -309,7 +309,7 @@ struct FirmwareFileReply
     friend bool operator==(const FirmwareFileReply&, const FirmwareFileReply&) = default;
 };
 
-/// Read System Information's Recent crashes (#2310) as the helper reads them as root: systemd-coredump's
+/// Read System Information's Recent crashes (#2310) as the helper reads them with its capabilities: systemd-coredump's
 /// journal entries and core files of every user, not only this one's.
 struct CrashesRequest
 {

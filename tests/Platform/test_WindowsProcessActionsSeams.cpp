@@ -28,7 +28,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <initializer_list>
 #include <memory>
 #include <set>
@@ -154,6 +153,14 @@ struct FailingWin
         ++resumeCalls;
         return resumeStatus;
     }
+    /// GetCurrentProcessId()'s answer: what the actions take for TaskSmack's own PID. A value of this
+    /// test's choosing, never the test process's real PID, which Windows reuses and so can be any
+    /// value, TARGET's included: it was 4242 in the v0.9.0 release dry run, and the self-suspend guard
+    /// fired where an identity or critical refusal was expected (#2785).
+    static DWORD WINAPI getCurrentProcessId()
+    {
+        return OWN_PID;
+    }
 
     [[nodiscard]] static WindowsProcessFunctions functions()
     {
@@ -170,13 +177,18 @@ struct FailingWin
             .getProcessInformation = &getProcessInformation,
             .ntSuspendProcess = &ntSuspendProcess,
             .ntResumeProcess = &ntResumeProcess,
+            .getCurrentProcessId = &getCurrentProcessId,
         };
     }
 
     static constexpr DWORD TARGET_TICKS = 4321;
+    static constexpr DWORD OWN_PID = 1000; // TaskSmack's own PID, as getCurrentProcessId() answers it
 };
 
+/// Every action's target. Its PID is never TaskSmack's own, whatever PID this test process has: the
+/// table answers FailingWin::OWN_PID for GetCurrentProcessId() (#2785).
 constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = FailingWin::TARGET_TICKS};
+static_assert(!isSamePid(static_cast<std::uint32_t>(TARGET.pid), FailingWin::OWN_PID), "TARGET would be refused as TaskSmack itself");
 
 class WindowsProcessActionsSeamTest : public ::testing::Test
 {
@@ -656,15 +668,15 @@ TEST_F(WindowsProcessActionsSeamTest, TheSystemProcessAndTaskSmackItselfAreNever
     EXPECT_EQ(system.errorMessage, "PID 4 is the System process; TaskSmack won't suspend it");
     EXPECT_FALSE(system.permissionDenied);
 
-    // This test process stands in for TaskSmack: refused by its PID before anything is opened, so it
-    // is never suspended (which would hang the test, as it would TaskSmack's window).
-    const auto self = static_cast<std::int32_t>(GetCurrentProcessId());
+    // TaskSmack's own PID, as the table answers it (FailingWin::OWN_PID, #2785): refused by its PID
+    // before anything is opened, so TaskSmack is never suspended (which would hang its window, with
+    // nothing left to resume it).
+    constexpr auto self = static_cast<std::int32_t>(FailingWin::OWN_PID);
     const ProcessActionResult own = actions.stop({.pid = self, .startTimeTicks = FailingWin::TARGET_TICKS});
     EXPECT_FALSE(own.success);
     EXPECT_FALSE(own.permissionDenied);
-    EXPECT_EQ(own.errorMessage,
-              std::format("Process {} is TaskSmack itself; suspending it would freeze TaskSmack with nothing left to resume it", self));
-    // OpenProcess ignores a PID's low two bits, so PID+1 names this process as well.
+    EXPECT_EQ(own.errorMessage, "Process 1000 is TaskSmack itself; suspending it would freeze TaskSmack with nothing left to resume it");
+    // OpenProcess ignores a PID's low two bits, so PID+1 names that process as well.
     EXPECT_FALSE(actions.stop({.pid = self + 1, .startTimeTicks = FailingWin::TARGET_TICKS}).success);
     EXPECT_TRUE(isSamePid(8U, 11U));
     EXPECT_FALSE(isSamePid(8U, 12U));
@@ -672,6 +684,36 @@ TEST_F(WindowsProcessActionsSeamTest, TheSystemProcessAndTaskSmackItselfAreNever
     EXPECT_EQ(actions.stop({.pid = 0, .startTimeTicks = FailingWin::TARGET_TICKS}).errorMessage, "Invalid PID");
     EXPECT_EQ(FailingWin::opens, 0);
     EXPECT_EQ(FailingWin::suspendCalls, 0);
+}
+
+TEST_F(WindowsProcessActionsSeamTest, ASuspendOfTaskSmackItselfIsRefusedBeforeItsIdentityOrCriticalityIsAsked)
+{
+    // The self-suspend guard comes first: a target that is TaskSmack's own PID is refused as such
+    // even where the identity check would fail and the process is critical, and nothing is opened to
+    // ask either. The table makes the own PID a known value, so this is tested on purpose rather than
+    // met by chance when Windows gives the test process TARGET's PID (#2785).
+    FailingWin::timesError = ERROR_ACCESS_DENIED;
+    FailingWin::critical = TRUE;
+    WindowsProcessActions actions(FailingWin::functions());
+    constexpr ProcessTarget SELF{.pid = static_cast<std::int32_t>(FailingWin::OWN_PID), .startTimeTicks = FailingWin::TARGET_TICKS};
+
+    const ProcessActionResult suspended = actions.stop(SELF);
+
+    EXPECT_FALSE(suspended.success);
+    EXPECT_FALSE(suspended.permissionDenied);
+    EXPECT_EQ(suspended.errorMessage,
+              "Process 1000 is TaskSmack itself; suspending it would freeze TaskSmack with nothing left to resume it");
+    EXPECT_EQ(FailingWin::opens, 0);
+    EXPECT_EQ(FailingWin::criticalChecks, 0);
+    EXPECT_EQ(FailingWin::suspendCalls, 0);
+
+    // Resume has no such guard (letting TaskSmack run again can't hang it), so the own PID goes on
+    // to the identity check, which fails here as it would for any other PID.
+    const ProcessActionResult resumed = actions.resume(SELF);
+    EXPECT_FALSE(resumed.success);
+    EXPECT_EQ(resumed.errorMessage, "Cannot confirm the identity of process 1000: error 5; action not sent");
+    EXPECT_EQ(FailingWin::opens, 1);
+    EXPECT_EQ(FailingWin::resumeCalls, 0);
 }
 
 TEST_F(WindowsProcessActionsSeamTest, WithoutNtSuspendProcessSuspendAndResumeAreUnavailable)
@@ -693,6 +735,9 @@ TEST(WindowsProcessFunctionsTest, TheRealFunctionsCheckCriticalityAndProtection)
     const WindowsProcessFunctions functions = realWindowsProcessFunctions();
     ASSERT_NE(functions.isProcessCritical, nullptr);
     ASSERT_NE(functions.getProcessInformation, nullptr);
+    // The real table names this process as TaskSmack's own, which the self-suspend guard refuses (#2785).
+    ASSERT_NE(functions.getCurrentProcessId, nullptr);
+    EXPECT_EQ(functions.getCurrentProcessId(), GetCurrentProcessId());
 
     // Asked of this test process only: it is neither critical nor protected.
     BOOL critical = TRUE;

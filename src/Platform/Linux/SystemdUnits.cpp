@@ -168,6 +168,7 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
         {
             units.push_back({.name = name,
                              .description = (description != nullptr) ? description : "",
+                             .loadState = (loadState != nullptr) ? loadState : "",
                              .activeState = (activeState != nullptr) ? activeState : "",
                              .subState = (subState != nullptr) ? subState : "",
                              .objectPath = (path != nullptr) ? path : ""});
@@ -375,6 +376,10 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
             cache->readAt = now;
         }
     }
+    // False once a property read below times out: systemd has stopped answering, so the rest of this call
+    // asks it nothing more, whichever loop it was in. A stalled systemd costs one call timeout per call
+    // (#2125, #2773), not one per loop.
+    bool answering = true;
     // Each loaded template instance's own enablement (#2425): ListUnitFiles has only its template's, which
     // an instance needn't share. One property per instance, and there are few.
     for (const SystemdServices::Unit& unit : read.listing.units)
@@ -391,7 +396,8 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
         std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
         if (result < 0 && timedOut(error.raw(), result))
         {
-            break; // systemd isn't answering: the template's state for the rest, as before
+            answering = false;
+            break; // the template's state for the rest, as before
         }
         if (!text.empty())
         {
@@ -401,6 +407,10 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
     // Each running service's main process: one property per service, so only for those that have one.
     for (const SystemdServices::Unit& unit : read.listing.units)
     {
+        if (!answering)
+        {
+            break; // systemd stopped answering above: the list without PIDs
+        }
         if (unit.objectPath.empty() || SystemdServices::stateFrom(unit.activeState) == ServiceState::Stopped)
         {
             continue;
@@ -411,7 +421,8 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
             sd_bus_get_property_trivial(bus.get(), SYSTEMD, unit.objectPath.c_str(), SYSTEMD_SERVICE, "MainPID", error.get(), 'u', &pid);
         if (result < 0 && timedOut(error.raw(), result))
         {
-            break; // systemd isn't answering: the list without the rest of the PIDs, not a call timeout per service
+            answering = false;
+            break; // the list without the rest of the PIDs, not a call timeout per service
         }
         if (result >= 0 && pid != 0)
         {
@@ -421,11 +432,14 @@ ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_
     // Each loaded service's User, ExecStart and Type (#2590): three or four properties per service, so
     // with a cache a service's are read again only when its state or main process changed or
     // UNIT_CONFIG_TTL passed -- once warm, a refresh asks only about the services that started, stopped
-    // or restarted.
-    bool answering = true;
+    // or restarted. After a timeout here or above, each is what was read before: none is read again in a
+    // call whose MainPIDs are missing, which would cache them as having no main process.
     for (const SystemdServices::Unit& unit : read.listing.units)
     {
-        if (unit.objectPath.empty())
+        // A unit that isn't loaded -- referenced but not installed (not-found), masked, or failing to
+        // parse -- still answers the Service interface, with an empty User, Type and ExecStart that would
+        // read as "runs as root" (#2750). It has no configuration to show, so none is asked for.
+        if (unit.objectPath.empty() || unit.loadState != "loaded")
         {
             continue;
         }

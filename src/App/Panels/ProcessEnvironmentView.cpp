@@ -1,6 +1,6 @@
 #include "ProcessEnvironmentView.h"
 
-#include "AuthorizeWording.h"
+#include "AuthenticateToReadButton.h"
 #include "Platform/IProcessEnvironment.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
@@ -102,15 +102,8 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
         ImGui::PushStyleColor(ImGuiCol_Text, color);
         ImGui::TextUnformatted(text.data(), text.data() + text.size());
         ImGui::PopStyleColor();
-        // Another user's process: an administrator can read it (#2309). The lock and the words.
-        if (offersAuthenticateToRead())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
-            {
-                requestAuthorizedRead();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
-        }
+        // Another user's process: an administrator can read it (#2309).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Truncated)

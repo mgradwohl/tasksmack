@@ -85,6 +85,10 @@ if(WIN32)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
+        # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
+        # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
+        add_test(NAME SetupDevScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -96,13 +100,14 @@ if(WIN32)
         # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
         # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
-        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript PROPERTIES TIMEOUT 120)
+            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
+            PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript and CheckPrereqsScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript and SetupDevScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
     # executables are refused, by name, before anything could be packaged.
@@ -118,6 +123,18 @@ if(WIN32)
             TIMEOUT 120)
     endif()
 endif()
+
+# THIRD_PARTY_NOTICES.txt's generator (#2753): a notice for each dependency in Dependencies.cmake, and a
+# FetchContent_Declare() in a shape it can't read fails the configure rather than being left out.
+add_test(NAME ThirdPartyNoticesScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-real
+            -DTS_CASE=real -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-unparsed
+            -DTS_CASE=unparsed -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+# CMake wraps the message, so any run of spaces and line breaks may separate the words.
+set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
+    PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
 
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
@@ -259,6 +276,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
+    Core/test_FramebufferCapture.cpp
     Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -493,6 +511,8 @@ set(COMMON_TEST_SOURCES
     App/test_KeyboardInputRender.cpp
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
+    App/test_DemoOverride.cpp
+    App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
@@ -662,6 +682,7 @@ set(THEME_REAL_TEST_SOURCES
 # Tests that need the whole app, built into TaskSmackAppTests below (#1395)
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
+    App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
 set(APP_REAL_LINUX_TEST_SOURCES
@@ -700,6 +721,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    # The screenshot hook's framebuffer read and PNG writer (#2827): test_FramebufferCapture.cpp runs
+    # the row flip and writePng() without a GL context
+    ${CMAKE_SOURCE_DIR}/src/Core/FramebufferCapture.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/SaveFileDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/X11ConnectionLoss.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
@@ -955,6 +979,7 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp # HelperLauncher::availability()
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp # PipeBroker names its launch thread (#2768)
     )
     target_compile_features(TaskSmackHelperTestParent PRIVATE cxx_std_23)
     tasksmack_apply_default_warnings(TaskSmackHelperTestParent)

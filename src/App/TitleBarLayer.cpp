@@ -427,6 +427,7 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     if (edge != ResizeEdge::None)
     {
         m_InteractionMode = InteractionMode::Resize;
+        m_RestoreSettle.stop();
         m_Resize.begin(edge,
                        globalMouseX,
                        globalMouseY,
@@ -440,6 +441,7 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
         // On a maximized window the restore waits until the pointer has actually moved past the drag
         // threshold, so a bare click doesn't unmaximize the window.
         m_InteractionMode = InteractionMode::Drag;
+        m_RestoreSettle.stop();
         m_Drag.begin(globalMouseX, globalMouseY, windowOriginX, windowOriginY, isMaximized, windowWidth);
         m_Resize = {};
     }
@@ -481,6 +483,12 @@ void TitleBarLayer::updateWindowInteraction()
 {
     if (m_InteractionMode == InteractionMode::None)
     {
+        if (m_RestoreSettle.active())
+        {
+            // A quick drag off a maximize can end before the window manager's late restore lands.
+            double setPositionMs = 0.0;
+            settleRestore(Core::Application::get().getWindow(), setPositionMs);
+        }
         return;
     }
 
@@ -567,23 +575,52 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
     switch (step.kind)
     {
     case DragTracker::Step::Kind::None:
+        // A moving pointer moves the window itself; a still one may need it moved back.
+        settleRestore(window, setPositionMs);
         break;
     case DragTracker::Step::Kind::Restore:
     {
         // Threshold crossed: restore, and carry on the drag from where the restored window lands.
+        // Where it would have restored to, which an X11 window manager may still move it to (#2761).
+        const std::optional<Core::WindowGeometry::Rect> staleRestore = window.getNormalGeometry();
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
         // Only the restored width is used: the saved restore position is replaced by one that keeps the
         // pointer at the spot on the title bar it pressed, across and down (#2715).
         const int restoredWidth = window.getSize().first;
         const auto [adjustedX, adjustedY] = m_Drag.rebaseAfterRestore(restoredWidth, mx, my);
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, adjustedY); });
+        // X11 only: elsewhere the restore is synchronous, or (native Wayland) the compositor drags.
+        if (staleRestore.has_value() && (Core::VideoBackend::isX11() || Core::VideoBackend::isXWaylandFallback()))
+        {
+            m_RestoreSettle.start(adjustedX, adjustedY, staleRestore->x, staleRestore->y, Core::Application::getTime());
+        }
         Core::Application::get().signalWindowGeometryChanged();
         break;
     }
     case DragTracker::Step::Kind::Move:
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(step.x, step.y); });
+        m_RestoreSettle.retarget(step.x, step.y);
         Core::Application::get().signalWindowGeometryChanged();
         break;
+    }
+}
+
+void TitleBarLayer::settleRestore(Core::Window& window, double& setPositionMs)
+{
+    if (!m_RestoreSettle.active())
+    {
+        return;
+    }
+    if (!window.isNormalNow())
+    {
+        m_RestoreSettle.stop();
+        return;
+    }
+    const auto [liveX, liveY] = window.getPosition();
+    if (const auto back = m_RestoreSettle.check(liveX, liveY, Core::Application::getTime()); back.has_value())
+    {
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(back->first, back->second); });
+        Core::Application::get().signalWindowGeometryChanged();
     }
 }
 

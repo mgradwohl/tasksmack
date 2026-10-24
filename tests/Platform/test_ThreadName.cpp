@@ -72,13 +72,24 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::OPEN_FILES_NAMER_THREAD_NAME,
         Platform::SYSTEM_INFO_READ_THREAD_NAME,
         Platform::CRASH_HISTORY_READ_THREAD_NAME,
+        Platform::BATTERY_READ_THREAD_NAME,
         Platform::UDP_TRACE_THREAD_NAME,
         Platform::PROCESS_ACTION_THREAD_NAME,
+        Platform::HELPER_LAUNCH_THREAD_NAME,
     };
     for (const std::string_view name : NAMES)
     {
         EXPECT_LE(name.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH) << name;
     }
+}
+
+// #2768: the Windows helper's launch thread, which sits behind a UAC prompt for minutes, has a name of
+// its own that fits the limit, so it is attributable wherever the others are.
+TEST(ThreadNameTest, TheHelperLaunchThreadHasItsOwnShortName)
+{
+    EXPECT_EQ(Platform::HELPER_LAUNCH_THREAD_NAME, "ts-uac-launch");
+    EXPECT_LE(Platform::HELPER_LAUNCH_THREAD_NAME.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH);
+    EXPECT_EQ(Platform::truncateThreadName(Platform::HELPER_LAUNCH_THREAD_NAME), "ts-uac-launch") << "nothing is cut";
 }
 
 #if !defined(_WIN32)

@@ -2015,6 +2015,37 @@ int tracedTargetSignal(int pidfd, int signal)
     return fakePidfdSendSignal(pidfd, signal);
 }
 
+// #2751: when waiting on gcore fails, it is killed as a cancel kills it, and the same follows: the dump waits
+// for gdb to let go and wakes the target it left stopped, and the error says TaskSmack lost track of gcore
+// rather than that gcore failed.
+TEST_F(LinuxProcessActionsFaultTest, AFailedWaitOnGcoreWakesTheTargetAndSaysTaskSmackLostTrack)
+{
+    tracedPlan() = TracedTargetPlan{};
+    g_WaitedChild = -1;
+    g_WaitFailed = false;
+    const TestSupport::ScopedTempDir work("tasksmack_dump_lost_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_lost_out");
+    // The pidfd and its signals are faked, so nothing is really sent to this test process.
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exec sleep 30\n"),
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &tracedTargetSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .ptraceContext = &ptraceAllowed,
+                                                     .waitPid = &waitPidFailingOnce,
+                                                     .processState = &tracedTargetState,
+                                                     .tracerPid = &tracedTargetTracer});
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_TRUE(g_WaitFailed);
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_TRUE(dump.error().starts_with("TaskSmack lost track of ")) << dump.error();
+    EXPECT_FALSE(dump.error().contains("gcore failed")) << dump.error();
+    EXPECT_TRUE(tracedPlan().untraced) << "waited for TracerPid to read 0";
+    EXPECT_EQ(tracedPlan().sigcontsWhileTraced, 0);
+    EXPECT_EQ(tracedPlan().sigcontsOnceUntraced, 1);
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
 // #2122 (#2479): a cancelled dump whose killed gdb hasn't let go yet leaves the target in a tracing stop ('t',
 // TracerPid set) -- which turns into 'T' once gdb exits. The dump waits until TracerPid is back to what it was,
 // then wakes the target with one SIGCONT. Unlike ACancelledDumpWakesATargetItLeftStopped's SIGSTOP, which the

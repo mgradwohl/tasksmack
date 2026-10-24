@@ -2,8 +2,10 @@
 /// @brief App::Detail::LazyBackgroundRead, the lazy worker read shared by Process Details' Connections,
 /// Modules and Open files sections: due only while drawn open and at the refresh interval (or, on
 /// demand, once per request), one read at a time, a read for a previous selection, another target or a
-/// closed on-demand section dropped (and, for a selection change or a close, stopped: #2404), and a
-/// read that throws (a std::exception or anything else) turned into the Failed result on the worker.
+/// closed on-demand section dropped (and, for a selection change or a close, stopped: #2404), a
+/// read that throws (a std::exception or anything else) turned into the Failed result on the worker,
+/// and the "Authenticate to read" request (#2309) the sections share (#2567): taken once, withdrawn by
+/// a selection change, offered only while the reader can read as an administrator.
 
 #include "App/Panels/LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
@@ -62,6 +64,24 @@ TEST(LazyBackgroundReadTest, DueOnlyWhenDrawnOpenAndAtTheInterval)
     EXPECT_FALSE(read.due(0.5F)); // half the interval
     read.markDrawnOpen();
     EXPECT_TRUE(read.due(0.5F));
+}
+
+// #2734: rearm() makes the next read due at once, inside the interval, and keeps the drawn-open flag,
+// unlike reset(), so the frame that saw the new target starts its read.
+TEST(LazyBackgroundReadTest, RearmMakesTheNextReadDueAtOnceAndKeepsTheDrawnFlag)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{}; }));
+    static_cast<void>(read.takeFinished(TARGET, true));
+
+    read.markDrawnOpen();
+    read.rearm();
+    EXPECT_TRUE(read.due(0.0F)); // well inside the interval, and the flag set before rearm() still counts
+
+    read.rearm(); // not drawn open: still nothing starts
+    EXPECT_FALSE(read.due(0.0F));
 }
 
 TEST(LazyBackgroundReadTest, DropsAReadForAPreviousSelection)
@@ -212,6 +232,44 @@ TEST(LazyBackgroundReadTest, OnDemandClosingStopsTheReadInFlight)
     read.request();
     read.markDrawnOpen();
     EXPECT_TRUE(read.due(0.0F));
+}
+
+// #2567: the "Authenticate to read" press (#2309) the four sections share. The view's next update()
+// takes it, once: a second update() finds nothing, and so does one after a press that was never made.
+TEST(LazyBackgroundReadTest, AnAuthorizeRequestIsTakenOnce)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    EXPECT_FALSE(read.takeAuthorizeRequest()); // nothing pressed
+    read.requestAuthorized();
+    read.requestAuthorized(); // pressed twice before an update(): one request
+    EXPECT_TRUE(read.takeAuthorizeRequest());
+    EXPECT_FALSE(read.takeAuthorizeRequest()); // taken
+}
+
+// #2567: a selection change withdraws a press not taken yet -- the prompt would have been for the
+// previous process -- as it stops and drops the read in flight.
+TEST(LazyBackgroundReadTest, ResetWithdrawsAnAuthorizeRequestNotTakenYet)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.requestAuthorized();
+    read.reset();
+    EXPECT_FALSE(read.takeAuthorizeRequest());
+    read.requestAuthorized(); // pressed again for the new process: taken as usual
+    EXPECT_TRUE(read.takeAuthorizeRequest());
+}
+
+// #2567: whether the reader can read as an administrator gates the offer. It is the reader's property,
+// recorded by every update(), not the selection's: a reset() leaves it as last recorded.
+TEST(LazyBackgroundReadTest, CanAuthorizeIsAsLastRecordedAndSurvivesReset)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    EXPECT_FALSE(read.canAuthorize()); // until a reader says so
+    read.setCanAuthorize(true);
+    EXPECT_TRUE(read.canAuthorize());
+    read.reset();
+    EXPECT_TRUE(read.canAuthorize());
+    read.setCanAuthorize(false); // the reader changed (a null reader, or the helper went away)
+    EXPECT_FALSE(read.canAuthorize());
 }
 
 } // namespace

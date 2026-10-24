@@ -40,11 +40,12 @@ and answers a fixed set of requests.
   OpenSSF Scorecard.
 - **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the helper's request protocol.
 - **Hardening:** release builds use `-fstack-protector-strong` everywhere, plus `_FORTIFY_SOURCE=2` and PIE on
-  Linux. The Linux helper, which runs as root, adds full RELRO with immediate binding, stack-clash protection,
-  CET (x86-64) or BTI/PAC (AArch64), `_FORTIFY_SOURCE=3` and libc++'s fast hardening mode, and at run time keeps
-  only the four capabilities its requests need, with `no_new_privs` set; the Windows helper
-  links with Control Flow Guard and CET shadow-stack compatibility. Debug builds use
-  `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
+  Linux. The Linux helper, which `pkexec` starts as root (it then serves as `nobody` with four capabilities), adds full RELRO with immediate binding, stack-clash protection,
+  CET on x86-64 (the AArch64 helper is compiled for BTI/PAC, but the shipped aarch64 binary carries no BTI/PAC
+  property note until [#2786](https://github.com/mgradwohl/tasksmack/issues/2786) is fixed), `_FORTIFY_SOURCE=3`
+  and libc++'s fast hardening mode, and at run time keeps only the four capabilities its requests need, with
+  `no_new_privs` set; the Windows helper links with Control Flow Guard and CET shadow-stack compatibility. Debug
+  builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
 - **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
 - **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.
 - **Releases:** every release asset is signed with Sigstore; see

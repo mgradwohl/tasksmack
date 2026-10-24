@@ -23,7 +23,8 @@ enum class EventType : uint8_t
     OpenHelp,
     OpenElevationNotice,
     UdpEventTraceChanged,
-    ShowService
+    ShowService,
+    CloseDialog
 };
 
 /// Macro to implement event type boilerplate

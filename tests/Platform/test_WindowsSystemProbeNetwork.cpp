@@ -2,10 +2,13 @@
 /// @brief WindowsSystemProbe's network read against a fake interface table (#1395): a failed GetIfTable2, the
 /// name fallbacks, unknown link speeds, and the removed-adapter filter (#1284) with its device-id cache --
 /// read once per interface, an empty read not retried every sample, and a LUID Windows gives to a new
-/// interface read afresh (#1369 review). A CI runner has no down or removed adapter, so the real table never
-/// shows these. The CPU and memory calls stay real; the real registry and configuration-manager readers are
-/// checked with ids that can't exist.
+/// interface read afresh (#1369 review) -- and its device-presence cache (#2731): the PnP lookup made once
+/// per down interface until the interface set or a status changes, or the backstop runs out, on a fake
+/// clock. A CI runner has no down or removed adapter, so the real table never shows these. The CPU and
+/// memory calls stay real; the real registry and configuration-manager readers are checked with ids that
+/// can't exist.
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
 #include "Platform/Windows/WindowsSystemProbe.h"
@@ -21,6 +24,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -59,6 +63,21 @@ FakeNetwork& fake()
     static FakeNetwork state;
     return state;
 }
+
+/// The probe's clock (#2731), which stands still unless a test moves it. Apart from FakeNetwork so
+/// reading it cannot throw.
+std::chrono::steady_clock::time_point& fakeClock() noexcept
+{
+    static std::chrono::steady_clock::time_point now;
+    return now;
+}
+
+std::chrono::steady_clock::time_point fakeNow() noexcept
+{
+    return fakeClock();
+}
+
+constexpr std::chrono::seconds DEVICE_CACHE_TTL{Domain::Sampling::NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS};
 
 DWORD WINAPI fakeGetIfTable2(MIB_IF_TABLE2** out)
 {
@@ -126,6 +145,7 @@ class WindowsSystemProbeNetworkTest : public ::testing::Test
     void SetUp() override
     {
         fake() = FakeNetwork{};
+        fakeClock() = std::chrono::steady_clock::time_point{} + std::chrono::hours{1};
     }
 
     void TearDown() override
@@ -133,7 +153,7 @@ class WindowsSystemProbeNetworkTest : public ::testing::Test
         fake() = FakeNetwork{};
     }
 
-    /// The real CPU and memory calls, the fake network.
+    /// The real CPU and memory calls, the fake network and clock.
     [[nodiscard]] static WindowsSystemProbe makeProbe()
     {
         WindowsSystemProbeFunctions fns = WindowsSystemProbe::systemFunctions();
@@ -141,6 +161,7 @@ class WindowsSystemProbeNetworkTest : public ::testing::Test
         fns.network.freeMibTable = &fakeFreeMibTable;
         fns.network.readAdapterDeviceInstanceId = &fakeReadAdapterDeviceInstanceId;
         fns.network.devicePresence = &fakeDevicePresence;
+        fns.now = &fakeNow;
         return {2'000, nullptr, fns};
     }
 
@@ -261,7 +282,107 @@ TEST_F(WindowsSystemProbeNetworkTest, DeviceIdIsReadOncePerInterface)
         ++sample;
     }
     EXPECT_EQ(fake().idReads[2], 1) << "a found id is kept";
-    EXPECT_EQ(fake().presenceQueries, 3) << "presence can change, so it is asked each sample";
+    EXPECT_EQ(fake().presenceQueries, 1) << "the presence too, while the table stands (#2731)";
+}
+
+// #2731: CM_Locate_DevNodeW is a PnP call, so a down interface's device presence is kept until the
+// interface table changes, the id is read again, or the backstop runs out.
+
+TEST_F(WindowsSystemProbeNetworkTest, DevicePresenceIsLookedUpAgainWhenAnInterfaceComesOrGoes)
+{
+    fake().rows = {row(1, L"Up"), row(2, L"Unplugged", OPER_STATUS_DOWN)};
+    fake().ids = {{2, L"PCI\\VEN_1\\2"}};
+    fake().presence = {{L"PCI\\VEN_1\\2", DevicePresence::Present}};
+
+    WindowsSystemProbe probe = makeProbe();
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        EXPECT_EQ(probe.read().networkInterfaces.size(), 2U);
+    }
+    EXPECT_EQ(fake().presenceQueries, 1);
+
+    // A dock's adapter appears: a PnP event, after which the unplugged adapter is asked about again
+    fake().rows.push_back(row(3, L"Dock"));
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 3U);
+    EXPECT_EQ(fake().presenceQueries, 2);
+    (void) probe.read();
+    EXPECT_EQ(fake().presenceQueries, 2) << "the same table again: no lookup";
+
+    // And it goes, taking the unplugged adapter's device with it this time
+    fake().rows.pop_back();
+    fake().presence[L"PCI\\VEN_1\\2"] = DevicePresence::Absent;
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"Up"}));
+    EXPECT_EQ(fake().presenceQueries, 3);
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, DevicePresenceIsLookedUpAgainWhenAStatusChanges)
+{
+    fake().rows = {row(1, L"Up"), row(2, L"Cable", OPER_STATUS_DOWN)};
+    fake().ids = {{2, L"PCI\\VEN_1\\2"}};
+    fake().presence = {{L"PCI\\VEN_1\\2", DevicePresence::Present}};
+
+    WindowsSystemProbe probe = makeProbe();
+    (void) probe.read();
+    (void) probe.read();
+    EXPECT_EQ(fake().presenceQueries, 1);
+
+    // The cable is plugged in: an up row's device is plainly present, so nothing is looked up
+    fake().rows[1].OperStatus = IfOperStatusUp;
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 2U);
+    EXPECT_EQ(fake().presenceQueries, 1);
+
+    // And out again: the status changed, so the cached answer is not reused
+    fake().rows[1].OperStatus = static_cast<IF_OPER_STATUS>(OPER_STATUS_DOWN);
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 2U);
+    EXPECT_EQ(fake().presenceQueries, 2);
+
+    // Another interface's status changing asks again too: one link event often changes several rows
+    fake().rows[0].OperStatus = static_cast<IF_OPER_STATUS>(OPER_STATUS_DOWN);
+    fake().ids[1] = L"PCI\\VEN_1\\1";
+    fake().presence[L"PCI\\VEN_1\\1"] = DevicePresence::Present;
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 2U);
+    EXPECT_EQ(fake().presenceQueries, 4) << "both down rows";
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, DevicePresenceIsLookedUpAgainAfterTheBackstop)
+{
+    fake().rows = {row(2, L"Unplugged", OPER_STATUS_DOWN)};
+    fake().ids = {{2, L"PCI\\VEN_1\\2"}};
+    fake().presence = {{L"PCI\\VEN_1\\2", DevicePresence::Present}};
+
+    WindowsSystemProbe probe = makeProbe();
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 1U);
+    EXPECT_EQ(fake().presenceQueries, 1);
+
+    fakeClock() += DEVICE_CACHE_TTL - std::chrono::seconds{1};
+    (void) probe.read();
+    EXPECT_EQ(fake().presenceQueries, 1) << "just short of the backstop";
+
+    // The device went away with no change in the table (the interface stays listed, down): noticed
+    // once the backstop runs out, not before
+    fake().presence[L"PCI\\VEN_1\\2"] = DevicePresence::Absent;
+    fakeClock() += std::chrono::seconds{1};
+    EXPECT_TRUE(probe.read().networkInterfaces.empty());
+    EXPECT_EQ(fake().presenceQueries, 2);
+    EXPECT_EQ(fake().idReads[2], 1) << "a found id is never read again";
+}
+
+TEST_F(WindowsSystemProbeNetworkTest, AnIdFoundOnRetryHasItsPresenceLookedUpAtOnce)
+{
+    // A phantom first seen before its registry value was written (#1369 review): the empty id is
+    // retried after the TTL, and the found id's device looked up in the same pass, not a TTL later.
+    fake().rows = {row(5, L"Phantom", OPER_STATUS_DOWN)};
+    WindowsSystemProbe probe = makeProbe();
+    EXPECT_EQ(probe.read().networkInterfaces.size(), 1U);
+    EXPECT_EQ(fake().idReads[5], 1);
+    EXPECT_EQ(fake().presenceQueries, 1) << "asked with the empty id: Unknown";
+
+    fake().ids = {{5, L"USB\\VID_1\\5"}};
+    fake().presence = {{L"USB\\VID_1\\5", DevicePresence::Absent}};
+    fakeClock() += DEVICE_CACHE_TTL;
+    EXPECT_TRUE(probe.read().networkInterfaces.empty());
+    EXPECT_EQ(fake().idReads[5], 2);
+    EXPECT_EQ(fake().presenceQueries, 2);
 }
 
 TEST_F(WindowsSystemProbeNetworkTest, EmptyDeviceIdIsNotRereadEverySample)
@@ -296,6 +417,7 @@ TEST_F(WindowsSystemProbeNetworkTest, ReusedLuidWithANewGuidRereadsTheId)
     EXPECT_TRUE(probe.read().networkInterfaces.empty()) << "the new interface's device is gone, not the old one's";
     EXPECT_EQ(fake().idReads[2], 1);
     EXPECT_EQ(fake().idReads[9], 1);
+    EXPECT_EQ(fake().presenceQueries, 2) << "the old adapter's presence is not inherited either (#2731)";
 }
 
 // The real readers, given ids that can't exist.

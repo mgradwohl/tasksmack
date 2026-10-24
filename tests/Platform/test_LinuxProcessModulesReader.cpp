@@ -82,6 +82,26 @@ TEST_F(LinuxProcessModulesReaderTest, AMapsPastTheCapIsReadThatFarAndMarkedTrunc
     EXPECT_TRUE(none.truncated);
 }
 
+// #2749: a maps exactly the cap long is all there: every line is parsed and it isn't marked truncated.
+TEST_F(LinuxProcessModulesReaderTest, AMapsExactlyTheCapLongIsWholeNotTruncated)
+{
+    constexpr std::string_view TWO_LINES = "55d0c1a00000-55d0c1a02000 r-xp 00000000 08:01 1311 /usr/bin/server\n"
+                                           "7f3a1c028000-7f3a1c1bd000 r-xp 00028000 08:01 1835 /usr/lib/libc.so.6\n";
+    write("maps", TWO_LINES);
+    LinuxProcessModulesReader reader(m_Proc.path.string(), TWO_LINES.size());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.status, ModulesReadStatus::Ok);
+    EXPECT_EQ(result.modules.size(), 2U);
+    EXPECT_FALSE(result.truncated);
+
+    // One byte more is past the cap: the partial line is dropped and the result marked truncated.
+    LinuxProcessModulesReader under(m_Proc.path.string(), TWO_LINES.size() - 1);
+    const ModulesReadResult cut = under.readModules(TARGET);
+    ASSERT_EQ(cut.status, ModulesReadStatus::Ok);
+    EXPECT_EQ(cut.modules.size(), 1U);
+    EXPECT_TRUE(cut.truncated);
+}
+
 TEST_F(LinuxProcessModulesReaderTest, RefusesAReusedPidAnUnknownIdentityAndAMissingProcess)
 {
     LinuxProcessModulesReader reader(m_Proc.path.string());

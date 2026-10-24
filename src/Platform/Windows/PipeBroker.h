@@ -17,14 +17,21 @@
 //     once its one action is answered (BrokerHelper::sessionPolicy(), #2550), after which connected()
 //     is false and connect() starts it again.
 //
-// The UAC prompt has no time limit, so the Launcher runs on a thread of its own, outside the lock calls
-// take (#2549; finding 3 of #2520's review). Meanwhile call() is "not connected" and callIfIdle() is
-// "busy" (as a pkexec prompt holds PkexecBroker's lock), both at once; and the destructor tells the
-// connect to give up, so neither waits for the prompt. A launch given up on is left to finish on its
-// thread: Windows has no way to take a UAC prompt down. Until that launch returns, connect() says
-// ALREADY_ASKING rather than raise a second prompt. If the prompt is then approved, the next connect()
-// uses the helper it started, while that still waits for its client (BrokerPipeServer::ACCEPT_TIMEOUT),
-// rather than ask again.
+// The UAC prompt has no time limit, so the Launcher runs on a thread of its own (HELPER_LAUNCH_THREAD_NAME),
+// outside the lock calls take (#2549; finding 3 of #2520's review). Meanwhile call() is "not connected"
+// and callIfIdle() is "busy" (as a pkexec prompt holds PkexecBroker's lock), both at once; and the
+// destructor tells the connect to give up, so neither waits for the prompt. A launch given up on is
+// left to finish on its thread: Windows has no way to take a UAC prompt down (PkexecBroker can SIGTERM
+// pkexec, #2370). Until that launch returns, connect() says ALREADY_ASKING rather than raise a second
+// prompt. What becomes of a helper the prompt then starts depends on why its connect gave up (#2768):
+//   - stopped by its caller: the next connect() uses that helper, while it still waits for its client
+//     (BrokerPipeServer::ACCEPT_TIMEOUT), rather than ask again (#2572 review, finding 2);
+//   - timed out (PROMPT_TIMED_OUT): the action was reported as failed, so the helper is dismissed as
+//     soon as it has made its pipe: its launch thread opens the pipe and closes it again, which the
+//     helper takes as its client's normal close, so it exits at once rather than wait out ACCEPT_TIMEOUT
+//     for a client that won't come; and the next connect() asks again. The approved action isn't run
+//     late: a kill landing minutes after the UI said the action failed would surprise more than it
+//     helps, and the elevation flow is being redesigned anyway (#2728).
 //
 // How the helper is started is the Launcher's: the app's runs TaskSmackHelper.exe through
 // ShellExecuteExW("runas") (HelperLauncher.h); the tests serve the pipe in-process.
@@ -65,8 +72,8 @@ class PipeBroker final : public IPrivilegedBroker
     /// Starts the helper, telling it to serve @p pipeName, and returns its process, opened with at least
     /// SYNCHRONIZE and PROCESS_QUERY_LIMITED_INFORMATION: the pipe's server must be that process. Blocks
     /// while the UAC prompt is up. The error says why there is no helper (the prompt was dismissed, the
-    /// helper isn't there). Called on a thread of its own, which may outlive the PipeBroker, so it must
-    /// own whatever it uses; @p stopToken is stopped once nobody waits for it.
+    /// helper isn't there). Called on a thread of its own (HELPER_LAUNCH_THREAD_NAME), which may outlive
+    /// the PipeBroker, so it must own whatever it uses; @p stopToken is stopped once nobody waits for it.
     using Launcher =
         std::function<std::expected<UniqueHandle, std::string>(const std::wstring& pipeName, const std::stop_token& stopToken)>;
 
@@ -78,6 +85,10 @@ class PipeBroker final : public IPrivilegedBroker
     /// connect()'s error while a UAC prompt it raised earlier is still up.
     static constexpr std::string_view ALREADY_ASKING =
         "already asking for an administrator's consent: the UAC prompt may be waiting behind TaskSmack or in the taskbar";
+    /// connect()'s error when its UAC prompt wasn't answered within the timeout. The prompt stays up,
+    /// but consent given after this starts a helper that is dismissed at once (#2768), never the action.
+    static constexpr std::string_view PROMPT_TIMED_OUT =
+        "the administrator's consent wasn't given in time; consent given later isn't acted on, so retry the action";
 
     /// @p readsOtherUsers: whether the helper it starts will run as TaskSmack's own user, and so read
     /// other users' processes (IPrivilegedBroker::readsOtherUsers(); HelperLauncher::readsOtherUsers()).

@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -66,7 +67,36 @@ class ShellLayer : public Core::Layer
         return m_ProcessesPanel.treeViewEnabled();
     }
 
+    /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
+    /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
+    /// captures only once it is false (#2827).
+    [[nodiscard]] bool startupSelectionPending() const noexcept
+    {
+        return m_StartupTab.pending() || m_ProcessesPanel.startupSelectionPending();
+    }
+
+    // TASKSMACK_DEMO's requests (#2827, DemoLayer), through the paths the startup hooks and the UI take.
+    // None of them is counted by startupSelectionPending(): the screenshot hook's settle is for startup.
+
+    /// Selects the main tab @p name names, as TASKSMACK_TAB resolves one (a registered id, a visible
+    /// label or an alias), asked for until ImGui shows it selected. False, and nothing requested, when
+    /// no tab matches.
+    [[nodiscard]] bool requestMainTab(std::string_view name);
+
+    /// Selects @p target's process in the Processes table when it next appears in a snapshot, as a
+    /// click does; the main tab stays (ProcessesPanel::requestSelection()).
+    void requestSelection(const SelectOverride::Target& target);
+
+    /// Brings @p tab of Process Details forward the next time its tabs are drawn, as TASKSMACK_DETAILS_TAB
+    /// does; the Process Details main tab itself is selected by a ShowProcessDetailsEvent.
+    void requestDetailsTab(SelectOverride::DetailsTab tab);
+
+    /// Draws @p section of Process Details' Overview open the next time the Overview is drawn.
+    void requestDetailsSection(SelectOverride::DetailsSection section);
+
   private:
+    /// Every registered tab's id and visible text, for TASKSMACK_TAB and the demo's tab= to resolve against.
+    [[nodiscard]] std::vector<SelectOverride::TabInfo> tabInfos() const;
     /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
     /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
     void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
@@ -140,6 +170,9 @@ class ShellLayer : public Core::Layer
     // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the
     // tab's registered id and kept until that tab reports selected (#1575).
     SelectOverride::PendingMainTab m_StartupTab;
+    // TASKSMACK_DEMO's tab= (#2827): the same, requested while running (requestMainTab()). Its own slot,
+    // so startupSelectionPending() -- the screenshot hook's settle -- never waits for it.
+    SelectOverride::PendingMainTab m_DemoTab;
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().

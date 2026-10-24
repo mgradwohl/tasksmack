@@ -1,6 +1,8 @@
 #include "WindowsPowerProbe.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/PowerTypes.h"
+#include "Platform/ThreadName.h"
 #include "WindowsBatteryInfo.h"
 #include "WindowsPowerProbeMath.h"
 
@@ -17,6 +19,11 @@
 // clang-format on
 
 #include <chrono>
+#include <exception>
+#include <mutex>
+#include <optional>
+#include <thread>
+#include <utility>
 
 namespace Platform
 {
@@ -26,7 +33,7 @@ namespace
 
 // How long the battery's static facts are kept before they are read again. A change of power
 // source also re-reads them: the full-charge capacity is recalibrated across a charge cycle.
-constexpr std::chrono::minutes BATTERY_INFO_REFRESH{5};
+constexpr std::chrono::seconds BATTERY_INFO_REFRESH{Domain::Sampling::BATTERY_INFO_REFRESH_SECONDS};
 
 } // namespace
 
@@ -43,8 +50,11 @@ WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batt
         spdlog::warn("WindowsPowerProbe: GetSystemPowerStatus failed");
     }
 
-    // The battery device's static facts (#1523); read() reads them again when they may have changed
-    refreshBatteryInfo(sps.ACLineStatus == 1);
+    // The battery device's static facts (#1523), read here once as the seed; read() has a worker read
+    // them again when they may have changed (#2731)
+    m_BatteryInfo = Windows::readBatteryInfo(m_BatteryApi);
+    m_BatteryInfoReadAt = std::chrono::steady_clock::now();
+    m_BatteryInfoOnAc = sps.ACLineStatus == 1;
     if (statusRead)
     {
         updateCapabilities(sps);
@@ -70,6 +80,7 @@ PowerCounters WindowsPowerProbe::read()
     }
 
     PowerCounters counters = parsePowerStatus(sps.ACLineStatus, sps.BatteryFlag, sps.BatteryLifePercent, sps.BatteryLifeTime);
+    takeFinishedBatteryInfo();
     if (counters.state != BatteryState::NotPresent)
     {
         // A battery absent until now (inserted after start, #2413) is read at once, not at the next
@@ -78,7 +89,7 @@ PowerCounters WindowsPowerProbe::read()
         if (batteryAppeared || counters.isOnAc != m_BatteryInfoOnAc ||
             std::chrono::steady_clock::now() - m_BatteryInfoReadAt >= BATTERY_INFO_REFRESH)
         {
-            refreshBatteryInfo(counters.isOnAc);
+            requestBatteryInfoRefresh(counters.isOnAc);
         }
     }
     // The capabilities follow every read, as LinuxPowerProbe's do (#2380, #2413): a battery inserted
@@ -105,11 +116,65 @@ PowerCapabilities WindowsPowerProbe::capabilities() const
     return m_Capabilities;
 }
 
-void WindowsPowerProbe::refreshBatteryInfo(bool isOnAc)
+void WindowsPowerProbe::requestBatteryInfoRefresh(bool isOnAc)
 {
-    m_BatteryInfo = Windows::readBatteryInfo(m_BatteryApi);
-    m_BatteryInfoReadAt = std::chrono::steady_clock::now();
     m_BatteryInfoOnAc = isOnAc;
+    if (m_BatteryInfoRefreshing)
+    {
+        m_BatteryInfoRefreshAgain = true;
+        return;
+    }
+    startBatteryInfoRefresh();
+}
+
+void WindowsPowerProbe::startBatteryInfoRefresh()
+{
+    // Assigning joins the previous worker, which has handed its result over and is exiting. The read
+    // itself -- SetupAPI's enumeration and the battery IOCTLs, which a slow ACPI call can stall -- is
+    // the worker's alone (#2731); the sampling pass never waits for it.
+    m_BatteryInfoWorker = std::jthread(
+        [this]
+        {
+            setCurrentThreadName(BATTERY_READ_THREAD_NAME);
+            Windows::BatteryInfo info;
+            try
+            {
+                info = Windows::readBatteryInfo(m_BatteryApi);
+            }
+            catch (const std::exception& e)
+            {
+                spdlog::warn("WindowsPowerProbe: the battery read failed: {}", e.what());
+            }
+            const std::scoped_lock lock(m_FinishedBatteryInfoMutex);
+            m_FinishedBatteryInfo = std::move(info);
+        });
+    m_BatteryInfoReadAt = std::chrono::steady_clock::now();
+    m_BatteryInfoRefreshing = true;
+}
+
+void WindowsPowerProbe::takeFinishedBatteryInfo()
+{
+    if (!m_BatteryInfoRefreshing)
+    {
+        return;
+    }
+    std::optional<Windows::BatteryInfo> finished;
+    {
+        const std::scoped_lock lock(m_FinishedBatteryInfoMutex);
+        finished.swap(m_FinishedBatteryInfo);
+    }
+    if (!finished.has_value())
+    {
+        return; // Still reading
+    }
+    m_BatteryInfo = std::move(*finished);
+    m_BatteryInfoRefreshing = false;
+    spdlog::debug("WindowsPowerProbe: battery facts re-read: found={} relative={}", m_BatteryInfo.found, m_BatteryInfo.relativeCapacity);
+    if (m_BatteryInfoRefreshAgain)
+    {
+        m_BatteryInfoRefreshAgain = false;
+        startBatteryInfoRefresh();
+    }
 }
 
 void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)

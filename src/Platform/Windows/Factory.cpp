@@ -76,9 +76,12 @@ std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* ownerWindow)
         return nullptr;
     }
     // A standard user's elevation runs as an administrator, which reads only the user's own processes:
-    // no "Read as administrator" is offered there; actions still are (#2550).
-    return std::make_shared<Windows::PipeBroker>(Windows::HelperLauncher::makeLauncher({}, static_cast<HWND>(ownerWindow)),
-                                                 Windows::HelperLauncher::readsOtherUsers());
+    // no "Read as administrator" is offered there; actions still are (#2550). An administrator's
+    // elevation that turns out to run as another account too (Windows 11's Administrator Protection, a
+    // credentials prompt answered with another administrator's account) is learned from the helper's
+    // first refusal, and then isn't offered either (#2769).
+    return std::make_shared<Windows::HelperLauncher::LearnedReadsBroker>(std::make_unique<Windows::PipeBroker>(
+        Windows::HelperLauncher::makeLauncher({}, static_cast<HWND>(ownerWindow)), Windows::HelperLauncher::readsOtherUsers()));
 }
 
 std::unique_ptr<IProcessIconSource> makeProcessIconSource()

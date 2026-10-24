@@ -1,6 +1,6 @@
 #include "ProcessOpenFilesView.h"
 
-#include "AuthorizeWording.h"
+#include "AuthenticateToReadButton.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
@@ -105,15 +105,8 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
             text += ": " + m_Detail;
         }
         mutedWrapped(text);
-        // Another user's process: an administrator can read it (#2309). The lock and the words.
-        if (offersAuthenticateToRead())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
-            {
-                requestAuthorizedRead();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
-        }
+        // Another user's process: an administrator can read it (#2309).
+        Detail::drawAuthenticateToReadButton(*this);
         return;
     }
     if (m_Truncated)

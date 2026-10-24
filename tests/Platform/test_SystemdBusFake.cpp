@@ -967,6 +967,73 @@ class SystemdBusFakeServiceConfigTest : public SystemdBusFakeServicesTest
     static constexpr const char* APT_PATH = "/org/freedesktop/systemd1/unit/apt_2ddaily_2eservice";
 };
 
+// #2750: ListUnits also lists services that are referenced but not installed (not-found) and masked ones.
+// systemd still answers their Service interface, with User, Type and ExecStart empty, which would read as
+// a root service with no command. Their configuration isn't read, and the list leaves those columns empty.
+TEST_F(SystemdBusFakeServicesTest, AServiceThatIsntLoadedHasNoAccountCommandOrTypeAndIsntAsked)
+{
+    constexpr const char* GHOST_PATH = "/org/freedesktop/systemd1/unit/connman_2eservice";
+    constexpr const char* MASKED_PATH = "/org/freedesktop/systemd1/unit/console_2dgetty_2eservice";
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnits",
+        []() -> MethodAnswer
+        {
+            TestSupport::UnitRow ghost = unit("connman.service", "connman.service", "inactive", "dead", GHOST_PATH);
+            ghost.loadState = "not-found";
+            TestSupport::UnitRow masked = unit("console-getty.service", "console-getty.service", "inactive", "dead", MASKED_PATH);
+            masked.loadState = "masked";
+            return {.path = std::nullopt,
+                    .errorName = {},
+                    .units = std::vector<TestSupport::UnitRow>{
+                        unit("cron.service", "Regular background program processing daemon", "active", "running", CRON_PATH),
+                        ghost,
+                        masked,
+                    }};
+        });
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnitFiles",
+        []() -> MethodAnswer
+        { return {.path = std::nullopt, .errorName = {}, .unitFiles = std::vector<std::pair<std::string, std::string>>{}}; });
+    auto& props = m_Bus.properties();
+    for (const char* path : {CRON_PATH, GHOST_PATH, MASKED_PATH})
+    {
+        props[path][SYSTEMD_SERVICE]["User"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["DynamicUser"] = false;
+        props[path][SYSTEMD_SERVICE]["Type"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{};
+        props[path][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
+    }
+    props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.configs.size(), 1U) << "only the loaded service's configuration";
+    for (const char* path : {GHOST_PATH, MASKED_PATH})
+    {
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "User"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "ExecStart"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "Type"), 0) << path;
+    }
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(read.listing);
+    for (const char* name : {"connman.service", "console-getty.service"})
+    {
+        const auto info = std::ranges::find(services, std::string(name), &ServiceInfo::name);
+        ASSERT_NE(info, services.end()) << name << " is still listed";
+        EXPECT_TRUE(info->account.empty()) << name;
+        EXPECT_TRUE(info->binaryPath.empty()) << name;
+        EXPECT_TRUE(info->serviceType.empty()) << name;
+    }
+    const auto cron = std::ranges::find(services, std::string("cron.service"), &ServiceInfo::name);
+    ASSERT_NE(cron, services.end());
+    EXPECT_EQ(cron->account, "root") << "a loaded service with an empty User still runs as root";
+}
+
 TEST_F(SystemdBusFakeServiceConfigTest, EachServicesUserCommandAndTypeAreRead)
 {
     serveConfigs();
@@ -1111,6 +1178,53 @@ TEST_F(SystemdBusFakeServiceConfigTest, AConfigTimeoutStopsAskingForTheRest)
     EXPECT_TRUE(read.listing.configs.empty());
     EXPECT_EQ(userReads(GETTY_PATH), 0) << "getty, after cron, wasn't asked";
     EXPECT_EQ(read.listing.mainPids.size(), 2U) << "the rest of the read is unaffected";
+}
+
+// #2773: a timeout ends every property read left in the call, not just that loop's: after an instance's
+// UnitFileState times out, no MainPID or configuration is asked for.
+TEST_F(SystemdBusFakeServiceConfigTest, AnInstanceStateTimeoutEndsTheCallsPropertyReads)
+{
+    m_Bus.failProperty(GETTY_PATH, "org.freedesktop.systemd1.Unit", "UnitFileState", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_EQ(m_Bus.propertyReads(CRON_PATH, SYSTEMD_SERVICE, "MainPID"), 0);
+    EXPECT_TRUE(read.listing.mainPids.empty());
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0);
+}
+
+// #2773: after a MainPID timeout no configuration is read either, even one due again: each service's is
+// the cached one, and the cache is left as it was, not re-filled with every service's main process as 0.
+TEST_F(SystemdBusFakeServiceConfigTest, AMainPidTimeoutLeavesTheCachedConfigurationsAsTheyWere)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const auto now = std::chrono::steady_clock::now();
+    const auto aged = now - SystemdBus::UNIT_CONFIG_TTL - std::chrono::seconds(1);
+    SystemdBus::UnitFileCache cache;
+    for (const char* name : {"cron.service", "getty@tty1.service"})
+    {
+        cache.configs.insert_or_assign(
+            name,
+            SystemdBus::CachedUnitConfig{.config = {.user = std::string("cached"), .dynamicUser = false, .execStart = {}, .type = "simple"},
+                                         .activeState = "active",
+                                         .subState = "running",
+                                         .mainPid = 4242,
+                                         .readAt = aged});
+    }
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices(&cache, now);
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0) << "all due, none asked";
+    ASSERT_EQ(read.listing.configs.size(), 2U) << "the cached ones; apt-daily had none";
+    EXPECT_EQ(read.listing.configs.at("cron.service").user, std::optional<std::string>("cached"));
+    ASSERT_EQ(cache.configs.size(), 2U);
+    for (const auto& [name, cached] : cache.configs)
+    {
+        EXPECT_EQ(cached.mainPid, 4242U) << name;
+        EXPECT_EQ(cached.readAt, aged) << name;
+    }
 }
 
 TEST_F(SystemdBusFakeTest, WithoutSystemdOnTheBusTheServicesSaySo)

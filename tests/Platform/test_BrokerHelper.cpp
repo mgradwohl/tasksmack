@@ -413,6 +413,146 @@ TEST(BrokerHelperTest, SameFileComparesWhatPathsNameNotHowTheyAreSpelled)
     EXPECT_FALSE(BrokerHelper::sameFile(own, L""));
 }
 
+// #2770: QueryFullProcessImageNameW fails with ERROR_INSUFFICIENT_BUFFER, and doesn't say the size
+// needed, when its buffer is too small. A TaskSmack installed at a path of MAX_PATH characters or more
+// needs the longest buffer tried, not that failure taken as final.
+
+/// What the fake QueryFullProcessImageNameW answers: @p path when the buffer has room for it and its
+/// terminator, ERROR_INSUFFICIENT_BUFFER when not, as Windows does; or @p failWith. Counts its calls.
+struct FakeImageQuery
+{
+    std::wstring path;
+    DWORD failWith = ERROR_SUCCESS;
+    int calls = 0;
+};
+
+[[nodiscard]] FakeImageQuery& fakeImageQuery()
+{
+    static FakeImageQuery fake;
+    return fake;
+}
+
+BOOL WINAPI fakeQueryFullProcessImageName(HANDLE /*process*/, DWORD /*flags*/, LPWSTR path, PDWORD size)
+{
+    FakeImageQuery& fake = fakeImageQuery();
+    ++fake.calls;
+    if (fake.failWith != ERROR_SUCCESS)
+    {
+        SetLastError(fake.failWith);
+        return FALSE;
+    }
+    if (*size <= fake.path.size())
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    const std::span<wchar_t> out(path, *size);
+    std::ranges::copy(fake.path, out.begin());
+    out[fake.path.size()] = L'\0';
+    *size = static_cast<DWORD>(fake.path.size());
+    return TRUE;
+}
+
+TEST(BrokerHelperTest, AnImagePathOfMaxPathOrMoreIsReadWithTheLongestBuffer)
+{
+    FakeImageQuery& fake = fakeImageQuery();
+    fake = {.path = L"C:\\" + std::wstring(283, L'a') + L"\\TaskSmack.exe"};
+    ASSERT_EQ(fake.path.size(), 300U);
+    const auto image = BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName);
+    ASSERT_TRUE(image.has_value());
+    EXPECT_EQ(*image, fake.path);
+    EXPECT_EQ(fake.calls, 2) << "MAX_PATH, then the longest path";
+
+    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe"};
+    EXPECT_EQ(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName), fake.path);
+    EXPECT_EQ(fake.calls, 1) << "one that fits MAX_PATH is read at once";
+
+    fake = {.path = std::wstring(32'768, L'a')};
+    EXPECT_FALSE(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
+    EXPECT_EQ(fake.calls, 2) << "longer than the longest path: no third try";
+
+    EXPECT_EQ(BrokerHelper::imageOf(GetCurrentProcess()), imageOf(GetCurrentProcess())) << "the real call, by default";
+}
+
+TEST(BrokerHelperTest, AnImageThatCantBeReadIsntRetried)
+{
+    FakeImageQuery& fake = fakeImageQuery();
+    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe", .failWith = ERROR_ACCESS_DENIED};
+    EXPECT_FALSE(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
+    EXPECT_EQ(fake.calls, 1) << "a failure that isn't the buffer's size is final";
+}
+
+// #2772: the readers of a process's own image and start time, which TaskSmack names itself to the
+// helper with and the helper reads itself with, are one pair, shared.
+
+/// What the fake GetModuleFileNameW answers: @p path when the buffer has room for it and its
+/// terminator, else what fits and the buffer's size back, as Windows does; or @p failWith. Counts its
+/// calls.
+struct FakeModuleFileName
+{
+    std::wstring path;
+    DWORD failWith = ERROR_SUCCESS;
+    int calls = 0;
+};
+
+[[nodiscard]] FakeModuleFileName& fakeModuleFileName()
+{
+    static FakeModuleFileName fake;
+    return fake;
+}
+
+DWORD WINAPI fakeGetModuleFileName(HMODULE /*module*/, LPWSTR path, DWORD size)
+{
+    FakeModuleFileName& fake = fakeModuleFileName();
+    ++fake.calls;
+    if (fake.failWith != ERROR_SUCCESS)
+    {
+        SetLastError(fake.failWith);
+        return 0;
+    }
+    const std::span<wchar_t> out(path, size);
+    if (fake.path.size() >= size)
+    {
+        std::ranges::copy(std::wstring_view(fake.path).substr(0, size - 1), out.begin());
+        out[size - 1] = L'\0';
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return size;
+    }
+    std::ranges::copy(fake.path, out.begin());
+    out[fake.path.size()] = L'\0';
+    return static_cast<DWORD>(fake.path.size());
+}
+
+TEST(BrokerHelperTest, TheOwnImageIsReadWithTheLongestBufferWhenMaxPathIsntEnough)
+{
+    FakeModuleFileName& fake = fakeModuleFileName();
+    fake = {.path = L"C:\\" + std::wstring(283, L'a') + L"\\TaskSmackHelper.exe"};
+    EXPECT_EQ(BrokerHelper::ownImage(&fakeGetModuleFileName), fake.path);
+    EXPECT_EQ(fake.calls, 2) << "MAX_PATH, then the longest path";
+
+    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmackHelper.exe"};
+    EXPECT_EQ(BrokerHelper::ownImage(&fakeGetModuleFileName), fake.path);
+    EXPECT_EQ(fake.calls, 1) << "one that fits MAX_PATH is read at once";
+
+    fake = {.path = std::wstring(32'768, L'a')};
+    EXPECT_FALSE(BrokerHelper::ownImage(&fakeGetModuleFileName).has_value());
+    EXPECT_EQ(fake.calls, 2) << "longer than the longest path: no third try";
+
+    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmackHelper.exe", .failWith = ERROR_ACCESS_DENIED};
+    EXPECT_FALSE(BrokerHelper::ownImage(&fakeGetModuleFileName).has_value());
+    EXPECT_EQ(fake.calls, 1) << "a failure that isn't the buffer's size is final";
+
+    EXPECT_EQ(BrokerHelper::ownImage(), imageOf(GetCurrentProcess())) << "the real call, by default";
+}
+
+TEST(BrokerHelperTest, TheStartTimeIsTheProcessCreationTimeInFileTimeTicks)
+{
+    EXPECT_EQ(BrokerHelper::startTicksOf(GetCurrentProcess()), startTicksOf(GetCurrentProcess()));
+    const SuspendedChild child;
+    EXPECT_EQ(BrokerHelper::startTicksOf(child.process()), startTicksOf(child.process()));
+    EXPECT_FALSE(BrokerHelper::startTicksOf(nullptr).has_value()) << "no process: nothing to read";
+}
+
 TEST(BrokerHelperTest, TheTaskSmackThatStartedTheHelperIsItsParent)
 {
     const BrokerHelper::Arguments arguments = argumentsForThisProcess(freshName());

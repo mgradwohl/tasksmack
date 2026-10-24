@@ -31,6 +31,8 @@ inline constexpr std::string_view MODULES_READ_THREAD_NAME = "ts-mod-read";
 /// The worker that runs one Process Details Open files read at a time (#183).
 inline constexpr std::string_view OPEN_FILES_READ_THREAD_NAME = "ts-files-read";
 inline constexpr std::string_view SECURITY_READ_THREAD_NAME = "ts-sec-read";
+/// The worker that runs one Process Details I/O priority read at a time (#2734).
+inline constexpr std::string_view IO_PRIORITY_READ_THREAD_NAME = "ts-ioprio-read";
 /// The worker that runs one Process Details Environment read at a time (#2116).
 inline constexpr std::string_view ENVIRONMENT_READ_THREAD_NAME = "ts-env-read";
 /// The thread that types and names a Windows process's File handles for one read (#183).
@@ -39,6 +41,9 @@ inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name"
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
 /// The worker that reads the crash history Process Details shows (#1675), at most once a minute.
 inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-read";
+/// The one-shot worker that reads the battery device's static facts on Windows (#1523, #2731): at most
+/// every BATTERY_INFO_REFRESH_SECONDS, so a slow ACPI call never stretches a system sample.
+inline constexpr std::string_view BATTERY_READ_THREAD_NAME = "ts-battery-read";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).
@@ -53,6 +58,9 @@ inline constexpr std::string_view BATCH_ACTION_THREAD_NAME = "ts-batch-action";
 inline constexpr std::string_view PROCESS_ACTION_THREAD_NAME = "ts-proc-action";
 /// The worker that shows the dump confirm's "Save dump to..." folder dialog while it is up (#2001).
 inline constexpr std::string_view FOLDER_DIALOG_THREAD_NAME = "ts-folder-pick";
+/// The thread that starts TaskSmack's Windows administrator helper, and sits behind its UAC prompt for
+/// as long as that is up (PipeBroker::launch(), #2549; named in #2768).
+inline constexpr std::string_view HELPER_LAUNCH_THREAD_NAME = "ts-uac-launch";
 /// The worker that reads process icons for the Processes table and Process Details (#1800).
 inline constexpr std::string_view ICON_READ_THREAD_NAME = "ts-icon-read";
 /// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.

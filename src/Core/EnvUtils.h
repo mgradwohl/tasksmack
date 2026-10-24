@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <string_view>
 
 namespace Core
@@ -38,6 +39,10 @@ inline constexpr std::array KNOWN_ENV_HOOKS{
     EnvHook{.name = "TASKSMACK_DETAILS_TAB", .description = "Open this Process Details tab for the selected process"},
     EnvHook{.name = "TASKSMACK_TAB", .description = "Start on this main tab"},
     EnvHook{.name = "TASKSMACK_OPEN", .description = "Open the help or about dialog at startup"},
+    EnvHook{.name = "TASKSMACK_SCREENSHOT",
+            .description = "Write a PNG of the window (file[;after=N][;frames=N][;fps=N]) after startup, then quit"},
+    EnvHook{.name = "TASKSMACK_DEMO",
+            .description = "Replay timed UI requests (seconds:action=value,...) once startup has settled, for a capture"},
     EnvHook{.name = "TASKSMACK_LOCALE", .description = "Format numbers and dates with this locale instead of the user's"},
     EnvHook{.name = LOG_LEVEL_ENV_VAR, .description = "Log at this level: trace, debug, info, warn, error, critical or off"},
     EnvHook{.name = TRACE_RESIZE_PERF_ENV_VAR, .description = "Log resize and frame timings (and log at info)"},

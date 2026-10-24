@@ -1,15 +1,23 @@
 #pragma once
 
-// The lazy background read shared by Process Details' on-demand sections (Connections #799, Modules
-// #802, Open files #183): one read at a time on a worker thread, started only while the section was
-// drawn open on the last frame, once when it opens or the selection changes and then every refresh
-// interval -- or, constructed ON_DEMAND (Open files), only after request() (a button), with no refresh.
-// The view keeps its rows, sort and filter; this keeps the cadence, the worker and the staleness
-// checks, so each section's update() is the same few lines:
+// The lazy background read shared by Process Details' on-demand sections (Environment #179,
+// Connections #799, Modules #802, Open files #183, Security #1526): one read at a time on a worker
+// thread, started only while the section was drawn open on the last frame, once when it opens or the
+// selection changes and then every refresh interval -- or, constructed ON_DEMAND (Open files), only
+// after request() (a button), with no refresh. The view keeps its rows, sort and filter; this keeps
+// the cadence, the worker and the staleness checks, so each section's update() is the same few lines:
 //
 //     if (auto result = m_Read.takeFinished(target, false)) applyResult(*result);
 //     if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasX()) return false;
 //     if (auto failed = m_Read.start(target, [reader](const auto& t) { return reader->readX(t); })) applyResult(*failed);
+//
+// It also carries the "Authenticate to read" request (#2309) the sections that can read as an
+// administrator share (#2567): render() draws the button (AuthenticateToReadButton.h) when the view
+// offers it, the press is requestAuthorized(), and the next update() takes it with
+// takeAuthorizeRequest() and starts the reader's authorized read in place of the due one:
+//
+//     m_Read.setCanAuthorize(reader != nullptr && reader->canReadAuthorized());
+//     if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight()) { ...start(readAuthorized)... }
 //
 // Free of ImGui; tested in tests/App/test_LazyBackgroundRead.cpp.
 
@@ -68,8 +76,38 @@ template<typename Result> class LazyBackgroundRead
         return m_RequestPending || (m_Pending.busy() && m_PendingGeneration == m_Generation);
     }
 
+    /// "Authenticate to read" was pressed (#2309): the next takeAuthorizeRequest() answers true, once,
+    /// and the view's update() then starts the reader's authorized read.
+    void requestAuthorized() noexcept
+    {
+        m_AuthorizeRequested = true;
+    }
+
+    /// Whether requestAuthorized() was called since the last call (or reset()), and takes it: the request
+    /// is consumed whether or not a read can start on it, so one made while a read is in flight is
+    /// dropped, not kept for a later update().
+    [[nodiscard]] bool takeAuthorizeRequest() noexcept
+    {
+        return std::exchange(m_AuthorizeRequested, false);
+    }
+
+    /// Records whether the reader can read as an administrator (its canReadAuthorized(), as of the
+    /// view's last update()). The view offers "Authenticate to read" only while it can. The reader's
+    /// property, not the selection's: reset() leaves it, and every update() sets it again.
+    void setCanAuthorize(bool canAuthorize) noexcept
+    {
+        m_CanAuthorize = canAuthorize;
+    }
+
+    /// What setCanAuthorize() last recorded (false until a reader said so).
+    [[nodiscard]] bool canAuthorize() const noexcept
+    {
+        return m_CanAuthorize;
+    }
+
     /// A different process was selected: a read in flight is asked to stop (a password prompt for the
-    /// previous process goes away, #2404) and dropped when it arrives, and the next one is due as soon
+    /// previous process goes away, #2404) and dropped when it arrives, an "Authenticate to read" press
+    /// not taken yet is withdrawn (it was for the previous process), and the next read is due as soon
     /// as the section is drawn open again and that read has been taken in.
     void reset() noexcept
     {
@@ -77,8 +115,18 @@ template<typename Result> class LazyBackgroundRead
         ++m_Generation;
         m_HasRequested = false;
         m_RequestPending = false;
+        m_AuthorizeRequested = false;
         m_SecondsSinceRequest = 0.0F;
         m_DrawnOpen = false; // the open frame was the previous process's
+    }
+
+    /// The target changed without a selection change (its start time became known, or the shown process
+    /// is another one): the next due() that finds the section drawn open starts a read at once. Unlike
+    /// reset(), this keeps the drawn-open flag, so the read isn't a frame late, and a read in flight is
+    /// left to finish -- takeFinished() drops it, as it was for another target.
+    void rearm() noexcept
+    {
+        m_HasRequested = false;
     }
 
     /// The read in flight, once it has finished (or, with @p wait, after waiting for it), when it is for
@@ -166,9 +214,11 @@ template<typename Result> class LazyBackgroundRead
     static constexpr std::string_view UNKNOWN_FAILURE = "unknown error";
 
     int m_RefreshMs;
-    bool m_DrawnOpen = false;      // render() drew the section open since the last due()
-    bool m_HasRequested = false;   // a read was started since the selection changed
-    bool m_RequestPending = false; // ON_DEMAND: request() was called and no read started for it yet
+    bool m_DrawnOpen = false;          // render() drew the section open since the last due()
+    bool m_HasRequested = false;       // a read was started since the selection changed
+    bool m_RequestPending = false;     // ON_DEMAND: request() was called and no read started for it yet
+    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed and not taken yet (#2309)
+    bool m_CanAuthorize = false;       // the reader can read as an administrator, as of the last setCanAuthorize()
     float m_SecondsSinceRequest = 0.0F;
 
     // Destroying this waits for one read.

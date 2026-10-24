@@ -103,9 +103,9 @@ class ProcessModulesView
     bool update(Platform::IProcessModulesReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_CanAuthorize = (reader != nullptr) && reader->canReadAuthorized();
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (std::exchange(m_AuthorizeRequested, false) && reader != nullptr && !m_Read.inFlight())
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
             if (auto failed = m_Read.start(target,
                                            [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
@@ -130,13 +130,13 @@ class ProcessModulesView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ModulesReadStatus::PermissionDenied && m_CanAuthorize && !m_Read.inFlight();
+        return m_HasRead && m_Status == Platform::ModulesReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
     void requestAuthorizedRead() noexcept
     {
-        m_AuthorizeRequested = true;
+        m_Read.requestAuthorized();
     }
 
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
@@ -149,7 +149,6 @@ class ProcessModulesView
     /// flight is dropped when it arrives. The sort and the filter are viewing preferences and stay.
     void onSelectionChanged() noexcept
     {
-        m_AuthorizeRequested = false;
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::ModulesReadStatus::Ok;
@@ -308,9 +307,7 @@ class ProcessModulesView
 
     void renderTable();
 
-    bool m_HasRead = false;            // a read was taken in since the selection changed
-    bool m_CanAuthorize = false;       // The reader can read as an administrator (#2309), as of the last update()
-    bool m_AuthorizeRequested = false; // "Authenticate to read" was pressed; the next update() reads that way
+    bool m_HasRead = false; // a read was taken in since the selection changed
     Platform::ModulesReadStatus m_Status = Platform::ModulesReadStatus::Ok;
     std::string m_Detail;
     bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
@@ -324,7 +321,8 @@ class ProcessModulesView
     std::string m_CountLabel;            // the header with the count: "Modules (87)"
     std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
 
-    // The read in flight and its cadence. Destroying the view waits for at most one read.
+    // The read in flight, its cadence and the "Authenticate to read" request (#2309). Destroying the
+    // view waits for at most one read.
     Detail::LazyBackgroundRead<Platform::ModulesReadResult> m_Read{
         Domain::Sampling::PROCESS_MODULES_REFRESH_MS, Platform::MODULES_READ_THREAD_NAME, &failedRead};
 };

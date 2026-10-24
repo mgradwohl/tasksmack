@@ -48,7 +48,7 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only ma
 
 **Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
 
-For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). It runs as root, but keeps only the capabilities its requests need (`CAP_KILL`, `CAP_SYS_NICE`, `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, with `no_new_privs` set), serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
+For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). `pkexec` starts it as root, but once it has checked its caller it stops being root: it runs as `nobody` (UID and GID 65534, with no supplementary groups) and keeps only the capabilities its requests need (`CAP_KILL`, `CAP_SYS_NICE`, `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, with `no_new_privs` set), serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running).
 
 On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
 
@@ -74,11 +74,19 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
 - **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
   an administrator's name and password, and the helper then runs as that administrator. It does that one
   action and exits, so the next one asks again. It wouldn't read another account's process for you,
-  which is why no **Read as administrator** is offered. If a process's sections do ask it, they say "The
-  administrator helper was approved for another account, so it reads only your own processes".
+  which is why no **Read as administrator** is offered.
 - **With Windows 11's Administrator Protection on,** every elevation runs as a separate,
   system-managed administrator account, never as you. So even an administrator gets the standard user's
-  session: one action per prompt, and reads of your own processes only.
+  session: one action per prompt, and reads of your own processes only. TaskSmack can't tell this
+  before the first prompt (the same happens when an administrator's prompt is answered with another
+  administrator's account), so **Read as administrator** is offered once: the first read then says "The
+  administrator account that approved the prompt isn't yours, so the administrator helper can't read
+  other users' processes for you", and the button isn't offered again until TaskSmack is restarted.
+
+The prompt is waited for two minutes. If it isn't answered by then, the action fails with "the
+administrator's consent wasn't given in time", and consent given after that isn't acted on: the helper it
+starts exits at once, and the action has to be chosen again. Windows doesn't let TaskSmack take the
+prompt down, so until it is answered a retry says the prompt is still up.
 
 Nothing else runs with elevated rights. The helper never ends a critical system process (one whose end
 would stop Windows), and it acts only on the process you chose, checked by its start time as well as

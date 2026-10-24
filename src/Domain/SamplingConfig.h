@@ -61,6 +61,27 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 // cache it for 60 seconds to avoid repeated sysfs reads.
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 
+// How long WindowsSystemProbe trusts what it last learned about a down network interface's adapter
+// device (seconds) (#1284, #2731): the registry's device instance id when the read came back empty,
+// and whether the device is still in the system (CM_Locate_DevNodeW, a PnP call). The presence is
+// dropped sooner when GetIfTable2's interface set or an interface's status changes; this is the
+// backstop, so a device that comes or goes with no table change is still noticed. Hyper-V and WSL add
+// several down vEthernet rows, so without the cache that was several PnP calls per pass.
+inline constexpr int NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS = 30;
+
+// How often the battery's static facts -- design and full-charge capacity, cycle count, chemistry,
+// manufacturer and model -- are read again from the battery device (seconds) (#1523). They barely
+// change. The read (a SetupAPI enumeration and the battery IOCTLs) can stall on a slow ACPI call, so
+// WindowsPowerProbe runs it on a one-shot worker (ts-battery-read, #2731), never in the sampling pass,
+// which reads only the live state (GetSystemPowerStatus) each pass.
+inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
+
+// A system-probe sub-read -- the CPU times, memory, the PDH clock counter, the interface table -- that
+// takes this long or longer is logged by name at debug level (#2731), so an overrun names "pdh-freq"
+// or "ifTable" rather than "system". The fastest Settings interval: a sub-read that long overruns it
+// on its own.
+inline constexpr int SYSTEM_PROBE_SLOW_SUB_READ_MS = REFRESH_INTERVAL_MIN_MS;
+
 // Cache TTL for inode-to-PID mapping (milliseconds) - Linux only
 // buildInodeToPidMap() scans /proc/[pid]/fd/* for all processes to resolve socket
 // inodes to owning PIDs. At 1Hz sampling this scan adds measurable latency on busy
@@ -104,6 +125,12 @@ inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
 // Each read walks the process's fd links and dumps the system's socket tables, so it is kept slower
 // than the sample rate; connections come and go faster than an environment, so faster than that.
 inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
+
+// Process Details' I/O priority control (#803) reads the shown process's I/O priority on a worker while
+// the control is drawn, once when it shows, after the selection changes or an apply, and then at this
+// cadence, so a change made outside TaskSmack (ionice) shows up. Off the UI thread: on Linux each read
+// is a pidfd open, a /proc read and ioprio_get (#2734).
+inline constexpr int PROCESS_IO_PRIORITY_REFRESH_MS = 2000;
 
 // How often Process Details re-reads the selected process's loaded modules (milliseconds) (#802)
 // Read on demand, never in the per-sample enumeration: only for the selected process, only while its

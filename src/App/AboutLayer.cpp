@@ -41,7 +41,7 @@ void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void AboutLayer::onRender()
 {
-    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_Icon); !url.empty())
+    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon); !url.empty())
     {
         (void) PlatformOpen::openWithSystemHandler(url);
     }
@@ -58,6 +58,13 @@ void AboutLayer::onEvent(Core::Event& event)
         {
             requestOpen();
             return false; // Don't consume
+        });
+    // TASKSMACK_DEMO's close=dialog (#2827): closes the dialog as OK does, on the next render.
+    dispatcher.dispatch<Core::CloseDialogEvent>(
+        [this](Core::CloseDialogEvent&)
+        {
+            m_CloseRequested = true;
+            return false; // The Help window closes on it too
         });
 }
 

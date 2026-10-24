@@ -6,6 +6,7 @@
 /// line instead of an empty table, a header click re-sorting the rows, and a table that stays within a
 /// narrow pane.
 
+#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessConnectionsView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -251,6 +252,37 @@ TEST_F(ProcessConnectionsViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEm
     TestMocks::MockProcessConnectionsReader reader;
     openAndRead(none, reader);
     EXPECT_TRUE(renderAndCapture(none, true).contains("No TCP or UDP sockets"));
+}
+
+// #2567: the "Authenticate to read" button the four sections share (Detail::drawAuthenticateToReadButton,
+// #2309) is drawn under a refused read's status line only while the reader can read as an administrator,
+// and pressing it hands the request to the view: the next update() reads as the administrator, after
+// which the sockets show and the button is gone.
+TEST_F(ProcessConnectionsViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAndPressingItReadsAsTheAdministrator)
+{
+    ProcessConnectionsView view;
+    TestMocks::MockProcessConnectionsReader reader;
+    reader.setResult({.status = Platform::ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
+    openAndRead(view, reader);
+    EXPECT_FALSE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT)) << "the reader can't read as an administrator";
+
+    reader.setAuthorizedResult(sampleConnections());
+    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F / 60.0F)); // takes in what the reader can do now; nothing is due
+    ASSERT_TRUE(view.offersAuthenticateToRead());
+    EXPECT_TRUE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT));
+    EXPECT_EQ(reader.authorizedReadCount(), 0) << "nothing is read until the button is pressed";
+
+    const ImGuiWindow* details = ImGui::FindWindowByName("Details");
+    ASSERT_NE(details, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, details->ID));
+    static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
+    EXPECT_TRUE(view.update(&reader, TARGET, 1.0F / 60.0F));
+    view.finishPendingRead(TARGET);
+    EXPECT_EQ(reader.authorizedReadCount(), 1);
+    EXPECT_EQ(view.rows().size(), 3U);
+    const std::string text = renderAndCapture(view, true);
+    EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT));
+    EXPECT_TRUE(text.contains("LOCAL ADDRESS"));
 }
 
 TEST_F(ProcessConnectionsViewRenderTest, ClickingAColumnHeaderSortsByIt)

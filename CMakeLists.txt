@@ -131,6 +131,7 @@ set(TASKSMACK_SOURCES
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
+    src/Core/FramebufferCapture.cpp
     src/Core/SaveFileDialog.cpp
     src/Core/X11ConnectionLoss.cpp
     src/Core/X11WindowManager.cpp
@@ -147,6 +148,8 @@ set(TASKSMACK_SOURCES
     src/UI/IconTextureCache.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
+    src/App/DemoLayer.cpp
+    src/App/DemoOverride.cpp
     src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp
@@ -157,6 +160,8 @@ set(TASKSMACK_SOURCES
     src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
     src/App/SelectOverride.cpp
+    src/App/ScreenshotLayer.cpp
+    src/App/ScreenshotOverride.cpp
     src/App/MainTabBarView.cpp
     src/App/ShellHost.cpp
     src/App/ShellLayer.cpp
@@ -236,6 +241,7 @@ set(PLATFORM_SOURCES_LINUX
     # The privileged broker (#2307): its socket transport and the helper side, which tests drive directly
     src/Platform/Linux/BrokerSocket.cpp
     src/Platform/Linux/BrokerServer.cpp
+    src/Platform/Linux/HelperPrivileges.cpp
     src/Platform/Linux/PkexecBroker.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp

@@ -183,6 +183,7 @@ struct ToolRun
 {
     std::error_code spawnError; ///< Set when it couldn't be started.
     bool cancelled = false;     ///< Killed because the stop token was requested.
+    std::error_code waitError;  ///< Set when waiting on it failed, so it was killed (#2148, #2751).
     int exitStatus = -1;        ///< Its exit status when it exited on its own; -1 when a signal ended it.
     std::string stderrText;     ///< The last of what it wrote on stderr (MAX_STDERR_KEPT bytes at most).
 };
@@ -288,6 +289,7 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
         }
         if (waited < 0 && errno != EINTR)
         {
+            run.waitError = std::error_code(errno, std::generic_category());
             // Not left running: gdb may be attached to the target, which would stay stopped (#2148).
             ::kill(-child, SIGKILL);
             while (syscalls.waitPid(child, &status, 0) < 0 && errno == EINTR)
@@ -535,18 +537,26 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         releaseName();
         return std::unexpected(std::format("Couldn't start {}: {}", gcore, run.spawnError.message()));
     }
-    if (run.cancelled)
+    if (run.cancelled || run.waitError)
     {
         std::filesystem::remove(written, ec);
         releaseName();
-        // gdb was killed while attached: the kernel detaches it, but a process its attach stopped may
-        // stay stopped. Killing gcore's group doesn't wait for gdb (gcore's child) to exit, and until it
-        // has, the process shows 't' and its stop is still to come (#2122): wait for gdb to let go first.
-        // One that was running before is then woken, through the pidfd, so it is still the target.
+        // gdb was killed while attached (cancelled, or TaskSmack lost track of gcore and killed it, #2751):
+        // the kernel detaches it, but a process its attach stopped may stay stopped. Killing gcore's group doesn't wait for gdb (gcore's
+        // child) to exit, and until it has, the process shows 't' and its stop is still to come (#2122): wait for gdb to let go first. One
+        // that was running before is then woken, through the pidfd, so it is still the target.
         waitForDumperToDetach(syscalls(), target.pid, tracerBefore);
         if (!wasStopped && processIsStopped(syscalls(), target.pid))
         {
             static_cast<void>(sendThroughPidfd(syscalls(), pidfd, SIGCONT));
+        }
+        if (run.waitError)
+        {
+            // TaskSmack's failure, not gcore's: say so rather than "gcore failed".
+            std::string message = std::format(
+                "TaskSmack lost track of {} ({}), so it was stopped; the partial dump file was deleted", gcore, run.waitError.message());
+            spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
+            return std::unexpected(std::move(message));
         }
         spdlog::info("Dump of PID {} cancelled", target.pid);
         return std::unexpected(std::string(LinuxCoreDump::CANCELLED_MESSAGE));
