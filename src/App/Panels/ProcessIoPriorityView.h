@@ -12,7 +12,10 @@
 //
 // The current I/O priority is not a sampled counter: it is read on demand through
 // IProcessActions::getIoPriority(), for the shown process only -- when the target changes, after an
-// apply, and otherwise at most every IO_PRIORITY_REFRESH_SECONDS while the control is drawn.
+// apply, and otherwise every Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS while the control is
+// drawn. The read runs on a worker (Detail::LazyBackgroundRead), started from the panel's update path
+// by updateRead(), never from render(): on Linux it opens a pidfd, reads /proc and calls ioprio_get
+// (#2734). render() only draws the last value taken in.
 //
 // Apply runs on a worker of its own (ProcessActionRun, #2305), as ProcessPriorityView's does; update()
 // takes its result in on a later frame, and only then is the current value read again.
@@ -20,31 +23,32 @@
 // Everything but render() is defined here, free of ImGui, so the state can be tested against a mock
 // IProcessActions without an ImGui context (test_ProcessIoPriorityView.cpp).
 
+#include "App/Panels/LazyBackgroundRead.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "Domain/PriorityConfig.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ThreadName.h"
 #include "PriorityEditTarget.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace App
 {
 
 namespace Detail
 {
-
-/// How often the shown process's I/O priority is read again while nothing else asks for a read, so
-/// a change made outside TaskSmack (ionice) shows up.
-inline constexpr double IO_PRIORITY_REFRESH_SECONDS = 2.0;
 
 /// The class's name.
 [[nodiscard]] constexpr std::string_view ioPriorityClassName(Platform::IoPriorityClass ioClass) noexcept
@@ -222,9 +226,8 @@ struct IoStop
 class ProcessIoPriorityView
 {
   public:
-    /// Draws the control for @p target: reads its current I/O priority when due (refreshCurrent()),
-    /// then the row label, one slider through every class and level (Detail::IO_PRIORITY_SLIDER, or
-    /// without Realtime unless @p realtimeSettable, #1540), "Reset to default" and Apply, which sets the
+    /// Draws the control for @p target from the last value updateRead() took in: the row label, one slider through every class and level
+    /// (Detail::IO_PRIORITY_SLIDER, or without Realtime unless @p realtimeSettable, #1540), "Reset to default" and Apply, which sets the
     /// edit through @p actions. @p currentNice is the process's nice value from its latest snapshot: a
     /// class never set shows at the Best-effort level it derives. The caller checks the capability.
     void render(Platform::IProcessActions* actions,
@@ -245,46 +248,68 @@ class ProcessIoPriorityView
         m_Current.reset();
         m_CurrentTarget = NO_TARGET;
         m_ReadError.clear();
-        m_ReadDue = true;
+        m_Read.reset(); // a read in flight was for the previous process
     }
 
-    /// Reads @p target's current I/O priority through @p actions when it is due: the target is not
-    /// the one last read, a read was asked for (after an apply or a selection change), or
-    /// IO_PRIORITY_REFRESH_SECONDS have passed since the last read at @p nowSeconds. A target whose
-    /// start time is not known yet is not read -- every IProcessActions refuses it -- and has no
-    /// current value. On a different target the shown value goes back to the neutral default before the
-    /// read, so if the read fails the control never shows the previous process's class and level.
-    /// Returns whether it read (or cleared) the value.
-    bool refreshCurrent(Platform::IProcessActions* actions, const Platform::ProcessTarget& target, double nowSeconds)
+    /// Each frame, from the panel's update path (never render()): takes in a read that finished for
+    /// @p target, then starts the next read of @p target's current I/O priority through @p actions on
+    /// the worker when it is due -- the control was drawn last frame, and no read has been started since
+    /// it showed, the target changed or an apply finished, or PROCESS_IO_PRIORITY_REFRESH_MS have passed
+    /// (@p deltaSeconds is the frame's time step). On a different target the shown value goes back to
+    /// the neutral default at once, so the control never shows the previous process's class and level.
+    /// A target whose start time is not known yet is not read -- every IProcessActions refuses it -- and
+    /// has no current value. @p wait blocks until a read in flight finishes (the tests' way to take it
+    /// in deterministically). @p actions must outlive the read; the panel owns them. Returns whether a
+    /// read started.
+    bool updateRead(Platform::IProcessActions* actions, const Platform::ProcessTarget& target, float deltaSeconds, bool wait = false)
     {
+        if (std::optional<Platform::IoPriorityReadResult> read = m_Read.takeFinished(target, wait))
+        {
+            m_Current.reset();
+            m_ReadError.clear();
+            if (read->has_value())
+            {
+                m_Current = Detail::normalizeIoPriority(**read);
+            }
+            else
+            {
+                m_ReadError = read->error();
+            }
+        }
         const bool sameTarget = (m_CurrentTarget.pid == target.pid) && (m_CurrentTarget.startTimeTicks == target.startTimeTicks);
-        if (sameTarget && !m_ReadDue && (nowSeconds - m_LastReadSeconds) < Detail::IO_PRIORITY_REFRESH_SECONDS)
+        if (!sameTarget)
+        {
+            if (!m_Changed)
+            {
+                m_Edit = {};
+            }
+            m_CurrentTarget = target;
+            m_Current.reset();
+            m_ReadError.clear();
+            m_Read.rearm(); // read the new target now; a read of the old one is dropped when it lands
+        }
+        if (!m_Read.due(deltaSeconds) || actions == nullptr || target.pid <= 0 || target.startTimeTicks == 0)
         {
             return false;
         }
-        if (!sameTarget && !m_Changed)
+        if (std::optional<Platform::IoPriorityReadResult> failed =
+                m_Read.start(target, [actions](const Platform::ProcessTarget& t) { return actions->getIoPriority(t); }))
         {
-            m_Edit = {};
-        }
-        m_CurrentTarget = target;
-        m_LastReadSeconds = nowSeconds;
-        m_ReadDue = false;
-        m_Current.reset();
-        m_ReadError.clear();
-        if (actions == nullptr || target.pid <= 0 || target.startTimeTicks == 0)
-        {
-            return true;
-        }
-        const Platform::IoPriorityReadResult read = actions->getIoPriority(target);
-        if (read.has_value())
-        {
-            m_Current = Detail::normalizeIoPriority(*read);
-        }
-        else
-        {
-            m_ReadError = read.error();
+            m_ReadError = failed->error();
         }
         return true;
+    }
+
+    /// render() drew the control this frame, so the next updateRead() may start a read.
+    void markDrawn() noexcept
+    {
+        m_Read.markDrawnOpen();
+    }
+
+    /// Whether a read runs on the worker now.
+    [[nodiscard]] bool reading() const noexcept
+    {
+        return m_Read.inFlight();
     }
 
     /// While nothing is edited, the control follows the process's own I/O priority, once read.
@@ -497,7 +522,7 @@ class ProcessIoPriorityView
     /// An apply's result, on the UI thread.
     void finishApply(const Platform::ProcessActionResult& result)
     {
-        m_ReadDue = true; // Read what the process has now, whichever way it went
+        m_Read.reset(); // Read what the process has now, whichever way it went
         if (result.success)
         {
             m_Error.clear();
@@ -508,6 +533,12 @@ class ProcessIoPriorityView
         {
             m_Edit = m_Current.value_or(Platform::IoPriority{});
         }
+    }
+
+    /// The result shown for a read that threw, or one no worker could be started for.
+    [[nodiscard]] static Platform::IoPriorityReadResult failedRead(std::string detail)
+    {
+        return std::unexpected(std::move(detail));
     }
 
     /// Whether m_Current was read for exactly @p liveTarget.
@@ -525,10 +556,12 @@ class ProcessIoPriorityView
     std::optional<Platform::IoPriority> m_Current;
     Platform::ProcessTarget m_CurrentTarget = NO_TARGET;
     std::string m_ReadError;
-    double m_LastReadSeconds = 0.0;
-    bool m_ReadDue = true;
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     std::optional<Retry> m_Retry;
+    // The current value's read and its cadence. Destroying the view waits for at most one read, which
+    // touches only the panel's actions.
+    Detail::LazyBackgroundRead<Platform::IoPriorityReadResult> m_Read{
+        Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS, Platform::IO_PRIORITY_READ_THREAD_NAME, &failedRead};
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

@@ -277,6 +277,13 @@ class ProcessPriorityView
         m_IoPriorityView.update(wait);
     }
 
+    /// From the panel's update path: the I/O priority control's read of @p target's current value,
+    /// on its worker (ProcessIoPriorityView::updateRead(), #2734).
+    bool updateReads(Platform::IProcessActions* actions, const Platform::ProcessTarget& target, float deltaSeconds, bool wait = false)
+    {
+        return m_IoPriorityView.updateRead(actions, target, deltaSeconds, wait);
+    }
+
     /// Whether an apply runs on the worker now: Apply is disabled and the line under it says so.
     [[nodiscard]] bool applying() const noexcept
     {

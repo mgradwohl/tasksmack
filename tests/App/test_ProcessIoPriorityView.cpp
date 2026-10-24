@@ -8,6 +8,7 @@
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "App/Panels/ProcessIoPriorityView.h"
 #include "App/Panels/ProcessPriorityView.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
@@ -39,14 +40,34 @@ constexpr Platform::ProcessTarget TARGET_A_UNCONFIRMED{.pid = 1001, .startTimeTi
 constexpr IoPriority BEST_EFFORT_4{.ioClass = IoPriorityClass::BestEffort, .level = 4};
 constexpr IoPriority IDLE{.ioClass = IoPriorityClass::Idle, .level = 0};
 
-/// A view that has read @p current for @p target, as render() does first.
+/// One frame of the read, as the panel runs it (#2734): render() marks the control drawn, then the
+/// update path's updateRead() starts the read on its worker when due, @p stepSeconds after the last
+/// frame. A changed target starts its read a frame later (the first frame only drops the old value),
+/// so that frame is run too. A read that started is waited for and taken in. Returns whether one started.
+bool readFrame(ProcessIoPriorityView& view, Platform::IProcessActions* actions, const Platform::ProcessTarget& target, float stepSeconds)
+{
+    view.markDrawn();
+    bool started = view.updateRead(actions, target, stepSeconds);
+    if (!started)
+    {
+        view.markDrawn();
+        started = view.updateRead(actions, target, 0.0F);
+    }
+    if (started)
+    {
+        (void) view.updateRead(actions, target, 0.0F, /*wait=*/true);
+    }
+    return started;
+}
+
+/// A view that has read @p current for @p target, as the panel's first frames do.
 void readCurrent(ProcessIoPriorityView& view,
                  TestMocks::MockProcessActions& mock,
                  const Platform::ProcessTarget& target,
                  IoPriority current)
 {
     mock.setIoPriorityReadResult(current);
-    (void) view.refreshCurrent(&mock, target, 0.0);
+    (void) readFrame(view, &mock, target, 0.0F);
     view.syncToProcess();
 }
 
@@ -156,16 +177,17 @@ TEST(ProcessIoPriorityViewTest, ReadsTheShownProcessOnceUntilDue)
     mock.setIoPriorityReadResult(IDLE);
     ProcessIoPriorityView view;
 
-    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A, 10.0));
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 10.0F));
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
     EXPECT_EQ(mock.lastIoPriorityReadTarget().pid, TARGET_A.pid);
     EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, TARGET_A.startTimeTicks);
     EXPECT_EQ(view.currentIoPriority(), std::optional<IoPriority>{IDLE});
 
     // Every frame in between reuses it; once the refresh interval has passed it is read again.
-    EXPECT_FALSE(view.refreshCurrent(&mock, TARGET_A, 10.5));
+    constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS) / 1000.0F;
+    EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.5F));
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
-    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A, 10.0 + Detail::IO_PRIORITY_REFRESH_SECONDS));
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, REFRESH_SECONDS - 0.5F));
     EXPECT_EQ(mock.getIoPriorityCount(), 2);
 }
 
@@ -173,8 +195,8 @@ TEST(ProcessIoPriorityViewTest, AnotherTargetIsReadAtOnce)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) view.refreshCurrent(&mock, TARGET_A, 0.0);
-    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A_REUSED, 0.1));
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A_REUSED, 0.1F));
     EXPECT_EQ(mock.getIoPriorityCount(), 2);
     EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, TARGET_A_REUSED.startTimeTicks);
 }
@@ -183,7 +205,7 @@ TEST(ProcessIoPriorityViewTest, AnUnknownStartTimeIsNotRead)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) view.refreshCurrent(&mock, TARGET_A_UNCONFIRMED, 0.0);
+    (void) readFrame(view, &mock, TARGET_A_UNCONFIRMED, 0.0F);
     EXPECT_EQ(mock.getIoPriorityCount(), 0);
     EXPECT_FALSE(view.currentIoPriority().has_value());
 }
@@ -193,7 +215,7 @@ TEST(ProcessIoPriorityViewTest, AFailedReadKeepsItsMessageAndNoValue)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
     ProcessIoPriorityView view;
-    (void) view.refreshCurrent(&mock, TARGET_A, 0.0);
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
     EXPECT_FALSE(view.currentIoPriority().has_value());
     EXPECT_EQ(view.readError(), "Process not found - may have already exited");
 }
@@ -208,7 +230,7 @@ TEST(ProcessIoPriorityViewTest, TheControlFollowsTheProcessUntilEdited)
 
     view.editIoPriority(BEST_EFFORT_4, TARGET_A);
     mock.setIoPriorityReadResult(IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 1});
-    (void) view.refreshCurrent(&mock, TARGET_A, 100.0);
+    (void) readFrame(view, &mock, TARGET_A, 100.0F);
     view.syncToProcess();
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4); // The edit stays
 }
@@ -224,7 +246,7 @@ TEST(ProcessIoPriorityViewTest, AnotherProcessWhoseReadFailsShowsNoLeftoverValue
 
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
     EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_B)); // As render() does: drop, read, sync
-    (void) view.refreshCurrent(&mock, TARGET_B, 0.1);
+    (void) readFrame(view, &mock, TARGET_B, 0.1F);
     view.syncToProcess();
     EXPECT_FALSE(view.hasPendingEdit());
     EXPECT_FALSE(view.currentIoPriority().has_value());
@@ -234,9 +256,104 @@ TEST(ProcessIoPriorityViewTest, AnotherProcessWhoseReadFailsShowsNoLeftoverValue
     ProcessIoPriorityView unedited;
     readCurrent(unedited, mock, TARGET_A, IDLE);
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
-    (void) unedited.refreshCurrent(&mock, TARGET_B, 0.1);
+    (void) readFrame(unedited, &mock, TARGET_B, 0.1F);
     unedited.syncToProcess();
     EXPECT_EQ(unedited.shownIoPriority(), IoPriority{});
+}
+
+// #2734: the read runs on a worker, started from the update path, so a read that blocks (a process in
+// D state, a slow /proc) never holds up a frame, and the frames go on showing the last value meanwhile.
+class GatedIoPriorityReads : public TestMocks::MockProcessActions
+{
+  public:
+    [[nodiscard]] Platform::IoPriorityReadResult getIoPriority(const Platform::ProcessTarget& target) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::getIoPriority(target);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+TEST(ProcessIoPriorityViewTest, ABlockedReadNeverHoldsUpAFrame)
+{
+    GatedIoPriorityReads mock;
+    mock.setIoPriorityReadResult(IDLE);
+    // Declared after the mock, so it is destroyed first: the gate opens even if an assertion below
+    // fails, and the view's destructor (which waits for the read) can't hang the suite.
+    struct OpenOnExit
+    {
+        explicit OpenOnExit(GatedIoPriorityReads& g) noexcept : gate(g)
+        {}
+        ~OpenOnExit()
+        {
+            gate.open();
+        }
+        GatedIoPriorityReads& gate;
+        OpenOnExit(const OpenOnExit&) = delete;
+        OpenOnExit& operator=(const OpenOnExit&) = delete;
+        OpenOnExit(OpenOnExit&&) = delete;
+        OpenOnExit& operator=(OpenOnExit&&) = delete;
+    };
+    ProcessIoPriorityView view;
+    const OpenOnExit opener{mock};
+    view.markDrawn();
+    ASSERT_TRUE(view.updateRead(&mock, TARGET_A, 0.0F)); // the target's first drawn frame starts the read; it blocks
+    EXPECT_TRUE(view.reading());
+
+    // Many frames pass while the read is blocked: each returns at once, none starts another read, and
+    // the control shows no value yet rather than waiting for one.
+    for (int frame = 0; frame < 120; ++frame)
+    {
+        view.markDrawn();
+        EXPECT_FALSE(view.updateRead(&mock, TARGET_A, 1.0F / 60.0F));
+    }
+    EXPECT_TRUE(view.reading());
+    EXPECT_FALSE(view.currentIoPriority().has_value());
+
+    mock.open();
+    (void) view.updateRead(&mock, TARGET_A, 0.0F, /*wait=*/true);
+    EXPECT_EQ(view.currentIoPriority(), std::optional<IoPriority>{IDLE});
+    EXPECT_EQ(mock.getIoPriorityCount(), 1);
+}
+
+// #2734 / #2731: the re-read is timed by the clock the update path is given, not by frames drawn. Any
+// number of frames inside the interval read nothing; one frame that spans it reads.
+TEST(ProcessIoPriorityViewTest, TheRereadIsTimedByTheClockNotByFrames)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, IDLE);
+    ASSERT_EQ(mock.getIoPriorityCount(), 1);
+
+    constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS) / 1000.0F;
+    for (int frame = 0; frame < 1000; ++frame) // 1000 frames, 1 s of clock in all
+    {
+        EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.001F));
+    }
+    EXPECT_EQ(mock.getIoPriorityCount(), 1);
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, REFRESH_SECONDS));
+    EXPECT_EQ(mock.getIoPriorityCount(), 2);
+}
+
+// The control isn't read while it isn't drawn (another tab, the card scrolled away): updateRead() alone
+// starts nothing.
+TEST(ProcessIoPriorityViewTest, NothingIsReadWhileTheControlIsNotDrawn)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        EXPECT_FALSE(view.updateRead(&mock, TARGET_A, 1.0F));
+    }
+    EXPECT_EQ(mock.getIoPriorityCount(), 0);
 }
 
 // --- Editing -------------------------------------------------------------------------------------
@@ -285,7 +402,7 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledUntilTheCurrentValueIsRead)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
     ProcessIoPriorityView view;
-    (void) view.refreshCurrent(&mock, TARGET_A, 0.0);
+    (void) readFrame(view, &mock, TARGET_A, 0.0F);
     view.editIoPriority(IDLE, TARGET_A);
     EXPECT_FALSE(view.canApply(TARGET_A));
     EXPECT_TRUE(view.waitingForProcessDetails(TARGET_A));
@@ -299,7 +416,7 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeI
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) view.refreshCurrent(&mock, TARGET_A_UNCONFIRMED, 0.0);
+    (void) readFrame(view, &mock, TARGET_A_UNCONFIRMED, 0.0F);
     view.editIoPriority(IDLE, TARGET_A_UNCONFIRMED);
     EXPECT_FALSE(view.canApply(TARGET_A_UNCONFIRMED));
     view.apply(&mock, TARGET_A_UNCONFIRMED);
@@ -320,7 +437,7 @@ TEST(ProcessIoPriorityViewTest, AStartTimeMismatchIsRefused)
     ProcessIoPriorityView view;
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
-    (void) view.refreshCurrent(&mock, TARGET_A_REUSED, 0.1);
+    (void) readFrame(view, &mock, TARGET_A_REUSED, 0.1F);
 
     EXPECT_FALSE(view.canApply(TARGET_A_REUSED));
     view.apply(&mock, TARGET_A_REUSED);
@@ -335,7 +452,7 @@ TEST(ProcessIoPriorityViewTest, AnEditIsNotAppliedToAnotherProcess)
     ProcessIoPriorityView view;
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority(IDLE, TARGET_A);
-    (void) view.refreshCurrent(&mock, TARGET_B, 0.1);
+    (void) readFrame(view, &mock, TARGET_B, 0.1F);
 
     EXPECT_FALSE(view.canApply(TARGET_B));
     view.apply(&mock, TARGET_B);
@@ -386,7 +503,7 @@ TEST(ProcessIoPriorityViewTest, ApplyAsksForAFreshRead)
 
     // Well inside the refresh interval, the next frame still reads what the process has now.
     mock.setIoPriorityReadResult(IDLE);
-    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A, 0.01));
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 0.01F));
     view.syncToProcess();
     EXPECT_EQ(view.shownIoPriority(), IDLE);
 }
@@ -491,12 +608,12 @@ TEST(ProcessIoPriorityViewTest, TheCurrentValueIsReadAgainOnlyAfterTheApplysResu
     view.apply(&mock, TARGET_A);
     EXPECT_TRUE(view.applying());
     EXPECT_EQ(view.applyingText(), "Setting the I/O priority of PID 1001...");
-    EXPECT_FALSE(view.refreshCurrent(&mock, TARGET_A, 0.1)); // nothing asked for a read yet
+    EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.1F)); // nothing asked for a read yet
 
     mock.open();
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
-    EXPECT_TRUE(view.refreshCurrent(&mock, TARGET_A, 0.2)); // now it is
+    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 0.2F)); // now it is
 }
 
 TEST(ProcessIoPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
