@@ -518,6 +518,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsInstalledMemory.h
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
+        src/Platform/Windows/WindowsStorageSmartMath.h
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDriverNodes.h
         src/Platform/Windows/WindowsDevices.h

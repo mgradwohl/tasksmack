@@ -191,7 +191,7 @@ struct NvmeHealth
     std::uint64_t mediaErrors = 0;          ///< Unrecovered data integrity errors (the low 64 bits)
 };
 
-/// An ATA drive's SMART health (#1631): Linux, through udisks2.
+/// An ATA drive's SMART health: Linux through udisks2 (#1631), Windows through ATA pass-through (#2588).
 struct AtaHealth
 {
     bool failing = false;                      ///< The drive's own SMART assessment predicts failure
@@ -231,9 +231,10 @@ struct PhysicalDisk
     std::string firmware; ///< The firmware revision
     std::string serial;   ///< An identifier
     std::optional<int> temperatureCelsius;
-    std::optional<NvmeHealth> health;    ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
-    std::optional<AtaHealth> ataHealth;  ///< Linux: ATA drives' SMART status, through udisks2 (#1631)
-    std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
+    std::optional<NvmeHealth> health; ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
+    std::optional<AtaHealth>
+        ataHealth; ///< ATA drives' SMART status: Linux through udisks2 (#1631), Windows through ATA pass-through (#2588)
+    std::string healthUnavailableReason;                     ///< Why health is missing; empty when it isn't read for this disk at all
     PartitionStyle partitionStyle = PartitionStyle::Unknown; ///< #1632
     bool partitionsRead = false;                             ///< The layout was read: an empty partitions means none
     std::vector<Partition> partitions;                       ///< In the OS's order (by number)
