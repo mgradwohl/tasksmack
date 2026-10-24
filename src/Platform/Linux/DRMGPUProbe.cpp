@@ -814,13 +814,8 @@ namespace
     return (error == std::errc{} && end == digits.data() + digits.size() && pid > 0) ? pid : 0;
 }
 
-/// The name an engine class goes by in a process's active engines, as Windows' engine types do.
-[[nodiscard]] constexpr std::string_view engineClassName(std::size_t engineClass) noexcept
-{
-    constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> NAMES{"3D", "Copy", "Video", "VideoProcessing", "Compute"};
-    return engineClass < NAMES.size() ? NAMES[engineClass]
-                                      : std::string_view{}; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index) - checked
-}
+/// The name each engine class goes by in a process's active engines, as Windows' engine types do.
+constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> ENGINE_CLASS_NAMES{"3D", "Copy", "Video", "VideoProcessing", "Compute"};
 
 } // namespace
 
@@ -1510,7 +1505,7 @@ std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
                 process->gpuUtilPercent = std::max(process->gpuUtilPercent, percent);
                 if (share.at(engineClass) > 0.0)
                 {
-                    process->activeEngines.emplace_back(engineClassName(engineClass));
+                    process->activeEngines.emplace_back(ENGINE_CLASS_NAMES.at(engineClass));
                 }
             }
         }
