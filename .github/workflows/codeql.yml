@@ -154,11 +154,12 @@ jobs:
       # Build the third-party libraries before CodeQL init (#1406). With a manual (traced) C/C++
       # build, CodeQL extracts every compiler invocation it traces, and only those: what enters
       # the database is decided by which compiles run after init, not by codeql-config.yml
-      # (its paths/paths-ignore filter reported results, not which compiled TUs are extracted).
-      # These dependency translation units (mostly SDL3 and FreeType) are compiled here, before
-      # the tracer is active, so they are never extracted and cost no traced-build or TRAP-import
-      # time; Ninja then sees them as up to date in the traced Build step, which compiles only
-      # our own sources. Dependency headers are still extracted wherever our sources include them.
+      # (its paths/paths-ignore filter nothing for a traced build, #2794; the "Keep results under
+      # src/" step below is what filters the results). These dependency translation units (mostly
+      # SDL3 and FreeType) are compiled here, before the tracer is active, so they are never
+      # extracted and cost no traced-build or TRAP-import time; Ninja then sees them as up to date
+      # in the traced Build step, which compiles only our own sources. Dependency headers are
+      # still extracted wherever our sources include them.
       # A renamed or removed dependency target fails this step loudly; a new dependency missing
       # from this list is still built (and traced) by the Build step, so it is only slower.
       - name: Build third-party dependencies (untraced)
@@ -181,7 +182,44 @@ jobs:
           cmake --build --preset debug --target
           TaskSmackApp CMakeFiles/TaskSmack.dir/src/main.cpp.o
 
+      # The CLI writes the SARIF; the upload is the last step. codeql-config.yml's paths and
+      # paths-ignore apply only to interpreted languages and to build-mode: none, so for this traced
+      # build they filter nothing (#2794): the dependency headers that src/ includes (ImGui, SDL3,
+      # stb, toml++, ...) are extracted with it, and 110 of main's 113 results were under
+      # .cache/fetchcontent/. The next step keeps only the results whose primary location is under
+      # src/ (the config's `paths: [src]`, applied by hand) and the upload sends that file under the
+      # same category from the same job, so the alerts' identity is unchanged. 'failure-only' still
+      # uploads the CLI's diagnostics when the analysis itself fails, so a broken run stays visible
+      # in code scanning.
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
+          category: "/language:c-cpp"
+          upload: failure-only
+          output: sarif-results
+
+      - name: Keep results under src/
+        run: |
+          # A result's primary location is locations[0]: one in third-party or generated code is
+          # dropped whole; related locations and code flows that pass through such code stay with
+          # the src/ result that owns them. Artifacts and the rest of each run are left as they are.
+          shopt -s nullglob
+          sarifs=(sarif-results/*.sarif)
+          if [[ ${#sarifs[@]} -eq 0 ]]; then
+            echo "::error title=CodeQL::no SARIF file in sarif-results/ to filter"
+            exit 1
+          fi
+          for sarif in "${sarifs[@]}"; do
+            before=$(jq '[.runs[] | (.results // [])[]] | length' "$sarif")
+            jq '.runs[].results |= ((. // []) | map(select((.locations[0].physicalLocation.artifactLocation.uri // "") | startswith("src/"))))' \
+              "$sarif" > "$sarif.tmp"
+            mv "$sarif.tmp" "$sarif"
+            after=$(jq '[.runs[] | (.results // [])[]] | length' "$sarif")
+            echo "$sarif: kept $after of $before results (dropped $((before - after)) outside src/)"
+          done
+
+      - name: Upload CodeQL results
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: sarif-results
           category: "/language:c-cpp"
