@@ -313,6 +313,7 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
 [[nodiscard]] SystemInfo::RowAction renderSection(const SystemInfo::VisibleSection& visible,
                                                   float labelWidth,
                                                   const std::map<std::string, Domain::SensorHistory>& sensorHistories,
+                                                  double sensorHistorySeconds,
                                                   bool reading,
                                                   SystemInfoViewState& state,
                                                   const UI::ColorScheme& scheme)
@@ -381,7 +382,7 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
                 UI::Widgets::renderSparkline("##History",
                                              recent->times,
                                              recent->values,
-                                             static_cast<double>(Domain::Sampling::HISTORY_SECONDS_DEFAULT),
+                                             sensorHistorySeconds,
                                              ImVec2(sparklineWidth, ImGui::GetTextLineHeight()),
                                              sensorColor(row.sensorKind.value_or(Platform::SensorKind::Temperature), scheme));
                 ImGui::PopID();
@@ -449,7 +450,13 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         for (const auto& visible : state.visible)
         {
             const SystemInfo::RowAction clicked =
-                renderSection(visible, labelWidth, sensors != nullptr ? sensors->histories : noSensorHistories(), reading, state, scheme);
+                renderSection(visible,
+                              labelWidth,
+                              sensors != nullptr ? sensors->histories : noSensorHistories(),
+                              sensors != nullptr ? sensors->historySeconds : Domain::Sampling::HISTORY_SECONDS_DEFAULT,
+                              reading,
+                              state,
+                              scheme);
             wifiDetails = wifiDetails || clicked == SystemInfo::RowAction::ShowWifiDetails;
             publicIp = publicIp || clicked == SystemInfo::RowAction::ShowPublicIp;
             authenticate = authenticate || clicked == SystemInfo::RowAction::AuthenticateToRead;

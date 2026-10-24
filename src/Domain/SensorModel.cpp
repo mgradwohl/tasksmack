@@ -38,7 +38,8 @@ void SensorModel::sample()
     next->sensors = m_Reader();
     const double nowSeconds = std::chrono::duration<double>(m_Now().time_since_epoch()).count();
     const double intervalSeconds = static_cast<double>(m_IntervalMs.load(std::memory_order_relaxed)) / 1000.0;
-    m_Tracker.add(next->sensors, nowSeconds, intervalSeconds);
+    next->historySeconds = m_HistorySeconds.load(std::memory_order_relaxed);
+    m_Tracker.add(next->sensors, nowSeconds, intervalSeconds, next->historySeconds);
     next->ranges = m_Tracker.ranges();
     next->histories = m_Tracker.histories();
     next->version = ++m_LastVersion;
