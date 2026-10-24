@@ -61,6 +61,7 @@ struct FakeProcess
     std::uint64_t creationTicks = START_TICKS;
     DWORD exitCode = STILL_ACTIVE;
     USHORT targetMachine = IMAGE_FILE_MACHINE_UNKNOWN; // IsWow64Process2's process machine for the target
+    USHORT selfMachine = IMAGE_FILE_MACHINE_UNKNOWN;   // ... and for this process (AMD64: an x64 TaskSmack emulated on ARM64)
     LONG queryStatus = 0;                              // NtQueryInformationProcess's NTSTATUS
     std::uintptr_t pebAddress = REMOTE_BASE;           // what it reports; 0 for no PEB
     DWORD readError = 0;                               // non-zero: every ReadProcessMemory fails with it
@@ -117,11 +118,11 @@ BOOL WINAPI fakeGetExitCodeProcess(HANDLE /*process*/, LPDWORD code)
     return TRUE;
 }
 
-/// The test process itself is never WOW64 (a 64-bit build); the target is what the test says.
+/// This process's and the target's machines are what the test says (native by default).
 BOOL WINAPI fakeIsWow64Process2(HANDLE process, USHORT* machine, USHORT* native)
 {
     *native = IMAGE_FILE_MACHINE_AMD64;
-    *machine = (process == GetCurrentProcess()) ? IMAGE_FILE_MACHINE_UNKNOWN : fake().targetMachine;
+    *machine = (process == GetCurrentProcess()) ? fake().selfMachine : fake().targetMachine;
     return TRUE;
 }
 
@@ -322,6 +323,29 @@ TEST_F(WindowsProcessEnvironmentReaderTest, AWow64TargetIsFailedWithItsReason)
 
     fake().targetMachine = IMAGE_FILE_MACHINE_ARMNT; // ARM32 under WOW64 on ARM64, the same
     EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+
+    fake().targetMachine = IMAGE_FILE_MACHINE_I386;
+    fake().selfMachine = IMAGE_FILE_MACHINE_AMD64; // an x64 TaskSmack emulated on ARM64 is 64-bit all the same
+    EXPECT_EQ(reader.readEnvironment(TARGET).status, EnvironmentReadStatus::Failed);
+}
+
+TEST_F(WindowsProcessEnvironmentReaderTest, AnEmulatedX64TargetOnArm64IsReadLikeANativeOne)
+{
+    // ARM64 Windows runs x64 processes under its WOW64 infrastructure, and IsWow64Process2 may report
+    // AMD64 for them: still a 64-bit PEB, so the native (UNKNOWN) ARM64 TaskSmack reads it.
+    layOut(joinBlock({L"A=1", L"B=2"}), 20);
+    fake().targetMachine = IMAGE_FILE_MACHINE_AMD64;
+    WindowsProcessEnvironmentReader reader(fakeApi());
+    EnvironmentReadResult result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_EQ(result.variables.size(), 2U);
+
+    // And the other way round: an x64 TaskSmack reported as AMD64 reads a native ARM64 (UNKNOWN) process.
+    fake().targetMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+    fake().selfMachine = IMAGE_FILE_MACHINE_AMD64;
+    result = reader.readEnvironment(TARGET);
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok) << result.detail;
+    EXPECT_EQ(result.variables.size(), 2U);
 }
 
 TEST_F(WindowsProcessEnvironmentReaderTest, BlockSizeCapIsRespected)

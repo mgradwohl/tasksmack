@@ -181,10 +181,18 @@ struct BlockRead
     return failure(EnvironmentReadStatus::Failed, std::format("ReadProcessMemory failed on {}: {}", what, errorText(error)));
 }
 
+/// Whether IsWow64Process2's process machine @p machine is a 32-bit one: x86 or ARM32, which run under
+/// WOW64 on the 64-bit Windows TaskSmack ships for. IMAGE_FILE_MACHINE_UNKNOWN is a native process,
+/// the OS's own size (64-bit); AMD64 and ARM64 are 64-bit too (an x64 process emulated on ARM64 Windows
+/// is reported as AMD64 by some Windows versions, and its PEB has the 64-bit layout).
+[[nodiscard]] constexpr bool is32BitMachine(USHORT machine) noexcept
+{
+    return machine == IMAGE_FILE_MACHINE_I386 || machine == IMAGE_FILE_MACHINE_ARMNT;
+}
+
 /// Whether @p process runs with the reader's pointer size, so its PEB and process parameters have the
-/// layouts read here: both are WOW64 processes, or neither is. IsWow64Process2 reports a 32-bit process
-/// on 64-bit Windows (x86 or ARM32, under WOW64) by its machine, and IMAGE_FILE_MACHINE_UNKNOWN for a
-/// native one (an x64 process emulated on ARM64 included: its PEB has the 64-bit layout).
+/// layouts read here: decided by the pointer size each machine implies (is32BitMachine()), not by
+/// whether either runs under WOW64, which an x64 process on ARM64 Windows does with a 64-bit PEB.
 [[nodiscard]] std::expected<bool, std::string> sameBitness(const ProcessEnvironmentFunctions& api, HANDLE process)
 {
     USHORT targetMachine = IMAGE_FILE_MACHINE_UNKNOWN;
@@ -198,7 +206,7 @@ struct BlockRead
     {
         return std::unexpected("TaskSmack's own architecture could not be read: " + errorText(GetLastError()));
     }
-    return (targetMachine == IMAGE_FILE_MACHINE_UNKNOWN) == (ownMachine == IMAGE_FILE_MACHINE_UNKNOWN);
+    return is32BitMachine(targetMachine) == is32BitMachine(ownMachine);
 }
 
 } // namespace

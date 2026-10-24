@@ -49,8 +49,9 @@ inline constexpr std::size_t ENVIRONMENT_VARIABLE_CAP = 4096;
 
 /// The calls WindowsProcessEnvironmentReader makes: kernel32's and ntdll's, or a test's fakes. The
 /// handle openProcess returns is closed through closeHandle, so a fake handle never reaches the real
-/// CloseHandle. isWow64Process2 is also asked about this process (GetCurrentProcess()), whose answer
-/// tells the reader's own pointer size from the target's.
+/// CloseHandle. isWow64Process2 is also asked about this process (GetCurrentProcess()); the pointer
+/// size each answer's machine implies (x86 and ARM32 are 32-bit; UNKNOWN, AMD64 and ARM64 are 64-bit)
+/// tells the reader's own from the target's.
 struct ProcessEnvironmentFunctions
 {
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
