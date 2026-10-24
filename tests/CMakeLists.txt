@@ -1132,7 +1132,11 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
 )
 # The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
 # once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
+# The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a
+# windows-2025 runner, which a slow one pushed past the CI steps' 60 s --timeout (main 82d9b173). The
+# same whole-suite limit as every other executable's entries.
 tasksmack_gtest_add_suites(TaskSmackAppTests
+    PROPERTIES TIMEOUT 300
     SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
