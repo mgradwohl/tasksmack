@@ -5,6 +5,7 @@
 #include "App/Panels/StartupActionsView.h"
 #include "Domain/ProcessIconCache.h"
 #include "Domain/StartupModel.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
@@ -16,7 +17,6 @@
 #include <imgui.h>
 // imgui_stdlib.h extends imgui.h's API for std::string, so it follows it.
 #include <algorithm>
-#include <cctype>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -35,27 +35,15 @@ namespace
 
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
 
-[[nodiscard]] bool containsIgnoringCase(std::string_view text, std::string_view needle)
-{
-    const auto lower = [](unsigned char c)
-    {
-        return std::tolower(c);
-    };
-    return !std::ranges::search(text, needle, {}, lower, lower).empty();
-}
-
-[[nodiscard]] std::strong_ordering compareIgnoringCase(std::string_view a, std::string_view b)
-{
-    return std::lexicographical_compare_three_way(
-        a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) { return std::tolower(x) <=> std::tolower(y); });
-}
+using Platform::compareIgnoreCase;
+using Platform::containsIgnoreCase;
 
 [[nodiscard]] std::strong_ordering compareBy(const Platform::StartupEntry& a, const Platform::StartupEntry& b, StartupColumn column)
 {
     switch (column)
     {
     case StartupColumn::Publisher:
-        return compareIgnoringCase(a.publisher, b.publisher);
+        return compareIgnoreCase(a.publisher, b.publisher);
     case StartupColumn::Enabled:
         // Enabled first; the names within each group are ordered by buildStartupRows (#1597).
         if (a.enabled != b.enabled)
@@ -68,10 +56,10 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
     case StartupColumn::Location:
         return a.location <=> b.location;
     case StartupColumn::Command:
-        return compareIgnoringCase(a.command, b.command);
+        return compareIgnoreCase(a.command, b.command);
     case StartupColumn::Name:
     default:
-        return compareIgnoringCase(a.name, b.name);
+        return compareIgnoreCase(a.name, b.name);
     }
 }
 
@@ -79,7 +67,7 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
 /// by where the entry is registered, so two entries never compare equal by name alone.
 [[nodiscard]] std::strong_ordering compareByName(const Platform::StartupEntry& a, const Platform::StartupEntry& b)
 {
-    if (const std::strong_ordering order = compareIgnoringCase(a.name, b.name); order != 0)
+    if (const std::strong_ordering order = compareIgnoreCase(a.name, b.name); order != 0)
     {
         return order;
     }
@@ -285,9 +273,9 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
         const auto& entry = entries[i];
-        if (filter.empty() || containsIgnoringCase(entry.name, filter) || containsIgnoringCase(entry.registrationName, filter) ||
-            containsIgnoringCase(entry.programName, filter) || containsIgnoringCase(entry.publisher, filter) ||
-            containsIgnoringCase(entry.command, filter))
+        if (containsIgnoreCase(entry.name, filter) || containsIgnoreCase(entry.registrationName, filter) ||
+            containsIgnoreCase(entry.programName, filter) || containsIgnoreCase(entry.publisher, filter) ||
+            containsIgnoreCase(entry.command, filter))
         {
             rows.push_back(i);
         }

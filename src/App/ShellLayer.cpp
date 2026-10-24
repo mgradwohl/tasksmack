@@ -156,30 +156,42 @@ void ShellLayer::onAttach()
 
     spdlog::info("Panels initialized");
 
-    // Build stable tab labels. Hostname doesn't change for the process lifetime,
-    // so the system tab label is built once here.
-    m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
+    // Build stable tab labels. The system tab's carries the hostname, which the System panel learns
+    // from its first sample, on its sampler thread (#2731): "System" now, the hostname once it is
+    // adopted (updateSystemTabLabel() in onUpdate()), and unchanged for the rest of the process.
     m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
+    m_DetailsTabNoSelectionLabel = makeDetailsTabLabel(ProcessDetailsPanel::NO_SELECTION_TAB_TEXT);
+    updateSystemTabLabel();
+
+    // Trigger the startup notice if wanted. The status bar's lock icon reads the live value instead
+    // (#1254); the notice itself is a one-off at startup. Whether the probe has reduced privileges is
+    // known with its first generation, which the sampler thread is still building (#2731), so onUpdate()
+    // decides once that has been adopted, after all layers are stacked (ElevationNoticeLayer hasn't been
+    // pushed yet here).
+    // Not while any test hook is set (#1559, #1569): the modal would cover the unattended capture,
+    // and dismissing it needs input.
+    m_PendingPrivilegeNotice = UserConfig::get().settings().showPrivilegeNotice && !SelectOverride::testHookActive();
+}
+
+void ShellLayer::updateSystemTabLabel()
+{
+    const std::string& hostname = m_SystemMetricsPanel.hostname();
+    if (m_SystemTabLabelBuilt && hostname == m_SystemTabLabelHostname)
+    {
+        return; // one string compare per frame, no allocation
+    }
+    m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, hostname, TabLabel::SYSTEM_TAB_ID);
+    m_SystemTabLabelHostname = hostname;
+    m_SystemTabLabelBuilt = true;
 
     // The labels the window's minimum width is measured with (#1939): every tab's own, but the Process
     // Details tab's as it reads with nothing selected, so the minimum does not move with the selection.
-    // A longer process name shrinks the tabs to fit instead.
-    m_DetailsTabNoSelectionLabel = makeDetailsTabLabel(ProcessDetailsPanel::NO_SELECTION_TAB_TEXT);
+    // A longer process name shrinks the tabs to fit instead. Rebuilt with the system tab's label, whose
+    // storage they point into.
     m_TabBarMinimumLabels.clear();
     for (const auto& tab : m_Tabs.tabs())
     {
         m_TabBarMinimumLabels.push_back(tab.eventName == "ProcessDetails" ? m_DetailsTabNoSelectionLabel.c_str() : tab.label());
-    }
-
-    // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
-    // (#1254); the notice itself is a one-off at startup.
-    // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
-    // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    // Not while any test hook is set (#1559, #1569): the modal would cover the unattended capture,
-    // and dismissing it needs input.
-    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice && !SelectOverride::testHookActive())
-    {
-        m_PendingPrivilegeNotice = true;
     }
 }
 
@@ -360,12 +372,17 @@ void ShellLayer::onUpdate(float deltaTime)
         ShellPanels::raiseStartupSettings([this](Core::Event& event) { m_Host->raiseEvent(event); });
     }
 
-    // Dispatch the startup privilege notice on the first update, after all layers are stacked.
-    if (m_PendingPrivilegeNotice)
+    // Dispatch the startup privilege notice on the first update after the process probe's first
+    // generation (#2731), with all layers stacked: that generation says whether the probe runs with
+    // reduced privileges, which onAttach() could not know.
+    if (m_PendingPrivilegeNotice && m_ProcessesPanel.firstSnapshotAdopted())
     {
         m_PendingPrivilegeNotice = false;
-        Core::OpenElevationNoticeEvent evt(m_ProcessesPanel.processCapabilities().missingPrivileges);
-        m_Host->raiseEvent(evt);
+        if (const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities(); capabilities.hasReducedPrivileges)
+        {
+            Core::OpenElevationNoticeEvent evt(capabilities.missingPrivileges);
+            m_Host->raiseEvent(evt);
+        }
     }
 
     // The frame's real duration, not deltaTime: deltaTime is capped at 0.1 s for animation, which made a
@@ -388,6 +405,9 @@ void ShellLayer::onUpdate(float deltaTime)
     // The hand-offs between the panels: capabilities, the selection count, Process Details' new
     // samples and the Services sampler's background demand (ShellPanels::update(), #2136).
     m_Panels.update(deltaTime);
+
+    // The system tab's label takes the hostname when the System panel's first sample brings it (#2731).
+    updateSystemTabLabel();
 
     // Rebuild the cached details tab label only when its text actually changes. Rebuilding on
     // every frame would allocate three std::string objects per frame at 60 fps; comparing the

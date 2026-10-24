@@ -10,6 +10,7 @@
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/UnsupportedSystemInfoProbe.h"
@@ -3207,10 +3208,12 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
     EXPECT_FALSE(UI::Widgets::sparklineYRange({}).has_value());
 }
 
-/// A package temperature and a fan, with a few seconds of history for the first (Domain::sensorKey()).
-[[nodiscard]] Domain::SystemInfoSnapshot snapshotWithSensorHistory()
+/// The sensor sampler's read (#2737) of a package temperature and a fan, with a few seconds of history
+/// for the first (Domain::sensorKey()).
+[[nodiscard]] Domain::SensorPublication sensorsWithHistory()
 {
-    Domain::SystemInfoSnapshot snap = snapshot();
+    Domain::SensorPublication snap;
+    snap.version = 1;
     snap.sensors.available = true;
     snap.sensors.listed = true;
     snap.sensors.devices.push_back({.name = "coretemp", .id = {}, .readings = {}});
@@ -3219,7 +3222,7 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
     snap.sensors.devices[0].readings.push_back(
         {.kind = Platform::SensorKind::Fan, .label = "fan1", .id = {}, .value = 1200.0, .high = {}, .critical = {}});
     const std::string key = Domain::sensorKey(snap.sensors.devices[0], snap.sensors.devices[0].readings[0]);
-    Domain::SensorRange& range = snap.sensorRanges[key];
+    Domain::SensorRange& range = snap.ranges[key];
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     int sample = 0;
     while (sample < 5)
@@ -3228,7 +3231,7 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
         range.min = sample == 0 ? value : std::min(range.min, value);
         range.max = std::max(range.max, value);
         ++range.samples;
-        Domain::appendSensorHistory(snap.sensorHistories[key], value, now - 10.0 + (2.0 * sample));
+        Domain::appendSensorHistory(snap.histories[key], value, now - 10.0 + (2.0 * sample));
         ++sample;
     }
     return snap;
@@ -3236,8 +3239,8 @@ TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
 
 TEST(SystemInfoSectionsTest, SensorRowsNameTheirKindForTheirChart)
 {
-    const Domain::SystemInfoSnapshot snap = snapshotWithSensorHistory();
-    const Section section = SystemInfo::buildSensorsSection(snap.sensors, snap.sensorRanges);
+    const Domain::SensorPublication snap = sensorsWithHistory();
+    const Section section = SystemInfo::buildSensorsSection(snap.sensors, snap.ranges);
     const Row* temperature = findRow(section, "coretemp: Package id 0");
     ASSERT_NE(temperature, nullptr);
     EXPECT_EQ(temperature->sensorKind, std::optional(Platform::SensorKind::Temperature));
@@ -3284,18 +3287,48 @@ TEST_F(SystemInfoViewRenderTest, SensorsSectionDrawsEachSensorsHistory)
 {
     ImPlotContext* plot = ImPlot::CreateContext();
     const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
-    const Domain::SystemInfoSnapshot withHistory = snapshotWithSensorHistory();
+    const Domain::SystemInfoSnapshot page = snapshot();
+    const Domain::SensorPublication withHistory = sensorsWithHistory();
     SystemInfoViewState state;
-    static_cast<void>(runFrame([&] { return renderSystemInfoView(&withHistory, supported, false, state); }));
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&page, supported, false, state, &withHistory); }));
     const int withCharts = ImGui::GetDrawData()->TotalVtxCount;
 
-    // The same page with no history (a first read): no chart column, so less geometry.
-    Domain::SystemInfoSnapshot withoutHistory = withHistory;
+    // The same sensors with no history (a first read): no chart column, so less geometry.
+    Domain::SensorPublication withoutHistory = withHistory;
     withoutHistory.version += 1;
-    withoutHistory.sensorHistories.clear();
-    static_cast<void>(runFrame([&] { return renderSystemInfoView(&withoutHistory, supported, false, state); }));
+    withoutHistory.histories.clear();
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&page, supported, false, state, &withoutHistory); }));
     const int withoutCharts = ImGui::GetDrawData()->TotalVtxCount;
     EXPECT_GT(withCharts, withoutCharts);
+    ImPlot::DestroyContext(plot);
+}
+
+// #2737: a new sensor read, at the Settings interval, rebuilds only the Sensors section: its row shows the
+// new reading, and the rest of the page (built from the page read) is left as it was.
+TEST_F(SystemInfoViewRenderTest, ANewSensorReadRebuildsOnlyTheSensorsSection)
+{
+    ImPlotContext* plot = ImPlot::CreateContext();
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    const Domain::SystemInfoSnapshot page = snapshot();
+    Domain::SensorPublication sensors = sensorsWithHistory();
+    SystemInfoViewState state;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&page, supported, false, state, &sensors); }));
+    const auto sensorsSection = [&state]
+    {
+        return std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &Section::title);
+    };
+    ASSERT_NE(sensorsSection(), state.sections.end());
+    const std::size_t sectionCount = state.sections.size();
+    state.readAtText = "untouched"; // set again only by a full rebuild for a new page read
+
+    sensors.version += 1;
+    sensors.sensors.devices[0].readings[0].value = 77.0;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&page, supported, false, state, &sensors); }));
+    ASSERT_NE(sensorsSection(), state.sections.end());
+    EXPECT_TRUE(findRow(*sensorsSection(), "coretemp: Package id 0")->value.contains(UI::Format::formatFixedLocalized(77.0, 1, " °C")));
+    EXPECT_EQ(state.sections.size(), sectionCount);
+    EXPECT_EQ(state.readAtText, "untouched") << "the page read wasn't rebuilt";
+    EXPECT_EQ(state.sectionsSensorsVersion, sensors.version);
     ImPlot::DestroyContext(plot);
 }
 

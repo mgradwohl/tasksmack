@@ -589,11 +589,11 @@ struct WifiLink
     std::uint32_t frequencyMhz = 0; ///< The channel's centre frequency; 0 when unknown
     std::uint32_t bitrateKbps = 0;  ///< The current transmit rate in kbit/s; 0 when unknown
 
-    // Windows only so far: Linux leaves these empty.
-    std::optional<std::uint32_t> signalQuality; ///< 0-100 %, Windows' own measure of the signal
-    std::string phy;                            ///< The standard: "802.11ax (Wi-Fi 6)"
-    std::uint32_t channel = 0;                  ///< The channel when frequencyMhz isn't known; 0 when unknown
-    std::uint32_t rxBitrateKbps = 0;            ///< The current receive rate in kbit/s; 0 when unknown
+    /// 0-100 %: Windows' own measure of the signal; Linux: NetworkManager's strength of the access point (#2591).
+    std::optional<std::uint32_t> signalQuality;
+    std::string phy;                 ///< The standard: "802.11ax (Wi-Fi 6)"; Linux: from nl80211's rates (#2591)
+    std::uint32_t channel = 0;       ///< Windows: the channel when frequencyMhz isn't known; 0 when unknown
+    std::uint32_t rxBitrateKbps = 0; ///< The current receive rate in kbit/s; 0 when unknown; Linux: nl80211
 };
 
 /// An adapter's IPv4 DHCP lease (#1518): who gave the address, for how long, and until when.
@@ -634,11 +634,13 @@ struct NetworkAdapter
     /// GetAdaptersAddresses (the lease's length isn't reported, so leaseSeconds stays 0).
     std::optional<DhcpLease> dhcpLease;
 
-    // Windows only so far: Linux leaves these empty, and their rows out.
-    std::string description;           ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
-    std::vector<std::string> gateways; ///< This adapter's default gateways
+    /// The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"; Linux: udev's hwdata vendor and model (#2591).
+    std::string description;
+    /// This adapter's default gateways; Linux: the default routes that leave by it, IPv4 then IPv6 (#2591).
+    std::vector<std::string> gateways;
     /// Whether IPv4 is configured by DHCP; unset when not known. Says "static" for an adapter without
-    /// a dhcpLease, and "no lease yet" for one that asks DHCP but holds none.
+    /// a dhcpLease, and "no lease yet" for one that asks DHCP but holds none. Linux: NetworkManager's
+    /// DHCP4 config for a device it manages, or a systemd-networkd lease (#2591).
     std::optional<bool> dhcpEnabled;
 };
 

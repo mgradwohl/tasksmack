@@ -431,6 +431,7 @@ TEST_F(NonAsciiProcessesPanelTest, TheTableDrawsNonAsciiAndInvalidNamesWithoutCr
                 .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         });
     panel->onAttach();
+    ASSERT_TRUE(panel->waitForFirstSample()); // the probe is built and the seed taken on the sampler thread (#2731)
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);
 

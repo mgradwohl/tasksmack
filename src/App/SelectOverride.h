@@ -24,11 +24,11 @@
 
 #include "Core/EnvUtils.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -124,15 +124,6 @@ struct ParseResult
 namespace Detail
 {
 
-[[nodiscard]] inline bool equalsIgnoreCase(const std::string_view a, const std::string_view b) noexcept
-{
-    return a.size() == b.size() &&
-           std::ranges::equal(a,
-                              b,
-                              [](const char x, const char y)
-                              { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
-}
-
 /// The value @p text names in @p names (TAB_NAMES and the like), in any case, or nullopt.
 template<typename Value, std::size_t N>
 [[nodiscard]] std::optional<Value> parseName(const std::string_view text,
@@ -140,7 +131,7 @@ template<typename Value, std::size_t N>
 {
     for (const auto& [name, value] : names)
     {
-        if (equalsIgnoreCase(text, name))
+        if (Platform::equalsIgnoreCase(text, name))
         {
             return value;
         }
@@ -380,7 +371,7 @@ inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TA
     }
     for (const auto& [alias, id] : TAB_ALIASES)
     {
-        if (Detail::equalsIgnoreCase(wanted, alias))
+        if (Platform::equalsIgnoreCase(wanted, alias))
         {
             const std::string_view target = id;
             return findId([target](const TabInfo& tab) { return tab.id == target; });

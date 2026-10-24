@@ -4,7 +4,7 @@
 // directly instead of only indirectly through a live SDL/OpenGL application instance. Each
 // function takes every input explicitly rather than reading Application member state -- see
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
-// App/TitleBarGeometry.h, App/Panels/AdaptiveIntervalUtils.h).
+// App/TitleBarGeometry.h).
 
 #include <algorithm>
 #include <cmath>

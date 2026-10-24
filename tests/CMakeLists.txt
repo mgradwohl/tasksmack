@@ -369,7 +369,6 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
-    App/test_AdaptiveIntervalUtils.cpp
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -425,6 +424,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
+    Platform/test_AsciiCase.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
@@ -529,12 +529,14 @@ set(COMMON_TEST_SOURCES
 # every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
 # a probe, Windows types or fakes of Windows APIs stay in WINDOWS_PLATFORM_TEST_SOURCES.
 set(WINDOWS_MATH_TEST_SOURCES
+    Platform/WindowsMath/test_AdapterPerfDataMath.cpp  # D3DKMT adapter perf data as GPU sensors (#2586)
     Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
     Platform/WindowsMath/test_WindowsEtwNetMath.cpp
     Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsPathProviderMath.cpp
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
+    Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
@@ -570,6 +572,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
+    Platform/test_WindowsProcessEnvironmentReader.cpp  # the environment block out of a fake process's PEB, and this process's own (#2569)
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
@@ -581,10 +584,12 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
+    Platform/test_WindowsEnergyMeter.cpp  # the EMI package energy through fake device calls, and the probe's reading (#2587)
     Platform/test_WindowsNVMLGPUProbe.cpp
     Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
+    Platform/test_WindowsD3DKMTAdapterPerfData.cpp  # the kernel adapter's perf data through fake D3DKMT calls (#2586)
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbeDXCore.cpp
     Platform/test_WindowsGPURescan.cpp
@@ -616,6 +621,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
+    Platform/test_Nl80211.cpp  # Wi-Fi rates and standard from nl80211 (#2591)
     Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
@@ -840,6 +846,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp

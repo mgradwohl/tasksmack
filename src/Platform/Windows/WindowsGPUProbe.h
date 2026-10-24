@@ -5,6 +5,8 @@
 #include "Platform/Windows/WindowsDriverNodes.h"
 
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,13 +17,18 @@
 namespace Platform
 {
 
+class DisplayDevicePower;
 class DXGIGPUProbe;
 class NVMLGPUProbe;
 class PDHGPUProbe;
+struct D3DKMTAdapterFunctions;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// - DXGI: Basic GPU enumeration (all vendors)
 /// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan, video encoder/decoder) and VRAM
+/// - D3DKMT adapter perf data: temperature, clock and fan for the GPUs NVML doesn't cover (AMD,
+///   Intel, Qualcomm, or NVIDIA without NVML), from the kernel graphics adapter, the figures Task
+///   Manager draws (#2586, D3DKMTAdapterPerfData.h). NVML is preferred where it has the adapter.
 /// - PDH: adapter and per-process GPU utilization, and memory, via Performance Counters (all
 ///   vendors, NVIDIA included, so every adapter's % means what Task Manager's does, #1264)
 ///
@@ -82,6 +89,19 @@ class WindowsGPUProbe : public IGPUProbe
                                                                         bool takeUtilization,
                                                                         const std::unordered_set<std::string>& idleDevices);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
+
+    /// Decide, at enumeration, which of @p gpus (DXGI's, in enumeration order) get their sensors from
+    /// D3DKMT adapter perf data (#2586): every GPU without an NVML device, by one reading each
+    /// (AdapterPerfDataMath.h's adapterPerfSensorCapabilities()), which sets its sensorCapabilities
+    /// and lists it in m_PerfAdapters. A GPU asleep now isn't read -- the query could wake it -- and
+    /// goes to m_PerfAsleepAtEnumeration with no sensors, for a quick rescan to report once it wakes.
+    void assignAdapterPerfSensors(std::vector<GPUInfo>& gpus);
+    /// Read each m_PerfAdapters adapter's perf data this sample and fill its counter's temperature,
+    /// clock and fan; a failed read, or an adapter asleep now (left alone, and marked suspended), is a
+    /// gap for each of its sensors.
+    void mergeAdapterPerfSensors(std::vector<GPUCounters>& counters);
+    /// Whether the GPU at @p location is asleep (m_IsAsleep); false without a location.
+    [[nodiscard]] bool isAdapterAsleep(const std::optional<PciLocation>& location) const;
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
@@ -146,6 +166,29 @@ class WindowsGPUProbe : public IGPUProbe
     // nvmlDevicesToLeaveIdle()).
     std::unordered_map<std::string, double> m_LastPDHUtilization;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_NVMLLastRead;
+
+    // The kernel adapter calls the perf-data reads make (#2586): gdi32's exports, or fakes in tests.
+    std::unique_ptr<D3DKMTAdapterFunctions> m_PerfFunctions;
+    // Whether a GPU is asleep, from the PnP manager's record of its power state, so a sleeping
+    // AMD or Intel dGPU is never woken by a perf-data query (#1265): m_DevicePower's answer in
+    // production, a fake in tests.
+    std::shared_ptr<DisplayDevicePower> m_DevicePower;
+    std::function<bool(const PciLocation&)> m_IsAsleep;
+
+    /// One adapter whose sensors come from D3DKMT adapter perf data: the LUID its kernel adapter is
+    /// opened by, where it sits (for the sleep check) and which sensors it reported at enumeration.
+    struct PerfAdapter
+    {
+        std::uint32_t luidHighPart = 0;
+        std::uint32_t luidLowPart = 0;
+        std::optional<PciLocation> pciLocation;
+        GPUCapabilities sensors{};
+    };
+    // By adapter id (GPUInfo::id), rebuilt by every enumerateGPUs().
+    std::unordered_map<std::string, PerfAdapter> m_PerfAdapters;
+    // The adapters asleep at the last enumeration, whose sensor set is still unknown, by id: a quick
+    // rescan reports a change once one is awake, so the enumeration that follows reads it (#1289).
+    std::unordered_map<std::string, PciLocation> m_PerfAsleepAtEnumeration;
 };
 
 } // namespace Platform

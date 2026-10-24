@@ -5,6 +5,7 @@
 
 #include "Domain/CrashHistory.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Mocks/UnsupportedSystemInfoProbe.h"
@@ -290,6 +291,21 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
                                              .critical = std::nullopt});
 }
 
+/// The sensor sampler's model (#2737) over @p probe's sensors, on a clock that moves 2 s on at each
+/// read: one sample() stands for one read of the sensors.
+[[nodiscard]] std::unique_ptr<SensorModel> sensorModelOver(std::unique_ptr<FakeSystemInfoProbe> probe)
+{
+    const std::shared_ptr<FakeSystemInfoProbe> shared = std::move(probe);
+    auto now = std::make_shared<SensorModel::Clock::time_point>(std::chrono::hours(1));
+    return std::make_unique<SensorModel>([shared] { return SensorModel::Reader([shared] { return shared->readSensors(); }); },
+                                         std::chrono::milliseconds(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS),
+                                         [now]
+                                         {
+                                             *now += std::chrono::seconds(2);
+                                             return *now;
+                                         });
+}
+
 /// A temperature or other reading for a scripted sensors read (#2340).
 [[nodiscard]] Platform::SensorReading scriptedReading(Platform::SensorKind kind, std::string label, std::string id, double value)
 {
@@ -351,15 +367,13 @@ TEST(SystemInfoModelTest, WifiDetailsOnlyOnceAskedThenForTheSession)
     EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld);
     EXPECT_TRUE(model.snapshot()->wifiDetailsIncluded);
 
-    model.readSensors();
-    EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "kept from the last full read";
     model.read(); // Refresh
     EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "the choice holds";
     EXPECT_TRUE(model.snapshot()->wifiDetailsIncluded);
 }
 
 // #1518: the public addresses are looked up (a query off the machine) only once asked for, then on every
-// read after, Refresh too; a sensors-only read keeps what the last full read had.
+// read after, Refresh too.
 TEST(SystemInfoModelTest, PublicIpOnlyOnceAskedThenForTheSession)
 {
     int reads = 0;
@@ -382,9 +396,6 @@ TEST(SystemInfoModelTest, PublicIpOnlyOnceAskedThenForTheSession)
     EXPECT_EQ(model.snapshot()->publicIp.v4, "203.0.113.7");
     EXPECT_EQ(model.snapshot()->publicIp.v6Unavailable, "No IPv6 route to the internet");
 
-    model.readSensors();
-    EXPECT_EQ(lookups, 1) << "a sensors read doesn't look it up again";
-    EXPECT_EQ(model.snapshot()->publicIp.v4, "203.0.113.7") << "kept from the last full read";
     model.read(); // Refresh
     EXPECT_EQ(lookups, 2) << "the choice holds";
 }
@@ -477,35 +488,27 @@ TEST(SystemInfoModelTest, PublicIpNeverAskedOfAProbeWithoutALookup)
 
 // #1522: the sensors read again on their own, with every other fact (and when they were read) kept, and
 // each sensor's range over the reads.
-TEST(SystemInfoModelTest, ReadSensorsKeepsTheRestAndTracksEachSensorsRange)
+// #2737: the sensors are read by their own sampler, which tracks each one's range; the page's full read
+// keeps no ranges of its own.
+TEST(SystemInfoModelTest, TheSensorSamplerTracksEachSensorsRange)
 {
     int reads = 0;
-    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
-    model.readSensors(); // before the first read: nothing to keep the rest of
-    EXPECT_EQ(model.version(), 0U);
-
-    model.read();
-    const auto first = model.snapshot();
+    auto sensors = sensorModelOver(std::make_unique<FakeSystemInfoProbe>(true, &reads));
     const std::string key = coretempKey();
-    ASSERT_TRUE(first->sensorRanges.contains(key));
-    EXPECT_EQ(first->sensorRanges.at(key), (SensorRange{.min = 50.0, .max = 50.0, .samples = 1}));
+    sensors->sample();
+    const auto first = sensors->publication();
+    ASSERT_TRUE(first->ranges.contains(key));
+    EXPECT_EQ(first->ranges.at(key), (SensorRange{.min = 50.0, .max = 50.0, .samples = 1}));
 
-    model.readSensors();
-    model.readSensors();
-    const auto latest = model.snapshot();
+    sensors->sample();
+    sensors->sample();
+    const auto latest = sensors->publication();
     EXPECT_EQ(latest->version, 3U);
-    EXPECT_EQ(reads, 1);                          // the OS wasn't read again
-    EXPECT_EQ(latest->os.build, first->os.build); // nor anything else
-    EXPECT_EQ(latest->readAtUnixSeconds, first->readAtUnixSeconds);
+    EXPECT_EQ(reads, 0) << "nothing but the sensors was read";
     ASSERT_EQ(latest->sensors.devices.size(), 1U);
     EXPECT_DOUBLE_EQ(latest->sensors.devices[0].readings[0].value, 60.0);
-    EXPECT_EQ(latest->sensorRanges.at(key), (SensorRange{.min = 40.0, .max = 60.0, .samples = 3}));
-    EXPECT_EQ(first->sensorRanges.at(key).samples, 1U); // an earlier snapshot is unchanged
-
-    // A full read (Refresh) adds to the ranges rather than starting them again.
-    model.read();
-    EXPECT_EQ(model.snapshot()->sensorRanges.at(key).samples, 4U);
-    EXPECT_FALSE(model.tryReadSensors().has_value());
+    EXPECT_EQ(latest->ranges.at(key), (SensorRange{.min = 40.0, .max = 60.0, .samples = 3}));
+    EXPECT_EQ(first->ranges.at(key).samples, 1U); // an earlier publication is unchanged
 }
 
 // #1773: a read is stamped when it starts, so the crash cache it publishes to orders it correctly against
@@ -602,21 +605,19 @@ TEST(SystemInfoModelTest, RequiresAProbe)
     EXPECT_THROW(SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe>{}), std::invalid_argument);
 }
 
-// #1522: each sensor's history for its row's chart, appended on full and sensors-only reads alike.
-TEST(SystemInfoModelTest, BothKindsOfReadAppendToEachSensorsHistory)
+// #1522: each sensor's history for its row's chart, appended at each read, oldest first.
+TEST(SystemInfoModelTest, EachSensorReadAppendsToItsHistory)
 {
     int reads = 0;
-    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    auto sensors = sensorModelOver(std::make_unique<FakeSystemInfoProbe>(true, &reads));
     const std::string key = coretempKey();
-    model.read(); // 50 °C
-    ASSERT_TRUE(model.snapshot()->sensorHistories.contains(key));
-    EXPECT_EQ(model.snapshot()->sensorHistories.at(key).values.size(), 1U);
+    sensors->sample(); // 50 °C
+    ASSERT_TRUE(sensors->publication()->histories.contains(key));
+    EXPECT_EQ(sensors->publication()->histories.at(key).values.size(), 1U);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
-    model.readSensors();                                       // 40 °C
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    model.read(); // 60 °C
-    const SensorHistory& range = model.snapshot()->sensorHistories.at(key);
+    sensors->sample(); // 40 °C
+    sensors->sample(); // 60 °C
+    const SensorHistory& range = sensors->publication()->histories.at(key);
     ASSERT_EQ(range.values.size(), 3U);
     ASSERT_EQ(range.times.size(), 3U);
     EXPECT_FLOAT_EQ(range.values[0], 50.0F); // oldest first
@@ -643,20 +644,20 @@ TEST(SystemInfoModelTest, ADeviceTakingAnUnpluggedOnesNumberStartsItsOwnRange)
     int reads = 0;
     auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
     probe->scriptSensors({chip("nvme", 40.0), chip("nvme", 55.0), chip("nvme #2", 50.0), chip("mt7921_phy0", 30.0)});
-    SystemInfoModel model(std::move(probe));
-    model.read();
-    model.readSensors();
-    model.readSensors();
+    auto sensors = sensorModelOver(std::move(probe));
+    sensors->sample();
+    sensors->sample();
+    sensors->sample();
     const std::string key = std::string("hwmon5") + '\x1F' + "temp1_input";
-    const auto renamed = model.snapshot();
-    ASSERT_TRUE(renamed->sensorRanges.contains(key));
-    EXPECT_EQ(renamed->sensorRanges.at(key), (SensorRange{.min = 40.0, .max = 55.0, .samples = 3})) << "only its #2 changed";
+    const auto renamed = sensors->publication();
+    ASSERT_TRUE(renamed->ranges.contains(key));
+    EXPECT_EQ(renamed->ranges.at(key), (SensorRange{.min = 40.0, .max = 55.0, .samples = 3})) << "only its #2 changed";
 
-    model.readSensors();
-    const auto replaced = model.snapshot();
-    EXPECT_EQ(replaced->sensorRanges.at(key), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
-    ASSERT_TRUE(replaced->sensorHistories.contains(key));
-    EXPECT_EQ(replaced->sensorHistories.at(key).values.size(), 1U);
+    sensors->sample();
+    const auto replaced = sensors->publication();
+    EXPECT_EQ(replaced->ranges.at(key), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
+    ASSERT_TRUE(replaced->histories.contains(key));
+    EXPECT_EQ(replaced->histories.at(key).values.size(), 1U);
 }
 
 // #2340: two sensors that share a label (two "acpitz" thermal zones; a voltage and a current both
@@ -698,10 +699,10 @@ TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
         sensors({zone1(72.0), zone0(41.0)}, {amps(2.5), volts(12.1)}), // the same channels, listed the other way round
         sensors({zone1(74.0)}, {amps(3.0)}),                           // thermal_zone0 and in1 gone
     });
-    SystemInfoModel model(std::move(probe));
+    auto sampler = sensorModelOver(std::move(probe));
 
-    model.read();
-    const auto first = model.snapshot();
+    sampler->sample();
+    const auto first = sampler->publication();
     const Platform::SensorDevice& chip = first->sensors.devices[0];
     const Platform::SensorDevice& thermal = first->sensors.devices[1];
     const std::string zone0Key = sensorKey(thermal, thermal.readings[0]);
@@ -710,32 +711,30 @@ TEST(SystemInfoModelTest, SensorsSharingALabelKeepTheirOwnRangeAndHistory)
     const std::string ampsKey = sensorKey(chip, chip.readings[1]);
     EXPECT_NE(zone0Key, zone1Key);
     EXPECT_NE(voltsKey, ampsKey);
-    ASSERT_EQ(first->sensorRanges.size(), 4U);
-    ASSERT_EQ(first->sensorHistories.size(), 4U);
-    EXPECT_EQ(first->sensorRanges.at(zone0Key), (SensorRange{.min = 40.0, .max = 40.0, .samples = 1}));
-    EXPECT_EQ(first->sensorRanges.at(zone1Key), (SensorRange{.min = 70.0, .max = 70.0, .samples = 1}));
-    EXPECT_EQ(first->sensorRanges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.0, .samples = 1}));
-    EXPECT_EQ(first->sensorRanges.at(ampsKey), (SensorRange{.min = 2.0, .max = 2.0, .samples = 1}));
+    ASSERT_EQ(first->ranges.size(), 4U);
+    ASSERT_EQ(first->histories.size(), 4U);
+    EXPECT_EQ(first->ranges.at(zone0Key), (SensorRange{.min = 40.0, .max = 40.0, .samples = 1}));
+    EXPECT_EQ(first->ranges.at(zone1Key), (SensorRange{.min = 70.0, .max = 70.0, .samples = 1}));
+    EXPECT_EQ(first->ranges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.0, .samples = 1}));
+    EXPECT_EQ(first->ranges.at(ampsKey), (SensorRange{.min = 2.0, .max = 2.0, .samples = 1}));
     // Every channel enters its own history, though they were all read at the same time.
-    EXPECT_EQ(first->sensorHistories.at(zone0Key).values, std::vector<float>{40.0F});
-    EXPECT_EQ(first->sensorHistories.at(zone1Key).values, std::vector<float>{70.0F});
-    EXPECT_EQ(first->sensorHistories.at(voltsKey).values, std::vector<float>{12.0F});
-    EXPECT_EQ(first->sensorHistories.at(ampsKey).values, std::vector<float>{2.0F});
+    EXPECT_EQ(first->histories.at(zone0Key).values, std::vector<float>{40.0F});
+    EXPECT_EQ(first->histories.at(zone1Key).values, std::vector<float>{70.0F});
+    EXPECT_EQ(first->histories.at(voltsKey).values, std::vector<float>{12.0F});
+    EXPECT_EQ(first->histories.at(ampsKey).values, std::vector<float>{2.0F});
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
-    model.readSensors();
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    model.readSensors();
-    const auto latest = model.snapshot();
-    ASSERT_EQ(latest->sensorRanges.size(), 4U);
-    EXPECT_EQ(latest->sensorRanges.at(zone0Key), (SensorRange{.min = 40.0, .max = 41.0, .samples = 2}));
-    EXPECT_EQ(latest->sensorRanges.at(zone1Key), (SensorRange{.min = 70.0, .max = 74.0, .samples = 3}));
-    EXPECT_EQ(latest->sensorRanges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.1, .samples = 2}));
-    EXPECT_EQ(latest->sensorRanges.at(ampsKey), (SensorRange{.min = 2.0, .max = 3.0, .samples = 3}));
-    EXPECT_EQ(latest->sensorHistories.at(zone0Key).values, (std::vector<float>{40.0F, 41.0F}));
-    EXPECT_EQ(latest->sensorHistories.at(zone1Key).values, (std::vector<float>{70.0F, 72.0F, 74.0F}));
-    EXPECT_EQ(latest->sensorHistories.at(voltsKey).values, (std::vector<float>{12.0F, 12.1F}));
-    EXPECT_EQ(latest->sensorHistories.at(ampsKey).values, (std::vector<float>{2.0F, 2.5F, 3.0F}));
+    sampler->sample();
+    sampler->sample();
+    const auto latest = sampler->publication();
+    ASSERT_EQ(latest->ranges.size(), 4U);
+    EXPECT_EQ(latest->ranges.at(zone0Key), (SensorRange{.min = 40.0, .max = 41.0, .samples = 2}));
+    EXPECT_EQ(latest->ranges.at(zone1Key), (SensorRange{.min = 70.0, .max = 74.0, .samples = 3}));
+    EXPECT_EQ(latest->ranges.at(voltsKey), (SensorRange{.min = 12.0, .max = 12.1, .samples = 2}));
+    EXPECT_EQ(latest->ranges.at(ampsKey), (SensorRange{.min = 2.0, .max = 3.0, .samples = 3}));
+    EXPECT_EQ(latest->histories.at(zone0Key).values, (std::vector<float>{40.0F, 41.0F}));
+    EXPECT_EQ(latest->histories.at(zone1Key).values, (std::vector<float>{70.0F, 72.0F, 74.0F}));
+    EXPECT_EQ(latest->histories.at(voltsKey).values, (std::vector<float>{12.0F, 12.1F}));
+    EXPECT_EQ(latest->histories.at(ampsKey).values, (std::vector<float>{2.0F, 2.5F, 3.0F}));
 }
 
 /// A full sensors read of @p devices (#2495).
@@ -768,27 +767,25 @@ TEST(SystemInfoModelTest, ADeviceTakingAnotherOnesHwmonNumberStartsFresh)
         // The NVMe enclosure unplugged and a Wi-Fi dongle plugged in, between two reads.
         scriptedSensors({scriptedChip("coretemp", "hwmon2", 51.0), scriptedChip("mt7921_phy0", "hwmon5", 30.0)}),
     });
-    SystemInfoModel model(std::move(probe));
+    auto sensors = sensorModelOver(std::move(probe));
 
-    model.read();
-    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
-    model.readSensors();
-    const auto before = model.snapshot();
+    sensors->sample();
+    sensors->sample();
+    const auto before = sensors->publication();
     const std::string coretemp = sensorKey(before->sensors.devices[0], before->sensors.devices[0].readings[0]);
     const std::string hwmon5 = sensorKey(before->sensors.devices[1], before->sensors.devices[1].readings[0]);
-    EXPECT_EQ(before->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 55.0, .samples = 2}));
-    EXPECT_EQ(before->sensorHistories.at(hwmon5).values, (std::vector<float>{40.0F, 55.0F}));
+    EXPECT_EQ(before->ranges.at(hwmon5), (SensorRange{.min = 40.0, .max = 55.0, .samples = 2}));
+    EXPECT_EQ(before->histories.at(hwmon5).values, (std::vector<float>{40.0F, 55.0F}));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    model.readSensors();
-    const auto after = model.snapshot();
+    sensors->sample();
+    const auto after = sensors->publication();
     ASSERT_EQ(after->sensors.devices[1].name, "mt7921_phy0");
     EXPECT_EQ(sensorKey(after->sensors.devices[1], after->sensors.devices[1].readings[0]), hwmon5) << "the same key";
-    EXPECT_EQ(after->sensorRanges.at(hwmon5), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
-    EXPECT_EQ(after->sensorHistories.at(hwmon5).values, std::vector<float>{30.0F});
+    EXPECT_EQ(after->ranges.at(hwmon5), (SensorRange{.min = 30.0, .max = 30.0, .samples = 1}));
+    EXPECT_EQ(after->histories.at(hwmon5).values, std::vector<float>{30.0F});
     // The device that stayed keeps its own.
-    EXPECT_EQ(after->sensorRanges.at(coretemp), (SensorRange{.min = 50.0, .max = 52.0, .samples = 3}));
-    EXPECT_EQ(after->sensorHistories.at(coretemp).values, (std::vector<float>{50.0F, 52.0F, 51.0F}));
+    EXPECT_EQ(after->ranges.at(coretemp), (SensorRange{.min = 50.0, .max = 52.0, .samples = 3}));
+    EXPECT_EQ(after->histories.at(coretemp).values, (std::vector<float>{50.0F, 52.0F, 51.0F}));
 }
 
 // #2495: a device gone from a full sensors list takes its range and history with it, so the maps don't
@@ -807,32 +804,30 @@ TEST(SystemInfoModelTest, ADeviceGoneFromTheSensorsListIsForgotten)
         scriptedSensors({scriptedChip("nvme", "hwmon5", 45.0)}), // hwmon3 unplugged: hwmon5 is "nvme" now
         scriptedSensors({scriptedChip("nvme", "hwmon3", 60.0), scriptedChip("nvme #2", "hwmon5", 42.0)}),
     });
-    SystemInfoModel model(std::move(probe));
+    auto sensors = sensorModelOver(std::move(probe));
 
-    model.read();
-    const auto first = model.snapshot();
+    sensors->sample();
+    const auto first = sensors->publication();
     const std::string hwmon3 = sensorKey(first->sensors.devices[0], first->sensors.devices[0].readings[0]);
     const std::string hwmon5 = sensorKey(first->sensors.devices[1], first->sensors.devices[1].readings[0]);
-    ASSERT_EQ(first->sensorRanges.size(), 2U);
+    ASSERT_EQ(first->ranges.size(), 2U);
 
-    model.readSensors(); // couldn't list the devices
-    EXPECT_EQ(model.snapshot()->sensorRanges.size(), 2U);
-    EXPECT_EQ(model.snapshot()->sensorHistories.size(), 2U);
+    sensors->sample(); // couldn't list the devices
+    EXPECT_EQ(sensors->publication()->ranges.size(), 2U);
+    EXPECT_EQ(sensors->publication()->histories.size(), 2U);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
-    model.readSensors();
-    const auto unplugged = model.snapshot();
-    EXPECT_FALSE(unplugged->sensorRanges.contains(hwmon3));
-    EXPECT_FALSE(unplugged->sensorHistories.contains(hwmon3));
-    EXPECT_EQ(unplugged->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 2}));
+    sensors->sample();
+    const auto unplugged = sensors->publication();
+    EXPECT_FALSE(unplugged->ranges.contains(hwmon3));
+    EXPECT_FALSE(unplugged->histories.contains(hwmon3));
+    EXPECT_EQ(unplugged->ranges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 2}));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    model.readSensors();
-    const auto replugged = model.snapshot();
-    EXPECT_EQ(replugged->sensorRanges.at(hwmon3), (SensorRange{.min = 60.0, .max = 60.0, .samples = 1}));
-    EXPECT_EQ(replugged->sensorHistories.at(hwmon3).values, std::vector<float>{60.0F});
-    EXPECT_EQ(replugged->sensorRanges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 3}));
-    EXPECT_EQ(replugged->sensorHistories.at(hwmon5).values, (std::vector<float>{40.0F, 45.0F, 42.0F}));
+    sensors->sample();
+    const auto replugged = sensors->publication();
+    EXPECT_EQ(replugged->ranges.at(hwmon3), (SensorRange{.min = 60.0, .max = 60.0, .samples = 1}));
+    EXPECT_EQ(replugged->histories.at(hwmon3).values, std::vector<float>{60.0F});
+    EXPECT_EQ(replugged->ranges.at(hwmon5), (SensorRange{.min = 40.0, .max = 45.0, .samples = 3}));
+    EXPECT_EQ(replugged->histories.at(hwmon5).values, (std::vector<float>{40.0F, 45.0F, 42.0F}));
 }
 
 // #2340: a source without ids still keeps a voltage and a current that share a label apart.

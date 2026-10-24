@@ -15,7 +15,9 @@
 // names in, an index out, no windows.h), so it is tested on every platform
 // (tests/Platform/WindowsMath/test_WindowsPackageLogoMath.cpp).
 
-#include <cctype>
+#include "Platform/AsciiCase.h"
+
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -61,12 +63,7 @@ struct Variant
 [[nodiscard]] inline std::string lowerAscii(std::string_view text)
 {
     std::string lower(text);
-    std::size_t index = 0;
-    while (index < lower.size())
-    {
-        lower[index] = static_cast<char>(std::tolower(static_cast<unsigned char>(lower[index])));
-        ++index;
-    }
+    std::ranges::transform(lower, lower.begin(), Platform::foldAscii);
     return lower;
 }
 

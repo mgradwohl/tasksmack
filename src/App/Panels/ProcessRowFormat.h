@@ -3,7 +3,7 @@
 // Pure per-row formatting logic extracted from ProcessesPanel (perf-plan #843 phase 3b), so it
 // can be unit-tested directly instead of only indirectly through a live ImGui context. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
-// ProcessTreeFlatten.h, AdaptiveIntervalUtils.h, TitleBarGeometry.h). buildRowFormatCache() makes
+// ProcessTreeFlatten.h, TitleBarGeometry.h). buildRowFormatCache() makes
 // no ImGui calls at all -- it only formats strings from a ProcessSnapshot -- so there is no
 // live-context blocker to extracting and testing it directly.
 

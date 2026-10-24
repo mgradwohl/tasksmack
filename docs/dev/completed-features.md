@@ -8,7 +8,7 @@ This is the canonical inventory of user-visible and engineering features current
 |---------|------------------|
 | Process table | Sortable, filterable list with PID, PPID, name and icon, command, user, publisher and type (Windows), container (Linux), services, state/status, CPU, memory (resident, virtual, shared, peak, and on Linux private and swap), CPU time, start time, priority, thread/handle/GDI counts, affinity, page faults, I/O, network, power (Linux with RAPL), GPU and NPU columns where supported; optional inline bars or sparklines behind the numeric columns |
 | Process tree | Collapsible parent/child hierarchy with cached rebuilds |
-| Process details | Overview with Identity, Runtime and Actions cards, recent crashes, and on-demand sections for services, environment variables (Linux), connections, modules, security context and open files; capability-driven chart tabs for CPU, memory, I/O, network, GPU and NPU data |
+| Process details | Overview with Identity, Runtime and Actions cards, recent crashes, and on-demand sections for services, environment variables, connections, modules, security context and open files; capability-driven chart tabs for CPU, memory, I/O, network, GPU and NPU data |
 | Column configuration | The header context menu and the toolbar's **Columns** menu (with **Reset columns**) control visibility; settings persist in `config.toml` |
 | Stable process identity | PID and process start time prevent counter reuse when an operating system recycles a PID |
 | Process actions | Terminate, force terminate, suspend/resume, priority and CPU affinity changes on Linux and Windows; I/O priority (ionice class and level) on Linux |
@@ -62,7 +62,7 @@ This is the canonical inventory of user-visible and engineering features current
 | AMD GPU | ROCm SMI | DXGI/PDH capability-dependent data |
 | Intel/generic GPU | DRM/sysfs | DXGI/PDH |
 | Stop/resume | `SIGSTOP` / `SIGCONT` | `NtSuspendProcess` / `NtResumeProcess` on a start-time-checked handle; critical and protected processes, PID 4 and TaskSmack itself are never suspended (#2582) |
-| Process environment variables | `/proc/[pid]/environ`, on demand for the selected process; secret-looking values masked until revealed | Not supported |
+| Process environment variables | `/proc/[pid]/environ`, on demand for the selected process; secret-looking values masked until revealed | The environment block out of the process's PEB (`NtQueryInformationProcess(ProcessBasicInformation)`, `ReadProcessMemory`) on a start-time-checked handle, on demand for the selected process, capped at 1 MiB and 4096 variables; the same masking; 32-bit (WOW64) processes not yet (#2569) |
 | Process security context | `/proc/[pid]/status` IDs, capabilities, `no_new_privs`, seccomp, LSM label and cgroup | The process token: user, integrity level, elevation, privileges and groups |
 | Process dump files | gdb's `gcore` | `MiniDumpWriteDump` from a `PssCaptureSnapshot` clone |
 | Per-process connections (netstat-style) | `/proc/[pid]/fd` socket inodes matched against `INET_DIAG` (fallback `/proc/[pid]/net/{tcp,tcp6,udp,udp6}`), on demand for the selected process | `GetExtendedTcpTable` / `GetExtendedUdpTable` owner-PID rows (IPv4 and IPv6) after a start-time check, on demand for the selected process (#1489) |

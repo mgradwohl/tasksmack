@@ -19,6 +19,7 @@
 #include "Platform/Linux/LinuxPlatformSecurity.h"
 #include "Platform/Linux/LinuxSensors.h"
 #include "Platform/Linux/LinuxStorage.h"
+#include "Platform/Linux/Nl80211.h"
 
 #include <gtest/gtest.h>
 
@@ -1314,6 +1315,91 @@ TEST(LinuxNetworkAdaptersTest, ReadsTheFactsUnderARoot)
     EXPECT_EQ(info.searchDomains, (std::vector<std::string>{"lan"}));
 }
 
+// #2591: each adapter's own gateways (IPv4 then IPv6, by metric), its hardware from udev's hwdata names,
+// and whether DHCP configures it.
+TEST(LinuxNetworkAdaptersTest, ReadsEachAdaptersGatewaysHardwareAndDhcp)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/eth0/ifindex", "2\n");
+    root.write("sys/class/net/wlan0/ifindex", "3\n");
+    root.write("sys/class/net/usb0/ifindex", "4\n");
+    root.write("run/udev/data/n2",
+               "I:12\nE:ID_VENDOR_FROM_DATABASE=Intel Corporation\nE:ID_MODEL_FROM_DATABASE=Ethernet Connection I219-V\n");
+    root.write("run/udev/data/n3",
+               "E:ID_VENDOR_FROM_DATABASE=Intel Corporation\nE:ID_MODEL_FROM_DATABASE=Intel Corporation Wi-Fi 6 AX201\n");
+    root.write("proc/net/route",
+               "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n"
+               "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\n"
+               "eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\n"
+               "eth0\t00000000\t0200A8C0\t0003\t0\t0\t50\t00000000\n"
+               "eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\n");
+    root.write("proc/net/ipv6_route",
+               "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 "
+               "00000000 00000003 eth0\n");
+    const auto addresses = []
+    {
+        return std::vector<LinuxNetworkAdapters::ListedAddress>{
+            {.adapter = "eth0", .address = {.address = "192.168.0.20", .prefix = 24, .v6 = false}},
+            {.adapter = "usb0", .address = {.address = "fe80::1", .prefix = 64, .v6 = true}},
+        };
+    };
+    const LinuxNetworkAdapters::DhcpLeaseReader networkManager = [](const std::string& adapter)
+    {
+        LinuxNetworkAdapters::DhcpLeaseRead read;
+        read.dhcp = adapter == "wlan0"; // eth0 static; usb0 not up (no IPv4 address), so not "static"
+        return read;
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, addresses, {.wifiLink = {}, .linkDns = {}, .dhcpLease = networkManager, .networkdLease = {}, .wifiStation = {}});
+    ASSERT_EQ(info.adapters.size(), 3U);
+    const NetworkAdapter& eth0 = info.adapters[0];
+    EXPECT_EQ(eth0.gateways, (std::vector<std::string>{"192.168.0.2", "192.168.0.1", "fe80::1"}));
+    EXPECT_EQ(eth0.description, "Intel Corporation Ethernet Connection I219-V");
+    EXPECT_EQ(eth0.dhcpEnabled, false);
+    const NetworkAdapter& usb0 = info.adapters[1];
+    EXPECT_TRUE(usb0.gateways.empty());
+    EXPECT_TRUE(usb0.description.empty()) << "no udev entry";
+    EXPECT_FALSE(usb0.dhcpEnabled.has_value());
+    const NetworkAdapter& wlan0 = info.adapters[2];
+    EXPECT_EQ(wlan0.gateways, (std::vector<std::string>{"192.168.1.1"}));
+    EXPECT_EQ(wlan0.description, "Intel Corporation Wi-Fi 6 AX201") << "the model already names the vendor";
+    EXPECT_EQ(wlan0.dhcpEnabled, true);
+    EXPECT_EQ(info.gatewayV4, "192.168.0.2"); // the lowest metric overall
+    EXPECT_EQ(info.gatewayV4Adapter, "eth0");
+}
+
+// #2591: a connected Wi-Fi adapter's standard and receive rate come from nl80211, by interface index.
+TEST(LinuxNetworkAdaptersTest, TheStationReaderAddsTheStandardAndTheReceiveRate)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/wlan0/ifindex", "3\n");
+    std::filesystem::create_directories(root.path() / "sys/class/net/wlan0/wireless");
+    const LinuxNetworkAdapters::WifiLinkReader link = [](const std::string&)
+    {
+        WifiLink wifi;
+        wifi.ssid = "home";
+        wifi.frequencyMhz = 5180;
+        return LinuxNetworkAdapters::WifiLinkRead{.link = wifi, .error = {}};
+    };
+    std::vector<int> asked;
+    const LinuxNetworkAdapters::WifiStationReader station = [&asked](int ifindex)
+    {
+        asked.push_back(ifindex);
+        return Nl80211::Station{.tx = Nl80211::Rate{.kbps = 866'700, .kind = Nl80211::RateKind::He},
+                                .rx = Nl80211::Rate{.kbps = 780'000, .kind = Nl80211::RateKind::He}};
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, nullptr, {.wifiLink = link, .linkDns = {}, .dhcpLease = {}, .networkdLease = {}, .wifiStation = station});
+    EXPECT_EQ(asked, (std::vector<int>{3}));
+    ASSERT_EQ(info.adapters.size(), 1U);
+    const WifiLink wifi = info.adapters[0].wifiLink.value_or(WifiLink{});
+    EXPECT_EQ(wifi.phy, "802.11ax (Wi-Fi 6)");
+    EXPECT_EQ(wifi.rxBitrateKbps, 780'000U);
+    EXPECT_EQ(wifi.bitrateKbps, 866'700U) << "NetworkManager gave none: nl80211's transmit rate";
+}
+
 TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
 {
     const FixtureRoot root;
@@ -1348,7 +1434,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
     };
     NetworkAdaptersInfo info;
     LinuxNetworkAdapters::readNetworkAdapterFacts(
-        root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}, .dhcpLease = {}, .networkdLease = {}});
+        root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}, .dhcpLease = {}, .networkdLease = {}, .wifiStation = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"wlan1", "wlp3s0"})); // never eth0
@@ -1410,7 +1496,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDnsReaderByInterfaceIndex)
     };
     NetworkAdaptersInfo info;
     LinuxNetworkAdapters::readNetworkAdapterFacts(
-        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader, .dhcpLease = {}, .networkdLease = {}});
+        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader, .dhcpLease = {}, .networkdLease = {}, .wifiStation = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<int>{2, 3}));
@@ -1461,7 +1547,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDhcpReaderForEveryAdapter)
     };
     NetworkAdaptersInfo info;
     LinuxNetworkAdapters::readNetworkAdapterFacts(
-        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = reader, .networkdLease = {}});
+        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = reader, .networkdLease = {}, .wifiStation = {}});
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"eth0", "eth1"}));
     ASSERT_EQ(info.adapters.size(), 2U);
@@ -1497,7 +1583,10 @@ TEST(LinuxNetworkAdaptersTest, NetworkdIsAskedForALeaseOnlyWhereNetworkManagerHa
     };
     NetworkAdaptersInfo info;
     LinuxNetworkAdapters::readNetworkAdapterFacts(
-        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = networkManager, .networkdLease = networkd});
+        root.path(),
+        info,
+        nullptr,
+        {.wifiLink = {}, .linkDns = {}, .dhcpLease = networkManager, .networkdLease = networkd, .wifiStation = {}});
     EXPECT_EQ(askedNetworkd, (std::vector<int>{3})); // eth1 only, by its index
     ASSERT_EQ(info.adapters.size(), 2U);
     EXPECT_EQ(info.adapters[0].dhcpLease.value_or(DhcpLease{}).server, "10.0.0.1");    // NetworkManager's

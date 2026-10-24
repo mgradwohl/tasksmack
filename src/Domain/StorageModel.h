@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "Domain/StorageSnapshot.h"
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
@@ -51,6 +52,8 @@ class StorageModel : public ISamplable
 {
   public:
     explicit StorageModel(std::unique_ptr<Platform::IDiskProbe> probe);
+    /// A model whose probe arrives later, through setProbe() (#2731): nothing is published until it does.
+    explicit StorageModel(DeferredProbeTag /*tag*/);
     ~StorageModel() override = default;
 
     StorageModel(const StorageModel&) = delete;
@@ -88,8 +91,14 @@ class StorageModel : public ISamplable
     /// window and republishes it at once, once anything has been published (#1145).
     void setMaxHistorySeconds(double seconds);
 
-    /// Test seam (#2155): nothing in the app reads it. The underlying probe's capabilities.
+    /// Test seam (#2155): nothing in the app reads it. The underlying probe's capabilities; the
+    /// defaults without a probe.
     [[nodiscard]] Platform::DiskCapabilities capabilities() const;
+
+    /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no disks. Meant for the
+    /// sampler thread, before its first sample (the sampler's start hook); thread-safe, and a probe
+    /// already held is replaced. The probe is not read here.
+    void setProbe(std::unique_ptr<Platform::IDiskProbe> probe);
 
   private:
     struct DiskState
@@ -146,12 +155,15 @@ class StorageModel : public ISamplable
     void trimHistory(double nowSeconds) noexcept;
     void applyHistoryCapacity();
 
+    // Set by the constructor or setProbe() (under m_WriterMutex); read by the sampling path, which is one
+    // thread (the sampler's, which also runs setProbe() from its start hook) and reads outside any lock
+    // as before.
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
 
     // Serialises the writers, sampleAt(), sampleSeries() and setMaxHistorySeconds(), from the counter processing
     // through the publication commit, so generations are numbered and committed in order. Readers
     // never take it. Taken before m_Mutex, never while holding it.
-    std::mutex m_WriterMutex;
+    mutable std::mutex m_WriterMutex; // mutable for capabilities(), a const test seam that reads the probe under it
     // Guards the state below: writers mutate it exclusively, and publish() reads it under a shared
     // lock, so publication() never waits on a publication's copy.
     mutable std::shared_mutex m_Mutex;

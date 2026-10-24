@@ -1,9 +1,14 @@
 #include "WindowsGPUProbe.h"
 
+#include "D3DKMTAdapterPerfData.h"
+#include "DXGIAdapterLocation.h"
 #include "DXGIGPUProbe.h"
+#include "DXGIGPUProbeMath.h"
+#include "DisplayDevicePower.h"
 #include "NVMLGPUProbe.h"
 #include "PDHGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/AdapterPerfDataMath.h"
 #include "Platform/Windows/WindowsDriverNodes.h"
 #include "WindowsGPUProbeMath.h"
 
@@ -25,6 +30,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,9 +58,12 @@ WindowsGPUProbe::WindowsGPUProbe()
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
       m_PDHProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Process)),
       m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Adapter)),
-      m_ListDriverNodes(listPciDriverNodes)
+      m_ListDriverNodes(listPciDriverNodes),
+      m_PerfFunctions(std::make_unique<D3DKMTAdapterFunctions>()),
+      m_DevicePower(std::make_shared<DisplayDevicePower>()),
+      m_IsAsleep([power = m_DevicePower](const PciLocation& location) { return power->isAsleep(location); })
 {
-    std::string probeSummary = "DXGI";
+    std::string probeSummary = "DXGI + D3DKMT perf data";
     if (m_NVMLProbe->isAvailable())
     {
         probeSummary += " + NVML";
@@ -121,8 +130,10 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
         m_DXGIIdIsIntegrated.clear();
-        // Sensor metrics are per adapter: its own NVML device's, or none without one (#1040).
+        // Sensor metrics are per adapter: its own NVML device's, or none without one (#1040)...
         assignSensorCapabilities(gpus, nvmlGPUs, m_DXGIToNVMLMap, nvmlCaps);
+        // ...unless the kernel adapter reports them, for a GPU without an NVML device (#2586).
+        assignAdapterPerfSensors(gpus);
 
         // The NPUs and compute accelerators DXGI never lists, after the GPUs, so the NVML mapping's
         // positions above still hold (#1799). They have no sensors (enumerateAccelerators()).
@@ -208,7 +219,24 @@ bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
         // restartNVMLIfNVIDIAAdaptersChanged()).
         m_NVMLRestartedSinceEnumeration = m_NVMLRestartedSinceEnumeration || m_NVMLProbe->restartCount() != restartsBefore;
     }
-    return adaptersChanged || nvmlChanged;
+    // A GPU asleep at enumeration, whose perf-data sensors are still unknown, that is awake now: the
+    // PnP power state says so without touching it (#1265), and the re-enumeration reads it (#2586).
+    // Reported once; the enumeration rebuilds the set.
+    bool perfAdapterWoke = false;
+    for (auto it = m_PerfAsleepAtEnumeration.begin(); it != m_PerfAsleepAtEnumeration.end();)
+    {
+        if (!isAdapterAsleep(it->second))
+        {
+            spdlog::debug("WindowsGPUProbe: Adapter {} woke; re-enumerating for its sensors", it->first);
+            perfAdapterWoke = true;
+            it = m_PerfAsleepAtEnumeration.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return adaptersChanged || nvmlChanged || perfAdapterWoke;
 }
 
 std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
@@ -242,6 +270,9 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         // Their memory in use is PDH's current figure, not the repeated NVML one.
         excludeIdleNVMLMemory(nvmlMemoryIds, idleDevices, m_NVMLAdapterIds);
     }
+
+    // The kernel adapter's temperature, clock and fan for the GPUs NVML doesn't cover (#2586).
+    mergeAdapterPerfSensors(counters);
 
     // The NPUs' and compute accelerators' counters, after the GPUs' (whose positions NVML's merge
     // above relies on): their utilization and memory in use are PDH's alone, by LUID, like a GPU's
@@ -286,7 +317,7 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
     }
 
     // Get NVML counters
-    auto nvmlCounters = m_NVMLProbe->readGPUCounters();
+    const auto nvmlCounters = m_NVMLProbe->readGPUCounters();
     // Only a real read restarts the idle gate's maximum age (#1265).
     recordNVMLReads(m_NVMLLastRead, nvmlCounters, idleDevices, std::chrono::steady_clock::now());
     if (nvmlCounters.empty())
@@ -384,6 +415,93 @@ std::vector<OtherAdapterProcessUsage> WindowsGPUProbe::otherAdapterUsage() const
     return m_OtherAdapterUsage;
 }
 
+bool WindowsGPUProbe::isAdapterAsleep(const std::optional<PciLocation>& location) const
+{
+    return location.has_value() && m_IsAsleep && m_IsAsleep(*location);
+}
+
+void WindowsGPUProbe::assignAdapterPerfSensors(std::vector<GPUInfo>& gpus)
+{
+    m_PerfAdapters.clear();
+    m_PerfAsleepAtEnumeration.clear();
+    if (!m_PerfFunctions)
+    {
+        return;
+    }
+    // Devices may have come or gone since the last enumeration: look each devnode up again.
+    if (m_DevicePower)
+    {
+        m_DevicePower->reset();
+    }
+    for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
+    {
+        GPUInfo& gpu = gpus[dxgiIdx];
+        // NVML's sensors are the richer set (power in watts, encoder/decoder): an adapter matched to
+        // an NVML device keeps them. An accelerator has no sensors (#1799).
+        if (gpu.kind != DeviceKind::Gpu || m_DXGIToNVMLMap.contains(static_cast<std::uint32_t>(dxgiIdx)))
+        {
+            continue;
+        }
+        const auto luid = luidFromPdhFormat(gpu.luidId);
+        if (!luid.has_value())
+        {
+            continue;
+        }
+        if (gpu.pciLocation.has_value() && isAdapterAsleep(gpu.pciLocation))
+        {
+            // Not read, so as not to wake it (#1265): no sensors until a quick rescan finds it awake.
+            spdlog::debug("WindowsGPUProbe: Adapter {} ({}) is asleep; its sensors are read once it wakes", gpu.id, gpu.name);
+            m_PerfAsleepAtEnumeration.emplace(gpu.id, gpu.pciLocation.value_or(PciLocation{}));
+            continue;
+        }
+        const LUID adapterLuid{.LowPart = luid->second, .HighPart = static_cast<LONG>(luid->first)};
+        const GPUCapabilities sensors = adapterPerfSensorCapabilities(readAdapterPerfData(adapterLuid, *m_PerfFunctions));
+        if (!hasAnyAdapterPerfSensor(sensors))
+        {
+            spdlog::debug("WindowsGPUProbe: Adapter {} ({}) reports no perf-data sensors", gpu.id, gpu.name);
+            continue;
+        }
+        // Once per enumeration, like NVML's "Enumerated N NVIDIA GPU(s)": which sensors the adapter has.
+        spdlog::info("WindowsGPUProbe: Adapter {} ({}) sensors from D3DKMT perf data: temperature {}, clock {}, fan {}",
+                     gpu.id,
+                     gpu.name,
+                     sensors.hasTemperature,
+                     sensors.hasClockSpeeds,
+                     sensors.hasFanSpeed);
+        gpu.sensorCapabilities = sensors;
+        m_PerfAdapters.insert_or_assign(
+            gpu.id,
+            PerfAdapter{.luidHighPart = luid->first, .luidLowPart = luid->second, .pciLocation = gpu.pciLocation, .sensors = sensors});
+    }
+}
+
+void WindowsGPUProbe::mergeAdapterPerfSensors(std::vector<GPUCounters>& counters)
+{
+    if (!m_PerfFunctions || m_PerfAdapters.empty())
+    {
+        return;
+    }
+    for (auto& counter : counters)
+    {
+        const auto adapter = m_PerfAdapters.find(counter.gpuId);
+        if (adapter == m_PerfAdapters.end())
+        {
+            continue;
+        }
+        // A sleeping GPU is left alone, as NVML's are (#1265): its sensors are gaps this sample, while
+        // PDH's utilization and memory, the OS's own figures, still fill in.
+        if (isAdapterAsleep(adapter->second.pciLocation))
+        {
+            counter.suspended = true;
+            applyAdapterPerfReading(counter, std::nullopt, adapter->second.sensors);
+            continue;
+        }
+        const LUID luid{.LowPart = adapter->second.luidLowPart, .HighPart = static_cast<LONG>(adapter->second.luidHighPart)};
+        // A failed read is "no sensor" this sample, never a logged error per sample.
+        applyAdapterPerfReading(counter, readAdapterPerfData(luid, *m_PerfFunctions), adapter->second.sensors);
+    }
+}
+
 GPUCapabilities WindowsGPUProbe::capabilities() const
 {
     GPUCapabilities caps{};
@@ -392,12 +510,23 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
     if (m_DXGIProbe)
     {
         caps = m_DXGIProbe->capabilities();
+        // Temperature, clock and fan from the kernel adapter's perf data, for any adapter whose
+        // driver fills them (#2586). This describes the probe: which adapters report which of them
+        // is per adapter (GPUInfo::sensorCapabilities, set by every enumeration), and the GPU tab
+        // draws an adapter's sensors from that, so a machine whose adapters report none draws none.
+        // GPUModel reads this before the first enumeration, so it can't wait on one.
+        if (m_PerfFunctions)
+        {
+            caps.hasTemperature = true;
+            caps.hasClockSpeeds = true;
+            caps.hasFanSpeed = true;
+        }
     }
 
     // Merge NVML capabilities for system-level GPU metrics (temp, power, clocks)
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        auto nvmlCaps = m_NVMLProbe->capabilities();
+        const auto nvmlCaps = m_NVMLProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || nvmlCaps.hasTemperature;
         caps.hasPowerMetrics = caps.hasPowerMetrics || nvmlCaps.hasPowerMetrics;
@@ -410,7 +539,7 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
     // Merge PDH capabilities for per-process metrics (works cross-vendor)
     if (m_PDHProbe && m_PDHProbe->isAvailable())
     {
-        auto pdhCaps = m_PDHProbe->capabilities();
+        const auto pdhCaps = m_PDHProbe->capabilities();
 
         caps.hasEngineUtilization = caps.hasEngineUtilization || pdhCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || pdhCaps.hasPerProcessMetrics;

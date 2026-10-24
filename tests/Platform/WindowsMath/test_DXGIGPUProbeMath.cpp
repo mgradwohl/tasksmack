@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -315,6 +316,34 @@ TEST(AcceleratorMemoryTest, AnAcceleratorWithoutDedicatedMemoryCountsShared)
     EXPECT_EQ(acceleratorMemoryTotalBytes(0, SHARED), SHARED);
     EXPECT_FALSE(acceleratorMemoryIsShared(8ULL << 30U));
     EXPECT_EQ(acceleratorMemoryTotalBytes(8ULL << 30U, SHARED), 8ULL << 30U);
+}
+
+// =============================================================================
+// luidFromPdhFormat: the LUID back out of GPUInfo::luidId (#2586)
+// =============================================================================
+
+TEST(LuidFromPdhFormatTest, RoundTripsLuidToPdhFormat)
+{
+    using Parts = std::pair<std::uint32_t, std::uint32_t>;
+    const auto parts = [](std::uint32_t high, std::uint32_t low)
+    {
+        return std::optional<Parts>{Parts{high, low}};
+    };
+    EXPECT_EQ(luidFromPdhFormat(luidToPdhFormat(0x00000001U, 0x0000F78EU)), parts(0x00000001U, 0x0000F78EU));
+    EXPECT_EQ(luidFromPdhFormat("GPU_0xFFFFFFFF_0x00000000"), parts(0xFFFFFFFFU, 0U));
+    EXPECT_EQ(luidFromPdhFormat("GPU_0x00000000_0x0000d3a0"), parts(0U, 0xD3A0U)) << "Hex digits in either case";
+}
+
+TEST(LuidFromPdhFormatTest, RejectsAnyOtherShape)
+{
+    EXPECT_FALSE(luidFromPdhFormat("").has_value());
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000_0x0000").has_value()) << "Short low part";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000_0x0000D3A00").has_value()) << "Long low part";
+    EXPECT_FALSE(luidFromPdhFormat("LUID_0x00000000_0x0000D3A0").has_value()) << "The LUID-named adapter id, not luidId";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x0000000G_0x0000D3A0").has_value()) << "Not a hex digit";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000-0x0000D3A0").has_value()) << "Wrong separator";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x-0000000_0x0000D3A0").has_value()) << "A sign is not a digit";
+    EXPECT_FALSE(luidFromPdhFormat("PCI_01:00.0_10DE:2684").has_value()) << "An adapter id";
 }
 
 } // namespace

@@ -3,6 +3,7 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -20,6 +21,7 @@
 // imgui_stdlib.h extends imgui.h's API for std::string, so it follows it.
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <string_view>
@@ -47,27 +49,55 @@ void textView(std::string_view text)
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
-/// Rebuilds the sections when a new read is published, and the visible rows when that, the filter or
-/// the identifier toggle changed: never every frame (#580).
+/// For the charts before the sensor sampler's first read. A function-local static: a namespace-scope map's
+/// constructor may throw (MSVC's does) before main().
+[[nodiscard]] const std::map<std::string, Domain::SensorHistory>& noSensorHistories()
+{
+    static const std::map<std::string, Domain::SensorHistory> NONE;
+    return NONE;
+}
+
+/// Rebuilds the sections when a new page read or sensor read (#2737) is published, and the visible rows
+/// when they, the filter or the identifier toggle changed: never every frame (#580).
 void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
+                    const Domain::SensorPublication* sensors,
                     const Platform::SystemInfoCapabilities& capabilities,
                     SystemInfoViewState& state)
 {
-    if (state.sectionsVersion != snapshot.version)
+    const std::uint64_t sensorsVersion = sensors != nullptr ? sensors->version : 0;
+    const bool newRead = state.sectionsVersion != snapshot.version;
+    if (!newRead && state.sectionsSensorsVersion != sensorsVersion)
     {
-        state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host, capabilities);
+        // Only the sensors changed, at the Settings interval: just their section is built again, when it
+        // is there and still has readings to show.
+        const auto sensorsSection = std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &SystemInfo::Section::title);
+        if (sensorsSection != state.sections.end() && sensors != nullptr && sensors->sensors.available)
+        {
+            *sensorsSection = SystemInfo::buildSensorsSection(sensors->sensors, sensors->ranges);
+            state.sectionsSensorsVersion = sensorsVersion;
+            ++state.sectionsGeneration;
+        }
+    }
+    if (newRead || state.sectionsSensorsVersion != sensorsVersion)
+    {
+        state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host, capabilities, sensors);
         state.sectionsVersion = snapshot.version;
+        state.sectionsSensorsVersion = sensorsVersion;
+        ++state.sectionsGeneration;
+    }
+    if (newRead)
+    {
         state.authenticateClicked = false; // a new read: offered again if the facts are still root-only
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : std::string{READ_AT_PREFIX} + when.substr(when.find(' ') + 1);
     }
-    if (state.visibleVersion == state.sectionsVersion && state.visibleFilter == state.filter &&
+    if (state.visibleVersion == state.sectionsGeneration && state.visibleFilter == state.filter &&
         state.visibleShowIdentifiers == state.showIdentifiers)
     {
         return;
     }
     state.visible = SystemInfo::visibleSections(state.sections, state.filter, state.showIdentifiers);
-    state.visibleVersion = state.sectionsVersion;
+    state.visibleVersion = state.sectionsGeneration;
     state.visibleFilter = state.filter;
     state.visibleShowIdentifiers = state.showIdentifiers;
 }
@@ -369,7 +399,8 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
 SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snapshot,
                                           const Platform::SystemInfoCapabilities& capabilities,
                                           bool reading,
-                                          SystemInfoViewState& state)
+                                          SystemInfoViewState& state,
+                                          const Domain::SensorPublication* sensors)
 {
     if (!capabilities.hasOs)
     {
@@ -394,9 +425,9 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
     }
 
     const auto& scheme = UI::Theme::get().scheme();
-    rebuildIfStale(*snapshot, capabilities, state); // Copy all copies the current read
+    rebuildIfStale(*snapshot, sensors, capabilities, state); // Copy all copies the current read
     const ToolbarClicks clicks = renderToolbar(reading, state, scheme);
-    rebuildIfStale(*snapshot, capabilities, state); // the filter or toggle may have changed
+    rebuildIfStale(*snapshot, sensors, capabilities, state); // the filter or toggle may have changed
     ImGui::Spacing();
 
     bool wifiDetails = false;
@@ -417,7 +448,8 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         const float labelWidth = UI::LineLayout::labelColumnWidth(widestLabel, ImGui::GetFontSize());
         for (const auto& visible : state.visible)
         {
-            const SystemInfo::RowAction clicked = renderSection(visible, labelWidth, snapshot->sensorHistories, reading, state, scheme);
+            const SystemInfo::RowAction clicked =
+                renderSection(visible, labelWidth, sensors != nullptr ? sensors->histories : noSensorHistories(), reading, state, scheme);
             wifiDetails = wifiDetails || clicked == SystemInfo::RowAction::ShowWifiDetails;
             publicIp = publicIp || clicked == SystemInfo::RowAction::ShowPublicIp;
             authenticate = authenticate || clicked == SystemInfo::RowAction::AuthenticateToRead;

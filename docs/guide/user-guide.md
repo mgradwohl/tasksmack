@@ -102,6 +102,10 @@ TaskSmack's window has six tabs, left to right:
 
 ### Process Table
 
+![The Processes tab: a table of PID, Name, User, State, CPU %, Mem %, Memory, CPU Time and Net Sent columns, sorted by CPU %, with the filter box, the process count and the Columns, List and Tree buttons above it](../images/screenshots/windows/processes-windows-dark.webp)
+
+*The Processes tab sorted by CPU %, with the filter box, the process count and the **Columns**, **List** and **Tree** buttons above the table and a selected row near the bottom.*
+
 The process table is the primary view. It lists all running processes. **PID** and **Name** are always shown; the other columns can be shown or hidden. Shown by default are **User**, **State**, **CPU %**, **Mem %**, **Memory**, **CPU Time**, **Net Sent**, **Net Received**, **Power** (where it can be read) and **Command**; every other column is hidden until you show it:
 
 Each process's name has its program's icon beside it, as in Task Manager, and so does the Process Details tab's title. On Windows the icon is the executable's own; on Linux it comes from the application's desktop entry (`.desktop` file in `~/.local/share/applications`, `/usr/share/applications`, or Flatpak's and Snap's exported entries) and the hicolor icon theme, PNG icons only. A process with no icon, one TaskSmack can't read (another user's process without administrator or root rights), or one whose icon is still loading shows a generic window icon instead. Icons are read once per program, in the background, and kept in memory (at most 512 programs); the Services and Startup tabs share them, so a program listed in several tabs is read once. Turn them off, in every tab, with **Show process icons** in Settings.
@@ -129,7 +133,7 @@ Each process's name has its program's icon beside it, as in Task Manager, and so
 - **Handles** (hidden by default) — open handles on Windows, open file descriptors on Linux
 - **GDI** (Windows, hidden by default) — GDI objects the process holds
 - **Started** (hidden by default) — when the process started
-- **Power** (shown by default where it can be read: Linux only, where the CPU package's RAPL energy counter is readable, which usually needs root) — the package's power shared out by each process's CPU time. Windows has no per-process power reading, so there the column is unavailable.
+- **Power** (shown by default where it can be read) — the CPU package's power shared out by each process's CPU time, from the package's energy counter: on Linux the RAPL counter in `/sys/class/powercap`, which is readable by root only on current kernels; on Windows the Energy Meter Interface (EMI) device the CPU's energy meter driver exposes, which needs no administrator rights but exists only on machines whose firmware and driver provide one (most Intel laptops and desktops of recent years; some AMD and Arm machines have none). Where there is no readable counter, the column is unavailable and hidden.
 - **Page Faults** (hidden by default) — cumulative page faults. Windows keeps this count in 32 bits, so on a long-lived process it can wrap back to a small number; the page-fault rate counts through the wrap.
 - **Command** — full command line. On Windows, a process whose command line can't be read (System, Registry, isolated processes such as LsaIso.exe) shows its executable's path, or its name in brackets.
 - **I/O Read / I/O Write** (hidden by default) — disk read and write bytes per second
@@ -158,6 +162,10 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Copy PID**, **Copy Name** and **Copy Command Line**, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9). On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
 
+![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/windows/walk-live.webp)
+
+*Selecting a process and opening its Process Details: the Processes tab, then the selected row, then the process's own tab with its **Network and I/O** sub-tab in front.*
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -185,9 +193,25 @@ The table's keys work while the pointer is over the process table or after click
 
 **F1**, or the **?** button in the title bar or the status bar, opens the **Help** window. It is not a dialog: you can keep it open beside the rest of TaskSmack, move it and resize it, and it keeps its place and size until you quit. It lists every keyboard shortcut grouped by where it works (Global, Processes, Process Details), with a box to find one by typing; describes each Processes column, with its units and platform notes, from the same text as the column headers' tooltips; gives one line on each tab; and links to this guide and the issue tracker. Escape or its close button closes it.
 
+![The Help window open over the machine tab, listing keyboard shortcuts grouped under Global and Processes, with a box to find one by typing and an About TaskSmack link at the foot](../images/screenshots/windows/help-windows-dark.webp)
+
+*The Help window (F1) over the machine tab: the shortcut list by where each one works, the box to find one by typing, and the **About TaskSmack...** link at its foot.*
+
 **About TaskSmack** (the version, build, commit, licenses and credits, and the same links to this guide and the issue tracker as the Help window) opens from the **i** button in the title bar, just left of the **?**, from the link at the foot of the Help window, or from **About TaskSmack** in Settings' Advanced section. It has no keyboard shortcut. From left to right, the title bar's buttons are **i** (About), **?** (Help, F1) and the gear (Settings, F2), then Minimize, Maximize and Close; hovering one names it.
 
+![The About TaskSmack dialog: the icon, version and build, the Project block with source, license and commit, the More help links and the start of the Credits](../images/screenshots/windows/about-windows-dark.webp)
+
+*The About dialog: version and build, the **Project** block (source, license, commit), the **More help** links to this guide and the issue tracker, and the credits below.*
+
 ### Machine Tab
+
+![The machine tab's Overview sub-tab: the CPU Details block of facts, then the CPU Usage history chart with Total, User and System series and the Memory and Swap chart with Used, Cached, Swap, Peak Used and Commit values on its heading line](../images/screenshots/windows/overview-windows-dark.webp)
+
+*The machine tab's **Overview**: the CPU Details block, then the CPU Usage and Memory & Swap history charts, each with its value strip on the heading line and the current values as bars on the right.*
+
+![Animation: the machine tab's Overview with its CPU, memory, battery and thread charts scrolling as new samples arrive](../images/screenshots/linux/overview-live.webp)
+
+*The same Overview as samples arrive: every chart advances one sample at the update interval, with the newest value at the right edge marked **now**.*
 
 The machine tab, the first tab, is named after the computer. Its sub-tabs (**Overview**, **CPU Cores**, **GPU**, **NPU** where there is one, and **Network and I/O**) show real-time and historical charts for:
 
@@ -198,7 +222,7 @@ The machine tab, the first tab, is named after the computer. Its sub-tabs (**Ove
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. An NVIDIA GPU also charts its video **Encoder** and **Decoder** utilization beside its core utilization, on Linux and Windows alike, from NVML; other GPUs' drivers don't report them, so they have no such lines. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. The Overview's **GPU memory** figure (in CPU Details) counts discrete GPUs only, since an integrated GPU's memory is system RAM.
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. An NVIDIA GPU also charts its video **Encoder** and **Decoder** utilization beside its core utilization, on Linux and Windows alike, from NVML; other GPUs' drivers don't report them, so they have no such lines. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Windows an NVIDIA GPU's sensors come from NVML; every other GPU's temperature, clock and fan (AMD, Intel, Qualcomm) come from the kernel graphics adapter's performance data, the figures Task Manager's GPU page shows, when its driver reports them (WDDM 2.4 or later): a GPU whose driver reports no temperature or fan has no such chart (Intel's integrated GPUs report a clock but no temperature, as in Task Manager), the clock reads 0 MHz while the GPU is idle and power-gated, and power draw isn't available for them, since Windows reports it only as a percentage. The Overview's **GPU memory** figure (in CPU Details) counts discrete GPUs only, since an integrated GPU's memory is system RAM.
   - **Sleeping GPUs:** a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labeled **(Sleeping)** and its sensors are not read until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. (On Windows its utilization and memory in use still show, since Windows reports them without waking the GPU.)
   - **Idle NVIDIA GPUs:** on Windows an NVIDIA GPU that is awake but had no activity in the last update is not asked for its sensors either, so they don't stop it going to sleep: its temperature, power, clock and fan readings hold their last values, refreshed at least once a minute, until it is busy again.
   - **At startup:** on Linux, detecting an NVIDIA GPU doesn't wake it either: until it first wakes it is listed under the model name its driver reports (or "NVIDIA GPU"), and TaskSmack asks NVML about it only once it is awake. On Windows, on WSL, in a container that hides the PCI devices, or with an NVIDIA driver too old to look a GPU up by PCI address, startup detection can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own.
@@ -215,6 +239,10 @@ A chart with several series has a value strip on its heading line as its key: a 
 **Copy a chart's data:** right-click any history chart (on the machine tab's sub-tabs or in Process Details) and choose **Copy data as CSV**. Every series in that chart goes to the clipboard as comma-separated text, ready to paste into a spreadsheet. There is one row per sample, oldest first, with the sample's time in UTC (`2026-10-12T03:04:05.123Z`) and its age in seconds, then one column per series, named as in the chart's key. All the history the chart holds is copied, at every sample, even where the chart draws fewer points than that. The stacked CPU charts copy each band's own value (User, System, I/O Wait), not the band's top edge. A sample with no reading is an empty cell. Values are the plain figures behind the chart, not its axis labels: percent, bytes, bytes per second or watts, so 1.5 GiB is copied as 1610612736.
 
 ### Network Monitoring
+
+![Process Details' Network and I/O sub-tab: an I/O Statistics chart with Read and Write rates and a Network chart with Sent and Received rates for the selected process, each with a five-minute history](../images/screenshots/windows/details-network-windows-dark.webp)
+
+*Process Details' **Network and I/O** sub-tab: the selected process's disk read and write rates and its sent and received network rates, each as a history chart with its current values on the heading line.*
 
 The machine tab's **Network and I/O** sub-tab and the process views provide three levels of visibility:
 
@@ -260,6 +288,10 @@ charge is weighted by each pack's capacity, capacities and power are added up, a
 most-cycled pack's. Chemistry, manufacturer and model are the first pack's.
 
 ### GPU Monitoring
+
+![Process Details' GPU sub-tab showing the message No GPU usage: this process has not used a GPU in its retained history](../images/screenshots/windows/details-gpu-windows-dark.webp)
+
+*Process Details' **GPU** sub-tab for a process that has not used a GPU in its retained history; the charts appear once it does.*
 
 TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 
@@ -313,21 +345,28 @@ The Process Details **Overview** tab has a **Recent crashes:** line under the co
 
 ### Environment variables
 
-On Linux, the Process Details **Overview** tab has a collapsible **Environment** section, closed by default, under the Identity and Runtime blocks. Open it to list the selected process's environment variables in a NAME / VALUE table sorted by name; with more than 20 variables a filter box appears. A value too long for its column shows in a tooltip, up to its first 4 KiB (a longer value is cut there, at a character boundary); the cell itself draws at most the first 512 bytes. TaskSmack reads `/proc/[pid]/environ` only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. The list is the environment the process started with; a later `setenv()` inside the process does not show.
+The Process Details **Overview** tab has a collapsible **Environment** section, closed by default, under the Identity and Runtime blocks. Open it to list the selected process's environment variables in a NAME / VALUE table sorted by name; with more than 20 variables a filter box appears. A value too long for its column shows in a tooltip, up to its first 4 KiB (a longer value is cut there, at a character boundary); the cell itself draws at most the first 512 bytes. TaskSmack reads the environment only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds.
+
+- **Linux:** from `/proc/[pid]/environ`, which holds the environment the process started with; a later `setenv()` inside the process does not show.
+- **Windows:** from the process's own memory (the environment block its PEB points to), which is the live one, so a `SetEnvironmentVariable` call inside the process does show. A block over 1 MiB, or more than 4096 variables, is cut there and the section says it is showing the first. A drive's working-directory entry such as `=C:=C:\Users\me` is listed under its name, `=C:`.
 
 - **Secret-looking values are masked.** A variable whose name looks like it holds a secret, or whose value carries a password in a URL, shows `••••••••` instead of its value, with an eye button on its row that reveals that one value; it stays revealed until you select a different process (or press the button again). Masked values are never searched by the filter. The rule matches the name case-insensitively and errs toward masking:
   - masked if the name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `COOKIE`, `PRIVATE`, `APIKEY`, `ACCESSKEY`, `SIGNINGKEY`, `CONNECTIONSTRING`, `CONNSTR`, `DATABASEURL` or `BEARER` anywhere (ignoring `_`, `-` and `.`);
   - masked if a word of the name (split at `_`, `-`, `.` and other non-alphanumerics) is `KEY`, `KEYS`, `PASS`, `PWD`, `PIN`, `AUTH`, `SESSION`, `CERT`, `CERTS`, `DSN`, `SALT`, `OTP`, `JWT` or `SID`, ends in `KEY`/`KEYS`, starts with `AUTH` (but not `AUTHOR`/`AUTHORS`), or starts or ends with `PASS`, `SESSION` or `CERT`;
   - masked, whatever the name, if the value holds a URL with a password in it (`scheme://user:password@host`, as in `HTTPS_PROXY`, `REDIS_URL` or `PIP_INDEX_URL`); every URL in the value is checked, and a user name alone (`http://alice@host`) isn't masked;
   - never masked by name: `PWD`, `OLDPWD`, `XDG_SESSION_TYPE`, `XDG_SESSION_CLASS`, `XDG_SESSION_DESKTOP`, `XDG_SESSION_ID`, `XDG_SESSION_PATH`, `DESKTOP_SESSION`, `DBUS_SESSION_BUS_ADDRESS`, `SESSION_MANAGER`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`. Words, not substrings, keep names such as `KEYBOARD` or `XKB_DEFAULT_KEYMAP` plain.
-- **Another user's process** shows "Not readable (permission denied)": the kernel lets only the process's own user, or root / `CAP_SYS_PTRACE`, read it. A process that has exited shows "Process exited". Until TaskSmack has confirmed which process holds the PID (its start time), the section shows "Not available yet" and reads nothing; it tries again at the next 3-second refresh.
-- Control characters and invalid UTF-8 in names and values are shown escaped (`\n`, `\xFF`).
+- **Another user's process** shows "Not readable (permission denied)". **Linux:** the kernel lets only the process's own user, or root / `CAP_SYS_PTRACE`, read it. **Windows:** a process TaskSmack can't open to read its memory: another user's, an elevated one while TaskSmack isn't elevated, or a protected process (antimalware, some system processes). A process that has exited shows "Process exited". Until TaskSmack has confirmed which process holds the PID (its start time), the section shows "Not available yet" and reads nothing; it tries again at the next 3-second refresh.
+- Control characters and invalid UTF-8 in names and values are shown escaped (`\n`, `\xFF`); on Windows the block's UTF-16 is converted to UTF-8 first.
 - TaskSmack never writes environment values to its log.
-- **Windows:** not available (reading another process's environment there needs its memory); the section is hidden.
+- **Windows:** a 32-bit process (one running under WOW64, such as an older x86 program on 64-bit Windows) shows "Could not be read: a 32-bit process (WOW64), whose environment TaskSmack does not read yet": its environment is laid out differently in memory, which a later version will read. Reading as an administrator (the **Authenticate to read** button Linux offers for another user's process) is not offered for this section on Windows yet.
 
 ### Connections
 
-The Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section (on Windows, where Environment is hidden, it is the first one). Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
+![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/windows/details-connections-windows-dark.webp)
+
+*The **Connections** section opened under the Actions and Priority cards, here for a process that holds no TCP or UDP sockets.*
+
+The Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section. Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
 
 - **PROTO** is `TCP`, `TCP6`, `UDP` or `UDP6` (IPv4 or IPv6).
 - **Addresses** are shown as `address:port`: IPv4 dotted (`10.0.0.5:55026`), IPv6 in brackets and in its short form (`[2001:db8::1]:443`, `[::]:22`), with an IPv4 peer of an IPv6 socket as `[::ffff:192.0.2.1]:443`. A port of `*` means none: a listening or unconnected socket's remote end (`0.0.0.0:*`).
@@ -342,6 +381,10 @@ The Process Details **Overview** tab also has a collapsible **Connections** sect
 - A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet" (on Windows, always for Idle and System). A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
 
 ### Modules
+
+![Process Details' Overview with the Modules section expanded: Modules (270) in its header, a filter box, and a table with NAME, VERSION, BASE, SIZE and PATH columns](../images/screenshots/windows/details-modules-windows-dark.webp)
+
+*The **Modules** section opened, with the count in its header, the filter box and the NAME / VERSION / BASE / SIZE / PATH table sorted by name.*
 
 The Process Details **Overview** tab also has a collapsible **Modules** section, closed by default, under the Connections section. Open it to list the code the selected process has loaded, its executable and every DLL or shared library, in a **NAME / VERSION / BASE / SIZE / PATH** table, with the count in the section's header ("Modules (87)"):
 
@@ -381,6 +424,10 @@ TaskSmack reads the token (`OpenProcessToken`, `GetTokenInformation`) only for t
 
 ### Open files
 
+![Process Details' Overview with the Open files section expanded after a scan, Open files (118) in its header](../images/screenshots/windows/details-openfiles-windows-dark.webp)
+
+*The **Open files** section after a scan, with the number of open files in its header and the results listed below it.*
+
 After Modules and Security, the **Open files** section (closed by default) lists what the selected process has open, like `lsof -p` or Process Explorer's handle view, with the count in its header ("Open files (42)"):
 
 - **FD** (Linux) is the descriptor number; **HANDLE** (Windows) the handle value in hex (`0x1A4`). **TYPE** is File, Directory, Device, Socket, Pipe, Anon inode, memfd or Other. **PATH** is the file's path, or the kernel's name for something with none (`socket:[12345]`, `pipe:[678]`, `anon_inode:[eventfd]`). **MODE** (Linux only) is how it was opened: `r`, `w` or `rw`, plus `append`.
@@ -391,6 +438,10 @@ After Modules and Security, the **Open files** section (closed by default) lists
 - A process that has exited shows "Process exited"; Windows' Idle and System show "Not available for this process".
 
 ### Services
+
+![The Services tab: a filter box, the services count, the Start, Stop, Restart and Startup type controls, and a table of Name, Display name, State, Start type, PID and Account sorted by state with Running services in green](../images/screenshots/windows/services-windows-dark.webp)
+
+*The **Services** tab: the filter box and count, the **Start**, **Stop**, **Restart** and **Startup type** controls, and the services sorted by state with their start type, PID and account.*
 
 The **Services** tab lists the system's services (Windows' Service Control Manager, Linux's systemd), starts, stops and restarts them, and changes their startup type:
 
@@ -420,6 +471,10 @@ The **Services** tab lists the system's services (Windows' Service Control Manag
 
 ### Startup
 
+![The Startup tab: a filter box, the startup apps count, the Enable and Disable buttons, and an empty table with Name, Publisher, Enabled, Scope, Location and Command columns](../images/screenshots/windows/startup-windows-dark.webp)
+
+*The **Startup** tab's filter box, count, **Enable** and **Disable** buttons and columns, on a machine with no startup apps to list.*
+
 The **Startup** tab lists the programs Windows (or, on Linux, your desktop session) starts when you sign in, and enables or disables them:
 
 - **Columns:** **Name** (the program's name from its version information, such as "Microsoft Edge", as **Settings > Apps > Startup** shows it; else the program's file name, such as `WavesSvc64.exe`; a RunOnce entry's registry value name, since many RunOnce clean-up commands run the same program; or a packaged app's name from its manifest), **Publisher** (the company named in the program's version information, or a packaged app's publisher), **Enabled** ("Enabled", or "Disabled since" the date it was disabled here, in Task Manager or in Settings; "Enabled by policy" or "Disabled by policy" when an administrator or group policy sets a packaged app's startup), **Scope** (Current user, or All users), **Location** (the Run or RunOnce registry key, including the 32-bit `WOW6432Node` view, the user's or all-users Startup folder, or "Packaged app") and **Command** (the command line it runs; for a Startup folder shortcut, its target and arguments; for a packaged app, the program its startup task starts).
@@ -440,6 +495,10 @@ The **Startup** tab lists the programs Windows (or, on Linux, your desktop sessi
 - **Linux:** the XDG autostart entries the desktop session starts at sign-in: the `.desktop` files in `~/.config/autostart` (Location "Autostart (your folder)", Current user) and `/etc/xdg/autostart` or the other `$XDG_CONFIG_DIRS` (Location "Autostart (system)", All users). A file in your folder with the same name as a system one replaces it, as the session does. **Enabled** follows the file's `Hidden` and `X-GNOME-Autostart-enabled` keys; an entry whose `OnlyShowIn` or `NotShowIn` leaves out your desktop (`$XDG_CURRENT_DESKTOP`) shows "Not started here" and can't be switched ("Starts only in KDE"). Parts of the desktop session itself (`NoDisplay=true`, or GNOME's `X-GNOME-Autostart-Phase` and `X-GNOME-HiddenUnderSystemd`: accessibility, settings daemons) are listed but can't be switched ("Part of the desktop session"), as the desktops' own startup settings don't offer them. A copy in your folder with no `Exec` (the usual `Hidden=true` stub) hides the system entry; enabling it brings the system entry back. Disable and Enable never touch a system file and need no administrator rights: they write a copy in `~/.config/autostart` with `Hidden=true` or `Hidden=false` (and `X-GNOME-Autostart-enabled` to match, when the file has it), the way desktop settings tools do. Enabling a system entry whose copy changed nothing else removes the copy, so later updates of the system file apply again.
 
 ### System Information
+
+![The System tab: a filter box, a Show identifiers checkbox, Copy all, Save report and Refresh buttons with the time of the last read, then the Operating system and Firmware and board sections of label/value rows, each with its own Copy button](../images/screenshots/windows/system-windows-dark.webp)
+
+*The **System** tab: the filter, **Show identifiers**, **Copy all**, **Save report...** and **Refresh** controls with the time of the last read, then the first titled sections of label/value rows, each with its own **Copy** button.*
 
 The **System** tab shows what this machine is, in titled sections of label/value rows.
 
@@ -521,6 +580,10 @@ On Windows, **Suspend** stops every thread of the process at once, as Resource M
 
 In Process Details the Overview's Identity, Runtime and Actions sections are bordered cards, each with its title inside, drawn like the cells of the CPU Cores grid. The Actions card sits beside the Identity and Runtime cards, no taller than they are, so the charts keep their height: a row with the Terminate, Kill, Suspend and Resume buttons (on Linux followed by **Trace system calls (strace)**, which takes a row of its own when there is no room for it after them), then **Priority**, the priority slider under it and **Apply** under the slider (on Linux, then **I/O priority**, with its current setting after its **Apply**). The process's current priority is the Runtime card's **Priority** row and the **Priority** label's tooltip, not repeated in the Actions card. A result or error message appears under the last row. When the window is too narrow for three cards side by side, or the card needs more height than Identity and Runtime have (as the priority slider usually does), the Actions card moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
+![Process Details' Overview sub-tab: the command line and Recent crashes line, the Identity and Runtime cards, the Actions card with Terminate, Kill, Suspend, Resume, Set affinity and Create dump file, the Priority card with its slider and Apply button, and the collapsed Connections, Modules, Security and Open files sections](../images/screenshots/windows/details-overview-windows-dark.webp)
+
+*Process Details' **Overview**: the command line and **Recent crashes** line, the Identity and Runtime cards, the Actions card and the Priority slider, and the collapsible sections below them.*
+
 What the Processes table shows for a process is also on its Overview:
 - **Status:** the **State** row carries it after a middle dot ("Running · Efficiency Mode", "Sleeping · Suspended").
 - **Architecture:** the Runtime card has an **Architecture** row, as the Architecture column writes it (`x64 (emulated)`); hover it for whether the process is emulated and what that costs.
@@ -590,6 +653,18 @@ See the built-in theme files (shipped alongside the application) for the expecte
 
 TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
 
+![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/windows/themes-live.webp)
+
+*The Overview switching through six of the bundled themes, as choosing each one in Settings does: Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light.*
+
+| Windows Dark | Ubuntu Light | Dracula |
+|---|---|---|
+| ![The Overview in the Windows Dark theme](../images/screenshots/windows/overview-windows-dark.webp) | ![The Overview in the Ubuntu Light theme](../images/screenshots/windows/overview-ubuntu-light.webp) | ![The Overview in the Dracula theme](../images/screenshots/windows/overview-dracula.webp) |
+| **Nord Light** | **Gruvbox** | **Monochrome Light** |
+| ![The Overview in the Nord Light theme](../images/screenshots/windows/overview-nord-light.webp) | ![The Overview in the Gruvbox theme](../images/screenshots/windows/overview-gruvbox.webp) | ![The Overview in the Monochrome Light theme](../images/screenshots/windows/overview-monochrome-light.webp) |
+
+*The machine tab's Overview in six of the bundled themes.*
+
 ---
 
 ## Platform Differences
@@ -608,6 +683,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Process I/O counters | ✅ (other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (no elevated privileges needed) |
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Per-process UDP network | ❌ | Opt-in (**Count UDP traffic per process**; ETW kernel network events; administrator required) |
+| Per-process power (Power column, Process Details, the System tab's Power chart) | ✅ (the CPU package's RAPL energy counter in `/sys/class/powercap`, shared out by CPU time; readable by root only on current kernels) | ✅ (the CPU package channel of the Energy Meter Interface (EMI) device, shared out by CPU time; no administrator needed; only on machines whose CPU driver provides an energy meter, otherwise hidden) |
 | Thread count per process | ✅ | ✅ |
 | Process priority | ✅ (nice value, −20 … 19) | ✅ (priority class: High, Above Normal, Normal, Below Normal, Idle; Realtime shown but not settable) |
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
@@ -619,7 +695,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ✅ (the shareable working set: working set less private working set) |
-| Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
+| Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (the environment block in the process's memory; processes TaskSmack can open for reading: own user's, or every user's when elevated; 32-bit (WOW64) processes not yet) |
 | Process security context (Process Details) | ✅ (`/proc/[pid]/status`: IDs, groups, capabilities, `no_new_privs`, seccomp; security label; cgroup) | ✅ (process token: user, session, integrity level, elevation, AppContainer, virtualization, privileges, groups) |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (`GetExtendedTcpTable` / `GetExtendedUdpTable`, every user's processes; UDP always `UNCONN`) |
 | Services tab | ✅ (systemd over D-Bus; listing needs no root, actions need root, a polkit rule, or your password through Authenticate and retry) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
@@ -640,8 +716,8 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Process Details: Recent crashes line | ✅ (core dumps matched on the 15-character comm, or the journal's executable path) | ✅ (Application log events 1000 and 1002 matched by file name, ignoring case) |
 | Startup apps tab | ✅ (XDG autostart: `~/.config/autostart`, `/etc/xdg/autostart`; enable / disable through a `Hidden` copy in `~/.config/autostart`, no root needed) | ✅ (Run/RunOnce keys, Startup folders, packaged apps' startup tasks; enable / disable through StartupApproved, all-users entries need administrator; packaged apps' startup tasks as Settings changes them) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
-| AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
-| Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |
+| AMD GPU metrics | ✅ (ROCm SMI) | ✅ (DXGI/PDH for utilization and memory; temperature, clock and fan from the kernel adapter's performance data, the figures Task Manager shows, when the driver reports them; no power draw) |
+| Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH; temperature, clock and fan from the kernel adapter's performance data when the driver reports them; no power draw) |
 | Border resize cursors with custom title bar | ✅ (app-managed client-side cursors, same as Windows) | ✅ (app-managed client-side cursors) |
 | Double-click title bar to maximize/restore | Works on X11/XWayland; not on native Wayland (use the maximize button there instead) | ✅ |
 | Native OS window decorations instead of custom title bar | Opt-in, native Wayland only (Settings > Advanced) | Not available (custom title bar always used) |

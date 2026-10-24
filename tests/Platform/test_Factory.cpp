@@ -78,10 +78,10 @@ TEST(FactoryTest, MakeProcessEnvironmentReaderReturnsNonNull)
 {
     const auto reader = makeProcessEnvironmentReader();
     ASSERT_NE(reader, nullptr);
-#ifdef _WIN32
-    // Not implemented on Windows yet (#179): the Environment section is hidden.
-    EXPECT_NE(dynamic_cast<UnsupportedProcessEnvironmentReader*>(reader.get()), nullptr);
-#endif
+    // Both platforms read environments (Linux: /proc/[pid]/environ, #179; Windows: the PEB, #2569), so
+    // the Environment section shows on both.
+    EXPECT_TRUE(reader->hasEnvironment());
+    EXPECT_EQ(dynamic_cast<UnsupportedProcessEnvironmentReader*>(reader.get()), nullptr);
 }
 
 TEST(FactoryTest, MakeProcessConnectionsReaderReturnsNonNull)
