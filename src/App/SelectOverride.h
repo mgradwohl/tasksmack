@@ -375,17 +375,26 @@ struct TabInfo
 };
 
 /// The ids the documented short names stand for: "machine" and "overview" the hostname tab, "details"
-/// Process Details. Every other name must equal a tab's id or text ("system" is the System
-/// Information tab's text, #1399).
-inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TAB_ALIASES{{
+/// Process Details, "system" the System Information tab (#1399). Every other name must equal a tab's
+/// id or visible text.
+///
+/// "system" is an alias and not only the System Information tab's text because the machine tab reads
+/// "System" too until the System panel's first sample brings the hostname (#2731), and that tab is
+/// registered first: matched by text, TASKSMACK_TAB=System opened the machine tab whenever the sample
+/// landed after onAttach() (#2886). The alias names the tab whatever the machine tab reads.
+inline constexpr std::array<std::pair<std::string_view, std::string_view>, 4> TAB_ALIASES{{
     {"machine", "SystemOverview"},
     {"overview", "SystemOverview"},
     {"details", "ProcessDetails"},
+    {"system", "SystemInfo"},
 }};
 
-/// The tab @p name selects, ignoring case (tabNamesEqual()): first a tab whose registered id or
-/// visible text equals it, across all tabs; then a documented alias (TAB_ALIASES). nullopt when
-/// none does or @p name is blank.
+/// The tab @p name selects, ignoring case (tabNamesEqual()), in this order across all tabs: a tab
+/// whose registered id equals it; the tab a documented alias (TAB_ALIASES) stands for, when that tab
+/// is registered; a tab whose visible text equals it (the hostname, the selected process's name).
+/// An id or an alias is never shadowed by another tab's text (#2886): the texts change with the
+/// hostname and the selection, the ids and the aliases do not. nullopt when none matches or @p name
+/// is blank.
 [[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs)
 {
     const std::string_view wanted = Platform::trimAscii(name);
@@ -398,21 +407,23 @@ inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TA
         const auto it = std::ranges::find_if(tabs, pred);
         return it != tabs.end() ? std::optional<std::size_t>{static_cast<std::size_t>(it - tabs.begin())} : std::nullopt;
     };
-    if (const auto exact =
-            findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.id, wanted) || tabNamesEqual(tab.text, wanted); });
-        exact.has_value())
+    if (const auto byId = findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.id, wanted); }); byId.has_value())
     {
-        return exact;
+        return byId;
     }
     for (const auto& [alias, id] : TAB_ALIASES)
     {
         if (Platform::equalsIgnoreCase(wanted, alias))
         {
             const std::string_view target = id;
-            return findId([target](const TabInfo& tab) { return tab.id == target; });
+            if (const auto aliased = findId([target](const TabInfo& tab) { return tab.id == target; }); aliased.has_value())
+            {
+                return aliased;
+            }
+            break; // the alias's tab is not registered: a tab's text may still read that way
         }
     }
-    return std::nullopt;
+    return findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.text, wanted); });
 }
 
 /// What TASKSMACK_TAB resolved to.

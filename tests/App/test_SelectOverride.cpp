@@ -304,6 +304,68 @@ TEST(SelectOverrideTest, ExactIdsWinAndThereIsNoPrefixOrSuffixMatching)
     EXPECT_FALSE(findTab("view", tabs).has_value());
 }
 
+// #2886: a registered id is matched across all tabs before any tab's text, so a tab whose text happens
+// to read as another tab's id never shadows that tab, whichever is registered first.
+TEST(SelectOverrideTest, AnIdBeatsAnEarlierTabsTextAcrossAllTabs)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "Services", .text = "Startup"},
+        {.id = "Startup", .text = "Services"},
+    };
+    EXPECT_EQ(findTab("startup", tabs), std::optional<std::size_t>{1});
+    EXPECT_EQ(findTab("SERVICES", tabs), std::optional<std::size_t>{0});
+}
+
+// #2886: the machine tab reads "System" until the System panel's first sample brings the hostname
+// (#2731), and ShellLayer registers it first. "System" opens the System Information tab whatever the
+// machine tab reads, as its id "SystemInfo" does; the machine tab is found by its id, its aliases and,
+// once shown, its hostname.
+TEST(SelectOverrideTest, SystemPicksSystemInfoWhileTheMachineTabStillReadsSystem)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::resolveMainTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> beforeTheHostname{
+        {.id = "SystemOverview", .text = "System"},
+        {.id = "Processes", .text = "Processes"},
+        {.id = "SystemInfo", .text = "System"},
+    };
+    EXPECT_EQ(findTab("System", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(findTab("system", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(findTab("SystemInfo", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(resolveMainTab("System", beforeTheHostname).id, std::optional<std::string>{"SystemInfo"});
+    EXPECT_EQ(findTab("SystemOverview", beforeTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("machine", beforeTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("overview", beforeTheHostname), std::optional<std::size_t>{0});
+
+    const std::vector<TabInfo> withTheHostname{
+        {.id = "SystemOverview", .text = "MYHOST"},
+        {.id = "Processes", .text = "Processes"},
+        {.id = "SystemInfo", .text = "System"},
+    };
+    EXPECT_EQ(findTab("System", withTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(resolveMainTab("system", withTheHostname).id, std::optional<std::string>{"SystemInfo"});
+    EXPECT_EQ(findTab("myhost", withTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("SystemOverview", withTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(resolveMainTab("MYHOST", withTheHostname).id, std::optional<std::string>{"SystemOverview"});
+}
+
+// An alias whose tab is not registered still lets a tab be found by that text: the aliases only take
+// precedence over text, they do not forbid it.
+TEST(SelectOverrideTest, AnAliasWithoutItsTabFallsBackToText)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "Processes", .text = "Processes"},
+        {.id = "Facts", .text = "System"},
+    };
+    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{1});
+    EXPECT_FALSE(findTab("machine", tabs).has_value());
+}
+
 TEST(SelectOverrideTest, MatchesNonAsciiAndHashTextAsIs)
 {
     // The text is the unescaped display text, so a hostname starting with a non-ASCII letter and a
