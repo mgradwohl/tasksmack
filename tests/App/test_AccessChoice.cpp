@@ -3,11 +3,15 @@
 /// platform, elevation, token, helper and setting, and each platform's wording, checked in one run.
 
 #include "App/AccessChoice.h"
+#include "App/AccessTable.h"
 #include "App/Panels/AuthorizeWording.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <string_view>
 
 namespace App::AccessChoice
@@ -117,6 +121,47 @@ TEST(AccessChoiceTest, TheHostsButtonWordsAreItsRowOfTheTable)
 {
     EXPECT_STREQ(AuthorizeWording::RETRY_TEXT, AuthorizeWording::wordingFor(HOST).retry);
     EXPECT_STREQ(AuthorizeWording::READ_TEXT, AuthorizeWording::wordingFor(HOST).read);
+}
+
+TEST(AccessTableTest, EveryLinuxMissingPrivilegeHasARow)
+{
+    // A privilege the notice can't explain would leave its loss unexplained: every bit has a row.
+    for (const std::uint8_t bit : {Platform::MissingPrivilege::READ_OTHERS,
+                                   Platform::MissingPrivilege::SIGNAL_OTHERS,
+                                   Platform::MissingPrivilege::RAISE_PRIORITY,
+                                   Platform::MissingPrivilege::PROCESSES_HIDDEN})
+    {
+        const auto rows = AccessTable::rowsFor(AccessPlatform::Linux);
+        EXPECT_NE(std::ranges::find(rows, bit, &AccessTable::Row::missingPrivilege), rows.end()) << "no row for bit " << int{bit};
+    }
+}
+
+TEST(AccessTableTest, EveryRowSaysWhatEachSessionGetsAndTheTableEndsWithWhatIsNeverAllowed)
+{
+    for (const AccessPlatform platform : PLATFORMS)
+    {
+        const auto rows = AccessTable::rowsFor(platform);
+        EXPECT_FALSE(rows.empty());
+        for (const AccessTable::Row& row : rows)
+        {
+            EXPECT_FALSE(row.item.empty());
+            EXPECT_FALSE(row.standard.empty()) << row.item;
+            EXPECT_FALSE(row.administrator.empty()) << row.item;
+            EXPECT_NE(row.standard, row.administrator) << row.item << ": a row where Administrator adds nothing";
+        }
+        EXPECT_TRUE(AccessTable::neverRowFor(platform).starts_with("Never, even as Administrator"));
+    }
+}
+
+TEST(AccessTableTest, WindowsRowsNeedNoHelperAndExplainNoLinuxBit)
+{
+    // Windows' Administrator is TaskSmack restarted elevated: no row waits on the helper, and its
+    // missingPrivileges is always 0.
+    for (const AccessTable::Row& row : AccessTable::rowsFor(AccessPlatform::Windows))
+    {
+        EXPECT_FALSE(row.needsHelperCoverage) << row.item;
+        EXPECT_EQ(row.missingPrivilege, 0U) << row.item;
+    }
 }
 
 } // namespace
