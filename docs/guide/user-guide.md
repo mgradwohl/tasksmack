@@ -102,6 +102,10 @@ TaskSmack's window has six tabs, left to right:
 
 ### Process Table
 
+![The Processes tab: a table of PID, Name, User, State, CPU %, Mem %, Memory, CPU Time and Net Sent columns, sorted by CPU %, with the filter box, the process count and the Columns, List and Tree buttons above it](../images/screenshots/windows/processes-windows-dark.webp)
+
+*The Processes tab sorted by CPU %, with the filter box, the process count and the **Columns**, **List** and **Tree** buttons above the table and a selected row near the bottom.*
+
 The process table is the primary view. It lists all running processes. **PID** and **Name** are always shown; the other columns can be shown or hidden. Shown by default are **User**, **State**, **CPU %**, **Mem %**, **Memory**, **CPU Time**, **Net Sent**, **Net Received**, **Power** (where it can be read) and **Command**; every other column is hidden until you show it:
 
 Each process's name has its program's icon beside it, as in Task Manager, and so does the Process Details tab's title. On Windows the icon is the executable's own; on Linux it comes from the application's desktop entry (`.desktop` file in `~/.local/share/applications`, `/usr/share/applications`, or Flatpak's and Snap's exported entries) and the hicolor icon theme, PNG icons only. A process with no icon, one TaskSmack can't read (another user's process without administrator or root rights), or one whose icon is still loading shows a generic window icon instead. Icons are read once per program, in the background, and kept in memory (at most 512 programs); the Services and Startup tabs share them, so a program listed in several tabs is read once. Turn them off, in every tab, with **Show process icons** in Settings.
@@ -158,6 +162,10 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Copy PID**, **Copy Name** and **Copy Command Line**, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9). On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
 
+![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/windows/walk-live.webp)
+
+*Selecting a process and opening its Process Details: the Processes tab, then the selected row, then the process's own tab with its **Network and I/O** sub-tab in front.*
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -185,9 +193,25 @@ The table's keys work while the pointer is over the process table or after click
 
 **F1**, or the **?** button in the title bar or the status bar, opens the **Help** window. It is not a dialog: you can keep it open beside the rest of TaskSmack, move it and resize it, and it keeps its place and size until you quit. It lists every keyboard shortcut grouped by where it works (Global, Processes, Process Details), with a box to find one by typing; describes each Processes column, with its units and platform notes, from the same text as the column headers' tooltips; gives one line on each tab; and links to this guide and the issue tracker. Escape or its close button closes it.
 
+![The Help window open over the machine tab, listing keyboard shortcuts grouped under Global and Processes, with a box to find one by typing and an About TaskSmack link at the foot](../images/screenshots/windows/help-windows-dark.webp)
+
+*The Help window (F1) over the machine tab: the shortcut list by where each one works, the box to find one by typing, and the **About TaskSmack...** link at its foot.*
+
 **About TaskSmack** (the version, build, commit, licenses and credits, and the same links to this guide and the issue tracker as the Help window) opens from the **i** button in the title bar, just left of the **?**, from the link at the foot of the Help window, or from **About TaskSmack** in Settings' Advanced section. It has no keyboard shortcut. From left to right, the title bar's buttons are **i** (About), **?** (Help, F1) and the gear (Settings, F2), then Minimize, Maximize and Close; hovering one names it.
 
+![The About TaskSmack dialog: the icon, version and build, the Project block with source, license and commit, the More help links and the start of the Credits](../images/screenshots/windows/about-windows-dark.webp)
+
+*The About dialog: version and build, the **Project** block (source, license, commit), the **More help** links to this guide and the issue tracker, and the credits below.*
+
 ### Machine Tab
+
+![The machine tab's Overview sub-tab: the CPU Details block of facts, then the CPU Usage history chart with Total, User and System series and the Memory and Swap chart with Used, Cached, Swap, Peak Used and Commit values on its heading line](../images/screenshots/windows/overview-windows-dark.webp)
+
+*The machine tab's **Overview**: the CPU Details block, then the CPU Usage and Memory & Swap history charts, each with its value strip on the heading line and the current values as bars on the right.*
+
+![Animation: the machine tab's Overview with its CPU, memory, battery and thread charts scrolling as new samples arrive](../images/screenshots/linux/overview-live.webp)
+
+*The same Overview as samples arrive: every chart advances one sample at the update interval, with the newest value at the right edge marked **now**.*
 
 The machine tab, the first tab, is named after the computer. Its sub-tabs (**Overview**, **CPU Cores**, **GPU**, **NPU** where there is one, and **Network and I/O**) show real-time and historical charts for:
 
@@ -215,6 +239,10 @@ A chart with several series has a value strip on its heading line as its key: a 
 **Copy a chart's data:** right-click any history chart (on the machine tab's sub-tabs or in Process Details) and choose **Copy data as CSV**. Every series in that chart goes to the clipboard as comma-separated text, ready to paste into a spreadsheet. There is one row per sample, oldest first, with the sample's time in UTC (`2026-10-12T03:04:05.123Z`) and its age in seconds, then one column per series, named as in the chart's key. All the history the chart holds is copied, at every sample, even where the chart draws fewer points than that. The stacked CPU charts copy each band's own value (User, System, I/O Wait), not the band's top edge. A sample with no reading is an empty cell. Values are the plain figures behind the chart, not its axis labels: percent, bytes, bytes per second or watts, so 1.5 GiB is copied as 1610612736.
 
 ### Network Monitoring
+
+![Process Details' Network and I/O sub-tab: an I/O Statistics chart with Read and Write rates and a Network chart with Sent and Received rates for the selected process, each with a five-minute history](../images/screenshots/windows/details-network-windows-dark.webp)
+
+*Process Details' **Network and I/O** sub-tab: the selected process's disk read and write rates and its sent and received network rates, each as a history chart with its current values on the heading line.*
 
 The machine tab's **Network and I/O** sub-tab and the process views provide three levels of visibility:
 
@@ -260,6 +288,10 @@ charge is weighted by each pack's capacity, capacities and power are added up, a
 most-cycled pack's. Chemistry, manufacturer and model are the first pack's.
 
 ### GPU Monitoring
+
+![Process Details' GPU sub-tab showing the message No GPU usage: this process has not used a GPU in its retained history](../images/screenshots/windows/details-gpu-windows-dark.webp)
+
+*Process Details' **GPU** sub-tab for a process that has not used a GPU in its retained history; the charts appear once it does.*
 
 TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 
@@ -330,6 +362,10 @@ The Process Details **Overview** tab has a collapsible **Environment** section, 
 
 ### Connections
 
+![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/windows/details-connections-windows-dark.webp)
+
+*The **Connections** section opened under the Actions and Priority cards, here for a process that holds no TCP or UDP sockets.*
+
 The Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section. Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
 
 - **PROTO** is `TCP`, `TCP6`, `UDP` or `UDP6` (IPv4 or IPv6).
@@ -345,6 +381,10 @@ The Process Details **Overview** tab also has a collapsible **Connections** sect
 - A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet" (on Windows, always for Idle and System). A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
 
 ### Modules
+
+![Process Details' Overview with the Modules section expanded: Modules (270) in its header, a filter box, and a table with NAME, VERSION, BASE, SIZE and PATH columns](../images/screenshots/windows/details-modules-windows-dark.webp)
+
+*The **Modules** section opened, with the count in its header, the filter box and the NAME / VERSION / BASE / SIZE / PATH table sorted by name.*
 
 The Process Details **Overview** tab also has a collapsible **Modules** section, closed by default, under the Connections section. Open it to list the code the selected process has loaded, its executable and every DLL or shared library, in a **NAME / VERSION / BASE / SIZE / PATH** table, with the count in the section's header ("Modules (87)"):
 
@@ -384,6 +424,10 @@ TaskSmack reads the token (`OpenProcessToken`, `GetTokenInformation`) only for t
 
 ### Open files
 
+![Process Details' Overview with the Open files section expanded after a scan, Open files (118) in its header](../images/screenshots/windows/details-openfiles-windows-dark.webp)
+
+*The **Open files** section after a scan, with the number of open files in its header and the results listed below it.*
+
 After Modules and Security, the **Open files** section (closed by default) lists what the selected process has open, like `lsof -p` or Process Explorer's handle view, with the count in its header ("Open files (42)"):
 
 - **FD** (Linux) is the descriptor number; **HANDLE** (Windows) the handle value in hex (`0x1A4`). **TYPE** is File, Directory, Device, Socket, Pipe, Anon inode, memfd or Other. **PATH** is the file's path, or the kernel's name for something with none (`socket:[12345]`, `pipe:[678]`, `anon_inode:[eventfd]`). **MODE** (Linux only) is how it was opened: `r`, `w` or `rw`, plus `append`.
@@ -394,6 +438,10 @@ After Modules and Security, the **Open files** section (closed by default) lists
 - A process that has exited shows "Process exited"; Windows' Idle and System show "Not available for this process".
 
 ### Services
+
+![The Services tab: a filter box, the services count, the Start, Stop, Restart and Startup type controls, and a table of Name, Display name, State, Start type, PID and Account sorted by state with Running services in green](../images/screenshots/windows/services-windows-dark.webp)
+
+*The **Services** tab: the filter box and count, the **Start**, **Stop**, **Restart** and **Startup type** controls, and the services sorted by state with their start type, PID and account.*
 
 The **Services** tab lists the system's services (Windows' Service Control Manager, Linux's systemd), starts, stops and restarts them, and changes their startup type:
 
@@ -423,6 +471,10 @@ The **Services** tab lists the system's services (Windows' Service Control Manag
 
 ### Startup
 
+![The Startup tab: a filter box, the startup apps count, the Enable and Disable buttons, and an empty table with Name, Publisher, Enabled, Scope, Location and Command columns](../images/screenshots/windows/startup-windows-dark.webp)
+
+*The **Startup** tab's filter box, count, **Enable** and **Disable** buttons and columns, on a machine with no startup apps to list.*
+
 The **Startup** tab lists the programs Windows starts when you sign in, and enables or disables them:
 
 - **Columns:** **Name** (the program's name from its version information, such as "Microsoft Edge", as **Settings > Apps > Startup** shows it; else the program's file name, such as `WavesSvc64.exe`; a RunOnce entry's registry value name, since many RunOnce clean-up commands run the same program; or a packaged app's name from its manifest), **Publisher** (the company named in the program's version information, or a packaged app's publisher), **Enabled** ("Enabled", or "Disabled since" the date it was disabled here, in Task Manager or in Settings; "Enabled by policy" or "Disabled by policy" when an administrator or group policy sets a packaged app's startup), **Scope** (Current user, or All users), **Location** (the Run or RunOnce registry key, including the 32-bit `WOW6432Node` view, the user's or all-users Startup folder, or "Packaged app") and **Command** (the command line it runs; for a Startup folder shortcut, its target and arguments; for a packaged app, the program its startup task starts).
@@ -443,6 +495,10 @@ The **Startup** tab lists the programs Windows starts when you sign in, and enab
 - **Linux:** not available yet ("Startup apps aren't available on this platform yet"); XDG autostart support is planned.
 
 ### System Information
+
+![The System tab: a filter box, a Show identifiers checkbox, Copy all, Save report and Refresh buttons with the time of the last read, then the Operating system and Firmware and board sections of label/value rows, each with its own Copy button](../images/screenshots/windows/system-windows-dark.webp)
+
+*The **System** tab: the filter, **Show identifiers**, **Copy all**, **Save report...** and **Refresh** controls with the time of the last read, then the first titled sections of label/value rows, each with its own **Copy** button.*
 
 The **System** tab shows what this machine is, in titled sections of label/value rows.
 
@@ -524,6 +580,10 @@ On Windows, **Suspend** stops every thread of the process at once, as Resource M
 
 In Process Details the Overview's Identity, Runtime and Actions sections are bordered cards, each with its title inside, drawn like the cells of the CPU Cores grid. The Actions card sits beside the Identity and Runtime cards, no taller than they are, so the charts keep their height: a row with the Terminate, Kill, Suspend and Resume buttons (on Linux followed by **Trace system calls (strace)**, which takes a row of its own when there is no room for it after them), then **Priority**, the priority slider under it and **Apply** under the slider (on Linux, then **I/O priority**, with its current setting after its **Apply**). The process's current priority is the Runtime card's **Priority** row and the **Priority** label's tooltip, not repeated in the Actions card. A result or error message appears under the last row. When the window is too narrow for three cards side by side, or the card needs more height than Identity and Runtime have (as the priority slider usually does), the Actions card moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
+![Process Details' Overview sub-tab: the command line and Recent crashes line, the Identity and Runtime cards, the Actions card with Terminate, Kill, Suspend, Resume, Set affinity and Create dump file, the Priority card with its slider and Apply button, and the collapsed Connections, Modules, Security and Open files sections](../images/screenshots/windows/details-overview-windows-dark.webp)
+
+*Process Details' **Overview**: the command line and **Recent crashes** line, the Identity and Runtime cards, the Actions card and the Priority slider, and the collapsible sections below them.*
+
 What the Processes table shows for a process is also on its Overview:
 - **Status:** the **State** row carries it after a middle dot ("Running · Efficiency Mode", "Sleeping · Suspended").
 - **Architecture:** the Runtime card has an **Architecture** row, as the Architecture column writes it (`x64 (emulated)`); hover it for whether the process is emulated and what that costs.
@@ -592,6 +652,18 @@ TaskSmack uses TOML-based theme files. Built-in themes are bundled with the appl
 See the built-in theme files (shipped alongside the application) for the expected key structure.
 
 TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
+
+![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/windows/themes-live.webp)
+
+*The Overview switching through six of the bundled themes, as choosing each one in Settings does: Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light.*
+
+| Windows Dark | Ubuntu Light | Dracula |
+|---|---|---|
+| ![The Overview in the Windows Dark theme](../images/screenshots/windows/overview-windows-dark.webp) | ![The Overview in the Ubuntu Light theme](../images/screenshots/windows/overview-ubuntu-light.webp) | ![The Overview in the Dracula theme](../images/screenshots/windows/overview-dracula.webp) |
+| **Nord Light** | **Gruvbox** | **Monochrome Light** |
+| ![The Overview in the Nord Light theme](../images/screenshots/windows/overview-nord-light.webp) | ![The Overview in the Gruvbox theme](../images/screenshots/windows/overview-gruvbox.webp) | ![The Overview in the Monochrome Light theme](../images/screenshots/windows/overview-monochrome-light.webp) |
+
+*The machine tab's Overview in six of the bundled themes.*
 
 ---
 

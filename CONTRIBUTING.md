@@ -817,6 +817,20 @@ The images show the machine they were taken on. Before committing, look at every
 host name or process you would not publish: the Processes User column, System Information and the
 hostname tab are the usual places.
 
+The user guide (`docs/guide/user-guide.md`) and `README.md` embed the images by these fixed names
+(`docs/images/screenshots/windows/processes-windows-dark.webp`, `.../linux/overview-live.webp`, and so
+on), so a regeneration that keeps the matrix replaces every picture in place and needs no doc edit.
+Renaming a shot or dropping one from the matrix is a doc change too: `tools/md-link-audit.sh` (the
+"Audit markdown links" step in `ci.yml`) fails on a Markdown image whose file is missing, so run it
+after the new set is in. The guide uses the Windows image wherever the Linux set has no
+counterpart of the same name; once the Linux set has one, switch the guide to it in the same PR.
+
+**At a minor release** (the `vX.Y.0` candidate, see [Cutting a Release](#cutting-a-release)):
+regenerate both sets from the candidate's build (the Linux set under Xvfb in WSL, the Windows set in a
+Windows Sandbox, as above), review every image for identity, and merge them in one docs PR to `main`
+with the `backport:X.Y` label so `release/X.Y` carries the same pictures. Images are documentation, so
+the PR merges under release gating without waiting for the tag.
+
 ### Visual validation without input (Process Details)
 
 Agents must not inject clicks or keys, so seven test-only environment variables (#1559, #172, #2827), read
@@ -2740,6 +2754,11 @@ failed run without creating a new tag); `validate` still checks that the ref rea
 stray dispatch from a branch can't impersonate one.
 
 ```bash
+# 0. For vX.Y.0 only: regenerate the documentation screenshots from the candidate's build with
+#    tools/screenshots.sh (Linux) and tools/screenshots.ps1 (Windows), review them for identity, and
+#    merge them to main with the backport:X.Y label. The guide and README reference the images by
+#    fixed names, so this is an image-only PR (see "Documentation screenshots" under Test).
+
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
 #    get it reviewed, and merge it: to main for vX.Y.0 (before the branch is cut), to release/X.Y
 #    for a patch release. release.yml's validate job requires this to already match the tag (see
