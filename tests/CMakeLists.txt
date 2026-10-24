@@ -210,6 +210,11 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
+# match the C++ encoder's.
+add_test(NAME HelperHandshakeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_helper_handshake.py)
+
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)

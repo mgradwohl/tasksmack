@@ -975,6 +975,63 @@ jobs:
       - name: Smoke-check extracted .tar.gz binary
         run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run.log
 
+  validate-linux-helper:
+    name: Validate the Installed Helper and Its polkit Policy (x64)
+    needs: [build-linux]
+    # A VM runner, not validate-linux-package's container: pkexec needs a running polkitd and systemd,
+    # and the job installs a polkit rule (#2723). #2489's manual check, apart from the password
+    # dialog itself: the policy registers, and the installed helper answers TaskSmack's handshake
+    # through pkexec.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read  # Required to download the linux-packages-x64 artifact from this run
+    steps:
+      # Only the handshake client and the protocol header it reads its version from.
+      - name: Check out the handshake client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: |
+            tools/helper-handshake.py
+            src/Platform/BrokerProtocol.h
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: linux-packages-x64
+          path: dist/
+
+      - name: Install the .deb with pkexec and polkitd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ./dist/*.deb pkexec polkitd
+
+      - name: The helper's polkit action is registered
+        # pkaction exits non-zero for an action polkit doesn't know. The exec.path annotation is what
+        # makes pkexec show the app's own prompt and apply auth_admin_keep.
+        run: |
+          pkaction --action-id app.tasksmack.TaskSmack.helper --verbose | tee pkaction.txt
+          grep -q 'org.freedesktop.policykit.exec.path -> /usr/libexec/tasksmack/tasksmack-helper' pkaction.txt
+
+      - name: Allow the runner's user without a password
+        # A rule for the CI runner only: the password dialog is the part that stays a manual check.
+        run: |
+          user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function (action, subject) {' \
+            "    if (action.id == \"app.tasksmack.TaskSmack.helper\" && subject.user == \"$user\") {" \
+            '        return polkit.Result.YES;' \
+            '    }' \
+            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
+          sudo systemctl restart polkit
+
+      - name: The installed helper answers the handshake through pkexec
+        run: python3 repo/tools/helper-handshake.py --timeout 60
+
   validate-windows-package:
     name: Validate Windows Release Artifacts (${{ matrix.arch }})
     # With signing on, x64's windows-packages-x64 is sign-windows' signed .zip; otherwise, and for
@@ -1335,12 +1392,13 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-windows-package]
+    needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-linux-helper, validate-windows-package]
     # Every job it needs must succeed, except sign-windows, which is skipped while signing is off
     # (SIGNING_ENABLED). Without this `if:`, that skip would skip the release too.
     if: >-
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
-      needs.validate-linux-package.result == 'success' && needs.validate-windows-package.result == 'success' &&
+      needs.validate-linux-package.result == 'success' && needs.validate-linux-helper.result == 'success' &&
+      needs.validate-windows-package.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
       (vars.SIGNPATH_SIGNING_ENABLED != 'true' && needs.sign-windows.result == 'skipped')) }}
     runs-on: ubuntu-24.04
