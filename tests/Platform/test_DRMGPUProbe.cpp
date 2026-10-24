@@ -15,6 +15,7 @@
 #include "Domain/GPUModel.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Linux/DRMGPUProbe.h"
+#include "Platform/Linux/LinuxGPUProbe.h"
 
 #include <algorithm>
 #include <array>
@@ -94,12 +95,14 @@ TEST(DRMGPUProbeIntegrationTest, ReadGPUCountersDoesNotCrash)
     EXPECT_NO_THROW({ [[maybe_unused]] auto counters = probe.readGPUCounters(); });
 }
 
-TEST(DRMGPUProbeIntegrationTest, ReadProcessGPUCountersReturnsEmpty)
+TEST(DRMGPUProbeIntegrationTest, ReadProcessGPUCountersDoesNotCrash)
 {
+    // Per-process figures come from the clients the last readGPUCounters() read (#2589): before one,
+    // there are none, and on an Intel machine after one there may be some.
     DRMGPUProbe probe;
-    // Per-process metrics are not yet supported via DRM sysfs
-    auto counters = probe.readProcessGPUCounters();
-    EXPECT_TRUE(counters.empty());
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    (void) probe.readGPUCounters();
+    EXPECT_NO_THROW({ [[maybe_unused]] auto counters = probe.readProcessGPUCounters(); });
 }
 
 TEST(DRMGPUProbeIntegrationTest, IsIntegratedFieldIsValidWhenPresent)
@@ -2156,6 +2159,20 @@ TEST_F(DRMGPUProbeEngineTest, GPUModelDerivesUtilizationFromTwoSamples)
     ASSERT_EQ(snapshots.size(), 1U);
     EXPECT_TRUE(snapshots[0].utilizationAvailable);
     EXPECT_DOUBLE_EQ(snapshots[0].utilizationPercent, 50.0);
+}
+
+// #2892: the composite the app uses passes the DRM probe's per-process figures on; it used to ask only
+// NVML and ROCm, so an Intel GPU's processes showed none.
+TEST_F(DRMGPUProbeEngineTest, TheLinuxCompositePassesTheDrmProcessesOn)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 1'000, 10'000) + "drm-resident-vram0:\t2048 KiB\n");
+    LinuxGPUProbe composite(makeProbe(), (m_SysRoot / "no-pci").string(), (m_SysRoot / "no-accel").string());
+    (void) composite.readGPUCounters();
+    const std::vector<ProcessGPUCounters> processes = composite.readProcessGPUCounters();
+    const auto process = std::ranges::find(processes, 100, &ProcessGPUCounters::pid);
+    ASSERT_NE(process, processes.end());
+    EXPECT_EQ(process->gpuMemoryBytes, 2048U * 1024U);
+    EXPECT_TRUE(composite.capabilities().hasPerProcessMetrics);
 }
 
 // #2589: each process gets its clients' memory and its share of the engines' time. Process 100 holds two

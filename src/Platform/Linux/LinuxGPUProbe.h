@@ -29,6 +29,9 @@ class LinuxGPUProbe : public IGPUProbe
     explicit LinuxGPUProbe(std::string drmBasePath = "/sys/class/drm",
                            const std::string& pciDevicesRoot = "/sys/bus/pci/devices",
                            std::string accelClassRoot = "/sys/class/accel");
+    /// The same, with @p drmProbe as the DRM probe: tests hand one a fake sysfs and /proc tree, so its
+    /// per-process figures can be checked through the composite (#2892).
+    LinuxGPUProbe(std::unique_ptr<DRMGPUProbe> drmProbe, const std::string& pciDevicesRoot, std::string accelClassRoot);
     ~LinuxGPUProbe() override;
 
     // Rule of 5
