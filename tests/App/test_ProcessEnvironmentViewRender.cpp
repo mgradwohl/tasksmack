@@ -291,6 +291,17 @@ TEST_F(ProcessEnvironmentViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEm
     TestMocks::MockProcessEnvironmentReader reader;
     openAndRead(empty, reader);
     EXPECT_TRUE(renderAndCapture(empty, true).contains("No environment variables"));
+
+    // A Failed read's reason follows the status when its reader gave one (the Windows reader's, #2569).
+    ProcessEnvironmentView detailed;
+    TestMocks::MockProcessEnvironmentReader detailedReader;
+    detailedReader.setResult(
+        {.status = Platform::EnvironmentReadStatus::Failed, .variables = {}, .truncated = false, .detail = "a 32-bit process (WOW64)"});
+    openAndRead(detailed, detailedReader);
+    EXPECT_EQ(detailed.detail(), "a 32-bit process (WOW64)");
+    EXPECT_TRUE(renderAndCapture(detailed, true).contains("Could not be read: a 32-bit process (WOW64)"));
+    detailed.onSelectionChanged(); // the reason goes with the process it was about
+    EXPECT_TRUE(detailed.detail().empty());
 }
 
 // #2403: an environment the administrator helper cut to fit its reply says so, and a whole one doesn't.

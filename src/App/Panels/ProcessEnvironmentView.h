@@ -121,8 +121,8 @@ class ProcessEnvironmentView
     using RowKeyView = std::pair<std::string_view, std::size_t>;
 
     /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
-    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (the platform
-    /// cannot read environments: Windows, synthetic runs).
+    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (no reader can
+    /// read environments: synthetic runs).
     void render(bool hasEnvironment);
 
     /// The panel's per-frame update: takes in a read that has finished, then starts @p target's on a
@@ -189,6 +189,7 @@ class ProcessEnvironmentView
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
+        m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
         m_Revealed.clear();
@@ -204,6 +205,7 @@ class ProcessEnvironmentView
     {
         m_HasRead = true;
         m_Status = result.status;
+        m_Detail = std::move(result.detail);
         m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
@@ -279,6 +281,12 @@ class ProcessEnvironmentView
         return m_Status;
     }
 
+    /// Why the last read Failed, when its reader said (EnvironmentReadResult::detail); else empty.
+    [[nodiscard]] const std::string& detail() const noexcept
+    {
+        return m_Detail;
+    }
+
     /// The last read's variables, sorted by name.
     [[nodiscard]] std::span<const Row> rows() const noexcept
     {
@@ -331,8 +339,9 @@ class ProcessEnvironmentView
         }
     }
 
-    /// The Failed result for a read that threw, or one no worker could be started for. The detail is
-    /// not kept: the status line says "Could not be read" (and a value must never be logged, #179).
+    /// The Failed result for a read that threw, or one no worker could be started for. That detail is
+    /// not kept (an exception's text could quote a value, which must never be shown or logged, #179):
+    /// the status line says "Could not be read"; only a reader's own detail is drawn after it.
     // NOLINTNEXTLINE(performance-unnecessary-value-param) - the signature LazyBackgroundRead::FailedResultFn takes
     [[nodiscard]] static Platform::EnvironmentReadResult failedRead(std::string /*detail*/)
     {
@@ -341,6 +350,7 @@ class ProcessEnvironmentView
 
     bool m_HasRead = false;
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
+    std::string m_Detail;     // why it Failed, when the reader said (the Windows reader does, #2569)
     bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown

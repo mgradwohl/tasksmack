@@ -24,7 +24,7 @@ enum class EnvironmentReadStatus : std::uint8_t
     Ok,               ///< Read; `variables` holds the entries (may be empty: a kernel thread or zombie has none).
     PermissionDenied, ///< The OS refused (Linux: EACCES/EPERM -- another user's process without ptrace rights).
     ProcessExited,    ///< The process is gone, or its PID now belongs to a different process (ENOENT/ESRCH).
-    Unsupported,      ///< This platform cannot read another process's environment (Windows, synthetic runs).
+    Unsupported,      ///< This run cannot read another process's environment (synthetic runs).
     IdentityUnknown,  ///< The target's start time is unknown (0), so the process could not be confirmed; nothing was read.
     Failed,           ///< Any other error.
 };
@@ -43,8 +43,13 @@ struct EnvironmentReadResult
     EnvironmentReadStatus status = EnvironmentReadStatus::Unsupported;
     std::vector<EnvironmentVariable> variables;
     /// The process had more than were passed on (the administrator helper's reply holds one frame,
-    /// #2403); `variables` holds the first.
+    /// #2403; the Windows reader caps the block and the count, #2569); `variables` holds the first.
     bool truncated = false;
+    /// Why, for Failed, when the reader can say (the Windows reader's: a Win32 or NTSTATUS error, or a
+    /// 32-bit process it does not read yet, #2569); else empty. Drawn after the status line. Never a
+    /// value. Not carried in the administrator helper's reply (BrokerProtocol), which words its own.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::string detail{};
 };
 
 /// Reads one process's environment variables on request.
@@ -66,7 +71,8 @@ class IProcessEnvironmentReader
     /// Environment section and readEnvironment() only ever returns Unsupported.
     [[nodiscard]] virtual bool hasEnvironment() const = 0;
 
-    /// Read @p target's environment now. Synchronous; one small /proc read on Linux.
+    /// Read @p target's environment now. Synchronous; one small /proc read on Linux, a few
+    /// ReadProcessMemory calls on Windows.
     /// The target's start time is checked against the process holding the PID, so a process that reused
     /// it reports ProcessExited instead of showing a stranger's environment. An unknown start time (0)
     /// is refused with IdentityUnknown and nothing is read, as the process actions refuse it
@@ -90,8 +96,9 @@ class IProcessEnvironmentReader
     }
 };
 
-/// The reader for a platform (or run) that cannot read another process's environment.
-/// Windows has none yet: it would need ReadProcessMemory on the target's PEB (#2569).
+/// The reader for a run that cannot read another process's environment: synthetic runs
+/// (App/SyntheticScenario). Both platforms have a reader of their own (Linux: /proc/[pid]/environ,
+/// #179; Windows: the target's PEB through ReadProcessMemory, #2569).
 class UnsupportedProcessEnvironmentReader final : public IProcessEnvironmentReader
 {
   public:

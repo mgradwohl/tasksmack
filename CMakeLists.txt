@@ -288,6 +288,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
+    src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
@@ -483,6 +484,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessMachineMath.h
         src/Platform/Windows/WindowsFolderPicker.h
         src/Platform/Windows/WindowsProcessConnections.h
+        src/Platform/Windows/WindowsProcessEnvironmentReader.h
         src/Platform/Windows/WindowsProcessIconSource.h
         src/Platform/Windows/WindowsProcessIconMath.h
         src/Platform/Windows/WindowsPackageLogoMath.h
