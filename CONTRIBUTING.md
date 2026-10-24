@@ -1076,6 +1076,10 @@ code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touchi
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
 `check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
+A release candidate's campaign gives each target 600 seconds instead (#2783):
+`gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
+summary line (targets, total and per-target seconds) in the release's fuzzing record.
 `.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits

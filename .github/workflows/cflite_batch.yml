@@ -12,6 +12,14 @@ on:
       - 'tests/fuzz/**'
       - '.clusterfuzzlite/build.sh'
   workflow_dispatch:
+    inputs:
+      campaign:
+        description: >-
+          weekly: 900 s shared by every target (the scheduled run). release: RELEASE_SECONDS_PER_TARGET
+          for each target, the release record's campaign (#2783).
+        type: choice
+        options: [weekly, release]
+        default: weekly
 
 # One batch run at a time, never cancelled: an overlapping run would download the same corpus and
 # race to upload it. A push that lands while a run is in progress queues behind it.
@@ -23,11 +31,19 @@ permissions:
   actions: read
   contents: read
 
+env:
+  # Batch mode splits fuzz-seconds across every target, one after another (#2783): the weekly 900 s
+  # gives each of 19 targets under a minute. A release campaign gives each this long instead.
+  RELEASE_SECONDS_PER_TARGET: 600
+  # What a release campaign may fuzz for in all, so the job (timeout below) ends inside the runner's
+  # 6-hour limit with time for the build and the corpus upload. More targets than fit share it.
+  RELEASE_SECONDS_MAX: 18000
+
 jobs:
   fuzz:
     name: Scheduled parser fuzzing
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.campaign == 'release' && 345 || 30 }}
     steps:
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
@@ -35,11 +51,33 @@ jobs:
           language: c++
           sanitizer: address
 
+      - name: Set the campaign's budget
+        id: budget
+        env:
+          CAMPAIGN: ${{ inputs.campaign || 'weekly' }}
+        run: |
+          # The targets build_fuzzers produced: executables named fuzz_* in build-out ($OUT), not the
+          # seed corpus zips and dictionaries beside them.
+          targets=$(find build-out -maxdepth 1 -type f -name 'fuzz_*' ! -name '*.*' -perm -u+x | wc -l)
+          if [ "$CAMPAIGN" = release ]; then
+            seconds=$((RELEASE_SECONDS_PER_TARGET * targets))
+            if [ "$seconds" -gt "$RELEASE_SECONDS_MAX" ]; then
+              echo "::warning::$targets targets x ${RELEASE_SECONDS_PER_TARGET} s is over ${RELEASE_SECONDS_MAX} s; capped, so each gets about $((RELEASE_SECONDS_MAX / targets)) s"
+              seconds=$RELEASE_SECONDS_MAX
+            fi
+          else
+            seconds=900
+          fi
+          [ "$targets" -gt 0 ] || { echo "::error::no fuzz_* targets in build-out"; exit 1; }
+          echo "seconds=$seconds" >> "$GITHUB_OUTPUT"
+          # The per-target figure the #2348-style release record quotes.
+          echo "$CAMPAIGN campaign: $targets targets, $seconds s in all, about $((seconds / targets)) s each" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run batch fuzzing
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 900
+          fuzz-seconds: ${{ steps.budget.outputs.seconds }}
           mode: batch
           sanitizer: address
           output-sarif: false
