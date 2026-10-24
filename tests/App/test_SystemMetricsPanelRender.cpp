@@ -2,10 +2,12 @@
 /// @brief The System Metrics panel as a whole (#1546), run headless with mock probes through its
 /// probe-factory seam: its sampler thread builds its models' probes from the mocks (no platform probe,
 /// no synthetic scenario; #2731: onAttach() itself calls no factory), the Overview draws its charts from
-/// their readings, the tabs switch to their sections, an inactive panel draws nothing, and a detached one
-/// says its model is gone. Its sampler runs at the refresh setting in every UI state (#2731).
+/// their readings, the tabs switch to their sections (and a requested sub-tab is brought forward once it
+/// is drawn, #2869), an inactive panel draws nothing, and a detached one says its model is gone. Its
+/// sampler runs at the refresh setting in every UI state (#2731).
 
 #include "App/Panels/SystemMetricsPanel.h"
+#include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
@@ -224,6 +226,91 @@ TEST_F(SystemMetricsPanelRenderTest, TheNetworkTabNeedsNetworkCounters)
     static_cast<void>(renderAndCapture(*panel));
     EXPECT_FALSE(selectTab("Network and I/O")); // not drawn at all
     EXPECT_TRUE(selectTab("Overview"));
+    panel->onDetach();
+}
+
+// #2869: requestTab() (TASKSMACK_MACHINE_TAB, TASKSMACK_DEMO's machine=) brings a sub-tab forward with
+// ImGuiTabItemFlags_SetSelected, which ImGui applies on the next frame, and the request is done once
+// the sub-tab reports selected.
+TEST_F(SystemMetricsPanelRenderTest, ARequestedTabIsSelected)
+{
+    const auto panel = attachedPanel(/*network=*/true);
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("CPU Usage")) << text; // the Overview, the default
+    EXPECT_FALSE(text.contains("Interface Status")) << text;
+
+    panel->requestTab(SelectOverride::MachineTab::Network);
+    EXPECT_TRUE(panel->requestedTabPending());
+    static_cast<void>(renderAndCapture(*panel)); // submitted with the flag
+    EXPECT_TRUE(panel->requestedTabPending()) << "ImGui applies SetSelected a frame late";
+    text = renderAndCapture(*panel);
+    EXPECT_FALSE(panel->requestedTabPending()) << "done once the sub-tab reported selected";
+    EXPECT_TRUE(text.contains("Network Throughput")) << text;
+    EXPECT_TRUE(text.contains("Interface Status")) << text;
+    EXPECT_FALSE(text.contains("CPU Usage")) << text;
+
+    // Back to the Overview, then the CPU Cores tab, each the same way.
+    panel->requestTab(SelectOverride::MachineTab::Overview);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("CPU Usage")) << text;
+    EXPECT_FALSE(panel->requestedTabPending());
+    panel->requestTab(SelectOverride::MachineTab::Cores);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("(4 logical processors)")) << text;
+    EXPECT_FALSE(panel->requestedTabPending());
+    panel->onDetach();
+}
+
+// #2869: a startup request (ShellLayer::onAttach() makes it before the first frame) outlives the frames
+// before the first sample, on which CPU Cores is not drawn at all, and takes effect once the seed brings
+// the sub-tab; Process Details' one-shot request would have been spent on the first frame.
+TEST_F(SystemMetricsPanelRenderTest, ARequestedTabWaitsForTheSampleThatDrawsIt)
+{
+    const auto gate = std::make_shared<std::latch>(1); // holds the factory, so no publication can arrive yet
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        [gate]
+        {
+            gate->wait();
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    panel->requestTab(SelectOverride::MachineTab::Cores);
+    panel->onUpdate(1.0F / 60.0F);
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        const std::string before = renderAndCapture(*panel);
+        EXPECT_FALSE(before.contains("CPU Cores")) << "no per-core readings yet: " << before;
+        EXPECT_TRUE(panel->requestedTabPending()) << "kept while the sub-tab is not drawn, frame " << frame;
+    }
+
+    gate->count_down();
+    ASSERT_TRUE(panel->waitForFirstSample());
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("(4 logical processors)")) << "the seed brought the CPU Cores tab, and the request took it: " << after;
+    EXPECT_FALSE(after.contains("CPU Usage")) << after;
+    EXPECT_FALSE(panel->requestedTabPending());
+    panel->onDetach();
+}
+
+// #2869: a request for a sub-tab this machine never draws (no NPU) is dropped, with nothing selected,
+// after MAX_MACHINE_TAB_FRAMES frames drawn with a snapshot, so no stale request is left.
+TEST_F(SystemMetricsPanelRenderTest, ARequestedTabThisMachineLacksIsDroppedAfterTheFrameLimit)
+{
+    const auto panel = attachedPanel(/*network=*/false);
+    panel->requestTab(SelectOverride::MachineTab::Npu);
+    for (int frame = 0; frame < SelectOverride::MAX_MACHINE_TAB_FRAMES - 1; ++frame)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        ASSERT_TRUE(panel->requestedTabPending()) << frame;
+    }
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_FALSE(panel->requestedTabPending());
+    EXPECT_FALSE(text.contains("NPU")) << text;
+    EXPECT_TRUE(text.contains("CPU Usage")) << "the Overview stays: " << text;
     panel->onDetach();
 }
 

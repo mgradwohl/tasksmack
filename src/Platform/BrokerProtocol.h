@@ -47,8 +47,8 @@ namespace Platform::Broker
 
 /// Bumped on every change to a message's fields: the helper and TaskSmack ship together, and a Hello of
 /// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
-/// their list was cut to fit a frame (#2403).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 2;
+/// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 3;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -103,6 +103,11 @@ enum class Signal : std::uint8_t
 struct Hello
 {
     std::uint16_t version = PROTOCOL_VERSION;
+    /// The user chose Administrator for this session (#2728): the Linux helper drops its idle exit and
+    /// serves until TaskSmack closes the socket. A Hello again mid-session can set it, so a helper an
+    /// "Authenticate and retry" started needs no second prompt. Windows restarts elevated instead, and
+    /// its pipe helper ignores it.
+    bool forSession = false;
     friend bool operator==(const Hello&, const Hello&) = default;
 };
 
@@ -661,6 +666,7 @@ template<typename Message>
     if (const auto* hello = std::get_if<Hello>(&request))
     {
         writer.u16(hello->version);
+        writer.u8(hello->forSession ? 1 : 0);
     }
     else if (const auto* signal = std::get_if<SignalRequest>(&request))
     {
@@ -831,7 +837,7 @@ namespace Detail
     switch (frame->kind)
     {
     case MessageKind::Hello:
-        return Detail::finish<Request>(reader, id, Hello{.version = reader.u16()});
+        return Detail::finish<Request>(reader, id, Hello{.version = reader.u16(), .forSession = reader.flag()});
     case MessageKind::Signal:
         return Detail::finish<Request>(reader, id, Detail::decodeSignalRequest(reader));
     case MessageKind::SetPriority:

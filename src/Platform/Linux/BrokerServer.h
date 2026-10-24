@@ -27,7 +27,8 @@ enum class SessionEnd : std::uint8_t
 };
 
 /// Answers requests on @p fd until the client closes it, no Hello or action arrives for @p idleTimeout
-/// (reads come on their own timers, so they don't put it off), or @p stopToken is stopped. The first
+/// (reads come on their own timers, so they don't put it off; a Hello with forSession turns this off for
+/// the rest of the session, #2728), or @p stopToken is stopped. The first
 /// frame must be a Hello of this protocol version; until then nothing else is acted on. A frame that
 /// doesn't decode gets an ErrorReply, and the session goes on. The idle timeout runs on @p clock,
 /// steady_clock unless a test steps it (#2546).

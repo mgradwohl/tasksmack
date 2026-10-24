@@ -39,6 +39,24 @@ class IPrivilegedBroker
     /// helper isn't installed, it didn't answer).
     [[nodiscard]] virtual std::expected<void, std::string> connect(const std::stop_token& stopToken) = 0;
 
+    /// "Authenticate for this session" (#2728): starts the helper if it isn't running (one prompt, so
+    /// blocking like connect(): a worker, never the UI thread) and keeps it for the rest of TaskSmack's
+    /// session instead of letting it exit when idle. A helper started later, after this one ended, is
+    /// held too. A refused or dismissed prompt leaves the session as it was: the error says why. The
+    /// default is for transports whose Administrator is something else (Windows restarts elevated).
+    [[nodiscard]] virtual std::expected<void, std::string> holdForSession(const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return std::unexpected(std::string("this platform's Administrator session doesn't use the helper"));
+    }
+
+    /// Whether the session is Administrator through the helper (#2728): holdForSession() succeeded and
+    /// the helper it holds is still connected.
+    [[nodiscard]] virtual bool heldForSession() const noexcept
+    {
+        return false;
+    }
+
     /// Whether the helper, once started, can read processes that aren't TaskSmack's user's own (#2550):
     /// what "Authenticate to read" is for. False where every elevation runs as another account and the
     /// helper then reads only the user's own processes (a standard user's Windows TaskSmack, whose UAC

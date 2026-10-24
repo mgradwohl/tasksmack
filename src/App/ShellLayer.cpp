@@ -147,6 +147,21 @@ void ShellLayer::onAttach()
     {
         m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
     }
+    // TASKSMACK_MACHINE_TAB (#2869): the machine tab's sub-tab, asked for until it shows; an unknown
+    // name is ignored with one warning. It picks no main tab: that stays TASKSMACK_TAB's, or the default.
+    const SelectOverride::MachineTabChoice machineTab =
+        SelectOverride::parseStartupMachineTab(Core::readEnv(SelectOverride::MACHINE_TAB_ENV_VAR));
+    if (!machineTab.warning.empty())
+    {
+        spdlog::warn("{}", machineTab.warning);
+    }
+    if (machineTab.tab.has_value())
+    {
+        spdlog::info("{} (test hook): bringing the machine tab's {} sub-tab forward",
+                     SelectOverride::MACHINE_TAB_ENV_VAR,
+                     SelectOverride::machineTabName(*machineTab.tab));
+        requestMachineTab(*machineTab.tab);
+    }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
@@ -227,6 +242,11 @@ void ShellLayer::requestSelection(const SelectOverride::Target& target)
 void ShellLayer::requestDetailsTab(const SelectOverride::DetailsTab tab)
 {
     m_ProcessDetailsPanel.requestTab(tab);
+}
+
+void ShellLayer::requestMachineTab(const SelectOverride::MachineTab tab)
+{
+    m_SystemMetricsPanel.requestTab(tab);
 }
 
 void ShellLayer::requestDetailsSection(const SelectOverride::DetailsSection section)

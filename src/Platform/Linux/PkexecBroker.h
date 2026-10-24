@@ -10,7 +10,8 @@
 // threads are serialised. A callIfIdle() that times out keeps the session (#2406): the helper still
 // answers, and that late reply is dropped, by the next call or, before it asks again, by callIfIdle().
 // Any other failure closes the socket. The helper exits when this closes the socket (destruction or disconnect()),
-// and after a few idle minutes on its own, after which connected() is false and connect() starts it again.
+// and after a few idle minutes on its own, after which connected() is false and connect() starts it again;
+// once holdForSession() has succeeded, every helper this starts is held and has no idle exit (#2728).
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -63,6 +64,9 @@ class PkexecBroker final : public IPrivilegedBroker
     /// Closes the socket, so the helper exits; connected() is false after.
     void disconnect();
 
+    [[nodiscard]] std::expected<void, std::string> holdForSession(const std::stop_token& stopToken) override;
+    [[nodiscard]] bool heldForSession() const noexcept override;
+
     [[nodiscard]] bool connected() const noexcept override;
     [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
                                                                           std::chrono::milliseconds timeout) override;
@@ -96,6 +100,7 @@ class PkexecBroker final : public IPrivilegedBroker
     std::uint32_t m_NextRequestId = 1;
     std::uint32_t m_Unanswered = 0;               // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)
     std::atomic<bool> m_Connecting{false};        // a connect is asking for the password (#2391)
+    std::atomic<bool> m_ForSession{false};        // holdForSession() succeeded: each Hello asks to be held (#2728)
     mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has hung up
 };
 

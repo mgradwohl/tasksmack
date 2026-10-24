@@ -10,6 +10,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
+#include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
@@ -470,8 +471,23 @@ void SystemMetricsPanel::renderContent()
 
     if (ImGui::BeginTabBar("SystemTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
+        // A sub-tab asked for (requestTab(): TASKSMACK_MACHINE_TAB, TASKSMACK_DEMO's machine=, #2869) is
+        // submitted with ImGuiTabItemFlags_SetSelected on every frame until BeginTabItem() reports it
+        // selected, as the shell's tab bar does for TASKSMACK_TAB (SelectOverride::PendingMainTab).
+        using SelectOverride::MachineTab;
+        const auto tabFlags = [this](const MachineTab tab) -> ImGuiTabItemFlags
+        {
+            return m_RequestedTab.wantsSelected(tab) ? ImGuiTabItemFlags_SetSelected : 0;
+        };
+        const auto beginTab = [this, &tabFlags](const char* label, const MachineTab tab)
+        {
+            const bool selected = ImGui::BeginTabItem(label, nullptr, tabFlags(tab));
+            m_RequestedTab.onTabSubmitted(tab, selected);
+            return selected;
+        };
+
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
-        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
+        if (beginTab(ICON_FA_GAUGE_HIGH "  Overview", MachineTab::Overview))
         {
             {
                 const UI::Widgets::TabContentScope content("##OverviewContent");
@@ -482,7 +498,7 @@ void SystemMetricsPanel::renderContent()
 
         if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
+            if (beginTab(ICON_FA_MICROCHIP "  CPU Cores", MachineTab::Cores))
             {
                 // Build context for CpuCoresSection render function
                 CpuCoresSection::RenderContext cpuCtx{
@@ -504,7 +520,7 @@ void SystemMetricsPanel::renderContent()
         // GPU tab - always available; content handles missing GPUs gracefully
         if (m_GPUModel)
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
+            if (beginTab(ICON_FA_MICROCHIP "  GPU", MachineTab::Gpu))
             {
                 // Build context for GpuSection render function
                 GpuSection::RenderContext gpuCtx{
@@ -530,7 +546,7 @@ void SystemMetricsPanel::renderContent()
         // The GPU tab's code draws it, over the publication's accelerators.
         if (m_GPUModel && GpuSection::showAcceleratorTab(m_GPUPublication.get()))
         {
-            if (ImGui::BeginTabItem(ICON_FA_BRAIN "  NPU"))
+            if (beginTab(ICON_FA_BRAIN "  NPU", MachineTab::Npu))
             {
                 GpuSection::RenderContext npuCtx{
                     .publication = m_GPUPublication.get(),
@@ -555,7 +571,7 @@ void SystemMetricsPanel::renderContent()
         // Network and I/O tab - show if network counters are available
         if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
         {
-            if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+            if (beginTab(ICON_FA_NETWORK_WIRED "  Network and I/O", MachineTab::Network))
             {
                 // Build context for NetworkSection render functions
                 NetworkSection::RenderContext netCtx{
@@ -588,6 +604,18 @@ void SystemMetricsPanel::renderContent()
         }
 
         ImGui::EndTabBar();
+
+        // The request's frames are counted only once the first sample is in, when every sub-tab this
+        // machine draws is drawn; a request still waiting then names a sub-tab it never has.
+        if (m_SystemPublication)
+        {
+            if (const std::optional<MachineTab> dropped = m_RequestedTab.onFrameEnd(); dropped.has_value())
+            {
+                spdlog::warn("Requested machine sub-tab '{}' was not drawn after {} frames; ignored",
+                             SelectOverride::machineTabName(*dropped),
+                             SelectOverride::MAX_MACHINE_TAB_FRAMES);
+            }
+        }
     }
 
     ImGui::PopStyleVar(); // FramePadding
