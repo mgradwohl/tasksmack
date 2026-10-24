@@ -44,6 +44,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_TRIANGLE_EXCLAMATION "\xef\x81\xb1" // U+f071 - Warning triangle
 #define ICON_FA_CIRCLE_QUESTION "\xef\x81\x99"      // U+f059 - Question in circle
 #define ICON_FA_LOCK "\xef\x80\xa3"                 // U+f023 - Lock (reduced privileges indicator)
+#define ICON_FA_SHIELD_HALVED "\xef\x8f\xad"        // U+f3ed - Half shield (an Administrator session, #2728)
 
 // ============================================================================
 // System & Hardware Icons

@@ -11,6 +11,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellPanels.h"
@@ -140,6 +141,10 @@ class ShellLayer : public Core::Layer
     // dispatched in the first onUpdate() after the process probe's first generation (which says whether
     // privileges are reduced, #2731), with all layers stacked.
     bool m_PendingPrivilegeNotice = false;
+    /// The privileged broker the access chip asks whether the session is held (#2728), resolved on the
+    /// first update; null where there is none (no helper, a synthetic run) or off Linux.
+    std::shared_ptr<Platform::IPrivilegedBroker> m_AccessBroker;
+    bool m_AccessBrokerResolved = false;
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).

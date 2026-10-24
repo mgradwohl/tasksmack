@@ -234,7 +234,9 @@ std::expected<void, std::string> PkexecBroker::holdForSession(const std::stop_to
 
 bool PkexecBroker::heldForSession() const noexcept
 {
-    return m_ForSession.load() && connected();
+    // Atomics only, no poll: the status-bar chip asks every frame on the UI thread (#2728). A helper that
+    // has hung up is noticed by the next call or connected() on a worker, as the readers make each refresh.
+    return m_ForSession.load() && m_Connected.load();
 }
 
 void PkexecBroker::disconnect()

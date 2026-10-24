@@ -1,5 +1,6 @@
 #include "ShellLayer.h"
 
+#include "AccessChoice.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvRead.h"
 #include "Core/Event.h"
@@ -11,6 +12,7 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
+#include "PanelPlatforms.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
@@ -21,6 +23,7 @@
 #include "ShellMetrics.h"
 #include "StatusBarText.h"
 #include "StatusBarView.h"
+#include "SyntheticScenario.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
@@ -390,6 +393,17 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         ShellPanels::raiseStartupSettings([this](Core::Event& event) { m_Host->raiseEvent(event); });
+    }
+
+    // The access chip's broker, on the UI thread its prompt belongs to (#2728); Linux only, where
+    // Administrator is the session-held helper.
+    if (!m_AccessBrokerResolved)
+    {
+        m_AccessBrokerResolved = true;
+        if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+        {
+            m_AccessBroker = privilegedBroker(Synthetic::activeScenario());
+        }
     }
 
     // Dispatch the startup privilege notice on the first update after the process probe's first
@@ -777,7 +791,18 @@ void ShellLayer::renderStatusBar() const
     const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
     // When native OS decorations replace the custom title bar (see #745), its Settings/Help buttons
     // don't exist, so the status bar carries them.
+    // Standard or Administrator (#2728), on Linux: Administrator when nothing is limited (root, or every
+    // capability granted) or the helper is held for the session; Windows keeps the plain lock until
+    // TaskSmack can restart itself elevated.
+    std::optional<StatusBarView::AccessChip> access;
+    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    {
+        const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+        access =
+            (!capabilities.hasReducedPrivileges || held) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
+    }
     const StatusBarView::Action action = StatusBarView::render({
+        .access = access,
         .reducedPrivileges = capabilities.hasReducedPrivileges,
         .networkCountersBlocked = capabilities.networkCountersBlocked,
         .processText = m_StatusProcessText,
@@ -794,6 +819,12 @@ void ShellLayer::renderStatusBar() const
     else if (action == StatusBarView::Action::Help)
     {
         Core::OpenHelpEvent event;
+        m_Host->raiseEvent(event);
+    }
+    else if (action == StatusBarView::Action::Access)
+    {
+        // The startup notice again, whatever its "Don't show this again": the user asked for it.
+        Core::OpenElevationNoticeEvent event(capabilities.missingPrivileges);
         m_Host->raiseEvent(event);
     }
 }
