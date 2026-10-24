@@ -24,18 +24,25 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.8'
-  # Exact apt.llvm.org package version currently served for clang-22 (noble).
-  # apt.llvm.org does not retain old snapshots per major version -- it only
-  # ever serves the latest build for a given major -- so this pin cannot
-  # survive indefinitely. When apt rotates the snapshot forward, build-linux's
-  # "Assert exact LLVM package version" step fails with the new version
-  # string instead of silently building with it. Review the change, then
-  # update this value (found via:
-  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-22/main/binary-amd64/Packages.gz \
+  # Exact apt.llvm.org package versions currently served for clang-22 (noble),
+  # one per architecture: apt.llvm.org builds amd64 and arm64 separately, so
+  # one can lag the other or miss a snapshot, and each Linux leg asserts its
+  # own architecture's pin (#2778). apt.llvm.org does not retain old snapshots
+  # per major version -- it only ever serves the latest build for a given
+  # major -- so these pins cannot survive indefinitely. When apt rotates a
+  # snapshot forward, that architecture's build-linux "Assert exact LLVM
+  # package version" step fails with the new version string instead of
+  # silently building with it. Review the change, then update that value
+  # (found via:
+  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-22/main/binary-<arch>/Packages.gz \
   #     | gunzip | grep -A2 '^Package: clang-22$'
-  # ) so a Linux toolchain change is always a deliberate, reviewed PR rather
-  # than a change in apt repository state between two runs of the same tag.
+  # with binary-amd64 for LLVM_LINUX_EXACT_VERSION and binary-arm64 for
+  # LLVM_LINUX_EXACT_VERSION_ARM64) so a Linux toolchain change is always a
+  # deliberate, reviewed PR rather than a change in apt repository state
+  # between two runs of the same tag. The matrix picks the pin: arm64 legs
+  # pass LLVM_LINUX_EXACT_VERSION_ARM64 to setup-llvm, x64 legs the other.
   LLVM_LINUX_EXACT_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
+  LLVM_LINUX_EXACT_VERSION_ARM64: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
 
   # 'true' only for a dispatched run with dry_run left on; a tag push has no inputs, so it is
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
@@ -45,11 +52,17 @@ env:
   # SignPath signing policy sign-windows submits to. 'test-signing' signs with SignPath's self-signed test
   # certificate, "TaskSmack Test Signing (untrusted)", with no approval: it proves the pipeline end to end, and
   # nothing it signs is trusted outside this workflow. To sign releases with the SignPath Foundation certificate
-  # once the Foundation approves the project, change the LAST 'test-signing' below to 'release-signing'. That one
-  # line moves tag runs (and dry_run=false dispatches) to the policy whose every request the maintainer approves
-  # in SignPath (sign-windows waits for it), while dry runs stay on test-signing. The signer common name the
-  # build configures and validate-windows-package requires follows the policy (see WINDOWS_EXPECTED_SIGNER's uses).
+  # once the Foundation approves the project, change the LAST 'test-signing' below to 'release-signing', and the
+  # LAST signer under it to 'SignPath Foundation'. Those two lines move tag runs (and dry_run=false dispatches)
+  # to the policy whose every request the maintainer approves in SignPath (sign-windows waits for it), while
+  # dry runs stay on test-signing. Until then, validate refuses a real release once signing is on (#2745).
   SIGNPATH_SIGNING_POLICY: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'test-signing' || 'test-signing' }}
+  # The signer common name the policy's certificate carries: what build-windows configures as
+  # TASKSMACK_EXPECTED_SIGNER and validate-windows-package's signature check requires, defined once so the two
+  # can't drift (#2779). A workflow-level env value can't read another, so this repeats the policy's condition
+  # instead of mapping from SIGNPATH_SIGNING_POLICY; a policy/signer mismatch fails that check, never publishes.
+  # 'TaskSmack Test Signing (untrusted)' is test-signing's certificate, 'SignPath Foundation' release-signing's.
+  WINDOWS_EXPECTED_SIGNER: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'TaskSmack Test Signing (untrusted)' || 'TaskSmack Test Signing (untrusted)' }}
 
   # The switch for the whole signing path: 'true' only when the repository variable
   # SIGNPATH_SIGNING_ENABLED is 'true'. It stays unset until the SignPath Foundation approves the
@@ -103,6 +116,20 @@ jobs:
             echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH, no leading zeroes). Aborting release." >&2
             exit 1
           fi
+
+      - name: Refuse to sign a real release under the test-signing policy
+        # Fail closed (#2745): with SIGNPATH_SIGNING_ENABLED set, a real release (a tag push, or a
+        # dispatch with dry_run off) must not ship a .zip signed by SignPath's self-signed test
+        # certificate. validate-windows-package trusts that certificate on its own runner, so its
+        # signature gate would pass while users saw an untrusted publisher. Until the policy line
+        # at the top moves real releases to release-signing, signing is for dry runs only.
+        if: env.DRY_RUN != 'true' && env.SIGNING_ENABLED == 'true'
+        run: |
+          if [[ "$SIGNPATH_SIGNING_POLICY" == "test-signing" ]]; then
+            echo "::error::SIGNPATH_SIGNING_ENABLED is 'true', but a real release can't be signed under the test-signing policy. Move SIGNPATH_SIGNING_POLICY's tag-run value to release-signing (see the env block at the top of release.yml), or dispatch a dry run. Aborting release."
+            exit 1
+          fi
+          echo "Signing policy for this release: $SIGNPATH_SIGNING_POLICY"
 
       - name: Refuse to replace a published release
         # A re-pushed (deleted and recreated) tag must not silently swap the assets of a
@@ -225,7 +252,8 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
-          expect-exact-version: ${{ env.LLVM_LINUX_EXACT_VERSION }}
+          # This architecture's own pin (#2778; both are documented in the env block at the top).
+          expect-exact-version: ${{ matrix.arch == 'arm64' && env.LLVM_LINUX_EXACT_VERSION_ARM64 || env.LLVM_LINUX_EXACT_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -270,10 +298,16 @@ jobs:
           cpack -G "TGZ;DEB"
 
       - name: Upload artifacts
+        # Only the packages: dist/ is also CPACK_PACKAGE_DIRECTORY, so it holds CPack's
+        # _CPack_Packages staging tree too, which doubled the artifact and made `gh run download`
+        # refuse it ("would result in path traversal", #2799).
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-packages-${{ matrix.arch }}
-          path: dist/*
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
           retention-days: 90
 
   verify-reproducibility:
@@ -312,7 +346,8 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
-          expect-exact-version: ${{ env.LLVM_LINUX_EXACT_VERSION }}
+          # This architecture's own pin (#2778; both are documented in the env block at the top).
+          expect-exact-version: ${{ matrix.arch == 'arm64' && env.LLVM_LINUX_EXACT_VERSION_ARM64 || env.LLVM_LINUX_EXACT_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -339,11 +374,11 @@ jobs:
           path: original-dist/
 
       - name: Compare digests
-        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed locally:
-        # CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/ itself), which the
-        # existing "Upload artifacts" step uploads along with the real packages. sha256sum
-        # on a directory errors and, under this job's `set -e` default, would abort before
-        # ever comparing anything. Restrict both operations to regular files.
+        # This job's own cpack leaves CPack's _CPack_Packages staging directory in dist/
+        # (CPACK_PACKAGE_DIRECTORY is dist/ itself); original-dist/ holds only the packages,
+        # since build-linux uploads just those (#2799). sha256sum on a directory errors and,
+        # under this job's `set -e` default, would abort before ever comparing anything, so
+        # both operations stay restricted to regular files.
         run: |
           echo "=== build-linux (first build) ==="
           find original-dist -maxdepth 1 -type f -exec sha256sum {} +
@@ -447,12 +482,12 @@ jobs:
         # TASKSMACK_SIGN_AFTER_PACKAGING moves cmake/VerifyWindowsSignatures.cmake's check from CPack,
         # where the .zip isn't signed yet, to validate-windows-package, which runs it on the signed
         # .zip, so an unsigned helper still can't be published. TASKSMACK_EXPECTED_SIGNER is the signer
-        # the policy's certificate names, the one that check requires.
+        # the policy's certificate names, the one that check requires (WINDOWS_EXPECTED_SIGNER, from
+        # the workflow's env).
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
           SIGNED: ${{ matrix.signed && env.SIGNING_ENABLED == 'true' }}
-          WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
         run: |
           $signing = @()
           if ($env:SIGNED -eq 'true') {
@@ -512,11 +547,14 @@ jobs:
           retention-days: 90
 
       - name: Upload artifacts
+        # Only the .zip, never CPack's _CPack_Packages staging tree beside it (see build-linux's
+        # upload, #2799).
         if: ${{ !matrix.signed || env.SIGNING_ENABLED != 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-packages-${{ matrix.arch }}
-          path: dist/*
+          path: dist/*.zip
+          if-no-files-found: error
           retention-days: 90
 
   sign-windows:
@@ -668,11 +706,10 @@ jobs:
           path: original-dist/
 
       - name: Compare digests
-        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed
-        # locally on Linux; CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/
-        # itself), which the existing "Upload artifacts" step uploads along with the real
-        # packages. Get-FileHash errors on a directory, so -File restricts Get-ChildItem
-        # to regular files up front.
+        # This job's own cpack leaves CPack's _CPack_Packages staging directory in dist/
+        # (CPACK_PACKAGE_DIRECTORY is dist/ itself); original-dist/ holds only the .zip, since
+        # build-windows uploads just that (#2799). Get-FileHash errors on a directory, so -File
+        # restricts Get-ChildItem to regular files up front.
         #
         # Identical .zip digests pass. Otherwise every file in the two .zips is compared, and the
         # only difference allowed is a TaskSmackHelper.exe only the original packages (x64, see the
@@ -1067,8 +1104,9 @@ jobs:
         # The check CPack skipped for this .zip (TASKSMACK_SIGN_AFTER_PACKAGING; #2302), run on the
         # signed .zip before create-release can publish it: cmake/VerifyWindowsSignatures.cmake
         # requires TaskSmack.exe and TaskSmackHelper.exe to be validly signed by the policy's
-        # signer, timestamped, with one certificate. A missing, invalid, wrongly signed or
-        # untimestamped signature fails the release here.
+        # signer (WINDOWS_EXPECTED_SIGNER, from the workflow's env), timestamped, with one
+        # certificate. A missing, invalid, wrongly signed or untimestamped signature fails the
+        # release here.
         #
         # test-signing's certificate is self-signed, so no machine trusts it and its signatures
         # read as UnknownError, not Valid. For that policy only, this ephemeral runner first trusts
@@ -1078,8 +1116,6 @@ jobs:
         # certificate chains to a public root, so nothing is added to the trust store for it.
         if: matrix.signed && env.SIGNING_ENABLED == 'true'
         shell: pwsh
-        env:
-          WINDOWS_EXPECTED_SIGNER: ${{ env.SIGNPATH_SIGNING_POLICY == 'release-signing' && 'SignPath Foundation' || 'TaskSmack Test Signing (untrusted)' }}
         run: |
           $pkg = $env:TASKSMACK_PKG_ROOT
           foreach ($name in 'TaskSmack.exe', 'TaskSmackHelper.exe') {
@@ -1376,20 +1412,15 @@ jobs:
       - name: Download packages (every OS and architecture)
         # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; x64's
         # Windows .zip is sign-windows' signed one (windows-unsigned-x64 never matches). Package
-        # names differ by architecture (cmake/Packaging.cmake), and so do the CPack staging
-        # directories dropped below, so nothing in one artifact overwrites another's.
+        # names differ by architecture (cmake/Packaging.cmake), so nothing in one artifact
+        # overwrites another's, and each artifact holds only its packages (#2799), so dist/ is
+        # exactly the release's package set: signing, the upload and the asset-count check below
+        # all see the same files.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: '*-packages-*'
           path: dist/
           merge-multiple: true
-
-      - name: Drop CPack staging directories
-        # The package artifacts also carry CPack's _CPack_Packages staging directory (see
-        # verify-reproducibility's comment). Only the regular files at the top of dist/ are
-        # release assets, so remove everything else: signing, the upload and the asset-count
-        # check below then all see exactly the same set.
-        run: find dist -mindepth 1 -maxdepth 1 ! -type f -exec rm -rf -- {} +
 
       - name: Verify the package set
         # Exactly the expected packages, before anything is signed: x64 keeps the names earlier
@@ -1463,7 +1494,11 @@ jobs:
             fi
             echo "Reusing the existing draft release for '$TAG'."
           elif grep -qi 'release not found' "$err"; then
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+            # A placeholder body, not --generate-notes: GitHub's generated notes for a big release
+            # exceed its 125,000-character body limit (v0.9.0's did, HTTP 422; #2801), and the
+            # maintainer's approved notes replace the body after publish anyway
+            # (gh release edit --notes-file; CONTRIBUTING.md's "Cutting a Release").
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "Release notes follow."
             echo "Created draft release for '$TAG'."
           else
             echo "Could not check for an existing release for '$TAG':" >&2
