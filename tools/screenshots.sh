@@ -198,7 +198,9 @@ done
 for t in "$DARK" "$LIGHT"; do
     [[ -n "$t" ]] || continue
     run_shot "processes-$t" "$t" TASKSMACK_TAB=Processes TASKSMACK_SELECT_NAME="$PROCESS"
-    run_shot "system-$t" "$t" TASKSMACK_TAB=System
+    # By id: the machine tab is labelled "System" until the first sample brings the hostname, so the
+    # System Information tab's label would race it at startup (#2886).
+    run_shot "system-$t" "$t" TASKSMACK_TAB=SystemInfo
 done
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 for sub in cores gpu network; do

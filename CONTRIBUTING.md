@@ -803,10 +803,19 @@ and exit non-zero if any shot failed.
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
 ```bash
-# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images.
+# SDL_VIDEO_X11_SCALING_FACTOR=1.75 renders at the Windows set's 175 % scale (SDL reads that hint,
+# Xft.dpi or GDK_SCALE, never Xvfb's -dpi); the three expanded-section shots need --window 1440x1200
+# on Linux, where the Actions and Priority cards are taller and push the sections below a 900 px fold.
 cmake --preset release && cmake --build --preset release
-tools/screenshots.sh --webp --hostname tasksmack-demo
+SDL_VIDEO_X11_SCALING_FACTOR=1.75 tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
+
+Under Xvfb, SDL warps the pointer to the window's centre at startup, which hovers a chart and draws its
+tooltip into the shot: keep the pointer parked outside the window for the run (python-xlib's
+`root.warp_pointer()` to a screen corner, repeated every quarter second). The selected process's command
+line is shown in Process Details, so run the binary from a path that names no user (a bind mount of the
+build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
 
 ```powershell
 # Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made

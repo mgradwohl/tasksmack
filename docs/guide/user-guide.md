@@ -162,7 +162,7 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Copy PID**, **Copy Name** and **Copy Command Line**, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9). On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
 
-![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/windows/walk-live.webp)
+![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/linux/walk-live.webp)
 
 *Selecting a process and opening its Process Details: the Processes tab, then the selected row, then the process's own tab with its **Network and I/O** sub-tab in front.*
 
@@ -362,7 +362,7 @@ The Process Details **Overview** tab has a collapsible **Environment** section, 
 
 ### Connections
 
-![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/windows/details-connections-windows-dark.webp)
+![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/linux/details-connections-windows-dark.webp)
 
 *The **Connections** section opened under the Actions and Priority cards, here for a process that holds no TCP or UDP sockets.*
 
@@ -382,7 +382,7 @@ The Process Details **Overview** tab also has a collapsible **Connections** sect
 
 ### Modules
 
-![Process Details' Overview with the Modules section expanded: Modules (270) in its header, a filter box, and a table with NAME, VERSION, BASE, SIZE and PATH columns](../images/screenshots/windows/details-modules-windows-dark.webp)
+![Process Details' Overview with the Modules section expanded below the collapsed Environment and Connections sections: Modules (51) in its header, a filter box, and a table with NAME, BASE, SIZE and PATH columns listing the shared libraries under /usr/lib](../images/screenshots/linux/details-modules-windows-dark.webp)
 
 *The **Modules** section opened, with the count in its header, the filter box and the NAME / VERSION / BASE / SIZE / PATH table sorted by name.*
 
@@ -424,7 +424,7 @@ TaskSmack reads the token (`OpenProcessToken`, `GetTokenInformation`) only for t
 
 ### Open files
 
-![Process Details' Overview with the Open files section expanded after a scan, Open files (118) in its header](../images/screenshots/windows/details-openfiles-windows-dark.webp)
+![Process Details' Overview with the Open files section expanded after a scan: Open files (14) in its header, the Rescan button with the time of the scan, and the filter box above the table](../images/screenshots/linux/details-openfiles-windows-dark.webp)
 
 *The **Open files** section after a scan, with the number of open files in its header and the results listed below it.*
 
@@ -653,7 +653,7 @@ See the built-in theme files (shipped alongside the application) for the expecte
 
 TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
 
-![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/windows/themes-live.webp)
+![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/linux/themes-live.webp)
 
 *The Overview switching through six of the bundled themes, as choosing each one in Settings does: Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light.*
 
