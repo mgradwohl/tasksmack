@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #ifdef TASKSMACK_HAS_SDBUS
@@ -11,7 +12,6 @@
 
 #include <array>
 #include <cstring>
-#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -70,7 +70,7 @@ class Journal
     return std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - read on one worker thread
 }
 
-LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::size_t maxEntries)
+LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::size_t maxEntries, std::optional<std::uint32_t> coredumpUid)
 {
     LinuxCoredumps::JournalRead read;
     Journal journal;
@@ -94,13 +94,6 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
         return read;
     }
     read.opened = true;
-    // The user systemd-coredump drops to, when it has one. getpwnam_r(): System Information's read and
-    // the crash history's worker can both be here at once (#2416).
-    std::optional<std::uint32_t> coredumpUid;
-    if (const std::optional<uid_t> uid = lookUpUserId("systemd-coredump", ::getpwnam_r); uid.has_value())
-    {
-        coredumpUid = static_cast<std::uint32_t>(*uid);
-    }
     read.coredumpUid = coredumpUid; // readCrashFacts() checks the entries again (#2382)
     while (read.entries.size() < maxEntries && sd_journal_previous(handle) > 0)
     {
@@ -152,12 +145,38 @@ LinuxCoredumps::JournalRead readCoredumpEntries(std::uint64_t sinceUsec, std::si
 
 } // namespace
 
+std::optional<std::uint32_t> lookUpCoredumpUid()
+{
+    // getpwnam_r(): System Information's read and the crash history's worker can both be here at once (#2416).
+    if (const std::optional<uid_t> uid = lookUpUserId("systemd-coredump", ::getpwnam_r); uid.has_value())
+    {
+        return static_cast<std::uint32_t>(*uid);
+    }
+    return std::nullopt;
+}
+
 LinuxCoredumps::JournalReader makeCoredumpJournalReader()
 {
-    return &readCoredumpEntries;
+    return [](std::uint64_t sinceUsec, std::size_t maxEntries)
+    {
+        return readCoredumpEntries(sinceUsec, maxEntries, lookUpCoredumpUid());
+    };
+}
+
+LinuxCoredumps::JournalReader makeCoredumpJournalReader(std::optional<std::uint32_t> coredumpUid)
+{
+    return [coredumpUid](std::uint64_t sinceUsec, std::size_t maxEntries)
+    {
+        return readCoredumpEntries(sinceUsec, maxEntries, coredumpUid);
+    };
 }
 
 #else
+
+std::optional<std::uint32_t> lookUpCoredumpUid()
+{
+    return std::nullopt; // no journal to check the entries of
+}
 
 LinuxCoredumps::JournalReader makeCoredumpJournalReader()
 {
@@ -167,6 +186,11 @@ LinuxCoredumps::JournalReader makeCoredumpJournalReader()
         read.error = "This build has no systemd support (it was built without libsystemd)";
         return read;
     };
+}
+
+LinuxCoredumps::JournalReader makeCoredumpJournalReader(std::optional<std::uint32_t> /*coredumpUid*/)
+{
+    return makeCoredumpJournalReader();
 }
 
 #endif

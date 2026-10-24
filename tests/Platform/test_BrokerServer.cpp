@@ -17,12 +17,14 @@
 #include "Platform/Linux/BrokerSocket.h"
 #include "Platform/Linux/FirmwareFileRead.h"
 #include "Platform/Linux/HelperPrivileges.h"
+#include "Platform/Linux/HelperSandboxMode.h"
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -45,8 +47,10 @@
 #include <variant>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <netinet/in.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <spawn.h>
 #include <sys/socket.h>
@@ -663,17 +667,19 @@ TEST(BrokerSocketTest, APipeIsNotASeqPacketSocket)
 // NOLINTBEGIN(misc-include-cleaner) - include-cleaner lacks mappings for <sys/wait.h>'s WNOHANG and W* macros
 
 /// tasksmack-helper, started with @p stdinFd as its stdin; reaped (killed first if need be) on scope exit.
+/// Its seccomp filter enforces (#2752) unless @p sandbox is null, so a call it doesn't list fails the test.
 class HelperProcess
 {
   public:
-    explicit HelperProcess(int stdinFd, const char* argument = "--broker")
+    explicit HelperProcess(int stdinFd, const char* argument = "--broker", const char* sandbox = HelperSandbox::ENFORCE_ARGUMENT)
     {
         posix_spawn_file_actions_t files{};
         posix_spawn_file_actions_init(&files);
         posix_spawn_file_actions_adddup2(&files, stdinFd, STDIN_FILENO);
         std::string path = TASKSMACK_HELPER_PATH;
         std::string arg = argument;
-        std::array<char*, 3> argv{path.data(), arg.data(), nullptr};
+        std::string sandboxArg = sandbox != nullptr ? sandbox : "";
+        std::array<char*, 4> argv{path.data(), arg.data(), sandbox != nullptr ? sandboxArg.data() : nullptr, nullptr};
         if (::posix_spawn(&m_Pid, path.c_str(), &files, nullptr, argv.data(), environ) != 0)
         {
             m_Pid = -1;
@@ -881,6 +887,24 @@ TEST(TasksmackHelperTest, SetsNoNewPrivsBeforeServing)
     const auto hello = roundTrip(pair.client(), 1, Broker::Hello{});
     ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
     EXPECT_EQ(statusField(helper.pid(), "NoNewPrivs"), "1");
+    // And its seccomp filter is in (#2752): mode 2 (filter), one filter.
+    EXPECT_EQ(statusField(helper.pid(), "Seccomp"), "2");
+    EXPECT_EQ(statusField(helper.pid(), "Seccomp_filters"), "1");
+    pair.closeClient();
+    EXPECT_EQ(helper.exitCode(), 0);
+}
+
+// #2752: the default, as TaskSmack starts it, is the logging filter; it serves the same.
+TEST(TasksmackHelperTest, ServesUnderTheLoggingFilterByDefault)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    HelperProcess helper(pair.server(), "--broker", nullptr);
+    ASSERT_TRUE(helper.started());
+    pair.closeServer();
+    const auto hello = roundTrip(pair.client(), 1, Broker::Hello{});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+    EXPECT_EQ(statusField(helper.pid(), "Seccomp"), "2");
     pair.closeClient();
     EXPECT_EQ(helper.exitCode(), 0);
 }
@@ -932,6 +956,7 @@ TEST(TasksmackHelperRootTest, KeepsOnlyItsCapabilitiesAndServesEveryRequestOnAno
     EXPECT_EQ(capabilitySet(helper.pid(), "CapInh"), 0U);
     EXPECT_EQ(capabilitySet(helper.pid(), "CapAmb"), 0U);
     EXPECT_EQ(statusField(helper.pid(), "NoNewPrivs"), "1");
+    EXPECT_EQ(statusField(helper.pid(), "Seccomp"), "2"); // its enforcing filter (#2752)
 
     // Who it runs as (#2752): nobody, in every ID, with no supplementary groups.
     const std::string uid = "65534"; // nobody and nogroup, written out rather than taken from the helper's constant
@@ -992,7 +1017,7 @@ TEST(PkexecBrokerTest, ConnectsToTheHelperAndTerminatesAProcessThroughIt)
     const ProcessTarget target = child.target();
     ASSERT_NE(target.startTimeTicks, 0U);
 
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}); // the helper itself, without pkexec
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce); // the helper itself, without pkexec
     EXPECT_FALSE(broker.connected());
     const auto connected = broker.connect(std::stop_token{});
     ASSERT_TRUE(connected.has_value()) << connected.error();
@@ -1009,7 +1034,7 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssEnvironment)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.call(Broker::EnvironmentRequest{.target = child.target()}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1023,7 +1048,7 @@ TEST(PkexecBrokerTest, TheHelperListsAProcesssModulesAndOpenFiles)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
 
     const auto modules = broker.call(Broker::ModulesRequest{.target = child.target()}, std::stop_token{});
@@ -1042,7 +1067,7 @@ TEST(PkexecBrokerTest, TheHelperListsAProcesssConnections)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.call(Broker::ConnectionsRequest{.target = child.target()}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1050,11 +1075,48 @@ TEST(PkexecBrokerTest, TheHelperListsAProcesssConnections)
     EXPECT_EQ(std::get<Broker::ConnectionsReply>(*response).result.status, ConnectionsReadStatus::Ok); // none open, but read
 }
 
+// #2752: a process with a socket open, read under the helper's enforcing filter, which allows it no
+// netlink socket: every table comes from /proc/<pid>/net, and the listener is there.
+TEST(PkexecBrokerTest, TheHelperListsAListeningSocketUnderItsFilter)
+{
+    const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_GE(listener, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)),
+              0); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - sockets API
+    ASSERT_EQ(::listen(listener, 1), 0);
+    socklen_t length = sizeof(address);
+    ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length),
+              0); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - sockets API
+    const std::uint16_t port = ntohs(address.sin_port);
+
+    std::ifstream stat("/proc/self/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const ProcessTarget self{.pid = static_cast<std::int32_t>(::getpid()),
+                             .startTimeTicks = ProcParsing::parseStatStartTime(line).value_or(0)};
+
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::ConnectionsRequest{.target = self}, std::stop_token{});
+    ::close(listener);
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ConnectionsReply>(*response));
+    const ConnectionsReadResult& result = std::get<Broker::ConnectionsReply>(*response).result;
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok) << result.detail;
+    EXPECT_TRUE(std::ranges::any_of(result.connections,
+                                    [port](const ProcessConnection& connection)
+                                    { return connection.state == ConnectionState::Listen && connection.local.port == port; }))
+        << "port " << port;
+    EXPECT_TRUE(broker.connected()) << "the read didn't kill the helper";
+}
+
 TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.call(Broker::MemoryRollupRequest{.target = child.target()}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1070,7 +1132,7 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
 
 TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.call(Broker::FirmwareFileRequest{.file = Broker::FirmwareFile::SmbiosTable}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1080,7 +1142,7 @@ TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
 
 TEST(PkexecBrokerTest, TheHelperAnswersACrashesRequest)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.call(Broker::CrashesRequest{}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1092,7 +1154,7 @@ TEST(PkexecBrokerTest, ACallIfIdleIsAnswered)
 {
     const SleepingChild child;
     ASSERT_TRUE(child.started());
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = child.target()}, std::chrono::seconds{2});
     ASSERT_TRUE(response.has_value()) << response.error();
@@ -1101,7 +1163,7 @@ TEST(PkexecBrokerTest, ACallIfIdleIsAnswered)
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     const auto response = broker.call(Broker::Hello{}, std::stop_token{});
     ASSERT_FALSE(response.has_value());
     EXPECT_EQ(response.error(), "not connected");
@@ -1110,7 +1172,7 @@ TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
 
 TEST(PkexecBrokerTest, DisconnectEndsTheSessionAndConnectStartsAnother)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     broker.disconnect();
     EXPECT_FALSE(broker.connected());
@@ -1152,7 +1214,7 @@ TEST(PkexecBrokerTest, DisconnectEndsTheSessionAndConnectStartsAnother)
 // refused action is offered "Authenticate and retry" rather than sent to a socket nobody reads.
 TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     ASSERT_TRUE(broker.connected());
     const pid_t helper = helperChild();
@@ -1178,7 +1240,7 @@ TEST(PkexecBrokerTest, AHelperThatExitsIsNoLongerConnected)
 // zombie until the next connect(), which may never come.
 TEST(PkexecBrokerTest, AHelperThatExitsIsReapedWithoutAnotherConnect)
 {
-    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const pid_t helper = helperChild();
     ASSERT_GT(helper, 0);

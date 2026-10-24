@@ -44,7 +44,8 @@ and answers a fixed set of requests.
   CET on x86-64 (the AArch64 helper is compiled for BTI/PAC, but the shipped aarch64 binary carries no BTI/PAC
   property note until [#2786](https://github.com/mgradwohl/tasksmack/issues/2786) is fixed), `_FORTIFY_SOURCE=3`
   and libc++'s fast hardening mode, and at run time keeps only the four capabilities its requests need, with
-  `no_new_privs` set; the Windows helper links with Control Flow Guard and CET shadow-stack compatibility. Debug
+  `no_new_privs` set, under a seccomp allow-list that refuses writing files, exec, loading code, ptrace, new
+  sockets and file-handle opens (it logs any other call it doesn't list; a later release kills on them); the Windows helper links with Control Flow Guard and CET shadow-stack compatibility. Debug
   builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
 - **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
 - **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.

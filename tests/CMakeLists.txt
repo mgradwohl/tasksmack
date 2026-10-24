@@ -621,6 +621,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_BrokerServer.cpp  # the privileged helper's server and tasksmack-helper itself (#2307)
+    Platform/test_HelperSandbox.cpp  # tasksmack-helper's seccomp allow-list (#2752)
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
