@@ -7,6 +7,8 @@
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|npu|network)
 //   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
+//   TASKSMACK_MACHINE_TAB=gpu                             the machine tab's GPU sub-tab
+//                                                         (overview|cores|gpu|npu|network, #2869)
 //
 // TASKSMACK_DEMO (App/DemoOverride.h, #2827) makes the same requests, and more, at given times
 // after startup, through the names and parsers here.
@@ -50,8 +52,11 @@ inline constexpr std::string_view TAB_ENV_VAR = "TASKSMACK_DETAILS_TAB";
 /// The top-level tab to open (machine/overview, processes, details, or any registered tab's id or label).
 /// It wins over the Process Details tab a TASKSMACK_SELECT_PID/_NAME selection would bring forward.
 inline constexpr std::string_view MAIN_TAB_ENV_VAR = "TASKSMACK_TAB";
+/// The machine (hostname) tab's sub-tab to bring forward (#2869): overview, cores, gpu, npu or network.
+/// It picks the sub-tab only; the main tab is TASKSMACK_TAB's (or the startup default, the machine tab).
+inline constexpr std::string_view MACHINE_TAB_ENV_VAR = "TASKSMACK_MACHINE_TAB";
 static_assert(Core::isKnownEnvHook(PID_ENV_VAR) && Core::isKnownEnvHook(NAME_ENV_VAR) && Core::isKnownEnvHook(TAB_ENV_VAR) &&
-              Core::isKnownEnvHook(MAIN_TAB_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
+              Core::isKnownEnvHook(MAIN_TAB_ENV_VAR) && Core::isKnownEnvHook(MACHINE_TAB_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// Snapshots to wait for the process before giving up (about 20 s at the default 1 s interval).
 inline constexpr int MAX_SNAPSHOTS = 20;
@@ -84,13 +89,32 @@ enum class StartupDialog : std::uint8_t
     About,
 };
 
-/// The names the hooks accept for each tab, section and dialog, lowercase: parseTab(), parseSection()
-/// and parseDialog() match them in any case; tabName(), sectionName() and dialogName() write them.
+/// A sub-tab of the machine (hostname) tab, in the order SystemMetricsPanel draws them: what
+/// TASKSMACK_MACHINE_TAB and TASKSMACK_DEMO's machine= step bring forward (#2869).
+enum class MachineTab : std::uint8_t
+{
+    Overview,
+    Cores,   ///< CPU Cores: drawn once the first sample has brought per-core readings
+    Gpu,     ///< Always drawn (its empty state says when there is no GPU)
+    Npu,     ///< Drawn only on a machine with an NPU or compute accelerator (#1799)
+    Network, ///< Network and I/O: drawn only where the platform has network counters
+};
+
+/// The names the hooks accept for each tab, section, dialog and machine sub-tab, lowercase: parseTab(),
+/// parseSection(), parseDialog() and parseMachineTab() match them in any case; tabName(), sectionName(),
+/// dialogName() and machineTabName() write them.
 inline constexpr std::array<std::pair<std::string_view, DetailsTab>, 4> TAB_NAMES{{
     {"overview", DetailsTab::Overview},
     {"gpu", DetailsTab::Gpu},
     {"npu", DetailsTab::Npu},
     {"network", DetailsTab::Network},
+}};
+inline constexpr std::array<std::pair<std::string_view, MachineTab>, 5> MACHINE_TAB_NAMES{{
+    {"overview", MachineTab::Overview},
+    {"cores", MachineTab::Cores},
+    {"gpu", MachineTab::Gpu},
+    {"npu", MachineTab::Npu},
+    {"network", MachineTab::Network},
 }};
 inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECTION_NAMES{{
     {"environment", DetailsSection::Environment},
@@ -189,7 +213,14 @@ template<typename Value, std::size_t N>
     return Detail::parseName(text, DIALOG_NAMES);
 }
 
-/// The names parseTab(), parseSection() and parseDialog() accept, for a log line: "gpu", "openfiles", "about".
+/// "overview", "cores", "gpu", "npu" or "network", in any case, or nullopt (#2869).
+[[nodiscard]] inline std::optional<MachineTab> parseMachineTab(const std::string_view text) noexcept
+{
+    return Detail::parseName(text, MACHINE_TAB_NAMES);
+}
+
+/// The names parseTab(), parseSection(), parseDialog() and parseMachineTab() accept, for a log line:
+/// "gpu", "openfiles", "about", "cores".
 [[nodiscard]] constexpr std::string_view tabName(const DetailsTab tab) noexcept
 {
     return Detail::nameOf(tab, TAB_NAMES);
@@ -201,6 +232,10 @@ template<typename Value, std::size_t N>
 [[nodiscard]] constexpr std::string_view dialogName(const StartupDialog dialog) noexcept
 {
     return Detail::nameOf(dialog, DIALOG_NAMES);
+}
+[[nodiscard]] constexpr std::string_view machineTabName(const MachineTab tab) noexcept
+{
+    return Detail::nameOf(tab, MACHINE_TAB_NAMES);
 }
 
 /// Parses the three variables' values (nullptr when unset). Unset or blank values are ignored
@@ -478,6 +513,97 @@ class PendingMainTab
     int m_Frames = 0;
 };
 
+/// What TASKSMACK_MACHINE_TAB asked for (#2869).
+struct MachineTabChoice
+{
+    std::optional<MachineTab> tab; ///< nullopt when unset, blank or unknown
+    std::string warning;           ///< set when a nonblank value names no sub-tab
+};
+
+/// Parses a TASKSMACK_MACHINE_TAB value (nullptr when unset): "overview", "cores", "gpu", "npu" or
+/// "network", in any case.
+[[nodiscard]] inline MachineTabChoice parseStartupMachineTab(const char* value)
+{
+    MachineTabChoice choice;
+    const std::string_view text = Platform::trimAscii(value != nullptr ? value : "");
+    if (text.empty())
+    {
+        return choice;
+    }
+    choice.tab = parseMachineTab(text);
+    if (!choice.tab.has_value())
+    {
+        choice.warning = std::format("{}: '{}' is not overview, cores, gpu, npu or network; ignored", MACHINE_TAB_ENV_VAR, text);
+    }
+    return choice;
+}
+
+/// Sampled tab-bar frames a machine sub-tab request may wait for its tab before it is dropped: the
+/// same bound as a TASKSMACK_TAB request (MAX_MAIN_TAB_FRAMES), counted only on frames the sub-tabs
+/// were drawn with a system snapshot, since CPU Cores and Network and I/O exist only once the first
+/// sample has arrived (#2731). It bounds a request for a sub-tab this machine never draws (npu without
+/// an accelerator, network without counters); one that can be met is done on its second frame.
+inline constexpr int MAX_MACHINE_TAB_FRAMES = MAX_MAIN_TAB_FRAMES;
+
+/// A machine sub-tab waiting to be brought forward (#2869): TASKSMACK_MACHINE_TAB's at startup, or
+/// TASKSMACK_DEMO's machine= while running, both through SystemMetricsPanel::requestTab(). As
+/// PendingMainTab, the panel submits the sub-tab with ImGuiTabItemFlags_SetSelected on every frame its
+/// tab bar is drawn until ImGui::BeginTabItem() returns true for it (ImGui applies SetSelected a frame
+/// late). Unlike Process Details' one-shot request, it survives frames on which the sub-tab is not
+/// drawn at all -- the machine tab is not the active main tab, or the first sample hasn't brought the
+/// sub-tab yet -- which is what lets a startup request reach Network and I/O.
+class PendingMachineTab
+{
+  public:
+    PendingMachineTab() = default;
+    explicit PendingMachineTab(const std::optional<MachineTab> tab) noexcept : m_Tab(tab)
+    {}
+
+    /// Whether a request is still waiting.
+    [[nodiscard]] bool pending() const noexcept
+    {
+        return m_Tab.has_value();
+    }
+
+    /// The requested sub-tab; nullopt once the request is done or dropped (or there was none).
+    [[nodiscard]] const std::optional<MachineTab>& tab() const noexcept
+    {
+        return m_Tab;
+    }
+
+    /// Whether @p tab is submitted with ImGuiTabItemFlags_SetSelected this frame.
+    [[nodiscard]] bool wantsSelected(const MachineTab tab) const noexcept
+    {
+        return m_Tab == tab;
+    }
+
+    /// Reports what ImGui::BeginTabItem() returned for @p tab. The request is done when its own
+    /// sub-tab reports selected; any other sub-tab's report changes nothing.
+    void onTabSubmitted(const MachineTab tab, const bool selected) noexcept
+    {
+        if (selected && wantsSelected(tab))
+        {
+            m_Tab.reset();
+        }
+    }
+
+    /// Ends one frame on which the sub-tabs were drawn with a snapshot. Returns the requested sub-tab
+    /// once, when the request is dropped after MAX_MACHINE_TAB_FRAMES such frames without its tab
+    /// being selected; nullopt otherwise.
+    [[nodiscard]] std::optional<MachineTab> onFrameEnd() noexcept
+    {
+        if (!m_Tab.has_value() || ++m_Frames < MAX_MACHINE_TAB_FRAMES)
+        {
+            return std::nullopt;
+        }
+        return std::exchange(m_Tab, std::nullopt);
+    }
+
+  private:
+    std::optional<MachineTab> m_Tab;
+    int m_Frames = 0;
+};
+
 /// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog (StartupDialog).
 inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
 static_assert(Core::isKnownEnvHook(OPEN_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
@@ -507,13 +633,13 @@ struct StartupDialogChoice
 }
 
 /// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME,
-/// TASKSMACK_DETAILS_TAB or TASKSMACK_OPEN, each nullptr when unset. A blank value counts as unset, as
-/// it does everywhere else. While one is set, the startup "Limited Data" notice is not queued: the
-/// hooks exist for unattended captures, and dismissing the modal needs input.
-[[nodiscard]] inline bool
-anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open) noexcept
+/// TASKSMACK_DETAILS_TAB, TASKSMACK_OPEN or TASKSMACK_MACHINE_TAB, each nullptr when unset. A blank value
+/// counts as unset, as it does everywhere else. While one is set, the startup "Limited Data" notice is
+/// not queued: the hooks exist for unattended captures, and dismissing the modal needs input.
+[[nodiscard]] inline bool anyTestHookActive(
+    const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open, const char* machineTab) noexcept
 {
-    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open},
+    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open, machineTab},
                                [](const char* value) { return value != nullptr && !Platform::trimAscii(value).empty(); });
 }
 

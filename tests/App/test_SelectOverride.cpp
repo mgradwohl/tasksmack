@@ -1,6 +1,7 @@
 /// @file test_SelectOverride.cpp
 /// @brief App::SelectOverride (#1559): the TASKSMACK_SELECT_PID / _NAME / TASKSMACK_DETAILS_TAB parser,
-/// and the pending selection that fires exactly once, when the process first appears in a snapshot.
+/// the pending selection that fires exactly once, when the process first appears in a snapshot, and the
+/// TASKSMACK_TAB and TASKSMACK_MACHINE_TAB (#2869) requests that wait until their tab shows.
 
 #include "App/SelectOverride.h"
 #include "Domain/ProcessSnapshot.h"
@@ -362,20 +363,21 @@ TEST(SelectOverrideTest, MainTabAloneIsATestHook)
 {
     using App::SelectOverride::anyTestHookActive;
 
-    EXPECT_TRUE(anyTestHookActive("processes", nullptr, nullptr, nullptr, nullptr));
-    EXPECT_TRUE(anyTestHookActive("not-a-tab", nullptr, nullptr, nullptr, nullptr)); // set, even if ignored
-    EXPECT_TRUE(anyTestHookActive(nullptr, "1234", nullptr, nullptr, nullptr));
-    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, "explorer.exe", nullptr, nullptr));
-    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, "gpu", nullptr));
-    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, "help")); // #172
+    EXPECT_TRUE(anyTestHookActive("processes", nullptr, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive("not-a-tab", nullptr, nullptr, nullptr, nullptr, nullptr)); // set, even if ignored
+    EXPECT_TRUE(anyTestHookActive(nullptr, "1234", nullptr, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, "explorer.exe", nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, "gpu", nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, "help", nullptr));  // #172
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, nullptr, "cores")); // #2869
 }
 
 TEST(SelectOverrideTest, NoHooksMeansNoTestHook)
 {
     using App::SelectOverride::anyTestHookActive;
 
-    EXPECT_FALSE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, nullptr));
-    EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "", " ")); // blank counts as unset
+    EXPECT_FALSE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "", " ", "\r\n")); // blank counts as unset
 }
 
 // #172: TASKSMACK_OPEN opens the Help window or the About dialog at startup.
@@ -401,13 +403,16 @@ TEST(SelectOverrideTest, ParsesTheStartupDialog)
     }
 }
 
-// #2827: the names TASKSMACK_DEMO's steps use for the tabs, the Overview's sections and the dialogs, in
-// any case, and written back the same way for a log line.
+// #2827: the names TASKSMACK_DEMO's steps use for the tabs, the Overview's sections, the dialogs and
+// (#2869) the machine tab's sub-tabs, in any case, and written back the same way for a log line.
 TEST(SelectOverrideTest, NamesOfTabsSectionsAndDialogsParseInAnyCaseAndWriteBack)
 {
     using App::SelectOverride::DetailsSection;
     using App::SelectOverride::dialogName;
+    using App::SelectOverride::MachineTab;
+    using App::SelectOverride::machineTabName;
     using App::SelectOverride::parseDialog;
+    using App::SelectOverride::parseMachineTab;
     using App::SelectOverride::parseSection;
     using App::SelectOverride::parseTab;
     using App::SelectOverride::sectionName;
@@ -419,6 +424,20 @@ TEST(SelectOverrideTest, NamesOfTabsSectionsAndDialogsParseInAnyCaseAndWriteBack
         EXPECT_EQ(parseTab(name), tab);
         EXPECT_EQ(tabName(tab), name);
     }
+    for (const auto& [name, tab] : App::SelectOverride::MACHINE_TAB_NAMES)
+    {
+        EXPECT_EQ(parseMachineTab(name), tab);
+        EXPECT_EQ(machineTabName(tab), name);
+    }
+    EXPECT_EQ(parseMachineTab("Cores"), MachineTab::Cores);
+    EXPECT_EQ(parseMachineTab("GPU"), MachineTab::Gpu);
+    EXPECT_EQ(parseMachineTab("nPu"), MachineTab::Npu);
+    EXPECT_EQ(parseMachineTab("NETWORK"), MachineTab::Network);
+    EXPECT_EQ(parseMachineTab("OverView"), MachineTab::Overview);
+    EXPECT_FALSE(parseMachineTab("memory").has_value());
+    EXPECT_FALSE(parseMachineTab("cpu cores").has_value());
+    EXPECT_FALSE(parseMachineTab("core").has_value()); // no prefix matching
+    EXPECT_FALSE(parseMachineTab("").has_value());
     for (const auto& [name, section] : App::SelectOverride::SECTION_NAMES)
     {
         EXPECT_EQ(parseSection(name), section);
@@ -500,6 +519,87 @@ TEST(SelectOverrideTest, PendingMainTabIsDroppedOnceAfterTheFrameLimit)
     PendingMainTab none;
     EXPECT_FALSE(none.pending());
     EXPECT_FALSE(none.wantsSelected(""));
+    EXPECT_FALSE(none.onFrameEnd().has_value());
+}
+
+// #2869: TASKSMACK_MACHINE_TAB names a sub-tab of the machine tab, in any case; anything else is
+// ignored with one warning naming the variable, and unset or blank is ignored quietly.
+TEST(SelectOverrideTest, ParsesTheStartupMachineTab)
+{
+    using App::SelectOverride::MachineTab;
+    using App::SelectOverride::parseStartupMachineTab;
+
+    EXPECT_EQ(parseStartupMachineTab("gpu").tab, MachineTab::Gpu);
+    EXPECT_EQ(parseStartupMachineTab(" CORES\r\n").tab, MachineTab::Cores);
+    EXPECT_EQ(parseStartupMachineTab("Network").tab, MachineTab::Network);
+    EXPECT_EQ(parseStartupMachineTab("npu").tab, MachineTab::Npu);
+    EXPECT_EQ(parseStartupMachineTab("overview").tab, MachineTab::Overview);
+    EXPECT_TRUE(parseStartupMachineTab("gpu").warning.empty());
+
+    const auto unknown = parseStartupMachineTab("memory");
+    EXPECT_FALSE(unknown.tab.has_value());
+    EXPECT_NE(unknown.warning.find("TASKSMACK_MACHINE_TAB"), std::string::npos) << unknown.warning;
+    EXPECT_NE(unknown.warning.find("'memory'"), std::string::npos) << unknown.warning;
+    EXPECT_NE(unknown.warning.find("ignored"), std::string::npos) << unknown.warning;
+
+    for (const char* blank : {static_cast<const char*>(nullptr), "", "  ", "\t\r\n"})
+    {
+        const auto none = parseStartupMachineTab(blank);
+        EXPECT_FALSE(none.tab.has_value());
+        EXPECT_TRUE(none.warning.empty());
+    }
+}
+
+// #2869: as PendingMainTab, the request is asked for on every frame its sub-tab is drawn and stays until
+// that sub-tab reports selected; another sub-tab's report, or a frame without the sub-tab, changes nothing.
+TEST(SelectOverrideTest, PendingMachineTabStaysUntilItsTabReportsSelected)
+{
+    using App::SelectOverride::MachineTab;
+    using App::SelectOverride::PendingMachineTab;
+    PendingMachineTab request(MachineTab::Network);
+    ASSERT_TRUE(request.pending());
+    EXPECT_EQ(request.tab(), MachineTab::Network);
+    EXPECT_TRUE(request.wantsSelected(MachineTab::Network));
+    EXPECT_FALSE(request.wantsSelected(MachineTab::Overview));
+
+    // The first frame: the Overview is selected, the Network tab is submitted with the flag.
+    request.onTabSubmitted(MachineTab::Overview, true);
+    request.onTabSubmitted(MachineTab::Gpu, false);
+    request.onTabSubmitted(MachineTab::Network, false);
+    EXPECT_FALSE(request.onFrameEnd().has_value());
+    EXPECT_TRUE(request.pending());
+    EXPECT_TRUE(request.wantsSelected(MachineTab::Network));
+
+    // A neighbour reporting selected does not count.
+    request.onTabSubmitted(MachineTab::Gpu, true);
+    EXPECT_TRUE(request.pending());
+
+    // Its own does: the request is done and asks for nothing more.
+    request.onTabSubmitted(MachineTab::Network, true);
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.tab().has_value());
+    EXPECT_FALSE(request.wantsSelected(MachineTab::Network));
+    EXPECT_FALSE(request.onFrameEnd().has_value());
+}
+
+TEST(SelectOverrideTest, PendingMachineTabIsDroppedOnceAfterTheFrameLimit)
+{
+    using App::SelectOverride::MachineTab;
+    using App::SelectOverride::MAX_MACHINE_TAB_FRAMES;
+    using App::SelectOverride::PendingMachineTab;
+    PendingMachineTab request(MachineTab::Npu);
+    for (int frame = 1; frame < MAX_MACHINE_TAB_FRAMES; ++frame)
+    {
+        ASSERT_FALSE(request.onFrameEnd().has_value()) << frame;
+        ASSERT_TRUE(request.wantsSelected(MachineTab::Npu)) << frame;
+    }
+    EXPECT_EQ(request.onFrameEnd(), MachineTab::Npu);
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.onFrameEnd().has_value()); // reported once
+
+    PendingMachineTab none;
+    EXPECT_FALSE(none.pending());
+    EXPECT_FALSE(none.wantsSelected(MachineTab::Overview));
     EXPECT_FALSE(none.onFrameEnd().has_value());
 }
 

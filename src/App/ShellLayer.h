@@ -91,6 +91,10 @@ class ShellLayer : public Core::Layer
     /// does; the Process Details main tab itself is selected by a ShowProcessDetailsEvent.
     void requestDetailsTab(SelectOverride::DetailsTab tab);
 
+    /// Brings @p tab of the machine (hostname) tab forward, asked for until it shows, as
+    /// TASKSMACK_MACHINE_TAB does (#2869); the machine tab itself is requestMainTab("machine")'s.
+    void requestMachineTab(SelectOverride::MachineTab tab);
+
     /// Draws @p section of Process Details' Overview open the next time the Overview is drawn.
     void requestDetailsSection(SelectOverride::DetailsSection section);
 

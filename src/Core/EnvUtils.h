@@ -37,6 +37,7 @@ inline constexpr std::array KNOWN_ENV_HOOKS{
     EnvHook{.name = "TASKSMACK_SELECT_NAME", .description = "Select the first process with this name at startup"},
     EnvHook{.name = "TASKSMACK_DETAILS_TAB", .description = "Open this Process Details tab for the selected process"},
     EnvHook{.name = "TASKSMACK_TAB", .description = "Start on this main tab"},
+    EnvHook{.name = "TASKSMACK_MACHINE_TAB", .description = "Start on this tab of the machine view: overview, cores, gpu, npu or network"},
     EnvHook{.name = "TASKSMACK_OPEN", .description = "Open the help or about dialog at startup"},
     EnvHook{.name = "TASKSMACK_SCREENSHOT",
             .description = "Write a PNG of the window (file[;after=N][;frames=N][;fps=N]) after startup, then quit"},

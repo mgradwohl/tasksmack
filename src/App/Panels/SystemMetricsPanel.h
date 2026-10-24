@@ -8,6 +8,7 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/Panels/StorageSection.h"
+#include "App/SelectOverride.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
@@ -147,6 +148,23 @@ class SystemMetricsPanel : public Panel
         return m_GPUModel;
     }
 
+    /// Brings @p tab forward, asked for on every frame the sub-tabs are drawn until ImGui shows it
+    /// selected: the test hooks' TASKSMACK_MACHINE_TAB and TASKSMACK_DEMO's machine= (#2869). A request
+    /// outlives frames on which the sub-tab is not drawn (another main tab shown, or the first sample
+    /// not yet in), and is dropped, with one warning, after MAX_MACHINE_TAB_FRAMES frames drawn with a
+    /// snapshot that never had it (npu without an accelerator, network without counters). A new request
+    /// replaces one still waiting.
+    void requestTab(SelectOverride::MachineTab tab) noexcept
+    {
+        m_RequestedTab = SelectOverride::PendingMachineTab(tab);
+    }
+
+    /// Whether a requestTab() request is still waiting for its sub-tab to show.
+    [[nodiscard]] bool requestedTabPending() const noexcept
+    {
+        return m_RequestedTab.pending();
+    }
+
   private:
     std::function<SystemMetricsProbes()> m_MakeProbes; ///< Set by the test seam only
     void renderOverview();
@@ -221,6 +239,8 @@ class SystemMetricsPanel : public Panel
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
+    // The sub-tab requestTab() asked for, until ImGui shows it selected (#2869).
+    SelectOverride::PendingMachineTab m_RequestedTab;
 
     // Previous frame's Overview layout, feeding UI::Widgets::FillPlotLayout (#922)
     UI::Widgets::PlotFillState m_OverviewFill;
