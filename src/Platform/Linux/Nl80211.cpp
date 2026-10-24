@@ -47,8 +47,8 @@ template<typename T> [[nodiscard]] T readValue(std::span<const std::byte> bytes,
 
 template<typename T> void appendValue(std::vector<std::byte>& out, T value)
 {
-    const auto* raw = reinterpret_cast<const std::byte*>(&value); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - byte view
-    out.insert(out.end(), raw, raw + sizeof(T));                  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::span<const std::byte, sizeof(T)> raw = std::as_bytes(std::span<const T, 1>(&value, 1));
+    out.insert(out.end(), raw.begin(), raw.end());
 }
 
 /// Appends one attribute of @p type holding @p payload, padded to 4 bytes.
