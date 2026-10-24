@@ -30,6 +30,9 @@ ShellPanels::ShellPanels()
 
 void ShellPanels::prepareAttach()
 {
+    // What the panel platforms share and must be made on this thread, before the samplers' threads build
+    // the rest of them (#2731).
+    preparePanelPlatforms(Synthetic::activeScenario());
     std::shared_ptr<Platform::ISystemInfoProbe> probe = makeCrashHistoryProbe(Synthetic::activeScenario());
     if (probe == nullptr)
     {

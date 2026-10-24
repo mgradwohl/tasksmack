@@ -13,6 +13,8 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -119,6 +121,7 @@ void SystemInfoPanel::onAttach()
             };
         },
         m_RefreshInterval);
+    m_Sensors->setHistorySeconds(m_HistorySeconds);
     m_SensorSampler = std::make_unique<Domain::BackgroundSampler>(Domain::SamplerConfig{
         .interval = m_RefreshInterval, .firstSampleAfterInterval = false, .threadName = std::string(Platform::SENSOR_SAMPLER_THREAD_NAME)});
     m_SensorSampler->addSamplable(m_Sensors, "sensors");
@@ -166,6 +169,18 @@ void SystemInfoPanel::onEvent(Core::Event& event)
             if (m_Sensors)
             {
                 m_Sensors->setInterval(m_RefreshInterval);
+            }
+            return false;
+        });
+    dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
+        [this](Core::HistoryDurationChangedEvent& e)
+        {
+            // The sensors' charts span the Settings history duration, as every metric's do (#2796),
+            // clamped as the models clamp it.
+            m_HistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
+            if (m_Sensors)
+            {
+                m_Sensors->setHistorySeconds(m_HistorySeconds);
             }
             return false;
         });

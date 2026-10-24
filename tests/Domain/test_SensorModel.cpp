@@ -123,6 +123,33 @@ TEST(SensorModelTest, TheHistoryHoldsTheDefaultWindowAtTheSamplingInterval)
     EXPECT_EQ(model.publication()->histories.at(packageKey()).values.size(), window + 1);
 }
 
+// #2796: the histories reach back the Settings history duration; the publication says which, for the charts.
+TEST(SensorModelTest, TheHistoryFollowsTheSettingsHistoryDuration)
+{
+    const FakeClock clock;
+    SensorModel model([] { return SensorModel::Reader([] { return oneTemperature(40.0); }); }, 1000ms, clock.function());
+    model.setHistorySeconds(600.0);
+    for (int i = 0; i < 700; ++i)
+    {
+        model.sample();
+        clock.advance(1000ms);
+    }
+    EXPECT_DOUBLE_EQ(model.publication()->historySeconds, 600.0);
+    EXPECT_EQ(model.publication()->histories.at(packageKey()).values.size(), 601U);
+
+    // A shorter one trims what is kept at the next sample.
+    model.setHistorySeconds(60.0);
+    model.sample();
+    EXPECT_DOUBLE_EQ(model.publication()->historySeconds, 60.0);
+    EXPECT_EQ(model.publication()->histories.at(packageKey()).values.size(), 61U);
+
+    // Clamped as the other models clamp it.
+    model.setHistorySeconds(1.0);
+    clock.advance(1000ms);
+    model.sample();
+    EXPECT_DOUBLE_EQ(model.publication()->historySeconds, static_cast<double>(Sampling::HISTORY_SECONDS_MIN));
+}
+
 TEST(SensorModelTest, ALongerIntervalKeepsTheHistoryAlreadyRead)
 {
     const FakeClock clock;

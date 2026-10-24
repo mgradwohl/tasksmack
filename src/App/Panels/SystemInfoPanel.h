@@ -110,6 +110,7 @@ class SystemInfoPanel : public Panel
     std::unique_ptr<Domain::BackgroundSampler> m_SensorSampler;
     std::shared_ptr<const Domain::SensorPublication> m_SensorPublication;
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
+    double m_HistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // the Settings history duration (#2796)
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
     SaveFileDialog m_SaveFileDialog; ///< Set by the test seam only

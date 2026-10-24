@@ -5,15 +5,16 @@
     One TaskSmack launch per shot, sequentially and without injected input: each run gets its own
     TASKSMACK_CONFIG_DIR with a generated config.toml (theme, medium font, 1 s sampling, window size,
     the Command column off: command lines name the machine's users and paths),
-    the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _SELECT_NAME, _DETAILS_TAB, _OPEN,
-    and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and TASKSMACK_SCREENSHOT,
-    which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation without input").
-    Same matrix and names as screenshots.sh.
+    the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _MACHINE_TAB, _SELECT_NAME,
+    _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
+    TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
+    without input"). Same matrix and names as screenshots.sh.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
-    Process Details (overview, gpu, network, and the Overview with its Modules, Open files and
-    Connections sections expanded) for one process, Services, Startup, About and Help in the first
-    theme; and three frame sequences written as animated WebPs: overview-live (8 s of the Overview),
+    the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
+    Details (overview, gpu, network, and the Overview with its Modules, Open files and Connections
+    sections expanded) for one process, Services, Startup, About and Help in the first theme; and three
+    frame sequences written as animated WebPs: overview-live (8 s of the Overview),
     walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
     themes-live (9 s: the Overview through every theme, 1.5 s each), all at 12 fps. The overview-*
     shots and themes-live get a 60 s history window and are captured after 60 s, so their charts are
@@ -160,6 +161,10 @@ foreach ($t in $Themes) {
 foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "processes-$t" $t @{ TASKSMACK_TAB = 'Processes'; TASKSMACK_SELECT_NAME = $Process }
     Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'System' }
+}
+# The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
+foreach ($sub in 'cores', 'gpu', 'network') {
+    Invoke-Shot "$sub-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_MACHINE_TAB = $sub }
 }
 foreach ($tab in 'overview', 'gpu', 'network') {
     Invoke-Shot "details-$tab-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = $tab }

@@ -9,6 +9,8 @@
 #include "Platform/BrokeredProcessActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
 #include "Platform/Factory.h"
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -57,6 +59,17 @@ namespace
 
 } // namespace
 
+void preparePanelPlatforms(const Synthetic::Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return; // a synthetic run uses no helper
+    }
+    // Made now, on the UI thread: its owner window handle is an SDL query (mainNativeWindow()), and the
+    // factories below, which share it, run on the panels' sampler threads from here on (#2731).
+    (void) sharedPrivilegedBroker();
+}
+
 ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario)
 {
     // PSS and USS of another user's process through the helper, once it runs (#2309).
@@ -67,12 +80,19 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
             .icons = Synthetic::makeProcessIconSource(scenario)};
 }
 
-SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario)
+SystemModelProbes makeSystemModelProbes(const Synthetic::Scenario* scenario)
 {
-    return {.system = Synthetic::makeSystemProbe(scenario),
-            .power = Synthetic::makePowerProbe(scenario),
-            .disk = Synthetic::makeDiskProbe(scenario),
-            .gpu = Synthetic::makeGPUProbe(scenario)};
+    return {.system = Synthetic::makeSystemProbe(scenario), .power = Synthetic::makePowerProbe(scenario)};
+}
+
+std::unique_ptr<Platform::IDiskProbe> makeStorageModelProbe(const Synthetic::Scenario* scenario)
+{
+    return Synthetic::makeDiskProbe(scenario);
+}
+
+std::unique_ptr<Platform::IGPUProbe> makeGPUModelProbe(const Synthetic::Scenario* scenario)
+{
+    return Synthetic::makeGPUProbe(scenario);
 }
 
 ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scenario)

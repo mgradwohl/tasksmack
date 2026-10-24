@@ -10,6 +10,7 @@
 
 #include "LinuxOsInfo.h"
 #include "LinuxStorage.h"
+#include "Nl80211.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -306,6 +307,10 @@ struct ResolverConfig
     return std::nullopt;
 }
 
+/// Reads a Wi-Fi adapter's station (its access point's rates) by interface index: Nl80211::readStation(), or
+/// a fake in tests. Nullopt when there is none to read.
+using WifiStationReader = std::function<std::optional<Nl80211::Station>(int ifindex)>;
+
 /// A Wi-Fi adapter's link as a WifiLinkReader read it: the link, or why there is none.
 struct WifiLinkRead
 {
@@ -395,6 +400,7 @@ struct AdapterReaders
     LinkDnsReader linkDns;                ///< Each adapter's own DNS servers and search domains.
     DhcpLeaseReader dhcpLease;            ///< Each adapter's IPv4 DHCP lease (NetworkManager).
     IndexedDhcpLeaseReader networkdLease; ///< The same from systemd-networkd, asked when the first has none.
+    WifiStationReader wifiStation;        ///< Each connected Wi-Fi adapter's rates (nl80211, #2591).
 };
 
 /// The facts under @p root into @p info, with the addresses from @p listAddresses and what @p readers
@@ -432,6 +438,9 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
         {
             adapter.driver = driver.filename().string();
         }
+        int ifindex = 0;
+        const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
+        std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
         adapter.wireless = std::filesystem::is_directory(dir / "wireless", linkError);
         if (adapter.wireless)
         {
@@ -442,10 +451,21 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
                 adapter.wifiLink = std::move(read.link);
                 adapter.wifiLinkUnavailable = std::move(read.error);
             }
+            // The standard and the receive rate, which NetworkManager doesn't give (#2591).
+            if (adapter.wifiLink && readers.wifiStation && ifindex > 0)
+            {
+                if (const std::optional<Nl80211::Station> station = readers.wifiStation(ifindex))
+                {
+                    WifiLink& link = *adapter.wifiLink;
+                    link.phy = Nl80211::standardName(*station, link.frequencyMhz);
+                    link.rxBitrateKbps = station->rx ? station->rx->kbps : 0;
+                    if (link.bitrateKbps == 0 && station->tx)
+                    {
+                        link.bitrateKbps = station->tx->kbps;
+                    }
+                }
+            }
         }
-        int ifindex = 0;
-        const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
-        std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
         if (ifindex > 0)
         {
             adapter.description = adapterDescription(LinuxOsInfo::readFile(root / "run/udev/data" / ("n" + std::to_string(ifindex))));

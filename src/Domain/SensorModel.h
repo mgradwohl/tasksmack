@@ -29,6 +29,8 @@ struct SensorPublication
     Platform::SensorsInfo sensors;
     std::map<std::string, SensorRange> ranges;
     std::map<std::string, SensorHistory> histories;
+    /// The window the histories reach back (the Settings history duration, #2796): their charts' span.
+    double historySeconds = Sampling::HISTORY_SECONDS_DEFAULT;
 };
 
 /// Reads the sensors from a BackgroundSampler of its own, so a slow hwmon or thermal-zone read delays
@@ -59,6 +61,13 @@ class SensorModel : public ISamplable
         m_IntervalMs.store(Sampling::clampRefreshInterval(interval.count()), std::memory_order_relaxed);
     }
 
+    /// How far back each sensor's history reaches from the next sample on (the Settings history
+    /// duration changed, #2796). Thread-safe. Clamped as the other models clamp it.
+    void setHistorySeconds(double seconds) noexcept
+    {
+        m_HistorySeconds.store(Sampling::clampHistorySeconds(seconds), std::memory_order_relaxed);
+    }
+
     /// The newest read (an empty version-0 one before the first sample).
     [[nodiscard]] std::shared_ptr<const SensorPublication> publication() const noexcept
     {
@@ -74,6 +83,7 @@ class SensorModel : public ISamplable
     ReaderFactory m_MakeReader;
     NowFunction m_Now;
     std::atomic<std::chrono::milliseconds::rep> m_IntervalMs;
+    std::atomic<double> m_HistorySeconds{Sampling::HISTORY_SECONDS_DEFAULT};
     std::mutex m_SampleMutex;
     Reader m_Reader;                 // made by the first sample(); used under m_SampleMutex only
     bool m_ReaderAsked = false;      // the factory was called (once only, even if it made no reader)

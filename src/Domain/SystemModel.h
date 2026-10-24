@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -57,6 +58,9 @@ class SystemModel : public ISamplable
 {
   public:
     explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
+    /// A model whose probes arrive later, through setProbes() (#2731): nothing is published and the
+    /// capabilities are the defaults until they do.
+    explicit SystemModel(DeferredProbeTag /*tag*/);
     ~SystemModel() override = default;
 
     SystemModel(const SystemModel&) = delete;
@@ -96,8 +100,14 @@ class SystemModel : public ISamplable
     [[nodiscard]] std::shared_ptr<const SystemPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
-    /// What the underlying probe supports.
-    [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
+    /// What the underlying probe supports: the defaults (nothing) until a probe is set. Thread-safe.
+    [[nodiscard]] Platform::SystemCapabilities capabilities() const;
+
+    /// Gives a model built with DeferredProbeTag its probes (#2731): the system probe, and the power
+    /// probe or null for no battery. Meant for the sampler thread, before its first sample (the
+    /// sampler's start hook); thread-safe, and a probe already held is replaced. Neither probe is read
+    /// here beyond its capabilities.
+    void setProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
 
     /// Configure maximum retained history duration (seconds), clamped to SamplingConfig's range.
     /// Trims the history to the new window and republishes it at once, once anything has been
@@ -113,10 +123,17 @@ class SystemModel : public ISamplable
     void setMaxSaneNetworkRate(double bytesPerSecond) noexcept;
 
   private:
+    /// The constructor's and setProbes()' shared body: holds the probes and caches their capabilities.
+    /// Requires m_WriterMutex held and m_Mutex not held.
+    void installProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe);
+
+    // The probes: set by the constructor or setProbes() (under m_WriterMutex), read by the sampling
+    // path, which is one thread (the sampler's, which also runs setProbes() from its start hook) and
+    // runs its reads outside any lock as before.
     std::unique_ptr<Platform::ISystemProbe> m_Probe;
     std::unique_ptr<Platform::IPowerProbe> m_PowerProbe;
-    Platform::SystemCapabilities m_Capabilities;
-    Platform::PowerCapabilities m_PowerCapabilities;
+    Platform::SystemCapabilities m_Capabilities;     // written under m_Mutex (unique); capabilities() reads it shared
+    Platform::PowerCapabilities m_PowerCapabilities; // sampling thread only
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;

@@ -9,7 +9,6 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
-#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>

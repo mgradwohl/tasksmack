@@ -177,6 +177,10 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
         return "Startup folder (all users)";
     case PackagedApp:
         return "Packaged app";
+    case XdgAutostartUser:
+        return "Autostart (your folder)";
+    case XdgAutostartSystem:
+        return "Autostart (system)";
     default:
         return "";
     }
@@ -234,6 +238,10 @@ std::string startupEnabledLabel(const Platform::StartupEntry& entry)
     if (entry.setByPolicy)
     {
         return entry.enabled ? "Enabled by policy" : "Disabled by policy";
+    }
+    if (!entry.notSwitchableReason.empty() && !entry.enabled)
+    {
+        return "Not started here"; // its tooltip and the actions say why
     }
     if (entry.enabled)
     {

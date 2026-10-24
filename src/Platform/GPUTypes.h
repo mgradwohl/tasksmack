@@ -148,6 +148,12 @@ struct GPUEngineClientCounters
 {
     std::uint64_t clientId = 0; // drm-client-id: one per open DRM file, shared by dup'd and inherited fds
     std::array<GPUEngineBusyCounter, GPU_ENGINE_CLASS_COUNT> engines{};
+    // For per-process figures (#2589): the process whose fd the client was read through, and its memory
+    // (drm-resident-*, else drm-total-*) in the GPU's own memory (vram*, local*) and in system memory
+    // the GPU maps (system*, gtt*). 0 when unknown.
+    std::int32_t pid = 0;
+    std::uint64_t dedicatedMemoryBytes = 0;
+    std::uint64_t sharedMemoryBytes = 0;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)

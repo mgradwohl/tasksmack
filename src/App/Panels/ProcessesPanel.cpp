@@ -38,6 +38,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/DeferredProbe.h"
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
@@ -66,6 +67,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -75,6 +77,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -958,75 +961,165 @@ void ProcessesPanel::onAttach()
     // length; ShellLayer raises the configured values as events on its first update (#1079).
     m_ForceRefresh = false;
 
-    // Create probe and transfer it to the ProcessModel. The model itself is then
-    // passed to BackgroundSampler so enumeration runs off the main thread.
-    // The synthetic scenario's probe when TASKSMACK_SYNTHETIC selects one (#1413), else the platform's.
-    // An injected factory (tests, #1546) replaces both, with no scenario.
+    // The model exists from here, so the shell can wire it (ShellPanels::connectModels()), but without
+    // its probe (#2731): the sampler thread builds the platform in its start hook below and seeds the
+    // model there, so this thread never enumerates processes or waits for the first read. Until the seed
+    // is adopted (onUpdate()) the table has no rows and the capabilities are the defaults.
+    // The synthetic scenario's platform when TASKSMACK_SYNTHETIC selects one (#1413), else the
+    // platform's. An injected factory (tests, #1546) replaces both, with no scenario.
     const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
-    ProcessesPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeProcessesPanelPlatform(scenario);
-    auto processProbe = std::move(platform.probe);
-
-    const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
-    processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
-
-    // The opt-in UDP event trace (#1492): the probe reads it, this panel starts and stops it.
-    m_UdpCollector = std::move(platform.udpCollector);
-    if (m_UdpCollector)
-    {
-        processProbe->setUdpTrafficCollector(m_UdpCollector);
-        applyUdpEventTrace(UserConfig::get().settings().udpEventTrace);
-    }
-
-    m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
-
-    // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
-    m_ProcessActions = std::move(platform.actions);
-    m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+    m_ProcessModel = std::make_shared<Domain::ProcessModel>(Domain::DEFERRED_PROBE);
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
-    // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
-    m_IconView.attach(std::move(platform.icons));
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
     // The sparklines' histories (#1612), kept only for the columns that show one.
     m_ProcessModel->setRowHistoryMetrics(m_MeterSettings.sparklineMetrics());
-
-    // The synthetic scenario starts with its whole history window filled (#1413), before the seed
-    // read below continues it. Nothing happens without a scenario.
+    // The synthetic scenario starts with its whole history window filled (#1413) by the hook below.
     if (scenario != nullptr)
     {
         m_ProcessModel->setMaxHistorySeconds(Synthetic::startupHistorySeconds(scenario, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
-        Synthetic::preloadProcessHistory(scenario, *m_ProcessModel, std::chrono::steady_clock::now());
     }
 
-    // Seed with one synchronous read so the first background callback produces valid CPU
-    // deltas instead of all-zero percentages (first call establishes the prev-sample
-    // baseline; second call - coming from the background thread - computes the delta).
-    m_ProcessModel->refresh();
+    // What the hook needs from the config, read here: UserConfig belongs to this thread.
+    const std::chrono::milliseconds socketStatsCacheTtl(UserConfig::get().settings().socketStatsCacheTtlMs);
+    const bool udpEventTrace = UserConfig::get().settings().udpEventTrace;
+    m_Handoff = std::make_shared<PlatformHandoff>();
 
-    // Wire sampler: polls the ProcessModel on each interval tick.
-    // Seeded synchronously above, so the first background sample waits a full interval (#1102).
-    Domain::SamplerConfig const samplerCfg{
-        .interval = m_RefreshInterval, .firstSampleAfterInterval = true, .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
+    // Wire sampler: polls the ProcessModel on each interval tick. Seeded by the start hook, so the
+    // first background sample waits a full interval after it (#1102).
+    Domain::SamplerConfig samplerCfg;
+    samplerCfg.interval = m_RefreshInterval;
+    samplerCfg.firstSampleAfterInterval = true;
+    samplerCfg.threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME);
+    samplerCfg.multiThreadedApartment = true; // what the probe creates lives with the sampler, not the UI's STA (#2731)
+    // The start hook: on the sampler thread, before its first pass. Everything it touches is captured
+    // by value or shared: the model outlives the sampler (onDetach() stops it first), the handoff is
+    // shared with this panel, and the scenario is the process's. The factory is still the composition
+    // root's (PanelPlatforms) or the test's.
+    samplerCfg.onThreadStart =
+        [makePlatform = m_MakePlatform, scenario, model = m_ProcessModel, handoff = m_Handoff, socketStatsCacheTtl, udpEventTrace]
+    {
+        ProcessesPanelPlatform platform = makePlatform ? makePlatform() : makeProcessesPanelPlatform(scenario);
+        if (platform.probe)
+        {
+            platform.probe->setSocketStatsCacheTtl(socketStatsCacheTtl);
+            // The opt-in UDP event trace (#1492): the probe reads it; the panel owns its on/off from here on.
+            if (platform.udpCollector)
+            {
+                platform.probe->setUdpTrafficCollector(platform.udpCollector);
+                if (udpEventTrace)
+                {
+                    // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
+                    (void) platform.udpCollector->start();
+                }
+            }
+        }
+        model->setProbe(std::move(platform.probe));
+
+        // The synthetic scenario's whole history window first (#1413), then the seed continues it.
+        if (scenario != nullptr)
+        {
+            Synthetic::preloadProcessHistory(scenario, *model, std::chrono::steady_clock::now());
+        }
+
+        // Seed with one read so the first background sample produces valid CPU deltas instead of
+        // all-zero percentages (this call establishes the prev-sample baseline; the next, one interval
+        // on, computes the delta).
+        model->refresh();
+
+        // The rest of the platform is the UI thread's: the row menu's actions, the icons (GL textures)
+        // and the UDP toggle. Handed over here; the panel adopts them on its next frame.
+        // Asked here, on this thread, before the actions move: the initializers run in order.
+        const Platform::ProcessActionCapabilities actionCapabilities =
+            platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        PlatformHandoff::Contents contents{.actions = std::move(platform.actions),
+                                           .actionCapabilities = actionCapabilities,
+                                           .udpCollector = std::move(platform.udpCollector),
+                                           .icons = std::move(platform.icons)};
+        {
+            const std::scoped_lock lock(handoff->mutex);
+            handoff->contents = std::move(contents);
+        }
+        handoff->seeded.store(true, std::memory_order_release);
+        spdlog::info("ProcessesPanel: process probe built and model seeded on the sampler thread");
+    };
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel, "processes");
     m_Sampler->start();
 
-    // Ensure the initial seed snapshots are loaded into the render cache so the UI
-    // isn't empty before the first background sample arrives.
-    adoptNewerSnapshots();
-
-    // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
-    // Before the table is first drawn, since its default visibility is set from these settings.
-    m_ColumnDefaultsCapabilities = processCapabilities();
-    m_GpuSupport = gpuSupport();
-    m_ColumnDefaultsGpuSupport = m_GpuSupport;
-    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities, m_GpuSupport);
-    // Handed to the table on its first frame, as a Columns menu request is: ShellLayer restores the
-    // saved ImGui layout after this, and its visibility would otherwise win over DefaultHide.
+    // The saved columns, handed to the table on its first frame as a Columns menu request is: ShellLayer
+    // restores the saved ImGui layout after this, and its visibility would otherwise win over
+    // DefaultHide. A column this system cannot fill is hidden by default, unless its visibility was
+    // chosen (#1210): that waits for the first generation, which brings the probe's capabilities
+    // (applyStartupColumnDefaults()), so the table never shows a set computed without them.
+    m_ColumnDefaultsApplied = false;
     m_RequestedColumns = m_ColumnSettings;
     m_TableShowsColumnSettings = false;
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_RefreshInterval.count());
+}
+
+bool ProcessesPanel::waitForFirstSample(std::chrono::milliseconds timeout)
+{
+    if (!m_Handoff)
+    {
+        return false; // not attached
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!m_Handoff->seeded.load(std::memory_order_acquire))
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    adoptPlatform();
+    adoptNewerSnapshots();
+    return true;
+}
+
+std::optional<ProcessesPanel::PlatformHandoff::Contents> ProcessesPanel::takePlatformHandoff()
+{
+    if (!m_Handoff)
+    {
+        return std::nullopt;
+    }
+    const std::scoped_lock lock(m_Handoff->mutex);
+    return std::exchange(m_Handoff->contents, std::nullopt);
+}
+
+void ProcessesPanel::adoptPlatform()
+{
+    std::optional<PlatformHandoff::Contents> contents = takePlatformHandoff();
+    if (!contents.has_value())
+    {
+        return;
+    }
+    // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
+    m_ProcessActions = std::move(contents->actions);
+    m_ActionCapabilities = contents->actionCapabilities;
+    // The UDP event trace's collector (#1492), started by the hook if Settings had it on; the toggle
+    // and detach go through this panel from here.
+    m_UdpCollector = std::move(contents->udpCollector);
+    // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
+    m_IconView.attach(std::move(contents->icons));
+}
+
+void ProcessesPanel::applyStartupColumnDefaults()
+{
+    // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210),
+    // from the capabilities the first generation published. Later changes go through renderContent()'s
+    // check against m_ColumnDefaultsCapabilities (#1254).
+    m_ColumnDefaultsCapabilities = processCapabilities();
+    m_GpuSupport = gpuSupport();
+    m_ColumnDefaultsGpuSupport = m_GpuSupport;
+    // Through the request path, as a Columns menu change is: the table may have drawn the saved
+    // columns already, and the request is what it takes its next layout from.
+    ProcessColumnSettings columns = m_RequestedColumns.value_or(m_ColumnSettings);
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, m_ColumnDefaultsCapabilities, m_GpuSupport);
+    m_RequestedColumns = columns; // trivially copyable
+    m_ColumnDefaultsApplied = true;
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
@@ -1058,17 +1151,27 @@ void ProcessesPanel::onDetach()
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
     UserConfig::get().settings().processMeters = m_MeterSettings;
-    // While the GL context is current: deletes the icons' textures, and stops their loader (#1800).
-    m_IconView.detach();
     // Order doesn't matter for safety here, same as the destructor above: BackgroundSampler
     // observes m_ProcessModel via a weak_ptr, so it's never left holding a dangling pointer
     // regardless of which is reset first. Stopping the sampler first still avoids a sample()
-    // call racing the rest of this teardown.
+    // call racing the rest of this teardown, and waits for its start hook if that is still building
+    // the platform (#2731).
     if (m_Sampler)
     {
         m_Sampler->stop();
         m_Sampler.reset();
     }
+    // A platform the hook handed over that no frame adopted (detached straight after attach): its
+    // collector is stopped and its actions released below like adopted ones; its icons are dropped
+    // unattached rather than attached to a view about to be detached.
+    if (std::optional<PlatformHandoff::Contents> contents = takePlatformHandoff(); contents.has_value())
+    {
+        m_ProcessActions = std::move(contents->actions);
+        m_UdpCollector = std::move(contents->udpCollector);
+    }
+    m_Handoff.reset();
+    // While the GL context is current: deletes the icons' textures, and stops their loader (#1800).
+    m_IconView.detach();
     // A dump still being written is cancelled and waited for, while its actions are still here (#807).
     m_DumpView.shutdown();
     // So is a batch still running (#2142): stopped before its next process.
@@ -1172,6 +1275,7 @@ void ProcessesPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
+    adoptPlatform(); // the actions, icons and UDP collector the sampler thread built (#2731), once
     adoptNewerSnapshots();
     // The test hook's startup selection (#1559), and a demo script's (#2827): one flag test per frame
     // each until it fires or gives up.
@@ -1237,6 +1341,11 @@ void ProcessesPanel::adoptNewerSnapshots()
         // Selected processes that have exited drop out of the selection (#804): once per generation,
         // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
         (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
+        // The first generation brings the probe's capabilities, which the column defaults wait for (#2731).
+        if (!m_ColumnDefaultsApplied)
+        {
+            applyStartupColumnDefaults();
+        }
     }
 }
 
@@ -1301,6 +1410,7 @@ void ProcessesPanel::renderContent()
     // published between the two; with nothing new this is one atomic load. Everything below is keyed
     // on m_CachedSnapshotVersion, the generation adopted with the vector, not on a version read
     // before adopting (#1394).
+    adoptPlatform();
     adoptNewerSnapshots();
     const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
