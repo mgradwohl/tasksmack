@@ -287,7 +287,13 @@ jobs:
     needs: [detect-docs-only, build-linux-debug]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Dispatch-only, so the cap never delays a pull request. 45 was the job's normal duration, not
+    # headroom (#2798): 31 minutes on a normal runner (debug build 12, IWYU 17) and over 55 on a
+    # slow one (build 20, IWYU 24+ with a quarter of the translation units still to go), where two
+    # runs hit the cap. tools/iwyu.sh already runs nproc IWYU jobs. A job that hits the cap reports
+    # "cancelled", as a manual cancel does; the summary step flags a cut-off IWYU run so its
+    # partial report is not read as complete.
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -369,13 +375,24 @@ jobs:
         run: cmake --build --preset debug
 
       - name: Run include-what-you-use
+        id: iwyu
         run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
 
       - name: Add IWYU summary to workflow summary
         if: always()
+        env:
+          IWYU_OUTCOME: ${{ steps.iwyu.outcome }}
         run: |
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # A cancelled IWYU step (the job's timeout-minutes cap, or a manual cancel) stops where
+          # IWYU did, so this report and the artifact below are partial (#2798).
+          if [[ "$IWYU_OUTCOME" == "cancelled" ]]; then
+            echo "::warning title=include-analysis::Run include-what-you-use was cancelled before it finished (the job's timeout-minutes cap, or a manual cancel); the IWYU report is partial."
+            echo "⚠️ **Status:** IWYU was cancelled before it finished (the job's timeout-minutes cap, or a manual cancel), so this report and the artifact are partial" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [[ ! -f iwyu-output.txt ]] || [[ ! -s iwyu-output.txt ]]; then
             echo "⚠️ **Status:** No IWYU output file generated" >> $GITHUB_STEP_SUMMARY
