@@ -528,6 +528,104 @@ TEST(BrokerServeTest, AnActionPutsOffTheIdleExit)
     EXPECT_EQ(session.get(), BrokerServer::SessionEnd::Idle);
 }
 
+/// serve() on a thread with an idle timeout of an hour, on a clock each PSS/USS read steps past it: a
+/// read ends a session that isn't held, at the next look for a frame (#2728).
+class SteppedSession
+{
+  public:
+    static constexpr std::chrono::milliseconds IDLE = std::chrono::hours{1};
+
+    explicit SteppedSession(SocketPair& pair) : m_Pair(pair)
+    {
+        m_Readers.memoryRollup = [clock = m_Clock](std::int32_t, std::uint64_t) -> MemoryRollupRead
+        {
+            clock.step(IDLE * 2);
+            return MemoryRollup{};
+        };
+        m_Session = std::async(std::launch::async,
+                               [this, &pair, idle = m_Clock.clock()]
+                               { return BrokerServer::serve(pair.server(), m_Actions, IDLE, std::stop_token{}, m_Readers, idle); });
+    }
+
+    // A held session ends only when the client closes: closed here, a failed assertion can't leave the
+    // future's destructor waiting on it forever.
+    ~SteppedSession()
+    {
+        m_Pair.closeClient();
+    }
+    SteppedSession(const SteppedSession&) = delete;
+    SteppedSession& operator=(const SteppedSession&) = delete;
+    SteppedSession(SteppedSession&&) = delete;
+    SteppedSession& operator=(SteppedSession&&) = delete;
+
+    [[nodiscard]] std::future<BrokerServer::SessionEnd>& session()
+    {
+        return m_Session;
+    }
+
+  private:
+    SocketPair& m_Pair;
+    TestMocks::MockProcessActions m_Actions;
+    SteppedClock m_Clock;
+    BrokerServer::Readers m_Readers;
+    std::future<BrokerServer::SessionEnd> m_Session;
+};
+
+[[nodiscard]] bool readsPssAndUss(SocketPair& pair, std::uint32_t id)
+{
+    return std::holds_alternative<Broker::MemoryRollupReply>(
+        roundTrip(pair.client(), id, Broker::MemoryRollupRequest{.target = TARGET}).message);
+}
+
+TEST(BrokerServeTest, ASessionHeldFromItsHelloNeverEndsIdleAndEndsWhenTheClientCloses)
+{
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    SteppedSession served(pair);
+    const auto hello = roundTrip(pair.client(), 1, Broker::Hello{.forSession = true});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(hello.message));
+    ASSERT_TRUE(std::get<Broker::HelloReply>(hello.message).accepted);
+    for (std::uint32_t id = 2; id <= 4; ++id) // each read leaves the clock two idle timeouts on
+    {
+        EXPECT_TRUE(readsPssAndUss(pair, id)) << id;
+    }
+    EXPECT_EQ(served.session().wait_for(std::chrono::milliseconds{200}), std::future_status::timeout);
+    pair.closeClient();
+    EXPECT_EQ(served.session().get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerServeTest, AHelloMidSessionHoldsIt)
+{
+    // A helper an "Authenticate and retry" started becomes the session's with no second prompt (#2728).
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    SteppedSession served(pair);
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    const auto held = roundTrip(pair.client(), 2, Broker::Hello{.forSession = true});
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(held.message));
+    EXPECT_TRUE(std::get<Broker::HelloReply>(held.message).accepted);
+    EXPECT_TRUE(readsPssAndUss(pair, 3));
+    // A Hello without the flag afterwards doesn't put the idle exit back.
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 4, Broker::Hello{}).message));
+    EXPECT_TRUE(readsPssAndUss(pair, 5));
+    pair.closeClient();
+    EXPECT_EQ(served.session().get(), BrokerServer::SessionEnd::ClientClosed);
+}
+
+TEST(BrokerServeTest, ASessionThatIsntHeldEndsIdleOnTheSameClock)
+{
+    // The control for the two above: the same read, without the flag, ends the session.
+    SocketPair pair;
+    ASSERT_TRUE(pair.valid());
+    SteppedSession served(pair);
+    ASSERT_TRUE(std::holds_alternative<Broker::HelloReply>(roundTrip(pair.client(), 1, Broker::Hello{}).message));
+    EXPECT_TRUE(readsPssAndUss(pair, 2));
+    const auto status = served.session().wait_for(REPLY_TIMEOUT);
+    pair.closeClient();
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_EQ(served.session().get(), BrokerServer::SessionEnd::Idle);
+}
+
 TEST(BrokerServeTest, AMalformedFrameAfterTheHelloGetsAnErrorAndTheSessionGoesOn)
 {
     SocketPair pair;
@@ -1097,6 +1195,41 @@ TEST(PkexecBrokerTest, ACallIfIdleIsAnswered)
     const auto response = broker.callIfIdle(Broker::MemoryRollupRequest{.target = child.target()}, std::chrono::seconds{2});
     ASSERT_TRUE(response.has_value()) << response.error();
     EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(*response));
+}
+
+TEST(PkexecBrokerTest, HoldingTheSessionStartsTheHelperOnce)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    EXPECT_FALSE(broker.heldForSession());
+    const auto held = broker.holdForSession(std::stop_token{});
+    ASSERT_TRUE(held.has_value()) << held.error();
+    EXPECT_TRUE(broker.connected());
+    EXPECT_TRUE(broker.heldForSession());
+    EXPECT_TRUE(broker.holdForSession(std::stop_token{}).has_value()); // already held: a Hello again
+    EXPECT_TRUE(std::holds_alternative<Broker::MemoryRollupReply>(
+        broker.call(Broker::MemoryRollupRequest{.target = child.target()}, std::stop_token{}).value_or(Broker::ErrorReply{})));
+    broker.disconnect();
+    EXPECT_FALSE(broker.heldForSession()); // nothing to hold once the helper is gone
+}
+
+TEST(PkexecBrokerTest, AConnectedHelperIsHeldWithoutAnotherStart)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {});
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    EXPECT_FALSE(broker.heldForSession());
+    const auto held = broker.holdForSession(std::stop_token{});
+    ASSERT_TRUE(held.has_value()) << held.error();
+    EXPECT_TRUE(broker.heldForSession());
+}
+
+TEST(PkexecBrokerTest, AHoldThatCantStartTheHelperLeavesTheSessionUnheld)
+{
+    PkexecBroker broker("/nonexistent/tasksmack-helper", {});
+    EXPECT_FALSE(broker.holdForSession(std::stop_token{}).has_value());
+    EXPECT_FALSE(broker.heldForSession());
+    EXPECT_FALSE(broker.connected());
 }
 
 TEST(PkexecBrokerTest, ACallWithoutAHelperSaysSo)
