@@ -22,11 +22,12 @@ namespace App::ProcessColumnAvailability
 struct GpuSupport
 {
     /// Per-process GPU memory, devices and engines: a GPU model exists and its probe has per-process
-    /// metrics (Platform::GPUCapabilities::hasPerProcessMetrics is false on DRM- or ROCm-only Linux
-    /// and with DXGI alone).
+    /// metrics (Platform::GPUCapabilities::hasPerProcessMetrics; false with DXGI alone, and on Linux
+    /// for a GPU whose driver reports no DRM clients, #2589).
     bool perProcess = true;
-    /// Per-process GPU utilization as well (hasPerProcessUtilization): NVML's running-process lists
-    /// give a process's memory and engines but not its utilization, which then reads 0 everywhere.
+    /// Per-process GPU utilization as well (hasPerProcessUtilization): without it a process's memory
+    /// and engines are known but not its utilization (NVML without nvmlDeviceGetProcessUtilization),
+    /// which then reads 0 everywhere.
     bool utilization = true;
     /// Supported, but reading the per-process GPU data failed for the generation being drawn: its GPU
     /// cells are unreadable for that sample, not "not available on this system" (#1210).
