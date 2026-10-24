@@ -448,6 +448,24 @@ TEST(BackgroundSamplerTest, AStartHookThatThrowsIsContainedAndSamplingGoesOn)
     EXPECT_GE(samplable->getSampleCount(), 2);
 }
 
+namespace
+{
+
+/// Whether the calling thread is in COM's multithreaded apartment: false where there is no COM (Linux),
+/// so the test below reads the same answer on every platform.
+[[nodiscard]] bool currentThreadInMta()
+{
+#if defined(_WIN32)
+    APTTYPE type = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
+    return SUCCEEDED(CoGetApartmentType(&type, &qualifier)) && type == APTTYPE_MTA;
+#else
+    return false;
+#endif
+}
+
+} // namespace
+
 // #2731: a sampler asked for the multithreaded apartment runs its hook, and so its probes' construction,
 // in the MTA, so PDH's providers and DXGI never belong to the UI thread's STA. The flag off: no apartment.
 TEST(BackgroundSamplerTest, TheStartHookRunsInTheMultiThreadedApartmentWhenAsked)
@@ -462,11 +480,7 @@ TEST(BackgroundSamplerTest, TheStartHookRunsInTheMultiThreadedApartmentWhenAsked
         config.multiThreadedApartment = wanted;
         config.onThreadStart = [&inMta, &hookRan]
         {
-#if defined(_WIN32)
-            APTTYPE type = APTTYPE_CURRENT;
-            APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
-            inMta.store(SUCCEEDED(CoGetApartmentType(&type, &qualifier)) && type == APTTYPE_MTA);
-#endif
+            inMta.store(currentThreadInMta());
             hookRan.store(true);
         };
         Domain::BackgroundSampler sampler(config);
