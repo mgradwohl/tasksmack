@@ -2704,10 +2704,13 @@ That single push runs two independent workflows:
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
   Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
-  GitHub Release: it creates the release as a **draft**, uploads every asset and `.bundle`,
-  checks the draft's assets match `dist/` by name and size, and only then publishes it
-  (`gh release edit --draft=false --latest`), so a failure part-way leaves a draft, never a
-  public release with missing assets; re-running reuses that draft and overwrites its assets.
+  GitHub Release: it creates the release as a **draft** with a placeholder body ("Release notes
+  follow."; not GitHub's generated notes, which exceed the release-body limit on a big release,
+  #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
+  size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
+  part-way leaves a draft, never a public release with missing assets; re-running reuses that
+  draft and overwrites its assets. The maintainer's approved release notes then replace the
+  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`.
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
