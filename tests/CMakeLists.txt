@@ -1092,7 +1092,10 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
 )
-tasksmack_gtest_add_suites(TaskSmackAppTests)
+# The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a
+# windows-2025 runner, which a slow one pushed past the CI steps' 60 s --timeout (main 82d9b173). The
+# same whole-suite limit as every other executable's entries.
+tasksmack_gtest_add_suites(TaskSmackAppTests PROPERTIES TIMEOUT 300)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small
