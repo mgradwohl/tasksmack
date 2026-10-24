@@ -841,10 +841,19 @@ and exit non-zero if any shot failed.
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
 ```bash
-# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images.
+# SDL_VIDEO_X11_SCALING_FACTOR=1.75 renders at the Windows set's 175 % scale (SDL reads that hint,
+# Xft.dpi or GDK_SCALE, never Xvfb's -dpi); the three expanded-section shots need --window 1440x1200
+# on Linux, where the Actions and Priority cards are taller and push the sections below a 900 px fold.
 cmake --preset release && cmake --build --preset release
-tools/screenshots.sh --webp --hostname tasksmack-demo
+SDL_VIDEO_X11_SCALING_FACTOR=1.75 tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
+
+Under Xvfb, SDL warps the pointer to the window's centre at startup, which hovers a chart and draws its
+tooltip into the shot: keep the pointer parked outside the window for the run (python-xlib's
+`root.warp_pointer()` to a screen corner, repeated every quarter second). The selected process's command
+line is shown in Process Details, so run the binary from a path that names no user (a bind mount of the
+build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
 
 ```powershell
 # Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
@@ -887,7 +896,7 @@ it would cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu`, `npu` or `network`. `npu` selects the NPU tab only on a machine that has one. |
-| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
+| `TASKSMACK_TAB` | The top-level tab to open, matched in this order: a tab's registered id (`SystemOverview`, `Processes`, `ProcessDetails`, `Services`, `Startup`, `SystemInfo`); one of the aliases `machine`/`overview` (the hostname tab), `details` and `system` (the System Information tab); or a tab's visible label (the hostname, the selected process's name). An id or an alias is never shadowed by another tab's label, so `system` opens System Information even while the machine tab still reads `System` -- its text until the first system sample brings the hostname (#2886); the hostname itself is matchable only once shown, so name the machine tab `machine` at startup. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_MACHINE_TAB` | The machine (hostname) tab's sub-tab to bring forward (#2869): `overview`, `cores` (CPU Cores), `gpu`, `npu` or `network` (Network and I/O). Case-insensitive; any other value logs one warning and is ignored. It picks the sub-tab only; the main tab stays `TASKSMACK_TAB`'s (or the default, the machine tab). The sub-tab is asked for until it shows, so a request made before the first sample (CPU Cores and Network and I/O exist only once it is in) still takes effect; one for a sub-tab this machine never draws (`npu` without an accelerator, `network` without network counters) is dropped with one warning after 120 frames drawn with a sample. `TASKSMACK_SCREENSHOT` does not wait for it: give `after` a few seconds, as the screenshot scripts do. |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |

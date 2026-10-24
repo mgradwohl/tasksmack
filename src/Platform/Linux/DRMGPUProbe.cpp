@@ -118,7 +118,8 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
 }
 
 /// The index (GPUEngineClass) of the engine class an fdinfo key names after its prefix: i915's
-/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267).
+/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267), or amdgpu's
+/// gfx/dma/compute and its video engines, dec, enc, enc_1 and jpeg, with vpe as video enhancement (#2589).
 [[nodiscard]] std::optional<std::size_t> engineClassIndex(std::string_view name)
 {
     struct EngineName
@@ -136,11 +137,30 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
     }};
     const auto* const match =
         std::ranges::find_if(NAMES, [name](const EngineName& entry) { return name == entry.i915 || name == entry.xe; });
-    if (match == NAMES.end())
+    if (match != NAMES.end())
+    {
+        return static_cast<std::size_t>(match->engineClass);
+    }
+    struct AmdgpuName
+    {
+        std::string_view name;
+        GPUEngineClass engineClass;
+    };
+    static constexpr std::array<AmdgpuName, 7> AMDGPU_NAMES{{
+        {.name = "gfx", .engineClass = GPUEngineClass::Render},
+        {.name = "dma", .engineClass = GPUEngineClass::Copy},
+        {.name = "dec", .engineClass = GPUEngineClass::Video},
+        {.name = "enc", .engineClass = GPUEngineClass::Video},
+        {.name = "enc_1", .engineClass = GPUEngineClass::Video},
+        {.name = "jpeg", .engineClass = GPUEngineClass::Video},
+        {.name = "vpe", .engineClass = GPUEngineClass::VideoEnhance},
+    }};
+    const auto* const amdgpu = std::ranges::find(AMDGPU_NAMES, name, &AmdgpuName::name);
+    if (amdgpu == AMDGPU_NAMES.end())
     {
         return std::nullopt;
     }
-    return static_cast<std::size_t>(match->engineClass);
+    return static_cast<std::size_t>(amdgpu->engineClass);
 }
 
 #if TASKSMACK_HAS_DRM_QUERY_UAPI
@@ -180,8 +200,12 @@ template<typename T> [[nodiscard]] T readAt(std::span<const std::byte> bytes, st
 #endif
 } // namespace
 
-DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock)
-    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery)), m_ProcRoot(std::move(procRoot)), m_Clock(std::move(clock))
+DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock, CardKind kind)
+    : m_DrmBasePath(std::move(drmBasePath)),
+      m_VramQuery(std::move(vramQuery)),
+      m_ProcRoot(std::move(procRoot)),
+      m_Clock(std::move(clock)),
+      m_Kind(kind)
 {
     if (!m_VramQuery)
     {
@@ -216,16 +240,17 @@ bool DRMGPUProbe::initialize()
     m_Cards = discoverIntelCards();
     for (const auto& card : m_Cards)
     {
-        spdlog::debug("DRMGPUProbe: Found Intel GPU at {}", card.cardPath);
+        spdlog::debug("DRMGPUProbe: Found {} at {}", m_Kind == CardKind::Intel ? "Intel GPU" : "amdgpu card (clients)", card.cardPath);
     }
     return !m_Cards.empty();
 }
 
 std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverIntelCards() const
 {
-    // Filter to only Intel GPUs (i915, xe drivers)
+    // The kind's cards only: Intel's (i915, xe), or amdgpu's for their clients (#2589)
     auto cards = discoverDRMCards();
-    std::erase_if(cards, [](const DRMCard& card) { return !isIntelGPU(card); });
+    const CardKind kind = m_Kind;
+    std::erase_if(cards, [kind](const DRMCard& card) { return kind == CardKind::Intel ? !isIntelGPU(card) : card.driver != "amdgpu"; });
     // directory_iterator order is unspecified; sorted, two scans of the same cards compare equal.
     std::ranges::sort(cards, {}, &DRMCard::cardPath);
     return cards;
@@ -286,7 +311,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
             card.queriedVramUsedBytes = previous->queriedVramUsedBytes;
         }
     }
-    spdlog::info("DRMGPUProbe: Intel DRM cards changed, now {}", cards.size());
+    spdlog::info("DRMGPUProbe: {} DRM cards changed, now {}", m_Kind == CardKind::Intel ? "Intel" : "amdgpu", cards.size());
     m_Cards = std::move(cards);
     m_Available = !m_Cards.empty();
     discoverDrmClients();
@@ -831,7 +856,17 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
     struct MemoryRegionRead
     {
         std::uint64_t resident = 0;
+        std::uint64_t legacyResident = 0; // drm-memory-<region>, used only without drm-resident-*
         std::uint64_t total = 0;
+
+        [[nodiscard]] std::uint64_t bytes() const noexcept
+        {
+            if (resident != 0)
+            {
+                return resident;
+            }
+            return legacyResident != 0 ? legacyResident : total;
+        }
     };
     MemoryRegionRead dedicatedMemory;
     MemoryRegionRead sharedMemory;
@@ -871,19 +906,24 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
         {
             info.pdev = std::string(trimAscii(value));
         }
-        else if (key.starts_with("drm-resident-") || (key.starts_with("drm-total-") && !key.starts_with(TOTAL_CYCLES_PREFIX)))
+        else if (key.starts_with("drm-resident-") || key.starts_with("drm-memory-") ||
+                 (key.starts_with("drm-total-") && !key.starts_with(TOTAL_CYCLES_PREFIX)))
         {
             // drm-resident-vram0, drm-total-system0, ... (#2589): resident wins over total per region.
-            const bool resident = key.starts_with("drm-resident-");
-            const std::string_view region =
-                key.substr(resident ? std::string_view("drm-resident-").size() : std::string_view("drm-total-").size());
+            // drm-memory-<region> is the older name amdgpu still prints for resident; a kernel printing
+            // both prints the same figure, so it counts only without drm-resident-*.
+            constexpr std::array<std::string_view, 3> PREFIXES{"drm-resident-", "drm-memory-", "drm-total-"};
+            const auto* const prefix =
+                std::ranges::find_if(PREFIXES, [key](std::string_view candidate) { return key.starts_with(candidate); });
+            const std::string_view region = key.substr(prefix->size()); // one of them matched to get here
             const std::optional<std::uint64_t> bytes = memoryValueBytes(value);
             const bool dedicated = region.starts_with("vram") || region.starts_with("local");
             const bool shared = region.starts_with("system") || region.starts_with("gtt");
             if (bytes && (dedicated || shared))
             {
                 MemoryRegionRead& read = dedicated ? dedicatedMemory : sharedMemory;
-                (resident ? read.resident : read.total) += *bytes;
+                std::array<std::uint64_t*, 3> sums{&read.resident, &read.legacyResident, &read.total}; // PREFIXES' order
+                *sums.at(static_cast<std::size_t>(prefix - PREFIXES.begin())) += *bytes;
             }
         }
         else if (key.starts_with(CAPACITY_PREFIX))
@@ -913,7 +953,11 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
         {
             if (const auto index = perClass(key, ENGINE_PREFIX, value))
             {
-                busyNs.at(*index) = leadingUint64(value);
+                // Summed: amdgpu names several of a class (dec, enc, enc_1 and jpeg are all video).
+                if (const auto busy = leadingUint64(value))
+                {
+                    busyNs.at(*index) = busyNs.at(*index).value_or(0) + *busy;
+                }
             }
         }
     }
@@ -921,8 +965,8 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
     {
         return std::nullopt;
     }
-    info.client.dedicatedMemoryBytes = dedicatedMemory.resident != 0 ? dedicatedMemory.resident : dedicatedMemory.total;
-    info.client.sharedMemoryBytes = sharedMemory.resident != 0 ? sharedMemory.resident : sharedMemory.total;
+    info.client.dedicatedMemoryBytes = dedicatedMemory.bytes();
+    info.client.sharedMemoryBytes = sharedMemory.bytes();
     for (std::size_t i = 0; i < GPU_ENGINE_CLASS_COUNT; ++i)
     {
         auto& engine = info.client.engines.at(i);
@@ -1322,8 +1366,17 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     return info;
 }
 
+void DRMGPUProbe::setClientGpuIds(std::vector<std::pair<std::string, std::string>> idsByPciAddress)
+{
+    m_ClientGpuIds = std::move(idsByPciAddress);
+}
+
 std::vector<GPUInfo> DRMGPUProbe::enumerateGPUs()
 {
+    if (m_Kind == CardKind::AmdClients)
+    {
+        return {}; // ROCm SMI lists them (#2589)
+    }
     std::vector<GPUInfo> gpus;
     gpus.reserve(m_Cards.size());
 
@@ -1348,6 +1401,11 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
     for (auto& card : m_Cards)
     {
+        if (m_Kind == CardKind::AmdClients)
+        {
+            readClientsOnly(card);
+            continue;
+        }
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
 
@@ -1440,6 +1498,20 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
     }
 
     return counters;
+}
+
+void DRMGPUProbe::readClientsOnly(DRMCard& card)
+{
+    // An amdgpu card's clients, under the id ROCm gave the card (#2589): no sensors, no counters of its
+    // own, and nothing for a card ROCm didn't list or one that's asleep (no clients run on it then).
+    const auto id = std::ranges::find(m_ClientGpuIds, card.gpuId, &std::pair<std::string, std::string>::first);
+    if (id == m_ClientGpuIds.end() || PciRuntimePm::isRuntimeSuspended(card.devicePath))
+    {
+        return;
+    }
+    GPUCounters counter{};
+    readEngineClients(card, counter);
+    m_LastClients.push_back(CardClients{.gpuId = id->second, .clients = std::move(counter.engineClients)});
 }
 
 std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
@@ -1539,6 +1611,14 @@ GPUCapabilities DRMGPUProbe::capabilities() const
 
     if (!m_Available)
     {
+        return caps;
+    }
+
+    if (m_Kind == CardKind::AmdClients)
+    {
+        // Per process only: ROCm SMI reads the cards themselves (#2589).
+        caps.hasPerProcessMetrics = true;
+        caps.hasPerProcessUtilization = true;
         return caps;
     }
 

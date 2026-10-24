@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -37,6 +38,16 @@ class DRMGPUProbe : public IGPUProbe
     /// CLOCK_MONOTONIC in nanoseconds, the time base i915's busy nanoseconds are measured against (#1267).
     using MonotonicClock = std::function<std::uint64_t()>;
 
+    /// Which cards a probe covers (#2589). Intel: i915 and xe cards, everything this probe reads. AmdClients:
+    /// amdgpu cards, for their DRM clients only: ROCm SMI lists them and reads their sensors, so this
+    /// lists no GPU and reads no sensor, and its per-process figures carry the ids ROCm gave the cards
+    /// (setClientGpuIds()).
+    enum class CardKind : std::uint8_t
+    {
+        Intel,
+        AmdClients,
+    };
+
     /// One DRM client's fdinfo, as parseFdinfo() reads it (#1267).
     struct DrmFdinfo
     {
@@ -48,10 +59,12 @@ class DRMGPUProbe : public IGPUProbe
     /// @param vramQuery  empty for the real ioctl (queryVramByIoctl)
     /// @param procRoot   where DRM clients' fds and fdinfo are looked for (a fake tree in tests)
     /// @param clock      empty for std::chrono::steady_clock (CLOCK_MONOTONIC)
+    /// @param kind       the cards it covers
     explicit DRMGPUProbe(std::string drmBasePath = "/sys/class/drm",
                          VramQuery vramQuery = {},
                          std::string procRoot = "/proc",
-                         MonotonicClock clock = {});
+                         MonotonicClock clock = {},
+                         CardKind kind = CardKind::Intel);
     ~DRMGPUProbe() override = default;
 
     // Rule of 5
@@ -70,6 +83,11 @@ class DRMGPUProbe : public IGPUProbe
     {
         return m_Available;
     }
+
+    /// AmdClients: the GPU id another probe gave each card, by the card's PCI address ("0000:03:00.0"),
+    /// which is this probe's own id for it. A card with none is read for nothing: there is no GPU of
+    /// its in the list to hang its processes on. Replaces the previous ids.
+    void setClientGpuIds(std::vector<std::pair<std::string, std::string>> idsByPciAddress);
 
     /// The real VramQuery: opens the render node read-only and issues DRM_IOCTL_XE_DEVICE_QUERY
     /// (DRM_XE_DEVICE_QUERY_MEM_REGIONS) for xe or DRM_IOCTL_I915_QUERY (DRM_I915_QUERY_MEMORY_REGIONS)
@@ -146,6 +164,8 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<DRMCard> discoverDRMCards() const;
     /// discoverDRMCards() filtered to Intel (i915/xe) cards, sorted by card path.
     [[nodiscard]] std::vector<DRMCard> discoverIntelCards() const;
+    /// AmdClients: reads @p card's clients into m_LastClients under the id ROCm gave it (#2589).
+    void readClientsOnly(DRMCard& card);
     [[nodiscard]] static bool isIntelGPU(const DRMCard& card);
     [[nodiscard]] static std::string readSysfsString(const std::string& path);
     [[nodiscard]] static uint64_t readSysfsUint64(const std::string& path);
@@ -243,6 +263,9 @@ class DRMGPUProbe : public IGPUProbe
     /// Each client's engine counters at the previous readProcessGPUCounters(), by card and client id:
     /// the baseline its utilization is the change from.
     std::vector<CardClients> m_ProcessBaseline;
+    CardKind m_Kind{CardKind::Intel};
+    /// AmdClients: setClientGpuIds()'s (PCI address, GPU id) pairs.
+    std::vector<std::pair<std::string, std::string>> m_ClientGpuIds;
 };
 
 } // namespace Platform

@@ -160,7 +160,9 @@ foreach ($t in $Themes) {
 }
 foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "processes-$t" $t @{ TASKSMACK_TAB = 'Processes'; TASKSMACK_SELECT_NAME = $Process }
-    Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'System' }
+    # By id: the machine tab is labelled "System" until the first sample brings the hostname, so the
+    # System Information tab's label would race it at startup (#2886).
+    Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
 }
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 foreach ($sub in 'cores', 'gpu', 'network') {
