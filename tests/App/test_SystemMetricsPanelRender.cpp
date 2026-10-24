@@ -1,9 +1,10 @@
 /// @file test_SystemMetricsPanelRender.cpp
 /// @brief The System Metrics panel as a whole (#1546), run headless with mock probes through its
-/// probe-factory seam: its sampler thread builds its models' probes from the mocks (no platform probe,
+/// probe-factory seams: its sampler threads build its models' probes from the mocks (no platform probe,
 /// no synthetic scenario; #2731: onAttach() itself calls no factory), the Overview draws its charts from
 /// their readings, the tabs switch to their sections, an inactive panel draws nothing, and a detached one
-/// says its model is gone. Its sampler runs at the refresh setting in every UI state (#2731).
+/// says its model is gone. Its three samplers (system, storage, GPU) run at the refresh setting in every
+/// UI state, each on its own named thread, and a stalled one never delays another (#2731).
 
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
@@ -13,10 +14,12 @@
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IDiskProbe.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"
+#include "Platform/ThreadName.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -39,6 +42,21 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <processthreadsapi.h>
+// clang-format on
+#else
+#include <pthread.h>
+#endif
+
 namespace App
 {
 namespace
@@ -48,6 +66,58 @@ constexpr float DISPLAY_WIDTH = 1600.0F;
 constexpr float DISPLAY_HEIGHT = 1200.0F;
 
 using SeriesLabels = std::set<std::string>;
+
+/// The calling thread's OS name: its Windows description, or its kernel name on Linux. Empty if it can't
+/// be read.
+[[nodiscard]] std::string currentThreadName()
+{
+#if defined(_WIN32)
+    PWSTR description = nullptr;
+    if (FAILED(GetThreadDescription(GetCurrentThread(), &description)) || description == nullptr)
+    {
+        return {};
+    }
+    const std::wstring wide(description);
+    LocalFree(description);            // allocated by the OS
+    return {wide.begin(), wide.end()}; // the sampler names are ASCII
+#else
+    std::array<char, 16> buffer{};
+    if (pthread_getname_np(pthread_self(), buffer.data(), buffer.size()) != 0)
+    {
+        return {};
+    }
+    return {buffer.data()};
+#endif
+}
+
+/// A disk probe whose first read blocks for @p stall, as a PDH rescan stalled on a PnP event would, then
+/// reports no disks; @p firstReadDone is set once that read returns. Later reads return at once.
+class StalledDiskProbe final : public Platform::IDiskProbe
+{
+  public:
+    StalledDiskProbe(std::chrono::milliseconds stall, std::shared_ptr<std::atomic<bool>> firstReadDone)
+        : m_Stall(stall), m_FirstReadDone(std::move(firstReadDone))
+    {}
+
+    [[nodiscard]] Platform::SystemDiskCounters read() override
+    {
+        if (!m_FirstReadDone->load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(m_Stall);
+            m_FirstReadDone->store(true, std::memory_order_release);
+        }
+        return {};
+    }
+
+    [[nodiscard]] Platform::DiskCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+  private:
+    std::chrono::milliseconds m_Stall;
+    std::shared_ptr<std::atomic<bool>> m_FirstReadDone;
+};
 
 /// onAttach(), then the seed the sampler thread takes (#2731), adopted as the first frame after it
 /// would: the tests below read the models and the hostname as they stand after it.
@@ -1069,16 +1139,26 @@ TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
     panel->onDetach();
 }
 
-// #2731: the sampler runs at the refresh setting in every UI state. Settings is the one thing that sets
-// it: this tab being shown or another, frames at any rate, and the slow frames of a minimized window
-// change nothing. (The System sampler once ran at twice the setting while its tab was hidden.)
+// #2731: every one of the panel's three samplers (system, storage, GPU) runs at the refresh setting in
+// every UI state. Settings is the one thing that sets it: this tab being shown or another, frames at any
+// rate, and the slow frames of a minimized window change nothing. (The System sampler once ran at twice
+// the setting while its tab was hidden.)
 TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEveryUiState)
 {
     const auto panel = attachedPanel();
     const auto setting = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
     EXPECT_EQ(panel->samplingInterval(), setting);
 
-    const auto expectThroughEveryUiState = [&panel](std::chrono::milliseconds expected)
+    // All three samplers at @p expected, not just the system one samplingInterval() reports.
+    const auto expectEverySampler = [&panel](std::chrono::milliseconds expected, const auto& state)
+    {
+        EXPECT_EQ(panel->samplingInterval(), expected) << state;
+        const SystemMetricsPanel::SamplerIntervals intervals = panel->samplerIntervals();
+        EXPECT_EQ(intervals.system, expected) << "system sampler, " << state;
+        EXPECT_EQ(intervals.storage, expected) << "storage sampler, " << state;
+        EXPECT_EQ(intervals.gpu, expected) << "GPU sampler, " << state;
+    };
+    const auto expectThroughEveryUiState = [&panel, &expectEverySampler](std::chrono::milliseconds expected)
     {
         // Each main tab shown in turn, with a frame on each: this panel's tab, and the others.
         for (const char* tab : {"SystemOverview", "Processes", "ProcessDetails", "Services", "Startup", "SystemInfo", "SystemOverview"})
@@ -1086,7 +1166,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEver
             Core::ActiveTabChangedEvent shown(tab);
             panel->onEvent(shown);
             panel->onUpdate(1.0F / 60.0F);
-            EXPECT_EQ(panel->samplingInterval(), expected) << tab;
+            expectEverySampler(expected, tab);
         }
         // Frames at the display rate of a resize or move, at 60 Hz, at the 5 Hz of a minimized window,
         // and after the gap of a window left minimized or covered.
@@ -1096,7 +1176,7 @@ TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEver
             {
                 panel->onUpdate(deltaTime);
             }
-            EXPECT_EQ(panel->samplingInterval(), expected) << deltaTime;
+            expectEverySampler(expected, deltaTime);
         }
     };
     expectThroughEveryUiState(setting);
@@ -1104,13 +1184,120 @@ TEST_F(SystemMetricsPanelRenderTest, TheSamplerIntervalIsTheRefreshSettingInEver
     // Settings changes it, and the new value holds through the same states.
     Core::RefreshRateChangedEvent faster(250);
     panel->onEvent(faster);
-    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(250));
+    expectEverySampler(std::chrono::milliseconds(250), "just set to 250 ms");
     expectThroughEveryUiState(std::chrono::milliseconds(250));
 
     Core::RefreshRateChangedEvent slower(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
     panel->onEvent(slower);
-    EXPECT_EQ(panel->samplingInterval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    expectEverySampler(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS), "just set to the maximum");
     expectThroughEveryUiState(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    panel->onDetach();
+}
+
+// #2731: the system, storage and GPU models each have their own sampler, so each domain's probe factory
+// runs on its own thread, named for its domain (ts-sampler-sys, ts-sampler-disk, ts-sampler-gpu), and
+// none of them on the attaching thread. waitForFirstSample() returns once all three have seeded.
+TEST_F(SystemMetricsPanelRenderTest, EachDomainSeedsOnItsOwnNamedSamplerThread)
+{
+    struct FactoryRun
+    {
+        std::atomic<int> calls{0};
+        std::thread::id thread{};
+        std::string threadName;
+    };
+    // Each run is written on its sampler thread before that sampler's seed, which waitForFirstSample()
+    // acquires, so the reads below are ordered after the writes.
+    const auto system = std::make_shared<FactoryRun>();
+    const auto disk = std::make_shared<FactoryRun>();
+    const auto gpu = std::make_shared<FactoryRun>();
+    const auto record = [](FactoryRun& run)
+    {
+        ++run.calls;
+        run.thread = std::this_thread::get_id();
+        run.threadName = currentThreadName();
+    };
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        SystemMetricsProbeFactories{.system =
+                                        [system, record]
+                                    {
+                                        record(*system);
+                                        return SystemModelProbes{.system = mockSystem(), .power = nullptr};
+                                    },
+                                    .disk =
+                                        [disk, record]
+                                    {
+                                        record(*disk);
+                                        return std::make_unique<Mocks::MockDiskProbe>();
+                                    },
+                                    .gpu =
+                                        [gpu, record]
+                                    {
+                                        record(*gpu);
+                                        auto probe = std::make_unique<TestMocks::MockGPUProbe>();
+                                        probe->withGPU("gpu0", "Test GPU");
+                                        return probe;
+                                    }});
+    panel->onAttach();
+    ASSERT_TRUE(panel->waitForFirstSample());
+
+    EXPECT_EQ(system->calls.load(), 1);
+    EXPECT_EQ(disk->calls.load(), 1);
+    EXPECT_EQ(gpu->calls.load(), 1);
+    const std::thread::id attaching = std::this_thread::get_id();
+    EXPECT_NE(system->thread, attaching) << "the system factory ran on the attaching thread";
+    EXPECT_NE(disk->thread, attaching) << "the disk factory ran on the attaching thread";
+    EXPECT_NE(gpu->thread, attaching) << "the GPU factory ran on the attaching thread";
+    EXPECT_NE(system->thread, disk->thread) << "system and storage share a sampler thread";
+    EXPECT_NE(system->thread, gpu->thread) << "system and GPU share a sampler thread";
+    EXPECT_NE(disk->thread, gpu->thread) << "storage and GPU share a sampler thread";
+    EXPECT_EQ(system->threadName, Platform::SYSTEM_SAMPLER_THREAD_NAME);
+    EXPECT_EQ(disk->threadName, Platform::STORAGE_SAMPLER_THREAD_NAME);
+    EXPECT_EQ(gpu->threadName, Platform::GPU_SAMPLER_THREAD_NAME);
+
+    EXPECT_EQ(panel->hostname(), "testhost") << "the system seed was adopted";
+    panel->onDetach();
+}
+
+// #2731: a disk probe that stalls (a PDH rescan held up by a driver or PnP event) holds up the storage
+// sampler alone. The system seed arrives, and the system sampler keeps its cadence, while the disk read
+// is still blocked; waitForFirstSample() waits for the stalled model too, so the test seam still sees
+// every seed.
+TEST_F(SystemMetricsPanelRenderTest, AStalledStorageProbeDoesNotDelayTheSystemSamples)
+{
+    static constexpr auto STALL = std::chrono::seconds(2); // static: the disk factory below names it
+    constexpr auto INTERVAL = std::chrono::milliseconds(100);
+    const auto diskRead = std::make_shared<std::atomic<bool>>(false);
+    // The model owns the mock from the factory on; read while the panel is attached.
+    std::atomic<TestMocks::MockSystemProbe*> systemProbe{nullptr};
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        SystemMetricsProbeFactories{.system =
+                                        [&systemProbe]
+                                    {
+                                        auto probe = mockSystem();
+                                        systemProbe.store(probe.get());
+                                        return SystemModelProbes{.system = std::move(probe), .power = nullptr};
+                                    },
+                                    .disk = [diskRead] { return std::make_unique<StalledDiskProbe>(STALL, diskRead); },
+                                    .gpu = {}});
+    panel->setSamplingInterval(INTERVAL);
+    const auto start = std::chrono::steady_clock::now();
+    panel->onAttach();
+
+    // The system seed, adopted as a frame would, while the disk probe is still in its first read.
+    while (panel->hostname() != "testhost")
+    {
+        ASSERT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(10)) << "no system seed";
+        panel->onUpdate(1.0F / 60.0F);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_FALSE(diskRead->load()) << "the system seed waited for the stalled disk read";
+    EXPECT_FALSE(panel->waitForFirstSample(std::chrono::milliseconds(50))) << "waitForFirstSample() returned before every seed";
+
+    // Every seed, once the disk read returns; the system sampler took its samples throughout the stall.
+    ASSERT_TRUE(panel->waitForFirstSample());
+    EXPECT_TRUE(diskRead->load());
+    ASSERT_NE(systemProbe.load(), nullptr);
+    EXPECT_GE(systemProbe.load()->readCount(), 3) << "the system sampler, at 100 ms, took no samples during the 2 s disk stall";
     panel->onDetach();
 }
 

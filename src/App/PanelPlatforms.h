@@ -15,6 +15,8 @@
 #include "Panels/ServicesPanel.h"
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -38,9 +40,13 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// Called on the Processes panel's sampler thread, from its start hook (#2731).
 [[nodiscard]] ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* scenario);
 
-/// The System panel's probes: @p scenario's, or the platform's. Called on the System panel's sampler
-/// thread, from its start hook (#2731): PDH, DXGI and NVML are opened there, in its apartment.
-[[nodiscard]] SystemMetricsProbes makeSystemMetricsProbes(const Synthetic::Scenario* scenario);
+/// The System panel's probes, one factory per sampler (#2731): @p scenario's, or the platform's. Each is
+/// called on its own sampler thread, from that sampler's start hook, so what a probe opens (the system
+/// probe's PDH query, the disk probe's PDH object list, DXGI and NVML) belongs to the thread that reads it,
+/// in its apartment, and a slow one (a DXGI/NVML enumeration, a PDH rescan) holds up only its own seed.
+[[nodiscard]] SystemModelProbes makeSystemModelProbes(const Synthetic::Scenario* scenario);
+[[nodiscard]] std::unique_ptr<Platform::IDiskProbe> makeStorageModelProbe(const Synthetic::Scenario* scenario);
+[[nodiscard]] std::unique_ptr<Platform::IGPUProbe> makeGPUModelProbe(const Synthetic::Scenario* scenario);
 
 /// Process Details' actions and readers: @p scenario's (its readers say "unsupported", so made-up PIDs
 /// never reach real /proc entries), or the platform's.

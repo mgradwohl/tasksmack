@@ -2081,8 +2081,9 @@ Get-Help tools/measure-idle.ps1 -Full
 
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
-are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
-`ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
+are readable: the background samplers are `ts-sampler-proc` (process enumeration),
+`ts-sampler-sys` (CPU, memory, network, power), `ts-sampler-disk` (disks) and `ts-sampler-gpu`
+(GPUs and NPUs; one thread per domain, #2731), plus `ts-sampler-svc` (the Services tab's list, created
 the first time that tab is shown) and `ts-sampler-auto` (the Startup tab's list, while it's shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.

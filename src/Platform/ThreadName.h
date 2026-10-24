@@ -20,7 +20,12 @@ inline constexpr std::size_t MAX_LINUX_THREAD_NAME_LENGTH = 15;
 inline constexpr std::string_view UI_THREAD_NAME = "tasksmack-ui";
 inline constexpr std::string_view SAMPLER_THREAD_NAME = "ts-sampler";
 inline constexpr std::string_view PROCESS_SAMPLER_THREAD_NAME = "ts-sampler-proc";
+/// The System panel's three samplers (#2731): one per data domain, so a stalled source never delays
+/// another's samples. CPU, memory, network and power on the system one; the disk counters and their PDH
+/// rescans on the storage one; DXGI, NVML and their rescans on the GPU/NPU one.
 inline constexpr std::string_view SYSTEM_SAMPLER_THREAD_NAME = "ts-sampler-sys";
+inline constexpr std::string_view STORAGE_SAMPLER_THREAD_NAME = "ts-sampler-disk";
+inline constexpr std::string_view GPU_SAMPLER_THREAD_NAME = "ts-sampler-gpu";
 inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc";
 /// The sensors' own sampler (#2737): temperatures, fans and voltages, at the Settings interval.
 inline constexpr std::string_view SENSOR_SAMPLER_THREAD_NAME = "ts-sampler-sens";
