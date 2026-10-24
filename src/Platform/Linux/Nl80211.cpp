@@ -6,7 +6,6 @@
 #include <cstring>
 #include <optional>
 #include <span>
-#include <string>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - kernel netlink headers: include-cleaner lacks mappings for NLMSG_*,
@@ -24,9 +23,6 @@ namespace Platform::Nl80211
 namespace
 {
 
-constexpr std::uint32_t SIX_GHZ_LOW_MHZ = 5925;
-constexpr std::uint32_t FIVE_GHZ_LOW_MHZ = 5000;
-constexpr std::uint32_t ELEVEN_MBITS_KBPS = 11'000;
 constexpr int RECEIVE_TIMEOUT_MS = 1000;
 constexpr std::size_t RECEIVE_BUFFER_BYTES = std::size_t{32} * 1024U;
 
@@ -236,42 +232,6 @@ template<typename OnMessage>
 }
 
 } // namespace
-
-std::string standardName(const Station& station, std::uint32_t frequencyMhz)
-{
-    if (!station.tx && !station.rx)
-    {
-        return {};
-    }
-    RateKind kind = RateKind::Legacy;
-    std::uint32_t fastestKbps = 0;
-    for (const std::optional<Rate>& rate : {station.tx, station.rx})
-    {
-        if (rate)
-        {
-            kind = rate->kind > kind ? rate->kind : kind;
-            fastestKbps = rate->kbps > fastestKbps ? rate->kbps : fastestKbps;
-        }
-    }
-    switch (kind)
-    {
-    case RateKind::Eht:
-        return "802.11be (Wi-Fi 7)";
-    case RateKind::He:
-        return frequencyMhz >= SIX_GHZ_LOW_MHZ ? "802.11ax (Wi-Fi 6E)" : "802.11ax (Wi-Fi 6)";
-    case RateKind::Vht:
-        return "802.11ac (Wi-Fi 5)";
-    case RateKind::Ht:
-        return "802.11n (Wi-Fi 4)";
-    case RateKind::Legacy:
-        break;
-    }
-    if (frequencyMhz >= FIVE_GHZ_LOW_MHZ)
-    {
-        return "802.11a";
-    }
-    return fastestKbps != 0 && fastestKbps <= ELEVEN_MBITS_KBPS ? "802.11b" : "802.11g";
-}
 
 std::vector<std::byte> familyRequest(std::uint32_t seq)
 {

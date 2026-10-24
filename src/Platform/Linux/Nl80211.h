@@ -43,7 +43,46 @@ struct Station
 /// names it: "802.11ax (Wi-Fi 6)", "802.11ax (Wi-Fi 6E)" at 6 GHz, "802.11g". The newer of the two rates'
 /// kinds counts; legacy rates are 802.11a at 5 GHz, else 802.11b up to 11 Mbit/s, else 802.11g. Empty when
 /// neither rate was reported.
-[[nodiscard]] std::string standardName(const Station& station, std::uint32_t frequencyMhz);
+/// Inline, with no socket code, since LinuxNetworkAdapters.h calls it and that header is also built on
+/// Windows, where its parsers are unit-tested and this file's .cpp isn't compiled.
+[[nodiscard]] inline std::string standardName(const Station& station, std::uint32_t frequencyMhz)
+{
+    if (!station.tx && !station.rx)
+    {
+        return {};
+    }
+    RateKind kind = RateKind::Legacy;
+    std::uint32_t fastestKbps = 0;
+    for (const std::optional<Rate>& rate : {station.tx, station.rx})
+    {
+        if (rate)
+        {
+            kind = rate->kind > kind ? rate->kind : kind;
+            fastestKbps = rate->kbps > fastestKbps ? rate->kbps : fastestKbps;
+        }
+    }
+    constexpr std::uint32_t SIX_GHZ_LOW_MHZ = 5925;
+    constexpr std::uint32_t FIVE_GHZ_LOW_MHZ = 5000;
+    constexpr std::uint32_t ELEVEN_MBITS_KBPS = 11'000;
+    switch (kind)
+    {
+    case RateKind::Eht:
+        return "802.11be (Wi-Fi 7)";
+    case RateKind::He:
+        return frequencyMhz >= SIX_GHZ_LOW_MHZ ? "802.11ax (Wi-Fi 6E)" : "802.11ax (Wi-Fi 6)";
+    case RateKind::Vht:
+        return "802.11ac (Wi-Fi 5)";
+    case RateKind::Ht:
+        return "802.11n (Wi-Fi 4)";
+    case RateKind::Legacy:
+        break;
+    }
+    if (frequencyMhz >= FIVE_GHZ_LOW_MHZ)
+    {
+        return "802.11a";
+    }
+    return fastestKbps != 0 && fastestKbps <= ELEVEN_MBITS_KBPS ? "802.11b" : "802.11g";
+}
 
 /// A CTRL_CMD_GETFAMILY request for "nl80211" (generic netlink's controller), with sequence @p seq.
 [[nodiscard]] std::vector<std::byte> familyRequest(std::uint32_t seq);

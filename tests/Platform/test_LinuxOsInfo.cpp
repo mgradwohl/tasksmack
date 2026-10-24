@@ -19,6 +19,7 @@
 #include "Platform/Linux/LinuxPlatformSecurity.h"
 #include "Platform/Linux/LinuxSensors.h"
 #include "Platform/Linux/LinuxStorage.h"
+#include "Platform/Linux/Nl80211.h"
 
 #include <gtest/gtest.h>
 
