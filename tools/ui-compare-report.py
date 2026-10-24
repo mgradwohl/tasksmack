@@ -27,6 +27,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # The channel difference above which a pixel counts as changed: anti-aliasing noise stays under it.
 CHANGE_THRESHOLD = 16
 # Log lines worth a reviewer's look: spdlog's warning, error and critical levels, and ImGui asserts.
+CTEST_PREFIX = re.compile(r"^\d+: ")
 NOTEWORTHY = re.compile(r"\[(warning|error|critical)\]|IM_ASSERT|Assertion .* failed", re.IGNORECASE)
 
 
@@ -136,10 +137,16 @@ def diff_images(a: Image, b: Image) -> tuple[Image, float]:
 
 
 def noteworthy_lines(log: Path) -> list[str]:
-    """The run log's warnings, errors and ImGui assertions; none when there is no log."""
+    """The run log's warnings, errors and ImGui assertions, each once; none when there is no log."""
     if not log.is_file():
         return []
-    return [line.rstrip() for line in log.read_text(encoding="utf-8", errors="replace").splitlines() if NOTEWORTHY.search(line)]
+    seen: dict[str, None] = {}
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        # ctest -V prefixes each line with the test's number, and prints a failing test's output again.
+        line = CTEST_PREFIX.sub("", line.rstrip())
+        if NOTEWORTHY.search(line):
+            seen.setdefault(line)
+    return list(seen)
 
 
 def frames(directory: Path) -> dict[str, Path]:

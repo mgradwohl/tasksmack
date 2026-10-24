@@ -119,6 +119,12 @@ class ReportTest(unittest.TestCase):
             self.assertTrue((out / "diff" / "01-list.png").is_file())
             self.assertFalse((out / "diff" / "02-tree.png").exists())
 
+    def test_a_line_ctest_printed_twice_is_quoted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            log.write_text("6: [warning] odd\n6: [info] fine\n[warning] odd\n", encoding="utf-8")
+            self.assertEqual(report.noteworthy_lines(log), ["[warning] odd"])
+
     def test_no_frames_on_either_side_is_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(report.main(["ui-compare-report.py", tmp, "a", "b"]), 1)
