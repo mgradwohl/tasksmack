@@ -719,6 +719,21 @@ Three established ways to get real coverage of such a file's logic:
 
    - **Adding a step:** add it to `signOffSteps()`. Each step starts where the last one left the shell, and the
      first step that isn't done within its frame budget fails the test and names itself.
+   - **Comparing two refs:** `tools/ui-compare.sh <ref-a> <ref-b>` builds both refs in scratch worktrees (the
+     debug preset, `-j 4`, one at a time), runs the scenarios in capture mode on each, and writes a report
+     with an `index.html` into `ui-compare-<a>-vs-<b>/`. It shows each step's two frames, a diff with the
+     changed pixels in red and the share of pixels that changed, and each run's warnings, errors and ImGui
+     assertions. Use it to sign off a UI dependency bump (ImGui, ImPlot, SDL, FreeType):
+
+     ```bash
+     tools/ui-compare.sh origin/main renovate/imgui-1.94
+     ```
+
+     - **Dependencies:** each worktree reuses this checkout's FetchContent sources read-only for every
+       dependency it pins at the same commit. The bumped one is downloaded.
+     - **Reading the numbers:** live values (CPU %, times) and System Information's real-machine facts move a
+       little between runs, so a small change on every step is normal. Look at the diffs.
+     - **Requirements:** both refs need the scenario suite.
 
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.

@@ -210,6 +210,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
+add_test(NAME UiCompareReportScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
+
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
