@@ -389,6 +389,64 @@ TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
     EXPECT_EQ(broker->connectCount(), 0);
 }
 
+/// A process as the probe read it: @p readable says whether its FD count and I/O were.
+[[nodiscard]] ProcessCounters countersOf(const ProcessTarget& target, bool readable)
+{
+    ProcessCounters counters;
+    counters.pid = target.pid;
+    counters.startTimeTicks = target.startTimeTicks;
+    counters.handleCount = readable ? 10 : 0;
+    counters.handleCountAvailable = readable;
+    counters.ioCountersAvailable = readable;
+    return counters;
+}
+
+TEST(BrokeredProcessProbeTest, RefusedFdCountsAndIoAreReadThroughARunningHelperInOneCall)
+{
+    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
+    const ProcessTarget gone{.pid = 98, .startTimeTicks = 2};
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            return Broker::Response{Broker::ProcessCountersReply{
+                .entries = {Broker::ProcessCountersEntry{
+                    .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 1000, .writeBytes = 2000}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    owned->setCounters({countersOf(mine, true), countersOf(TARGET, false), countersOf(gone, false)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET, gone}}}));
+    EXPECT_EQ(broker->idleCallCount(), 1) << "the sampler never queues behind another call";
+    ASSERT_EQ(counters.size(), 3U);
+    EXPECT_EQ(counters[0].handleCount, 10) << "read in-process, left alone";
+    EXPECT_TRUE(counters[1].handleCountAvailable);
+    EXPECT_EQ(counters[1].handleCount, 57);
+    EXPECT_TRUE(counters[1].ioCountersAvailable);
+    EXPECT_EQ(counters[1].writeBytes, 2000U);
+    EXPECT_FALSE(counters[2].handleCountAvailable) << "gone: no entry, still refused";
+
+    broker->setConnected(false); // no helper: nothing asked, nothing prompts
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->connectCount(), 0);
+}
+
+TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    owned->setCounters({countersOf(TARGET, false)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+    static_cast<void>(probe.enumerate());
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U) << "Windows' helper answers with an error: asked once";
+}
+
 // --- Every action, and every call the decorators only pass on (#2417) --------------------------------
 
 TEST(BrokeredProcessActionsTest, EverySignalRefusedInProcessIsRetriedAsItsOwnRequest)

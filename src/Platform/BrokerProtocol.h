@@ -47,10 +47,12 @@ namespace Platform::Broker
 
 /// Bumped on every change to a message's fields: the helper and TaskSmack ship together, and a Hello of
 /// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
-/// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 3;
+/// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728). 4: ReadProcessCounters (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 4;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
+/// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
+inline constexpr std::size_t MAX_COUNTER_TARGETS = std::size_t{1} << 14U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
@@ -73,22 +75,24 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetPriority = 17,
     SetIoPriority = 18,
     SetAffinity = 19,
-    ReadEnvironment = 32,    ///< Another user's process's environment, for Process Details (#2309)
-    ReadModules = 33,        ///< Its loaded modules (#2309)
-    ReadOpenFiles = 34,      ///< Its open files (#2309)
-    ReadConnections = 35,    ///< Its TCP and UDP sockets (#2309)
-    ReadMemoryRollup = 36,   ///< Its PSS and USS (#2309)
-    ReadFirmwareFile = 37,   ///< One of System Information's root-only firmware files (#2310)
-    ReadCrashes = 38,        ///< Recent crashes, every user's (#2310)
-    ActionResult = 48,       ///< The answer to a process action
-    EnvironmentResult = 49,  ///< The answer to ReadEnvironment
-    ModulesResult = 50,      ///< The answer to ReadModules
-    OpenFilesResult = 51,    ///< The answer to ReadOpenFiles
-    ConnectionsResult = 52,  ///< The answer to ReadConnections
-    MemoryRollupResult = 53, ///< The answer to ReadMemoryRollup
-    FirmwareFileResult = 54, ///< The answer to ReadFirmwareFile
-    CrashesResult = 55,      ///< The answer to ReadCrashes
-    Error = 63,              ///< A request the helper refused to read (malformed, or a kind it doesn't do)
+    ReadEnvironment = 32,       ///< Another user's process's environment, for Process Details (#2309)
+    ReadModules = 33,           ///< Its loaded modules (#2309)
+    ReadOpenFiles = 34,         ///< Its open files (#2309)
+    ReadConnections = 35,       ///< Its TCP and UDP sockets (#2309)
+    ReadMemoryRollup = 36,      ///< Its PSS and USS (#2309)
+    ReadFirmwareFile = 37,      ///< One of System Information's root-only firmware files (#2310)
+    ReadCrashes = 38,           ///< Recent crashes, every user's (#2310)
+    ReadProcessCounters = 39,   ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
+    ActionResult = 48,          ///< The answer to a process action
+    EnvironmentResult = 49,     ///< The answer to ReadEnvironment
+    ModulesResult = 50,         ///< The answer to ReadModules
+    OpenFilesResult = 51,       ///< The answer to ReadOpenFiles
+    ConnectionsResult = 52,     ///< The answer to ReadConnections
+    MemoryRollupResult = 53,    ///< The answer to ReadMemoryRollup
+    FirmwareFileResult = 54,    ///< The answer to ReadFirmwareFile
+    CrashesResult = 55,         ///< The answer to ReadCrashes
+    ProcessCountersResult = 56, ///< The answer to ReadProcessCounters
+    Error = 63,                 ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
 /// The signals a Signal request sends.
@@ -254,6 +258,35 @@ struct ConnectionsReply
     }
 };
 
+/// Read many processes' FD counts and I/O bytes at once (#2728): the processes the sampler's own read was
+/// refused (other users', without CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE), every refresh, in one round
+/// trip. At most MAX_COUNTER_TARGETS.
+struct ProcessCountersRequest
+{
+    std::vector<ProcessTarget> targets;
+    friend bool operator==(const ProcessCountersRequest&, const ProcessCountersRequest&) = default;
+};
+
+/// One process's counters in a ProcessCountersReply: each figure with whether it was read.
+struct ProcessCountersEntry
+{
+    ProcessTarget target;
+    bool handleCountRead = false; ///< /proc/<pid>/fd was listed
+    std::int32_t handleCount = 0;
+    bool ioRead = false; ///< /proc/<pid>/io gave read_bytes and write_bytes
+    std::uint64_t readBytes = 0;
+    std::uint64_t writeBytes = 0;
+    friend bool operator==(const ProcessCountersEntry&, const ProcessCountersEntry&) = default;
+};
+
+/// The answer to ProcessCountersRequest: an entry for each target still running with that start time, in
+/// the request's order; a process that has exited, or whose PID now names another, has none.
+struct ProcessCountersReply
+{
+    std::vector<ProcessCountersEntry> entries;
+    friend bool operator==(const ProcessCountersReply&, const ProcessCountersReply&) = default;
+};
+
 /// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup with its capabilities.
 struct MemoryRollupRequest
 {
@@ -378,7 +411,8 @@ using Request = std::variant<Hello,
                              ConnectionsRequest,
                              MemoryRollupRequest,
                              FirmwareFileRequest,
-                             CrashesRequest>;
+                             CrashesRequest,
+                             ProcessCountersRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -388,7 +422,8 @@ using Response = std::variant<HelloReply,
                               ConnectionsReply,
                               MemoryRollupReply,
                               FirmwareFileReply,
-                              CrashesReply>;
+                              CrashesReply,
+                              ProcessCountersReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -712,6 +747,16 @@ template<typename Message>
         kind = MessageKind::ReadMemoryRollup;
         writer.target(rollup->target);
     }
+    else if (const auto* counters = std::get_if<ProcessCountersRequest>(&request))
+    {
+        kind = MessageKind::ReadProcessCounters;
+        const std::size_t count = std::min(counters->targets.size(), MAX_COUNTER_TARGETS);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            writer.target(counters->targets[i]);
+        }
+    }
     else if (const auto* firmware = std::get_if<FirmwareFileRequest>(&request))
     {
         kind = MessageKind::ReadFirmwareFile;
@@ -804,6 +849,24 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
+/// A ReadProcessCounters payload: the count (at most MAX_COUNTER_TARGETS), then the targets.
+[[nodiscard]] inline ProcessCountersRequest decodeProcessCountersRequest(Reader& reader)
+{
+    ProcessCountersRequest request;
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_COUNTER_TARGETS)
+    {
+        reader.fail();
+        return request;
+    }
+    request.targets.reserve(count);
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        request.targets.push_back(reader.target());
+    }
+    return request;
+}
+
 /// A ReadFirmwareFile request's payload: the file, refused when past BoardSerial.
 [[nodiscard]] inline FirmwareFileRequest decodeFirmwareFileRequest(Reader& reader)
 {
@@ -856,6 +919,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, ConnectionsRequest{.target = reader.target()});
     case MessageKind::ReadMemoryRollup:
         return Detail::finish<Request>(reader, id, MemoryRollupRequest{.target = reader.target()});
+    case MessageKind::ReadProcessCounters:
+        return Detail::finish<Request>(reader, id, Detail::decodeProcessCountersRequest(reader));
     case MessageKind::ReadFirmwareFile:
         return Detail::finish<Request>(reader, id, Detail::decodeFirmwareFileRequest(reader));
     case MessageKind::ReadCrashes:
@@ -869,6 +934,7 @@ namespace Detail
     case MessageKind::MemoryRollupResult:
     case MessageKind::FirmwareFileResult:
     case MessageKind::CrashesResult:
+    case MessageKind::ProcessCountersResult:
     case MessageKind::Error:
         break;
     }
@@ -1015,6 +1081,24 @@ namespace Detail
         writer.u64(figures.pssBytes);
         writer.u64(figures.ussBytes);
         writer.u64(figures.swapPssBytes);
+    }
+    else if (const auto* counters = std::get_if<ProcessCountersReply>(&response))
+    {
+        kind = MessageKind::ProcessCountersResult;
+        // An entry: the target, a flags byte (1: the handle count was read, 2: the I/O was), the count and
+        // both byte figures, always sent. MAX_COUNTER_TARGETS of them fit a frame with room to spare.
+        static_assert(MAX_COUNTER_TARGETS * (4 + 8 + 1 + 4 + 8 + 8) <= Detail::listRoom(4));
+        const std::size_t count = std::min(counters->entries.size(), MAX_COUNTER_TARGETS);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const ProcessCountersEntry& entry = counters->entries[i];
+            writer.target(entry.target);
+            writer.u8(static_cast<std::uint8_t>((entry.handleCountRead ? 1U : 0U) | (entry.ioRead ? 2U : 0U)));
+            writer.i32(entry.handleCount);
+            writer.u64(entry.readBytes);
+            writer.u64(entry.writeBytes);
+        }
     }
     else if (const auto* firmware = std::get_if<FirmwareFileReply>(&response))
     {
@@ -1257,6 +1341,37 @@ namespace Detail
     return reply;
 }
 
+/// A ProcessCountersResult's payload: the count (at most MAX_COUNTER_TARGETS), then the entries, each
+/// with a flags byte refused past its two bits.
+[[nodiscard]] inline ProcessCountersReply decodeProcessCountersReply(Reader& reader)
+{
+    ProcessCountersReply reply;
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_COUNTER_TARGETS)
+    {
+        reader.fail();
+        return reply;
+    }
+    reply.entries.reserve(count);
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        ProcessCountersEntry entry;
+        entry.target = reader.target();
+        const std::uint8_t flags = reader.u8();
+        if (flags > 3U)
+        {
+            reader.fail();
+        }
+        entry.handleCountRead = (flags & 1U) != 0;
+        entry.ioRead = (flags & 2U) != 0;
+        entry.handleCount = reader.i32();
+        entry.readBytes = reader.u64();
+        entry.writeBytes = reader.u64();
+        reply.entries.push_back(entry);
+    }
+    return reply;
+}
+
 /// A MemoryRollupResult's payload: the tag (0 for figures, else 1 + the failure, refused past PermissionDenied),
 /// then the three figures, which are always sent.
 [[nodiscard]] inline MemoryRollupReply decodeMemoryRollupReply(Reader& reader)
@@ -1397,6 +1512,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeFirmwareFileReply(reader));
     case MessageKind::CrashesResult:
         return Detail::finish<Response>(reader, id, Detail::decodeCrashesReply(reader));
+    case MessageKind::ProcessCountersResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeProcessCountersReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1409,6 +1526,7 @@ namespace Detail
     case MessageKind::ReadMemoryRollup:
     case MessageKind::ReadFirmwareFile:
     case MessageKind::ReadCrashes:
+    case MessageKind::ReadProcessCounters:
         break;
     }
     return std::unexpected("Not a response");

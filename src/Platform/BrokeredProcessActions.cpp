@@ -12,6 +12,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -451,7 +452,71 @@ BrokeredProcessProbe::BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner,
 
 std::vector<ProcessCounters> BrokeredProcessProbe::enumerate()
 {
-    return m_Inner->enumerate();
+    std::vector<ProcessCounters> counters = m_Inner->enumerate();
+    readRefusedCounters(counters);
+    return counters;
+}
+
+void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& counters)
+{
+    if (m_CountersRefused || m_Broker == nullptr || !m_Broker->connected())
+    {
+        return;
+    }
+    Broker::ProcessCountersRequest request;
+    for (const ProcessCounters& process : counters)
+    {
+        if ((!process.handleCountAvailable || !process.ioCountersAvailable) && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
+        {
+            request.targets.push_back({.pid = process.pid, .startTimeTicks = process.startTimeTicks});
+        }
+    }
+    if (request.targets.empty())
+    {
+        return;
+    }
+    // As the PSS read: on the sampler's thread, never behind another call, and briefly; a skipped read
+    // shows the refusals until the next refresh.
+    constexpr std::chrono::milliseconds COUNTERS_TIMEOUT{1000};
+    const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, COUNTERS_TIMEOUT);
+    if (!response.has_value())
+    {
+        return;
+    }
+    if (std::holds_alternative<Broker::ErrorReply>(*response))
+    {
+        m_CountersRefused = true;
+        return;
+    }
+    const auto* reply = std::get_if<Broker::ProcessCountersReply>(&*response);
+    if (reply == nullptr)
+    {
+        return;
+    }
+    // Entries come in the request's order, which is the counters', with gone processes left out.
+    auto process = counters.begin();
+    for (const Broker::ProcessCountersEntry& entry : reply->entries)
+    {
+        process = std::find_if(process,
+                               counters.end(),
+                               [&entry](const ProcessCounters& candidate)
+                               { return candidate.pid == entry.target.pid && candidate.startTimeTicks == entry.target.startTimeTicks; });
+        if (process == counters.end())
+        {
+            break;
+        }
+        if (!process->handleCountAvailable && entry.handleCountRead)
+        {
+            process->handleCount = entry.handleCount;
+            process->handleCountAvailable = true;
+        }
+        if (!process->ioCountersAvailable && entry.ioRead)
+        {
+            process->readBytes = entry.readBytes;
+            process->writeBytes = entry.writeBytes;
+            process->ioCountersAvailable = true;
+        }
+    }
 }
 
 ProcessCapabilities BrokeredProcessProbe::capabilities() const

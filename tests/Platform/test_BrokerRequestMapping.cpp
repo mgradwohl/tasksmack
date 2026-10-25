@@ -217,6 +217,36 @@ TEST(BrokerRequestMappingTest, AMemoryRollupRequestIsReadThroughItsFunction)
         std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions)));
 }
 
+TEST(BrokerRequestMappingTest, AProcessCountersRequestReadsEachTargetAndLeavesOutTheGoneOrThrowing)
+{
+    TestMocks::MockProcessActions actions;
+    const ProcessTarget gone{.pid = 8, .startTimeTicks = 1};
+    const ProcessTarget throwing{.pid = 9, .startTimeTicks = 1};
+    BrokerServer::Readers readers;
+    readers.processCounters = [&](const ProcessTarget& target) -> std::optional<Broker::ProcessCountersEntry>
+    {
+        if (target == gone)
+        {
+            return std::nullopt;
+        }
+        if (target == throwing)
+        {
+            throw std::runtime_error("boom");
+        }
+        return Broker::ProcessCountersEntry{.target = target, .handleCountRead = true, .handleCount = 4};
+    };
+    const Broker::Response response =
+        BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET, gone, throwing}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(response));
+    const auto& entries = std::get<Broker::ProcessCountersReply>(response).entries;
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries.front().target, TARGET);
+    EXPECT_EQ(entries.front().handleCount, 4);
+    // A helper without the reader (Windows', which reads every process itself) says so.
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
+        BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET}}, actions)));
+}
+
 // --- #2417: what the helper does when a read or an action throws -------------------------------------
 
 /// Readers whose every read throws, for handleRequest()'s no-throw promise.
