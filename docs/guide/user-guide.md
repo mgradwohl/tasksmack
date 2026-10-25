@@ -162,7 +162,7 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Copy PID**, **Copy Name** and **Copy Command Line**, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9). On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
 
-![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/windows/walk-live.webp)
+![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/linux/walk-live.webp)
 
 *Selecting a process and opening its Process Details: the Processes tab, then the selected row, then the process's own tab with its **Network and I/O** sub-tab in front.*
 
@@ -311,7 +311,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 
 **AMD GPUs on Linux** (ROCm SMI): an APU's integrated GPU is recognized from the graphics-core version amdgpu publishes in sysfs (`ip_discovery`), or from its PCI device ID on kernels without it, so it is labeled integrated and its shared memory isn't counted as VRAM. An APU generation newer than TaskSmack's list still shows as discrete.
 
-**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilization of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and shared memory on an integrated one (Windows, and Intel GPUs on Linux), added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory. On Linux, an Intel GPU's per-process figures (i915 and xe) come from the same DRM fdinfo the GPU tab's utilization does, with no extra reads: GPU% is the process's share of its busiest engine class's time between two refreshes, summed over the DRM files it has open, so it shows from its second refresh; memory is what the kernel reports resident (else allocated) in VRAM as dedicated and in system memory as shared (`drm-resident-*`/`drm-total-*`). A sleeping card has no processes, and the same visibility as the GPU tab's applies: without root, only your own programs. On Linux, an NVIDIA GPU's per-process figures come from NVML: memory and engines from its running-process lists, and GPU% (with the video encoder and decoder) from each process's newest utilization sample since the previous refresh (`nvmlDeviceGetProcessUtilization`); a process with no sample since is idle, and a driver without that call shows no GPU% per process.
+**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilization of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and shared memory on an integrated one (Windows, and Intel GPUs on Linux), added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory. On Linux, an Intel GPU's per-process figures (i915 and xe) come from the same DRM fdinfo the GPU tab's utilization does, with no extra reads: GPU% is the process's share of its busiest engine class's time between two refreshes, summed over the DRM files it has open, so it shows from its second refresh; memory is what the kernel reports resident (else allocated) in VRAM as dedicated and in system memory as shared (`drm-resident-*`/`drm-total-*`). A sleeping card has no processes, and the same visibility as the GPU tab's applies: without root, only your own programs. On Linux, an NVIDIA GPU's per-process figures come from NVML: memory and engines from its running-process lists, and GPU% (with the video encoder and decoder) from each process's newest utilization sample since the previous refresh (`nvmlDeviceGetProcessUtilization`); a process with no sample since is idle, and a driver without that call shows no GPU% per process. An AMD GPU's come from the same DRM fdinfo as an Intel GPU's, since ROCm SMI has no per-process figures: amdgpu's engines (gfx as 3D, dma as copy, compute, and the video decode and encode engines together as video) and its VRAM and GTT memory, shown under the GPU ROCm SMI lists, so they need ROCm SMI running.
 
 **Per-process NPU figures** come, on Windows, from the same Windows counters as the GPU ones, read for the NPUs and compute accelerators and kept apart from the GPU figures: a process that only runs work on the NPU has no GPU% and no GPU device. NPU% is its utilization of the busiest one it uses; NPU memory adds up what it holds on them. On Linux only NPU memory is read, from the accel driver's fdinfo (see the NPU tab above), so NPU% reads —.
 
@@ -362,7 +362,7 @@ The Process Details **Overview** tab has a collapsible **Environment** section, 
 
 ### Connections
 
-![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/windows/details-connections-windows-dark.webp)
+![Process Details' Overview with the Connections section expanded below the Actions and Priority cards, reading No TCP or UDP sockets for the selected process](../images/screenshots/linux/details-connections-windows-dark.webp)
 
 *The **Connections** section opened under the Actions and Priority cards, here for a process that holds no TCP or UDP sockets.*
 
@@ -382,7 +382,7 @@ The Process Details **Overview** tab also has a collapsible **Connections** sect
 
 ### Modules
 
-![Process Details' Overview with the Modules section expanded: Modules (270) in its header, a filter box, and a table with NAME, VERSION, BASE, SIZE and PATH columns](../images/screenshots/windows/details-modules-windows-dark.webp)
+![Process Details' Overview with the Modules section expanded below the collapsed Environment and Connections sections: Modules (51) in its header, a filter box, and a table with NAME, BASE, SIZE and PATH columns listing the shared libraries under /usr/lib](../images/screenshots/linux/details-modules-windows-dark.webp)
 
 *The **Modules** section opened, with the count in its header, the filter box and the NAME / VERSION / BASE / SIZE / PATH table sorted by name.*
 
@@ -424,7 +424,7 @@ TaskSmack reads the token (`OpenProcessToken`, `GetTokenInformation`) only for t
 
 ### Open files
 
-![Process Details' Overview with the Open files section expanded after a scan, Open files (118) in its header](../images/screenshots/windows/details-openfiles-windows-dark.webp)
+![Process Details' Overview with the Open files section expanded after a scan: Open files (14) in its header, the Rescan button with the time of the scan, and the filter box above the table](../images/screenshots/linux/details-openfiles-windows-dark.webp)
 
 *The **Open files** section after a scan, with the number of open files in its header and the results listed below it.*
 
@@ -653,7 +653,7 @@ See the built-in theme files (shipped alongside the application) for the expecte
 
 TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
 
-![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/windows/themes-live.webp)
+![Animation: the machine tab's Overview switching through the Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light themes](../images/screenshots/linux/themes-live.webp)
 
 *The Overview switching through six of the bundled themes, as choosing each one in Settings does: Windows Dark, Ubuntu Light, Dracula, Nord Light, Gruvbox and Monochrome Light.*
 
@@ -719,6 +719,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | AMD GPU metrics | ✅ (ROCm SMI) | ✅ (DXGI/PDH for utilization and memory; temperature, clock and fan from the kernel adapter's performance data, the figures Task Manager shows, when the driver reports them; no power draw) |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH; temperature, clock and fan from the kernel adapter's performance data when the driver reports them; no power draw) |
 | Border resize cursors with custom title bar | ✅ (app-managed client-side cursors, same as Windows) | ✅ (app-managed client-side cursors) |
+| Snap by dragging the title bar to a screen edge | Native Wayland: the compositor's own (the drag is handed to it); X11/XWayland: no (the app moves the window itself) | ✅ Aero Snap, with the snap preview and drag-to-the-top to maximize; Snap Layouts on the maximize button is not available |
 | Double-click title bar to maximize/restore | Works on X11/XWayland; not on native Wayland (use the maximize button there instead) | ✅ |
 | Native OS window decorations instead of custom title bar | Opt-in, native Wayland only (Settings > Advanced) | Not available (custom title bar always used) |
 

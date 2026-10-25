@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -40,6 +41,11 @@ class ROCmGPUProbe final : public IGPUProbe
 
     /// Check if ROCm SMI is available and initialized
     [[nodiscard]] bool isAvailable() const;
+
+    /// Each device's PCI address ("0000:03:00.0") and the GPU id this probe gives it, for the DRM probe
+    /// that reads the amdgpu cards' clients to label their processes with (#2589). A device whose
+    /// address ROCm SMI didn't give is left out; empty while ROCm SMI isn't running.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> gpuIdsByPciAddress() const;
 
   private:
     struct Impl;

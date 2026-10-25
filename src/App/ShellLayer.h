@@ -68,6 +68,12 @@ class ShellLayer : public Core::Layer
         return m_ProcessesPanel.treeViewEnabled();
     }
 
+    /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
+    [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
+    {
+        return m_ProcessesPanel;
+    }
+
     /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
     /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
     /// captures only once it is false (#2827).
@@ -79,9 +85,9 @@ class ShellLayer : public Core::Layer
     // TASKSMACK_DEMO's requests (#2827, DemoLayer), through the paths the startup hooks and the UI take.
     // None of them is counted by startupSelectionPending(): the screenshot hook's settle is for startup.
 
-    /// Selects the main tab @p name names, as TASKSMACK_TAB resolves one (a registered id, a visible
-    /// label or an alias), asked for until ImGui shows it selected. False, and nothing requested, when
-    /// no tab matches.
+    /// Selects the main tab @p name names, as TASKSMACK_TAB resolves one (a registered id, a documented
+    /// alias or a visible label, in that order, SelectOverride::findTab()), asked for until ImGui shows
+    /// it selected. False, and nothing requested, when no tab matches.
     [[nodiscard]] bool requestMainTab(std::string_view name);
 
     /// Selects @p target's process in the Processes table when it next appears in a snapshot, as a

@@ -109,10 +109,11 @@ jobs:
           target_branches: release/${{ matrix.version }}
           # The repository squash-merges, so the squashed commit is what gets cherry-picked (-x).
           pull_title: '${pull_title} [backport ${{ matrix.version }}]'
+          # Each of the action's placeholders at most once: it substitutes only the first occurrence.
           pull_description: |-
             Backport of #${pull_number} to `${target_branch}` (#2741). ${issue_refs}
 
-            Cherry-picked by `.github/workflows/backport.yml` from the `backport:${{ matrix.version }}` label on #${pull_number}; @${pull_author} owns any conflict.
+            Cherry-picked by `.github/workflows/backport.yml` from the `backport:${{ matrix.version }}` label; @${pull_author} owns any conflict.
           # The original's labels minus the backport ones (so a backport PR's own merge never
           # re-runs this) and the lanes' transient `merging` marker.
           copy_labels_pattern: '^(?!backport:)(?!merging$).+$'

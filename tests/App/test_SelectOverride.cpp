@@ -304,6 +304,68 @@ TEST(SelectOverrideTest, ExactIdsWinAndThereIsNoPrefixOrSuffixMatching)
     EXPECT_FALSE(findTab("view", tabs).has_value());
 }
 
+// #2886: a registered id is matched across all tabs before any tab's text, so a tab whose text happens
+// to read as another tab's id never shadows that tab, whichever is registered first.
+TEST(SelectOverrideTest, AnIdBeatsAnEarlierTabsTextAcrossAllTabs)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "Services", .text = "Startup"},
+        {.id = "Startup", .text = "Services"},
+    };
+    EXPECT_EQ(findTab("startup", tabs), std::optional<std::size_t>{1});
+    EXPECT_EQ(findTab("SERVICES", tabs), std::optional<std::size_t>{0});
+}
+
+// #2886: the machine tab reads "System" until the System panel's first sample brings the hostname
+// (#2731), and ShellLayer registers it first. "System" opens the System Information tab whatever the
+// machine tab reads, as its id "SystemInfo" does; the machine tab is found by its id, its aliases and,
+// once shown, its hostname.
+TEST(SelectOverrideTest, SystemPicksSystemInfoWhileTheMachineTabStillReadsSystem)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::resolveMainTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> beforeTheHostname{
+        {.id = "SystemOverview", .text = "System"},
+        {.id = "Processes", .text = "Processes"},
+        {.id = "SystemInfo", .text = "System"},
+    };
+    EXPECT_EQ(findTab("System", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(findTab("system", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(findTab("SystemInfo", beforeTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(resolveMainTab("System", beforeTheHostname).id, std::optional<std::string>{"SystemInfo"});
+    EXPECT_EQ(findTab("SystemOverview", beforeTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("machine", beforeTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("overview", beforeTheHostname), std::optional<std::size_t>{0});
+
+    const std::vector<TabInfo> withTheHostname{
+        {.id = "SystemOverview", .text = "MYHOST"},
+        {.id = "Processes", .text = "Processes"},
+        {.id = "SystemInfo", .text = "System"},
+    };
+    EXPECT_EQ(findTab("System", withTheHostname), std::optional<std::size_t>{2});
+    EXPECT_EQ(resolveMainTab("system", withTheHostname).id, std::optional<std::string>{"SystemInfo"});
+    EXPECT_EQ(findTab("myhost", withTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("SystemOverview", withTheHostname), std::optional<std::size_t>{0});
+    EXPECT_EQ(resolveMainTab("MYHOST", withTheHostname).id, std::optional<std::string>{"SystemOverview"});
+}
+
+// An alias whose tab is not registered still lets a tab be found by that text: the aliases only take
+// precedence over text, they do not forbid it.
+TEST(SelectOverrideTest, AnAliasWithoutItsTabFallsBackToText)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "Processes", .text = "Processes"},
+        {.id = "Facts", .text = "System"},
+    };
+    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{1});
+    EXPECT_FALSE(findTab("machine", tabs).has_value());
+}
+
 TEST(SelectOverrideTest, MatchesNonAsciiAndHashTextAsIs)
 {
     // The text is the unescaped display text, so a hostname starting with a non-ASCII letter and a
@@ -380,7 +442,7 @@ TEST(SelectOverrideTest, NoHooksMeansNoTestHook)
     EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "", " ", "\r\n")); // blank counts as unset
 }
 
-// #172: TASKSMACK_OPEN opens the Help window or the About dialog at startup.
+// #172: TASKSMACK_OPEN opens the Help window, the About dialog or (#2827) the Settings dialog at startup.
 TEST(SelectOverrideTest, ParsesTheStartupDialog)
 {
     using App::SelectOverride::parseStartupDialog;
@@ -389,11 +451,16 @@ TEST(SelectOverrideTest, ParsesTheStartupDialog)
     EXPECT_EQ(parseStartupDialog("help").dialog, StartupDialog::Help);
     EXPECT_EQ(parseStartupDialog(" HELP ").dialog, StartupDialog::Help);
     EXPECT_EQ(parseStartupDialog("About").dialog, StartupDialog::About);
+    EXPECT_EQ(parseStartupDialog("settings").dialog, StartupDialog::Settings);
+    EXPECT_EQ(parseStartupDialog(" SETTINGS\t").dialog, StartupDialog::Settings);
     EXPECT_TRUE(parseStartupDialog("help").warning.empty());
+    EXPECT_TRUE(parseStartupDialog("Settings").warning.empty());
 
-    const auto unknown = parseStartupDialog("settings");
+    const auto unknown = parseStartupDialog("preferences");
     EXPECT_FALSE(unknown.dialog.has_value());
     EXPECT_FALSE(unknown.warning.empty());
+    EXPECT_NE(unknown.warning.find("not help, about or settings"), std::string::npos) << unknown.warning;
+    EXPECT_FALSE(parseStartupDialog("setting").dialog.has_value()); // no prefix matching
 
     for (const char* blank : {static_cast<const char*>(nullptr), "", "  "})
     {
@@ -451,10 +518,12 @@ TEST(SelectOverrideTest, NamesOfTabsSectionsAndDialogsParseInAnyCaseAndWriteBack
     EXPECT_EQ(parseSection("OpenFiles"), DetailsSection::OpenFiles);
     EXPECT_EQ(parseSection("MODULES"), DetailsSection::Modules);
     EXPECT_EQ(parseDialog("About"), StartupDialog::About);
+    EXPECT_EQ(parseDialog("Settings"), StartupDialog::Settings);
     EXPECT_FALSE(parseSection("files").has_value());
     EXPECT_FALSE(parseSection("open files").has_value());
     EXPECT_FALSE(parseSection("").has_value());
-    EXPECT_FALSE(parseDialog("settings").has_value());
+    EXPECT_FALSE(parseDialog("preferences").has_value());
+    EXPECT_FALSE(parseDialog("").has_value());
     EXPECT_FALSE(parseTab("memory").has_value());
 }
 

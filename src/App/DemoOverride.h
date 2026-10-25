@@ -19,7 +19,7 @@
 //   details=<overview|gpu|npu|network>   Process Details brought forward, with that tab
 //   machine=<overview|cores|gpu|npu|network>   the machine (hostname) tab brought forward, with
 //                                 that sub-tab (as TASKSMACK_MACHINE_TAB names one, #2869)
-//   open=<help|about>             the Help window or the About dialog
+//   open=<help|about|settings>    the Help window, the About dialog or the Settings dialog
 //   close=dialog                  closes them
 //   theme=<id>                    a loaded theme, applied as Settings applies one
 //   section=<name>                expands that section of Process Details' Overview (modules,
@@ -93,7 +93,7 @@ struct MachineAction
     [[nodiscard]] bool operator==(const MachineAction&) const = default;
 };
 
-/// open=<help|about>
+/// open=<help|about|settings>
 struct OpenAction
 {
     SelectOverride::StartupDialog dialog = SelectOverride::StartupDialog::Help;
@@ -101,7 +101,7 @@ struct OpenAction
     [[nodiscard]] bool operator==(const OpenAction&) const = default;
 };
 
-/// close=dialog: the Help window and the About dialog, whichever is open.
+/// close=dialog: the Help window, the About dialog and the Settings dialog, whichever is open.
 struct CloseDialogAction
 {
     [[nodiscard]] bool operator==(const CloseDialogAction&) const = default;
@@ -252,7 +252,7 @@ namespace Detail
         {
             return OpenAction{.dialog = *dialog};
         }
-        return std::unexpected(std::format("opens '{}', not help or about", value));
+        return std::unexpected(std::format("opens '{}', not help, about or settings", value));
     }
     if (equalsIgnoreCase(key, "close"))
     {

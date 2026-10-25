@@ -266,8 +266,8 @@ class TitleBarDriverLayer : public Core::Layer
             ClientToScreen(hwnd, &point);
             return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(point.x, point.y));
         };
-        m_Observed.titleHitTest = ask(client.right / 2, TITLE_Y);          // the empty title bar: a drag on X11
-        m_Observed.edgeHitTest = ask(client.right - 2, client.bottom / 2); // the right edge: a resize on X11
+        m_Observed.titleHitTest = ask(client.right / 2, TITLE_Y);          // the empty title bar: the OS's caption (#2716)
+        m_Observed.edgeHitTest = ask(client.right - 2, client.bottom / 2); // the right edge: the app's own resize
     }
 #endif
 
@@ -332,9 +332,10 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
 #ifdef _WIN32
-    // On Windows the whole window is client area, its edges too: TitleBarLayer drags and resizes it
-    // itself, so Windows never enters its modal move or resize loop and the frames keep coming.
-    EXPECT_EQ(observed.titleHitTest, HTCLIENT);
+    // On Windows the empty title bar is the OS's caption (#2716): a press there runs Windows' own
+    // move loop, which is where Aero Snap lives. The edges stay client area: TitleBarLayer resizes
+    // the window itself, so Windows never enters its modal resize loop and the frames keep coming.
+    EXPECT_EQ(observed.titleHitTest, HTCAPTION);
     EXPECT_EQ(observed.edgeHitTest, HTCLIENT);
 #endif
 }
@@ -1121,6 +1122,14 @@ struct DragGeometryObserved
     std::array<bool, 2> clickKeptMaximized{};  ///< A move inside the threshold leaves it maximized
     std::array<bool, 2> restoredByDrag{};
     bool maximizeUnavailable = false; ///< The window never maximized: the restore checks were skipped
+    /// What the window's hit test answers where each press was made (#2716): the path a real press
+    /// there takes. The driver's pushed events drive the client-side path whatever the answer.
+    SDL_HitTestResult plainPressHitTest = SDL_HITTEST_NORMAL;
+    SDL_HitTestResult resizePressHitTest = SDL_HITTEST_NORMAL;
+    std::array<SDL_HitTestResult, 2> maximizedPressHitTest{};
+    bool systemDrag = false;         ///< Core::VideoBackend::usesSystemDrag() while the app ran
+    bool systemResize = false;       ///< Core::VideoBackend::usesSystemResize()
+    bool clientSideMaximize = false; ///< Core::VideoBackend::supportsClientSideMaximize()
     int frames = 0;
     int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
     bool timedOut = false;
@@ -1173,8 +1182,13 @@ class DragGeometryDriverLayer : public Core::Layer
         {
             const char* driver = SDL_GetCurrentVideoDriver();
             m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
+            m_Observed.systemDrag = Core::VideoBackend::usesSystemDrag();
+            m_Observed.systemResize = Core::VideoBackend::usesSystemResize();
+            m_Observed.clientSideMaximize = Core::VideoBackend::supportsClientSideMaximize();
             m_Start = {x, y};
-            press(x, y, width / 2, TITLE_Y, frame);
+            const int pressX = width / 2; // the press's own integer point, so the hit test is asked where it lands
+            m_Observed.plainPressHitTest = m_TitleBar.hitTest(static_cast<float>(pressX), static_cast<float>(TITLE_Y));
+            press(x, y, pressX, TITLE_Y, frame);
             m_Sample = 0;
             holdAt(PLAIN_OFFSETS[0], frame);
             next(Phase::AwaitPlainDrag, 1);
@@ -1212,7 +1226,11 @@ class DragGeometryDriverLayer : public Core::Layer
         case Phase::BeginResize:
             m_Start = {x, y};
             m_StartWidth = width;
-            press(x, y, width - 2, height / 2, frame);
+            {
+                const int pressY = height / 2;
+                m_Observed.resizePressHitTest = m_TitleBar.hitTest(static_cast<float>(width - 2), static_cast<float>(pressY));
+                press(x, y, width - 2, pressY, frame);
+            }
             holdAt({WIDEN_BY, 0}, frame);
             next(Phase::AwaitResize, 1);
             break;
@@ -1286,6 +1304,8 @@ class DragGeometryDriverLayer : public Core::Layer
             m_PressLocalY = m_End == 0 ? TITLE_Y_NEAR_TOP : static_cast<int>(App::TitleBarLayer::height() * 0.75F);
             m_PressLocalX = clearPressX(width, m_PressLocalY, m_End == 0);
             m_Fraction = static_cast<double>(m_PressLocalX) / static_cast<double>(width);
+            m_Observed.maximizedPressHitTest.at(m_End) =
+                m_TitleBar.hitTest(static_cast<float>(m_PressLocalX), static_cast<float>(m_PressLocalY));
             press(x, y, m_PressLocalX, m_PressLocalY, frame);
             holdAt({INSIDE_THRESHOLD, INSIDE_THRESHOLD}, frame);
             next(Phase::CheckStillMaximized, STEP);
@@ -1556,17 +1576,32 @@ TEST(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
     {
         ADD_FAILURE() << failure;
     }
+    // #2716: the other path. The pushed presses above drove the client-side drag and resize whatever
+    // the window's hit test says; this is what it says, so a real press at the same points takes the
+    // OS's or the compositor's gesture where the backend runs it and the client-side one elsewhere.
+    EXPECT_EQ(observed.plainPressHitTest, observed.systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL);
+    EXPECT_EQ(observed.resizePressHitTest, observed.systemResize ? SDL_HITTEST_RESIZE_RIGHT : SDL_HITTEST_NORMAL);
+#ifdef _WIN32
+    EXPECT_EQ(observed.plainPressHitTest, SDL_HITTEST_DRAGGABLE); // Windows' own move loop: Aero Snap
+    EXPECT_EQ(observed.resizePressHitTest, SDL_HITTEST_NORMAL);   // the resize stays the app's
+#endif
     if (observed.maximizeUnavailable)
     {
         // The plain drag and the resize were checked above; only the restore part is skipped.
         GTEST_SKIP() << "The window never maximized on this display, so the drag-to-restore checks were skipped";
     }
+    // A client-side maximized window (Windows) keeps the press for the restore under the pointer.
+    const bool maximizedSystemDrag = App::computeSystemDragApplies(observed.systemDrag, observed.clientSideMaximize, /*isMaximized=*/true);
     for (std::size_t end = 0; end < 2; ++end)
     {
         SCOPED_TRACE(end == 0 ? "pressed near the left end" : "pressed near the right end");
         EXPECT_TRUE(observed.maximizedBeforeDrag.at(end));
         EXPECT_TRUE(observed.clickKeptMaximized.at(end)) << "a move inside the threshold restored the window";
         EXPECT_TRUE(observed.restoredByDrag.at(end));
+        EXPECT_EQ(observed.maximizedPressHitTest.at(end), maximizedSystemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL);
+#ifdef _WIN32
+        EXPECT_EQ(observed.maximizedPressHitTest.at(end), SDL_HITTEST_NORMAL);
+#endif
     }
     if (observed.positionsApply)
     {
@@ -2335,6 +2370,313 @@ TEST(UiLayersOnDisplayTest, AFastLeftEdgeResizeKeepsTheRightEdgeWhereItWas)
     }
     EXPECT_EQ(observed.checks, FastLeftResizeDriverLayer::CHECK_COUNT);
 }
+
+/// What the hit-test driver saw (#2716).
+struct HitTestObserved
+{
+    int checks = 0; ///< Points asked
+    std::vector<std::string> failures;
+    SDL_HitTestResult title = SDL_HITTEST_NORMAL;          ///< The empty title bar
+    SDL_HitTestResult rightEdge = SDL_HITTEST_NORMAL;      ///< The right border, below the bar
+    SDL_HitTestResult maximizedTitle = SDL_HITTEST_NORMAL; ///< The empty title bar of the maximized window
+    bool systemDrag = false;                               ///< Core::VideoBackend::usesSystemDrag() while the app ran
+    bool systemResize = false;                             ///< Core::VideoBackend::usesSystemResize()
+    bool clientSideMaximize = false;                       ///< Core::VideoBackend::supportsClientSideMaximize()
+    bool maximized = false;                                ///< The window maximized for the second round
+    bool maximizeUnavailable = false;                      ///< It never did: that round was skipped
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: once the bar has drawn, asks the window's hit test --
+/// TitleBarLayer::hitTest(), the function the callback installed on the real window forwards to --
+/// what lies under the empty title bar, each button, the icon, every edge and corner and the content,
+/// against what the backend's policy says it should answer; on Windows also asks the window itself
+/// with WM_NCHITTEST, as Windows does when the pointer moves, so the installed callback and SDL's
+/// mapping of its answers are covered too. Then maximizes the window and asks again: no resize
+/// answers, and the title bar as the policy has it for a maximized window. Nothing is clicked or moved.
+class HitTestDriverLayer : public Core::Layer
+{
+  public:
+    HitTestDriverLayer(HitTestObserved& observed, App::TitleBarLayer& titleBar)
+        : Layer("HitTestDriver"), m_Observed(observed), m_TitleBar(titleBar)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const bool maximized = window.isMaximized();
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const bool waiting = frame < m_Deadline;
+        switch (m_Phase)
+        {
+        case Phase::AskNormal:
+            m_Observed.systemDrag = Core::VideoBackend::usesSystemDrag();
+            m_Observed.systemResize = Core::VideoBackend::usesSystemResize();
+            m_Observed.clientSideMaximize = Core::VideoBackend::supportsClientSideMaximize();
+            askNormal(width, height);
+            window.maximize();
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
+            break;
+        case Phase::AwaitMaximized:
+            if (!maximized && waiting)
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
+            if (!maximized)
+            {
+                m_Observed.maximizeUnavailable = true;
+                next(Phase::Stop, 1);
+                break;
+            }
+            m_Geometry = {};
+            m_StableFrames = 0;
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximizedSettled, 1);
+            break;
+        case Phase::AwaitMaximizedSettled:
+        {
+            // The maximized flag can lead the window's new size by some frames (X11 reports the
+            // configure later): wait until the geometry has held for SETTLED_FRAMES.
+            const std::array<int, 2> geometry{width, height};
+            m_StableFrames = geometry == m_Geometry ? m_StableFrames + 1 : 0;
+            m_Geometry = geometry;
+            if (m_StableFrames < SETTLED_FRAMES && waiting)
+            {
+                next(Phase::AwaitMaximizedSettled, 1);
+                break;
+            }
+            m_Observed.maximized = true;
+            askMaximized(width, height);
+            window.restore();
+            next(Phase::Stop, STEP);
+            break;
+        }
+        case Phase::Stop:
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// One point asked: what the window answers for (@p x, @p y) against @p expected.
+    SDL_HitTestResult check(const char* what, float x, float y, SDL_HitTestResult expected)
+    {
+        const SDL_HitTestResult got = m_TitleBar.hitTest(x, y);
+        ++m_Observed.checks;
+        if (got != expected)
+        {
+            m_Observed.failures.push_back(
+                std::format("{} at ({}, {}): answered {}, expected {}", what, x, y, static_cast<int>(got), static_cast<int>(expected)));
+        }
+        return got;
+    }
+
+    void askNormal(int width, int height)
+    {
+        const App::WindowHitTestInput input = m_TitleBar.hitTestInput();
+        const auto w = static_cast<float>(width);
+        const auto h = static_cast<float>(height);
+        const float barMiddleY = input.titleBarHeightPx * 0.5F;
+        const SDL_HitTestResult drag = m_Observed.systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
+        const auto resize = [this](SDL_HitTestResult edge)
+        {
+            return m_Observed.systemResize ? edge : SDL_HITTEST_NORMAL;
+        };
+
+        m_Observed.title = check("the empty title bar", w * 0.5F, barMiddleY, drag);
+        check("the gap before the window controls", input.buttons.minimize.minX - 1.0F, barMiddleY, drag);
+        const auto& b = input.buttons;
+        const std::array<std::pair<const char*, const App::ButtonBounds*>, 6> buttons{{{"About", &b.about},
+                                                                                       {"Help", &b.help},
+                                                                                       {"Settings", &b.settings},
+                                                                                       {"Minimize", &b.minimize},
+                                                                                       {"Maximize", &b.maximize},
+                                                                                       {"Close", &b.close}}};
+        for (const auto& [name, bounds] : buttons)
+        {
+            check(name, (bounds->minX + bounds->maxX) * 0.5F, (bounds->minY + bounds->maxY) * 0.5F, SDL_HITTEST_NORMAL);
+        }
+        if (input.icon.maxX > input.icon.minX)
+        {
+            check("the icon", (input.icon.minX + input.icon.maxX) * 0.5F, (input.icon.minY + input.icon.maxY) * 0.5F, SDL_HITTEST_NORMAL);
+        }
+        check("the left edge", 1.0F, h * 0.5F, resize(SDL_HITTEST_RESIZE_LEFT));
+        m_Observed.rightEdge = check("the right edge", w - 2.0F, h * 0.5F, resize(SDL_HITTEST_RESIZE_RIGHT));
+        check("the top edge", w * 0.5F, 1.0F, resize(SDL_HITTEST_RESIZE_TOP));
+        check("the bottom edge", w * 0.5F, h - 2.0F, resize(SDL_HITTEST_RESIZE_BOTTOM));
+        check("the top-left corner", 1.0F, 1.0F, resize(SDL_HITTEST_RESIZE_TOPLEFT));
+        check("the bottom-left corner", 1.0F, h - 2.0F, resize(SDL_HITTEST_RESIZE_BOTTOMLEFT));
+        check("the bottom-right corner", w - 2.0F, h - 2.0F, resize(SDL_HITTEST_RESIZE_BOTTOMRIGHT));
+        check("the top-right corner (the close button)", w - 2.0F, 1.0F, SDL_HITTEST_NORMAL);
+        check("the content", w * 0.5F, input.titleBarHeightPx + 50.0F, SDL_HITTEST_NORMAL);
+#ifdef _WIN32
+        askWindows(width, height, b.close, barMiddleY, drag, resize(SDL_HITTEST_RESIZE_RIGHT));
+#endif
+    }
+
+    void askMaximized(int width, int height)
+    {
+        const App::WindowHitTestInput input = m_TitleBar.hitTestInput();
+        const auto w = static_cast<float>(width);
+        const auto h = static_cast<float>(height);
+        const SDL_HitTestResult drag =
+            App::computeSystemDragApplies(m_Observed.systemDrag, m_Observed.clientSideMaximize, /*isMaximized=*/true)
+                ? SDL_HITTEST_DRAGGABLE
+                : SDL_HITTEST_NORMAL;
+        m_Observed.maximizedTitle = check("the maximized window's empty title bar", w * 0.5F, input.titleBarHeightPx * 0.5F, drag);
+        check("the maximized window's top strip", w * 0.5F, 1.0F, drag); // no resize border: the bar
+        check("the maximized window's right edge", w - 2.0F, h * 0.5F, SDL_HITTEST_NORMAL);
+        check("the maximized window's bottom-left corner", 1.0F, h - 2.0F, SDL_HITTEST_NORMAL);
+        check("the maximized window's close button", w - 2.0F, 1.0F, SDL_HITTEST_NORMAL);
+    }
+
+#ifdef _WIN32
+    /// Asks the window itself, as Windows does when the pointer moves: the window procedure hands
+    /// WM_NCHITTEST to the installed callback, and SDL maps its answer to a Win32 hit-test code --
+    /// DRAGGABLE is HTCAPTION, which is what Aero Snap needs. Only a question: nothing is clicked.
+    void askWindows(
+        int width, int height, const App::ButtonBounds& close, float barMiddleY, SDL_HitTestResult title, SDL_HitTestResult rightEdge)
+    {
+        const SDL_PropertiesID props = SDL_GetWindowProperties(Core::Application::get().getWindow().getHandle());
+        auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        if (hwnd == nullptr)
+        {
+            m_Observed.failures.emplace_back("no HWND for the window");
+            return;
+        }
+        const auto ask = [hwnd](float x, float y)
+        {
+            POINT point{.x = static_cast<LONG>(x), .y = static_cast<LONG>(y)};
+            ClientToScreen(hwnd, &point);
+            return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(point.x, point.y));
+        };
+        const auto code = [](SDL_HitTestResult result) -> LRESULT
+        {
+            switch (result)
+            {
+            case SDL_HITTEST_DRAGGABLE:
+                return HTCAPTION;
+            case SDL_HITTEST_RESIZE_RIGHT:
+                return HTRIGHT;
+            default:
+                return HTCLIENT;
+            }
+        };
+        const auto checkWindows = [this, &ask, &code](const char* what, float x, float y, SDL_HitTestResult expected)
+        {
+            const LRESULT got = ask(x, y);
+            ++m_Observed.checks;
+            if (got != code(expected))
+            {
+                m_Observed.failures.push_back(
+                    std::format("WM_NCHITTEST on {} at ({}, {}): answered {}, expected {}", what, x, y, got, code(expected)));
+            }
+        };
+        checkWindows("the empty title bar", static_cast<float>(width) * 0.5F, barMiddleY, title);
+        checkWindows("the Close button", (close.minX + close.maxX) * 0.5F, (close.minY + close.maxY) * 0.5F, SDL_HITTEST_NORMAL);
+        checkWindows("the right edge", static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, rightEdge);
+    }
+#endif
+
+    enum class Phase : std::uint8_t
+    {
+        AskNormal,
+        AwaitMaximized,
+        AwaitMaximizedSettled,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10; // frames before the first question: the bar has drawn and cached its layout
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 300;
+    static constexpr int SETTLED_FRAMES = 15;
+    static constexpr int MAX_FRAMES = 900;
+
+    HitTestObserved& m_Observed;
+    App::TitleBarLayer& m_TitleBar;
+    Phase m_Phase = Phase::AskNormal;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
+    std::array<int, 2> m_Geometry{};
+    int m_StableFrames = 0;
+};
+
+// #2716: the hit-test callback TitleBarLayer installs on the real window answers for the title bar, the
+// buttons and the edges as the backend's policy says: on Windows the empty title bar is DRAGGABLE
+// (HTCAPTION to Windows, so its own move loop and Aero Snap run the drag) and the edges stay the app's
+// resize; on X11 the edges are the window manager's and the bar the app's; on native Wayland both are
+// the compositor's. Maximized, nothing is a resize edge.
+TEST(UiLayersOnDisplayTest, TheHitTestCallbackAnswersForTheRealWindow)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayHitTestTest";
+    spec.VSync = false;
+    HitTestObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<HitTestDriverLayer>(observed, titleBar);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    for (const std::string& failure : observed.failures)
+    {
+        ADD_FAILURE() << failure;
+    }
+    EXPECT_GE(observed.checks, 17); // the bar, the gap, 6 buttons, 7 edges and corners, the close corner, the content
+    EXPECT_EQ(observed.title, observed.systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL);
+    EXPECT_EQ(observed.rightEdge, observed.systemResize ? SDL_HITTEST_RESIZE_RIGHT : SDL_HITTEST_NORMAL);
+#ifdef _WIN32
+    EXPECT_TRUE(observed.systemDrag);
+    EXPECT_FALSE(observed.systemResize);
+    EXPECT_EQ(observed.title, SDL_HITTEST_DRAGGABLE);
+    EXPECT_EQ(observed.rightEdge, SDL_HITTEST_NORMAL);
+#endif
+    if (observed.maximizeUnavailable)
+    {
+        GTEST_SKIP() << "The window never maximized on this display, so the maximized round was skipped";
+    }
+    EXPECT_TRUE(observed.maximized);
+    EXPECT_EQ(observed.maximizedTitle,
+              App::computeSystemDragApplies(observed.systemDrag, observed.clientSideMaximize, /*isMaximized=*/true) ? SDL_HITTEST_DRAGGABLE
+                                                                                                                    : SDL_HITTEST_NORMAL);
+#ifdef _WIN32
+    EXPECT_EQ(observed.maximizedTitle, SDL_HITTEST_NORMAL); // the restore under the pointer stays the app's (#2715)
+#endif
+}
+
 /// What the UI-layer driver saw.
 struct UiLayerObserved
 {
