@@ -6,8 +6,9 @@
 // request (as TASKSMACK_TAB), a selection waiting for its process (as TASKSMACK_SELECT_PID/_NAME,
 // then as a click), the ShowProcessDetailsEvent the row menu's Details raises, the machine tab's
 // sub-tab request (as TASKSMACK_MACHINE_TAB, #2869), the Open*Event the title bar's buttons raise, the
-// theme change Settings makes, and a Process Details section drawn open through ImGui's own open
-// state. Nothing is injected as input.
+// theme change Settings makes, a Process Details section drawn open through ImGui's own open
+// state, and the Render Metrics overlay shown, hidden or exported to a CSV file as Ctrl+Shift+M and
+// its Copy CSV button do (#2923). Nothing is injected as input.
 //
 // The clock starts at the settle point: the first frame on which the shell reports no startup
 // selection pending, read in onPostRender() as ScreenshotLayer reads it, so the two layers agree on
@@ -25,6 +26,8 @@
 #include "Core/Layer.h"
 
 #include <cstddef>
+#include <filesystem>
+#include <optional>
 #include <vector>
 
 namespace App
@@ -37,7 +40,10 @@ class DemoLayer : public Core::Layer
   public:
     /// @p shell: the shell whose startup selections start the clock and whose requests the steps make.
     /// Non-owning: the application's layer stack holds both for the application's lifetime.
-    DemoLayer(std::vector<DemoOverride::Step> steps, ShellLayer& shell);
+    /// @p metricsCsv: the file a metrics=export step writes (#2923): TASKSMACK_RENDER_METRICS' file, or
+    /// one beside the screenshot's path when only TASKSMACK_SCREENSHOT is set (main.cpp resolves it);
+    /// nullopt, and the step is skipped with one warning.
+    DemoLayer(std::vector<DemoOverride::Step> steps, ShellLayer& shell, std::optional<std::filesystem::path> metricsCsv = std::nullopt);
     ~DemoLayer() override = default;
 
     DemoLayer(const DemoLayer&) = delete;
@@ -65,7 +71,8 @@ class DemoLayer : public Core::Layer
     void issue(const DemoOverride::Step& step) const;
 
     std::vector<DemoOverride::Step> m_Steps;
-    ShellLayer* m_Shell = nullptr; ///< Never null
+    ShellLayer* m_Shell = nullptr;                     ///< Never null
+    std::optional<std::filesystem::path> m_MetricsCsv; ///< Where metrics=export writes; nullopt: nowhere
     bool m_Started = false;
     double m_StartTime = 0.0; ///< App clock at the settle point; the steps' times count from it
     std::size_t m_Next = 0;   ///< The next step to issue

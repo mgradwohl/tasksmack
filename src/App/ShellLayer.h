@@ -104,6 +104,16 @@ class ShellLayer : public Core::Layer
     /// Draws @p section of Process Details' Overview open the next time the Overview is drawn.
     void requestDetailsSection(SelectOverride::DetailsSection section);
 
+    /// Shows (@p show) or hides the Render Metrics overlay, as Ctrl+Shift+M does (#2923): recording starts
+    /// with this frame, and the status bar's FPS readout follows the overlay.
+    void requestRenderMetrics(bool show) noexcept;
+
+    /// Whether the Render Metrics overlay is shown: by the chord, TASKSMACK_RENDER_METRICS or a metrics= step.
+    [[nodiscard]] bool renderMetricsShown() const noexcept
+    {
+        return m_ShowRenderMetrics;
+    }
+
   private:
     /// Every registered tab's id and visible text, for TASKSMACK_TAB and the demo's tab= to resolve against.
     [[nodiscard]] std::vector<SelectOverride::TabInfo> tabInfos() const;
@@ -163,8 +173,9 @@ class ShellLayer : public Core::Layer
     std::optional<WindowMinimumSize> m_GrowMinimumSize;
     TitleBarLayer* m_TitleBar = nullptr;
 
-    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M. The
-    // status bar's FPS readout is shown only while it is on (#1200).
+    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M; on from
+    // the first frame with TASKSMACK_RENDER_METRICS set, and set by the demo script's metrics= step
+    // (#2923). The status bar's FPS readout is shown only while it is on (#1200).
     bool m_ShowRenderMetrics = false;
 
     // The status bar's live text (#1200), rebuilt in onUpdate() only when the count or the interval

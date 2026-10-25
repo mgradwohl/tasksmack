@@ -99,8 +99,13 @@ if(WIN32)
         # Their own TIMEOUTs, rather than the CI steps' 60 s --timeout: about twice the slowest CI
         # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
         # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
+        #
+        # The `pwsh-script` label marks every test that runs under pwsh (#2832): on the windows-11-arm
+        # runner the interpreter itself dies now and then, a few seconds into a script, with .NET's
+        # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
+        # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
@@ -118,8 +123,10 @@ if(WIN32)
         set_tests_properties(WindowsSignatureGateScript PROPERTIES
             # CMake wraps the message, so any run of spaces and line breaks may separate the words.
             PASS_REGULAR_EXPRESSION "TaskSmack(Helper)?\\.exe[ \r\n]+isn't[ \r\n]+Authenticode-signed[ \r\n]+\\(NotSigned\\)"
-            # It starts PowerShell too, so it takes its turn with the script tests above (#2054).
+            # It starts PowerShell too, so it takes its turn with the script tests above (#2054), and
+            # gets their second attempt on windows-11-arm (#2832).
             RESOURCE_LOCK pwsh-script-tests
+            LABELS pwsh-script
             TIMEOUT 120)
     endif()
 endif()
@@ -209,6 +216,11 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 # tools/tidy-cache.py keys the clang-tidy jobs' per-file result cache (#1785).
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
+
+# tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
+# match the C++ encoder's.
+add_test(NAME HelperHandshakeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_helper_handshake.py)
 
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
@@ -512,6 +524,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_ProcessAffinityDialog.cpp
     App/test_AboutDialogRender.cpp
+    App/test_AccessNoticeDialogRender.cpp  # Standard or Administrator, headless (#2728)
     App/test_ElevationNoticeDialogRender.cpp
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
@@ -519,6 +532,7 @@ set(COMMON_TEST_SOURCES
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
     App/test_DemoOverride.cpp
+    App/test_RenderMetricsOverride.cpp
     App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
@@ -699,6 +713,7 @@ set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
     App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
+    App/test_AccessNoticeOnDisplay.cpp # the startup notice in a real application (#2728)
     App/test_SettingsThemeApply.cpp  # a theme picked in Settings applies on Save, not before (#2713)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
@@ -751,6 +766,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
     ${CMAKE_SOURCE_DIR}/src/App/SelectOverride.cpp
+    # The Render Metrics hook's CSV writer (#2923): test_RenderMetricsOverride.cpp compares its file with toCsv()
+    ${CMAKE_SOURCE_DIR}/src/App/RenderMetricsOverride.cpp
     # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
@@ -836,6 +853,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/AboutLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/AccessNoticeDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
@@ -1066,6 +1084,13 @@ endif()
 # per-entry --timeout (60 s, 120 s under the sanitizers), which was sized for one case: a suite under
 # TSan can run several times its debug time. It still ends a hung suite.
 set(TASKSMACK_GTEST_PROPERTIES TIMEOUT 300)
+# The suite list is read when a binary links (`--gtest_list_tests`, a build step, so ninja runs it beside
+# the other links). Its 30 s default cap failed the Build step of an otherwise green PR on a loaded
+# windows-2025 runner (#2838, run 39880473743: TaskSmackThemeTests and TaskSmackAppTests both
+# "terminated due to timeout" while the three big executables linked at once; the same tree lists its
+# tests in under a second alone). Listing only loads the debug binary and runs its static initialisers,
+# so this is load-time headroom, not a test timeout; a real hang still fails the build, 90 s later.
+set(TASKSMACK_GTEST_DISCOVERY_TIMEOUT 120)
 if(NOT WIN32)
     # Prepend the mocks directory to LD_LIBRARY_PATH before the test process starts so
     # dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6") find the mock shared
@@ -1080,6 +1105,7 @@ endif()
 # On Windows, ImGui's clipboard is the system clipboard, which every process shares: suites that
 # copy and read it back take turns, or one reads what another just wrote.
 tasksmack_gtest_add_suites(TaskSmackTests
+    DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT}
     SHARDS ApplicationTest=3
     PROPERTIES ${TASKSMACK_GTEST_PROPERTIES}
     SUITE_PROPERTIES
@@ -1106,7 +1132,7 @@ target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_D
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)
-tasksmack_gtest_add_suites(TaskSmackThemeTests PROPERTIES TIMEOUT 300)
+tasksmack_gtest_add_suites(TaskSmackThemeTests DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT} PROPERTIES TIMEOUT 300)
 
 # Tests that need the whole app (#1395): a real Core::Application with the real UI::Theme, UILayer and
 # TitleBarLayer on a display. Built from the app's own objects (TaskSmackApp, everything but main()),
@@ -1137,6 +1163,7 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
 # windows-2025 runner, which a slow one pushed past the CI steps' 60 s --timeout (main 82d9b173). The
 # same whole-suite limit as every other executable's entries.
 tasksmack_gtest_add_suites(TaskSmackAppTests
+    DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT}
     PROPERTIES TIMEOUT 300
     SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
 

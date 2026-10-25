@@ -17,6 +17,7 @@
 #include "App/DemoOverride.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
+#include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SettingsLayer.h"
@@ -47,6 +48,9 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <random>
@@ -470,7 +474,9 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 
     const std::filesystem::path given = m_Dir / "demo.png";
     const ScreenshotEnv screenshotEnv(Core::pathToUtf8(given) + ";after=0;frames=3;fps=1");
-    const DemoEnv demoEnv("0.5:tab=processes,1:theme=dracula");
+    // metrics=on then metrics=export (#2923): with TASKSMACK_RENDER_METRICS unset the CSV lands beside the
+    // screenshot, as main.cpp resolves it; the last frame is captured with the overlay on.
+    const DemoEnv demoEnv("0.5:tab=processes,1:theme=dracula,1:metrics=on,1.5:metrics=export");
     ASSERT_TRUE(screenshotEnv.set());
     ASSERT_TRUE(demoEnv.set());
     const App::ScreenshotOverride::ParseResult parsedShot = ScreenshotEnv::parseFromEnvironment();
@@ -479,14 +485,17 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     const App::DemoOverride::ParseResult parsedDemo = DemoEnv::parseFromEnvironment();
     ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
     const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
-    ASSERT_EQ(steps.size(), 2U);
-    EXPECT_EQ(App::DemoOverride::describe(steps), "0.5:tab=processes, 1:theme=dracula");
+    ASSERT_EQ(steps.size(), 4U);
+    EXPECT_EQ(App::DemoOverride::describe(steps), "0.5:tab=processes, 1:theme=dracula, 1:metrics=on, 1.5:metrics=export");
+    const std::filesystem::path metricsCsv = App::RenderMetricsOverride::csvBesideScreenshot(request.path);
+    EXPECT_EQ(metricsCsv, m_Dir / "demo-metrics.csv");
 
     // Composed as main.cpp's runApp() composes it: the demo layer after the dialog layers, the
     // screenshot layer last.
     RunResult run;
     bool demoStarted = false;
     std::size_t stepsIssued = 0;
+    bool renderMetricsShown = false;
     try
     {
         Core::Application app(smallWindow("ScreenshotOnDisplayDemoTest"));
@@ -498,7 +507,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
         app.pushLayer<App::AboutLayer>();
         app.pushLayer<App::SettingsLayer>();
         app.pushLayer<App::ElevationNoticeLayer>();
-        const App::DemoLayer& demo = app.pushLayer<App::DemoLayer>(steps, shell);
+        const App::DemoLayer& demo = app.pushLayer<App::DemoLayer>(steps, shell, metricsCsv);
         const App::ScreenshotLayer& screenshot = app.pushLayer<App::ScreenshotLayer>(request, &shell);
         app.pushLayer<ObserverLayer>(run.observed);
         app.run();
@@ -507,6 +516,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
         run.capturedSize = screenshot.capturedSize();
         demoStarted = demo.started();
         stepsIssued = demo.stepsIssued();
+        renderMetricsShown = shell.renderMetricsShown();
     }
     catch (const std::exception& e)
     {
@@ -518,10 +528,19 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
     EXPECT_EQ(run.framesWritten, 3);
     EXPECT_EQ(run.observed.closeRequests, 1);
     EXPECT_TRUE(demoStarted) << "the script's clock never started";
-    EXPECT_EQ(stepsIssued, 2U) << "every step was due before the last capture";
+    EXPECT_EQ(stepsIssued, 4U) << "every step was due before the last capture";
     EXPECT_EQ(run.observed.lastTab, "Processes") << "tab=processes selected the Processes tab";
     EXPECT_NE(run.observed.firstThemeId, "dracula") << "the startup theme is another";
     EXPECT_EQ(run.observed.lastThemeId, "dracula") << "theme=dracula applied";
+    EXPECT_TRUE(renderMetricsShown) << "metrics=on showed the Render Metrics overlay";
+    // metrics=export wrote the overlay's CSV beside the screenshot: its header, then the last completed
+    // frame's rows (the Processes tab draws no chart, so none here).
+    ASSERT_TRUE(std::filesystem::exists(metricsCsv)) << Core::pathToUtf8(metricsCsv);
+    {
+        std::ifstream csvFile(metricsCsv, std::ios::binary);
+        const std::string csv((std::istreambuf_iterator<char>(csvFile)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(csv.starts_with("timestamp_us,scenario,frame_id,publication_id,chart,vertices,cpu_us\n")) << csv;
+    }
 
     const Png first = decodePng(App::ScreenshotOverride::frameFileName(given, 1));
     const Png last = decodePng(App::ScreenshotOverride::frameFileName(given, 3));
