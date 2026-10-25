@@ -905,7 +905,8 @@ void TitleBarLayer::renderTitleBar()
                                                              .maximized = window.isMaximized(),
                                                              .resizeBorderPx = resizeBorderThickness(),
                                                              .icon = &m_IconTexture,
-                                                             .openSystemMenu = std::exchange(m_ShowSystemMenu, false)});
+                                                             .openSystemMenu = std::exchange(m_ShowSystemMenu, false),
+                                                             .title = window.title()});
     // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
     // drag area and where a right-click opens the system menu.
     m_ButtonLayout = drawn.layout;

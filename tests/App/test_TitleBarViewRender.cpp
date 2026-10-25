@@ -15,6 +15,7 @@
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
 
 #include <string>
+#include <string_view>
 
 namespace App
 {
@@ -144,6 +145,33 @@ TEST_F(TitleBarViewRenderTest, NothingIsAskedForUntilAButtonIsPressed)
 {
     EXPECT_EQ(frame().action, Action::None);
     EXPECT_EQ(frame().action, Action::None);
+}
+
+// #2728: the bar draws the window's title, as the OS shows it, so an Administrator session says so here too.
+TEST_F(TitleBarViewRenderTest, TheBarDrawsTheWindowsTitle)
+{
+    const auto drawnText = [](std::string_view title)
+    {
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        static_cast<void>(TitleBarView::render({.windowWidth = WIDTH,
+                                                .windowHeight = HEIGHT,
+                                                .barHeight = BAR,
+                                                .maximized = false,
+                                                .resizeBorderPx = BORDER,
+                                                .icon = nullptr,
+                                                .openSystemMenu = false,
+                                                .title = title}));
+        std::string captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::Render();
+        return captured;
+    };
+    const std::string standard = drawnText("TaskSmack");
+    EXPECT_TRUE(standard.contains("TaskSmack")) << standard;
+    EXPECT_FALSE(standard.contains("Administrator")) << standard;
+    const std::string administrator = drawnText("TaskSmack (Administrator)");
+    EXPECT_TRUE(administrator.contains("TaskSmack (Administrator)")) << administrator;
 }
 
 TEST_F(TitleBarViewRenderTest, TheButtonsSitWhereTheLayoutSays)
