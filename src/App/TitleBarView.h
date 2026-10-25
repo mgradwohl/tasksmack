@@ -39,6 +39,10 @@ namespace TitleBarView
 /// The Linux system menu's popup ID (the icon's menu, also opened by Alt+Space).
 inline constexpr const char* SYSTEM_MENU_ID = "##SystemMenu";
 
+/// The item that holds the window's top-right resize corner out of the Close button's hover and
+/// press (#2882); named so the headless test can ask ImGui which item the corner hovers.
+inline constexpr const char* TOP_RIGHT_RESIZE_CORNER_ID = "##TopRightResizeCorner";
+
 /// What the user asked for this frame, for TitleBarLayer to carry out.
 enum class Action : std::uint8_t
 {
@@ -60,6 +64,10 @@ struct Input
     float windowHeight = 0.0F;
     float barHeight = 0.0F; ///< TitleBarLayer::height()
     bool maximized = false; ///< Decides Maximize vs Restore, and the border
+    /// The resize border's thickness (computeResizeBorderThickness()): the side of the top-right
+    /// resize corner, which the bar keeps from the Close button's hover and press (#2882). Not used
+    /// on a maximized window, which has no borders; 0 keeps the corner the Close button's.
+    float resizeBorderPx = 0.0F;
     const UI::Texture* icon = nullptr;
     bool openSystemMenu = false; ///< Open the Linux system menu this frame (Alt+Space)
 };

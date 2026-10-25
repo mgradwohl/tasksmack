@@ -167,6 +167,8 @@ Test that custom border resize works:
 **All Platforms:**
 - [ ] Resize from top-left corner
   - Expected: Cursor changes to NESW resize; dragging resizes from top-left
+- [ ] Resize from top-right corner, inside the Close button's slot (#2882)
+  - Expected: Cursor changes to NESW resize over the corner square (the resize border's thickness on a side) and the X does not highlight; dragging resizes from top-right. One pixel left of or below the square the arrow cursor is back and a click closes the window
 - [ ] Resize from top edge
   - Expected: Cursor changes to NS resize; dragging changes only height
 - [ ] Resize from right edge

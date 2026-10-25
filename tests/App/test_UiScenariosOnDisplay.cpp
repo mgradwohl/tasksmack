@@ -38,6 +38,7 @@
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
 
+#include <SDL3/SDL_mouse.h>
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(), tables and tab bars
@@ -168,6 +169,16 @@ constexpr const char* FILTER_TEXT = "systemd"; // the synthetic machine's init a
     return window != nullptr && window->WasActive;
 }
 
+/// Moves the pointer to @p x, @p y: into ImGui, and the OS cursor there too. While the window has the
+/// focus but the OS cursor is outside it, ImGui's SDL backend feeds the cursor's global position in
+/// every frame, which would undo an injected one (a Windows runner focuses the window and parks its
+/// cursor elsewhere); with the cursor over the window, the backend leaves the position to its events.
+void movePointer(float x, float y)
+{
+    ImGui::GetIO().AddMousePosEvent(x, y);
+    SDL_WarpMouseInWindow(Core::Application::get().getWindow().getHandle(), x, y);
+}
+
 /// A key pressed on frame @p at and released on the next; true once both have gone in.
 bool tapKey(int frame, int at, ImGuiKey key)
 {
@@ -185,7 +196,7 @@ bool clickAt(int frame, int at, ImVec2 pos, ImGuiMouseButton button = ImGuiMouse
     ImGuiIO& io = ImGui::GetIO();
     if (frame == at)
     {
-        io.AddMousePosEvent(pos.x, pos.y);
+        movePointer(pos.x, pos.y);
     }
     else if (frame == at + 2 || frame == at + 3)
     {
@@ -203,7 +214,7 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
     const int step = frame - at;
     if (step == 0)
     {
-        io.AddMousePosEvent(from.x, from.y);
+        movePointer(from.x, from.y);
     }
     else if (step == 2)
     {
@@ -212,7 +223,7 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
     else if (step > 2 && step <= 2 + DRAG_STEPS)
     {
         const float t = static_cast<float>(step - 2) / static_cast<float>(DRAG_STEPS);
-        io.AddMousePosEvent(from.x + ((to.x - from.x) * t), from.y + ((to.y - from.y) * t));
+        movePointer(from.x + ((to.x - from.x) * t), from.y + ((to.y - from.y) * t));
     }
     else if (step == 3 + DRAG_STEPS)
     {
@@ -418,7 +429,7 @@ std::vector<Step> signOffSteps()
                          const int cycle = step.frame % RETRY_FRAMES;
                          if (cycle == 0 && table != nullptr)
                          {
-                             ImGui::GetIO().AddMousePosEvent(table->OuterRect.GetCenter().x, table->OuterRect.GetCenter().y);
+                             movePointer(table->OuterRect.GetCenter().x, table->OuterRect.GetCenter().y);
                          }
                          static_cast<void>(tapKey(cycle, 2, ImGuiKey_Home));
                          static_cast<void>(tapKey(cycle, 6, ImGuiKey_LeftArrow));
@@ -454,7 +465,7 @@ std::vector<Step> signOffSteps()
                          const float y = table->OuterRect.Min.y - (ImGui::GetFrameHeight() * 0.5F) - ImGui::GetStyle().ItemSpacing.y;
                          const float x = table->OuterRect.Min.x + 20.0F + (40.0F * static_cast<float>(probe++));
                          ImGuiIO& io = ImGui::GetIO();
-                         io.AddMousePosEvent(x, y);
+                         movePointer(x, y);
                          io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
                          io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
                          return false;

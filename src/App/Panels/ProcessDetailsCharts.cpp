@@ -873,22 +873,22 @@ void ProcessDetailsCharts::drawCpuBandsAndLines(std::span<const double> timeData
     UI::Widgets::exportSeries(CPU_SYSTEM_LABEL, timeData, system);
 
     // These bands and lines are drawn with ImPlot directly, so they are capped here like every
-    // plotLineWithFill series (#1022). Reduced together, so the bands still line up with each other
-    // and with the lines. Points are chosen by each drawn value -- User (also the user band's top),
-    // System and Total -- not by the cumulative system top, which stays flat when System rises as User
-    // falls and would drop that spike.
+    // plotLineWithFill series (#1022), and to the same budget: what this plot's width calls for
+    // (currentPlotPointBudget(), #1411, #843), not a fixed count, so the chart in a narrow details pane
+    // draws a fraction of a wide one's points while each bucket still keeps every series' extremes.
+    // Reduced together, so the bands still line up with each other and with the lines. Points are
+    // chosen by each drawn value -- User (also the user band's top), System and Total -- not by the
+    // cumulative system top, which stays flat when System rises as User falls and would drop that spike.
     //
-    // The choice of points is kept until the history changes (historyGeneration, #1139): reducing and
-    // copying the whole history every frame was most of this chart's cost at the largest history
-    // settings. Each frame only builds the kept points, at most LINE_PLOT_MAX_POINTS_DENSE of them,
-    // into reused member buffers.
+    // The choice of points is kept until the history changes (historyGeneration, #1139), or the budget
+    // does (a resize; it is part of the key): reducing and copying the whole history every frame was
+    // most of this chart's cost at the largest history settings. Each frame only builds the kept
+    // points, at most LINE_PLOT_MAX_POINTS_DENSE of them, into reused member buffers.
+    const int pointBudget = UI::Widgets::currentPlotPointBudget();
     const std::span<const UI::Widgets::ReducedPoint> points = m_CpuPlotReduction.points(
-        {.generation = historyGeneration, .dataId = 0, .count = timeData.size(), .maxOut = UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE},
+        {.generation = historyGeneration, .dataId = 0, .count = timeData.size(), .maxOut = pointBudget},
         [&](std::vector<UI::Widgets::ReducedPoint>& out)
-        {
-            UI::Widgets::reduceAlignedPoints<double>(
-                timeData, {user, system, total}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds, out);
-        });
+        { UI::Widgets::reduceAlignedPoints<double>(timeData, {user, system, total}, pointBudget, nowSeconds, out); });
 
     // The User and System bands' edges (shared with the Overview, #1180), plus the Total and System
     // lines. A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries). The User line

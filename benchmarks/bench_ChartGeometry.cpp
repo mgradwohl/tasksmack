@@ -48,6 +48,14 @@ void BM_ChartGeometry_CpuStacked_FullHistory(benchmark::State& state)
 }
 BENCHMARK(BM_ChartGeometry_CpuStacked_FullHistory)->Unit(benchmark::kMicrosecond);
 
+// The same chart over the default window (3k samples) in a 480 px window (a Process Details pane, a
+// small window): the stack's point budget follows the plot's width, as plotLineWithFill's does (#843).
+void BM_ChartGeometry_CpuStackedNarrow_DefaultWindow(benchmark::State& state)
+{
+    runScene(state, ChartGeometry::Scene::CpuStackedNarrow);
+}
+BENCHMARK(BM_ChartGeometry_CpuStackedNarrow_DefaultWindow)->Unit(benchmark::kMicrosecond);
+
 // The CPU Cores grid: 16 small filled charts (3k samples each) with a now bar apiece.
 void BM_ChartGeometry_PerCoreSparklines(benchmark::State& state)
 {

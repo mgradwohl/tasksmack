@@ -79,7 +79,10 @@ template<typename PollAndDispatch, typename ElapsedMs>
 
 /// Whether the current frame counts as an interactive (move/resize) frame: either this
 /// frame's event drain produced a resize, a prior resize/move is still within its redraw
-/// grace period, or any resize event was seen this drain.
+/// grace period, or any resize event was seen this drain. Ordinary input (a wheel, a button, a key,
+/// text) is not a move/resize interaction: it is paced through computeInputRedrawUntil() and
+/// computeFrameRateCap() instead, and never toggles vsync (computeVsyncTransition()), whose
+/// disable/restore exists for the compositor stalls of a live resize (#843).
 [[nodiscard]] inline auto computeIsInteracting(bool needsResizeRedraw, bool forceInteractionRedraw, std::uint32_t resizeEventCount) -> bool
 {
     return needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0);
@@ -91,6 +94,20 @@ template<typename PollAndDispatch, typename ElapsedMs>
 [[nodiscard]] inline auto isWithinInteractionGrace(double nowSeconds, double interactionRedrawUntilSeconds) -> bool
 {
     return nowSeconds < interactionRedrawUntilSeconds;
+}
+
+/// When the input redraw grace ends (#843), after a drain that handled @p inputEventCount input events
+/// (WindowEventRouting::isInputEvent): @p graceSeconds after @p nowSeconds if it handled any, otherwise
+/// the deadline as it was, @p inputRedrawUntilSeconds. While isWithinInteractionGrace(now, deadline)
+/// holds, computeFrameRateCap() paces the regular frame as an input frame, so the frames in which Dear
+/// ImGui finishes reacting to the input (a popup drawn the frame after it is opened, a tab's content
+/// the frame after the click, a hover delay elapsing) come at the full rate rather than the idle one.
+/// The grace is a deadline, not a frame count: frames are never counted to time anything.
+[[nodiscard]] constexpr auto
+computeInputRedrawUntil(double nowSeconds, std::uint32_t inputEventCount, double inputRedrawUntilSeconds, double graceSeconds) noexcept
+    -> double
+{
+    return (inputEventCount > 0) ? nowSeconds + graceSeconds : inputRedrawUntilSeconds;
 }
 
 /// P1: adaptive-vsync transition to apply given the previous and current interaction state.
@@ -247,8 +264,9 @@ computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResiz
 ///
 /// - Hidden (minimized or occluded): 0. Nothing on screen to animate, so the hidden idle sleep
 ///   applies (#1125: a covered window used to keep animating at 60 fps).
-/// - Input arrived this drain: @p inputFps. Input-driven frames used to be uncapped -- the display
-///   rate with vsync, unbounded without (#1153) -- now they share the full animation rate.
+/// - Input arrived this drain, or an input event's grace is still running (@p hadInput, see
+///   computeInputRedrawUntil(), #843): @p inputFps. Input-driven frames used to be uncapped -- the
+///   display rate with vsync, unbounded without (#1153) -- now they share the full animation rate.
 /// - Otherwise @p animationFps (computeAnimationRate()): charts animate at a steady rate whatever the
 ///   input (#1037), but only as fast as their on-screen motion needs (#1125).
 [[nodiscard]] inline auto computeFrameRateCap(double animationFps, bool hadInput, bool isHidden, double inputFps) noexcept -> double
