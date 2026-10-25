@@ -16,6 +16,28 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 
 ---
 
+## How do I check that a download is genuine?
+
+Every release file (the `.deb`, `.tar.gz` and `.zip` for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases after v0.9.0 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
+
+```bash
+gh attestation verify <asset> --repo mgradwohl/tasksmack
+```
+
+Every release also has a Sigstore `<asset>.bundle` beside each file. Download it too, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
+
+```bash
+cosign verify-blob \
+  --bundle <asset>.bundle \
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  <asset>
+```
+
+If either check fails, don't use the file. See the user guide's [Verifying a Release](user-guide.md#verifying-a-release) for what each check proves and what to do next.
+
+---
+
 ## "Process I/O, FDs or network show N/A" on Linux
 
 **Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
