@@ -423,14 +423,14 @@ pwsh tools/clean.ps1      # Windows equivalent (same flags)
 The `optimized` and `win-optimized` presets target the x86-64-v3 microarchitecture, which requires AVX2 support (Haswell 2013+ or Excavator 2015+ CPUs). If you encounter "Illegal instruction" errors, your CPU may not support these instructions.
 
 For broader compatibility, use:
-- `release-compatible` (Linux) or `win-release-compatible` (Windows) for x86-64-v2 (2009+)
-- `release` (Linux) or `win-release` (Windows) for default compiler optimizations
+- `release-compatible` (Linux) or `win-release-compatible` (Windows) for x86-64-v2, which needs SSSE3, SSE4.1, SSE4.2, POPCNT and CMPXCHG16B (Intel Nehalem or later, AMD Bulldozer or later, or AMD Jaguar). AMD Athlon II / Phenom II and Intel Core 2 do not qualify.
+- `release` (Linux) or `win-release` (Windows) for default compiler optimizations, targeting the baseline x86-64 that every x86-64 CPU runs
 
 You can also customize the target microarchitecture by setting the `TASKSMACK_MARCH` CMake variable:
 
 ```bash
 cmake --preset release -DTASKSMACK_MARCH=native  # Optimize for your specific CPU
-cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
+cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target SSE4.2/POPCNT CPUs
 ```
 
 ### Common Presets
@@ -440,7 +440,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
 | `debug` | `win-debug` | Debug symbols, no optimization, security hardening |
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
-| `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2, 2009+) |
+| `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs) |
 | `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped, whole-program vtables (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |

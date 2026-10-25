@@ -9,10 +9,13 @@
 **Fix:** Rebuild with a preset that doesn't require AVX2:
 
 ```bash
-cmake --preset release-compatible   # Linux, x86-64-v2 (2009+ CPUs)
-cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
-# or the plain "release"/"win-release" presets, which use default optimizations
+cmake --preset release-compatible      # Linux, x86-64-v2: needs SSSE3, SSE4.1/4.2 and POPCNT
+cmake --preset win-release-compatible  # Windows, x86-64-v2: needs SSSE3, SSE4.1/4.2 and POPCNT
+cmake --preset release                 # Linux, baseline x86-64: runs on any x86-64 CPU
+cmake --preset win-release             # Windows, baseline x86-64: runs on any x86-64 CPU
 ```
+
+The `release-compatible` presets need an x86-64-v2 CPU: Intel Nehalem (first-generation Core i3/i5/i7) or later, or AMD Bulldozer (FX) or later, or a Jaguar-based chip. Older CPUs, including Intel Core 2 and AMD Athlon II / Phenom II, lack some of those instructions and crash the same way on a `release-compatible` build; use the plain `release` / `win-release` preset there. If a `release-compatible` build is the one that crashes, switch to the plain preset too.
 
 ---
 
