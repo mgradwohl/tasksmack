@@ -94,8 +94,9 @@ class ProcessDetailsCharts
     static void renderNpuHistoryGraphs(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
 
     // Render scratch buffers for the stacked CPU chart (reused across frames to avoid per-frame heap
-    // allocation): only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them
-    // each frame. The User and System bands, their x axis held to now (#1016), shared with the
+    // allocation): only the reduced points, at most the plot's width-aware budget
+    // (currentPlotPointBudget(), so LINE_PLOT_MAX_POINTS_DENSE at most), are built into them each
+    // frame. The User and System bands, their x axis held to now (#1016), shared with the
     // Overview (#1180); the User line is the User band's top.
     UI::Widgets::UserSystemStack m_CpuStack;
     std::vector<double> m_CpuPlotTotal;

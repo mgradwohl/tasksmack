@@ -3,7 +3,7 @@
 tools/merge-gtest-results.py -- One JUnit report with a testcase per Google Test case (#1871).
 
 Usage:
-    merge-gtest-results.py <ctest-junit.xml> <gtest-results-dir> <output.xml>
+    merge-gtest-results.py <ctest-junit.xml>... <gtest-results-dir> <output.xml>
 
 ctest runs one entry per gtest suite (cmake/GTestSuites.cmake), so its --output-junit report has a
 testcase per suite. Each entry also writes gtest's own XML report, one testcase per case, to
@@ -12,8 +12,10 @@ the reports of the entries ctest ran, plus the ctest entries that have no gtest 
 tests) or did not pass (a crash or timeout leaves no report, and a failing entry's output names
 the cases it ran). Shards of one suite are merged back into one testsuite.
 
-A missing ctest report (the build failed before the tests ran) writes nothing and exits 0, so the
-CI step that runs this never hides the build's own failure.
+Several ctest reports (Windows ARM64 runs the script tests in a second ctest run, #2832) merge as
+one. A ctest report that doesn't exist is skipped; when none does (the build failed before the tests
+ran) nothing is written and the exit code is 0, so the CI step that runs this never hides the
+build's own failure.
 """
 
 import re
@@ -32,10 +34,10 @@ def passed(entry: ET.Element) -> bool:
     return entry.get("status") == "run" and entry.find("failure") is None and entry.find("error") is None
 
 
-def merge(ctest_junit: Path, gtest_dir: Path) -> ET.Element:
+def merge(ctest_junits: list[Path], gtest_dir: Path) -> ET.Element:
     suites: dict[str, ET.Element] = {}  # gtest suite name -> merged <testsuite>
     kept = ET.Element("testsuite", name="ctest")
-    for entry in ET.parse(ctest_junit).getroot().iter("testcase"):
+    for entry in [e for junit in ctest_junits for e in ET.parse(junit).getroot().iter("testcase")]:
         report = gtest_dir / (c_identifier(entry.get("name", "")) + ".xml")
         if report.is_file():
             for suite in ET.parse(report).getroot().iter("testsuite"):
@@ -67,14 +69,15 @@ def merge(ctest_junit: Path, gtest_dir: Path) -> ET.Element:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 4:
+    if len(argv) < 4:
         print(__doc__, file=sys.stderr)
         return 2
-    ctest_junit, gtest_dir, output = Path(argv[1]), Path(argv[2]), Path(argv[3])
-    if not ctest_junit.is_file():
-        print(f"merge-gtest-results: {ctest_junit} not found; nothing to merge", file=sys.stderr)
+    ctest_junits, gtest_dir, output = [Path(a) for a in argv[1:-2]], Path(argv[-2]), Path(argv[-1])
+    found = [junit for junit in ctest_junits if junit.is_file()]
+    if not found:
+        print(f"merge-gtest-results: {', '.join(map(str, ctest_junits))} not found; nothing to merge", file=sys.stderr)
         return 0
-    root = merge(ctest_junit, gtest_dir)
+    root = merge(found, gtest_dir)
     ET.indent(root)
     ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
     print(

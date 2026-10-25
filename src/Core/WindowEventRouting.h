@@ -97,6 +97,31 @@ enum class Action : std::uint8_t
     }
 }
 
+/// Whether an SDL event is user input the UI reacts to: a mouse wheel, a mouse button, a key, or text
+/// input (#843). run() keeps the full frame rate for a short grace after one (Application.cpp's
+/// INPUT_REDRAW_GRACE_SECONDS): Dear ImGui finishes reacting to input over the next frame or two -- a
+/// popup, combo list or tooltip is laid out hidden on its first frame and drawn on the next, a clicked
+/// tab shows its content a frame later, hover and tooltip delays tick per frame -- and those frames
+/// used to fall to the idle rate, so a popup opened 50 ms after the click instead of 16. Mouse motion
+/// is not input here: a hover changes nothing once the pointer stops, and each motion event already
+/// wakes the loop for a frame of its own (as does any event: FramePacing::computeFrameRateCap()).
+[[nodiscard]] constexpr bool isInputEvent(std::uint32_t sdlEventType) noexcept
+{
+    switch (sdlEventType)
+    {
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+    case SDL_EVENT_TEXT_EDITING:
+    case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+    case SDL_EVENT_MOUSE_WHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// Whether an SDL_EVENT_WINDOW_EXPOSED should be handled as a resize: only when the framebuffer is a
 /// real size that differs from the last size run() raised a WindowResizedEvent for. This keeps the
 /// fallback for Windows border drags, which can surface EXPOSED before (or instead of)
