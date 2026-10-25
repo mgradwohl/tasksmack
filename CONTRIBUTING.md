@@ -2841,14 +2841,16 @@ That single push runs two independent workflows:
 
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
-  Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
-  GitHub Release: it creates the release as a **draft** with a placeholder body ("Release notes
-  follow."; not GitHub's generated notes, which exceed the release-body limit on a big release,
-  #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
+  Validation](#release-artifact-validation)), signs everything with Sigstore and attests its build
+  provenance, and publishes the GitHub Release: it creates the release as a **draft**
+  with a placeholder body ("Release notes follow." and the two verification commands; not GitHub's
+  generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
   size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. The maintainer's approved release notes then replace the
-  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`.
+  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
+  Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
+  placeholder has.
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
@@ -3084,7 +3086,7 @@ To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
 `cpack -G "TGZ;DEB"`, and compare `sha256sum` of the result against the published asset.
 
-Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`; see the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `cosign verify-blob` procedure.
+Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`. A tag run also records a GitHub artifact attestation (SLSA build provenance, `actions/attest-build-provenance`) covering the same files; a dry run skips it, since attestations are public and permanent, and lists the files a tag run would attest instead (#2673). See the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `gh attestation verify` and `cosign verify-blob` procedures.
 
 ### Changelog
 
