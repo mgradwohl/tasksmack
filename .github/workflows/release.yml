@@ -2123,12 +2123,24 @@ jobs:
           fi
           echo "- Build-provenance attestations: passed ($verified assets, signer workflow \`$ATTESTATION_SIGNER_WORKFLOW\`)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install mesa software rendering
-        # As validate-linux-package does: llvmpipe through SDL's offscreen driver, no X server.
+      - name: Install the published .deb and mesa software rendering
+        # The .tar.gz declares no dependencies, so its runtime libraries (libOpenGL.so.0, libc++ and
+        # the rest) come from installing the downloaded x64 .deb, which also proves the published
+        # .deb installs: validate-linux-package's .tar.gz check relies on its .deb install the same
+        # way. Then llvmpipe through SDL's offscreen driver, no X server, as validate-linux-package does.
         if: matrix.os == 'linux'
         run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(published/TaskSmack-*-Linux.deb)
+          if (( ${#debs[@]} != 1 )); then
+            echo "Expected one TaskSmack-*-Linux.deb in the download, found ${#debs[@]}." >&2
+            echo "- Install of the Linux x64 \`.deb\`: **FAILED** (no single x64 \`.deb\`)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dri libegl1 libegl-mesa0
+          sudo apt-get install -y "./${debs[0]}" libgl1-mesa-dri libegl1 libegl-mesa0
+          echo "- Install of the Linux x64 \`.deb\`: passed (\`${debs[0]#published/}\`)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Relaunch the published Linux x64 .tar.gz
         # validate-linux-package's smoke check (tools/release-smoke-check.sh), on the downloaded copy.
