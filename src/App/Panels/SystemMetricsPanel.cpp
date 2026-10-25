@@ -880,28 +880,27 @@ void SystemMetricsPanel::renderOverview()
                 }
 
                 // The bands are drawn with ImPlot directly, so they are capped here like every
-                // plotLineWithFill series (#1022), reduced together so they still line up. Points are
-                // chosen by each band's own value (User is its own top), not by the cumulative tops:
-                // a System spike while User falls by as much leaves System's top flat, and would be
-                // dropped if the tops chose the points.
+                // plotLineWithFill series (#1022), reduced together so they still line up, and to the
+                // same budget: what this plot's width calls for (currentPlotPointBudget(), #1411,
+                // #843), not a fixed count, so a narrow window draws a fraction of a wide one's points
+                // while each bucket still keeps every band's extremes. Points are chosen by each
+                // band's own value (User is its own top), not by the cumulative tops: a System spike
+                // while User falls by as much leaves System's top flat, and would be dropped if the
+                // tops chose the points.
                 //
-                // The choice of points is kept until m_ChartDataGeneration changes (#1139): reducing
-                // the whole history and copying every band out of it each frame was most of this
-                // chart's cost at the largest history settings. Each frame only builds the kept
-                // points, at most LINE_PLOT_MAX_POINTS_DENSE of them.
-                const std::span<const UI::Widgets::ReducedPoint> points =
-                    m_CpuStackReduction.points({.generation = m_ChartDataGeneration,
-                                                .dataId = 0,
-                                                .count = breakdownCount,
-                                                .maxOut = UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE},
-                                               [&](std::vector<UI::Widgets::ReducedPoint>& out)
-                                               {
-                                                   UI::Widgets::reduceAlignedPoints<float>(breakdownTimeData,
-                                                                                           {cpuUserData, cpuSystemData, cpuIowaitData},
-                                                                                           UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE,
-                                                                                           nowSeconds,
-                                                                                           out);
-                                               });
+                // The choice of points is kept until m_ChartDataGeneration changes (#1139), or the
+                // budget does (a resize; it is part of the key): reducing the whole history and copying
+                // every band out of it each frame was most of this chart's cost at the largest history
+                // settings. Each frame only builds the kept points, at most LINE_PLOT_MAX_POINTS_DENSE
+                // of them.
+                const int pointBudget = UI::Widgets::currentPlotPointBudget();
+                const std::span<const UI::Widgets::ReducedPoint> points = m_CpuStackReduction.points(
+                    {.generation = m_ChartDataGeneration, .dataId = 0, .count = breakdownCount, .maxOut = pointBudget},
+                    [&](std::vector<UI::Widgets::ReducedPoint>& out)
+                    {
+                        UI::Widgets::reduceAlignedPoints<float>(
+                            breakdownTimeData, {cpuUserData, cpuSystemData, cpuIowaitData}, pointBudget, nowSeconds, out);
+                    });
 
                 // The User and System bands' edges (shared with Process Details, #1180). A gap point is
                 // NaN in every band (see UI::Widgets::reduceAlignedSeries).
