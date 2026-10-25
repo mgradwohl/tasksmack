@@ -162,9 +162,9 @@ namespace
     {
         try
         {
-            if (std::optional<Broker::ProcessCountersEntry> entry = readers.processCounters(target))
+            if (std::optional<Broker::ProcessCountersEntry> entry = readers.processCounters(target, read.withSockets))
             {
-                reply.entries.push_back(*entry);
+                reply.entries.push_back(std::move(*entry));
             }
         }
         catch (...)
