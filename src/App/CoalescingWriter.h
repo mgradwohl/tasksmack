@@ -143,6 +143,7 @@ template<typename Snapshot> class CoalescingWriter
         }
     }
 
+    // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog catches its own formatting and sink errors inside log()
     void write(const Snapshot& snapshot) noexcept
     {
         bool written = false;
