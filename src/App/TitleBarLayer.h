@@ -69,7 +69,9 @@ class TitleBarLayer : public Core::Layer
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
     using ButtonBounds = App::ButtonBounds;
 
-    /// True if (x, y) falls inside any title-bar button's bounds, the icon's included.
+    /// True if (x, y) is a title-bar control's -- any button's or the icon's -- so neither a drag nor a
+    /// resize starts there: computeIsPointInControlArea() over hitTestInput(), which leaves the
+    /// top-right resize corner to the border (#2882).
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
     /// Everything SDL's hit test is decided from, as the bar has it now (WindowHitTestInput): the

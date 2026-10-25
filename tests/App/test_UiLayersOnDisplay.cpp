@@ -1749,9 +1749,8 @@ struct EdgeResizeObserved
     int checks = 0;  ///< Cases checked against where the window ended up
     int skipped = 0; ///< Cases that move the window's origin, skipped where positions don't apply
     std::vector<std::string> failures;
-    bool closeCoversTopRightCorner = false; ///< The top-right corner's press point is on the Close button
-    int minimumWidth = 0;                   ///< The minimum the resize held the window to...
-    int minimumHeight = 0;                  ///< ...in window coordinates
+    int minimumWidth = 0;  ///< The minimum the resize held the window to...
+    int minimumHeight = 0; ///< ...in window coordinates
     int frames = 0;
     int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
     bool timedOut = false;
@@ -1762,8 +1761,8 @@ struct EdgeResizeObserved
 /// held pointer -- and checks where the window lands (#2717): the edge or corner pressed follows the
 /// pointer and the opposite edge or edges stay put; a pull past the minimum size stops there, with
 /// the right or bottom edge still pinned when the left or top one was pulled. The top-right corner
-/// is the Close button, which the hit test excludes before any resize border (#750): a press there
-/// resizes nothing.
+/// included: the Close button's slot reaches it, but the corner square is the resize border's, not the
+/// button's (#2882), so it resizes like the other three.
 ///
 /// Each case waits for the window to reach its expected rectangle, up to WAIT_LIMIT frames (the size
 /// commits at most every ResizeTracker::SIZE_COMMIT_INTERVAL_SECONDS, and an X11 window manager
@@ -1854,18 +1853,9 @@ class EdgeResizeDriverLayer : public Core::Layer
                 m_Observed.minimumHeight = m_Minimum.second;
             }
             const auto [localX, localY] = resizePressPoint(resizeCase.edge, now.width, now.height);
-            m_OnControl = m_TitleBar.isPointInControlArea(static_cast<float>(localX), static_cast<float>(localY));
-            if (resizeCase.edge == App::ResizeEdge::TopRight)
-            {
-                // The Close button touches the window's top and right edges and is excluded before the
-                // resize border (#750), so the corner under it resizes nothing.
-                m_Observed.closeCoversTopRightCorner = m_OnControl;
-                if (m_OnControl)
-                {
-                    m_Expected = now;
-                }
-            }
-            else if (m_OnControl)
+            // No press point is a control's: the top-right corner's is inside the Close button's slot,
+            // which the corner square is taken back out of (#2882).
+            if (m_TitleBar.isPointInControlArea(static_cast<float>(localX), static_cast<float>(localY)))
             {
                 check(false, std::format("{}: the press point ({}, {}) is on a control", resizeCase.name, localX, localY));
                 nextCase();
@@ -1873,7 +1863,7 @@ class EdgeResizeDriverLayer : public Core::Layer
             }
             m_Target = {now.x + localX + m_Offset.first, now.y + localY + m_Offset.second};
             press(resizeCase.edge, now, frame);
-            m_Deadline = frame + (m_OnControl ? NO_CHANGE_FRAMES : WAIT_LIMIT);
+            m_Deadline = frame + WAIT_LIMIT;
             next(Phase::AwaitCase, 1);
             break;
         }
@@ -1881,16 +1871,14 @@ class EdgeResizeDriverLayer : public Core::Layer
         {
             const Case& resizeCase = CASES.at(m_Case);
             const bool landed = withinRect(now, m_Expected);
-            // A case that expects no change waits its whole deadline out, so a resize that did happen
-            // has had time to commit.
-            if (waiting && (!landed || m_OnControl))
+            if (waiting && !landed)
             {
                 if (!sameRect(now, m_LastSeen))
                 {
                     m_LastSeen = now;
                     m_StillSince = frame;
                 }
-                else if (!m_OnControl && frame - m_StillSince >= RETRY_EVERY)
+                else if (frame - m_StillSince >= RETRY_EVERY)
                 {
                     press(resizeCase.edge, now, frame);
                     ++m_Observed.pressRetries;
@@ -1991,11 +1979,10 @@ class EdgeResizeDriverLayer : public Core::Layer
     };
 
     static constexpr int SETTLE = 10;
-    static constexpr int STEP = 5;              // frames between cases: the release takes effect on the next one
-    static constexpr int WAIT_LIMIT = 300;      // frames to wait for a rectangle before recording the miss
-    static constexpr int NO_CHANGE_FRAMES = 10; // frames a press that resizes nothing is watched: past a size commit interval
-    static constexpr int RETRY_EVERY = 30;      // frames with no change before a press is made again
-    static constexpr int MAX_FRAMES = 4000;     // room for every wait to run out
+    static constexpr int STEP = 5;          // frames between cases: the release takes effect on the next one
+    static constexpr int WAIT_LIMIT = 300;  // frames to wait for a rectangle before recording the miss
+    static constexpr int RETRY_EVERY = 30;  // frames with no change before a press is made again
+    static constexpr int MAX_FRAMES = 4000; // room for every wait to run out
     static constexpr int PROBE_X = 40;
     static constexpr int PROBE_Y = 30;
     static constexpr int RESIZE_BY = 60;
@@ -2032,14 +2019,14 @@ class EdgeResizeDriverLayer : public Core::Layer
     std::pair<int, int> m_Minimum;
     std::pair<int, int> m_Offset;
     std::pair<int, int> m_Target; ///< Global: where the pointer is held
-    bool m_OnControl = false;     ///< The press point is on a title-bar control, so nothing should happen
 };
 
 // #2717: the resize the title bar runs client-side, from every edge and corner, live. The edge or
 // corner pressed follows the pointer and the opposite edge or edges stay put; a pull past the
-// minimum size stops there, the far edge still pinned. The top-right corner is the Close button and
-// resizes nothing. The maths is unit-tested in ComputeResizeGeometryTest and ResizeTrackerTest; this
-// checks the window on a display ends up where it says.
+// minimum size stops there, the far edge still pinned. The top-right corner resizes like the other
+// three although the Close button's slot reaches it: the corner square is the border's (#2882). The
+// maths is unit-tested in ComputeResizeGeometryTest and ResizeTrackerTest; this checks the window on
+// a display ends up where it says.
 TEST(UiLayersOnDisplayTest, TitleBarResizesFromEveryEdgeAndCornerAndStopsAtTheMinimumSize)
 {
     if (!hasDisplay())
@@ -2079,7 +2066,6 @@ TEST(UiLayersOnDisplayTest, TitleBarResizesFromEveryEdgeAndCornerAndStopsAtTheMi
     if (observed.positionsApply)
     {
         EXPECT_EQ(observed.skipped, 0);
-        EXPECT_TRUE(observed.closeCoversTopRightCorner) << "the top-right corner is the Close button, excluded before the resize border";
     }
 }
 
@@ -2527,10 +2513,16 @@ class HitTestDriverLayer : public Core::Layer
         check("the top-left corner", 1.0F, 1.0F, resize(SDL_HITTEST_RESIZE_TOPLEFT));
         check("the bottom-left corner", 1.0F, h - 2.0F, resize(SDL_HITTEST_RESIZE_BOTTOMLEFT));
         check("the bottom-right corner", w - 2.0F, h - 2.0F, resize(SDL_HITTEST_RESIZE_BOTTOMRIGHT));
-        check("the top-right corner (the close button)", w - 2.0F, 1.0F, SDL_HITTEST_NORMAL);
+        // The top-right corner is the border's although the Close button's slot reaches it (#2882); one
+        // pixel past the corner square, left of it or below it, is the button.
+        const float border = input.resizeBorderPx;
+        check("the top-right corner", w - 2.0F, 1.0F, resize(SDL_HITTEST_RESIZE_TOPRIGHT));
+        check("the top-right corner's innermost pixel", w - border, border - 1.0F, resize(SDL_HITTEST_RESIZE_TOPRIGHT));
+        check("the close button left of the corner", w - border - 1.0F, border - 1.0F, SDL_HITTEST_NORMAL);
+        check("the close button below the corner", w - 2.0F, border, SDL_HITTEST_NORMAL);
         check("the content", w * 0.5F, input.titleBarHeightPx + 50.0F, SDL_HITTEST_NORMAL);
 #ifdef _WIN32
-        askWindows(width, height, b.close, barMiddleY, drag, resize(SDL_HITTEST_RESIZE_RIGHT));
+        askWindows(width, height, b.close, barMiddleY, drag, resize(SDL_HITTEST_RESIZE_RIGHT), resize(SDL_HITTEST_RESIZE_TOPRIGHT));
 #endif
     }
 
@@ -2554,8 +2546,13 @@ class HitTestDriverLayer : public Core::Layer
     /// Asks the window itself, as Windows does when the pointer moves: the window procedure hands
     /// WM_NCHITTEST to the installed callback, and SDL maps its answer to a Win32 hit-test code --
     /// DRAGGABLE is HTCAPTION, which is what Aero Snap needs. Only a question: nothing is clicked.
-    void askWindows(
-        int width, int height, const App::ButtonBounds& close, float barMiddleY, SDL_HitTestResult title, SDL_HitTestResult rightEdge)
+    void askWindows(int width,
+                    int height,
+                    const App::ButtonBounds& close,
+                    float barMiddleY,
+                    SDL_HitTestResult title,
+                    SDL_HitTestResult rightEdge,
+                    SDL_HitTestResult topRightCorner)
     {
         const SDL_PropertiesID props = SDL_GetWindowProperties(Core::Application::get().getWindow().getHandle());
         auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
@@ -2578,6 +2575,8 @@ class HitTestDriverLayer : public Core::Layer
                 return HTCAPTION;
             case SDL_HITTEST_RESIZE_RIGHT:
                 return HTRIGHT;
+            case SDL_HITTEST_RESIZE_TOPRIGHT:
+                return HTTOPRIGHT;
             default:
                 return HTCLIENT;
             }
@@ -2595,6 +2594,9 @@ class HitTestDriverLayer : public Core::Layer
         checkWindows("the empty title bar", static_cast<float>(width) * 0.5F, barMiddleY, title);
         checkWindows("the Close button", (close.minX + close.maxX) * 0.5F, (close.minY + close.maxY) * 0.5F, SDL_HITTEST_NORMAL);
         checkWindows("the right edge", static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, rightEdge);
+        // The corner the Close button's slot reaches (#2882): the border's, so on Windows HTCLIENT like
+        // every border, and the press comes to the app's resize rather than the OS's modal one.
+        checkWindows("the top-right corner", static_cast<float>(width) - 2.0F, 1.0F, topRightCorner);
     }
 #endif
 
