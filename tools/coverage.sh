@@ -101,13 +101,29 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 # app's own objects, for the layers that need the whole app on a display (#1395). A failing suite still
 # gets its coverage reported, so the failure can be diagnosed from the report, but the script exits
 # non-zero at the end (#2251). Keep in sync with tools/coverage.ps1.
+#
+# The UI scenarios (#2711) run on a synthetic machine: tests/CMakeLists.txt gives UiScenarioTest
+# TASKSMACK_SYNTHETIC, which the app reads once per process, so they get a run of their own here with
+# the same value, as under CTest, and the rest of TaskSmackAppTests runs without it (#2927).
+UI_SCENARIO_SYNTHETIC="$(sed -n 's/.*UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=\([^"]*\)".*/\1/p' "${PROJECT_ROOT}/tests/CMakeLists.txt")"
+if [[ -z "$UI_SCENARIO_SYNTHETIC" ]]; then
+    echo "Error: no UiScenarioTest TASKSMACK_SYNTHETIC in tests/CMakeLists.txt; keep this script in step with it." >&2
+    exit 1
+fi
 FAILED_SUITES=()
-for suite in TaskSmackTests TaskSmackThemeTests TaskSmackAppTests; do
+# Each run: the suite, then its gtest filter and environment (either may be empty).
+for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScenarioTest.*|" \
+    "TaskSmackAppTests|UiScenarioTest.*|TASKSMACK_SYNTHETIC=${UI_SCENARIO_SYNTHETIC}"; do
+    IFS='|' read -r suite filter run_env <<<"$run"
+    command=(env)
+    [[ -n "$run_env" ]] && command+=("$run_env")
+    command+=("./tests/${suite}")
+    [[ -n "$filter" ]] && command+=("--gtest_filter=${filter}")
     suite_status=0
-    "./tests/${suite}" || suite_status=$?
+    "${command[@]}" || suite_status=$?
     if [[ $suite_status -ne 0 ]]; then
-        echo "Warning: ${suite} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
-        FAILED_SUITES+=("$suite")
+        echo "Warning: ${suite}${filter:+ (${filter})} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
+        FAILED_SUITES+=("${suite}${filter:+ (${filter})}")
     fi
 done
 

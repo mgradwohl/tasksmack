@@ -179,11 +179,39 @@ try {
     # objects, for the layers that need the whole app on a display (#1395). Keep in sync with
     # tools/coverage.sh. A failing suite still gets its coverage reported, so the failure can be
     # diagnosed from the report, but the script exits non-zero at the end (#2251).
-    foreach ($suite in "TaskSmackTests", "TaskSmackThemeTests", "TaskSmackAppTests") {
-        & "$BuildDir\tests\$suite.exe"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "$suite failed (exit code $LASTEXITCODE); generating the coverage report, then failing."
-            $failedSuites.Add($suite)
+    #
+    # The UI scenarios (#2711) run on a synthetic machine: tests/CMakeLists.txt gives UiScenarioTest
+    # TASKSMACK_SYNTHETIC, which the app reads once per process, so they get a run of their own here with
+    # the same value, as under CTest, and the rest of TaskSmackAppTests runs without it (#2927).
+    $syntheticMatch = Select-String -Path (Join-Path $ProjectRoot "tests\CMakeLists.txt") `
+        -Pattern 'UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=([^"]*)"' | Select-Object -First 1
+    if ($null -eq $syntheticMatch) {
+        Write-Error "No UiScenarioTest TASKSMACK_SYNTHETIC in tests/CMakeLists.txt; keep this script in step with it."
+        exit 1
+    }
+    $uiScenarioSynthetic = $syntheticMatch.Matches[0].Groups[1].Value
+    # Each run: the suite, its gtest filter and its TASKSMACK_SYNTHETIC (either may be empty).
+    $runs = @(
+        @{ Suite = "TaskSmackTests"; Filter = ""; Synthetic = "" },
+        @{ Suite = "TaskSmackThemeTests"; Filter = ""; Synthetic = "" },
+        @{ Suite = "TaskSmackAppTests"; Filter = "-UiScenarioTest.*"; Synthetic = "" },
+        @{ Suite = "TaskSmackAppTests"; Filter = "UiScenarioTest.*"; Synthetic = $uiScenarioSynthetic }
+    )
+    foreach ($run in $runs) {
+        $suite = $run.Suite
+        $label = if ($run.Filter) { "$suite ($($run.Filter))" } else { $suite }
+        $arguments = if ($run.Filter) { @("--gtest_filter=$($run.Filter)") } else { @() }
+        if ($run.Synthetic) { $env:TASKSMACK_SYNTHETIC = $run.Synthetic }
+        try {
+            & "$BuildDir\tests\$suite.exe" @arguments
+            $suiteExit = $LASTEXITCODE
+        }
+        finally {
+            Remove-Item Env:TASKSMACK_SYNTHETIC -ErrorAction SilentlyContinue
+        }
+        if ($suiteExit -ne 0) {
+            Write-Warning "$label failed (exit code $suiteExit); generating the coverage report, then failing."
+            $failedSuites.Add($label)
         }
     }
 
