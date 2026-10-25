@@ -75,6 +75,29 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return {};
     }
 
+    /// Whether holdForSession() holds (#2728): off by default, refusing as a transport without a session
+    /// helper does; on, it connects (failing as connect() would) and holds.
+    void setHoldsSessions(bool holds) noexcept
+    {
+        m_HoldsSessions = holds;
+    }
+
+    [[nodiscard]] std::expected<void, std::string> holdForSession(const std::stop_token& stopToken) override
+    {
+        if (!m_HoldsSessions)
+        {
+            return IPrivilegedBroker::holdForSession(stopToken);
+        }
+        auto connected = connect(stopToken);
+        m_Held = connected.has_value();
+        return connected;
+    }
+
+    [[nodiscard]] bool heldForSession() const noexcept override
+    {
+        return m_Held && m_Connected;
+    }
+
     /// callIfIdle() as call(), counted: the sampler's reads must use it (#2369).
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> callIfIdle(const Platform::Broker::Request& request,
                                                                                     std::chrono::milliseconds /*timeout*/) override
@@ -132,6 +155,8 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     int m_IdleCallCount = 0;
     std::atomic<bool> m_Connected{true};
     std::atomic<bool> m_ReadsOtherUsers{true};
+    std::atomic<bool> m_HoldsSessions{false};
+    std::atomic<bool> m_Held{false};
 };
 
 } // namespace Mocks
