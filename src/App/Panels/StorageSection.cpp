@@ -449,11 +449,14 @@ void renderStorageSection(RenderContext& ctx)
             // not clamped. A per-disk series holds NaN for samples where the disk was absent, and the
             // current values are NaN when it is absent from the latest sample (#1015): both are skipped.
             // Keyed by device name, like the cell, so a disk keeps its easing when another is unplugged.
+            // The window's maximum is kept between frames, per disk (UI::Widgets::windowSeriesMax(), #843).
             ImGui::PushID(disk.deviceName.data(), disk.deviceName.data() + disk.deviceName.size());
             diskUpperBounds.push_back(UI::Widgets::easedRateAxisUpperBound(
                 "##DiskAxis",
-                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(frame.times, diskAxis.xMin, frame.readData, frame.writeData),
-                                               {frame.currentRead, frame.currentWrite}),
+                UI::Widgets::withCurrentValues(
+                    UI::Widgets::windowSeriesMax(
+                        "##DiskAxis", ctx.chartDataGeneration, frame.times, diskAxis.xMin, frame.readData, frame.writeData),
+                    {frame.currentRead, frame.currentWrite}),
                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
             ImGui::PopID();
             diskFrames.push_back(frame);
@@ -501,11 +504,14 @@ void renderStorageSection(RenderContext& ctx)
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
         // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window
-        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it.
+        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it. The
+        // window's maximum is kept between frames (UI::Widgets::windowSeriesMax(), #843).
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##SystemDiskHistory",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
-                                           {smoothedRead, smoothedWrite}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::windowSeriesMax(
+                    "##SystemDiskHistory", ctx.chartDataGeneration, aggregateTimes, diskAxis.xMin, readData, writeData),
+                {smoothedRead, smoothedWrite}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),

@@ -98,14 +98,6 @@ class ScopedGpuId
     ScopedGpuId& operator=(ScopedGpuId&&) = delete;
 };
 
-/// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
-/// Accepts a reusable buffer to avoid per-call heap allocation.
-void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<float>& out)
-{
-    out.resize(hist.size());
-    std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
-}
-
 /// The metrics a GPU does not report, named for renderUnavailableMetricsNote(). Held in place: the
 /// names are constants, and the list is built every frame (#1171).
 class UnavailableMetrics
@@ -376,13 +368,10 @@ void renderGpuSection(RenderContext& ctx)
         }
     };
 
-    // Scratch buffers for normalizeToPercent, kept across GPUs and frames (resize only allocates when
-    // the count grows).
-    std::vector<float>& clockPercentBuf = cache.clockPercent;
-    std::vector<float>& tempPercentBuf = cache.temperaturePercent;
-    std::vector<float>& powerPercentBuf = cache.powerPercent;
-    // Grows or shrinks only when the GPU count does; each entry rebuilds a label only when its scale moves.
+    // Grow or shrink only when the GPU count does. Each entry rebuilds a label only when its scale
+    // moves, and its scaled lines only for a new publication or scale (#843).
     cache.scaledLabels.resize(drawList.size());
+    cache.percentSeries.resize(drawList.size());
     const char* const tempLabel = temperatureLabel().c_str();
 
     // Render each GPU
@@ -488,11 +477,11 @@ void renderGpuSection(RenderContext& ctx)
         // Only the clocks the window shows set the scale: not the trim anchor left of it (#1324). The
         // NowBar's smoothed clock counts too, so the bar never exceeds the scale while it eases down
         // from a peak that has left the window.
-        const float maxClockMHz = gpuClockReferenceMHz(timeData,
-                                                       axisConfig.xMin,
-                                                       clockData,
-                                                       snap.gpuClockMHz,
-                                                       UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
+        // The window's largest clock is kept between frames (UI::Widgets::windowSeriesMax(), #843).
+        const float maxClockMHz = gpuClockReferenceMHz(
+            UI::Widgets::windowSeriesMax("##GPUClockReference", ctx.chartDataGeneration, timeData, axisConfig.xMin, clockData),
+            snap.gpuClockMHz,
+            UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
         // What 100 % means for the clock, temperature and power lines, named by their labels (#1205).
         const float clockScaleMHz = gpuClockScaleMHz(maxClockMHz);
         const GpuPowerScale powerScale = gpuPowerScale(snap.powerLimitWatts);
@@ -500,6 +489,7 @@ void renderGpuSection(RenderContext& ctx)
         scaledLabels.update(clockScaleMHz, powerScale);
         const char* const clockLabel = scaledLabels.clock.c_str();
         const char* const powerLabel = scaledLabels.power.c_str();
+        GpuPercentSeries& percentSeries = cache.percentSeries[entryIndex];
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
@@ -540,11 +530,12 @@ void renderGpuSection(RenderContext& ctx)
                 // every clock is below it, rounded up to a step. Its label names that scale (#1205).
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
-                    normalizeToPercent(clockData, clockScaleMHz, clockPercentBuf);
-                    const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
+                    const std::span<const float> clockPercentData =
+                        percentSeries.clock.percentOf(ctx.chartDataGeneration, clockData, clockScaleMHz);
+                    const auto clockTimeData = tailAlignedSpan(timeData, clockPercentData.size());
                     plotSeries(clockLabel,
                                clockTimeData.values.data(),
-                               clockPercentBuf.data(),
+                               clockPercentData.data(),
                                UI::Format::checkedCount(clockTimeData.values.size()),
                                theme.scheme().gpuClock,
                                theme.scheme().gpuClockFill,
@@ -840,11 +831,12 @@ void renderGpuSection(RenderContext& ctx)
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempData.empty())
                     {
-                        normalizeToPercent(tempData, maxTempC, tempPercentBuf);
-                        const auto tempTimeData = tailAlignedSpan(timeData, tempPercentBuf.size());
+                        const std::span<const float> tempPercentData =
+                            percentSeries.temperature.percentOf(ctx.chartDataGeneration, tempData, maxTempC);
+                        const auto tempTimeData = tailAlignedSpan(timeData, tempPercentData.size());
                         plotSeries(tempLabel,
                                    tempTimeData.values.data(),
-                                   tempPercentBuf.data(),
+                                   tempPercentData.data(),
                                    UI::Format::checkedCount(tempTimeData.values.size()),
                                    theme.scheme().gpuTemperature,
                                    std::nullopt,
@@ -854,11 +846,12 @@ void renderGpuSection(RenderContext& ctx)
                     // Power (normalized to the GPU's limit, or an assumed one its label says is assumed)
                     if (caps.hasPowerMetrics && !powerData.empty())
                     {
-                        normalizeToPercent(powerData, maxPowerW, powerPercentBuf);
-                        const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
+                        const std::span<const float> powerPercentData =
+                            percentSeries.power.percentOf(ctx.chartDataGeneration, powerData, maxPowerW);
+                        const auto powerTimeData = tailAlignedSpan(timeData, powerPercentData.size());
                         plotSeries(powerLabel,
                                    powerTimeData.values.data(),
-                                   powerPercentBuf.data(),
+                                   powerPercentData.data(),
                                    UI::Format::checkedCount(powerTimeData.values.size()),
                                    theme.scheme().gpuPower,
                                    std::nullopt,

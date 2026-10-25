@@ -97,11 +97,13 @@ class ProcessDetailsCharts
     // allocation): only the reduced points, at most the plot's width-aware budget
     // (currentPlotPointBudget(), so LINE_PLOT_MAX_POINTS_DENSE at most), are built into them each
     // frame. The User and System bands, their x axis held to now (#1016), shared with the
-    // Overview (#1180); the User line is the User band's top.
+    // Overview (#1180); the User line is the User band's top. Their values are gathered only when
+    // the points change, and only x is rebuilt every frame (#843).
     UI::Widgets::UserSystemStack m_CpuStack;
     std::vector<double> m_CpuPlotTotal;
     std::vector<double> m_CpuPlotSystem;
     UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per history generation (#1139)
+    UI::Widgets::ReducedValuesStamp m_CpuPlotValues;    // Whether the buffers above hold those points' values (#843)
 
     // Per-tab state for the shared chart-height rule (#959). The Overview's is the panel's: its
     // Identity/Runtime block shares that tab's height.

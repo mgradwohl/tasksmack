@@ -332,6 +332,8 @@ set(COMMON_TEST_SOURCES
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
+    # The chart caches that keep per-publication work out of the frames between samples (#843)
+    UI/test_ChartFrameCaches.cpp
     UI/test_NowBarsRender.cpp
     # ImPlot lines sample ImGui's baked line texture (#2744)
     UI/test_PlotLineTexture.cpp

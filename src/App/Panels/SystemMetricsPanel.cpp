@@ -903,33 +903,41 @@ void SystemMetricsPanel::renderOverview()
                     });
 
                 // The User and System bands' edges (shared with Process Details, #1180). A gap point is
-                // NaN in every band (see UI::Widgets::reduceAlignedSeries).
+                // NaN in every band (see UI::Widgets::reduceAlignedSeries). They are gathered only when
+                // the points change (ReducedValuesStamp, #843), each with the value it holds out to
+                // "now" (#1016) already appended; between samples a frame rebuilds only their x, which
+                // moves with now.
                 auto& stack = m_CpuStack;
-                UI::Widgets::buildUserSystemStack<float>(points, breakdownTimeData, cpuUserData, cpuSystemData, stack);
                 auto& yIowaitTop = m_CpuStackYIowait;
                 auto& yBusyTop = m_CpuStackYBusy;
-                yIowaitTop.resize(points.size());
-                yBusyTop.resize(points.size());
-                for (std::size_t k = 0; k < points.size(); ++k)
+                if (m_CpuStackValues.stale(m_CpuStackReduction))
                 {
-                    if (points[k].gap)
+                    UI::Widgets::buildUserSystemStackValues<float>(points, cpuUserData, cpuSystemData, stack);
+                    yIowaitTop.resize(points.size());
+                    yBusyTop.resize(points.size());
+                    for (std::size_t k = 0; k < points.size(); ++k)
                     {
-                        yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
-                        continue;
+                        if (points[k].gap)
+                        {
+                            yIowaitTop[k] = yBusyTop[k] = std::numeric_limits<double>::quiet_NaN();
+                            continue;
+                        }
+                        // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
+                        // (100 - idle - iowait, which the Total line follows) rather than on System, so
+                        // the Total line runs along its bottom edge instead of through it.
+                        const auto i = static_cast<std::size_t>(points[k].index);
+                        yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
+                        yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
                     }
-                    // I/O Wait is idle time, not busy (#1157): its band sits on the busy total
-                    // (100 - idle - iowait, which the Total line follows) rather than on System, so
-                    // the Total line runs along its bottom edge instead of through it.
-                    const auto i = static_cast<std::size_t>(points[k].index);
-                    yIowaitTop[k] = 100.0 - static_cast<double>(cpuIdleData[i]);
-                    yBusyTop[k] = yIowaitTop[k] - static_cast<double>(cpuIowaitData[i]);
+                    UI::Widgets::appendHeldValues({&stack.base, &stack.userTop, &stack.systemTop, &yIowaitTop, &yBusyTop});
+                    m_CpuStackValues.markGathered(m_CpuStackReduction);
                 }
+                UI::Widgets::gatherReducedTimes(points, breakdownTimeData, stack.x);
 
                 // The bands reach "now" like every plotLineWithFill series: the last sample held to
-                // x = 0 (#1016), unless it is too old to pass for current (#1147).
-                UI::Widgets::holdLastValuesToNow(stack.x,
-                                                 {&stack.base, &stack.userTop, &stack.systemTop, &yIowaitTop, &yBusyTop},
-                                                 UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
+                // x = 0 (#1016), unless it is too old to pass for current (#1147). Each band is drawn
+                // to x's length, so its held value is drawn only when x reaches now.
+                UI::Widgets::holdTimeToNow(stack.x, UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
                 const int stackCount = UI::Format::checkedCount(stack.x.size());
 
                 // Each band is filled only where both of its edges have a reading (#1149).
@@ -1099,8 +1107,9 @@ void SystemMetricsPanel::renderOverview()
             // bar's smoothed value, which can still be easing down from a peak that has just left it.
             const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
                 "##PowerBatteryHistory",
-                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(powerTimeData, axis.xMin, powerHist),
-                                               {UI::Widgets::currentIfAvailable(hasProcessPower, m_SmoothedPower.watts)}),
+                UI::Widgets::withCurrentValues(
+                    UI::Widgets::windowSeriesMax("##PowerBatteryHistory", m_ChartDataGeneration, powerTimeData, axis.xMin, powerHist),
+                    {UI::Widgets::currentIfAvailable(hasProcessPower, m_SmoothedPower.watts)}),
                 UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
 
             // Beside Power, Battery is drawn on the right-hand axis; alone it takes the primary one.
@@ -1319,18 +1328,25 @@ void SystemMetricsPanel::renderOverview()
         // shared the left axis the Threads line and bar lay flat at zero (#1916). Each bar is scaled
         // to its series' axis, so a bar and its line show a value at the same height (#1003). All are
         // sized to the samples in the window, not ones left of it (#1145), and to their bars' smoothed
-        // values, which can still be easing down from a peak that has just left it.
+        // values, which can still be easing down from a peak that has just left it. The window's maxima
+        // are kept between frames (UI::Widgets::windowSeriesMax(), #843).
         const double threadAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData), {m_SmoothedResources.threads}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::windowSeriesMax("##ResourcesHistory", m_ChartDataGeneration, timeData, axis.xMin, threadData),
+                {m_SmoothedResources.threads}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory/Y2",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), {m_SmoothedResources.pageFaults}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::windowSeriesMax("##ResourcesHistory/Y2", m_ChartDataGeneration, timeData, axis.xMin, faultData),
+                {m_SmoothedResources.pageFaults}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double handleAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory/Y3",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, handleData), {m_SmoothedResources.handles}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::windowSeriesMax("##ResourcesHistory/Y3", m_ChartDataGeneration, timeData, axis.xMin, handleData),
+                {m_SmoothedResources.handles}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
 #ifdef _WIN32

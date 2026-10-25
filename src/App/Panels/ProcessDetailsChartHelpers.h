@@ -120,8 +120,18 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 // #1145) and the smoothed values of its bars, which can still be easing down from a peak that has
 // just left the window. Each bar is scaled to its series' axis, so a bar and its line show a value at
 // the same height (#1003). An unread value (NaN, or a bar showing N/A) does not move an axis.
+//
+// Each comes in two forms: from the window's series maximum, which the charts keep between frames
+// (UI::Widgets::windowSeriesMax(), #843), and from the series themselves, the same over
+// maxOfSeriesSince().
 
-/// The CPU chart's: Total, User and System on one percent axis (#1195).
+/// The CPU chart's: Total, User and System on one percent axis (#1195). @p seriesMax is their maximum
+/// in the window.
+[[nodiscard]] inline double cpuAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return std::max({seriesMax, smoothed.cpuPercent, smoothed.cpuUserPercent, smoothed.cpuSystemPercent});
+}
+
 [[nodiscard]] inline double cpuAxisDataMax(std::span<const double> timeData,
                                            double xMin,
                                            std::span<const double> total,
@@ -129,15 +139,18 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
                                            std::span<const double> system,
                                            const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return std::max({UI::Widgets::maxOfSeriesSince(timeData, xMin, total, user, system),
-                     smoothed.cpuPercent,
-                     smoothed.cpuUserPercent,
-                     smoothed.cpuSystemPercent});
+    return cpuAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, total, user, system), smoothed);
 }
 
 /// The Memory chart's left axis: Used and Shared bytes (@p shared empty where it is not drawn), with
 /// their bars' smoothed values, and Private and Swap where they are drawn (#1885; empty otherwise). The lifetime peak is left out: one far
 /// above today's usage would flatten the lines; its value is in the value strip and the tooltip.
+/// @p seriesMax is the drawn series' maximum in the window.
+[[nodiscard]] inline double memoryAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return std::max({seriesMax, smoothed.residentBytes, smoothed.memorySharedBytes});
+}
+
 [[nodiscard]] inline double memoryAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> used,
@@ -146,124 +159,171 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
                                               std::span<const double> privateBytes = {},
                                               std::span<const double> swapBytes = {}) noexcept
 {
-    return std::max({UI::Widgets::maxOfSeriesSince(timeData, xMin, used, shared, privateBytes, swapBytes),
-                     smoothed.residentBytes,
-                     smoothed.memorySharedBytes});
+    return memoryAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, used, shared, privateBytes, swapBytes), smoothed);
 }
 
 /// The Memory chart's right-hand Virtual axis (#992).
+[[nodiscard]] inline double virtualAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax, {smoothed.virtualBytes});
+}
+
 [[nodiscard]] inline double virtualAxisDataMax(std::span<const double> timeData,
                                                double xMin,
                                                std::span<const double> virtualBytes,
                                                const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, virtualBytes), {smoothed.virtualBytes});
+    return virtualAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, virtualBytes), smoothed);
 }
 
 /// The Resources chart's left axis: Threads alone (#1916). Handles/FDs have their own right-hand
 /// axis (handleAxisDataMax()): a process holds tens of times more of them than threads, so on one
 /// shared axis the Threads line lay flat on the baseline. A Threads bar with no reading is left out (#1935).
+[[nodiscard]] inline double threadAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount)});
+}
+
 [[nodiscard]] inline double threadAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> threads,
                                               const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads),
-                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount)});
+    return threadAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), smoothed);
 }
 
 /// threadAxisDataMax() with the GDI Objects series too (Windows, #1000), which shares the Threads
 /// axis: a process's GDI objects run to the same order of magnitude as its threads, far closer than
 /// its handles do (#1916). @p gdi can be shorter than the others; it ends at the same newest sample.
-/// A GDI bar with no reading is left out.
+/// A GDI bar with no reading is left out. @p seriesMax is Threads' and GDI Objects' maximum in the
+/// window.
+[[nodiscard]] inline double threadAxisDataMaxWithGdi(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
+                                           UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+}
+
 [[nodiscard]] inline double threadAxisDataMaxWithGdi(std::span<const double> timeData,
                                                      double xMin,
                                                      std::span<const double> threads,
                                                      std::span<const double> gdi,
                                                      const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(
-        std::max(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), UI::Widgets::maxOfSeriesSince(timeData, xMin, gdi)),
-        {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
-         UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+    return threadAxisDataMaxWithGdi(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads, gdi), smoothed);
 }
 
 /// The Resources chart's Handles/FDs axis, the outer right-hand one (#1916). An unreadable handle
 /// count (#1110) is left out.
+[[nodiscard]] inline double handleAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.handleCountAvailable, smoothed.handleCount)});
+}
+
 [[nodiscard]] inline double handleAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> handles,
                                               const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, handles),
-                                          {UI::Widgets::currentIfAvailable(smoothed.handleCountAvailable, smoothed.handleCount)});
+    return handleAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, handles), smoothed);
 }
 
 /// The Resources chart's right-hand Page Faults axis (#1024).
+[[nodiscard]] inline double faultAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax, {smoothed.pageFaultsPerSec});
+}
+
 [[nodiscard]] inline double faultAxisDataMax(std::span<const double> timeData,
                                              double xMin,
                                              std::span<const double> faults,
                                              const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, faults), {smoothed.pageFaultsPerSec});
+    return faultAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, faults), smoothed);
 }
 
 /// The I/O chart's: Read and Write, without the bars while the counters are unread (#1110).
+[[nodiscard]] inline double ioAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioReadBytesPerSec),
+                                           UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioWriteBytesPerSec)});
+}
+
 [[nodiscard]] inline double ioAxisDataMax(std::span<const double> timeData,
                                           double xMin,
                                           std::span<const double> read,
                                           std::span<const double> write,
                                           const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, read, write),
-                                          {UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioReadBytesPerSec),
-                                           UI::Widgets::currentIfAvailable(smoothed.ioAvailable, smoothed.ioWriteBytesPerSec)});
+    return ioAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, read, write), smoothed);
 }
 
 /// The Network chart's: Sent and Received, without the bars while they are unattributed (#1110).
+[[nodiscard]] inline double networkAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netSentBytesPerSec),
+                                           UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netRecvBytesPerSec)});
+}
+
 [[nodiscard]] inline double networkAxisDataMax(std::span<const double> timeData,
                                                double xMin,
                                                std::span<const double> sent,
                                                std::span<const double> received,
                                                const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, sent, received),
-                                          {UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netSentBytesPerSec),
-                                           UI::Widgets::currentIfAvailable(smoothed.networkAvailable, smoothed.netRecvBytesPerSec)});
+    return networkAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, sent, received), smoothed);
 }
 
 /// The Power chart's.
+[[nodiscard]] inline double powerAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax, {smoothed.powerWatts});
+}
+
 [[nodiscard]] inline double powerAxisDataMax(std::span<const double> timeData,
                                              double xMin,
                                              std::span<const double> power,
                                              const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, power), {smoothed.powerWatts});
+    return powerAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, power), smoothed);
 }
 
 /// The GPU Memory chart's, without the bar while the GPU probe gave no reading (#1210).
+[[nodiscard]] inline double gpuMemoryAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.gpuMemoryBytes)});
+}
+
 [[nodiscard]] inline double gpuMemoryAxisDataMax(std::span<const double> timeData,
                                                  double xMin,
                                                  std::span<const double> gpuMemory,
                                                  const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, gpuMemory),
-                                          {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.gpuMemoryBytes)});
+    return gpuMemoryAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, gpuMemory), smoothed);
 }
 
 /// The NPU Memory chart's (#1869): Dedicated and Shared, without the bars while the GPU probe gave no
 /// reading (the NPU figures come with the GPU ones).
+[[nodiscard]] inline double npuMemoryAxisDataMax(double seriesMax, const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(seriesMax,
+                                          {UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
+                                           UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+}
+
 [[nodiscard]] inline double npuMemoryAxisDataMax(std::span<const double> timeData,
                                                  double xMin,
                                                  std::span<const double> dedicated,
                                                  std::span<const double> shared,
                                                  const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, dedicated, shared),
-                                          {UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
-                                           UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+    return npuMemoryAxisDataMax(UI::Widgets::maxOfSeriesSince(timeData, xMin, dedicated, shared), smoothed);
 }
-
 /// What the GPU tab shows for @p proc and its retained @p history (gpuTabContent()). @p gpuSupported
 /// is whether the GPU probe supports per-process data at all (SampleRateReadings::gpuSupported): a
 /// failed read is not "not available on this system" (#1210).

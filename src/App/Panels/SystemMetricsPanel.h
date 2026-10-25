@@ -267,7 +267,8 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_CpuStackYIowait;
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;
-    std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
+    UI::Widgets::ReducedValuesStamp m_CpuStackValues; // Whether the band buffers hold its points' values (#843)
+    std::vector<double> m_CpuStackYBusy;              // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
 
     // The CPU Details block's rows (#809), rebuilt only when what they show changes -- the system and
     // GPU publications, the process count or the process histories -- not every frame (#1171).
