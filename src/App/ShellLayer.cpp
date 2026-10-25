@@ -335,6 +335,9 @@ void ShellLayer::onDetach()
     // a panel writes back into the settings on detach is included in it (#1124, #1177).
     m_Tabs.onDetach();
 
+    // Synchronous, as nothing draws after it. save() first waits for a background save still in
+    // flight or queued (a click just before exit), then writes these settings over it: nothing is
+    // lost, and the last state wins (#2916).
     config.save();
     spdlog::info("ShellLayer detached");
 }

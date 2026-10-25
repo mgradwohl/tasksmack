@@ -821,7 +821,7 @@ void SystemMetricsPanel::renderOverview()
     if (cpuDetailsVisible && CpuDetailsBlock::render(cpuDetailsContent, m_CpuDetailsMeasured))
     {
         userSettings.cpuDetailsExpanded = !userSettings.cpuDetailsExpanded;
-        UserConfig::get().save();
+        UserConfig::get().saveInBackground(); // written by a worker, never in this render path (#2916)
     }
     UI::Widgets::endCard();
 

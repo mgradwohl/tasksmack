@@ -60,6 +60,9 @@ inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 inline constexpr std::string_view STARTUP_ACTION_THREAD_NAME = "ts-auto-action";
 /// The worker that writes one "Create dump file" dump at a time (#807).
 inline constexpr std::string_view DUMP_THREAD_NAME = "ts-dump";
+/// The one-shot worker that writes config.toml for a settings change made on the UI thread (#2916),
+/// coalescing rapid changes into one write of the last state (App/CoalescingWriter.h).
+inline constexpr std::string_view SETTINGS_SAVE_THREAD_NAME = "ts-config-save";
 /// The worker that runs a confirmed batch action or batch priority change over the Processes table's
 /// selection, one batch at a time (#2142).
 inline constexpr std::string_view BATCH_ACTION_THREAD_NAME = "ts-batch-action";

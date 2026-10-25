@@ -482,6 +482,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_BackgroundTask.cpp
+    App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp

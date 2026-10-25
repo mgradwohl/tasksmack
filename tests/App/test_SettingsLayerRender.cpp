@@ -280,6 +280,7 @@ TEST_F(SettingsLayerRenderTest, SaveWritesThePickedChoicesRaisesTheirEventsAndSa
     EXPECT_FALSE(settings.showPrivilegeNotice);
     EXPECT_EQ(m_Seen.refreshIntervalsMs, std::vector<int>{250});
     EXPECT_EQ(m_Seen.historySeconds, std::vector<int>{600});
+    UserConfig::get().flushPendingSave(); // Save is written by the settings worker (#2916)
     std::error_code ec;
     EXPECT_TRUE(std::filesystem::exists(m_ConfigPath, ec)); // saved to the redirected config
 
