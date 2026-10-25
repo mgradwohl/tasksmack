@@ -78,7 +78,20 @@ function(ts_write_third_party_notices output)
         string(APPEND _text "  Commit:   ${_commit}\n")
         string(APPEND _text "  Licence:  ${_license}\n")
         if(_name STREQUAL "tomlplusplus")
-            # The patch InstallRules.cmake installs, by the name Dependencies.cmake gives it (#2779).
+            # The patch InstallRules.cmake installs, by the name Dependencies.cmake gives it (#2779). Run
+            # standalone (the -P check, #2753) nothing has included Dependencies.cmake, so the one
+            # definition, its set(TASKSMACK_TOMLPLUSPLUS_PATCH "${CMAKE_CURRENT_LIST_DIR}/<file>"), is read
+            # from the file instead of being declared a second time here.
+            if(NOT DEFINED TASKSMACK_TOMLPLUSPLUS_PATCH)
+                string(REGEX MATCH "\nset\\(TASKSMACK_TOMLPLUSPLUS_PATCH \"\\$\\{CMAKE_CURRENT_LIST_DIR\\}/([^\"]+)\"\\)"
+                       _ "${_deps}")
+                if(NOT CMAKE_MATCH_1)
+                    message(FATAL_ERROR "ThirdPartyNotices: ${_deps_file} doesn't set TASKSMACK_TOMLPLUSPLUS_PATCH as "
+                                        "\"\${CMAKE_CURRENT_LIST_DIR}/<file>\" (#2779), so the notice can't name the patch.")
+                endif()
+                cmake_path(GET _deps_file PARENT_PATH _deps_dir)
+                set(TASKSMACK_TOMLPLUSPLUS_PATCH "${_deps_dir}/${CMAKE_MATCH_1}")
+            endif()
             cmake_path(GET TASKSMACK_TOMLPLUSPLUS_PATCH FILENAME _patch_name)
             string(APPEND _text "  Modified: patched with ${_patch_name} (installed beside this file),\n")
             string(APPEND _text "            so malformed TOML is reported as a parse error instead of reaching\n")
