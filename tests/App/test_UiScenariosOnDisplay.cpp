@@ -173,10 +173,19 @@ constexpr const char* FILTER_TEXT = "systemd"; // the synthetic machine's init a
 /// focus but the OS cursor is outside it, ImGui's SDL backend feeds the cursor's global position in
 /// every frame, which would undo an injected one (a Windows runner focuses the window and parks its
 /// cursor elsewhere); with the cursor over the window, the backend leaves the position to its events.
+/// Only with no button held: a warp is a real mouse move, and on Windows SDL squares the buttons it
+/// thinks are down with the move's, so a warp mid-drag released the injected press.
 void movePointer(float x, float y)
 {
     ImGui::GetIO().AddMousePosEvent(x, y);
     SDL_WarpMouseInWindow(Core::Application::get().getWindow().getHandle(), x, y);
+}
+
+/// Moves the pointer within ImGui only, while an injected button is held: the OS cursor stays where
+/// movePointer() left it, over the window, so the backend still leaves the position alone.
+void dragPointer(float x, float y)
+{
+    ImGui::GetIO().AddMousePosEvent(x, y);
 }
 
 /// A key pressed on frame @p at and released on the next; true once both have gone in.
@@ -223,7 +232,7 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
     else if (step > 2 && step <= 2 + DRAG_STEPS)
     {
         const float t = static_cast<float>(step - 2) / static_cast<float>(DRAG_STEPS);
-        movePointer(from.x + ((to.x - from.x) * t), from.y + ((to.y - from.y) * t));
+        dragPointer(from.x + ((to.x - from.x) * t), from.y + ((to.y - from.y) * t));
     }
     else if (step == 3 + DRAG_STEPS)
     {
