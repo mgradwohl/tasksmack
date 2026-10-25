@@ -892,7 +892,21 @@ jobs:
     permissions:
       contents: read
       actions: read  # Required to download the linux-packages-<arch> artifact from this run
+    env:
+      # The config.toml v0.8.0 saved, for the smoke check's second launch of each binary (#2726).
+      V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
     steps:
+      # Only the v0.8.0 config fixture is needed. The bare container has no git, so the action
+      # downloads this commit's tree through the REST API instead (sparse-checkout needs git), and
+      # installing git here would pull packages into the clean environment the .deb is checked in.
+      - name: Check out the v0.8.0 config fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: tests/App/fixtures/config-v0.8.0.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Download Linux packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -1042,69 +1056,135 @@ jobs:
         # writes one frame ALIVE_SECONDS after startup and closes the window through the same close
         # request as the title bar's Close button, so every layer detaches and
         # ShellLayer::onDetach() saves config.toml into the run's own TASKSMACK_CONFIG_DIR. The run
-        # must exit 0 (one that wrote no frame exits non-zero) within QUIT_TIMEOUT_SECONDS, and
-        # leave a config.toml with its [theme] table: with no input nothing writes the file before
-        # the shutdown's save, so its being there proves that save ran.
+        # must exit 0 (one that wrote no frame exits non-zero) within QUIT_TIMEOUT_SECONDS, log no
+        # [error] or [critical] line, and leave a config.toml with its [theme] table: with no input
+        # nothing writes the file before the shutdown's save, so its being there proves that save ran.
+        #
+        # Each binary runs twice (#2726): from an empty config dir, then from a copy of the config.toml
+        # v0.8.0 saved (tests/App/fixtures/config-v0.8.0.toml). The second run must save the file in
+        # today's format (config_version) and keep the settings changed in v0.8.0's UI when the
+        # fixture was made (tests/App/fixtures/README.md), each of which differs from the default.
+        # validate-linux-upgrade checks the same settings; keep the two lists in step.
         run: |
           cat > /tmp/smoke-check.sh <<'SMOKE_CHECK'
           #!/usr/bin/env bash
           set -uo pipefail
           label="$1"
           bin="$2"
-          log="$3"
+          log_prefix="$3"
+          fixture="$4"
           ALIVE_SECONDS=5
           QUIT_TIMEOUT_SECONDS=60
-          work=$(mktemp -d)
-          config_dir="$work/config"
-          shot="$work/smoke.png"
-          SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug TASKSMACK_CONFIG_DIR="$config_dir" \
-            TASKSMACK_SCREENSHOT="$shot;after=$ALIVE_SECONDS" timeout "$QUIT_TIMEOUT_SECONDS" "$bin" > "$log" 2>&1
-          status=$?
-          cat "$log"
-          if [[ "$status" -eq 124 ]]; then
-            echo "$label: TaskSmack didn't quit by itself within $QUIT_TIMEOUT_SECONDS s (TASKSMACK_SCREENSHOT asks it to after $ALIVE_SECONDS s); the timeout killed it." >&2
+          # Section, key and the value as TaskSmack writes it.
+          FIXTURE_SETTINGS=(
+            "theme id 'dracula'"
+            "font size 'large'"
+            "sampling interval_ms 2000"
+            "sampling history_max_seconds 600"
+            "ui show_privilege_notice false"
+            "process_columns threads true"
+            "process_columns user false"
+          )
+
+          # The value of <key> in [<section>] of a config.toml, as written.
+          toml_value() {
+            awk -v want="$2" -v key="$3" '
+              /^\[/ { section = substr($0, 2, length($0) - 2); next }
+              section == want && $1 == key && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }
+            ' "$1"
+          }
+
+          # launch <run label> <log> [<config.toml to start from>]
+          launch() {
+            local run="$1" log="$2" seed="${3:-}"
+            local work config_dir shot config status
+            work=$(mktemp -d)
+            config_dir="$work/config"
+            shot="$work/smoke.png"
+            config="$config_dir/config.toml"
+            if [[ -n "$seed" ]]; then
+              mkdir -p "$config_dir"
+              cp "$seed" "$config"
+            fi
+            SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug TASKSMACK_CONFIG_DIR="$config_dir" \
+              TASKSMACK_SCREENSHOT="$shot;after=$ALIVE_SECONDS" timeout "$QUIT_TIMEOUT_SECONDS" "$bin" > "$log" 2>&1
+            status=$?
+            cat "$log"
+            if [[ "$status" -eq 124 ]]; then
+              echo "$run: TaskSmack didn't quit by itself within $QUIT_TIMEOUT_SECONDS s (TASKSMACK_SCREENSHOT asks it to after $ALIVE_SECONDS s); the timeout killed it." >&2
+              exit 1
+            fi
+            if [[ "$status" -ne 0 ]]; then
+              echo "$run: TaskSmack exited with status $status; a clean quit after its screenshot exits 0." >&2
+              exit 1
+            fi
+            if [[ ! -s "$shot" ]]; then
+              echo "$run: TaskSmack exited 0 but wrote no screenshot at $shot." >&2
+              exit 1
+            fi
+            if grep -E '\[(critical|error)\]' "$log" >&2; then
+              echo "$run: the log has the [critical]/[error] line(s) above." >&2
+              exit 1
+            fi
+            if [[ ! -f "$config" ]]; then
+              echo "$run: no config.toml in $config_dir after the quit; the settings weren't saved on exit." >&2
+              exit 1
+            fi
+            echo "=== $run config.toml ==="
+            cat "$config"
+            echo
+            echo "=== end of config.toml ==="
+            if ! grep -A1 -x '\[theme\]' "$config" | grep -Eqx "id = ('[^']+'|\"[^\"]+\")"; then
+              echo "$run: config.toml in $config_dir has no [theme] table with an id; the save wrote something else." >&2
+              exit 1
+            fi
+            if [[ -n "$seed" ]]; then
+              # v0.8.0 wrote no config_version, so its being there proves the shutdown's save ran.
+              if ! grep -Eqx 'config_version = [0-9]+' "$config"; then
+                echo "$run: config.toml has no config_version; the shutdown's save didn't rewrite v0.8.0's file." >&2
+                exit 1
+              fi
+              local entry section key expected actual lost=0
+              for entry in "${FIXTURE_SETTINGS[@]}"; do
+                read -r section key expected <<<"$entry"
+                actual=$(toml_value "$config" "$section" "$key")
+                if [[ "$actual" != "$expected" ]]; then
+                  echo "$run: [$section] $key is ${actual:-missing} after the save, not v0.8.0's $expected." >&2
+                  lost=1
+                fi
+              done
+              if [[ "$lost" -ne 0 ]]; then
+                exit 1
+              fi
+            fi
+            if ! grep -q "Assets directory found:" "$log"; then
+              echo "$run: assets directory was not found (see the 'Assets directory not found' fallback warning above, if present); installed/extracted asset layout is broken." >&2
+              exit 1
+            fi
+            if grep -q "Icon font not found" "$log"; then
+              echo "$run: icon font failed to load even though an assets directory was found." >&2
+              exit 1
+            fi
+            if ! grep -q "Loaded theme:" "$log"; then
+              echo "$run: no themes loaded; theme directory is missing or empty." >&2
+              exit 1
+            fi
+          }
+
+          if [[ ! -s "$fixture" ]]; then
+            echo "$label: the v0.8.0 config fixture $fixture is missing." >&2
             exit 1
           fi
-          if [[ "$status" -ne 0 ]]; then
-            echo "$label: TaskSmack exited with status $status; a clean quit after its screenshot exits 0." >&2
-            exit 1
-          fi
-          if [[ ! -s "$shot" ]]; then
-            echo "$label: TaskSmack exited 0 but wrote no screenshot at $shot." >&2
-            exit 1
-          fi
-          config="$config_dir/config.toml"
-          if [[ ! -f "$config" ]]; then
-            echo "$label: no config.toml in $config_dir after the quit; the settings weren't saved on exit." >&2
-            exit 1
-          fi
-          echo "=== $label config.toml ==="
-          cat "$config"
-          echo "=== end of config.toml ==="
-          if ! grep -A1 -x '\[theme\]' "$config" | grep -Eqx "id = ('[^']+'|\"[^\"]+\")"; then
-            echo "$label: config.toml in $config_dir has no [theme] table with an id; the save wrote something else." >&2
-            exit 1
-          fi
-          if ! grep -q "Assets directory found:" "$log"; then
-            echo "$label: assets directory was not found (see the 'Assets directory not found' fallback warning above, if present); installed/extracted asset layout is broken." >&2
-            exit 1
-          fi
-          if grep -q "Icon font not found" "$log"; then
-            echo "$label: icon font failed to load even though an assets directory was found." >&2
-            exit 1
-          fi
-          if ! grep -q "Loaded theme:" "$log"; then
-            echo "$label: no themes loaded; theme directory is missing or empty." >&2
-            exit 1
-          fi
-          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack quit by itself after $ALIVE_SECONDS s with config.toml saved."
+          launch "$label (fresh config)" "$log_prefix-fresh.log"
+          launch "$label (v0.8.0's config)" "$log_prefix-v080.log" "$fixture"
+          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack quit by itself after $ALIVE_SECONDS s with config.toml saved, from a fresh config and from v0.8.0's, whose settings it kept."
           SMOKE_CHECK
           chmod +x /tmp/smoke-check.sh
 
       - name: Smoke-check installed .deb binary
         run: |
           BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
-          /tmp/smoke-check.sh "deb" "$BIN" /tmp/deb-run.log
+          /tmp/smoke-check.sh "deb" "$BIN" /tmp/deb-run "$V080_CONFIG"
 
       - name: Extract and verify .tar.gz layout
         run: |
@@ -1119,7 +1199,253 @@ jobs:
           echo "TGZ_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Smoke-check extracted .tar.gz binary
-        run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run.log
+        run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run "$V080_CONFIG"
+
+  validate-linux-upgrade:
+    name: Validate the Upgrade over v0.8.0's .deb (x64)
+    needs: [build-linux]
+    # #2489's upgrade check: v0.8.0's .deb installed with apt and run once from the config.toml it
+    # saved (tests/App/fixtures/config-v0.8.0.toml), then this run's .deb installed over it (#2726).
+    # In an ubuntu:26.04 container, not validate-linux-package's 24.04 one: v0.8.0's .deb Depends on
+    # libsdl3-0, which Ubuntu 24.04 doesn't have, so it never installed there. x64 only, as v0.8.0
+    # published no arm64 .deb.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ubuntu:26.04
+    # As in validate-linux-package: a container job's `run` steps default to sh, not bash.
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read  # Also lets the job's token read v0.8.0's release
+      actions: read  # Required to download the linux-packages-x64 artifact from this run
+    env:
+      V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
+      V080_DEB: TaskSmack-0.8.0-Linux.deb
+      # The .deb's SHA-256 as published (the release's asset digest; tests/App/fixtures/README.md).
+      V080_DEB_SHA256: ea44d9c7955f4349141e421209141b1ff61d38c9cf6d4e6fc8d8b9075155edf4
+      # One home folder for both versions: each reads and saves $HOME/.config/tasksmack/config.toml.
+      UPGRADE_HOME: /tmp/upgrade-home
+      # No debconf prompt (tzdata, say) may wait for input that never comes.
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      # Only the fixture is needed; with no git in the container the action downloads the tree instead.
+      - name: Check out the v0.8.0 config fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: tests/App/fixtures/config-v0.8.0.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: linux-packages-x64
+          path: dist/
+
+      - name: Fetch v0.8.0's .deb from its release
+        # By name from the v0.8.0 release, checked against the pinned SHA-256 and the release's own
+        # asset digest (the release publishes no SHA256SUMS file).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl jq
+          api=(curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28")
+          asset=$("${api[@]}" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/v0.8.0" |
+            jq -c --arg name "$V080_DEB" '[.assets[] | select(.name == $name)] | if length == 1 then .[0] else empty end')
+          if [[ -z "$asset" ]]; then
+            echo "The v0.8.0 release has no single asset named $V080_DEB." >&2
+            exit 1
+          fi
+          mkdir -p /tmp/v080
+          "${api[@]}" -H "Accept: application/octet-stream" -o "/tmp/v080/$V080_DEB" "$(jq -r .url <<<"$asset")"
+          actual=$(sha256sum "/tmp/v080/$V080_DEB" | cut -d' ' -f1)
+          if [[ "$actual" != "$V080_DEB_SHA256" ]]; then
+            echo "$V080_DEB: SHA-256 $actual, expected $V080_DEB_SHA256." >&2
+            exit 1
+          fi
+          digest=$(jq -r '.digest // empty' <<<"$asset")
+          if [[ -n "$digest" && "$digest" != "sha256:$V080_DEB_SHA256" ]]; then
+            echo "$V080_DEB: the release lists digest $digest, not sha256:$V080_DEB_SHA256." >&2
+            exit 1
+          fi
+          echo "$V080_DEB: SHA-256 $actual, as pinned${digest:+ and as the release lists}."
+
+      - name: Install v0.8.0 and run it once from its config
+        # v0.8.0 has no clean-quit hook and no TASKSMACK_CONFIG_DIR, so it runs from the shared home
+        # folder for 5 s and is then stopped. It must still be running then: an earlier exit means it
+        # never started. Its .deb doesn't declare the libc++ and GL libraries its binary links, so
+        # they are installed here with Mesa's software renderer.
+        run: |
+          apt-get install -y "/tmp/v080/$V080_DEB" libc++1 libc++abi1 libopengl0 libglx0 \
+            libgl1-mesa-dri libegl1 libegl-mesa0
+          installed=$(dpkg-query -W -f='${Version}' tasksmack)
+          if [[ "$installed" != "0.8.0" ]]; then
+            echo "Installed tasksmack is '$installed', not 0.8.0." >&2
+            exit 1
+          fi
+          # v0.8.0's .deb installed the binary at /usr/TaskSmack, not on PATH.
+          bin=$(dpkg -L tasksmack | grep -Ex '/usr/(bin/)?TaskSmack')
+          config_dir="$UPGRADE_HOME/.config/tasksmack"
+          mkdir -p "$config_dir"
+          cp "$V080_CONFIG" "$config_dir/config.toml"
+          # The step's bash runs with -e, so a failing status is caught, not fatal.
+          status=0
+          env -u XDG_CONFIG_HOME HOME="$UPGRADE_HOME" SDL_VIDEODRIVER=offscreen \
+            timeout -k 10 5 "$bin" > /tmp/v080-run.log 2>&1 || status=$?
+          cat /tmp/v080-run.log
+          # 124: still running when stopped; 137: it ignored the stop and was killed.
+          if [[ "$status" -ne 124 && "$status" -ne 137 ]]; then
+            echo "v0.8.0 ($bin) exited with status $status within 5 s; it didn't start." >&2
+            exit 1
+          fi
+          echo "=== config.toml after v0.8.0 ==="
+          cat "$config_dir/config.toml"
+          echo
+          echo "=== end of config.toml ==="
+          if ! grep -qx "id = 'dracula'" "$config_dir/config.toml"; then
+            echo "v0.8.0 left a config.toml without the fixture's theme." >&2
+            exit 1
+          fi
+
+      - name: Install this run's .deb over v0.8.0
+        # apt must upgrade in place with exit 0 and no file conflict, leave every file the new .deb
+        # ships installed as it ships it (the privileged helper and its polkit policy by name, #2307),
+        # and remove every v0.8.0 file the new .deb no longer ships.
+        run: |
+          shopt -s nullglob
+          debs=(dist/*.deb)
+          if [[ ${#debs[@]} -ne 1 ]]; then
+            echo "Expected exactly one .deb in dist/, found ${#debs[@]}." >&2
+            exit 1
+          fi
+          new="./${debs[0]}"
+          status=0
+          apt-get install -y "$new" 2>&1 | tee /tmp/upgrade.log || status=$?
+          if [[ "$status" -ne 0 ]]; then
+            echo "apt-get install over v0.8.0 exited with status $status." >&2
+            exit 1
+          fi
+          if grep -Ei 'trying to overwrite|dpkg: error' /tmp/upgrade.log >&2; then
+            echo "dpkg reported the file conflict(s) or error(s) above while upgrading." >&2
+            exit 1
+          fi
+          expected=$(dpkg-deb -f "$new" Version)
+          if ! grep -Fq "Unpacking tasksmack ($expected) over (0.8.0)" /tmp/upgrade.log; then
+            echo "apt didn't upgrade tasksmack 0.8.0 to $expected in place." >&2
+            exit 1
+          fi
+          installed=$(dpkg-query -W -f='${Version}' tasksmack)
+          if [[ "$installed" != "$expected" ]]; then
+            echo "Installed tasksmack is '$installed', not $expected." >&2
+            exit 1
+          fi
+          if ! audit=$(dpkg --audit 2>&1) || [[ -n "$audit" ]]; then
+            echo "dpkg --audit after the upgrade: $audit" >&2
+            exit 1
+          fi
+
+          rm -rf /tmp/new-deb /tmp/old-deb
+          dpkg-deb -x "$new" /tmp/new-deb
+          dpkg-deb -x "/tmp/v080/$V080_DEB" /tmp/old-deb
+          failed=0
+          for required in usr/libexec/tasksmack/tasksmack-helper \
+            usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy; do
+            if [[ ! -f "/tmp/new-deb/$required" ]]; then
+              echo "The new .deb doesn't ship /$required." >&2
+              failed=1
+            elif ! cmp -s "/tmp/new-deb/$required" "/$required"; then
+              echo "/$required isn't the new .deb's after the upgrade." >&2
+              failed=1
+            else
+              echo "/$required: $(sha256sum "/$required" | cut -d' ' -f1), the new .deb's."
+            fi
+          done
+          # Docs and man pages aside: the ubuntu image's dpkg doesn't unpack them (/etc/dpkg/dpkg.cfg.d/excludes).
+          while IFS= read -r file; do
+            if ! cmp -s "/tmp/new-deb/$file" "/$file"; then
+              echo "/$file differs from the new .deb's, or is missing." >&2
+              failed=1
+            fi
+          done < <(find /tmp/new-deb -type f -printf '%P\n' | grep -Ev '^usr/share/(doc|man)/')
+          while IFS= read -r file; do
+            if [[ ! -e "/tmp/new-deb/$file" && ( -e "/$file" || -L "/$file" ) ]]; then
+              echo "/$file, from v0.8.0, is still installed though the new .deb doesn't ship it." >&2
+              failed=1
+            fi
+          done < <(find /tmp/old-deb -type f,l -printf '%P\n')
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "tasksmack 0.8.0 upgraded to $expected in place: every file is the new .deb's, and none of v0.8.0's is left over."
+
+      - name: Start the upgraded TaskSmack from v0.8.0's config
+        # The installed binary, from the home folder v0.8.0 used and with no TASKSMACK_CONFIG_DIR, so
+        # it finds config.toml where v0.8.0 saved it. It quits by itself as validate-linux-package's
+        # smoke check does (TASKSMACK_SCREENSHOT, #2720): exit 0, a frame, no [error] or [critical]
+        # line, and the file saved in today's format with the settings changed in v0.8.0's UI kept.
+        # Keep the list in step with validate-linux-package's smoke check.
+        run: |
+          settings=(
+            "theme id 'dracula'"
+            "font size 'large'"
+            "sampling interval_ms 2000"
+            "sampling history_max_seconds 600"
+            "ui show_privilege_notice false"
+            "process_columns threads true"
+            "process_columns user false"
+          )
+          toml_value() {
+            awk -v want="$2" -v key="$3" '
+              /^\[/ { section = substr($0, 2, length($0) - 2); next }
+              section == want && $1 == key && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }
+            ' "$1"
+          }
+          bin=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
+          config="$UPGRADE_HOME/.config/tasksmack/config.toml"
+          shot=/tmp/upgrade-smoke.png
+          status=0
+          env -u XDG_CONFIG_HOME -u TASKSMACK_CONFIG_DIR HOME="$UPGRADE_HOME" SDL_VIDEODRIVER=offscreen \
+            TASKSMACK_LOG_LEVEL=debug TASKSMACK_SCREENSHOT="$shot;after=5" timeout 60 "$bin" > /tmp/upgrade-run.log 2>&1 ||
+            status=$?
+          cat /tmp/upgrade-run.log
+          if [[ "$status" -ne 0 ]]; then
+            echo "The upgraded TaskSmack exited with status $status (124: it didn't quit by itself); a clean quit exits 0." >&2
+            exit 1
+          fi
+          if [[ ! -s "$shot" ]]; then
+            echo "The upgraded TaskSmack exited 0 but wrote no screenshot at $shot." >&2
+            exit 1
+          fi
+          if grep -E '\[(critical|error)\]' /tmp/upgrade-run.log >&2; then
+            echo "The upgraded TaskSmack's log has the [critical]/[error] line(s) above." >&2
+            exit 1
+          fi
+          echo "=== config.toml after the upgrade ==="
+          cat "$config"
+          echo
+          echo "=== end of config.toml ==="
+          if ! grep -Eqx 'config_version = [0-9]+' "$config"; then
+            echo "$config has no config_version: the upgraded TaskSmack didn't save over v0.8.0's file." >&2
+            exit 1
+          fi
+          lost=0
+          for entry in "${settings[@]}"; do
+            read -r section key expected <<<"$entry"
+            actual=$(toml_value "$config" "$section" "$key")
+            if [[ "$actual" != "$expected" ]]; then
+              echo "[$section] $key is ${actual:-missing} after the upgrade, not v0.8.0's $expected." >&2
+              lost=1
+            fi
+          done
+          if [[ "$lost" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "The upgraded TaskSmack started from v0.8.0's config.toml, quit by itself and kept its settings."
 
   validate-linux-helper:
     name: Validate the Installed Helper and Its polkit Policy (x64)
@@ -1209,15 +1535,19 @@ jobs:
     permissions:
       contents: read
       actions: read  # Required to download the windows-packages-<arch> artifact from this run
+    # The .zip is portable, so there is no package to upgrade over v0.8.0's here; an NSIS upgrade
+    # check (install the previous release, then this one) waits on #2302's installer.
     steps:
-      # Only the signature check's script, for "Verify the Authenticode signatures". In its own
-      # folder, since a checkout cleans the folder it checks out into.
-      - name: Check out the signature check
-        if: matrix.signed && env.SIGNING_ENABLED == 'true'
+      # Only the signature check's script, for "Verify the Authenticode signatures", and the config.toml
+      # v0.8.0 saved, for the smoke check's second launch (#2726). In its own folder, since a checkout
+      # cleans the folder it checks out into.
+      - name: Check out the signature check and the v0.8.0 config fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: repo
-          sparse-checkout: cmake/VerifyWindowsSignatures.cmake
+          sparse-checkout: |
+            cmake/VerifyWindowsSignatures.cmake
+            tests/App/fixtures/config-v0.8.0.toml
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1431,7 +1761,7 @@ jobs:
           "MESA_DLL_DIR=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Smoke-check extracted executable
-        # Runs a temporary copy of the extracted package with llvmpipe beside the exe, a fresh
+        # Runs a temporary copy of the extracted package with llvmpipe beside the exe, its own
         # TASKSMACK_CONFIG_DIR, a private %TEMP% and an info-level log captured from stdout. It quits by
         # itself (#2720): TASKSMACK_SCREENSHOT (#2827) writes one frame ALIVE_SECONDS after startup and
         # closes the window through the same close request as the title bar's Close button, so every
@@ -1439,11 +1769,16 @@ jobs:
         # non-zero. Fails unless it quits with exit code 0 in the time allowed, on any [critical] or
         # [error] log line, unless the log shows OpenGL 3.3+ from llvmpipe (proof the real renderer
         # came up, not an error box), and unless config.toml was saved with its [theme] table.
+        # It runs twice (#2726): from an empty config dir, then from a copy of the config.toml v0.8.0
+        # saved (tests/App/fixtures/config-v0.8.0.toml), which must be saved in today's format
+        # (config_version) with the settings changed in v0.8.0's UI when the fixture was made kept
+        # (tests/App/fixtures/README.md; each differs from the default). Keep that list in step with
+        # validate-linux-package's smoke check.
         # Then, as a user deleting the portable .zip's folder would (#2488): no new TaskSmack-named
-        # entry may appear under %APPDATA% or %LOCALAPPDATA% outside the config dir and %TEMP%, and
+        # entry may appear under %APPDATA% or %LOCALAPPDATA% outside the config dirs and %TEMP%, and
         # the folder TaskSmack ran from must delete with no file still locked.
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           GALLIUM_DRIVER: llvmpipe
           TASKSMACK_LOG_LEVEL: info
@@ -1452,26 +1787,38 @@ jobs:
           # How deep under %APPDATA% and %LOCALAPPDATA% the leave-no-trace listing looks: deep enough
           # for Local\Microsoft\Windows\WER\ReportArchive\<report>, and a few seconds' work.
           TRACE_SCAN_DEPTH: "5"
+          V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
         run: |
           $ErrorActionPreference = 'Stop'
           $work = Join-Path $env:RUNNER_TEMP 'tasksmack-smoke'
           $pkg = Join-Path $work 'pkg'
-          $configDir = Join-Path $work 'config'
           $tempDir = Join-Path $work 'temp'
-          foreach ($dir in @($pkg, $configDir, $tempDir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+          foreach ($dir in @($pkg, $tempDir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
           Copy-Item -Path (Join-Path $env:TASKSMACK_PKG_ROOT '*') -Destination $pkg -Recurse
           Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination $pkg
           $exe = Join-Path $pkg 'TaskSmack.exe'
-          $shot = Join-Path $work 'smoke.png'
-          $configFile = Join-Path $configDir 'config.toml'
-          $stdoutLog = Join-Path $work 'stdout.log'
-          $stderrLog = Join-Path $work 'stderr.log'
+          $fixture = (Resolve-Path -LiteralPath $env:V080_CONFIG).Path
+          # Section, key and the value as TaskSmack writes it.
+          $fixtureSettings = @(
+            @('theme', 'id', "'dracula'"),
+            @('font', 'size', "'large'"),
+            @('sampling', 'interval_ms', '2000'),
+            @('sampling', 'history_max_seconds', '600'),
+            @('ui', 'show_privilege_notice', 'false'),
+            @('process_columns', 'threads', 'true'),
+            @('process_columns', 'user', 'false')
+          )
+          # One config dir per launch: an empty one, then one holding v0.8.0's config.toml.
+          $launches = @(
+            @{ Name = 'fresh config'; ConfigDir = (Join-Path $work 'config'); Seed = $null },
+            @{ Name = "v0.8.0's config"; ConfigDir = (Join-Path $work 'config-v080'); Seed = $fixture }
+          )
 
           # Every TaskSmack-named file or folder under %APPDATA% and %LOCALAPPDATA%, case-insensitively,
-          # listed before the launch and again after it. A new one is a trace the .zip leaves behind,
-          # unless it is under the config dir or a %TEMP% (the private one below, or the runner's own,
+          # listed before the launches and again after them. A new one is a trace the .zip leaves behind,
+          # unless it is under a config dir or a %TEMP% (the private one below, or the runner's own,
           # which is under %LOCALAPPDATA% and may be named by its 8.3 short path, so both spellings).
-          $allowedRoots = @($configDir, $tempDir, [System.IO.Path]::GetTempPath(), (Join-Path $env:LOCALAPPDATA 'Temp')) |
+          $allowedRoots = @($launches.ConfigDir) + @($tempDir, [System.IO.Path]::GetTempPath(), (Join-Path $env:LOCALAPPDATA 'Temp')) |
             ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
           function Get-TaskSmackEntries {
             foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
@@ -1479,83 +1826,121 @@ jobs:
                 Where-Object { $_.Name -match 'tasksmack' } | ForEach-Object { $_.FullName }
             }
           }
+          # The value of <key> in [<section>] of a config.toml, as written.
+          function Get-TomlValue([string[]]$Lines, [string]$Section, [string]$Key) {
+            $current = ''
+            foreach ($line in $Lines) {
+              if ($line -match '^\[(.+)\]$') { $current = $Matches[1]; continue }
+              if ($current -eq $Section -and $line -match '^(\S+) = (.*)$' -and $Matches[1] -eq $Key) { return $Matches[2] }
+            }
+            return $null
+          }
           $entriesBefore = @(Get-TaskSmackEntries)
 
-          # Fresh, empty settings and lock directory, and a private %TEMP% for tasksmack-debug.log.
-          $env:TASKSMACK_CONFIG_DIR = $configDir
+          # A private %TEMP% for tasksmack-debug.log.
           $env:TMP = $tempDir
           $env:TEMP = $tempDir
-          $env:TASKSMACK_SCREENSHOT = "$shot;after=$env:ALIVE_SECONDS"
-
           # The wait covers startup, the ALIVE_SECONDS before the capture and the shutdown's save.
           $quitSeconds = [int]$env:STARTUP_TIMEOUT_SECONDS + [int]$env:ALIVE_SECONDS + 30
-          $proc = Start-Process -FilePath $exe -WorkingDirectory $pkg -PassThru `
-            -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
-          $null = $proc.Handle  # cache the handle, or ExitCode is empty once the process has gone
           $failure = $null
-          if ($proc.WaitForExit($quitSeconds * 1000)) {
-            if ($proc.ExitCode -ne 0) {
-              $failure = "TaskSmack.exe exited with code $($proc.ExitCode); a clean quit after its screenshot exits 0"
-            }
-          } else {
-            $failure = "TaskSmack.exe didn't quit by itself within $quitSeconds s of starting"
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            $proc.WaitForExit(10000) | Out-Null
-          }
-
-          $lines = @(Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue) +
-            @(Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue)
-          Write-Host "=== TaskSmack log ==="
-          $lines | ForEach-Object { Write-Host $_ }
-          Write-Host "=== end of log ==="
-
-          $errorLines = @($lines | Where-Object { $_ -match '\[(critical|error)\]' })
-          $rendererLine = $lines | Where-Object { $_ -match '\]\s+Renderer:\s*(.+)$' } | Select-Object -First 1
-          $renderer = if ($rendererLine -match '\]\s+Renderer:\s*(.+)$') { $Matches[1].Trim() } else { '' }
-          $versionLine = $lines | Where-Object { $_ -match '\]\s+Version:\s*(.+)$' } | Select-Object -First 1
-          $version = if ($versionLine -match '\]\s+Version:\s*(.+)$') { $Matches[1].Trim() } else { '' }
-
-          if (-not $failure -and $errorLines.Count -gt 0) {
-            $failure = "The log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
-          }
-          if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
-            $failure = "The log never reached 'Entering main loop' (Application::run): startup never finished"
-          }
-          if (-not $failure -and $renderer -notmatch 'llvmpipe') {
-            $failure = "Expected the llvmpipe renderer in the log, found '$renderer'"
-          }
-          if (-not $failure) {
-            if ($version -match '^(\d+)\.(\d+)') {
-              $glVersion = [version]::new([int]$Matches[1], [int]$Matches[2])
-              if ($glVersion -lt [version]'3.3') { $failure = "OpenGL $glVersion is below the required 3.3 ('$version')" }
-            } else {
-              $failure = "No parseable OpenGL version in the log (found '$version')"
-            }
-          }
-          if (-not $failure -and -not (Test-Path -LiteralPath $shot -PathType Leaf)) {
-            $failure = "TaskSmack.exe exited 0 but wrote no screenshot at $shot"
-          }
-
-          # The settings saved on the way out: with no input nothing writes config.toml before then, so
-          # its being there proves the shutdown's save ran. The [theme] table and its id are always written.
+          $renderer = ''
+          $version = ''
           $configSaved = $false
-          if (-not $failure) {
-            if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
-              $failure = "No config.toml in $configDir after the quit: the settings weren't saved on exit"
+          $index = 0
+          foreach ($launch in $launches) {
+            $index++
+            $run = "TaskSmack.exe ($($launch.Name))"
+            $configDir = $launch.ConfigDir
+            New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+            $configFile = Join-Path $configDir 'config.toml'
+            if ($launch.Seed) { Copy-Item -LiteralPath $launch.Seed -Destination $configFile }
+            $shot = Join-Path $work "smoke-$index.png"
+            $stdoutLog = Join-Path $work "stdout-$index.log"
+            $stderrLog = Join-Path $work "stderr-$index.log"
+            $env:TASKSMACK_CONFIG_DIR = $configDir
+            $env:TASKSMACK_SCREENSHOT = "$shot;after=$env:ALIVE_SECONDS"
+
+            $proc = Start-Process -FilePath $exe -WorkingDirectory $pkg -PassThru `
+              -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+            $null = $proc.Handle  # cache the handle, or ExitCode is empty once the process has gone
+            if ($proc.WaitForExit($quitSeconds * 1000)) {
+              if ($proc.ExitCode -ne 0) {
+                $failure = "$run exited with code $($proc.ExitCode); a clean quit after its screenshot exits 0"
+              }
             } else {
-              $config = Get-Content -LiteralPath $configFile -Raw
-              Write-Host "=== config.toml ==="
-              Write-Host $config
-              Write-Host "=== end of config.toml ==="
-              if ($config -notmatch '(?m)^\[theme\]\r?\nid = (''[^''\r\n]+''|"[^"\r\n]+")\r?$') {
-                $failure = "config.toml in $configDir has no [theme] table with an id: the save wrote something else"
+              $failure = "$run didn't quit by itself within $quitSeconds s of starting"
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              $proc.WaitForExit(10000) | Out-Null
+            }
+
+            $lines = @(Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue) +
+              @(Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue)
+            Write-Host "=== $run log ==="
+            $lines | ForEach-Object { Write-Host $_ }
+            Write-Host "=== end of log ==="
+
+            $errorLines = @($lines | Where-Object { $_ -match '\[(critical|error)\]' })
+            $rendererLine = $lines | Where-Object { $_ -match '\]\s+Renderer:\s*(.+)$' } | Select-Object -First 1
+            $runRenderer = if ($rendererLine -match '\]\s+Renderer:\s*(.+)$') { $Matches[1].Trim() } else { '' }
+            $versionLine = $lines | Where-Object { $_ -match '\]\s+Version:\s*(.+)$' } | Select-Object -First 1
+            $runVersion = if ($versionLine -match '\]\s+Version:\s*(.+)$') { $Matches[1].Trim() } else { '' }
+            if ($index -eq 1) { $renderer = $runRenderer; $version = $runVersion }
+
+            if (-not $failure -and $errorLines.Count -gt 0) {
+              $failure = "$run's log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
+            }
+            if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
+              $failure = "$run's log never reached 'Entering main loop' (Application::run): startup never finished"
+            }
+            if (-not $failure -and $runRenderer -notmatch 'llvmpipe') {
+              $failure = "Expected the llvmpipe renderer in $run's log, found '$runRenderer'"
+            }
+            if (-not $failure) {
+              if ($runVersion -match '^(\d+)\.(\d+)') {
+                $glVersion = [version]::new([int]$Matches[1], [int]$Matches[2])
+                if ($glVersion -lt [version]'3.3') { $failure = "$run got OpenGL $glVersion, below the required 3.3 ('$runVersion')" }
               } else {
-                $configSaved = $true
+                $failure = "No parseable OpenGL version in $run's log (found '$runVersion')"
               }
             }
-          }
+            if (-not $failure -and -not (Test-Path -LiteralPath $shot -PathType Leaf)) {
+              $failure = "$run exited 0 but wrote no screenshot at $shot"
+            }
 
-          # Leave no trace: no new TaskSmack-named entry outside the config dir and %TEMP%, then the
+            # The settings saved on the way out: with no input nothing writes config.toml before then, so
+            # its being there proves the shutdown's save ran (for v0.8.0's file, so does config_version,
+            # which v0.8.0 didn't write). The [theme] table and its id are always written.
+            if (-not $failure) {
+              if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
+                $failure = "No config.toml in $configDir after $run quit: the settings weren't saved on exit"
+              } else {
+                $config = Get-Content -LiteralPath $configFile -Raw
+                Write-Host "=== $run config.toml ==="
+                Write-Host $config
+                Write-Host "=== end of config.toml ==="
+                if ($config -notmatch '(?m)^\[theme\]\r?\nid = (''[^''\r\n]+''|"[^"\r\n]+")\r?$') {
+                  $failure = "config.toml in $configDir has no [theme] table with an id: $run's save wrote something else"
+                } elseif ($launch.Seed) {
+                  $configLines = @(Get-Content -LiteralPath $configFile)
+                  if (-not ($configLines -match '^config_version = \d+$')) {
+                    $failure = "config.toml in $configDir has no config_version: $run's shutdown save didn't rewrite v0.8.0's file"
+                  } else {
+                    $lost = @(foreach ($setting in $fixtureSettings) {
+                      $actual = Get-TomlValue $configLines $setting[0] $setting[1]
+                      if ($actual -cne $setting[2]) {
+                        "[$($setting[0])] $($setting[1]) is $(if ($null -eq $actual) { 'missing' } else { $actual }), not v0.8.0's $($setting[2])"
+                      }
+                    })
+                    if ($lost.Count -gt 0) { $failure = "$run didn't keep v0.8.0's settings:`n$($lost -join "`n")" }
+                  }
+                }
+              }
+            }
+            if ($failure) { break }
+          }
+          $configSaved = -not $failure
+
+          # Leave no trace: no new TaskSmack-named entry outside the config dirs and %TEMP%, then the
           # folder it ran from deletes, which fails on any file still locked.
           $leftNoTrace = $false
           if (-not $failure) {
@@ -1565,7 +1950,7 @@ jobs:
                 -not ($allowedRoots | Where-Object { ($entry + '\').StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
             })
             if ($traces.Count -gt 0) {
-              $failure = "TaskSmack left $($traces.Count) new TaskSmack-named entr$(if ($traces.Count -eq 1) { 'y' } else { 'ies' }) under %APPDATA%/%LOCALAPPDATA%, outside the config dir and %TEMP%:`n$($traces -join "`n")"
+              $failure = "TaskSmack left $($traces.Count) new TaskSmack-named entr$(if ($traces.Count -eq 1) { 'y' } else { 'ies' }) under %APPDATA%/%LOCALAPPDATA%, outside the config dirs and %TEMP%:`n$($traces -join "`n")"
             }
           }
           if (-not $failure) {
@@ -1584,7 +1969,7 @@ jobs:
             "- OpenGL renderer: ``$renderer``",
             "- OpenGL version: ``$version``",
             "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)",
-            "- Quit by itself with config.toml saved: $(if ($configSaved) { 'yes' } else { 'no' })",
+            "- Quit by itself with config.toml saved, from a fresh config and from v0.8.0's (its settings kept): $(if ($configSaved) { 'yes' } else { 'no' })",
             "- Left no trace (no new %APPDATA%/%LOCALAPPDATA% entries; its folder deleted): $(if ($leftNoTrace) { 'yes' } else { 'no' })"
           )
           if ($failure) { $summary += "- Failure: $failure" }
@@ -1594,17 +1979,17 @@ jobs:
             Write-Error $failure
             exit 1
           }
-          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors, quit by itself after $env:ALIVE_SECONDS s with config.toml saved, and left no trace."
+          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors, quit by itself after $env:ALIVE_SECONDS s with config.toml saved, from a fresh config and from v0.8.0's (whose settings it kept), and left no trace."
 
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-linux-helper, validate-windows-package]
+    needs: [build-linux, build-windows, sign-windows, validate-linux-package, validate-linux-upgrade, validate-linux-helper, validate-windows-package]
     # Every job it needs must succeed, except sign-windows, which is skipped while signing is off
     # (SIGNING_ENABLED). Without this `if:`, that skip would skip the release too.
     if: >-
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
-      needs.validate-linux-package.result == 'success' && needs.validate-linux-helper.result == 'success' &&
-      needs.validate-windows-package.result == 'success' &&
+      needs.validate-linux-package.result == 'success' && needs.validate-linux-upgrade.result == 'success' &&
+      needs.validate-linux-helper.result == 'success' && needs.validate-windows-package.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
       (vars.SIGNPATH_SIGNING_ENABLED != 'true' && needs.sign-windows.result == 'skipped')) }}
     runs-on: ubuntu-24.04

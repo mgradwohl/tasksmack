@@ -2906,15 +2906,33 @@ launches the executable directly on the runner's desktop session, with a tempora
 llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Each launch
 gets its own `TASKSMACK_CONFIG_DIR` and quits by itself rather than being killed (#2720):
 `TASKSMACK_SCREENSHOT=<png>;after=5` writes one frame 5 seconds after startup and closes the window through
-the normal close request, so `ShellLayer::onDetach()` saves `config.toml`. The launch must exit 0 and leave a
-`config.toml` with its `[theme]` table, which nothing writes before the shutdown's save in a run with no input.
-On Windows the run must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
-TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dir and `%TEMP%`, and the folder
-it ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
+the normal close request, so `ShellLayer::onDetach()` saves `config.toml`. The launch must exit 0, log no
+`[error]` or `[critical]` line, and leave a `config.toml` with its `[theme]` table, which nothing writes before
+the shutdown's save in a run with no input. Each binary is launched twice (#2726): from an empty config dir,
+then from a copy of the `config.toml` v0.8.0 saved (`tests/App/fixtures/config-v0.8.0.toml`). The second
+launch must save the file in today's format (`config_version`, which v0.8.0 didn't write) and keep the
+settings changed in v0.8.0's UI when the fixture was made (theme, font size, refresh rate, history, the
+privilege notice, and the User and Threads columns; see `tests/App/fixtures/README.md`).
+On Windows the runs must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
+TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dirs and `%TEMP%`, and the folder
+they ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
 asset layout. These are still smoke checks, not a functional test suite.
+
+`validate-linux-upgrade` checks the upgrade from v0.8.0 (#2726), x64 only since v0.8.0 published no
+arm64 `.deb`. It runs in an `ubuntu:26.04` container, because v0.8.0's `.deb` depends on `libsdl3-0`,
+which Ubuntu 24.04 doesn't have. It fetches `TaskSmack-0.8.0-Linux.deb` from the v0.8.0 release and
+checks its SHA-256 against the pinned one and the release's asset digest. Then it installs it with apt
+and runs v0.8.0 for 5 seconds from the fixture `config.toml`, in `$HOME/.config/tasksmack`, where both
+versions read it. It installs this run's `.deb` over it, which must exit 0 with no dpkg file conflict
+and upgrade `tasksmack` in place. Every file the new `.deb` ships must be installed as it ships it (docs
+and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
+over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
+itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
+the fixture's settings kept. Windows has no package to upgrade while the `.zip` is portable; an NSIS
+upgrade check waits on the installer (#2302).
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
