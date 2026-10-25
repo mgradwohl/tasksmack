@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <linux/filter.h>
+#include <sys/types.h>
 
 namespace Platform::HelperSandbox
 {
