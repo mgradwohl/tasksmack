@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
-#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/BatteryDetailsText.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
@@ -11,18 +10,23 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
+#include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/DeferredProbe.h"
 #include "Domain/GPUModel.h"
+#include "Domain/ISamplable.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
 #include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/Card.h"
@@ -43,6 +47,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -50,11 +55,13 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -139,11 +146,82 @@ constexpr size_t OVERVIEW_NOW_BAR_COLUMNS_WITHOUT_IOWAIT = 3;
 
 } // namespace
 
+namespace
+{
+
+/// The one-factory test seam shared out to the three samplers (#2731): @p makeProbes runs once, on
+/// whichever sampler thread reaches it first, and each sampler's factory then moves its own probes out
+/// of the one result. One mutex covers the run and every take, so the run happens-before each take, and
+/// a probe's first use on its taker's thread (the move itself, then GPUModel::setProbe()'s virtual
+/// calls) comes after a lock that thread acquired. It was std::call_once, the same order in the
+/// language, but libc++'s call_once completes inside libc++.so, which ThreadSanitizer doesn't
+/// instrument, so TSan reported the moves and the first virtual calls on probes another thread built as
+/// data races (the Sanitizers leg went red on main after #2877). A mutex is a synchronization it sees.
+[[nodiscard]] SystemMetricsProbeFactories splitProbeFactory(std::function<SystemMetricsProbes()> makeProbes)
+{
+    struct Shared
+    {
+        std::mutex mutex;
+        std::function<SystemMetricsProbes()> makeProbes; ///< guarded by mutex; empty once it has run
+        SystemMetricsProbes probes;                      ///< guarded by mutex; each member emptied by its taker
+    };
+    const auto shared = std::make_shared<Shared>();
+    shared->makeProbes = std::move(makeProbes);
+    // Runs the factory if no taker has yet (one that throws stays, as under call_once, for the next taker
+    // to retry; the sampler's start hook logs the failure), then hands @p take the result, still locked.
+    const auto made = [shared](auto take)
+    {
+        const std::scoped_lock lock(shared->mutex);
+        if (shared->makeProbes)
+        {
+            shared->probes = shared->makeProbes();
+            shared->makeProbes = nullptr;
+        }
+        return take(shared->probes);
+    };
+    return {.system =
+                [made]
+            {
+                return made([](SystemMetricsProbes& probes)
+                            { return SystemModelProbes{.system = std::move(probes.system), .power = std::move(probes.power)}; });
+            },
+            .disk = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.disk); }); },
+            .gpu = [made] { return made([](SystemMetricsProbes& probes) { return std::move(probes.gpu); }); }};
+}
+
+} // namespace
+
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {}
 
+SystemMetricsPanel::SystemMetricsPanel(SystemMetricsProbeFactories factories) : Panel("System"), m_Factories(std::move(factories))
+{
+    // A factory the test left out is no such device (a null probe), never the platform's probe.
+    if (!m_Factories.system)
+    {
+        m_Factories.system = []
+        {
+            return SystemModelProbes{};
+        };
+    }
+    if (!m_Factories.disk)
+    {
+        m_Factories.disk = []
+        {
+            return std::unique_ptr<Platform::IDiskProbe>{};
+        };
+    }
+    if (!m_Factories.gpu)
+    {
+        m_Factories.gpu = []
+        {
+            return std::unique_ptr<Platform::IGPUProbe>{};
+        };
+    }
+}
+
 SystemMetricsPanel::SystemMetricsPanel(std::function<SystemMetricsProbes()> makeProbes)
-    : Panel("System"), m_MakeProbes(std::move(makeProbes))
+    : Panel("System"), m_Factories(splitProbeFactory(std::move(makeProbes)))
 {}
 
 std::size_t SystemMetricsPanel::overviewNowBarColumns() const
@@ -164,10 +242,13 @@ float SystemMetricsPanel::overviewNowBarColumnWidth() const
 SystemMetricsPanel::~SystemMetricsPanel()
 {
     // Mirrors onDetach()'s order/completeness (#782): BackgroundSampler observes the models via
-    // weak_ptr, so destruction order among these six members isn't itself a safety requirement
+    // weak_ptr, so destruction order among these members isn't itself a safety requirement
     // today, but keeping the destructor in sync with onDetach() means that invariant doesn't
     // have to be re-verified by hand if a future member's safety ever does depend on order.
-    m_Sampler.reset();
+    m_GpuSampler.reset();
+    m_StorageSampler.reset();
+    m_SystemSampler.reset();
+    m_Seeds.reset();
     m_GPUPublication.reset();
     m_StoragePublication.reset();
     m_SystemPublication.reset();
@@ -185,61 +266,143 @@ void SystemMetricsPanel::onAttach()
     // The synthetic scenario's probes when TASKSMACK_SYNTHETIC selects one (#1413), else the
     // platform's. A scenario that preloads history starts at its window, which ShellLayer's startup
     // event then confirms rather than trims.
-    // An injected probe factory (tests, #1546) replaces both, with no scenario.
-    const Synthetic::Scenario* scenario = m_MakeProbes ? nullptr : Synthetic::activeScenario();
+    // Injected probe factories (tests, #1546; all three set, or none) replace both, with no scenario.
+    const Synthetic::Scenario* scenario = m_Factories.system ? nullptr : Synthetic::activeScenario();
     m_MaxHistorySeconds = static_cast<double>(Synthetic::startupHistorySeconds(scenario, static_cast<int>(m_MaxHistorySeconds)));
-    SystemMetricsProbes probes = m_MakeProbes ? m_MakeProbes() : makeSystemMetricsProbes(scenario);
 
-    m_Model = std::make_shared<Domain::SystemModel>(std::move(probes.system), std::move(probes.power));
+    // The models exist from here, so the shell can wire them (ShellPanels::connectModels()), but
+    // without probes (#2731): each sampler thread builds its own in its start hook below and seeds its
+    // model there, so this thread never opens PDH, enumerates DXGI/NVML or waits for a first read, and
+    // what the probes create belongs to the sampler's apartment, not this thread's STA. Until the seed
+    // is adopted (onUpdate()) the publications are the empty generation and the charts draw no data.
+    m_Model = std::make_shared<Domain::SystemModel>(Domain::DEFERRED_PROBE);
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1291).
     m_Model->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
-    m_StorageModel = std::make_shared<Domain::StorageModel>(std::move(probes.disk));
+    m_StorageModel = std::make_shared<Domain::StorageModel>(Domain::DEFERRED_PROBE);
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_GPUModel = std::make_shared<Domain::GPUModel>(std::move(probes.gpu));
+    m_GPUModel = std::make_shared<Domain::GPUModel>(Domain::DEFERRED_PROBE);
     m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    // The synthetic scenario fills the whole window before the seed below continues it; a no-op
-    // without one.
-    if (scenario != nullptr)
-    {
-        const auto now = std::chrono::steady_clock::now();
-        Synthetic::preloadSystemHistory(scenario, *m_Model, now);
-        Synthetic::preloadStorageHistory(scenario, *m_StorageModel, now);
-    }
+    m_Seeds = std::make_shared<Seeds>();
 
-    // Initial refresh to seed histories
-    m_Model->refresh();
-    m_StorageModel->sample();
-    if (m_GPUModel)
-    {
-        m_GPUModel->refresh();
-    }
+    // Three samplers, one per data domain (#2731): a disk rescan (PdhEnumObjects) or a DXGI/NVML
+    // enumeration that stalls on a driver or PnP event holds up its own thread only, never the CPU and
+    // memory samples, and each model publishes with its own timestamp, so the charts need no lockstep.
+    // The start hooks run on their sampler's thread, before its first pass. Everything they touch is
+    // captured by value or shared: the models outlive the samplers (onDetach() stops those first), and
+    // the scenario is the process's. The factories are still the composition root's (PanelPlatforms) or
+    // the test's. Each seed is the model's first publication, and the baseline the next pass's deltas
+    // are taken against, one interval from now. The synthetic scenario fills the whole window before the
+    // seed continues it; a no-op without one.
+    m_SystemSampler = startSampler(Platform::SYSTEM_SAMPLER_THREAD_NAME,
+                                   m_Model,
+                                   "system",
+                                   [makeProbes = m_Factories.system, scenario, model = m_Model, seeds = m_Seeds]
+                                   {
+                                       SystemModelProbes probes = makeProbes ? makeProbes() : makeSystemModelProbes(scenario);
+                                       model->setProbes(std::move(probes.system), std::move(probes.power));
+                                       if (scenario != nullptr)
+                                       {
+                                           Synthetic::preloadSystemHistory(scenario, *model, std::chrono::steady_clock::now());
+                                       }
+                                       model->refresh();
+                                       seeds->system.store(true, std::memory_order_release);
+                                       spdlog::info("SystemMetricsPanel: system and power probes built and seeded on {}",
+                                                    Platform::SYSTEM_SAMPLER_THREAD_NAME);
+                                   });
+    m_StorageSampler =
+        startSampler(Platform::STORAGE_SAMPLER_THREAD_NAME,
+                     m_StorageModel,
+                     "storage",
+                     [makeProbe = m_Factories.disk, scenario, storage = m_StorageModel, seeds = m_Seeds]
+                     {
+                         storage->setProbe(makeProbe ? makeProbe() : makeStorageModelProbe(scenario));
+                         if (scenario != nullptr)
+                         {
+                             Synthetic::preloadStorageHistory(scenario, *storage, std::chrono::steady_clock::now());
+                         }
+                         storage->sample();
+                         seeds->storage.store(true, std::memory_order_release);
+                         spdlog::info("SystemMetricsPanel: disk probe built and seeded on {}", Platform::STORAGE_SAMPLER_THREAD_NAME);
+                     });
+    m_GpuSampler = startSampler(Platform::GPU_SAMPLER_THREAD_NAME,
+                                m_GPUModel,
+                                "gpu",
+                                [makeProbe = m_Factories.gpu, scenario, gpu = m_GPUModel, seeds = m_Seeds]
+                                {
+                                    gpu->setProbe(makeProbe ? makeProbe() : makeGPUModelProbe(scenario));
+                                    gpu->refresh();
+                                    seeds->gpu.store(true, std::memory_order_release);
+                                    spdlog::info("SystemMetricsPanel: GPU probe built and seeded on {}", Platform::GPU_SAMPLER_THREAD_NAME);
+                                });
 
+    // The empty generation (version 0) until onUpdate() adopts the seeds; m_Hostname stays "System"
+    // until then too, and the shell relabels the tab when it arrives.
+    adoptPublications();
+    m_ForceRefresh = false;
+}
+
+std::unique_ptr<Domain::BackgroundSampler> SystemMetricsPanel::startSampler(std::string_view threadName,
+                                                                            const std::shared_ptr<Domain::ISamplable>& model,
+                                                                            std::string name,
+                                                                            std::function<void()> hook) const
+{
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
-    samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
-    samplerCfg.threadName = Platform::SYSTEM_SAMPLER_THREAD_NAME;
-    m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
-    m_Sampler->addSamplable(m_Model, "system");
-    m_Sampler->addSamplable(m_StorageModel, "storage");
-    if (m_GPUModel)
+    samplerCfg.firstSampleAfterInterval = true; // seeded by the start hook (#1102)
+    samplerCfg.threadName = std::string(threadName);
+    samplerCfg.multiThreadedApartment = true; // PDH's providers and DXGI live with the sampler, not the UI's STA (#2731)
+    samplerCfg.onThreadStart = std::move(hook);
+    auto sampler = std::make_unique<Domain::BackgroundSampler>(std::move(samplerCfg));
+    sampler->addSamplable(model, std::move(name));
+    sampler->start();
+    return sampler;
+}
+
+bool SystemMetricsPanel::waitForFirstSample(std::chrono::milliseconds timeout)
+{
+    if (!m_Seeds || !m_Model)
     {
-        m_Sampler->addSamplable(m_GPUModel, "gpu");
+        return false; // not attached
     }
-    m_Sampler->start();
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!m_Seeds->all())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    adoptPublications();
+    return true;
+}
 
-    adoptSystemPublication();
-    m_StoragePublication = m_StorageModel->publication();
-    m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
-    m_ForceRefresh = false;
-
-    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
-    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
-    const std::string& hostname = m_SystemPublication->snapshot.hostname;
-    m_Hostname = hostname.empty() ? "System" : hostname;
+void SystemMetricsPanel::adoptPublications()
+{
+    if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
+    {
+        adoptSystemPublication();
+        // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
+        // UI code (e.g., tab labels) is responsible for adding icons when rendering.
+        if (const std::string& hostname = m_SystemPublication->snapshot.hostname; !hostname.empty())
+        {
+            m_Hostname = hostname;
+        }
+    }
+    if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
+    {
+        m_StoragePublication = m_StorageModel->publication();
+        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    }
+    if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
+    {
+        m_GPUPublication = m_GPUModel->publication();
+        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
+    }
 }
 
 void SystemMetricsPanel::adoptSystemPublication()
@@ -258,7 +421,11 @@ const Domain::SystemSnapshot& SystemMetricsPanel::systemSnapshot() const
 
 void SystemMetricsPanel::onDetach()
 {
-    m_Sampler.reset();
+    // Each waits for its start hook if that is still building its probes (#2731).
+    m_GpuSampler.reset();
+    m_StorageSampler.reset();
+    m_SystemSampler.reset();
+    m_Seeds.reset();
     m_ProcessModel.reset();
     m_GPUPublication.reset();
     m_StoragePublication.reset();
@@ -275,9 +442,13 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval,
         return;
     }
     m_RefreshInterval = interval;
-    if (m_Sampler)
+    // All three samplers (#2731): every domain is sampled at the Settings interval.
+    for (Domain::BackgroundSampler* sampler : {m_SystemSampler.get(), m_StorageSampler.get(), m_GpuSampler.get()})
     {
-        m_Sampler->setInterval(interval);
+        if (sampler != nullptr)
+        {
+            sampler->setInterval(interval);
+        }
     }
     if (forceSample)
     {
@@ -286,13 +457,28 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval,
     }
 }
 
+std::chrono::milliseconds SystemMetricsPanel::samplingInterval() const
+{
+    return m_SystemSampler ? m_SystemSampler->interval() : m_RefreshInterval;
+}
+
+SystemMetricsPanel::SamplerIntervals SystemMetricsPanel::samplerIntervals() const
+{
+    return {.system = m_SystemSampler ? m_SystemSampler->interval() : m_RefreshInterval,
+            .storage = m_StorageSampler ? m_StorageSampler->interval() : m_RefreshInterval,
+            .gpu = m_GpuSampler ? m_GpuSampler->interval() : m_RefreshInterval};
+}
+
 void SystemMetricsPanel::requestRefresh()
 {
-    if (m_Sampler)
+    for (Domain::BackgroundSampler* sampler : {m_SystemSampler.get(), m_StorageSampler.get(), m_GpuSampler.get()})
     {
-        m_Sampler->requestRefresh();
+        if (sampler != nullptr)
+        {
+            sampler->requestRefresh();
+        }
     }
-    m_ForceRefresh = false; // Consumed since sampler will refresh
+    m_ForceRefresh = false; // Consumed since the samplers will refresh
 }
 
 void SystemMetricsPanel::onEvent(Core::Event& event)
@@ -350,40 +536,15 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         return;
     }
 
-    // Do not throttle the background sampler just because the user is resizing the UI.
-    const auto effectiveInterval = AdaptiveIntervalUtils::chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
-    if (m_Sampler && m_Sampler->interval() != effectiveInterval)
-    {
-        m_Sampler->setInterval(effectiveInterval);
-    }
-
+    // The sampler's interval is not touched here: it is the refresh setting, set by setSamplingInterval()
+    // alone, whether or not this tab is the one shown and whatever the window is doing (#2731). Sampling
+    // and drawing are separate.
     if (m_ForceRefresh)
     {
-        if (m_Sampler)
-        {
-            m_Sampler->requestRefresh();
-        }
-        m_ForceRefresh = false;
+        requestRefresh();
     }
 
-    if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
-    {
-        adoptSystemPublication();
-        if (const std::string& hostname = m_SystemPublication->snapshot.hostname; !hostname.empty())
-        {
-            m_Hostname = hostname;
-        }
-    }
-    if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
-    {
-        m_StoragePublication = m_StorageModel->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-    }
-    if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
-    {
-        m_GPUPublication = m_GPUModel->publication();
-        m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-    }
+    adoptPublications();
     if (const auto processModel = m_ProcessModel.lock(); processModel != nullptr)
     {
         Domain::ProcessSystemHistories histories;
@@ -429,8 +590,23 @@ void SystemMetricsPanel::renderContent()
 
     if (ImGui::BeginTabBar("SystemTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
+        // A sub-tab asked for (requestTab(): TASKSMACK_MACHINE_TAB, TASKSMACK_DEMO's machine=, #2869) is
+        // submitted with ImGuiTabItemFlags_SetSelected on every frame until BeginTabItem() reports it
+        // selected, as the shell's tab bar does for TASKSMACK_TAB (SelectOverride::PendingMainTab).
+        using SelectOverride::MachineTab;
+        const auto tabFlags = [this](const MachineTab tab) -> ImGuiTabItemFlags
+        {
+            return m_RequestedTab.wantsSelected(tab) ? ImGuiTabItemFlags_SetSelected : 0;
+        };
+        const auto beginTab = [this, &tabFlags](const char* label, const MachineTab tab)
+        {
+            const bool selected = ImGui::BeginTabItem(label, nullptr, tabFlags(tab));
+            m_RequestedTab.onTabSubmitted(tab, selected);
+            return selected;
+        };
+
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
-        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
+        if (beginTab(ICON_FA_GAUGE_HIGH "  Overview", MachineTab::Overview))
         {
             {
                 const UI::Widgets::TabContentScope content("##OverviewContent");
@@ -441,7 +617,7 @@ void SystemMetricsPanel::renderContent()
 
         if (CpuCoresSection::showCpuCoresTab(snap.seenCoreIds, static_cast<std::size_t>(snap.coreCount)))
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
+            if (beginTab(ICON_FA_MICROCHIP "  CPU Cores", MachineTab::Cores))
             {
                 // Build context for CpuCoresSection render function
                 CpuCoresSection::RenderContext cpuCtx{
@@ -463,7 +639,7 @@ void SystemMetricsPanel::renderContent()
         // GPU tab - always available; content handles missing GPUs gracefully
         if (m_GPUModel)
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
+            if (beginTab(ICON_FA_MICROCHIP "  GPU", MachineTab::Gpu))
             {
                 // Build context for GpuSection render function
                 GpuSection::RenderContext gpuCtx{
@@ -489,7 +665,7 @@ void SystemMetricsPanel::renderContent()
         // The GPU tab's code draws it, over the publication's accelerators.
         if (m_GPUModel && GpuSection::showAcceleratorTab(m_GPUPublication.get()))
         {
-            if (ImGui::BeginTabItem(ICON_FA_BRAIN "  NPU"))
+            if (beginTab(ICON_FA_BRAIN "  NPU", MachineTab::Npu))
             {
                 GpuSection::RenderContext npuCtx{
                     .publication = m_GPUPublication.get(),
@@ -514,7 +690,7 @@ void SystemMetricsPanel::renderContent()
         // Network and I/O tab - show if network counters are available
         if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
         {
-            if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+            if (beginTab(ICON_FA_NETWORK_WIRED "  Network and I/O", MachineTab::Network))
             {
                 // Build context for NetworkSection render functions
                 NetworkSection::RenderContext netCtx{
@@ -547,6 +723,18 @@ void SystemMetricsPanel::renderContent()
         }
 
         ImGui::EndTabBar();
+
+        // The request's frames are counted only once the first sample is in, when every sub-tab this
+        // machine draws is drawn; a request still waiting then names a sub-tab it never has.
+        if (m_SystemPublication)
+        {
+            if (const std::optional<MachineTab> dropped = m_RequestedTab.onFrameEnd(); dropped.has_value())
+            {
+                spdlog::warn("Requested machine sub-tab '{}' was not drawn after {} frames; ignored",
+                             SelectOverride::machineTabName(*dropped),
+                             SelectOverride::MAX_MACHINE_TAB_FRAMES);
+            }
+        }
     }
 
     ImGui::PopStyleVar(); // FramePadding

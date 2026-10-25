@@ -34,12 +34,14 @@
 #include "Platform/ProcessTypes.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -134,11 +136,7 @@ class ProcessesPanel : public Panel
 
     /// Test seam (#1546): as above, and the events the panel raises (a selection, Details) go to
     /// @p raiseEvent instead of Core::Application, so selection can be driven without an Application.
-    /// With @p interactionRedrawActive, onUpdate() asks it, not Core::Application, whether the window is
-    /// being resized or moved, so onUpdate() runs without an Application too.
-    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform,
-                   std::function<void(Core::Event&)> raiseEvent,
-                   std::function<bool()> interactionRedrawActive = {});
+    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent);
     ~ProcessesPanel() override;
 
     ProcessesPanel(const ProcessesPanel&) = delete;
@@ -146,13 +144,29 @@ class ProcessesPanel : public Panel
     ProcessesPanel(ProcessesPanel&&) = delete;
     ProcessesPanel& operator=(ProcessesPanel&&) = delete;
 
-    /// Initialize the panel (creates ProcessModel and starts sampler).
+    /// Initialize the panel: makes the ProcessModel and starts its sampler, whose thread builds the
+    /// platform (probe, actions, icons, UDP collector) and seeds the model (#2731). Returns without a
+    /// probe call or a read: the table has no rows until onUpdate() adopts the seed.
     void onAttach() override;
+
+    /// Waits until the sampler thread has built the platform and seeded the model, then adopts the
+    /// platform and the seed generation as onUpdate() would (#2731). For tests, which used to find the
+    /// seed in place when onAttach() returned; the app never waits. False on timeout, or before onAttach().
+    [[nodiscard]] bool waitForFirstSample(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+
+    /// Whether a snapshot generation has been adopted yet: false until the first frame after the seed
+    /// (#2731). Until then processCapabilities() is the defaults, so a reader that acts on them once at
+    /// startup (the privilege notice) waits for this.
+    [[nodiscard]] bool firstSnapshotAdopted() const noexcept
+    {
+        return m_CachedSnapshotVersion != std::numeric_limits<std::uint64_t>::max();
+    }
 
     /// Cleanup (stops sampler).
     void onDetach() override;
 
-    /// Update logic (no longer needed for refresh, kept for interface compatibility).
+    /// Adopts the sampler's newest publication and runs the per-frame bookkeeping. It never sets the
+    /// sampling cadence: that is the Settings value alone (#2731).
     void onUpdate(float deltaTime) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
@@ -175,12 +189,9 @@ class ProcessesPanel : public Panel
         return m_Selection.size();
     }
 
-    /// The interval onUpdate() last gave the sampler: the refresh setting, relaxed while no tab on show
-    /// needs process data and while the window is being resized or moved (AdaptiveIntervalUtils).
-    [[nodiscard]] std::chrono::milliseconds appliedSamplingInterval() const noexcept
-    {
-        return m_AppliedSamplerInterval;
-    }
+    /// The interval the sampler runs at: the refresh setting from Settings, in every UI state (#2731);
+    /// before onAttach(), the setting itself.
+    [[nodiscard]] std::chrono::milliseconds samplingInterval() const;
 
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
@@ -237,7 +248,8 @@ class ProcessesPanel : public Panel
         return m_ColumnSettings;
     }
 
-    /// Set the refresh interval (applied by onUpdate cadence checks).
+    /// Set the refresh interval the sampler runs at. It is the Settings value, whatever the UI state
+    /// (#2731): no tab change, resize, move or minimize rescales or pauses it.
     void setSamplingInterval(std::chrono::milliseconds interval, bool forceSample = true);
 
     /// Request an immediate refresh.
@@ -303,6 +315,24 @@ class ProcessesPanel : public Panel
         return m_TreeViewEnabled;
     }
 
+    /// The filter box's text, for the UI scenarios driving it through the whole shell (#2711).
+    [[nodiscard]] const std::string& searchTextForTesting() const noexcept
+    {
+        return m_SearchBuffer;
+    }
+
+    /// The row menu's popup ID (#2711): a scenario tells the row menu from another popup by it.
+    [[nodiscard]] unsigned int rowMenuPopupIdForTesting() const noexcept
+    {
+        return m_RowMenuPopupId;
+    }
+
+    /// How many tree branches are collapsed, the filter's own set included (#2711).
+    [[nodiscard]] std::size_t collapsedBranchCountForTesting() const noexcept
+    {
+        return m_CollapsedKeys.size() + m_FilterCollapsedKeys.size();
+    }
+
     /// Switches between list and tree view, as the toolbar's List | Tree control does (F5, #170).
     void toggleTreeView()
     {
@@ -347,12 +377,37 @@ class ProcessesPanel : public Panel
   private:
     std::function<ProcessesPanelPlatform()> m_MakePlatform; ///< Set by the test seam only
     std::function<void(Core::Event&)> m_RaiseEvent;         ///< Set by the test seam only; else the Application
-    std::function<bool()> m_InteractionRedrawActive;        ///< Set by the test seam only; else the Application
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.
     std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
+
+    /// What the sampler thread's start hook built besides the probe (#2731), on its way to this panel:
+    /// the row menu's actions, the UDP collector and the icon source are the UI thread's to own, so the
+    /// hook leaves them here and adoptPlatform() takes them on the next frame. Shared between the hook
+    /// and the panel, so neither depends on the other's lifetime.
+    struct PlatformHandoff
+    {
+        struct Contents
+        {
+            std::unique_ptr<Platform::IProcessActions> actions;
+            Platform::ProcessActionCapabilities actionCapabilities; ///< actions->actionCapabilities(), asked on the hook's thread
+            std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector;
+            std::unique_ptr<Platform::IProcessIconSource> icons;
+        };
+        std::mutex mutex;
+        std::optional<Contents> contents; ///< guarded by mutex; empty once taken
+        std::atomic<bool> seeded{false};  ///< set last: the probe is in place and the model has its seed
+    };
+    std::shared_ptr<PlatformHandoff> m_Handoff;
+    /// The hook's contents, once: empty when nothing is waiting or it was taken already.
+    [[nodiscard]] std::optional<PlatformHandoff::Contents> takePlatformHandoff();
+    /// Takes the hook's contents into this panel (actions, collector, icon view). UI thread.
+    void adoptPlatform();
+    /// The column defaults for this system's capabilities, from the first generation adopted (#1210, #2731).
+    void applyStartupColumnDefaults();
+    bool m_ColumnDefaultsApplied = false;
     // ImGui's ID for the process table, recorded when it is rendered; 0 until then. Needed to pick
     // this table's section out of ImGui's settings text (#952).
     std::uint32_t m_TableId = 0;
@@ -383,13 +438,8 @@ class ProcessesPanel : public Panel
     std::int32_t m_OwnPid = 0;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
-    // Whether the active main tab shows any process data, which sets the sampling rate (#1097). True
-    // at start: the default System tab shows process-derived charts.
-    bool m_ProcessDataShown = true;
-    float m_InteractionHoldSeconds = 0.0F;
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;

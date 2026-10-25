@@ -22,6 +22,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ThreadName.h"
@@ -83,20 +84,6 @@ environmentCellNeedsTooltip(std::size_t shownBytes, std::size_t totalBytes, floa
     return shownBytes < totalBytes || textWidth > availableWidth;
 }
 
-/// Whether @p haystack contains @p needle, ignoring ASCII case. An empty needle matches everything.
-[[nodiscard]] inline bool containsIgnoringCase(std::string_view haystack, std::string_view needle) noexcept
-{
-    const auto lower = [](char c) noexcept
-    {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    if (needle.empty())
-    {
-        return true;
-    }
-    return !std::ranges::search(haystack, needle, [&lower](char a, char b) { return lower(a) == lower(b); }).empty();
-}
-
 } // namespace Detail
 
 /// The Environment section for the process Process Details shows.
@@ -121,8 +108,8 @@ class ProcessEnvironmentView
     using RowKeyView = std::pair<std::string_view, std::size_t>;
 
     /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
-    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (the platform
-    /// cannot read environments: Windows, synthetic runs).
+    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (no reader can
+    /// read environments: synthetic runs).
     void render(bool hasEnvironment);
 
     /// The panel's per-frame update: takes in a read that has finished, then starts @p target's on a
@@ -189,6 +176,7 @@ class ProcessEnvironmentView
         m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
+        m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
         m_Revealed.clear();
@@ -204,6 +192,7 @@ class ProcessEnvironmentView
     {
         m_HasRead = true;
         m_Status = result.status;
+        m_Detail = std::move(result.detail);
         m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
@@ -279,6 +268,12 @@ class ProcessEnvironmentView
         return m_Status;
     }
 
+    /// Why the last read Failed, when its reader said (EnvironmentReadResult::detail); else empty.
+    [[nodiscard]] const std::string& detail() const noexcept
+    {
+        return m_Detail;
+    }
+
     /// The last read's variables, sorted by name.
     [[nodiscard]] std::span<const Row> rows() const noexcept
     {
@@ -302,8 +297,8 @@ class ProcessEnvironmentView
             for (std::size_t i = 0; i < m_Rows.size(); ++i)
             {
                 const Row& row = m_Rows[i];
-                if (Detail::containsIgnoringCase(row.name, m_Filter) ||
-                    (!isMasked(row) && Detail::containsIgnoringCase(row.value, m_Filter)))
+                if (Platform::containsIgnoreCase(row.name, m_Filter) ||
+                    (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter)))
                 {
                     m_FilteredRows.push_back(i);
                 }
@@ -331,8 +326,9 @@ class ProcessEnvironmentView
         }
     }
 
-    /// The Failed result for a read that threw, or one no worker could be started for. The detail is
-    /// not kept: the status line says "Could not be read" (and a value must never be logged, #179).
+    /// The Failed result for a read that threw, or one no worker could be started for. That detail is
+    /// not kept (an exception's text could quote a value, which must never be shown or logged, #179):
+    /// the status line says "Could not be read"; only a reader's own detail is drawn after it.
     // NOLINTNEXTLINE(performance-unnecessary-value-param) - the signature LazyBackgroundRead::FailedResultFn takes
     [[nodiscard]] static Platform::EnvironmentReadResult failedRead(std::string /*detail*/)
     {
@@ -341,6 +337,7 @@ class ProcessEnvironmentView
 
     bool m_HasRead = false;
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
+    std::string m_Detail;     // why it Failed, when the reader said (the Windows reader does, #2569)
     bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown

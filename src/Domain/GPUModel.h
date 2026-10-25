@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "Domain/GPUSnapshot.h"
 #include "Domain/SharedHistory.h"
 #include "ISamplable.h"
@@ -144,8 +145,20 @@ using GPUSnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentS
 class GPUModel : public ISamplable
 {
   public:
+    /// With a probe, or null for a machine with no GPU probe at all: a known answer (no per-process GPU
+    /// data), not an unknown one.
     explicit GPUModel(std::unique_ptr<Platform::IGPUProbe> probe);
+    /// A model whose probe arrives later, through setProbe() (#2731): until then nothing is published and
+    /// nothing is known -- not the GPUs, not whether per-process data exists -- so the consumers that
+    /// wait for the capabilities (the GPU columns' defaults, #1210) keep waiting.
+    explicit GPUModel(DeferredProbeTag /*tag*/);
     ~GPUModel() override = default;
+
+    /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no GPU probe (as the
+    /// constructor takes it). Reads the probe's capabilities and enumerates its GPUs, as the constructor
+    /// did, so the first refresh has the device list. Meant for the sampler thread, before its first
+    /// sample (the sampler's start hook); thread-safe, and a probe already held is replaced.
+    void setProbe(std::unique_ptr<Platform::IGPUProbe> probe);
 
     GPUModel(const GPUModel&) = delete;
     GPUModel& operator=(const GPUModel&) = delete;
@@ -244,6 +257,9 @@ class GPUModel : public ISamplable
     /// The four "known unsupported" flags from m_Capabilities, once they are known (under m_Mutex, unique).
     void storePerProcessSupport() noexcept;
 
+    // Set by the constructor or setProbe() (under m_ProbeMutex); refreshAt()'s null check reads it
+    // outside the lock, on the one sampling thread (the sampler's, which also runs setProbe() from its
+    // start hook), as before.
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
     // The per-process GPU publication (#1417). Committed by refreshAt() while it holds m_ProbeMutex,
@@ -252,9 +268,9 @@ class GPUModel : public ISamplable
     PublicationSlot<ProcessGPUPublication> m_ProcessPublication;
     std::uint64_t m_ProcessPublicationVersion = 0; // guarded by m_ProbeMutex
     bool m_ProcessReadFailing = false;             // guarded by m_ProbeMutex; logs a failing read once per streak
-    // The GPU info, its known flag and the capabilities are written only by the constructor, then by
-    // rescanGPUs() inside refreshAt(), which holds m_ProbeMutex and takes a unique m_Mutex to write.
-    // So code holding m_ProbeMutex may read them without m_Mutex; anything else takes m_Mutex shared.
+    // The GPU info, its known flag and the capabilities are written only by setProbe() (the constructor's
+    // too) and by rescanGPUs() inside refreshAt(), each holding m_ProbeMutex and taking a unique m_Mutex
+    // to write. So code holding m_ProbeMutex may read them without m_Mutex; anything else takes m_Mutex shared.
     // refreshAt() copies the GPU info it computes snapshots from while it holds m_ProbeMutex, so two
     // racing refreshes never read the list while the other replaces it (#2153).
     std::vector<Platform::GPUInfo> m_GPUInfo;

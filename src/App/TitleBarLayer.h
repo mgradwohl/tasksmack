@@ -6,6 +6,7 @@
 #include "UI/IconLoader.h"
 
 #include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_video.h>
 
 #include <cstdint>
 #include <functional>
@@ -29,7 +30,8 @@ namespace App
 /// - "TaskSmack" title in Sixtyfour pixel font
 /// - About (i), Help (?) and Settings (gear) buttons (emit events)
 /// - Window controls: minimize, maximize/restore, close
-/// - SDL hit test registration for window dragging
+/// - SDL hit test registration: the OS or compositor runs the title-bar drag and the border resize
+///   where it can (hitTest()), and the layer runs them itself elsewhere
 class TitleBarLayer : public Core::Layer
 {
   public:
@@ -67,9 +69,20 @@ class TitleBarLayer : public Core::Layer
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
     using ButtonBounds = App::ButtonBounds;
 
-    /// True if (x, y) falls inside any title-bar button's bounds. Public so the
-    /// free-function hit-test callback can use it directly.
+    /// True if (x, y) falls inside any title-bar button's bounds, the icon's included.
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
+
+    /// Everything SDL's hit test is decided from, as the bar has it now (WindowHitTestInput): the
+    /// window's size and maximized state, the bar's height and resize border at the display's scale,
+    /// where the buttons and the icon were last drawn, and the backend's policy
+    /// (Core::VideoBackend::usesSystemDrag()/usesSystemResize(), a client-side maximized window
+    /// excepted: computeSystemDragApplies()). Valid outside an ImGui frame.
+    [[nodiscard]] auto hitTestInput() const -> WindowHitTestInput;
+
+    /// What the SDL hit-test callback installed on the window answers for window-local (@p x, @p y):
+    /// computeWindowHitTestAt() over hitTestInput(). Public so a test can ask the real window's
+    /// callback the same question SDL does (#2716).
+    [[nodiscard]] auto hitTest(float x, float y) const -> SDL_HitTestResult;
 
     /// Mouse state a drag or resize in progress reads instead of SDL's, as {x, y, buttonMask} in
     /// global coordinates: tests hold the left button down and move the pointer, which a pushed

@@ -12,6 +12,8 @@
 #include "Mocks/WindowsNVMLFake.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
+#include "Platform/Windows/AdapterPerfDataMath.h"
+#include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
@@ -26,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,6 +69,16 @@ struct WindowsGPUProbeTestAccessor
     static void setDriverNodes(WindowsGPUProbe& probe, std::vector<WindowsGraphics::DriverNode> (*list)())
     {
         probe.m_ListDriverNodes = list;
+    }
+    /// The kernel adapter calls the perf-data sensors are read through (#2586), in place of gdi32's.
+    static void setPerfFunctions(WindowsGPUProbe& probe, const D3DKMTAdapterFunctions& functions)
+    {
+        *probe.m_PerfFunctions = functions;
+    }
+    /// Whether a GPU at a PCI location is asleep, in place of this machine's PnP power states (#1265).
+    static void setAsleep(WindowsGPUProbe& probe, std::function<bool(const PciLocation&)> isAsleep)
+    {
+        probe.m_IsAsleep = std::move(isAsleep);
     }
 };
 
@@ -125,6 +138,10 @@ class WindowsGPURescanTest : public ::testing::Test
         NVMLGPUProbeTestAccessor::inject(WindowsGPUProbeTestAccessor::nvml(probe), NVMLGPUProbeTestAccessor::fullFakeFunctions(), true);
         WindowsGPUProbeTestAccessor::dropPDH(probe);
         WindowsGPUProbeTestAccessor::setDriverNodes(probe, [] { return std::vector<WindowsGraphics::DriverNode>{}; });
+        // The perf-data sensors through the fake D3DKMT too (#2586), and no adapter asleep unless a
+        // test says so, rather than this machine's PnP power states.
+        WindowsGPUProbeTestAccessor::setPerfFunctions(probe, fakeD3DKMTFunctions());
+        WindowsGPUProbeTestAccessor::setAsleep(probe, [](const PciLocation&) { return false; });
     }
 };
 
@@ -604,6 +621,174 @@ TEST_F(WindowsGPURescanTest, NVMLEncoderAndDecoderReachTheMatchedAdapter)
     EXPECT_DOUBLE_EQ(withEngines->decoderUtilPercent, 9.0);
     EXPECT_FALSE(withoutEngines->encoderAvailable);
     EXPECT_FALSE(withoutEngines->decoderAvailable);
+}
+
+// =============================================================================
+// Sensors from D3DKMT adapter perf data for the GPUs NVML doesn't cover (#2586)
+// =============================================================================
+
+/// A discrete AMD card at PCI bus 3, with a temperature, fan and clock in its perf data.
+FakeAdapter amdGPU()
+{
+    FakeAdapter adapter =
+        makeAdapter(L"AMD Radeon RX 7800 XT", 0x1002, 0x747E, 0x300, PciLocation{.bus = 0x03, .device = 0x00, .function = 0});
+    adapter.perf = FakeAdapterPerf{.temperatureDeciCelsius = 612,
+                                   .fanRpm = 1200,
+                                   .maxFanRpm = 3300,
+                                   .engineFrequencyHz = 2'124'000'000ULL,
+                                   .maxEngineFrequencyHz = 2'430'000'000ULL};
+    return adapter;
+}
+
+/// The counter for the adapter with this LUID, or end.
+auto counterOf(const std::vector<GPUCounters>& counters, const std::vector<GPUInfo>& gpus, std::uint32_t luidLowPart)
+{
+    const GPUInfo* gpu = findByLuid(gpus, luidLowPart);
+    return gpu == nullptr ? counters.end() : std::ranges::find(counters, gpu->id, &GPUCounters::gpuId);
+}
+
+// A hybrid laptop: the NVIDIA GPU keeps NVML's sensors; the Intel iGPU, which no NVML device covers,
+// gets the temperature and clock its kernel adapter reports -- and no fan, since it reports no fan
+// maximum. Each sample reads them again, scaled into the counter.
+TEST_F(WindowsGPURescanTest, AGpuWithoutAnNVMLDeviceGetsItsSensorsFromTheKernelAdapter)
+{
+    FakeAdapter igpu = intelIGPU();
+    igpu.perf =
+        FakeAdapterPerf{.temperatureDeciCelsius = 455, .engineFrequencyHz = 1'850'000'000ULL, .maxEngineFrequencyHz = 2'250'000'000ULL};
+    setAdapters({igpu, nvidiaGPU(0x200, 0x01)});
+    fakeState().deviceCount = 1;
+    setNVMLDevice(0, "GPU-internal", 0x01, 50);
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    EXPECT_TRUE(probe.capabilities().hasTemperature) << "The probe can read a temperature before the first enumeration says whose";
+    EXPECT_TRUE(probe.capabilities().hasClockSpeeds);
+
+    const auto gpus = probe.enumerateGPUs();
+    const GPUInfo* intel = findByLuid(gpus, 0x100);
+    const GPUInfo* nvidia = findByLuid(gpus, 0x200);
+    ASSERT_NE(intel, nullptr);
+    ASSERT_NE(nvidia, nullptr);
+    ASSERT_TRUE(intel->sensorCapabilities.has_value());
+    const GPUCapabilities intelSensors = intel->sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(intelSensors.hasTemperature);
+    EXPECT_TRUE(intelSensors.hasClockSpeeds);
+    EXPECT_FALSE(intelSensors.hasFanSpeed) << "No fan maximum reported";
+    EXPECT_FALSE(intelSensors.hasPowerMetrics) << "Perf data has power as a percentage only";
+    EXPECT_FALSE(intelSensors.hasEncoderDecoder);
+    EXPECT_TRUE(nvidia->sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature) << "NVML's, as before";
+    EXPECT_EQ(dxgiState().perfQueries, 1) << "The NVIDIA adapter, matched to NVML, isn't asked";
+
+    const auto counters = probe.readGPUCounters();
+    const auto intelCounter = counterOf(counters, gpus, 0x100);
+    const auto nvidiaCounter = counterOf(counters, gpus, 0x200);
+    ASSERT_NE(intelCounter, counters.end());
+    ASSERT_NE(nvidiaCounter, counters.end());
+    EXPECT_TRUE(intelCounter->temperatureAvailable);
+    EXPECT_EQ(intelCounter->temperatureC, 46) << "45.5 °C rounds up";
+    EXPECT_TRUE(intelCounter->gpuClockAvailable);
+    EXPECT_EQ(intelCounter->gpuClockMHz, 1850U);
+    EXPECT_EQ(intelCounter->fanSpeedMaxRaw, 0U);
+    EXPECT_FALSE(intelCounter->suspended);
+    EXPECT_TRUE(nvidiaCounter->temperatureAvailable);
+    EXPECT_EQ(nvidiaCounter->temperatureC, 50) << "NVML's reading, not the kernel adapter's";
+    EXPECT_EQ(dxgiState().perfQueries, 2) << "One per sample for the Intel adapter alone";
+}
+
+// A read that fails this sample (the driver mid-reset, say) is a gap for each of the adapter's
+// sensors, never a logged error or a real-looking 0; the next sample that reads fills them again.
+// A sensor the adapter didn't claim at enumeration stays unread even when a sample reports it.
+TEST_F(WindowsGPURescanTest, AFailedKernelAdapterReadIsAGapThisSample)
+{
+    FakeAdapter igpu = intelIGPU();
+    igpu.perf =
+        FakeAdapterPerf{.temperatureDeciCelsius = 455, .engineFrequencyHz = 1'850'000'000ULL, .maxEngineFrequencyHz = 2'250'000'000ULL};
+    setAdapters({igpu});
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_NE(findByLuid(gpus, 0x100), nullptr);
+    FakeAdapter* adapter = adapterWithLuid(LUID{.LowPart = 0x100, .HighPart = 0});
+    ASSERT_NE(adapter, nullptr);
+
+    ASSERT_TRUE(adapter->perf.has_value());
+    const FakeAdapterPerf perf = adapter->perf.value_or(FakeAdapterPerf{});
+    adapter->perf.reset();
+    const auto failed = probe.readGPUCounters();
+    const auto gap = counterOf(failed, gpus, 0x100);
+    ASSERT_NE(gap, failed.end());
+    EXPECT_FALSE(gap->temperatureAvailable);
+    EXPECT_FALSE(gap->gpuClockAvailable);
+    EXPECT_EQ(gap->temperatureC, 0);
+    EXPECT_FALSE(gap->suspended) << "A failed read is not a sleeping GPU";
+
+    adapter->perf = perf;
+    adapter->perf->temperatureDeciCelsius = 500;
+    adapter->perf->fanRpm = 1000;
+    adapter->perf->maxFanRpm = 3000; // Reported now, but the adapter claimed no fan at enumeration
+    const auto read = probe.readGPUCounters();
+    const auto reading = counterOf(read, gpus, 0x100);
+    ASSERT_NE(reading, read.end());
+    EXPECT_TRUE(reading->temperatureAvailable);
+    EXPECT_EQ(reading->temperatureC, 50);
+    EXPECT_TRUE(reading->gpuClockAvailable);
+    EXPECT_EQ(reading->fanSpeedMaxRaw, 0U) << "Masked: no fan series appears mid-run";
+}
+
+// A discrete AMD GPU asleep at enumeration isn't asked for its perf data, which could wake it, so it
+// has no sensors until a quick rescan finds it awake and the re-enumeration reads it; once asleep
+// again, a sample leaves it alone and marks it suspended.
+TEST_F(WindowsGPURescanTest, AGpuAsleepAtEnumerationIsReadOnceAQuickRescanFindsItAwake)
+{
+    setAdapters({intelIGPU(), amdGPU()});
+
+    WindowsGPUProbe probe;
+    useFakes(probe);
+    bool asleep = true;
+    WindowsGPUProbeTestAccessor::setAsleep(probe, [&asleep](const PciLocation& location) { return asleep && location.bus == 0x03; });
+
+    const auto sleeping = probe.enumerateGPUs();
+    const GPUInfo* amd = findByLuid(sleeping, 0x300);
+    ASSERT_NE(amd, nullptr);
+    ASSERT_TRUE(amd->sensorCapabilities.has_value());
+    EXPECT_FALSE(hasAnyAdapterPerfSensor(amd->sensorCapabilities.value_or(GPUCapabilities{}))) << "Unknown while asleep: nothing is drawn";
+    EXPECT_EQ(dxgiState().perfQueries, 1) << "The Intel adapter alone was asked (and reports nothing)";
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full));
+
+    asleep = false;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_EQ(dxgiState().perfQueries, 1) << "Finding out it woke didn't ask the GPU";
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)) << "Reported once";
+    const auto awake = probe.enumerateGPUs();
+    amd = findByLuid(awake, 0x300);
+    ASSERT_NE(amd, nullptr);
+    ASSERT_TRUE(amd->sensorCapabilities.has_value());
+    const GPUCapabilities amdSensors = amd->sensorCapabilities.value_or(GPUCapabilities{});
+    EXPECT_TRUE(amdSensors.hasTemperature);
+    EXPECT_TRUE(amdSensors.hasFanSpeed);
+    EXPECT_TRUE(amdSensors.hasClockSpeeds);
+    const auto counters = probe.readGPUCounters();
+    const auto reading = counterOf(counters, awake, 0x300);
+    ASSERT_NE(reading, counters.end());
+    EXPECT_TRUE(reading->temperatureAvailable);
+    EXPECT_EQ(reading->temperatureC, 61);
+    EXPECT_EQ(reading->fanSpeedRaw, 1200U);
+    EXPECT_EQ(reading->fanSpeedMaxRaw, 3300U);
+    EXPECT_EQ(reading->gpuClockMHz, 2124U);
+    EXPECT_FALSE(reading->suspended);
+
+    asleep = true;
+    const int queriesBefore = dxgiState().perfQueries;
+    const auto dozing = probe.readGPUCounters();
+    const auto gap = counterOf(dozing, awake, 0x300);
+    ASSERT_NE(gap, dozing.end());
+    EXPECT_TRUE(gap->suspended);
+    EXPECT_FALSE(gap->temperatureAvailable);
+    EXPECT_FALSE(gap->gpuClockAvailable);
+    EXPECT_EQ(gap->fanSpeedMaxRaw, 0U);
+    EXPECT_EQ(dxgiState().perfQueries, queriesBefore) << "A sleeping GPU is left alone";
 }
 
 // =============================================================================

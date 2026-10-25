@@ -150,6 +150,18 @@ bool VideoBackend::supportsGlobalMouseState() noexcept
     return s_Backend != Backend::Wayland;
 }
 
+bool VideoBackend::usesSystemDrag() noexcept
+{
+    const std::scoped_lock lock(s_Mutex);
+    return usesSystemDrag(s_Backend);
+}
+
+bool VideoBackend::usesSystemResize() noexcept
+{
+    const std::scoped_lock lock(s_Mutex);
+    return usesSystemResize(s_Backend);
+}
+
 std::string VideoBackend::driverName() noexcept
 {
     // Some call sites are noexcept themselves (e.g. Window::supportsPositioning()), so a copy

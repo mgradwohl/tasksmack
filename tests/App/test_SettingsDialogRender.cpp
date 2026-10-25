@@ -352,6 +352,25 @@ TEST_F(SettingsDialogRenderTest, EscapeClosesWithoutSaving)
     EXPECT_FALSE(settle().open);
 }
 
+// #2827: a close request (a CloseDialogEvent, TASKSMACK_DEMO's close=dialog) closes the dialog as Cancel
+// does and is spent by it; one made while the dialog is closed is dropped, not kept for the next opening.
+TEST_F(SettingsDialogRenderTest, ACloseRequestClosesWithoutSaving)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    m_State.closeRequested = true;
+    EXPECT_EQ(runFrame().action, Action::None);
+    EXPECT_FALSE(settle().open);
+    EXPECT_FALSE(m_State.closeRequested);
+}
+
+TEST_F(SettingsDialogRenderTest, ACloseRequestWhileClosedIsDropped)
+{
+    m_State.closeRequested = true;
+    EXPECT_FALSE(settle().open);
+    EXPECT_FALSE(m_State.closeRequested);
+    EXPECT_TRUE(openAndSettle().open);
+}
+
 TEST_F(SettingsDialogRenderTest, SaveIsReportedAndCloses)
 {
     ASSERT_TRUE(openAndSettle().open);

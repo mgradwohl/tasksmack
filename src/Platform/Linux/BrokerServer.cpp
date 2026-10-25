@@ -16,6 +16,13 @@
 namespace Platform::BrokerServer
 {
 
+namespace
+{
+/// How long a held session waits for a frame before it looks again: any length works, as a held session
+/// never ends idle; this one keeps the wait's arithmetic far from overflowing.
+constexpr std::chrono::milliseconds HELD_WAIT = std::chrono::hours{1};
+} // namespace
+
 SessionEnd serve(int fd,
                  IProcessActions& actions,
                  std::chrono::milliseconds idleTimeout,
@@ -24,12 +31,16 @@ SessionEnd serve(int fd,
                  const Broker::IdleClock& clock)
 {
     bool greeted = false;
+    // Held for the session (#2728): a Hello asked for it, and the session then ends only when TaskSmack
+    // closes the socket, the session is stopped or the channel breaks.
+    bool held = false;
     // The idle timeout runs from the last request the user made: reads come on their own timers, so they
     // don't keep the helper alive (#2369, #2405).
     auto lastActivity = Broker::idleNow(clock);
     while (true)
     {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (Broker::idleNow(clock) - lastActivity));
+        const auto left =
+            held ? HELD_WAIT : std::chrono::duration_cast<std::chrono::milliseconds>(idleTimeout - (Broker::idleNow(clock) - lastActivity));
         if (left.count() <= 0)
         {
             return SessionEnd::Idle;
@@ -42,6 +53,10 @@ SessionEnd serve(int fd,
             case BrokerSocket::ReceiveEnd::Closed:
                 return SessionEnd::ClientClosed;
             case BrokerSocket::ReceiveEnd::TimedOut:
+                if (held)
+                {
+                    continue;
+                }
                 return SessionEnd::Idle;
             case BrokerSocket::ReceiveEnd::Stopped:
                 return SessionEnd::Stopped;
@@ -78,6 +93,8 @@ SessionEnd serve(int fd,
                 {
                     greeted = std::get<Broker::HelloReply>(response).accepted;
                     endAfterReply = !greeted;
+                    // Once held, held: a later Hello without the flag doesn't put the idle exit back.
+                    held = held || (greeted && std::get<Broker::Hello>(decoded->message).forSession);
                 }
             }
         }

@@ -1,5 +1,6 @@
 #include "Platform/NVMLTypes.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -571,6 +572,36 @@ extern "C"
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
         *throughput = (counter == NVML::NVML_PCIE_UTIL_TX_BYTES) ? dev->pcieTxKilobytes : dev->pcieRxKilobytes;
+        return NVML::NVML_SUCCESS;
+    }
+
+    // Per-process utilization (#2589): two samples for pid 123 (the newer one counts) and one for 456, all
+    // at or before timestamp 2000; asked for samples after 2000 or later, there are none.
+    NVML::nvmlReturn_t nvmlDeviceGetProcessUtilization(NVML::nvmlDevice_t device,
+                                                       NVML::nvmlProcessUtilizationSample_t* samples,
+                                                       unsigned int* count,
+                                                       unsigned long long lastSeenTimeStamp)
+    {
+        if (safeDevice(device) == nullptr || count == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        constexpr std::array<NVML::nvmlProcessUtilizationSample_t, 3> SAMPLES{{
+            {.pid = 123U, .timeStamp = 1000ULL, .smUtil = 10U, .memUtil = 1U, .encUtil = 0U, .decUtil = 0U},
+            {.pid = 123U, .timeStamp = 2000ULL, .smUtil = 37U, .memUtil = 5U, .encUtil = 4U, .decUtil = 6U},
+            {.pid = 456U, .timeStamp = 1500ULL, .smUtil = 12U, .memUtil = 2U, .encUtil = 0U, .decUtil = 0U},
+        }};
+        if (lastSeenTimeStamp >= 2000ULL)
+        {
+            return NVML::NVML_ERROR_NOT_FOUND;
+        }
+        if (samples == nullptr || *count < SAMPLES.size())
+        {
+            *count = static_cast<unsigned int>(SAMPLES.size());
+            return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+        }
+        std::ranges::copy(SAMPLES, samples);
+        *count = static_cast<unsigned int>(SAMPLES.size());
         return NVML::NVML_SUCCESS;
     }
 

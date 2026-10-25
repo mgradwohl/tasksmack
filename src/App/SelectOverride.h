@@ -6,7 +6,9 @@
 //   TASKSMACK_SELECT_PID=1234 ./TaskSmack                 the process with PID 1234
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|npu|network)
-//   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
+//   TASKSMACK_OPEN=help                                   the Help window (help|about|settings, #172)
+//   TASKSMACK_MACHINE_TAB=gpu                             the machine tab's GPU sub-tab
+//                                                         (overview|cores|gpu|npu|network, #2869)
 //
 // TASKSMACK_DEMO (App/DemoOverride.h, #2827) makes the same requests, and more, at given times
 // after startup, through the names and parsers here.
@@ -24,11 +26,11 @@
 
 #include "Core/EnvUtils.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -50,8 +52,11 @@ inline constexpr std::string_view TAB_ENV_VAR = "TASKSMACK_DETAILS_TAB";
 /// The top-level tab to open (machine/overview, processes, details, or any registered tab's id or label).
 /// It wins over the Process Details tab a TASKSMACK_SELECT_PID/_NAME selection would bring forward.
 inline constexpr std::string_view MAIN_TAB_ENV_VAR = "TASKSMACK_TAB";
+/// The machine (hostname) tab's sub-tab to bring forward (#2869): overview, cores, gpu, npu or network.
+/// It picks the sub-tab only; the main tab is TASKSMACK_TAB's (or the startup default, the machine tab).
+inline constexpr std::string_view MACHINE_TAB_ENV_VAR = "TASKSMACK_MACHINE_TAB";
 static_assert(Core::isKnownEnvHook(PID_ENV_VAR) && Core::isKnownEnvHook(NAME_ENV_VAR) && Core::isKnownEnvHook(TAB_ENV_VAR) &&
-              Core::isKnownEnvHook(MAIN_TAB_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
+              Core::isKnownEnvHook(MAIN_TAB_ENV_VAR) && Core::isKnownEnvHook(MACHINE_TAB_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 /// Snapshots to wait for the process before giving up (about 20 s at the default 1 s interval).
 inline constexpr int MAX_SNAPSHOTS = 20;
@@ -77,20 +82,41 @@ enum class DetailsSection : std::uint8_t
     Services, ///< Drawn only for a process that runs a service
 };
 
-/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog, "settings" the
+/// Settings dialog (#2827).
 enum class StartupDialog : std::uint8_t
 {
     Help,
     About,
+    Settings, ///< Opened as the title bar's gear and F2 open it
 };
 
-/// The names the hooks accept for each tab, section and dialog, lowercase: parseTab(), parseSection()
-/// and parseDialog() match them in any case; tabName(), sectionName() and dialogName() write them.
+/// A sub-tab of the machine (hostname) tab, in the order SystemMetricsPanel draws them: what
+/// TASKSMACK_MACHINE_TAB and TASKSMACK_DEMO's machine= step bring forward (#2869).
+enum class MachineTab : std::uint8_t
+{
+    Overview,
+    Cores,   ///< CPU Cores: drawn once the first sample has brought per-core readings
+    Gpu,     ///< Always drawn (its empty state says when there is no GPU)
+    Npu,     ///< Drawn only on a machine with an NPU or compute accelerator (#1799)
+    Network, ///< Network and I/O: drawn only where the platform has network counters
+};
+
+/// The names the hooks accept for each tab, section, dialog and machine sub-tab, lowercase: parseTab(),
+/// parseSection(), parseDialog() and parseMachineTab() match them in any case; tabName(), sectionName(),
+/// dialogName() and machineTabName() write them.
 inline constexpr std::array<std::pair<std::string_view, DetailsTab>, 4> TAB_NAMES{{
     {"overview", DetailsTab::Overview},
     {"gpu", DetailsTab::Gpu},
     {"npu", DetailsTab::Npu},
     {"network", DetailsTab::Network},
+}};
+inline constexpr std::array<std::pair<std::string_view, MachineTab>, 5> MACHINE_TAB_NAMES{{
+    {"overview", MachineTab::Overview},
+    {"cores", MachineTab::Cores},
+    {"gpu", MachineTab::Gpu},
+    {"npu", MachineTab::Npu},
+    {"network", MachineTab::Network},
 }};
 inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECTION_NAMES{{
     {"environment", DetailsSection::Environment},
@@ -100,9 +126,10 @@ inline constexpr std::array<std::pair<std::string_view, DetailsSection>, 6> SECT
     {"openfiles", DetailsSection::OpenFiles},
     {"services", DetailsSection::Services},
 }};
-inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 2> DIALOG_NAMES{{
+inline constexpr std::array<std::pair<std::string_view, StartupDialog>, 3> DIALOG_NAMES{{
     {"help", StartupDialog::Help},
     {"about", StartupDialog::About},
+    {"settings", StartupDialog::Settings},
 }};
 
 /// The process to select: by PID when one is given, else by name.
@@ -124,15 +151,6 @@ struct ParseResult
 namespace Detail
 {
 
-[[nodiscard]] inline bool equalsIgnoreCase(const std::string_view a, const std::string_view b) noexcept
-{
-    return a.size() == b.size() &&
-           std::ranges::equal(a,
-                              b,
-                              [](const char x, const char y)
-                              { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
-}
-
 /// The value @p text names in @p names (TAB_NAMES and the like), in any case, or nullopt.
 template<typename Value, std::size_t N>
 [[nodiscard]] std::optional<Value> parseName(const std::string_view text,
@@ -140,7 +158,7 @@ template<typename Value, std::size_t N>
 {
     for (const auto& [name, value] : names)
     {
-        if (equalsIgnoreCase(text, name))
+        if (Platform::equalsIgnoreCase(text, name))
         {
             return value;
         }
@@ -192,13 +210,20 @@ template<typename Value, std::size_t N>
     return Detail::parseName(text, SECTION_NAMES);
 }
 
-/// "help" or "about", in any case, or nullopt.
+/// "help", "about" or "settings", in any case, or nullopt.
 [[nodiscard]] inline std::optional<StartupDialog> parseDialog(const std::string_view text) noexcept
 {
     return Detail::parseName(text, DIALOG_NAMES);
 }
 
-/// The names parseTab(), parseSection() and parseDialog() accept, for a log line: "gpu", "openfiles", "about".
+/// "overview", "cores", "gpu", "npu" or "network", in any case, or nullopt (#2869).
+[[nodiscard]] inline std::optional<MachineTab> parseMachineTab(const std::string_view text) noexcept
+{
+    return Detail::parseName(text, MACHINE_TAB_NAMES);
+}
+
+/// The names parseTab(), parseSection(), parseDialog() and parseMachineTab() accept, for a log line:
+/// "gpu", "openfiles", "about", "cores".
 [[nodiscard]] constexpr std::string_view tabName(const DetailsTab tab) noexcept
 {
     return Detail::nameOf(tab, TAB_NAMES);
@@ -210,6 +235,10 @@ template<typename Value, std::size_t N>
 [[nodiscard]] constexpr std::string_view dialogName(const StartupDialog dialog) noexcept
 {
     return Detail::nameOf(dialog, DIALOG_NAMES);
+}
+[[nodiscard]] constexpr std::string_view machineTabName(const MachineTab tab) noexcept
+{
+    return Detail::nameOf(tab, MACHINE_TAB_NAMES);
 }
 
 /// Parses the three variables' values (nullptr when unset). Unset or blank values are ignored
@@ -349,17 +378,26 @@ struct TabInfo
 };
 
 /// The ids the documented short names stand for: "machine" and "overview" the hostname tab, "details"
-/// Process Details. Every other name must equal a tab's id or text ("system" is the System
-/// Information tab's text, #1399).
-inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TAB_ALIASES{{
+/// Process Details, "system" the System Information tab (#1399). Every other name must equal a tab's
+/// id or visible text.
+///
+/// "system" is an alias and not only the System Information tab's text because the machine tab reads
+/// "System" too until the System panel's first sample brings the hostname (#2731), and that tab is
+/// registered first: matched by text, TASKSMACK_TAB=System opened the machine tab whenever the sample
+/// landed after onAttach() (#2886). The alias names the tab whatever the machine tab reads.
+inline constexpr std::array<std::pair<std::string_view, std::string_view>, 4> TAB_ALIASES{{
     {"machine", "SystemOverview"},
     {"overview", "SystemOverview"},
     {"details", "ProcessDetails"},
+    {"system", "SystemInfo"},
 }};
 
-/// The tab @p name selects, ignoring case (tabNamesEqual()): first a tab whose registered id or
-/// visible text equals it, across all tabs; then a documented alias (TAB_ALIASES). nullopt when
-/// none does or @p name is blank.
+/// The tab @p name selects, ignoring case (tabNamesEqual()), in this order across all tabs: a tab
+/// whose registered id equals it; the tab a documented alias (TAB_ALIASES) stands for, when that tab
+/// is registered; a tab whose visible text equals it (the hostname, the selected process's name).
+/// An id or an alias is never shadowed by another tab's text (#2886): the texts change with the
+/// hostname and the selection, the ids and the aliases do not. nullopt when none matches or @p name
+/// is blank.
 [[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs)
 {
     const std::string_view wanted = Platform::trimAscii(name);
@@ -372,21 +410,23 @@ inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TA
         const auto it = std::ranges::find_if(tabs, pred);
         return it != tabs.end() ? std::optional<std::size_t>{static_cast<std::size_t>(it - tabs.begin())} : std::nullopt;
     };
-    if (const auto exact =
-            findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.id, wanted) || tabNamesEqual(tab.text, wanted); });
-        exact.has_value())
+    if (const auto byId = findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.id, wanted); }); byId.has_value())
     {
-        return exact;
+        return byId;
     }
     for (const auto& [alias, id] : TAB_ALIASES)
     {
-        if (Detail::equalsIgnoreCase(wanted, alias))
+        if (Platform::equalsIgnoreCase(wanted, alias))
         {
             const std::string_view target = id;
-            return findId([target](const TabInfo& tab) { return tab.id == target; });
+            if (const auto aliased = findId([target](const TabInfo& tab) { return tab.id == target; }); aliased.has_value())
+            {
+                return aliased;
+            }
+            break; // the alias's tab is not registered: a tab's text may still read that way
         }
     }
-    return std::nullopt;
+    return findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.text, wanted); });
 }
 
 /// What TASKSMACK_TAB resolved to.
@@ -487,7 +527,99 @@ class PendingMainTab
     int m_Frames = 0;
 };
 
-/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog (StartupDialog).
+/// What TASKSMACK_MACHINE_TAB asked for (#2869).
+struct MachineTabChoice
+{
+    std::optional<MachineTab> tab; ///< nullopt when unset, blank or unknown
+    std::string warning;           ///< set when a nonblank value names no sub-tab
+};
+
+/// Parses a TASKSMACK_MACHINE_TAB value (nullptr when unset): "overview", "cores", "gpu", "npu" or
+/// "network", in any case.
+[[nodiscard]] inline MachineTabChoice parseStartupMachineTab(const char* value)
+{
+    MachineTabChoice choice;
+    const std::string_view text = Platform::trimAscii(value != nullptr ? value : "");
+    if (text.empty())
+    {
+        return choice;
+    }
+    choice.tab = parseMachineTab(text);
+    if (!choice.tab.has_value())
+    {
+        choice.warning = std::format("{}: '{}' is not overview, cores, gpu, npu or network; ignored", MACHINE_TAB_ENV_VAR, text);
+    }
+    return choice;
+}
+
+/// Sampled tab-bar frames a machine sub-tab request may wait for its tab before it is dropped: the
+/// same bound as a TASKSMACK_TAB request (MAX_MAIN_TAB_FRAMES), counted only on frames the sub-tabs
+/// were drawn with a system snapshot, since CPU Cores and Network and I/O exist only once the first
+/// sample has arrived (#2731). It bounds a request for a sub-tab this machine never draws (npu without
+/// an accelerator, network without counters); one that can be met is done on its second frame.
+inline constexpr int MAX_MACHINE_TAB_FRAMES = MAX_MAIN_TAB_FRAMES;
+
+/// A machine sub-tab waiting to be brought forward (#2869): TASKSMACK_MACHINE_TAB's at startup, or
+/// TASKSMACK_DEMO's machine= while running, both through SystemMetricsPanel::requestTab(). As
+/// PendingMainTab, the panel submits the sub-tab with ImGuiTabItemFlags_SetSelected on every frame its
+/// tab bar is drawn until ImGui::BeginTabItem() returns true for it (ImGui applies SetSelected a frame
+/// late). Unlike Process Details' one-shot request, it survives frames on which the sub-tab is not
+/// drawn at all -- the machine tab is not the active main tab, or the first sample hasn't brought the
+/// sub-tab yet -- which is what lets a startup request reach Network and I/O.
+class PendingMachineTab
+{
+  public:
+    PendingMachineTab() = default;
+    explicit PendingMachineTab(const std::optional<MachineTab> tab) noexcept : m_Tab(tab)
+    {}
+
+    /// Whether a request is still waiting.
+    [[nodiscard]] bool pending() const noexcept
+    {
+        return m_Tab.has_value();
+    }
+
+    /// The requested sub-tab; nullopt once the request is done or dropped (or there was none).
+    [[nodiscard]] const std::optional<MachineTab>& tab() const noexcept
+    {
+        return m_Tab;
+    }
+
+    /// Whether @p tab is submitted with ImGuiTabItemFlags_SetSelected this frame.
+    [[nodiscard]] bool wantsSelected(const MachineTab tab) const noexcept
+    {
+        return m_Tab == tab;
+    }
+
+    /// Reports what ImGui::BeginTabItem() returned for @p tab. The request is done when its own
+    /// sub-tab reports selected; any other sub-tab's report changes nothing.
+    void onTabSubmitted(const MachineTab tab, const bool selected) noexcept
+    {
+        if (selected && wantsSelected(tab))
+        {
+            m_Tab.reset();
+        }
+    }
+
+    /// Ends one frame on which the sub-tabs were drawn with a snapshot. Returns the requested sub-tab
+    /// once, when the request is dropped after MAX_MACHINE_TAB_FRAMES such frames without its tab
+    /// being selected; nullopt otherwise.
+    [[nodiscard]] std::optional<MachineTab> onFrameEnd() noexcept
+    {
+        if (!m_Tab.has_value() || ++m_Frames < MAX_MACHINE_TAB_FRAMES)
+        {
+            return std::nullopt;
+        }
+        return std::exchange(m_Tab, std::nullopt);
+    }
+
+  private:
+    std::optional<MachineTab> m_Tab;
+    int m_Frames = 0;
+};
+
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog, "settings" the
+/// Settings dialog (StartupDialog).
 inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
 static_assert(Core::isKnownEnvHook(OPEN_ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
@@ -498,7 +630,7 @@ struct StartupDialogChoice
     std::string warning;                 ///< set when a nonblank value names no dialog
 };
 
-/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help" or "about", in any case.
+/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help", "about" or "settings", in any case.
 [[nodiscard]] inline StartupDialogChoice parseStartupDialog(const char* value)
 {
     StartupDialogChoice choice;
@@ -510,19 +642,19 @@ struct StartupDialogChoice
     choice.dialog = parseDialog(text);
     if (!choice.dialog.has_value())
     {
-        choice.warning = std::format("{}: '{}' is not help or about; ignored", OPEN_ENV_VAR, text);
+        choice.warning = std::format("{}: '{}' is not help, about or settings; ignored", OPEN_ENV_VAR, text);
     }
     return choice;
 }
 
 /// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME,
-/// TASKSMACK_DETAILS_TAB or TASKSMACK_OPEN, each nullptr when unset. A blank value counts as unset, as
-/// it does everywhere else. While one is set, the startup "Limited Data" notice is not queued: the
-/// hooks exist for unattended captures, and dismissing the modal needs input.
-[[nodiscard]] inline bool
-anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open) noexcept
+/// TASKSMACK_DETAILS_TAB, TASKSMACK_OPEN or TASKSMACK_MACHINE_TAB, each nullptr when unset. A blank value
+/// counts as unset, as it does everywhere else. While one is set, the startup "Limited Data" notice is
+/// not queued: the hooks exist for unattended captures, and dismissing the modal needs input.
+[[nodiscard]] inline bool anyTestHookActive(
+    const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open, const char* machineTab) noexcept
 {
-    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open},
+    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open, machineTab},
                                [](const char* value) { return value != nullptr && !Platform::trimAscii(value).empty(); });
 }
 

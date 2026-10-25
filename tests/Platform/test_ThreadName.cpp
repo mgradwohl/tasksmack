@@ -65,6 +65,8 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::SAMPLER_THREAD_NAME,
         Platform::PROCESS_SAMPLER_THREAD_NAME,
         Platform::SYSTEM_SAMPLER_THREAD_NAME,
+        Platform::STORAGE_SAMPLER_THREAD_NAME,
+        Platform::GPU_SAMPLER_THREAD_NAME,
         Platform::CONNECTIONS_READ_THREAD_NAME,
         Platform::MODULES_READ_THREAD_NAME,
         Platform::OPEN_FILES_READ_THREAD_NAME,

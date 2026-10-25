@@ -99,11 +99,12 @@ foreach(_ts_dep_license IN ITEMS
     endif()
     install(FILES "${_ts_dep_file}" DESTINATION ${_ts_license_dir}/${_ts_dep_name})
 endforeach()
-# What each of those is, at its pinned version, and the patch TaskSmack applies to toml++ (#2490).
+# What each of those is, at its pinned version, and the patch TaskSmack applies to toml++ (#2490;
+# its path is Dependencies.cmake's TASKSMACK_TOMLPLUSPLUS_PATCH, checked to exist there, #2779).
 include(${CMAKE_CURRENT_LIST_DIR}/ThirdPartyNotices.cmake)
 ts_write_third_party_notices("${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt")
 install(FILES "${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt"
-              "${CMAKE_SOURCE_DIR}/cmake/patches/tomlplusplus-parse-assertions.patch"
+              "${TASKSMACK_TOMLPLUSPLUS_PATCH}"
         DESTINATION ${_ts_license_dir})
 unset(_ts_license_dir)
 unset(_ts_dep_license)

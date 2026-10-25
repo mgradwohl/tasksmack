@@ -24,6 +24,8 @@
 //   (listed in rule 1), are not caught by KEY or SESSION alone. A word merely ending in PASS (BYPASS)
 //   is still masked: erring toward masking.
 
+#include "Platform/AsciiCase.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -92,9 +94,9 @@ namespace EnvironmentMaskingDetail
 [[nodiscard]] inline std::string toUpperAscii(std::string_view text)
 {
     std::string upper(text);
-    // ASCII only, as containsIgnoringCase() does: std::toupper follows the C locale, which main() sets
-    // from the user's environment, so it could leave a keyword's letters unmapped.
-    std::ranges::transform(upper, upper.begin(), [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; });
+    // ASCII only, as the filter's Platform::containsIgnoreCase() is: std::toupper follows the C locale,
+    // which main() sets from the user's environment, so it could leave a keyword's letters unmapped.
+    std::ranges::transform(upper, upper.begin(), Platform::upperAscii);
     return upper;
 }
 

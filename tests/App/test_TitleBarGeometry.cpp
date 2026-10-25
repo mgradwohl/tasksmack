@@ -1,5 +1,6 @@
 #include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
+#include "App/TitleBarView.h" // the bar's layout ratios, for the hit test over its real geometry
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "UI/IconsFontAwesome6.h"
@@ -12,6 +13,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace App
 {
@@ -459,25 +461,61 @@ TEST(ComputeRestoreFromMaximizedDragYTest, PressAboveTheMaximizedWindow_CountsAs
 }
 
 // ========== computeTitleBarAreaHitTest ==========
-// See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
-// managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE
-// result consumes the click before the app ever sees it (button clicks would stop working).
+// See #744 and #2716: where the OS or compositor runs the drag (native Wayland, Windows), the empty
+// title-bar drag area must return DRAGGABLE, but title-bar buttons must stay NORMAL on every
+// backend, since a DRAGGABLE result consumes the click before the app ever sees it (button clicks
+// would stop working).
 
-TEST(ComputeTitleBarAreaHitTestTest, ControlArea_AlwaysNormal_RegardlessOfBackend)
+TEST(ComputeTitleBarAreaHitTestTest, ControlArea_AlwaysNormal_RegardlessOfPolicy)
 {
-    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/true), SDL_HITTEST_NORMAL);
-    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*systemDrag=*/true), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*systemDrag=*/false), SDL_HITTEST_NORMAL);
 }
 
-TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NativeWayland_ReturnsDraggable)
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_SystemDrag_ReturnsDraggable)
 {
-    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/true), SDL_HITTEST_DRAGGABLE);
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*systemDrag=*/true), SDL_HITTEST_DRAGGABLE);
 }
 
-TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NonWayland_ReturnsNormal)
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_ClientSideDrag_ReturnsNormal)
 {
-    // X11, XWayland, and Windows all keep the client-side drag path.
-    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+    // X11 and XWayland keep the client-side drag path, as does a client-side maximized window on
+    // Windows (computeSystemDragApplies()).
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*systemDrag=*/false), SDL_HITTEST_NORMAL);
+}
+
+// ========== computeSystemDragApplies (#2716) ==========
+
+TEST(ComputeSystemDragAppliesTest, ANormalWindowFollowsTheBackend)
+{
+    EXPECT_TRUE(computeSystemDragApplies(/*usesSystemDrag=*/true, /*clientSideMaximize=*/true, /*isMaximized=*/false));   // Windows
+    EXPECT_TRUE(computeSystemDragApplies(/*usesSystemDrag=*/true, /*clientSideMaximize=*/false, /*isMaximized=*/false));  // Wayland
+    EXPECT_FALSE(computeSystemDragApplies(/*usesSystemDrag=*/false, /*clientSideMaximize=*/true, /*isMaximized=*/false)); // X11
+}
+
+TEST(ComputeSystemDragAppliesTest, AClientSideMaximizedWindowKeepsThePressForTheApp)
+{
+    // Windows: the OS sees a normal window the size of the work area, so its move loop would drag it
+    // around at that size; the client-side drag restores it under the pointer instead (#2715).
+    EXPECT_FALSE(computeSystemDragApplies(/*usesSystemDrag=*/true, /*clientSideMaximize=*/true, /*isMaximized=*/true));
+    // Native Wayland: the compositor knows the window is maximized and handles the drag.
+    EXPECT_TRUE(computeSystemDragApplies(/*usesSystemDrag=*/true, /*clientSideMaximize=*/false, /*isMaximized=*/true));
+    EXPECT_FALSE(computeSystemDragApplies(/*usesSystemDrag=*/false, /*clientSideMaximize=*/true, /*isMaximized=*/true));
+}
+
+// ========== hitTestResultForEdge ==========
+
+TEST(HitTestResultForEdgeTest, MapsEveryEdgeAndCorner)
+{
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::None), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::Left), SDL_HITTEST_RESIZE_LEFT);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::Right), SDL_HITTEST_RESIZE_RIGHT);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::Top), SDL_HITTEST_RESIZE_TOP);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::Bottom), SDL_HITTEST_RESIZE_BOTTOM);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::TopLeft), SDL_HITTEST_RESIZE_TOPLEFT);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::TopRight), SDL_HITTEST_RESIZE_TOPRIGHT);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::BottomLeft), SDL_HITTEST_RESIZE_BOTTOMLEFT);
+    EXPECT_EQ(hitTestResultForEdge(ResizeEdge::BottomRight), SDL_HITTEST_RESIZE_BOTTOMRIGHT);
 }
 
 // ========== computeWindowHitTest ==========
@@ -502,7 +540,8 @@ TEST(ComputeWindowHitTestTest, ControlArea_WinsOverRightEdgeOverlap)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/true,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
@@ -517,7 +556,8 @@ TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsRightEdgeResize)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_RIGHT);
 }
 
@@ -532,7 +572,8 @@ TEST(ComputeWindowHitTestTest, ControlArea_WinsOverTopEdgeOverlap)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/true,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
@@ -546,7 +587,8 @@ TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsTopEdgeResize)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_TOP);
 }
 
@@ -560,7 +602,8 @@ TEST(ComputeWindowHitTestTest, ControlArea_WinsEvenWhenMaximized)
                                    BORDER,
                                    /*isMaximized=*/true,
                                    /*isInControlArea=*/true,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
@@ -574,7 +617,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_BottomLeftCorner_ReturnsResizeBott
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_BOTTOMLEFT);
 }
 
@@ -588,7 +632,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_BottomRightCorner_ReturnsResizeBot
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_BOTTOMRIGHT);
 }
 
@@ -602,7 +647,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_BottomEdgeMiddle_ReturnsResizeBott
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_BOTTOM);
 }
 
@@ -616,7 +662,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_TopLeftCorner_ReturnsResizeTopLeft
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_TOPLEFT);
 }
 
@@ -630,7 +677,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_TopRightCorner_ReturnsResizeTopRig
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_TOPRIGHT);
 }
 
@@ -644,7 +692,8 @@ TEST(ComputeWindowHitTestTest, NotControlArea_LeftEdgeMiddle_ReturnsResizeLeft)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_RESIZE_LEFT);
 }
 
@@ -660,11 +709,12 @@ TEST(ComputeWindowHitTestTest, Maximized_SuppressesResizeBorders_EvenNearEdge)
                                    BORDER,
                                    /*isMaximized=*/true,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
-TEST(ComputeWindowHitTestTest, EmptyTitleRow_NonWayland_ReturnsNormal)
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_ClientSideDrag_ReturnsNormal)
 {
     EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
                                    TITLE_BAR_H - 5.0F,
@@ -674,11 +724,12 @@ TEST(ComputeWindowHitTestTest, EmptyTitleRow_NonWayland_ReturnsNormal)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
-TEST(ComputeWindowHitTestTest, EmptyTitleRow_NativeWayland_ReturnsDraggable)
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_SystemDrag_ReturnsDraggable)
 {
     EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
                                    TITLE_BAR_H - 5.0F,
@@ -688,11 +739,12 @@ TEST(ComputeWindowHitTestTest, EmptyTitleRow_NativeWayland_ReturnsDraggable)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/true),
+                                   /*systemDrag=*/true,
+                                   /*systemResize=*/true),
               SDL_HITTEST_DRAGGABLE);
 }
 
-TEST(ComputeWindowHitTestTest, TitleBarBoundary_JustAboveHeight_StillDraggable_NativeWayland)
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_JustAboveHeight_StillDraggable_SystemDrag)
 {
     // One pixel inside the title-bar row: still the title bar's row, so still draggable.
     EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
@@ -703,11 +755,12 @@ TEST(ComputeWindowHitTestTest, TitleBarBoundary_JustAboveHeight_StillDraggable_N
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/true),
+                                   /*systemDrag=*/true,
+                                   /*systemResize=*/true),
               SDL_HITTEST_DRAGGABLE);
 }
 
-TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NativeWayland)
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_SystemDrag)
 {
     // titleBarHeight is an exclusive upper bound: ShellLayer's content window starts at
     // exactly y == titleBarHeight, so this row must not be draggable, or native Wayland
@@ -720,11 +773,12 @@ TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_Na
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/true),
+                                   /*systemDrag=*/true,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
-TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NonWayland)
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_ClientSideDrag)
 {
     EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
                                    TITLE_BAR_H,
@@ -734,7 +788,8 @@ TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_No
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/false),
+                                   /*systemDrag=*/false,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
 }
 
@@ -748,8 +803,226 @@ TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
                                    BORDER,
                                    /*isMaximized=*/false,
                                    /*isInControlArea=*/false,
-                                   /*isNativeWayland=*/true),
+                                   /*systemDrag=*/true,
+                                   /*systemResize=*/true),
               SDL_HITTEST_NORMAL);
+}
+
+// Windows (#2716): the title bar is the OS's drag, the borders stay the app's resize.
+TEST(ComputeWindowHitTestTest, ClientSideResize_BordersAnswerNormal_TitleBarStillDrags)
+{
+    const auto hitTest = [](float x, float y)
+    {
+        return computeWindowHitTest(x,
+                                    y,
+                                    WIN_W,
+                                    WIN_H,
+                                    TITLE_BAR_H,
+                                    BORDER,
+                                    /*isMaximized=*/false,
+                                    /*isInControlArea=*/false,
+                                    /*systemDrag=*/true,
+                                    /*systemResize=*/false);
+    };
+    EXPECT_EQ(hitTest(WIN_W - 1.0F, static_cast<float>(WIN_H) / 2.0F), SDL_HITTEST_NORMAL); // right edge
+    EXPECT_EQ(hitTest(0.0F, static_cast<float>(WIN_H) - 1.0F), SDL_HITTEST_NORMAL);         // bottom-left corner
+    EXPECT_EQ(hitTest(0.0F, 0.0F), SDL_HITTEST_NORMAL);                                     // top-left corner
+    // The top strip crosses the title bar: NORMAL, not DRAGGABLE, so the press reaches the
+    // client-side resize rather than the OS move loop.
+    EXPECT_EQ(hitTest(static_cast<float>(WIN_W) / 2.0F, BORDER - 1.0F), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(hitTest(static_cast<float>(WIN_W) / 2.0F, BORDER), SDL_HITTEST_DRAGGABLE);
+    EXPECT_EQ(hitTest(static_cast<float>(WIN_W) / 2.0F, TITLE_BAR_H - 5.0F), SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeWindowHitTestTest, Maximized_NoResizeAnswers_WhoeverWouldServeThem)
+{
+    for (const bool systemResize : {true, false})
+    {
+        SCOPED_TRACE(systemResize ? "system resize" : "client-side resize");
+        const auto hitTest = [systemResize](float x, float y)
+        {
+            return computeWindowHitTest(x,
+                                        y,
+                                        WIN_W,
+                                        WIN_H,
+                                        TITLE_BAR_H,
+                                        BORDER,
+                                        /*isMaximized=*/true,
+                                        /*isInControlArea=*/false,
+                                        /*systemDrag=*/true,
+                                        systemResize);
+        };
+        EXPECT_EQ(hitTest(0.0F, static_cast<float>(WIN_H) - 1.0F), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(hitTest(WIN_W - 1.0F, static_cast<float>(WIN_H) - 1.0F), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(hitTest(0.0F, static_cast<float>(WIN_H) / 2.0F), SDL_HITTEST_NORMAL);
+        // The top strip is the title bar now: a drag where the policy says so.
+        EXPECT_EQ(hitTest(static_cast<float>(WIN_W) / 2.0F, 0.0F), SDL_HITTEST_DRAGGABLE);
+    }
+}
+
+// ========== computeWindowHitTestAt (#2716) ==========
+// The geometry-level decision the real callback makes (TitleBarLayer::hitTest()): the buttons and
+// the icon laid out as the bar draws them, at the display scale, so every control, edge and corner
+// can be asked by position rather than by a precomputed "is in control area" flag.
+
+constexpr int AT_W = 1200;
+constexpr int AT_H = 800;
+/// The title bar at a 1.0 display scale: 24pt at 96 DPI (UILayer); it scales with the display.
+constexpr float BAR_REFERENCE_PX = 32.0F;
+
+/// The bar's geometry at @p scale, laid out as TitleBarView::render() lays it out: the six buttons from
+/// the right edge, the icon inset at the left.
+[[nodiscard]] WindowHitTestInput hitTestInputAt(float scale, bool systemDrag, bool systemResize, bool isMaximized = false)
+{
+    const float barHeight = BAR_REFERENCE_PX * scale;
+    const float iconSize = computeTitleBarIconSize(barHeight, barHeight * TITLE_BAR_ICON_INSET_RATIO);
+    const float iconX = barHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
+    const float iconY = (barHeight - iconSize) * 0.5F;
+    return {.windowWidth = AT_W,
+            .windowHeight = AT_H,
+            .titleBarHeightPx = barHeight,
+            .resizeBorderPx = computeResizeBorderThickness(scale),
+            .buttons = computeTitleBarButtonLayout(static_cast<float>(AT_W),
+                                                   computeTitleBarButtonWidth(barHeight, TITLE_BAR_BUTTON_ASPECT),
+                                                   barHeight,
+                                                   barHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
+            .icon = {.minX = iconX, .maxX = iconX + iconSize, .minY = iconY, .maxY = iconY + iconSize},
+            .isMaximized = isMaximized,
+            .systemDrag = systemDrag,
+            .systemResize = systemResize};
+}
+
+constexpr std::array<float, 2> HIT_TEST_SCALES{1.0F, 2.0F};
+
+TEST(ComputeWindowHitTestAtTest, TheEmptyTitleBarDragsWhereTheBackendRunsTheDrag)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        const WindowHitTestInput system = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true);
+        const WindowHitTestInput client = hitTestInputAt(scale, /*systemDrag=*/false, /*systemResize=*/true);
+        const float middleX = static_cast<float>(AT_W) * 0.5F;
+        const float middleY = system.titleBarHeightPx * 0.5F;
+        EXPECT_EQ(computeWindowHitTestAt(middleX, middleY, system), SDL_HITTEST_DRAGGABLE);
+        EXPECT_EQ(computeWindowHitTestAt(middleX, middleY, client), SDL_HITTEST_NORMAL);
+        // The gap between the app buttons and the window controls is still the bar.
+        const float gapX = system.buttons.minimize.minX - 1.0F;
+        EXPECT_EQ(computeWindowHitTestAt(gapX, middleY, system), SDL_HITTEST_DRAGGABLE);
+        // The bar's last row is a drag; the row below it is content.
+        EXPECT_EQ(computeWindowHitTestAt(middleX, system.titleBarHeightPx - 1.0F, system), SDL_HITTEST_DRAGGABLE);
+        EXPECT_EQ(computeWindowHitTestAt(middleX, system.titleBarHeightPx, system), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(middleX, system.titleBarHeightPx + 100.0F, system), SDL_HITTEST_NORMAL);
+    }
+}
+
+TEST(ComputeWindowHitTestAtTest, EveryButtonAndTheIconAnswerNormal)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        const WindowHitTestInput input = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true);
+        const auto& b = input.buttons;
+        for (const ButtonBounds& bounds : {b.about, b.help, b.settings, b.minimize, b.maximize, b.close})
+        {
+            EXPECT_EQ(computeWindowHitTestAt((bounds.minX + bounds.maxX) * 0.5F, (bounds.minY + bounds.maxY) * 0.5F, input),
+                      SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(bounds.minX, bounds.minY, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(bounds.maxX, bounds.maxY, input), SDL_HITTEST_NORMAL);
+        }
+        // The close button reaches the window's right edge and the top strip: still the button (#750).
+        EXPECT_EQ(computeWindowHitTestAt(static_cast<float>(AT_W) - 1.0F, 0.0F, input), SDL_HITTEST_NORMAL);
+        // The icon, its top pixels inside the top strip included.
+        EXPECT_EQ(computeWindowHitTestAt((input.icon.minX + input.icon.maxX) * 0.5F, (input.icon.minY + input.icon.maxY) * 0.5F, input),
+                  SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(input.icon.minX, input.icon.minY, input), SDL_HITTEST_NORMAL);
+    }
+}
+
+TEST(ComputeWindowHitTestAtTest, EveryEdgeAndCornerAnswersItsResize)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        const WindowHitTestInput input = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true);
+        constexpr float RIGHT = static_cast<float>(AT_W) - 1.0F;
+        constexpr float BOTTOM = static_cast<float>(AT_H) - 1.0F;
+        constexpr float MID_X = static_cast<float>(AT_W) * 0.5F;
+        constexpr float MID_Y = static_cast<float>(AT_H) * 0.5F;
+        EXPECT_EQ(computeWindowHitTestAt(0.0F, MID_Y, input), SDL_HITTEST_RESIZE_LEFT);
+        EXPECT_EQ(computeWindowHitTestAt(RIGHT, MID_Y, input), SDL_HITTEST_RESIZE_RIGHT);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, 0.0F, input), SDL_HITTEST_RESIZE_TOP);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, BOTTOM, input), SDL_HITTEST_RESIZE_BOTTOM);
+        EXPECT_EQ(computeWindowHitTestAt(0.0F, 0.0F, input), SDL_HITTEST_RESIZE_TOPLEFT);
+        EXPECT_EQ(computeWindowHitTestAt(0.0F, BOTTOM, input), SDL_HITTEST_RESIZE_BOTTOMLEFT);
+        EXPECT_EQ(computeWindowHitTestAt(RIGHT, BOTTOM, input), SDL_HITTEST_RESIZE_BOTTOMRIGHT);
+        // The top-right corner is the close button once the bar has drawn; before the first frame
+        // (no buttons laid out yet) it is the corner.
+        EXPECT_EQ(computeWindowHitTestAt(RIGHT, 0.0F, input), SDL_HITTEST_NORMAL);
+        WindowHitTestInput firstFrame = input;
+        firstFrame.buttons = {};
+        firstFrame.icon = {};
+        EXPECT_EQ(computeWindowHitTestAt(RIGHT, 0.0F, firstFrame), SDL_HITTEST_RESIZE_TOPRIGHT);
+
+        // The strip is one physical size at every scale: its inner edge moves with the scale.
+        const float border = input.resizeBorderPx;
+        EXPECT_EQ(computeWindowHitTestAt(border - 1.0F, MID_Y, input), SDL_HITTEST_RESIZE_LEFT);
+        EXPECT_EQ(computeWindowHitTestAt(border, MID_Y, input), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, border - 1.0F, input), SDL_HITTEST_RESIZE_TOP);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, border, input), SDL_HITTEST_DRAGGABLE);
+    }
+    // The same point, 8px down the middle of the bar, is inside the 8px strip at 1.0 only at 2.0.
+    const float middleX = static_cast<float>(AT_W) * 0.5F;
+    EXPECT_EQ(computeWindowHitTestAt(middleX, RESIZE_BORDER_REFERENCE_PX, hitTestInputAt(1.0F, true, true)), SDL_HITTEST_DRAGGABLE);
+    EXPECT_EQ(computeWindowHitTestAt(middleX, RESIZE_BORDER_REFERENCE_PX, hitTestInputAt(2.0F, true, true)), SDL_HITTEST_RESIZE_TOP);
+}
+
+TEST(ComputeWindowHitTestAtTest, WindowsPolicy_TheTitleBarDragsAndTheBordersStayWithTheApp)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        const WindowHitTestInput input = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/false);
+        constexpr float RIGHT = static_cast<float>(AT_W) - 1.0F;
+        constexpr float BOTTOM = static_cast<float>(AT_H) - 1.0F;
+        constexpr float MID_X = static_cast<float>(AT_W) * 0.5F;
+        constexpr float MID_Y = static_cast<float>(AT_H) * 0.5F;
+        for (const auto [x, y] : std::array<std::pair<float, float>, 7>{
+                 {{0.0F, MID_Y}, {RIGHT, MID_Y}, {MID_X, 0.0F}, {MID_X, BOTTOM}, {0.0F, 0.0F}, {0.0F, BOTTOM}, {RIGHT, BOTTOM}}})
+        {
+            EXPECT_EQ(computeWindowHitTestAt(x, y, input), SDL_HITTEST_NORMAL) << "at (" << x << ", " << y << ")";
+        }
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, input.titleBarHeightPx * 0.5F, input), SDL_HITTEST_DRAGGABLE);
+    }
+}
+
+TEST(ComputeWindowHitTestAtTest, Maximized_NoResizeAnswers_TheTitleBarFollowsThePolicy)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        // Native Wayland: the compositor drags a maximized window. Windows and X11: TitleBarLayer passes
+        // systemDrag=false for a client-side maximized window (computeSystemDragApplies()).
+        const WindowHitTestInput compositor = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true, /*isMaximized=*/true);
+        const WindowHitTestInput clientSide = hitTestInputAt(scale, /*systemDrag=*/false, /*systemResize=*/true, /*isMaximized=*/true);
+        constexpr float RIGHT = static_cast<float>(AT_W) - 1.0F;
+        constexpr float BOTTOM = static_cast<float>(AT_H) - 1.0F;
+        constexpr float MID_X = static_cast<float>(AT_W) * 0.5F;
+        constexpr float MID_Y = static_cast<float>(AT_H) * 0.5F;
+        for (const WindowHitTestInput& input : {compositor, clientSide})
+        {
+            EXPECT_EQ(computeWindowHitTestAt(0.0F, MID_Y, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(RIGHT, MID_Y, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(MID_X, BOTTOM, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(0.0F, BOTTOM, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(RIGHT, BOTTOM, input), SDL_HITTEST_NORMAL);
+            EXPECT_EQ(computeWindowHitTestAt(RIGHT, 0.0F, input), SDL_HITTEST_NORMAL); // the close button
+        }
+        // The top strip is the title bar now.
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, 0.0F, compositor), SDL_HITTEST_DRAGGABLE);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, compositor.titleBarHeightPx * 0.5F, compositor), SDL_HITTEST_DRAGGABLE);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, 0.0F, clientSide), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(MID_X, clientSide.titleBarHeightPx * 0.5F, clientSide), SDL_HITTEST_NORMAL);
+    }
 }
 
 // ========== computeResizeCursorUpdate: active resize takes priority ==========
@@ -1003,10 +1276,10 @@ TEST(ComputeTitleBarButtonLayoutTest, TheBarLeftOfAboutAndTheGapStayDraggable)
     EXPECT_FALSE(computeIsPointOnTitleBarButton(10.0F, 10.0F, TitleBarButtonLayout{}));               // Not laid out yet
 }
 
-TEST(ComputeTitleBarButtonLayoutTest, OnNativeWaylandAboutIsAClickNotADrag)
+TEST(ComputeTitleBarButtonLayoutTest, WhereTheSystemDragsAboutIsAClickNotADrag)
 {
     // What the SDL hit test sees: the About button must stay NORMAL (clickable) where the empty bar
-    // beside it hands the press to the compositor as a drag (#744).
+    // beside it hands the press to the compositor (#744) or the OS (#2716) as a drag.
     const TitleBarButtonLayout layout = sampleLayout();
     const auto hitTest = [&layout](float x, float y)
     {
@@ -1018,7 +1291,8 @@ TEST(ComputeTitleBarButtonLayoutTest, OnNativeWaylandAboutIsAClickNotADrag)
                                     8.0F,
                                     /*isMaximized=*/false,
                                     computeIsPointOnTitleBarButton(x, y, layout),
-                                    /*isNativeWayland=*/true);
+                                    /*systemDrag=*/true,
+                                    /*systemResize=*/true);
     };
     EXPECT_EQ(hitTest(centreX(layout.about), LAYOUT_BAR_H * 0.5F), SDL_HITTEST_NORMAL);
     EXPECT_EQ(hitTest(layout.about.minX - 20.0F, LAYOUT_BAR_H * 0.5F), SDL_HITTEST_DRAGGABLE);

@@ -1,5 +1,6 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Platform/GPUTypes.h"
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/AmdApu.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
@@ -8,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +18,7 @@
 #include <ios>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <dlfcn.h>
@@ -698,6 +701,28 @@ TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
 
 // #1117: a runtime-suspended AMD GPU (mock device 1, PCI id 9001 = 0000:23:05.1) is left alone:
 // its readings are unavailable and it is marked asleep, while the others are read as usual.
+// #2589: the DRM probe that reads the amdgpu cards' clients labels their processes with these, so each
+// is a device's PCI address and the id enumerateGPUs() gives that device.
+TEST(LinuxROCmGPUProbeTest, EachGpuIdIsPairedWithItsPciAddress)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_pci_ids");
+    ROCmGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    const auto ids = probe.gpuIdsByPciAddress();
+    ASSERT_FALSE(ids.empty());
+    for (const auto& [pciAddress, gpuId] : ids)
+    {
+        EXPECT_EQ(pciAddress.size(), std::string_view("0000:03:00.0").size()) << pciAddress;
+        EXPECT_NE(std::ranges::find(gpus, gpuId, &GPUInfo::id), gpus.end()) << gpuId << " isn't a listed GPU";
+    }
+}
+
 TEST(LinuxROCmGPUProbeTest, RuntimeSuspendedGpuIsNotRead)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();

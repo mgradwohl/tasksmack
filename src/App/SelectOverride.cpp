@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 #include "Platform/Windows/WinString.h"
+#else
+#include "Platform/AsciiCase.h"
 #endif
 
 #include <SDL3/SDL.h>
@@ -64,7 +66,7 @@ bool tabNamesEqual(const std::string_view a, const std::string_view b)
 #ifdef _WIN32
     return equalsOrdinalIgnoreCase(a, b);
 #else
-    return Detail::equalsIgnoreCase(a, b);
+    return Platform::equalsIgnoreCase(a, b);
 #endif
 }
 
@@ -101,7 +103,12 @@ bool testHookActive()
         return value != nullptr && !Platform::trimAscii(value).empty();
     };
     return Core::ConfigDirOverride::active().has_value() || set(ScreenshotOverride::ENV_VAR) || set(DemoOverride::ENV_VAR) ||
-           anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR), read(OPEN_ENV_VAR));
+           anyTestHookActive(read(MAIN_TAB_ENV_VAR),
+                             read(PID_ENV_VAR),
+                             read(NAME_ENV_VAR),
+                             read(TAB_ENV_VAR),
+                             read(OPEN_ENV_VAR),
+                             read(MACHINE_TAB_ENV_VAR));
 }
 
 std::optional<StartupDialog> startupDialog()

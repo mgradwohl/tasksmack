@@ -192,8 +192,9 @@ class OpenHelpEvent : public Event
     EVENT_CLASS_TYPE(OpenHelp)
 };
 
-/// Close request for the Help window and the About dialog, whichever is open (TASKSMACK_DEMO's
-/// close=dialog, #2827): each layer closes its own as its close button would and lets the event on.
+/// Close request for the Help window, the About dialog and the Settings dialog, whichever is open
+/// (TASKSMACK_DEMO's close=dialog, #2827): each layer closes its own as its close button would (Settings as
+/// Cancel does, saving nothing) and lets the event on.
 class CloseDialogEvent : public Event
 {
   public:

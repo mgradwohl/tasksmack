@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -523,6 +524,23 @@ ROCmGPUProbe::~ROCmGPUProbe()
 bool ROCmGPUProbe::isAvailable() const
 {
     return m_Impl && m_Impl->initialized;
+}
+
+std::vector<std::pair<std::string, std::string>> ROCmGPUProbe::gpuIdsByPciAddress() const
+{
+    std::vector<std::pair<std::string, std::string>> ids;
+    if (!isAvailable())
+    {
+        return ids;
+    }
+    for (std::size_t i = 0; i < m_Impl->sysfsPaths.size() && i < m_Impl->deviceIds.size(); ++i)
+    {
+        if (!m_Impl->sysfsPaths[i].empty())
+        {
+            ids.emplace_back(std::filesystem::path(m_Impl->sysfsPaths[i]).filename().string(), m_Impl->deviceIds[i]);
+        }
+    }
+    return ids;
 }
 
 std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
