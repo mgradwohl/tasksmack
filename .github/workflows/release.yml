@@ -1026,6 +1026,14 @@ jobs:
         # fonts/themes, so a broken installed/extracted asset layout would still pass a
         # plain liveness check. Assert the actual log lines that only appear once the
         # icon font and at least one theme have loaded from the real assets directory.
+        #
+        # Each run quits by itself rather than being killed (#2720): TASKSMACK_SCREENSHOT (#2827)
+        # writes one frame ALIVE_SECONDS after startup and closes the window through the same close
+        # request as the title bar's Close button, so every layer detaches and
+        # ShellLayer::onDetach() saves config.toml into the run's own TASKSMACK_CONFIG_DIR. The run
+        # must exit 0 (one that wrote no frame exits non-zero) within QUIT_TIMEOUT_SECONDS, and
+        # leave a config.toml with its [theme] table: with no input nothing writes the file before
+        # the shutdown's save, so its being there proves that save ran.
         run: |
           cat > /tmp/smoke-check.sh <<'SMOKE_CHECK'
           #!/usr/bin/env bash
@@ -1033,11 +1041,37 @@ jobs:
           label="$1"
           bin="$2"
           log="$3"
-          SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug timeout 5 "$bin" > "$log" 2>&1
+          ALIVE_SECONDS=5
+          QUIT_TIMEOUT_SECONDS=60
+          work=$(mktemp -d)
+          config_dir="$work/config"
+          shot="$work/smoke.png"
+          SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug TASKSMACK_CONFIG_DIR="$config_dir" \
+            TASKSMACK_SCREENSHOT="$shot;after=$ALIVE_SECONDS" timeout "$QUIT_TIMEOUT_SECONDS" "$bin" > "$log" 2>&1
           status=$?
           cat "$log"
-          if [[ "$status" -ne 124 ]]; then
-            echo "$label: TaskSmack exited on its own (status=$status) instead of running until the timeout killed it; treating as a crash." >&2
+          if [[ "$status" -eq 124 ]]; then
+            echo "$label: TaskSmack didn't quit by itself within $QUIT_TIMEOUT_SECONDS s (TASKSMACK_SCREENSHOT asks it to after $ALIVE_SECONDS s); the timeout killed it." >&2
+            exit 1
+          fi
+          if [[ "$status" -ne 0 ]]; then
+            echo "$label: TaskSmack exited with status $status; a clean quit after its screenshot exits 0." >&2
+            exit 1
+          fi
+          if [[ ! -s "$shot" ]]; then
+            echo "$label: TaskSmack exited 0 but wrote no screenshot at $shot." >&2
+            exit 1
+          fi
+          config="$config_dir/config.toml"
+          if [[ ! -f "$config" ]]; then
+            echo "$label: no config.toml in $config_dir after the quit; the settings weren't saved on exit." >&2
+            exit 1
+          fi
+          echo "=== $label config.toml ==="
+          cat "$config"
+          echo "=== end of config.toml ==="
+          if ! grep -A1 -x '\[theme\]' "$config" | grep -Eqx "id = ('[^']+'|\"[^\"]+\")"; then
+            echo "$label: config.toml in $config_dir has no [theme] table with an id; the save wrote something else." >&2
             exit 1
           fi
           if ! grep -q "Assets directory found:" "$log"; then
@@ -1052,7 +1086,7 @@ jobs:
             echo "$label: no themes loaded; theme directory is missing or empty." >&2
             exit 1
           fi
-          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack ran until the timeout as expected."
+          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack quit by itself after $ALIVE_SECONDS s with config.toml saved."
           SMOKE_CHECK
           chmod +x /tmp/smoke-check.sh
 
@@ -1387,10 +1421,16 @@ jobs:
 
       - name: Smoke-check extracted executable
         # Runs a temporary copy of the extracted package with llvmpipe beside the exe, a fresh
-        # TASKSMACK_CONFIG_DIR and an info-level log captured from stdout (spdlog's Windows stdout
-        # sink writes unbuffered with WriteFile, so nothing is lost when the process is killed).
-        # Fails on an early exit, on any [critical] or [error] log line, or unless the log shows
-        # OpenGL 3.3+ from llvmpipe -- proof the real renderer came up, not an error box.
+        # TASKSMACK_CONFIG_DIR, a private %TEMP% and an info-level log captured from stdout. It quits by
+        # itself (#2720): TASKSMACK_SCREENSHOT (#2827) writes one frame ALIVE_SECONDS after startup and
+        # closes the window through the same close request as the title bar's Close button, so every
+        # layer detaches and ShellLayer::onDetach() saves config.toml; a run that wrote no frame exits
+        # non-zero. Fails unless it quits with exit code 0 in the time allowed, on any [critical] or
+        # [error] log line, unless the log shows OpenGL 3.3+ from llvmpipe (proof the real renderer
+        # came up, not an error box), and unless config.toml was saved with its [theme] table.
+        # Then, as a user deleting the portable .zip's folder would (#2488): no new TaskSmack-named
+        # entry may appear under %APPDATA% or %LOCALAPPDATA% outside the config dir and %TEMP%, and
+        # the folder TaskSmack ran from must delete with no file still locked.
         shell: pwsh
         timeout-minutes: 5
         env:
@@ -1398,6 +1438,9 @@ jobs:
           TASKSMACK_LOG_LEVEL: info
           STARTUP_TIMEOUT_SECONDS: "60"
           ALIVE_SECONDS: "5"
+          # How deep under %APPDATA% and %LOCALAPPDATA% the leave-no-trace listing looks: deep enough
+          # for Local\Microsoft\Windows\WER\ReportArchive\<report>, and a few seconds' work.
+          TRACE_SCAN_DEPTH: "5"
         run: |
           $ErrorActionPreference = 'Stop'
           $work = Join-Path $env:RUNNER_TEMP 'tasksmack-smoke'
@@ -1408,44 +1451,50 @@ jobs:
           Copy-Item -Path (Join-Path $env:TASKSMACK_PKG_ROOT '*') -Destination $pkg -Recurse
           Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination $pkg
           $exe = Join-Path $pkg 'TaskSmack.exe'
+          $shot = Join-Path $work 'smoke.png'
+          $configFile = Join-Path $configDir 'config.toml'
           $stdoutLog = Join-Path $work 'stdout.log'
           $stderrLog = Join-Path $work 'stderr.log'
+
+          # Every TaskSmack-named file or folder under %APPDATA% and %LOCALAPPDATA%, case-insensitively,
+          # listed before the launch and again after it. A new one is a trace the .zip leaves behind,
+          # unless it is under the config dir or a %TEMP% (the private one below, or the runner's own,
+          # which is under %LOCALAPPDATA% and may be named by its 8.3 short path, so both spellings).
+          $allowedRoots = @($configDir, $tempDir, [System.IO.Path]::GetTempPath(), (Join-Path $env:LOCALAPPDATA 'Temp')) |
+            ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
+          function Get-TaskSmackEntries {
+            foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
+              Get-ChildItem -LiteralPath $root -Recurse -Depth ([int]$env:TRACE_SCAN_DEPTH) -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match 'tasksmack' } | ForEach-Object { $_.FullName }
+            }
+          }
+          $entriesBefore = @(Get-TaskSmackEntries)
 
           # Fresh, empty settings and lock directory, and a private %TEMP% for tasksmack-debug.log.
           $env:TASKSMACK_CONFIG_DIR = $configDir
           $env:TMP = $tempDir
           $env:TEMP = $tempDir
+          $env:TASKSMACK_SCREENSHOT = "$shot;after=$env:ALIVE_SECONDS"
 
+          # The wait covers startup, the ALIVE_SECONDS before the capture and the shutdown's save.
+          $quitSeconds = [int]$env:STARTUP_TIMEOUT_SECONDS + [int]$env:ALIVE_SECONDS + 30
           $proc = Start-Process -FilePath $exe -WorkingDirectory $pkg -PassThru `
             -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+          $null = $proc.Handle  # cache the handle, or ExitCode is empty once the process has gone
           $failure = $null
-          try {
-            # Wait for the "  Version: ..." line Window.cpp logs once the GL context is up (it follows
-            # the Renderer line), then require the process to keep running for ALIVE_SECONDS more.
-            $deadline = (Get-Date).AddSeconds([int]$env:STARTUP_TIMEOUT_SECONDS)
-            while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
-              $log = Get-Content -LiteralPath $stdoutLog -Raw -ErrorAction SilentlyContinue
-              if ($log -match '\]\s+Version:') { break }
-              Start-Sleep -Milliseconds 500
+          if ($proc.WaitForExit($quitSeconds * 1000)) {
+            if ($proc.ExitCode -ne 0) {
+              $failure = "TaskSmack.exe exited with code $($proc.ExitCode); a clean quit after its screenshot exits 0"
             }
-            if ($proc.HasExited) {
-              $failure = "TaskSmack.exe exited during startup (exit code $($proc.ExitCode))"
-            } else {
-              Start-Sleep -Seconds ([int]$env:ALIVE_SECONDS)
-              if ($proc.HasExited) {
-                $failure = "TaskSmack.exe exited within $env:ALIVE_SECONDS s of creating its OpenGL context (exit code $($proc.ExitCode))"
-              }
-            }
-          } finally {
-            if (-not $proc.HasExited) {
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-              $proc.WaitForExit(10000) | Out-Null
-            }
+          } else {
+            $failure = "TaskSmack.exe didn't quit by itself within $quitSeconds s of starting"
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $proc.WaitForExit(10000) | Out-Null
           }
 
           $lines = @(Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue) +
             @(Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue)
-          Write-Host "=== TaskSmack startup log ==="
+          Write-Host "=== TaskSmack log ==="
           $lines | ForEach-Object { Write-Host $_ }
           Write-Host "=== end of log ==="
 
@@ -1456,7 +1505,7 @@ jobs:
           $version = if ($versionLine -match '\]\s+Version:\s*(.+)$') { $Matches[1].Trim() } else { '' }
 
           if (-not $failure -and $errorLines.Count -gt 0) {
-            $failure = "The startup log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
+            $failure = "The log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
           }
           if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
             $failure = "The log never reached 'Entering main loop' (Application::run): startup never finished"
@@ -1472,6 +1521,50 @@ jobs:
               $failure = "No parseable OpenGL version in the log (found '$version')"
             }
           }
+          if (-not $failure -and -not (Test-Path -LiteralPath $shot -PathType Leaf)) {
+            $failure = "TaskSmack.exe exited 0 but wrote no screenshot at $shot"
+          }
+
+          # The settings saved on the way out: with no input nothing writes config.toml before then, so
+          # its being there proves the shutdown's save ran. The [theme] table and its id are always written.
+          $configSaved = $false
+          if (-not $failure) {
+            if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
+              $failure = "No config.toml in $configDir after the quit: the settings weren't saved on exit"
+            } else {
+              $config = Get-Content -LiteralPath $configFile -Raw
+              Write-Host "=== config.toml ==="
+              Write-Host $config
+              Write-Host "=== end of config.toml ==="
+              if ($config -notmatch '(?m)^\[theme\]\r?\nid = (''[^''\r\n]+''|"[^"\r\n]+")\r?$') {
+                $failure = "config.toml in $configDir has no [theme] table with an id: the save wrote something else"
+              } else {
+                $configSaved = $true
+              }
+            }
+          }
+
+          # Leave no trace: no new TaskSmack-named entry outside the config dir and %TEMP%, then the
+          # folder it ran from deletes, which fails on any file still locked.
+          $leftNoTrace = $false
+          if (-not $failure) {
+            $traces = @(Get-TaskSmackEntries | Where-Object {
+              $entry = $_
+              $entriesBefore -notcontains $entry -and
+                -not ($allowedRoots | Where-Object { ($entry + '\').StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+            })
+            if ($traces.Count -gt 0) {
+              $failure = "TaskSmack left $($traces.Count) new TaskSmack-named entr$(if ($traces.Count -eq 1) { 'y' } else { 'ies' }) under %APPDATA%/%LOCALAPPDATA%, outside the config dir and %TEMP%:`n$($traces -join "`n")"
+            }
+          }
+          if (-not $failure) {
+            try {
+              Remove-Item -LiteralPath $pkg -Recurse -Force -ErrorAction Stop
+              $leftNoTrace = $true
+            } catch {
+              $failure = "The folder TaskSmack.exe ran from ($pkg) didn't delete after it quit: $($_.Exception.Message)"
+            }
+          }
 
           $summary = @(
             "### Windows package smoke check ($env:RUNNER_ARCH)",
@@ -1479,7 +1572,9 @@ jobs:
             "- Result: $(if ($failure) { 'FAILED' } else { 'passed' })",
             "- OpenGL renderer: ``$renderer``",
             "- OpenGL version: ``$version``",
-            "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)"
+            "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)",
+            "- Quit by itself with config.toml saved: $(if ($configSaved) { 'yes' } else { 'no' })",
+            "- Left no trace (no new %APPDATA%/%LOCALAPPDATA% entries; its folder deleted): $(if ($leftNoTrace) { 'yes' } else { 'no' })"
           )
           if ($failure) { $summary += "- Failure: $failure" }
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
@@ -1488,7 +1583,7 @@ jobs:
             Write-Error $failure
             exit 1
           }
-          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors and ran for $env:ALIVE_SECONDS s."
+          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors, quit by itself after $env:ALIVE_SECONDS s with config.toml saved, and left no trace."
 
   create-release:
     name: Create GitHub Release

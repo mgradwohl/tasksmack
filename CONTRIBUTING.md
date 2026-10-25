@@ -2895,13 +2895,19 @@ still run, emulated, on the ARM64 runner. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
 `Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
-no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
+no X server needed). Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout; a
 signed x64 `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
 one), checks a signed `.zip`'s Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
 launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
-llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Beyond the process staying up
-for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
+llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Each launch
+gets its own `TASKSMACK_CONFIG_DIR` and quits by itself rather than being killed (#2720):
+`TASKSMACK_SCREENSHOT=<png>;after=5` writes one frame 5 seconds after startup and closes the window through
+the normal close request, so `ShellLayer::onDetach()` saves `config.toml`. The launch must exit 0 and leave a
+`config.toml` with its `[theme]` table, which nothing writes before the shutdown's save in a run with no input.
+On Windows the run must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
+TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dir and `%TEMP%`, and the folder
+it ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
