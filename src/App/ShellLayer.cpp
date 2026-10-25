@@ -4,6 +4,7 @@
 #include "Core/EnvRead.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/ProcessSnapshot.h"
@@ -16,6 +17,7 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
+#include "RenderMetricsOverride.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellMetrics.h"
@@ -40,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -162,6 +165,12 @@ void ShellLayer::onAttach()
                      SelectOverride::machineTabName(*machineTab.tab));
         requestMachineTab(*machineTab.tab);
     }
+    // TASKSMACK_RENDER_METRICS (#2923): the Render Metrics overlay from the first frame, as Ctrl+Shift+M
+    // shows it; its CSV is written to the named file on detach, with the config. main() read and logged it.
+    if (RenderMetricsOverride::active().has_value())
+    {
+        m_ShowRenderMetrics = true;
+    }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
@@ -254,6 +263,14 @@ void ShellLayer::requestDetailsSection(const SelectOverride::DetailsSection sect
     m_ProcessDetailsPanel.requestSection(section);
 }
 
+void ShellLayer::requestRenderMetrics(const bool show) noexcept
+{
+    m_ShowRenderMetrics = show;
+    // Synced now as well as in onUpdate(): a demo step is issued after this layer's onUpdate() ran, so
+    // without this the charts of the frame the step lands on would not record.
+    UI::RenderMetrics::get().setEnabled(show);
+}
+
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
@@ -336,6 +353,25 @@ void ShellLayer::onDetach()
     m_Tabs.onDetach();
 
     config.save();
+
+    // TASKSMACK_RENDER_METRICS (#2923): the overlay's CSV -- the last completed frame's rows, the bytes its
+    // Copy CSV button puts on the clipboard -- to the named file, here with the config save: the one
+    // place the UI thread writes a file, at exit, when no frame waits on it.
+    if (const std::optional<std::filesystem::path>& csvPath = RenderMetricsOverride::active(); csvPath.has_value())
+    {
+        const std::string csv = UI::RenderMetrics::get().toCsv();
+        if (const auto written = RenderMetricsOverride::writeCsv(*csvPath, csv); written.has_value())
+        {
+            spdlog::info("{}: Render Metrics CSV written: {} ({} rows)",
+                         RenderMetricsOverride::ENV_VAR,
+                         Core::pathToUtf8(*csvPath),
+                         RenderMetricsOverride::csvRowCount(csv));
+        }
+        else
+        {
+            spdlog::error("{}: {}", RenderMetricsOverride::ENV_VAR, written.error());
+        }
+    }
     spdlog::info("ShellLayer detached");
 }
 

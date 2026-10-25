@@ -659,7 +659,7 @@ struct StartupDialogChoice
 }
 
 /// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR (#1596), TASKSMACK_SCREENSHOT
-/// or TASKSMACK_DEMO (#2827) set.
+/// or TASKSMACK_DEMO (#2827) or TASKSMACK_RENDER_METRICS (#2923) set.
 [[nodiscard]] bool testHookActive();
 
 /// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.

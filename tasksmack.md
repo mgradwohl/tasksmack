@@ -68,7 +68,7 @@ The diagram shows runtime data flow. Compile-time dependencies are constrained m
 
 - Owns Dear ImGui and ImPlot integration, themes, icons, shared widgets, charts, and formatting.
 - All history charts render through the shared `HistoryChart` RAII helper (`ChartWidgets.h`), which applies the chart font, legend, time axis, Y-axis formatter, and locked-vs-auto-fit Y policy in one place.
-- `RenderMetrics` captures per-chart vertex counts and CPU time when the Render Metrics overlay (Ctrl+Shift+M) is open; recording is a no-op branch otherwise. Per-chart indices are deliberately not captured (see #908); the overlay's frame-level total still reports ImGui's own index count.
+- `RenderMetrics` captures per-chart vertex counts and CPU time when the Render Metrics overlay (Ctrl+Shift+M) is open; recording is a no-op branch otherwise. Without input, `TASKSMACK_RENDER_METRICS=<file.csv>` shows the overlay from the first frame and writes its CSV at exit, and `TASKSMACK_DEMO`'s `metrics=<on|off|export>` steps drive it mid-run (#2923, `App/RenderMetricsOverride.h`). Per-chart indices are deliberately not captured (see #908); the overlay's frame-level total still reports ImGui's own index count.
 - May consume Domain snapshots and Core path services.
 - Never creates probes or calls operating-system APIs.
 

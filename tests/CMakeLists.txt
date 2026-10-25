@@ -518,6 +518,7 @@ set(COMMON_TEST_SOURCES
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
     App/test_DemoOverride.cpp
+    App/test_RenderMetricsOverride.cpp
     App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
@@ -750,6 +751,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
     ${CMAKE_SOURCE_DIR}/src/App/SelectOverride.cpp
+    # The Render Metrics hook's CSV writer (#2923): test_RenderMetricsOverride.cpp compares its file with toCsv()
+    ${CMAKE_SOURCE_DIR}/src/App/RenderMetricsOverride.cpp
     # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
