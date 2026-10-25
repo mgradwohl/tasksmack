@@ -92,7 +92,7 @@ void rememberDumpDirectory(const std::filesystem::path& directory)
         return;
     }
     config.settings().dumpFolder = std::move(folder);
-    config.save();
+    config.saveInBackground(); // called on the UI thread, which never writes the file (#2916)
 }
 
 std::string confirmTitle(std::string_view processName, std::int32_t pid)

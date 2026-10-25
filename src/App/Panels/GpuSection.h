@@ -8,6 +8,7 @@
 #include "UI/RateAxis.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -325,6 +326,17 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
     return reference;
 }
 
+/// gpuClockReferenceMHz() from the window's largest clock sample, @p visibleClockMaxMHz: the
+/// maxOfSeriesSince() of the overload below, which the tab keeps between frames
+/// (UI::Widgets::windowSeriesMax(), #843).
+[[nodiscard]] inline float gpuClockReferenceMHz(double visibleClockMaxMHz, std::uint32_t currentClockMHz, double shownClockMHz) noexcept
+{
+    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
+    // it back to float is exact.
+    return static_cast<float>(UI::Widgets::withCurrentValues(
+        visibleClockMaxMHz, {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
+}
+
 /// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
 /// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
 ///
@@ -343,11 +355,7 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
                                                 std::uint32_t currentClockMHz,
                                                 double shownClockMHz) noexcept
 {
-    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
-    // it back to float is exact.
-    return static_cast<float>(
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory),
-                                       {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
+    return gpuClockReferenceMHz(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory), currentClockMHz, shownClockMHz);
 }
 
 /// Step the clock's 100 % mark is rounded up to (gpuClockScaleMHz()).
@@ -441,6 +449,68 @@ struct GpuScaledLabels
     }
 };
 
+/// Scale each sample to a 0–100 percentage relative to @p maxVal, into @p out (resized in place, so a
+/// reused buffer allocates only when the history grows).
+inline void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<float>& out)
+{
+    out.resize(hist.size());
+    std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
+}
+
+/// One GPU history drawn as a percentage of its scale (normalizeToPercent(): the clock's, temperature's
+/// or power's 100 % mark, #1205), kept from frame to frame (#843). Between samples every frame draws
+/// the same publication, so it is scaled again only when the history -- its data generation, address
+/// or length -- or the scale changes. A generation of 0 is never kept: percentOf() then scales on
+/// every call.
+class PercentSeriesCache
+{
+  public:
+    /// @p history as a percentage of @p scale, valid until the next call.
+    [[nodiscard]] std::span<const float> percentOf(std::uint64_t generation, std::span<const float> history, float scale)
+    {
+        const Key key{
+            .generation = generation, .data = history.data(), .size = history.size(), .scaleBits = std::bit_cast<std::uint32_t>(scale)};
+        if (!m_Valid || generation == 0 || key != m_Key)
+        {
+            normalizeToPercent(history, scale, m_Values);
+            m_Key = key;
+            m_Valid = generation != 0;
+            ++m_RebuildCount;
+        }
+        return m_Values;
+    }
+
+    /// How many times percentOf() has scaled the history rather than returned the kept values.
+    [[nodiscard]] std::uint64_t rebuildCount() const noexcept
+    {
+        return m_RebuildCount;
+    }
+
+  private:
+    struct Key
+    {
+        std::uint64_t generation = 0;
+        const float* data = nullptr;
+        std::size_t size = 0;
+        std::uint32_t scaleBits = 0; ///< The scale's bit pattern, compared exactly
+
+        [[nodiscard]] bool operator==(const Key&) const = default;
+    };
+
+    std::vector<float> m_Values;
+    Key m_Key;
+    std::uint64_t m_RebuildCount = 0;
+    bool m_Valid = false;
+};
+
+/// A GPU's lines drawn as percentages of their scales, kept per draw-list entry (FrameCache).
+struct GpuPercentSeries
+{
+    PercentSeriesCache clock;
+    PercentSeriesCache temperature;
+    PercentSeriesCache power;
+};
+
 /// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
 /// (#1171): its scratch buffers and draw list, reused, and the strings built from a publication --
 /// header labels and chart layout IDs, one per draw-list entry -- rebuilt only when a new publication
@@ -448,9 +518,9 @@ struct GpuScaledLabels
 struct FrameCache
 {
     std::vector<GpuDrawEntry> drawList;
-    std::vector<float> clockPercent;
-    std::vector<float> temperaturePercent;
-    std::vector<float> powerPercent;
+    /// Per draw-list entry: its clock, temperature and power lines as percentages, rebuilt only for a
+    /// new publication or scale (#843).
+    std::vector<GpuPercentSeries> percentSeries;
 
     /// Per draw-list entry, built from the publication named below.
     std::vector<std::string> headerLabels;

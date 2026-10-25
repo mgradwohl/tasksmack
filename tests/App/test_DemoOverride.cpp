@@ -3,6 +3,7 @@
 /// action's value, and the scripts it refuses -- and how a script is described back.
 
 #include "App/DemoOverride.h"
+#include "App/RenderMetricsOverride.h"
 #include "App/SelectOverride.h"
 
 #include <gtest/gtest.h>
@@ -23,6 +24,7 @@ using App::DemoOverride::DetailsAction;
 using App::DemoOverride::formatSeconds;
 using App::DemoOverride::MachineAction;
 using App::DemoOverride::MAX_STEP_SECONDS;
+using App::DemoOverride::MetricsAction;
 using App::DemoOverride::OpenAction;
 using App::DemoOverride::parse;
 using App::DemoOverride::SectionAction;
@@ -30,6 +32,7 @@ using App::DemoOverride::SelectAction;
 using App::DemoOverride::Step;
 using App::DemoOverride::TabAction;
 using App::DemoOverride::ThemeAction;
+using App::RenderMetricsOverride::MetricsRequest;
 using App::SelectOverride::DetailsSection;
 using App::SelectOverride::DetailsTab;
 using App::SelectOverride::MachineTab;
@@ -73,7 +76,7 @@ TEST(DemoOverrideParseTest, UnsetAndBlankGiveNoScriptAndNoWarning)
 TEST(DemoOverrideParseTest, ParsesEveryActionAndKeepsTheStepsInOrder)
 {
     const auto result = parse("1:tab=processes,3:select=name:explorer.exe,3:select=pid:42,5:details=network,6:open=help,"
-                              "7:close=dialog,8:theme=dracula,9:section=modules,10:machine=cores");
+                              "7:close=dialog,8:theme=dracula,9:section=modules,10:machine=cores,11:metrics=export");
     ASSERT_TRUE(result.steps.has_value()) << result.warning;
     EXPECT_TRUE(result.warning.empty()) << result.warning;
     const std::vector<Step> steps = result.steps.value_or(std::vector<Step>{});
@@ -87,11 +90,12 @@ TEST(DemoOverrideParseTest, ParsesEveryActionAndKeepsTheStepsInOrder)
         step(8000, ThemeAction{.id = "dracula"}),
         step(9000, SectionAction{.section = DetailsSection::Modules}),
         step(10000, MachineAction{.tab = MachineTab::Cores}),
+        step(11000, MetricsAction{.request = MetricsRequest::Export}),
     };
     EXPECT_EQ(steps, expected);
     EXPECT_EQ(describe(steps),
               "1:tab=processes, 3:select=name:explorer.exe, 3:select=pid:42, 5:details=network, 6:open=help, 7:close=dialog, "
-              "8:theme=dracula, 9:section=modules, 10:machine=cores");
+              "8:theme=dracula, 9:section=modules, 10:machine=cores, 11:metrics=export");
 }
 
 TEST(DemoOverrideParseTest, KeywordsParseInAnyCaseWithSpacesAroundEveryPart)
@@ -99,9 +103,11 @@ TEST(DemoOverrideParseTest, KeywordsParseInAnyCaseWithSpacesAroundEveryPart)
     // The action, the select kind and each keyword value in any case; a tab name and a theme id are
     // kept as given, since they are resolved when the step runs.
     EXPECT_EQ(parsed(" 1 : TAB = Processes , 2 : Select = Name : Explorer.EXE ,2:SELECT=PID: 7 , 3 : Details = GPU , 4:Open=ABOUT, "
-                     "4.5:OPEN=Settings, 5:Close=DIALOG, 6:Theme=Dracula, 7:Section=OpenFiles, 8 : Machine = GPU , 9:MACHINE=Network"),
+                     "4.5:OPEN=Settings, 5:Close=DIALOG, 6:Theme=Dracula, 7:Section=OpenFiles, 8 : Machine = GPU , 9:MACHINE=Network, "
+                     "10 : Metrics = ON , 11:METRICS=Export"),
               "1:tab=Processes, 2:select=name:Explorer.EXE, 2:select=pid:7, 3:details=gpu, 4:open=about, 4.5:open=settings, "
-              "5:close=dialog, 6:theme=Dracula, 7:section=openfiles, 8:machine=gpu, 9:machine=network");
+              "5:close=dialog, 6:theme=Dracula, 7:section=openfiles, 8:machine=gpu, 9:machine=network, 10:metrics=on, "
+              "11:metrics=export");
 }
 
 TEST(DemoOverrideParseTest, EveryDetailsTabDialogAndSectionIsAccepted)
@@ -116,6 +122,8 @@ TEST(DemoOverrideParseTest, EveryDetailsTabDialogAndSectionIsAccepted)
                      "0:section=services"),
               "0:section=modules, 0:section=openfiles, 0:section=connections, 0:section=environment, 0:section=security, "
               "0:section=services");
+    // #2923: the Render Metrics overlay, as Ctrl+Shift+M and its Copy CSV button act.
+    EXPECT_EQ(parsed("0:metrics=on,0:metrics=off,0:metrics=export"), "0:metrics=on, 0:metrics=off, 0:metrics=export");
 }
 
 TEST(DemoOverrideParseTest, TimesAreSecondsWithUpToThreeDecimals)
@@ -199,6 +207,10 @@ TEST(DemoOverrideParseTest, InvalidScriptsAreIgnoredWholeWithAWarningNamingTheSt
              Case{.value = "1:open=preferences", .step = "step 1"},
              Case{.value = "1:close=window", .step = "step 1"},
              Case{.value = "1:section=files", .step = "step 1"},
+             Case{.value = "1:metrics=show", .step = "step 1"},
+             Case{.value = "1:metrics=1", .step = "step 1"},
+             Case{.value = "1:metrics=", .step = "step 1"},
+             Case{.value = "1:metrics=export:a.csv", .step = "step 1"},
              Case{.value = "1:jump=processes", .step = "step 1"},
          })
     {
@@ -224,6 +236,7 @@ TEST(DemoOverrideParseTest, TheWarningSaysWhatIsWrong)
     EXPECT_NE(parse("1:close=x").warning.find("not dialog"), std::string::npos);
     EXPECT_NE(parse("1:section=x").warning.find("not modules, openfiles, connections, environment, security or services"),
               std::string::npos);
+    EXPECT_NE(parse("1:metrics=show").warning.find("not on, off or export"), std::string::npos);
     EXPECT_NE(parse("1:jump=x").warning.find("unknown action 'jump'"), std::string::npos);
     EXPECT_NE(parse("1:tab=a,").warning.find("is empty"), std::string::npos);
 }
@@ -272,7 +285,7 @@ TEST(DemoOverrideTest, FormatSecondsWritesWholeSecondsAndTrimmedDecimals)
 TEST(DemoOverrideTest, DescribeRoundTripsThroughParse)
 {
     const char* script = "0.5:tab=machine, 1:select=pid:1234, 1.25:details=npu, 2:open=about, 2:close=dialog, 3:theme=nord-light, "
-                         "4:section=connections, 5:machine=npu";
+                         "4:section=connections, 5:machine=npu, 6:metrics=on, 7:metrics=export, 7.5:metrics=off";
     EXPECT_EQ(parsed(script), script);
     EXPECT_EQ(describe(std::vector<Step>{}), "");
 }

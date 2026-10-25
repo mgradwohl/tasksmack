@@ -1,13 +1,17 @@
 #pragma once
 
+#include "App/CoalescingWriter.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 #include "UI/Theme.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -140,7 +144,8 @@ class UserConfig
     UserConfig(UserConfig&&) = delete;
     auto operator=(UserConfig&&) -> UserConfig& = delete;
 
-    /// Load settings from config file (call on startup)
+    /// Load settings from config file (call on startup). A background save still being written is
+    /// finished first (flushPendingSave()), so the file is read as it leaves it.
     void load();
 
     /// Parses `tomlText` as a config file and reads every setting it holds into `settings`, the same
@@ -156,7 +161,20 @@ class UserConfig
     /// alone and nothing is saved. The read-merge-rename isn't locked against another TaskSmack:
     /// main() lets only one run per config directory (InstanceLock, #1230).
     /// Resets the loaded flag so a subsequent load() call will re-read from disk.
+    /// Synchronous, on the calling thread: for the exit path (ShellLayer::onDetach(), after which
+    /// nothing draws) and a caller that needs the file at once. A background save still in flight or
+    /// queued is written first, so the settings written here always land last (#2916).
     void save();
+
+    /// What the UI thread calls when the user changes a setting (#2916): a copy of the settings is
+    /// written by the ts-config-save worker, never on the calling thread, which never does file I/O
+    /// (#2731). Coalesced: while one write is in flight, later calls replace each other's unwritten
+    /// copy, so rapid clicks cost one more write, of the last state. A failure is logged once for a run
+    /// of failed writes. save() and flushPendingSave() wait for it.
+    void saveInBackground();
+
+    /// Waits until every saveInBackground() so far is written.
+    void flushPendingSave();
 
     /// Get current settings
     [[nodiscard]] auto settings() const -> const UserSettings&
@@ -189,6 +207,7 @@ class UserConfig
     /// Application code should never call this method.
     void resetConfigPathForTesting(const std::filesystem::path& path)
     {
+        flushPendingSave(); // a background save still writes to the previous path
         m_ConfigPath = path;
         m_Settings = UserSettings{};
         m_Synced = UserSettings{};
@@ -243,7 +262,7 @@ class UserConfig
 
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
-    bool m_IsLoaded = false;
+    std::atomic<bool> m_IsLoaded = false; // also reset by a background save, on its worker
 
     // The settings as TaskSmack last read them from, or wrote them to, the file (the merge base for
     // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
@@ -258,6 +277,23 @@ class UserConfig
     [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;
 
     static auto getConfigDirectory() -> std::filesystem::path;
+
+    /// The file write behind save() and saveInBackground(): @p settings merged into the file as it is.
+    /// Logs why when it fails. Serialised by m_WriteMutex; on success @p settings becomes m_Synced.
+    [[nodiscard]] bool writeSettings(const UserSettings& settings);
+    /// writeSettings() as the background writer's sink, on its worker.
+    [[nodiscard]] bool writeInBackground(const UserSettings& settings);
+    /// The background writer's failure report, once for a run of failed writes.
+    void reportBackgroundSaveFailure() const;
+
+    // Held for each file write and for load(): writes never overlap (a worker's and save()'s), and
+    // m_Synced, their merge base, is read and replaced under it.
+    std::mutex m_WriteMutex;
+    // Last: destroyed first, its destructor writing what is still pending while everything the sink
+    // uses is alive.
+    CoalescingWriter<UserSettings> m_Writer{Platform::SETTINGS_SAVE_THREAD_NAME,
+                                            [this](const UserSettings& settings) { return writeInBackground(settings); },
+                                            [this] { reportBackgroundSaveFailure(); }};
 };
 
 } // namespace App

@@ -19,9 +19,22 @@ namespace App::StatusBarView
 inline constexpr const char* SETTINGS_LABEL = ICON_FA_GEAR "##StatusBarSettings";
 inline constexpr const char* HELP_LABEL = ICON_FA_CIRCLE_QUESTION "##StatusBarHelp";
 
+/// The access chip (#2728): what the session is, in place of the plain lock icon.
+enum class AccessChip : std::uint8_t
+{
+    Standard,      ///< A lock and "Standard": clicking it offers Administrator (Action::Access)
+    Administrator, ///< A shield and "Administrator": nothing is limited
+};
+
+/// The chip's labels, glyph and words, each with an ID of its own.
+inline constexpr const char* STANDARD_CHIP_LABEL = ICON_FA_LOCK " Standard##AccessChip";
+inline constexpr const char* ADMINISTRATOR_CHIP_LABEL = ICON_FA_SHIELD_HALVED " Administrator##AccessChip";
+
 /// What the bar shows this frame.
 struct Input
 {
+    /// The access chip, where the platform has one (Linux, #2728); nullopt: the plain lock icon below.
+    std::optional<AccessChip> access;
     bool reducedPrivileges = false;      ///< The lock icon: some details of other users' processes are unavailable
     bool networkCountersBlocked = false; ///< The network icon: per-process network counters are blocked (#1358)
     std::string_view processText;        ///< "N processes", with its glyph; empty to leave it out
@@ -37,6 +50,7 @@ enum class Action : std::uint8_t
     None,
     Settings,
     Help,
+    Access, ///< The Standard chip: offer Administrator (the startup notice again)
 };
 
 /// Draw the status bar for this frame, fitted to the window: at its narrowest the lower-priority

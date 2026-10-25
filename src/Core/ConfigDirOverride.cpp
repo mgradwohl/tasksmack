@@ -9,14 +9,19 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace Core::ConfigDirOverride
 {
 
-const std::optional<std::filesystem::path>& active()
+namespace
 {
-    // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<std::filesystem::path> dir = [] -> std::optional<std::filesystem::path>
+
+/// What active() returns. Read once: a function-local static is initialised exactly once,
+/// thread-safely. Only setActiveForTesting() replaces it after that.
+std::optional<std::filesystem::path>& current()
+{
+    static std::optional<std::filesystem::path> dir = [] -> std::optional<std::filesystem::path>
     {
         std::optional<std::filesystem::path> parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.has_value())
@@ -39,6 +44,18 @@ const std::optional<std::filesystem::path>& active()
         return parsed;
     }();
     return dir;
+}
+
+} // namespace
+
+const std::optional<std::filesystem::path>& active()
+{
+    return current();
+}
+
+void setActiveForTesting(std::optional<std::filesystem::path> dir)
+{
+    current() = std::move(dir);
 }
 
 } // namespace Core::ConfigDirOverride

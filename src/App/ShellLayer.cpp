@@ -1,9 +1,11 @@
 #include "ShellLayer.h"
 
+#include "AccessChoice.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvRead.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/ProcessSnapshot.h"
@@ -11,16 +13,19 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
+#include "PanelPlatforms.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
+#include "RenderMetricsOverride.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellMetrics.h"
 #include "StatusBarText.h"
 #include "StatusBarView.h"
+#include "SyntheticScenario.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
@@ -40,6 +45,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -162,6 +168,12 @@ void ShellLayer::onAttach()
                      SelectOverride::machineTabName(*machineTab.tab));
         requestMachineTab(*machineTab.tab);
     }
+    // TASKSMACK_RENDER_METRICS (#2923): the Render Metrics overlay from the first frame, as Ctrl+Shift+M
+    // shows it; its CSV is written to the named file on detach, with the config. main() read and logged it.
+    if (RenderMetricsOverride::active().has_value())
+    {
+        m_ShowRenderMetrics = true;
+    }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
@@ -254,6 +266,14 @@ void ShellLayer::requestDetailsSection(const SelectOverride::DetailsSection sect
     m_ProcessDetailsPanel.requestSection(section);
 }
 
+void ShellLayer::requestRenderMetrics(const bool show) noexcept
+{
+    m_ShowRenderMetrics = show;
+    // Synced now as well as in onUpdate(): a demo step is issued after this layer's onUpdate() ran, so
+    // without this the charts of the frame the step lands on would not record.
+    UI::RenderMetrics::get().setEnabled(show);
+}
+
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
@@ -335,7 +355,29 @@ void ShellLayer::onDetach()
     // a panel writes back into the settings on detach is included in it (#1124, #1177).
     m_Tabs.onDetach();
 
+    // Synchronous, as nothing draws after it. save() first waits for a background save still in
+    // flight or queued (a click just before exit), then writes these settings over it: nothing is
+    // lost, and the last state wins (#2916).
     config.save();
+
+    // TASKSMACK_RENDER_METRICS (#2923): the overlay's CSV -- the last completed frame's rows, the bytes its
+    // Copy CSV button puts on the clipboard -- to the named file, here with the config save: the one
+    // place the UI thread writes a file, at exit, when no frame waits on it.
+    if (const std::optional<std::filesystem::path>& csvPath = RenderMetricsOverride::active(); csvPath.has_value())
+    {
+        const std::string csv = UI::RenderMetrics::get().toCsv();
+        if (const auto written = RenderMetricsOverride::writeCsv(*csvPath, csv); written.has_value())
+        {
+            spdlog::info("{}: Render Metrics CSV written: {} ({} rows)",
+                         RenderMetricsOverride::ENV_VAR,
+                         Core::pathToUtf8(*csvPath),
+                         RenderMetricsOverride::csvRowCount(csv));
+        }
+        else
+        {
+            spdlog::error("{}: {}", RenderMetricsOverride::ENV_VAR, written.error());
+        }
+    }
     spdlog::info("ShellLayer detached");
 }
 
@@ -390,6 +432,33 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         ShellPanels::raiseStartupSettings([this](Core::Event& event) { m_Host->raiseEvent(event); });
+    }
+
+    // The access chip's broker, on the UI thread its prompt belongs to (#2728); Linux only, where
+    // Administrator is the session-held helper.
+    if (!m_AccessBrokerResolved)
+    {
+        m_AccessBrokerResolved = true;
+        if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+        {
+            m_AccessBroker = privilegedBroker(Synthetic::activeScenario());
+        }
+    }
+
+    // "TaskSmack (Administrator)" while the session is (#2728), on Linux, whose access chip says the same;
+    // set only when that changes.
+    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    {
+        if (m_ProcessesPanel.firstSnapshotAdopted())
+        {
+            const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+            const bool administrator = !m_ProcessesPanel.processCapabilities().hasReducedPrivileges || held;
+            if (m_TitleSaysAdministrator != administrator)
+            {
+                m_TitleSaysAdministrator = administrator;
+                m_Host->setWindowTitle(administrator ? "TaskSmack (Administrator)" : "TaskSmack");
+            }
+        }
     }
 
     // Dispatch the startup privilege notice on the first update after the process probe's first
@@ -777,7 +846,18 @@ void ShellLayer::renderStatusBar() const
     const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
     // When native OS decorations replace the custom title bar (see #745), its Settings/Help buttons
     // don't exist, so the status bar carries them.
+    // Standard or Administrator (#2728), on Linux: Administrator when nothing is limited (root, or every
+    // capability granted) or the helper is held for the session; Windows keeps the plain lock until
+    // TaskSmack can restart itself elevated.
+    std::optional<StatusBarView::AccessChip> access;
+    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    {
+        const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+        access =
+            (!capabilities.hasReducedPrivileges || held) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
+    }
     const StatusBarView::Action action = StatusBarView::render({
+        .access = access,
         .reducedPrivileges = capabilities.hasReducedPrivileges,
         .networkCountersBlocked = capabilities.networkCountersBlocked,
         .processText = m_StatusProcessText,
@@ -794,6 +874,12 @@ void ShellLayer::renderStatusBar() const
     else if (action == StatusBarView::Action::Help)
     {
         Core::OpenHelpEvent event;
+        m_Host->raiseEvent(event);
+    }
+    else if (action == StatusBarView::Action::Access)
+    {
+        // The startup notice again, whatever its "Don't show this again": the user asked for it.
+        Core::OpenElevationNoticeEvent event(capabilities.missingPrivileges);
         m_Host->raiseEvent(event);
     }
 }

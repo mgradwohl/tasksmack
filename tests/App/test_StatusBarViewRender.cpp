@@ -37,7 +37,8 @@ class StatusBarViewRenderTest : public ::testing::Test
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // ImGui owns the font atlas
         io.Fonts->AddFontDefault();
-        m_Input = {.reducedPrivileges = false,
+        m_Input = {.access = std::nullopt,
+                   .reducedPrivileges = false,
                    .networkCountersBlocked = false,
                    .processText = PROCESSES,
                    .intervalText = INTERVAL,
@@ -100,6 +101,27 @@ TEST_F(StatusBarViewRenderTest, TheIconsShowOnlyWhenTheyApply)
     EXPECT_TRUE(frame().contains(ICON_FA_LOCK));
     m_Input.networkCountersBlocked = true;
     EXPECT_TRUE(frame().contains(ICON_FA_NETWORK_WIRED));
+}
+
+// #2728: where the platform has the access chip, it replaces the plain lock: Standard with a lock,
+// which offers Administrator when clicked, or Administrator with a shield, which offers nothing.
+TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStandardOffersAdministrator)
+{
+    m_Input.reducedPrivileges = true;
+    m_Input.access = StatusBarView::AccessChip::Standard;
+    const std::string standard = frame();
+    EXPECT_TRUE(standard.contains(ICON_FA_LOCK " Standard")) << standard;
+    press(StatusBarView::STANDARD_CHIP_LABEL);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::Access);
+
+    m_Input.access = StatusBarView::AccessChip::Administrator;
+    const std::string administrator = frame();
+    EXPECT_TRUE(administrator.contains(ICON_FA_SHIELD_HALVED " Administrator")) << administrator;
+    EXPECT_FALSE(administrator.contains(ICON_FA_LOCK)) << "the chip, not the lock as well";
+    press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::None);
 }
 
 TEST_F(StatusBarViewRenderTest, TheFrameRateReadoutShowsWhileRenderMetricsIsOn)

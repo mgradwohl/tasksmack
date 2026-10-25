@@ -55,7 +55,27 @@ Action render(const Input& input)
         // Show a persistent lock icon when running without elevated privileges
         // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
         // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
-        if (input.reducedPrivileges)
+        if (input.access.has_value())
+        {
+            // Standard or Administrator (#2728): what the session is, and Standard's way to Administrator.
+            const bool standard = *input.access == AccessChip::Standard;
+            ImGui::PushStyleColor(ImGuiCol_Text, standard ? theme.scheme().textWarning : theme.scheme().textPrimary);
+            const bool pressed = ImGui::SmallButton(standard ? STANDARD_CHIP_LABEL : ADMINISTRATOR_CHIP_LABEL);
+            ImGui::PopStyleColor();
+            if (pressed && standard)
+            {
+                action = Action::Access;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s",
+                                  standard ? "Standard: some details of other users' processes, or actions on them, are unavailable. "
+                                             "Click for Administrator"
+                                           : "Administrator: nothing is limited for this session");
+            }
+            ImGui::SameLine();
+        }
+        else if (input.reducedPrivileges)
         {
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())

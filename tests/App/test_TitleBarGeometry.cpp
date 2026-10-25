@@ -929,8 +929,10 @@ TEST(ComputeWindowHitTestAtTest, EveryButtonAndTheIconAnswerNormal)
             EXPECT_EQ(computeWindowHitTestAt(bounds.minX, bounds.minY, input), SDL_HITTEST_NORMAL);
             EXPECT_EQ(computeWindowHitTestAt(bounds.maxX, bounds.maxY, input), SDL_HITTEST_NORMAL);
         }
-        // The close button reaches the window's right edge and the top strip: still the button (#750).
-        EXPECT_EQ(computeWindowHitTestAt(static_cast<float>(AT_W) - 1.0F, 0.0F, input), SDL_HITTEST_NORMAL);
+        // The close button reaches the window's right edge and the top strip: still the button (#750),
+        // except for the top-right resize corner itself (#2882, TheTopRightCornerIsTheBordersNotTheCloseButtons).
+        EXPECT_EQ(computeWindowHitTestAt(static_cast<float>(AT_W) - 1.0F, input.resizeBorderPx, input), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(static_cast<float>(AT_W) - input.resizeBorderPx - 1.0F, 0.0F, input), SDL_HITTEST_NORMAL);
         // The icon, its top pixels inside the top strip included.
         EXPECT_EQ(computeWindowHitTestAt((input.icon.minX + input.icon.maxX) * 0.5F, (input.icon.minY + input.icon.maxY) * 0.5F, input),
                   SDL_HITTEST_NORMAL);
@@ -955,9 +957,10 @@ TEST(ComputeWindowHitTestAtTest, EveryEdgeAndCornerAnswersItsResize)
         EXPECT_EQ(computeWindowHitTestAt(0.0F, 0.0F, input), SDL_HITTEST_RESIZE_TOPLEFT);
         EXPECT_EQ(computeWindowHitTestAt(0.0F, BOTTOM, input), SDL_HITTEST_RESIZE_BOTTOMLEFT);
         EXPECT_EQ(computeWindowHitTestAt(RIGHT, BOTTOM, input), SDL_HITTEST_RESIZE_BOTTOMRIGHT);
-        // The top-right corner is the close button once the bar has drawn; before the first frame
-        // (no buttons laid out yet) it is the corner.
-        EXPECT_EQ(computeWindowHitTestAt(RIGHT, 0.0F, input), SDL_HITTEST_NORMAL);
+        // The top-right corner too, although the close button's slot reaches it (#2882): the corner
+        // square is the border's, like the other three, whether the bar has drawn its buttons yet or
+        // not (before the first frame none is laid out).
+        EXPECT_EQ(computeWindowHitTestAt(RIGHT, 0.0F, input), SDL_HITTEST_RESIZE_TOPRIGHT);
         WindowHitTestInput firstFrame = input;
         firstFrame.buttons = {};
         firstFrame.icon = {};
@@ -974,6 +977,53 @@ TEST(ComputeWindowHitTestAtTest, EveryEdgeAndCornerAnswersItsResize)
     const float middleX = static_cast<float>(AT_W) * 0.5F;
     EXPECT_EQ(computeWindowHitTestAt(middleX, RESIZE_BORDER_REFERENCE_PX, hitTestInputAt(1.0F, true, true)), SDL_HITTEST_DRAGGABLE);
     EXPECT_EQ(computeWindowHitTestAt(middleX, RESIZE_BORDER_REFERENCE_PX, hitTestInputAt(2.0F, true, true)), SDL_HITTEST_RESIZE_TOP);
+}
+
+// #2882: the Close button's slot reaches the window's top and right edges, and the controls are
+// tested before the borders (#750), so the top-right corner was the one corner that could not start
+// a resize. The corner square -- the border's thickness on a side, where the diagonal cursor shows at
+// the other three corners -- is the border's; one pixel past it in either direction is the button.
+TEST(ComputeWindowHitTestAtTest, TheTopRightCornerIsTheBordersNotTheCloseButtons)
+{
+    for (const float scale : HIT_TEST_SCALES)
+    {
+        SCOPED_TRACE(scale);
+        const WindowHitTestInput input = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true);
+        const float border = input.resizeBorderPx;
+        constexpr auto WIDTH = static_cast<float>(AT_W);
+        ASSERT_LE(input.buttons.close.minX, WIDTH - border)
+            << "the close button's slot must still cover the corner for this to test anything";
+
+        // The corner square, its outermost and its innermost pixel, is not the control area but the border.
+        EXPECT_FALSE(computeIsPointInControlArea(WIDTH - 1.0F, 0.0F, input));
+        EXPECT_FALSE(computeIsPointInControlArea(WIDTH - border, border - 1.0F, input));
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - 1.0F, 0.0F, input), SDL_HITTEST_RESIZE_TOPRIGHT);
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - border, border - 1.0F, input), SDL_HITTEST_RESIZE_TOPRIGHT);
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - (border * 0.5F), border * 0.5F, input), SDL_HITTEST_RESIZE_TOPRIGHT);
+
+        // One pixel inside the square, left of it or below it, is the Close button: a press there closes.
+        EXPECT_TRUE(computeIsPointInControlArea(WIDTH - border - 1.0F, border - 1.0F, input));
+        EXPECT_TRUE(computeIsPointInControlArea(WIDTH - 1.0F, border, input));
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - border - 1.0F, border - 1.0F, input), SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - 1.0F, border, input), SDL_HITTEST_NORMAL);
+        // The rest of the top strip over the buttons and the right strip down the Close button are
+        // unchanged: the button's.
+        EXPECT_EQ(computeWindowHitTestAt((input.buttons.maximize.minX + input.buttons.maximize.maxX) * 0.5F, 0.0F, input),
+                  SDL_HITTEST_NORMAL);
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - 1.0F, input.titleBarHeightPx - 1.0F, input), SDL_HITTEST_NORMAL);
+
+        // Where the app resizes (Windows), the corner answers NORMAL like every border, so the press is
+        // delivered to the app: the control-area decision is what tells it from the button there.
+        const WindowHitTestInput windows = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/false);
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - 1.0F, 0.0F, windows), SDL_HITTEST_NORMAL);
+        EXPECT_FALSE(computeIsPointInControlArea(WIDTH - 1.0F, 0.0F, windows));
+        EXPECT_TRUE(computeIsPointInControlArea(WIDTH - 1.0F, border, windows));
+
+        // A maximized window has no borders: its Close button reaches the corner, as on Windows.
+        const WindowHitTestInput maximized = hitTestInputAt(scale, /*systemDrag=*/true, /*systemResize=*/true, /*isMaximized=*/true);
+        EXPECT_TRUE(computeIsPointInControlArea(WIDTH - 1.0F, 0.0F, maximized));
+        EXPECT_EQ(computeWindowHitTestAt(WIDTH - 1.0F, 0.0F, maximized), SDL_HITTEST_NORMAL);
+    }
 }
 
 TEST(ComputeWindowHitTestAtTest, WindowsPolicy_TheTitleBarDragsAndTheBordersStayWithTheApp)

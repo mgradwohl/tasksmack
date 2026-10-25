@@ -302,7 +302,7 @@ jobs:
           cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Test (Windows)
-        if: runner.os == 'Windows' && inputs.build
+        if: runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build
         shell: pwsh
         env:
           # llvmpipe (beside the test executables, see "Software OpenGL for the display tests")
@@ -312,15 +312,41 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
+      # windows-11-arm (arm64.yml) runs the same ctest, in two parts (#2832). On that runner, and never
+      # on x64, pwsh itself (7.6.6, the version the windows-2025 image ships too) dies a few seconds
+      # into one of the PowerShell script tests with .NET's "Fatal error. Internal CLR error.
+      # (0x80131506)", which ctest reports as SEGFAULT: one script test in about one run of several,
+      # green on re-run (runs 39844666038, 39864985825, 40090045726, 40111717096). The entries with
+      # the `pwsh-script` label (tests/CMakeLists.txt), and only those, get a second attempt
+      # (--repeat until-pass:2); everything else runs exactly as on x64, first. The two reports are
+      # merged below, so the Job Summary and the artifact still list every entry.
+      - name: Test (Windows ARM64)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64' && inputs.build
+        shell: pwsh
+        env:
+          TASKSMACK_REQUIRE_DISPLAY: '1'
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          $common = @('--preset', 'win-${{ inputs.build_type }}', '-j', $env:NUMBER_OF_PROCESSORS, '--schedule-random', '--output-on-failure', '--timeout', '60')
+          ctest @common -LE pwsh-script --output-junit test-results.xml
+          $suites = $LASTEXITCODE
+          ctest @common -L pwsh-script --repeat until-pass:2 --output-junit test-results-pwsh-script.xml
+          $scripts = $LASTEXITCODE
+          if ($suites -ne 0) { Write-Host "::error::ctest (every entry but the pwsh-script label) exited $suites" }
+          if ($scripts -ne 0) { Write-Host "::error::ctest (the pwsh-script label, two attempts each) exited $scripts" }
+          if ($suites -ne 0 -or $scripts -ne 0) { exit 1 }
+
       # ctest runs one entry per gtest suite (#1871); each entry also writes gtest's own report, one
       # testcase per case, to gtest-results/. Fold those into one JUnit file so the artifact and the
       # Job Summary still list every case. A missing ctest report (the build failed) writes nothing.
+      # Windows ARM64 writes a second ctest report, the script tests' (#2832); elsewhere it doesn't
+      # exist and is skipped.
       - name: Merge test results
         if: always() && inputs.build
         shell: bash
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
-        run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
+        run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/test-results-pwsh-script.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
 
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux' && inputs.build
@@ -339,6 +365,7 @@ jobs:
           name: windows-${{ inputs.build_type }}-test-results
           path: |
             build/win-${{ inputs.build_type }}/test-results.xml
+            build/win-${{ inputs.build_type }}/test-results-pwsh-script.xml
             build/win-${{ inputs.build_type }}/test-results-cases.xml
           retention-days: 5
 

@@ -8,6 +8,7 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
+#include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SettingsLayer.h"
@@ -243,6 +244,17 @@ auto runApp() -> int
     // has settled, for the screenshot to record. Unset, nothing below is pushed for it.
     const std::optional<std::vector<App::DemoOverride::Step>>& demo = App::DemoOverride::active();
 
+    // TASKSMACK_RENDER_METRICS (#2923), likewise read and logged once: the Render Metrics overlay from the
+    // first frame (ShellLayer::onAttach) and its CSV to this file at exit (ShellLayer::onDetach). It is
+    // also where the demo script's metrics=export writes; with it unset, that step writes beside the
+    // screenshot's path, and with neither set it is skipped with a warning.
+    const std::optional<std::filesystem::path>& renderMetricsCsv = App::RenderMetricsOverride::active();
+    std::optional<std::filesystem::path> demoMetricsCsv = renderMetricsCsv;
+    if (!demoMetricsCsv.has_value() && screenshot.has_value())
+    {
+        demoMetricsCsv = App::RenderMetricsOverride::csvBesideScreenshot(screenshot->path);
+    }
+
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {
         spdlog::warn(
@@ -345,7 +357,7 @@ auto runApp() -> int
         // in its onUpdate(), before any layer renders, so the shell draws it on that same frame.
         if (demo.has_value())
         {
-            appRef.pushLayer<App::DemoLayer>(*demo, shell);
+            appRef.pushLayer<App::DemoLayer>(*demo, shell, demoMetricsCsv);
         }
 
         // The screenshot hook's layer (#2827), last, so it sees each frame once every layer above has

@@ -51,7 +51,8 @@ class IPrivilegedBroker
     }
 
     /// Whether the session is Administrator through the helper (#2728): holdForSession() succeeded and
-    /// the helper it holds is still connected.
+    /// the helper it holds is still connected, as last seen. Cheap and non-blocking, for the UI thread:
+    /// it makes no system call, so a helper that has just exited reads as held until a call finds out.
     [[nodiscard]] virtual bool heldForSession() const noexcept
     {
         return false;

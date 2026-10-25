@@ -11,6 +11,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/IPrivilegedBroker.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellPanels.h"
@@ -104,6 +105,16 @@ class ShellLayer : public Core::Layer
     /// Draws @p section of Process Details' Overview open the next time the Overview is drawn.
     void requestDetailsSection(SelectOverride::DetailsSection section);
 
+    /// Shows (@p show) or hides the Render Metrics overlay, as Ctrl+Shift+M does (#2923): recording starts
+    /// with this frame, and the status bar's FPS readout follows the overlay.
+    void requestRenderMetrics(bool show) noexcept;
+
+    /// Whether the Render Metrics overlay is shown: by the chord, TASKSMACK_RENDER_METRICS or a metrics= step.
+    [[nodiscard]] bool renderMetricsShown() const noexcept
+    {
+        return m_ShowRenderMetrics;
+    }
+
   private:
     /// Every registered tab's id and visible text, for TASKSMACK_TAB and the demo's tab= to resolve against.
     [[nodiscard]] std::vector<SelectOverride::TabInfo> tabInfos() const;
@@ -146,6 +157,12 @@ class ShellLayer : public Core::Layer
     // dispatched in the first onUpdate() after the process probe's first generation (which says whether
     // privileges are reduced, #2731), with all layers stacked.
     bool m_PendingPrivilegeNotice = false;
+    /// The privileged broker the access chip asks whether the session is held (#2728), resolved on the
+    /// first update; null where there is none (no helper, a synthetic run) or off Linux.
+    std::shared_ptr<Platform::IPrivilegedBroker> m_AccessBroker;
+    bool m_AccessBrokerResolved = false;
+    /// The window title last set (#2728): whether it says "(Administrator)", nullopt before the first.
+    std::optional<bool> m_TitleSaysAdministrator;
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).
@@ -163,8 +180,9 @@ class ShellLayer : public Core::Layer
     std::optional<WindowMinimumSize> m_GrowMinimumSize;
     TitleBarLayer* m_TitleBar = nullptr;
 
-    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M. The
-    // status bar's FPS readout is shown only while it is on (#1200).
+    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M; on from
+    // the first frame with TASKSMACK_RENDER_METRICS set, and set by the demo script's metrics= step
+    // (#2923). The status bar's FPS readout is shown only while it is on (#1200).
     bool m_ShowRenderMetrics = false;
 
     // The status bar's live text (#1200), rebuilt in onUpdate() only when the count or the interval

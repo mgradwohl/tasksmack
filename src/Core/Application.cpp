@@ -99,6 +99,15 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr double INTERACTION_REDRAW_GRACE_SECONDS = 0.35;
+// How long after an input event (a wheel, a button, a key, text: WindowEventRouting::isInputEvent) the
+// regular frame stays paced at MAX_FRAME_RATE instead of dropping to the idle wait (#843). Dear ImGui
+// finishes reacting to input over the next frame or two (a popup or combo list is drawn the frame after
+// it opens, a clicked tab's content the frame after the click, hover and tooltip delays tick per frame),
+// and at the 20 fps idle rate each of those frames came 50 ms apart. Long enough to cover ImGui's
+// hover delays and the gap between keystrokes while typing; short enough that a single click costs
+// about a dozen extra frames. Does not touch sampling, the hidden-window throttle (#1125) or the
+// move/resize vsync transition, which stays tied to resize/move events.
+constexpr double INPUT_REDRAW_GRACE_SECONDS = 0.2;
 // Whether an OS maximize of the borderless window is replaced by the client-side one
 // (Window::adoptSystemMaximize(), #1208): on Windows only; see the SystemMaximized case in run().
 #ifdef _WIN32
@@ -457,6 +466,10 @@ void Application::run()
     std::optional<SDL_Event> idleWakeEvent;
     // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
     std::uint32_t consecutiveSkippedRenders = 0;
+    // When the input redraw grace ends (FramePacing::computeInputRedrawUntil, #843): until then the
+    // regular frame is paced as an input frame, so the frames after a click or a key come at the full
+    // rate, not the idle one. 0 = no input yet.
+    double inputRedrawUntil = 0.0;
     std::uint64_t loopStart = 0;
     ResizePerfLoopTiming loopTiming;
     const auto finishTracedLoop = [&](std::uint64_t end)
@@ -509,6 +522,8 @@ void Application::run()
         // Process SDL events
         bool needsResizeRedraw = false;
         std::uint32_t resizeEventCount = 0;
+        // Wheel, button, key and text events this drain: they start the input redraw grace (#843).
+        std::uint32_t inputEventCount = 0;
         SDL_Event sdlEvent;
         const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
         // Snapshot geometry-changed flag from previous frame, then reset for this frame.
@@ -529,6 +544,10 @@ void Application::run()
             else if (!SDL_PollEvent(&sdlEvent))
             {
                 return false;
+            }
+            if (WindowEventRouting::isInputEvent(sdlEvent.type))
+            {
+                ++inputEventCount;
             }
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
@@ -645,6 +664,10 @@ void Application::run()
         {
             loopTiming.drainMs = totalDrainMs;
         }
+        // Input this drain restarts the input redraw grace (#843); while it runs, the regular frame below
+        // is paced as an input frame (FramePacing::computeFrameRateCap) rather than taking the idle wait.
+        inputRedrawUntil = FramePacing::computeInputRedrawUntil(getTime(), inputEventCount, inputRedrawUntil, INPUT_REDRAW_GRACE_SECONDS);
+        const bool inputGraceActive = FramePacing::isWithinInteractionGrace(getTime(), inputRedrawUntil);
         // recordEventBatch() for THIS drain is deferred until after the interaction-transition
         // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
         // same drain), so the batch that triggers a transition lands in the correctly-reset
@@ -713,6 +736,7 @@ void Application::run()
         {
             resizeTraceStats.recordEventBatch(
                 drain.eventCount, resizeEventCount, totalDrainMs, drain.maxSingleEventMs, drain.budgetExceeded);
+            resizeTraceStats.inputEvents += inputEventCount;
         }
 
         // Deferred from just after the drain (see comment above) so this frame's batch is
@@ -789,11 +813,12 @@ void Application::run()
         }
 
         // Pace the regular frame:
-        // - Something moving visibly asked for more frames than idling gives, or input arrived:
-        //   cap the frame rate (FramePacing::computeFrameRateCap) at a whole number of display
-        //   refreshes. Charts keep a steady rate whatever the input (#1037), only as fast as their
-        //   motion needs (#1125); input frames are capped too (#1153). Events that arrive during
-        //   the wait are handled by the next drain, at most one period later.
+        // - Something moving visibly asked for more frames than idling gives, or input arrived --
+        //   this drain, or recently enough that its grace still runs (#843): cap the frame rate
+        //   (FramePacing::computeFrameRateCap) at a whole number of display refreshes. Charts keep a
+        //   steady rate whatever the input (#1037), only as fast as their motion needs (#1125); input
+        //   frames are capped too (#1153). Events that arrive during the wait are handled by the next
+        //   drain, at most one period later.
         // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
         //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
         //     display stays current during burst gaps between resize/move events.
@@ -802,7 +827,7 @@ void Application::run()
         //     sleep immediately, keeping interactive frame rate unaffected. The waking event is
         //     dispatched before the next frame renders (#1409): see idleWakeEvent.
         const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
-        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents, isHidden, MAX_FRAME_RATE);
+        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FRAME_RATE);
         if (frameRateCap > 0.0 && !isInteracting)
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(

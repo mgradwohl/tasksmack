@@ -107,7 +107,9 @@ void SettingsLayer::onRender()
     case SettingsDialog::Action::EditConfig:
     {
         // On a first run nothing has saved the file yet, and opening a path that doesn't exist does
-        // nothing the user can see (#2145): write it first, every key with its documentation.
+        // nothing the user can see (#2145): write it first, every key with its documentation. The one
+        // synchronous save a click makes (#2916): the editor opens the file at once, so it must exist
+        // first, and it is written at most once, on a first run.
         auto& config = UserConfig::get();
         std::error_code ec;
         if (!std::filesystem::exists(config.configPath(), ec))
@@ -244,8 +246,8 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Show process icons changed to {}", m_State.showProcessIcons);
     }
 
-    // Save to disk
-    config.save();
+    // Save to disk, on a worker: the UI thread never writes the file (#2916)
+    config.saveInBackground();
 }
 
 } // namespace App

@@ -73,6 +73,11 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 [[nodiscard]] std::shared_ptr<Platform::ISystemInfoProbe> crashHistoryProbe(std::unique_ptr<Platform::ISystemInfoProbe> probe,
                                                                             std::shared_ptr<Platform::IPrivilegedBroker> broker);
 
+/// The one privileged broker the panels share, for the startup notice's Administrator choice (#2728):
+/// null in a synthetic run and where there is none (no helper installed, already root). Made on first
+/// use; call it on the UI thread, as its prompt belongs to the main window.
+[[nodiscard]] std::shared_ptr<Platform::IPrivilegedBroker> privilegedBroker(const Synthetic::Scenario* scenario);
+
 namespace Detail
 {
 /// Test seam: @p broker in place of the installed helper's for every panel platform made after it, so a

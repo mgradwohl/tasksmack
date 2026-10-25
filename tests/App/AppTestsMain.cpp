@@ -3,6 +3,8 @@
 /// PathService and UserConfig read TASKSMACK_CONFIG_DIR once per process, on first use. Pointing it at
 /// a fresh temporary directory before any test runs means nothing these tests save (ShellLayer's
 /// onDetach() writes config.toml) can reach the user's own config. The directory is removed afterwards.
+/// A suite whose fixture derives from ScratchConfigDirTest (ScratchConfigDir.h) goes further: each of
+/// its tests gets a new, empty directory of its own, so none loads what an earlier one saved (#2932).
 /// Every test also fails on a warning or error it didn't expect (LogWarningGuard.h, #2718).
 
 #include "Core/ConfigDirOverride.h"

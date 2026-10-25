@@ -485,11 +485,13 @@ ctest --preset win-debug
 ctest runs each Google Test **suite** as one entry, in one process (#1871), not each case: on Windows,
 starting a process for each of the ~5,000 cases took most of the test time. `cmake/GTestSuites.cmake`
 registers the entries from the binaries' suite lists when they link. `ctest -R` matches suite names, and
-`-L gtest` / `-LE gtest` picks or skips all of them (the script tests have no `gtest` label):
+`-L gtest` / `-LE gtest` picks or skips all of them (the script tests have no `gtest` label), and
+`-L pwsh-script` the Windows tests that run under PowerShell 7:
 
 ```bash
 ctest --preset debug -R ProcessModelTest       # one suite (ApplicationTest runs as ApplicationTest/shard1of3 ...)
 ctest --preset debug -LE gtest                 # only the script tests (BenchScript, TidyCacheScript, ...)
+ctest --preset win-debug -L pwsh-script        # only the pwsh script tests (EtwCaptureScript, SetupDevScript, ...)
 ```
 
 To run one case, or a pattern of them, run the binary with `--gtest_filter`:
@@ -505,7 +507,9 @@ build\win-debug\tests\TaskSmackTests.exe --gtest_filter=ProcessModelTest.*Gpu*
   artifact, so each case is still listed.
 - **Isolation.** Cases in one suite share a process. A case must not depend on running alone, or leave
   state behind that breaks the next case (a static, an environment variable, a library left loaded).
-- **Timeouts.** An entry's 300 s `TIMEOUT` covers its whole suite.
+- **Timeouts.** An entry's 300 s `TIMEOUT` covers its whole suite. Reading a binary's suite list when it
+  links (`--gtest_list_tests`) has 120 s: a loaded CI runner linking three executables at once passed
+  the 30 s default (#2838).
 - **Options.** `tasksmack_gtest_add_suites()` takes `SHARDS <Suite>=<n>` to split a slow suite into `n`
   entries (via gtest's own sharding), `ISOLATE <Suite>` to run each case of a suite in its own process,
   as `gtest_discover_tests()` did, and `SUITE_PROPERTIES <Suite> <name> <value>` for one suite's entries
@@ -887,12 +891,12 @@ the PR merges under release gating without waiting for the tag.
 
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so eight test-only environment variables (#1559, #172, #2827,
-#2869), read once at startup, select a process, open a tab or a sub-tab, open the Help window, the About
-dialog or Settings, replay a timed script of such requests, or write a screenshot of the window and quit, by themselves. With
+Agents must not inject clicks or keys, so nine test-only environment variables (#1559, #172, #2827,
+#2869, #2923), read once at startup, select a process, open a tab or a sub-tab, open the Help window, the About
+dialog or Settings, replay a timed script of such requests, show the Render Metrics overlay and write its CSV, or write a screenshot of the window and quit, by themselves. With
 `TASKSMACK_SELECT_PID` or `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a
 snapshot, exactly as a click and the row menu's **Details** do, and Process Details opens. If it has not
-appeared after 20 snapshots, one warning is logged and nothing is selected. While any of the eight
+appeared after 20 snapshots, one warning is logged and nothing is selected. While any of the nine
 variables, or `TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since
 it would cover the capture. Unset, the variables do nothing.
 
@@ -905,7 +909,8 @@ it would cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_MACHINE_TAB` | The machine (hostname) tab's sub-tab to bring forward (#2869): `overview`, `cores` (CPU Cores), `gpu`, `npu` or `network` (Network and I/O). Case-insensitive; any other value logs one warning and is ignored. It picks the sub-tab only; the main tab stays `TASKSMACK_TAB`'s (or the default, the machine tab). The sub-tab is asked for until it shows, so a request made before the first sample (CPU Cores and Network and I/O exist only once it is in) still takes effect; one for a sub-tab this machine never draws (`npu` without an accelerator, `network` without network counters) is dropped with one warning after 120 frames drawn with a sample. `TASKSMACK_SCREENSHOT` does not wait for it: give `after` a few seconds, as the screenshot scripts do. |
 | `TASKSMACK_OPEN` | `help` (the Help window), `about` (the About dialog) or `settings` (the Settings dialog, as the title bar's gear and F2 open it; #2827), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |
-| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `machine=<overview|cores|gpu|npu|network>` (brings the machine tab forward with that sub-tab, as `TASKSMACK_TAB=machine` with `TASKSMACK_MACHINE_TAB` does, #2869); `open=<help|about|settings>` (the Help window, the About dialog or the Settings dialog, as `TASKSMACK_OPEN` names them); `close=dialog` (closes the Help window, the About dialog and the Settings dialog, the last as **Cancel** does, saving nothing); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
+| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `machine=<overview|cores|gpu|npu|network>` (brings the machine tab forward with that sub-tab, as `TASKSMACK_TAB=machine` with `TASKSMACK_MACHINE_TAB` does, #2869); `open=<help|about|settings>` (the Help window, the About dialog or the Settings dialog, as `TASKSMACK_OPEN` names them); `close=dialog` (closes the Help window, the About dialog and the Settings dialog, the last as **Cancel** does, saving nothing); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then); `metrics=<on|off|export>` (#2923: `on` and `off` show and hide the Render Metrics overlay as **Ctrl+Shift+M** does, recording from that frame; `export` writes the overlay's CSV, the bytes its **Copy CSV** button puts on the clipboard for the last completed frame, to `TASKSMACK_RENDER_METRICS`' file, or with that unset to `<stem>-metrics.csv` beside `TASKSMACK_SCREENSHOT`'s path, and with neither set logs one warning and is skipped; an `export` with the overlay off writes the header only, with a warning). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
+| `TASKSMACK_RENDER_METRICS` | A CSV file path (#2923). The Render Metrics overlay (**Ctrl+Shift+M**: per-chart vertices and CPU time, with ImGui's frame totals) is shown from the first frame, and at exit -- on the normal close path, where `config.toml` is saved -- the overlay's CSV for the last completed frame is written to the file: the same bytes its **Copy CSV** button puts on the clipboard (`timestamp_us,scenario,frame_id,publication_id,chart,vertices,cpu_us`, one row per chart drawn that frame). A relative path is taken from the working directory; the directory must exist, and an existing file is replaced. Logs `Render Metrics CSV written: <path> (N rows)`, or an error. With `TASKSMACK_SCREENSHOT`, one run leaves both the PNG and the CSV, the before/after artifact #843 asks for; a `TASKSMACK_DEMO` `metrics=export` step writes to the same file mid-run. The overlay's own cost is in the numbers (it draws and measures more), so compare runs that both have it on. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 | `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only the user's locale `LocaleSetup` builds and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
@@ -1444,7 +1449,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
-| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the same chart over the default window in a 480 px window (where its point budget follows the plot width, #843), the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
 | `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
 
@@ -1877,7 +1882,9 @@ TaskSmack as usual from a normal terminal (an elevated target skews what is meas
   the whole window. Capture each scenario separately, at the same window size and display, and
   name the CSV after it.
 - Leave the Render Metrics overlay off for the capture that counts: while it is open TaskSmack
-  draws and measures more. Turn it on only to compare its readout with PresentMon's.
+  draws and measures more. Turn it on only to compare its readout with PresentMon's. For that
+  comparison without input, `TASKSMACK_RENDER_METRICS=<file.csv>` shows the overlay from the first
+  frame and writes its CSV at exit (see "Visual validation without input", #2923).
 
 **Columns that matter** (all times in ms; the default 2.x CSV, one row per present):
 
@@ -2651,7 +2658,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
   - **Other jobs:** a blocking Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs, and IWYU (include analysis) on manual dispatch only.
   - **`CI Success`** is the gate job used for branch protection. When a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
@@ -2862,6 +2869,14 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   executables are Authenticode-signed; until then it is unsigned and has no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; not Authenticode-signed yet, and without `TaskSmackHelper.exe`)
+- Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
+  `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
+  `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
+  version, the SHA-256 of the CRT, STL and UCRT libraries the link consumed (`libcmt.lib`,
+  `libvcruntime.lib`, `libcpmt.lib`, `libucrt.lib` and their import-library counterparts), the
+  Windows SDK version, the runner image (`ImageOS`/`ImageVersion`), the compiler and the commit. Two
+  builds of one commit with equal `inputs` should give the same bytes; see [Release
+  Reproducibility](#release-reproducibility) for how a mismatch is read.
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
 
 The x64 names are the ones earlier releases used, so existing download links keep working; only the
@@ -2869,8 +2884,9 @@ ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/
 from the compiler's target). Each package's build, test, reproducibility check and validation runs
 natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
-`windows-packages-arm64`). `create-release` checks that `dist/` holds exactly these six packages
-before signing anything, so a missing or renamed package fails the release.
+`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`.
+`create-release` checks that `dist/` holds exactly these six packages and the two manifests before
+signing anything, so a missing or renamed file fails the release.
 
 ### Release Artifact Validation
 
@@ -2882,17 +2898,41 @@ still run, emulated, on the ARM64 runner. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
 `Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
-no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
+no X server needed). Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout; a
 signed x64 `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
 one), checks a signed `.zip`'s Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
 launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
-llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Beyond the process staying up
-for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
+llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Each launch
+gets its own `TASKSMACK_CONFIG_DIR` and quits by itself rather than being killed (#2720):
+`TASKSMACK_SCREENSHOT=<png>;after=5` writes one frame 5 seconds after startup and closes the window through
+the normal close request, so `ShellLayer::onDetach()` saves `config.toml`. The launch must exit 0, log no
+`[error]` or `[critical]` line, and leave a `config.toml` with its `[theme]` table, which nothing writes before
+the shutdown's save in a run with no input. Each binary is launched twice (#2726): from an empty config dir,
+then from a copy of the `config.toml` v0.8.0 saved (`tests/App/fixtures/config-v0.8.0.toml`). The second
+launch must save the file in today's format (`config_version`, which v0.8.0 didn't write) and keep the
+settings changed in v0.8.0's UI when the fixture was made (theme, font size, refresh rate, history, the
+privilege notice, and the User and Threads columns; see `tests/App/fixtures/README.md`).
+On Windows the runs must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
+TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dirs and `%TEMP%`, and the folder
+they ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
 asset layout. These are still smoke checks, not a functional test suite.
+
+`validate-linux-upgrade` checks the upgrade from v0.8.0 (#2726), x64 only since v0.8.0 published no
+arm64 `.deb`. It runs in an `ubuntu:26.04` container, because v0.8.0's `.deb` depends on `libsdl3-0`,
+which Ubuntu 24.04 doesn't have. It fetches `TaskSmack-0.8.0-Linux.deb` from the v0.8.0 release and
+checks its SHA-256 against the pinned one and the release's asset digest. Then it installs it with apt
+and runs v0.8.0 for 5 seconds from the fixture `config.toml`, in `$HOME/.config/tasksmack`, where both
+versions read it. It installs this run's `.deb` over it, which must exit 0 with no dpkg file conflict
+and upgrade `tasksmack` in place. Every file the new `.deb` ships must be installed as it ships it (docs
+and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
+over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
+itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
+the fixture's settings kept. Windows has no package to upgrade while the `.zip` is portable; an NSIS
+upgrade check waits on the installer (#2302).
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
@@ -3018,6 +3058,27 @@ true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workfl
 investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism
 (e.g. absolute build-path fragments a future dependency might embed in debug info).
+
+On Windows the build is deterministic but its inputs may not be: the runner image's serviced MSVC
+CRT and Windows SDK payload can change under an unchanged directory name (v0.9.0's arm64
+`TaskSmack.exe` differed between the dry run and the tag run because one image carried VS 18.10's
+libraries and the other 18.11's, both as `VC\Tools\MSVC\14.51.36231` and SDK `10.0.26100.0`; #2802).
+Each Windows build and rebuild therefore records a build-inputs manifest (see [Release
+Artifacts](#release-artifacts)), and `verify-reproducibility-windows`'s "Compare digests" diffs the
+two manifests' `inputs` with `.github/actions/windows-build-inputs/compare-build-inputs.ps1`: a
+differing `.zip` whose inputs also differ is reported as the runner image's CRT changing, and one
+whose inputs match as the build itself not being reproducible. The post-release check does the
+same for the dry run's and the published release's manifests of the same commit (both carry them):
+
+```powershell
+pwsh .github/actions/windows-build-inputs/compare-build-inputs.ps1 `
+    dry-run/TaskSmack-<version>-windows-arm64-build-inputs.json `
+    release/TaskSmack-<version>-windows-arm64-build-inputs.json   # exit 0: same inputs; 1: differ
+```
+
+Byte-identity across runner images would need the toolset pinned by content (a cached, hash-checked
+MSVC and SDK overlay, as `setup-windows-llvm` does for LLVM); the manifest is the record that makes
+that a deliberate follow-up rather than a guess.
 
 To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
