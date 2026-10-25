@@ -44,6 +44,7 @@
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(), tables and tab bars
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -205,20 +206,26 @@ bool clickAt(int frame, int at, ImVec2 pos, ImGuiMouseButton button = ImGuiMouse
     return frame > at + 3;
 }
 
-/// A left-button drag from @p from to @p to starting on frame @p at, in DRAG_STEPS moves. True once
-/// the release has gone in.
+/// The moves in a drag, and the frames dragFrom() takes: two with the pointer on the start, the press,
+/// the moves, and the release.
+constexpr int DRAG_STEPS = 10;
+constexpr int DRAG_FRAMES = 4 + DRAG_STEPS;
+
+/// A left-button drag from @p from to @p to starting on frame @p at, in DRAG_STEPS moves. The pointer
+/// is put on @p from again on each frame up to the press and on @p to with the release, so an OS event
+/// queued between two injected positions (the mouse leaving the window, a warp's late motion) can't
+/// move the press or the release off target (#2906). True once the release has gone in.
 bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
 {
-    constexpr int DRAG_STEPS = 10;
     ImGuiIO& io = ImGui::GetIO();
     const int step = frame - at;
-    if (step == 0)
+    if (step >= 0 && step <= 2)
     {
         movePointer(from.x, from.y);
-    }
-    else if (step == 2)
-    {
-        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        if (step == 2)
+        {
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        }
     }
     else if (step > 2 && step <= 2 + DRAG_STEPS)
     {
@@ -227,6 +234,7 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
     }
     else if (step == 3 + DRAG_STEPS)
     {
+        movePointer(to.x, to.y);
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
     }
     return step > 3 + DRAG_STEPS;
@@ -235,6 +243,133 @@ bool dragFrom(int frame, int at, ImVec2 from, ImVec2 to)
 /// Frames between retries of an input whose effect hasn't shown yet: a press can land on a frame that
 /// doesn't take it (a window still taking the focus, a popup still opening).
 constexpr int RETRY_FRAMES = 10;
+
+/// @p key pressed every RETRY_FRAMES while @p wanted, and released the frame after each press whether
+/// or not it is still wanted: a press that has done its job (Escape closing a menu) mustn't stay held
+/// into the next input. ImGui drops a key event that changes nothing, so a release of an up key is none.
+void tapKeyWhile(int frame, bool wanted, ImGuiKey key)
+{
+    const int cycle = frame % RETRY_FRAMES;
+    if (cycle == 0 && wanted)
+    {
+        ImGui::GetIO().AddKeyEvent(key, true);
+    }
+    else if (cycle == 1)
+    {
+        ImGui::GetIO().AddKeyEvent(key, false);
+    }
+}
+
+/// Every key the scenario presses.
+constexpr std::array SCENARIO_KEYS{
+    ImGuiKey_Escape,
+    ImGuiKey_F1,
+    ImGuiKey_F2,
+    ImGuiKey_F5,
+    ImGuiKey_Home,
+    ImGuiKey_DownArrow,
+    ImGuiKey_LeftArrow,
+};
+
+/// Lets go of every key and button the scenario presses: a step can be done on the frame its press
+/// takes, before the release has gone in, and the next step mustn't start with it held. ImGui drops
+/// the events for keys and buttons that are already up.
+void releaseHeldInput()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    for (const ImGuiKey key : SCENARIO_KEYS)
+    {
+        io.AddKeyEvent(key, false);
+    }
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+}
+
+/// A drag tried again until what it does shows (#2906). One drag can land while the table is still
+/// laying out after the step before (a popup closing, a reorder taking effect a frame late, a slow
+/// runner's first frames) and do nothing, so each attempt reads where to drag when it starts, and one
+/// released without effect is followed, RETRY_FRAMES later, by another from the geometry of that frame.
+class RetriedDrag
+{
+  public:
+    /// Whether the drag holds no button on @p frame: no attempt yet, its press not yet in, or its
+    /// release in. A step checks its effect only then, so it is never done with the button held.
+    [[nodiscard]] bool buttonUp(int frame) const noexcept
+    {
+        const int step = frame - m_Start;
+        return m_Start < 0 || step <= 2 || step > 3 + DRAG_STEPS;
+    }
+
+    /// Runs the drag on @p frame. A new attempt starts once the last has had RETRY_FRAMES since its
+    /// release, from and to where @p aim says; @p aim returns false while no drag can start yet.
+    template<typename Aim> void tick(int frame, const Aim& aim)
+    {
+        if (m_Start < 0 || frame >= m_Start + DRAG_FRAMES + RETRY_FRAMES)
+        {
+            if (!aim(m_From, m_To))
+            {
+                m_Start = -1;
+                return;
+            }
+            m_Start = frame;
+        }
+        static_cast<void>(dragFrom(frame, m_Start, m_From, m_To));
+    }
+
+  private:
+    ImVec2 m_From;
+    ImVec2 m_To;
+    int m_Start = -1; ///< The current attempt's first frame, or -1 before the first
+};
+
+/// The Processes table's column for @p column.
+[[nodiscard]] const ImGuiTableColumn& tableColumn(const ImGuiTable& table, App::ProcessColumn column)
+{
+    return table.Columns[static_cast<int>(App::toIndex(column))];
+}
+
+/// The middle of the Processes table's header row.
+[[nodiscard]] float headerY(const ImGuiTable& table)
+{
+    return table.OuterRect.Min.y + ImGui::GetStyle().CellPadding.y + (ImGui::GetTextLineHeight() * 0.5F);
+}
+
+/// What the pointer, ImGui and the Processes table's PID and Name columns looked like, for a step that
+/// wasn't done in time: a failure on a runner says what the step found there.
+[[nodiscard]] std::string describeUiState()
+{
+    const ImGuiContext& g = *GImGui;
+    const ImGuiWindow* popup = topPopup();
+    const std::string text = std::format("display {:.0f}x{:.0f}, pointer ({:.0f}, {:.0f}), left {} right {}, hovered window {}, hovered "
+                                         "id {:08x}, active id {:08x}, popup {}",
+                                         g.IO.DisplaySize.x,
+                                         g.IO.DisplaySize.y,
+                                         g.IO.MousePos.x,
+                                         g.IO.MousePos.y,
+                                         g.IO.MouseDown[ImGuiMouseButton_Left] ? "down" : "up",
+                                         g.IO.MouseDown[ImGuiMouseButton_Right] ? "down" : "up",
+                                         g.HoveredWindow != nullptr ? g.HoveredWindow->Name : "none",
+                                         g.HoveredId,
+                                         g.ActiveId,
+                                         popup != nullptr ? popup->Name : "none");
+    const ImGuiTable* table = processTable();
+    if (table == nullptr)
+    {
+        return text + "; no Processes table";
+    }
+    const ImGuiTableColumn& pid = tableColumn(*table, App::ProcessColumn::PID);
+    const ImGuiTableColumn& name = tableColumn(*table, App::ProcessColumn::Name);
+    return text + std::format("; table x {:.0f}..{:.0f}, PID #{} x {:.0f}..{:.0f} width {:.0f}, Name #{} x {:.0f}..{:.0f}",
+                              table->InnerClipRect.Min.x,
+                              table->InnerClipRect.Max.x,
+                              pid.DisplayOrder,
+                              pid.MinX,
+                              pid.MaxX,
+                              pid.WidthGiven,
+                              name.DisplayOrder,
+                              name.MinX,
+                              name.MaxX);
+}
 
 /// What a step is handed each frame it runs.
 struct StepContext
@@ -258,6 +393,7 @@ struct ScenarioOutcome
 {
     std::vector<std::string> passed;
     std::optional<std::string> failed; ///< The step that wasn't done in time
+    std::string failedState;           ///< What it found on its last frame (describeUiState())
     std::vector<std::string> captureErrors;
     int captured = 0;
     bool timedOut = false;
@@ -313,11 +449,13 @@ class ScenarioDriverLayer : public Core::Layer
         {
             m_Outcome.passed.push_back(step.name);
             m_SettleLeft = SETTLE_AFTER_STEP;
+            releaseHeldInput(); // gone in before the next step starts
             return;
         }
         if (m_StepFrame > step.maxFrames)
         {
             m_Outcome.failed = step.name;
+            m_Outcome.failedState = describeUiState();
             finish();
         }
     }
@@ -412,29 +550,55 @@ std::vector<Step> signOffSteps()
                      }});
 
     steps.push_back({.name = "processes-tree-collapsed",
-                     .tick = [before = std::size_t{0}](StepContext& step) mutable
+                     .tick =
+                         [before = std::optional<std::size_t>{}, start = -1, downs = 0](StepContext& step) mutable
                      {
-                         const App::ProcessesPanel& panel = step.shell->processesPanelForTesting();
-                         const ImGuiTable* table = processTable();
-                         if (step.frame == 0)
+                         constexpr int KEY_GAP = 4;   // frames from one key's press to the next's
+                         constexpr int MAX_DOWNS = 8; // rows tried below the first before starting over
+                         const std::size_t collapsed = step.shell->processesPanelForTesting().collapsedBranchCountForTesting();
+                         if (!before.has_value())
                          {
-                             before = panel.collapsedBranchCountForTesting();
+                             before = collapsed;
                          }
-                         else if (panel.collapsedBranchCountForTesting() > before)
+                         else if (collapsed > *before)
                          {
                              return true;
                          }
-                         // Hovered, so the table takes the navigation keys; Home selects the first row, a root
-                         // with children, and Left collapses it. Again every RETRY_FRAMES until it has.
-                         const int cycle = step.frame % RETRY_FRAMES;
-                         if (cycle == 0 && table != nullptr)
+                         // Each attempt: Home, Down `downs` times, then Left twice. Left collapses an expanded
+                         // parent, or on a child selects its parent, which the second Left collapses. A row
+                         // that takes neither (a root with no children, or one an earlier run left collapsed)
+                         // has the next attempt start a row further down (#2906).
+                         if (start < 0 || step.frame >= start + 2 + (KEY_GAP * (downs + 3)) + RETRY_FRAMES)
+                         {
+                             if (start >= 0)
+                             {
+                                 downs = (downs + 1) % MAX_DOWNS;
+                             }
+                             start = step.frame;
+                         }
+                         // Hovered on every frame of it, so the table takes the navigation keys even if an
+                         // OS event has moved the pointer since.
+                         if (const ImGuiTable* table = processTable(); table != nullptr)
                          {
                              movePointer(table->OuterRect.GetCenter().x, table->OuterRect.GetCenter().y);
                          }
-                         static_cast<void>(tapKey(cycle, 2, ImGuiKey_Home));
-                         static_cast<void>(tapKey(cycle, 6, ImGuiKey_LeftArrow));
+                         const int at = step.frame - start - 2;
+                         if (const int key = at / KEY_GAP; at >= 0 && key < downs + 3)
+                         {
+                             ImGuiKey pressed = ImGuiKey_LeftArrow;
+                             if (key == 0)
+                             {
+                                 pressed = ImGuiKey_Home;
+                             }
+                             else if (key <= downs)
+                             {
+                                 pressed = ImGuiKey_DownArrow;
+                             }
+                             static_cast<void>(tapKey(at % KEY_GAP, 0, pressed));
+                         }
                          return false;
-                     }});
+                     },
+                     .maxFrames = 600});
 
     steps.push_back({.name = "filter-typed",
                      .tick =
@@ -498,57 +662,89 @@ std::vector<Step> signOffSteps()
                      .maxFrames = 600});
 
     steps.push_back({.name = "column-reordered",
-                     .tick = [pidFirst = false, dragStart = -1, from = ImVec2{}, to = ImVec2{}](StepContext& step) mutable
+                     .tick =
+                         [pidFirst = std::optional<bool>{}, drag = RetriedDrag{}](StepContext& step) mutable
                      {
+                         // Escape until the row menu has closed, and always released the frame after.
+                         const bool menuOpen = topPopup() != nullptr;
+                         tapKeyWhile(step.frame, menuOpen, ImGuiKey_Escape);
                          const ImGuiTable* table = processTable();
-                         if (dragStart < 0)
+                         if (table != nullptr && !menuOpen)
                          {
-                             // Escape until the row menu has closed (again every 10 frames, in case a press was
-                             // taken by something else), then the drag starts.
-                             if (topPopup() != nullptr || table == nullptr)
+                             const bool pidBeforeName = tableColumn(*table, App::ProcessColumn::PID).DisplayOrder <
+                                                        tableColumn(*table, App::ProcessColumn::Name).DisplayOrder;
+                             if (!pidFirst.has_value())
                              {
-                                 static_cast<void>(tapKey(step.frame % 10, 0, ImGuiKey_Escape));
-                                 return false;
+                                 pidFirst = pidBeforeName;
                              }
-                             const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
-                             const ImGuiTableColumn& name = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::Name))];
-                             // The later of PID and Name has its header dragged onto the earlier one's.
-                             pidFirst = pid.DisplayOrder < name.DisplayOrder;
-                             const ImGuiTableColumn& later = pidFirst ? name : pid;
-                             const ImGuiTableColumn& earlier = pidFirst ? pid : name;
-                             const float y = table->OuterRect.Min.y + ImGui::GetStyle().CellPadding.y + (ImGui::GetTextLineHeight() * 0.5F);
-                             from = ImVec2((later.MinX + later.MaxX) * 0.5F, y);
-                             to = ImVec2(earlier.MinX + 2.0F, y);
-                             dragStart = step.frame + 2; // the key's release lands first
+                             else if (drag.buttonUp(step.frame) && pidBeforeName != *pidFirst)
+                             {
+                                 return true;
+                             }
                          }
-                         if (table == nullptr || step.frame < dragStart || !dragFrom(step.frame, dragStart, from, to))
-                         {
-                             return false;
-                         }
-                         const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
-                         const ImGuiTableColumn& name = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::Name))];
-                         return (pid.DisplayOrder < name.DisplayOrder) != pidFirst;
-                     }});
+                         // The later of PID and Name has its header dragged onto the earlier one's, both where
+                         // they are as the attempt starts: within the part of each that is in view.
+                         drag.tick(step.frame,
+                                   [&](ImVec2& from, ImVec2& to)
+                                   {
+                                       if (table == nullptr || menuOpen || !pidFirst.has_value())
+                                       {
+                                           return false;
+                                       }
+                                       const ImGuiTableColumn& pid = tableColumn(*table, App::ProcessColumn::PID);
+                                       const ImGuiTableColumn& name = tableColumn(*table, App::ProcessColumn::Name);
+                                       const ImGuiTableColumn& later = *pidFirst ? name : pid;
+                                       const ImGuiTableColumn& earlier = *pidFirst ? pid : name;
+                                       const float y = headerY(*table);
+                                       from = ImVec2((later.ClipRect.Min.x + later.ClipRect.Max.x) * 0.5F, y);
+                                       to = ImVec2(earlier.ClipRect.Min.x + 2.0F, y);
+                                       return true;
+                                   });
+                         return false;
+                     },
+                     .maxFrames = 600});
 
     steps.push_back({.name = "column-resized",
-                     .tick = [widthBefore = 0.0F, border = 0.0F, y = 0.0F](StepContext& step) mutable
+                     .tick =
+                         [widthBefore = std::optional<float>{}, grow = true, drag = RetriedDrag{}](StepContext& step) mutable
                      {
+                         constexpr float RESIZE_BY = 40.0F;
+                         // Wider than this, PID is made narrower instead: a run on the layout an earlier one
+                         // saved (--gtest_repeat) would otherwise widen it each time, until its right border
+                         // is out of view.
+                         constexpr float WIDEST_TO_GROW = 200.0F;
                          const ImGuiTable* table = processTable();
-                         if (table == nullptr)
+                         if (table != nullptr)
                          {
-                             return false;
+                             const ImGuiTableColumn& pid = tableColumn(*table, App::ProcessColumn::PID);
+                             if (!widthBefore.has_value())
+                             {
+                                 widthBefore = pid.WidthGiven;
+                                 grow = pid.WidthGiven < WIDEST_TO_GROW && pid.MaxX + (RESIZE_BY * 2.0F) < table->InnerClipRect.Max.x;
+                             }
+                             const float change = pid.WidthGiven - *widthBefore;
+                             if (drag.buttonUp(step.frame) && (grow ? change > RESIZE_BY * 0.5F : change < -RESIZE_BY * 0.5F))
+                             {
+                                 return true;
+                             }
                          }
-                         const ImGuiTableColumn& pid = table->Columns[static_cast<int>(App::toIndex(App::ProcessColumn::PID))];
-                         if (step.frame == 0)
-                         {
-                             widthBefore = pid.WidthGiven;
-                             border = pid.MaxX;
-                             y = table->OuterRect.Min.y + ImGui::GetStyle().CellPadding.y + (ImGui::GetTextLineHeight() * 0.5F);
-                         }
-                         // PID's right border dragged 40 px right.
-                         const bool released = dragFrom(step.frame, 0, ImVec2(border - 1.0F, y), ImVec2(border + 39.0F, y));
-                         return released && pid.WidthGiven > widthBefore + 20.0F;
-                     }});
+                         // PID's right border, where it is as the attempt starts, dragged RESIZE_BY px.
+                         drag.tick(step.frame,
+                                   [&](ImVec2& from, ImVec2& to)
+                                   {
+                                       if (table == nullptr)
+                                       {
+                                           return false;
+                                       }
+                                       const float border = tableColumn(*table, App::ProcessColumn::PID).MaxX;
+                                       const float y = headerY(*table);
+                                       from = ImVec2(border - 1.0F, y);
+                                       to = ImVec2(border - 1.0F + (grow ? RESIZE_BY : -RESIZE_BY), y);
+                                       return true;
+                                   });
+                         return false;
+                     },
+                     .maxFrames = 600});
 
     steps.push_back({.name = "details-overview",
                      .tick = [](StepContext& step)
@@ -603,10 +799,11 @@ std::vector<Step> signOffSteps()
     steps.push_back({.name = "about",
                      .tick = [](StepContext& step)
                      {
-                         if (windowShown(App::HelpWindow::WINDOW_ID))
+                         // Escape closes Help while it has the focus; pressed again until it has.
+                         const bool helpShown = windowShown(App::HelpWindow::WINDOW_ID);
+                         tapKeyWhile(step.frame, helpShown, ImGuiKey_Escape);
+                         if (helpShown)
                          {
-                             // Escape closes Help while it has the focus; pressed again until it has.
-                             static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_Escape));
                              return false;
                          }
                          if (ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID))
@@ -642,19 +839,16 @@ std::vector<Step> signOffSteps()
                          switch (phase)
                          {
                          case 0:
+                         {
+                             const bool aboutOpen = ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID);
+                             tapKeyWhile(step.frame, !settingsOpen && aboutOpen, ImGuiKey_Escape);
+                             tapKeyWhile(step.frame, !settingsOpen && !aboutOpen, ImGuiKey_F2);
                              if (settingsOpen)
                              {
                                  phase = 1;
                              }
-                             else if (ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID))
-                             {
-                                 static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_Escape));
-                             }
-                             else
-                             {
-                                 static_cast<void>(tapKey(step.frame % RETRY_FRAMES, 0, ImGuiKey_F2));
-                             }
                              return false;
+                         }
                          case 1:
                              if (comboOpen)
                              {
@@ -740,7 +934,8 @@ TEST(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
 
     EXPECT_FALSE(outcome.timedOut);
     EXPECT_FALSE(outcome.failed.has_value()) << "step not done in time: " << outcome.failed.value_or("")
-                                             << " (after: " << (outcome.passed.empty() ? "none" : outcome.passed.back()) << ")";
+                                             << " (after: " << (outcome.passed.empty() ? "none" : outcome.passed.back())
+                                             << "): " << outcome.failedState;
     EXPECT_EQ(outcome.passed.size(), stepCount);
     for (const std::string& error : outcome.captureErrors)
     {
