@@ -18,7 +18,9 @@ set(_TS_NOTICE_LICENSES
     "implot|MIT")
 
 function(ts_write_third_party_notices output)
-    file(READ "${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake" _deps)
+    # Named once: the standalone toml++ fallback below resolves the patch path relative to it (#2960).
+    set(_deps_file "${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake")
+    file(READ "${_deps_file}" _deps)
     string(REGEX MATCHALL
            "FetchContent_Declare\\(\n +[A-Za-z0-9_]+\n +GIT_REPOSITORY [^\n]+\n +GIT_TAG [0-9a-f]+[^\n]*"
            _declares "${_deps}")
