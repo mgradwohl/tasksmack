@@ -50,7 +50,9 @@ jobs:
 
   # windows-11-arm: native ARM64 LLVM (the pinned woa64 installer, setup-windows-llvm) building
   # plain ARM64, not ARM64EC, and mmozeiko/build-mesa's ARM64 llvmpipe for the display suites
-  # (setup-mesa-llvmpipe), test-only.
+  # (setup-mesa-llvmpipe), test-only. The PowerShell script tests (`pwsh-script` label) get a
+  # second attempt on this runner only, where pwsh itself crashes now and then (#2832): see
+  # "Test (Windows ARM64)" in reusable-build-test.yml.
   build-windows-arm64:
     if: >-
       github.event_name != 'pull_request' ||
