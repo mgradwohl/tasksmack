@@ -295,9 +295,9 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
-    // Called from the mouse-move hot path (updateResizeCursor(), hitTestCallback()) - test
-    // each bound directly rather than building an array of ButtonBounds copies per call.
-    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointOnTitleBarButton(x, y, m_ButtonLayout);
+    // The same decision the hit-test callback makes over the same geometry: the buttons and the
+    // icon, less the top-right resize corner the Close button's slot reaches into (#2882).
+    return computeIsPointInControlArea(x, y, hitTestInput());
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
@@ -903,6 +903,7 @@ void TitleBarLayer::renderTitleBar()
                                                              .windowHeight = static_cast<float>(windowHeight),
                                                              .barHeight = titleBarHeight,
                                                              .maximized = window.isMaximized(),
+                                                             .resizeBorderPx = resizeBorderThickness(),
                                                              .icon = &m_IconTexture,
                                                              .openSystemMenu = std::exchange(m_ShowSystemMenu, false)});
     // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the

@@ -1721,6 +1721,60 @@ TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
     EXPECT_TRUE(framesShowingKey.back()) << "the first frame after the wake must reflect the key";
 }
 
+// #843: an input event restarts the input redraw grace; a drain without one leaves the deadline alone.
+TEST(FramePacingTest, InputRestartsTheInputGraceAndOtherDrainsLeaveIt)
+{
+    using Core::FramePacing::computeInputRedrawUntil;
+    constexpr double GRACE = 0.2;
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.0, 1, 0.0, GRACE), 10.2);
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.0, 3, 0.0, GRACE), 10.2) << "several events in one drain: one deadline";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.05, 0, 10.2, GRACE), 10.2) << "no input: the running grace stands";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.15, 1, 10.2, GRACE), 10.35) << "more input extends it from now";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(30.0, 0, 10.2, GRACE), 10.2) << "an expired deadline stays expired";
+}
+
+// #843: the loop's pacing decisions in order, over the frames after one wheel event. The frame the
+// event wakes is paced as input (#1153) as before; the frames that follow, in which ImGui finishes
+// reacting (a popup drawn the frame after it opens, a tab's content the frame after the click), now
+// stay at the input rate through the grace instead of dropping to the idle wait, and the idle wait
+// resumes once it ends. A hidden window takes the idle path throughout (#1125).
+TEST(FramePacingTest, InputKeepsTheFullFrameRateThroughItsGraceThenIdles)
+{
+    constexpr double GRACE = 0.2;
+    constexpr double IDLE_FPS = 20.0;
+    constexpr double MAX_FPS = 60.0;
+    constexpr double NO_MOTION = 0.0; // nothing on screen asked for animation frames
+    double inputRedrawUntil = 0.0;
+
+    // One Application::run() iteration's pacing: the frame-rate cap for the regular frame, 0 = idle wait.
+    const auto paceFrame = [&](double nowSeconds, std::uint32_t inputEvents, bool hadEvents, bool isHidden)
+    {
+        inputRedrawUntil = Core::FramePacing::computeInputRedrawUntil(nowSeconds, inputEvents, inputRedrawUntil, GRACE);
+        const bool inputGraceActive = Core::FramePacing::isWithinInteractionGrace(nowSeconds, inputRedrawUntil);
+        const double animationFps = Core::FramePacing::computeAnimationRate(NO_MOTION, IDLE_FPS, MAX_FPS);
+        return Core::FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FPS);
+    };
+
+    EXPECT_DOUBLE_EQ(paceFrame(1.0, 0, false, false), 0.0) << "idle before any input";
+    EXPECT_DOUBLE_EQ(paceFrame(1.05, 1, true, false), MAX_FPS) << "the wheel event's own frame";
+    EXPECT_DOUBLE_EQ(paceFrame(1.07, 0, false, false), MAX_FPS) << "the follow-up frame: used to be the 50 ms idle wait";
+    EXPECT_DOUBLE_EQ(paceFrame(1.20, 0, false, false), MAX_FPS) << "still inside the grace";
+    EXPECT_DOUBLE_EQ(paceFrame(1.25, 0, false, false), 0.0) << "the grace ended: back to the idle wait";
+
+    EXPECT_DOUBLE_EQ(paceFrame(2.0, 1, true, true), 0.0) << "hidden: no paced frames even for input (#1125)";
+    EXPECT_DOUBLE_EQ(paceFrame(2.05, 0, false, true), 0.0) << "hidden: nor through the grace";
+    EXPECT_DOUBLE_EQ(paceFrame(2.10, 0, false, false), MAX_FPS) << "shown again inside the grace: the input frames resume";
+}
+
+// #843: the grace paces input frames; it is not a move/resize interaction, so it never toggles vsync.
+TEST(FramePacingTest, InputGraceIsNotAMoveResizeInteraction)
+{
+    // Input alone: no resize this drain, no resize grace, no resize event -> not interacting, whatever
+    // the input grace says, so computeVsyncTransition() sees no interaction start.
+    EXPECT_FALSE(Core::FramePacing::computeIsInteracting(false, false, 0));
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(false, false, true, false), Core::FramePacing::VsyncTransition::NoChange);
+}
+
 // #1450: waitForIdleEvent() polls once after a wait that times out, and only
 // then.
 TEST(FramePacingTest, IdleWaitPollsOnceAfterATimeout)
@@ -1993,6 +2047,7 @@ TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollin
 {
     Core::ResizePerfTraceStats stats;
     stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.inputEvents += 2;
     stats.recordFrame(true, 1.0, 2.0, 0.5, 3.0);
 
     stats.resetIntervalCounters();
@@ -2000,6 +2055,7 @@ TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollin
     EXPECT_EQ(stats.eventBatches, 0U);
     EXPECT_EQ(stats.frames, 0U);
     EXPECT_EQ(stats.resizeFrames, 0U);
+    EXPECT_EQ(stats.inputEvents, 0U) << "inputEvents is a per-interval count (#843)";
     EXPECT_DOUBLE_EQ(stats.drainMs, 0.0);
     EXPECT_DOUBLE_EQ(stats.updateMs, 0.0);
     EXPECT_DOUBLE_EQ(stats.maxDrainMs, 0.0);

@@ -63,6 +63,9 @@ inline constexpr int MANY_CORE_GRID_COLUMNS = 8;
 
 inline constexpr float DISPLAY_WIDTH = 1920.0F;
 inline constexpr float DISPLAY_HEIGHT = 1080.0F;
+/// The window the narrow stacked scene draws in: a Process Details pane or a small window, where the
+/// stacked CPU chart's plot is a few hundred pixels wide and its point budget follows the width (#843).
+inline constexpr float NARROW_DISPLAY_WIDTH = 480.0F;
 inline constexpr float CHART_HEIGHT = 180.0F; // HISTORY_PLOT_HEIGHT_DEFAULT
 inline constexpr float CORE_CHART_HEIGHT = 90.0F;
 
@@ -73,14 +76,19 @@ inline constexpr int WARMUP_FRAMES = 3;
 enum class Scene : std::uint8_t
 {
     CpuStacked,         ///< Overview CPU: User/System/IOWait bands, their edges and the Total line, full history
+    CpuStackedNarrow,   ///< Overview CPU, default window, in a NARROW_DISPLAY_WIDTH window: its point budget follows the width (#843)
     PerCoreSparklines,  ///< CPU Cores grid: CORE_COUNT small filled charts, default window
     ManyCoreSparklines, ///< CPU Cores grid on a many-core machine: MANY_CORE_COUNT narrow filled charts, default window
     Memory,             ///< Memory: Used (filled), Cached and Swap (markers), and the peak line, default window
     LongSeriesMinMax,   ///< One filled line over full history, min/max-reduced afresh every frame (no cache)
 };
 
-inline constexpr std::array ALL_SCENES{
-    Scene::CpuStacked, Scene::PerCoreSparklines, Scene::ManyCoreSparklines, Scene::Memory, Scene::LongSeriesMinMax};
+inline constexpr std::array ALL_SCENES{Scene::CpuStacked,
+                                       Scene::CpuStackedNarrow,
+                                       Scene::PerCoreSparklines,
+                                       Scene::ManyCoreSparklines,
+                                       Scene::Memory,
+                                       Scene::LongSeriesMinMax};
 
 [[nodiscard]] constexpr const char* sceneName(Scene scene) noexcept
 {
@@ -88,6 +96,8 @@ inline constexpr std::array ALL_SCENES{
     {
     case Scene::CpuStacked:
         return "CpuStacked";
+    case Scene::CpuStackedNarrow:
+        return "CpuStackedNarrow";
     case Scene::PerCoreSparklines:
         return "PerCoreSparklines";
     case Scene::ManyCoreSparklines:
@@ -261,16 +271,22 @@ bar(std::string_view label, double percent, const ImVec4& color, ImPlotMarker ma
 /// SystemMetricsPanel's Overview CPU chart: User, System and I/O Wait bands reduced together and
 /// cached per data generation, an edge along each band, the Total line, and the four now bars with
 /// their value strip.
-inline void drawCpuStacked(const SceneData& data, SceneState& state)
+///
+/// Draws the newest @p samples of the history (all of it when there are fewer), on an axis spanning
+/// just those, as the app's history setting does.
+inline void drawCpuStacked(const SceneData& data, SceneState& state, std::size_t samples)
 {
     using namespace UI::Widgets;
     const auto& scheme = UI::Theme::get().scheme();
     const double nowSeconds = historyFrameNowSeconds();
-    const std::span<const double> time(data.fullTime);
-    const std::span<const float> user(data.cpuUser);
-    const std::span<const float> system(data.cpuSystem);
-    const std::span<const float> iowait(data.cpuIowait);
-    const double xMin = -static_cast<double>(FULL_HISTORY_SAMPLES) * SAMPLE_INTERVAL_SECONDS;
+    const std::size_t count = std::min(samples, data.fullTime.size());
+    const std::span<const double> time = std::span(data.fullTime).last(count);
+    const std::span<const float> user = std::span(data.cpuUser).last(count);
+    const std::span<const float> system = std::span(data.cpuSystem).last(count);
+    const std::span<const float> iowait = std::span(data.cpuIowait).last(count);
+    const std::span<const float> idle = std::span(data.cpuIdle).last(count);
+    const std::span<const float> total = std::span(data.cpuTotal).last(count);
+    const double xMin = -static_cast<double>(count) * SAMPLE_INTERVAL_SECONDS;
 
     const auto cpuPlot = [&]
     {
@@ -280,10 +296,12 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state)
         {
             return;
         }
-        const std::span<const ReducedPoint> points = state.cpuStackReduction.points(
-            {.generation = state.dataGeneration, .dataId = 0, .count = time.size(), .maxOut = LINE_PLOT_MAX_POINTS_DENSE},
-            [&](std::vector<ReducedPoint>& out)
-            { reduceAlignedPoints<float>(time, {user, system, iowait}, LINE_PLOT_MAX_POINTS_DENSE, nowSeconds, out); });
+        // The stack's budget follows the plot's width, as the panel's does (#843).
+        const int pointBudget = currentPlotPointBudget();
+        const std::span<const ReducedPoint> points =
+            state.cpuStackReduction.points({.generation = state.dataGeneration, .dataId = 0, .count = time.size(), .maxOut = pointBudget},
+                                           [&](std::vector<ReducedPoint>& out)
+                                           { reduceAlignedPoints<float>(time, {user, system, iowait}, pointBudget, nowSeconds, out); });
 
         auto& stack = state.cpuStack;
         buildUserSystemStack<float>(points, time, user, system, stack);
@@ -292,8 +310,8 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state)
         for (std::size_t k = 0; k < points.size(); ++k)
         {
             const auto i = static_cast<std::size_t>(points[k].index);
-            state.cpuIowaitTop[k] = 100.0 - static_cast<double>(data.cpuIdle[i]);
-            state.cpuBusyTop[k] = state.cpuIowaitTop[k] - static_cast<double>(data.cpuIowait[i]);
+            state.cpuIowaitTop[k] = 100.0 - static_cast<double>(idle[i]);
+            state.cpuBusyTop[k] = state.cpuIowaitTop[k] - static_cast<double>(iowait[i]);
         }
         holdLastValuesToNow(
             stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop}, maxHoldSecondsForAxis(time));
@@ -314,9 +332,9 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state)
                        scheme.cpuIowait,
                        seriesStyle(SeriesRole::Secondary, 2));
         plotLineWithFill(CPU_TOTAL_LABEL,
-                         data.fullTime.data(),
-                         data.cpuTotal.data(),
-                         UI::Format::checkedCount(data.cpuTotal.size()),
+                         time.data(),
+                         total.data(),
+                         UI::Format::checkedCount(total.size()),
                          scheme.chartCpu,
                          scheme.chartCpuFill,
                          PRIMARY_SERIES_WEIGHT,
@@ -447,12 +465,18 @@ inline FrameGeometry renderFrame(Scene scene, const SceneData& data, SceneState&
 {
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    // The window is the display, except for the narrow scene, which draws its chart in a window a few
+    // hundred pixels wide so the chart's point budget (plotPointBudget()) is the narrow one.
+    const float windowWidth = (scene == Scene::CpuStackedNarrow) ? NARROW_DISPLAY_WIDTH : DISPLAY_WIDTH;
+    ImGui::SetNextWindowSize(ImVec2(windowWidth, DISPLAY_HEIGHT));
     ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     switch (scene)
     {
     case Scene::CpuStacked:
-        Detail::drawCpuStacked(data, state);
+        Detail::drawCpuStacked(data, state, FULL_HISTORY_SAMPLES);
+        break;
+    case Scene::CpuStackedNarrow:
+        Detail::drawCpuStacked(data, state, DEFAULT_WINDOW_SAMPLES);
         break;
     case Scene::PerCoreSparklines:
         Detail::drawPerCoreSparklines(data, state, CORE_COUNT, CORE_GRID_COLUMNS);

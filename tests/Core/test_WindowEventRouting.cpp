@@ -9,6 +9,9 @@
 #include <SDL3/SDL_events.h>
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstdint>
+
 namespace Core::WindowEventRouting
 {
 namespace
@@ -83,6 +86,38 @@ TEST(WindowEventRoutingTest, OtherEventsNeedNoRouting)
     EXPECT_EQ(classify(SDL_EVENT_MOUSE_MOTION), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_FOCUS_GAINED), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_HIDDEN), Action::None);
+}
+
+// #843: wheel, button, key and text events start the input redraw grace that keeps the frames after
+// them at the full rate. They need no routing of their own: the layers' onSDLEvent() handles them.
+TEST(WindowEventRoutingTest, InputEventsAreClassifiedAsInput)
+{
+    constexpr std::array<std::uint32_t, 7> INPUT_TYPES{SDL_EVENT_MOUSE_WHEEL,
+                                                       SDL_EVENT_MOUSE_BUTTON_DOWN,
+                                                       SDL_EVENT_MOUSE_BUTTON_UP,
+                                                       SDL_EVENT_KEY_DOWN,
+                                                       SDL_EVENT_KEY_UP,
+                                                       SDL_EVENT_TEXT_INPUT,
+                                                       SDL_EVENT_TEXT_EDITING};
+    for (const std::uint32_t type : INPUT_TYPES)
+    {
+        SCOPED_TRACE(type);
+        EXPECT_TRUE(isInputEvent(type));
+        EXPECT_EQ(classify(type), Action::None);
+    }
+}
+
+// Motion wakes the loop for a frame of its own but changes nothing once the pointer stops; window,
+// display and user events are not input at all.
+TEST(WindowEventRoutingTest, MotionWindowAndUserEventsAreNotInput)
+{
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_MOUSE_MOTION));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_WINDOW_EXPOSED));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_WINDOW_RESIZED));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_WINDOW_FOCUS_GAINED));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_WINDOW_MOUSE_ENTER));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_USER));
+    EXPECT_FALSE(isInputEvent(SDL_EVENT_QUIT));
 }
 
 TEST(WindowEventRoutingTest, ExposeAtTheSameSizeIsNotAResize)

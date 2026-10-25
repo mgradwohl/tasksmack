@@ -99,6 +99,10 @@ struct ResizePerfTraceStats
     std::uint32_t resizeFrames = 0;
     std::uint32_t drainedEvents = 0;
     std::uint32_t resizeEvents = 0;
+    /// Events WindowEventRouting::isInputEvent() classifies as input (wheel, button, key, text), which
+    /// start the input redraw grace (#843). Logged as inputEvents, so a capture shows how much of an
+    /// interval's frame cadence was input-paced; a capture without input reads 0 here.
+    std::uint32_t inputEvents = 0;
     std::uint32_t maxEventsPerBatch = 0;
     double drainMs = 0.0;
     double updateMs = 0.0;
@@ -240,6 +244,7 @@ struct ResizePerfTraceStats
         resizeFrames = 0;
         drainedEvents = 0;
         resizeEvents = 0;
+        inputEvents = 0;
         maxEventsPerBatch = 0;
         drainMs = 0.0;
         updateMs = 0.0;
@@ -313,7 +318,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
     const double loopP95 = computePercentile(stats.loopIntervalSamplesMs, 0.95);
     const double loopP99 = computePercentile(stats.loopIntervalSamplesMs, 0.99);
 
-    spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
+    spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} inputEvents={} maxBatchEvents={} "
                  "p0Hits={} skippedFrames={} maxSingleEvent={:.3f} ms "
                  "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms over100={} over250={} "
                  "loopIntervals={} loop avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
@@ -326,6 +331,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  stats.eventBatches,
                  stats.drainedEvents,
                  stats.resizeEvents,
+                 stats.inputEvents,
                  stats.maxEventsPerBatch,
                  stats.p0BudgetCapHits,
                  stats.skippedRenderFrames,

@@ -274,6 +274,19 @@ Output render(const Input& input)
         ImGui::PushFont(chromeIcons);
     }
 
+    // The window's top-right resize corner is the resize border's, not the Close button's (#2882):
+    // TitleBarLayer starts the resize from the press, and keeps the press and the hover from the
+    // button (computeIsPointInControlArea()). ImGui would still hover and press the button there,
+    // since the button's rectangle covers the corner, so an item of the corner's size is submitted
+    // first: ImGui's hover goes to the first item submitted under the pointer, so over the corner
+    // the Close button neither highlights nor takes the press. The same square
+    // computeDetectResizeEdge() answers TopRight for; a maximized window has no borders.
+    if (!input.maximized && input.resizeBorderPx > 0.0F)
+    {
+        ImGui::SetCursorPos(ImVec2(windowWidth - input.resizeBorderPx, 0));
+        static_cast<void>(ImGui::InvisibleButton(TOP_RIGHT_RESIZE_CORNER_ID, ImVec2(input.resizeBorderPx, input.resizeBorderPx)));
+    }
+
     // Close button (hover/active colors from theme)
     ImGui::SetCursorPos(ImVec2(output.layout.close.minX, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.closeButtonHovered);

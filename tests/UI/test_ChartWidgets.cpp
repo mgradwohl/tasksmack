@@ -1,3 +1,4 @@
+#include "Domain/SamplingConfig.h"
 #include "TestLocales.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -751,6 +753,176 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsASingleSamplePeak)
     EXPECT_DOUBLE_EQ(peak, 99.0);
     // The newest sample is never dropped.
     EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], 0.0);
+}
+
+// ========== Width-sized reduction keeps every spike and dip (#843) ==========
+
+namespace
+{
+/// The longest history a chart draws: HISTORY_SECONDS_MAX at the fastest refresh interval (18,000
+/// samples at 100 ms), the size at which the old stride reduction lost real samples.
+constexpr int FULL_HISTORY_COUNT = (Domain::Sampling::HISTORY_SECONDS_MAX * 1000) / Domain::Sampling::REFRESH_INTERVAL_MIN_MS;
+
+/// The "now" the reductions below anchor their buckets at (a history chart adds it back to x).
+constexpr double ANCHOR_NOW = 1000.0;
+
+struct FullHistoryFixture
+{
+    std::vector<double> x = std::vector<double>(static_cast<std::size_t>(FULL_HISTORY_COUNT));
+    std::vector<double> y = std::vector<double>(static_cast<std::size_t>(FULL_HISTORY_COUNT), 10.0);
+    FullHistoryFixture()
+    {
+        for (int i = 0; i < FULL_HISTORY_COUNT; ++i)
+        {
+            x[static_cast<std::size_t>(i)] = (static_cast<double>(i) - (FULL_HISTORY_COUNT - 1)) * 0.1;
+        }
+    }
+};
+
+/// Whether the drawn x positions `drawn` are real samples in strictly ascending time order, starting at
+/// the oldest sample and ending at the newest.
+void expectDrawnFromOldestToNewest(std::span<const double> drawn, std::span<const double> x)
+{
+    ASSERT_GE(drawn.size(), 2U);
+    EXPECT_DOUBLE_EQ(drawn.front(), x.front());
+    EXPECT_DOUBLE_EQ(drawn.back(), x.back());
+    EXPECT_EQ(std::ranges::adjacent_find(drawn, std::ranges::greater_equal{}), drawn.end()) << "drawn x is not strictly ascending";
+    for (const double value : drawn)
+    {
+        EXPECT_TRUE(std::ranges::binary_search(x, value)) << value << " is not a sample's time";
+    }
+}
+} // namespace
+
+TEST(ChartWidgetsReduceTest, AWidthSizedReductionKeepsASpikeAtTheSecondSampleOfTheLongestHistory)
+{
+    // #843: reducing 18,000 samples to 720 by a plain stride kept indices 0, 25, 50, ..., so a
+    // one-sample spike at index 1 vanished from the line though the tooltip's raw lookup still found
+    // it. Under a full-width plot's budget the min/max reduction keeps it, and a one-sample dip too,
+    // each drawn at its own time.
+    FullHistoryFixture f;
+    f.y[1] = 99.0;
+    f.y[12'345] = -5.0;
+    const int budget = plotPointBudget(1920.0F, 1.0F);
+    ASSERT_EQ(budget, LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outX(static_cast<std::size_t>(budget));
+    std::vector<double> outY(static_cast<std::size_t>(budget));
+    const int written = reduceSeriesMinMax(f.x.data(), f.y.data(), FULL_HISTORY_COUNT, budget, ANCHOR_NOW, outX.data(), outY.data());
+    ASSERT_GT(written, 2);
+    ASSERT_LE(written, budget);
+    const std::span<const double> keptX = std::span(outX).first(static_cast<std::size_t>(written));
+    const std::span<const double> keptY = std::span(outY).first(static_cast<std::size_t>(written));
+    EXPECT_DOUBLE_EQ(std::ranges::max(keptY), 99.0);
+    EXPECT_DOUBLE_EQ(std::ranges::min(keptY), -5.0);
+    EXPECT_NE(std::ranges::find(keptX, f.x[1]), keptX.end()) << "the spike is not drawn at its own time";
+    EXPECT_NE(std::ranges::find(keptX, f.x[12'345]), keptX.end()) << "the dip is not drawn at its own time";
+    expectDrawnFromOldestToNewest(keptX, f.x);
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionOfMonotoneDataKeepsEachBucketsEndSamples)
+{
+    // Rising data has no interior extremes: a bucket's lowest sample is its first and its highest its
+    // last, so the reduced line is exactly the bucket boundaries, two points per bucket (one for a
+    // bucket holding a single sample), and nothing is drawn from inside a bucket.
+    FullHistoryFixture f;
+    for (int i = 0; i < FULL_HISTORY_COUNT; ++i)
+    {
+        f.y[static_cast<std::size_t>(i)] = static_cast<double>(i) * 0.001;
+    }
+    const int budget = plotPointBudget(1920.0F, 1.0F);
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), FULL_HISTORY_COUNT, budget, ANCHOR_NOW, points);
+    ASSERT_GT(points.size(), 2U);
+    ASSERT_LE(points.size(), static_cast<std::size_t>(budget));
+
+    // The bucket layout the reduction used (see forEachMinMaxReducedPoint()).
+    const int bucketCount = ((budget - 2) / 3) - 1;
+    const double width = minMaxBucketWidth(f.x.back() - f.x.front(), bucketCount);
+    ASSERT_GT(width, 0.0);
+    const auto bucketOf = [&](int index)
+    {
+        return minMaxBucketIndex(f.x[static_cast<std::size_t>(index)] + ANCHOR_NOW, width);
+    };
+    std::size_t expectedPoints = 0;
+    for (int start = 0; start < FULL_HISTORY_COUNT;)
+    {
+        int next = start + 1;
+        while (next < FULL_HISTORY_COUNT && bucketOf(next) == bucketOf(start))
+        {
+            ++next;
+        }
+        expectedPoints += (next - start > 1) ? 2U : 1U;
+        start = next;
+    }
+    EXPECT_EQ(points.size(), expectedPoints);
+
+    int previous = -1;
+    for (const ReducedPoint& point : points)
+    {
+        EXPECT_FALSE(point.gap);
+        EXPECT_GT(point.index, previous);
+        previous = point.index;
+        const int i = point.index;
+        const bool firstInBucket = (i == 0) || (bucketOf(i) != bucketOf(i - 1));
+        const bool lastInBucket = (i == FULL_HISTORY_COUNT - 1) || (bucketOf(i) != bucketOf(i + 1));
+        EXPECT_TRUE(firstInBucket || lastInBucket) << "sample " << i << " is drawn from inside its bucket";
+    }
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionFollowsThePlotWidthAndKeepsEveryLayersExtremes)
+{
+    // The stacked CPU plots reduce their layers with one bucket layout under the plot's own width
+    // budget, as plotLineWithFill() does (#843): a narrow pane draws fewer points than a full-width
+    // chart, every layer is drawn at the same x positions, and each layer's one-sample spike and dip
+    // survive at either width.
+    const FullHistoryFixture f;
+    const auto count = static_cast<std::size_t>(FULL_HISTORY_COUNT);
+    std::vector<double> user(count, 30.0);
+    std::vector<double> system(count, 10.0);
+    std::vector<double> total(count, 45.0);
+    user[1] = 90.0;
+    user[9'003] = 0.0;
+    system[7'001] = 0.5;
+    total[15'002] = 100.0;
+
+    const auto reduceFor = [&](float plotWidth)
+    {
+        const int budget = plotPointBudget(plotWidth, 1.0F);
+        std::vector<ReducedPoint> points;
+        reduceAlignedPoints<double>(f.x,
+                                    {std::span<const double>(user), std::span<const double>(system), std::span<const double>(total)},
+                                    budget,
+                                    ANCHOR_NOW,
+                                    points);
+        EXPECT_LE(points.size(), static_cast<std::size_t>(budget)) << plotWidth << " px";
+        return points;
+    };
+    const std::vector<ReducedPoint> wide = reduceFor(1920.0F);
+    const std::vector<ReducedPoint> narrow = reduceFor(150.0F);
+    EXPECT_LT(narrow.size(), wide.size());
+    EXPECT_LT(narrow.size(), count);
+
+    for (const std::vector<ReducedPoint>* points : {&wide, &narrow})
+    {
+        SCOPED_TRACE(points == &wide ? "wide" : "narrow");
+        // One shared list of points: every layer has a value at every kept x, all real samples.
+        std::vector<double> drawnX;
+        std::vector<double> userDrawn;
+        std::vector<double> systemDrawn;
+        std::vector<double> totalDrawn;
+        gatherReducedValues<double>(*points, f.x, drawnX);
+        gatherReducedValues<double>(*points, user, userDrawn);
+        gatherReducedValues<double>(*points, system, systemDrawn);
+        gatherReducedValues<double>(*points, total, totalDrawn);
+        ASSERT_EQ(userDrawn.size(), points->size());
+        ASSERT_EQ(systemDrawn.size(), points->size());
+        ASSERT_EQ(totalDrawn.size(), points->size());
+        expectDrawnFromOldestToNewest(drawnX, f.x);
+        EXPECT_DOUBLE_EQ(std::ranges::max(userDrawn), 90.0);
+        EXPECT_DOUBLE_EQ(std::ranges::min(userDrawn), 0.0);
+        EXPECT_DOUBLE_EQ(std::ranges::min(systemDrawn), 0.5);
+        EXPECT_DOUBLE_EQ(std::ranges::max(totalDrawn), 100.0);
+    }
 }
 
 // ========== plotPointBudget (#1411) ==========

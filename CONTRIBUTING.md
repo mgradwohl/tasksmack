@@ -485,11 +485,13 @@ ctest --preset win-debug
 ctest runs each Google Test **suite** as one entry, in one process (#1871), not each case: on Windows,
 starting a process for each of the ~5,000 cases took most of the test time. `cmake/GTestSuites.cmake`
 registers the entries from the binaries' suite lists when they link. `ctest -R` matches suite names, and
-`-L gtest` / `-LE gtest` picks or skips all of them (the script tests have no `gtest` label):
+`-L gtest` / `-LE gtest` picks or skips all of them (the script tests have no `gtest` label), and
+`-L pwsh-script` the Windows tests that run under PowerShell 7:
 
 ```bash
 ctest --preset debug -R ProcessModelTest       # one suite (ApplicationTest runs as ApplicationTest/shard1of3 ...)
 ctest --preset debug -LE gtest                 # only the script tests (BenchScript, TidyCacheScript, ...)
+ctest --preset win-debug -L pwsh-script        # only the pwsh script tests (EtwCaptureScript, SetupDevScript, ...)
 ```
 
 To run one case, or a pattern of them, run the binary with `--gtest_filter`:
@@ -505,7 +507,9 @@ build\win-debug\tests\TaskSmackTests.exe --gtest_filter=ProcessModelTest.*Gpu*
   artifact, so each case is still listed.
 - **Isolation.** Cases in one suite share a process. A case must not depend on running alone, or leave
   state behind that breaks the next case (a static, an environment variable, a library left loaded).
-- **Timeouts.** An entry's 300 s `TIMEOUT` covers its whole suite.
+- **Timeouts.** An entry's 300 s `TIMEOUT` covers its whole suite. Reading a binary's suite list when it
+  links (`--gtest_list_tests`) has 120 s: a loaded CI runner linking three executables at once passed
+  the 30 s default (#2838).
 - **Options.** `tasksmack_gtest_add_suites()` takes `SHARDS <Suite>=<n>` to split a slow suite into `n`
   entries (via gtest's own sharding), `ISOLATE <Suite>` to run each case of a suite in its own process,
   as `gtest_discover_tests()` did, and `SUITE_PROPERTIES <Suite> <name> <value>` for one suite's entries
@@ -1444,7 +1448,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
-| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the same chart over the default window in a 480 px window (where its point budget follows the plot width, #843), the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
 | `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
 
@@ -2651,7 +2655,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
   - **Other jobs:** a blocking Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs, and IWYU (include analysis) on manual dispatch only.
   - **`CI Success`** is the gate job used for branch protection. When a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
@@ -2862,6 +2866,14 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   executables are Authenticode-signed; until then it is unsigned and has no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; not Authenticode-signed yet, and without `TaskSmackHelper.exe`)
+- Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
+  `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
+  `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
+  version, the SHA-256 of the CRT, STL and UCRT libraries the link consumed (`libcmt.lib`,
+  `libvcruntime.lib`, `libcpmt.lib`, `libucrt.lib` and their import-library counterparts), the
+  Windows SDK version, the runner image (`ImageOS`/`ImageVersion`), the compiler and the commit. Two
+  builds of one commit with equal `inputs` should give the same bytes; see [Release
+  Reproducibility](#release-reproducibility) for how a mismatch is read.
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
 
 The x64 names are the ones earlier releases used, so existing download links keep working; only the
@@ -2869,8 +2881,9 @@ ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/
 from the compiler's target). Each package's build, test, reproducibility check and validation runs
 natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
-`windows-packages-arm64`). `create-release` checks that `dist/` holds exactly these six packages
-before signing anything, so a missing or renamed package fails the release.
+`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`.
+`create-release` checks that `dist/` holds exactly these six packages and the two manifests before
+signing anything, so a missing or renamed file fails the release.
 
 ### Release Artifact Validation
 
@@ -3018,6 +3031,27 @@ true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workfl
 investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism
 (e.g. absolute build-path fragments a future dependency might embed in debug info).
+
+On Windows the build is deterministic but its inputs may not be: the runner image's serviced MSVC
+CRT and Windows SDK payload can change under an unchanged directory name (v0.9.0's arm64
+`TaskSmack.exe` differed between the dry run and the tag run because one image carried VS 18.10's
+libraries and the other 18.11's, both as `VC\Tools\MSVC\14.51.36231` and SDK `10.0.26100.0`; #2802).
+Each Windows build and rebuild therefore records a build-inputs manifest (see [Release
+Artifacts](#release-artifacts)), and `verify-reproducibility-windows`'s "Compare digests" diffs the
+two manifests' `inputs` with `.github/actions/windows-build-inputs/compare-build-inputs.ps1`: a
+differing `.zip` whose inputs also differ is reported as the runner image's CRT changing, and one
+whose inputs match as the build itself not being reproducible. The post-release check does the
+same for the dry run's and the published release's manifests of the same commit (both carry them):
+
+```powershell
+pwsh .github/actions/windows-build-inputs/compare-build-inputs.ps1 `
+    dry-run/TaskSmack-<version>-windows-arm64-build-inputs.json `
+    release/TaskSmack-<version>-windows-arm64-build-inputs.json   # exit 0: same inputs; 1: differ
+```
+
+Byte-identity across runner images would need the toolset pinned by content (a cached, hash-checked
+MSVC and SDK overlay, as `setup-windows-llvm` does for LLVM); the manifest is the record that makes
+that a deliberate follow-up rather than a guess.
 
 To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
