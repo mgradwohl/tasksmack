@@ -161,12 +161,14 @@ class SanitizerSummaryTests(unittest.TestCase):
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
 [[ "$1" == api ]] || { echo "gh stub: unexpected command $*" >&2; exit 2; }
-url="$2"; shift 2
+shift
+url=""
 filter=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --jq) filter="$2"; shift 2 ;;
-    *) shift ;;
+    -*) shift ;;
+    *) [[ -n "$url" ]] || url="$1"; shift ;;
   esac
 done
 case "$url" in
@@ -179,6 +181,7 @@ case "$url" in
     id="${url#*/runs/}"; id="${id%%/jobs*}"
     file="$FIXTURES/jobs_${id}.json"
     [[ -f "$file" ]] || file="$FIXTURES/no_jobs.json" ;;
+  repos/*/branches\?*) file="$FIXTURES/branches.json" ;;
   *) echo "gh stub: unexpected api call $url" >&2; exit 2 ;;
 esac
 if [[ -n "$filter" ]]; then jq -r "$filter" "$file"; else cat "$file"; fi
@@ -194,6 +197,140 @@ def bash_has_jq() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+MAIN_HEALTH_STEP = "Open, update or close the tracking issue"
+
+# Stands in for the issue calls of update_issue(): logs each call to $FIXTURES/calls.log, finds
+# tracking issue #7 open and answers its body from $FIXTURES/previous_body.txt.
+ISSUE_GH_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FIXTURES/calls.log"
+case "$*" in
+  "api repos/owner/repo/issues?labels="*) echo 7 ;;
+  "api repos/owner/repo/issues/7 --jq .body") cat "$FIXTURES/previous_body.txt" ;;
+  "api -X PATCH repos/owner/repo/issues/7 "*|"api repos/owner/repo/issues/7/comments "*) ;;
+  *) echo "gh stub: unexpected command $*" >&2; exit 2 ;;
+esac
+"""
+
+
+@unittest.skipUnless(bash_has_jq(), "jq is not on bash's PATH")
+class MainHealthBranchTests(unittest.TestCase):
+    """#2951: Main Health's one concurrency group keeps a single pending run and replaces it, so a run
+    that judged only its triggering branch could drop another branch's update. Every run now judges
+    main and every release/* branch, and only the triggering branch's issue gets the turned-red comment."""
+
+    BRANCHES = ["main", "release/0.9", "release/0.10"]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.fixtures = self.tmp / "fixtures"
+        self.fixtures.mkdir()
+        step = find_step(WORKFLOWS / "main-health.yml", MAIN_HEALTH_STEP)
+        # The step's functions end with update_issue(); the branch selection and loop follow it.
+        cut = step.run.index("\n}\n", step.run.index("update_issue() {")) + 3
+        self.functions, self.selection = step.run[:cut], step.run[cut:]
+        branches = [{"name": name} for name in ("fix/2951-main-health", "main", "release/0.10", "release/0.9")]
+        (self.fixtures / "branches.json").write_text(json.dumps(branches), encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def stub(self, name: str, text: str) -> str:
+        """A `gh` shell function running the stub, so the real gh can never answer (see MainHealthJobTests)."""
+        path = self.tmp / name
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return f'gh() {{ "$BASH" "{posix(path)}" "$@"; }}\n'
+
+    def trigger_env(self, event: str, branch: str, conclusion: str) -> dict[str, str]:
+        workflow_run = event == "workflow_run"
+        return {
+            "FIXTURES": posix(self.fixtures),
+            "REPO": "owner/repo",
+            "SERVER": "https://github.example",
+            "LABEL": "ci-red-main",
+            "GITHUB_WORKFLOW": "Main Health",
+            "GITHUB_RUN_ID": "42",
+            "EVENT_NAME": event,
+            "TRIGGER_BRANCH": branch if workflow_run else "",
+            "TRIGGER_NAME": "CI" if workflow_run else "",
+            "TRIGGER_URL": "https://github.example/runs/1" if workflow_run else "",
+            "TRIGGER_CONCLUSION": conclusion if workflow_run else "",
+            "TRIGGER_SHA": "0123456789abcdef" if workflow_run else "",
+        }
+
+    def select(self, event: str, trigger_branch: str) -> subprocess.CompletedProcess:
+        """The step's branch selection and loop, with judge_branch and update_issue only printing the branch."""
+        script = (
+            "set -euo pipefail\n"
+            + self.stub("gh", GH_STUB)
+            + 'judge_branch() { red=""; echo "JUDGE $1"; }\n'
+            + 'update_issue() { echo "UPDATE $1"; }\n'
+            + self.selection
+        )
+        return run_bash(script, self.tmp, self.trigger_env(event, trigger_branch, "failure"))
+
+    def judged(self, event: str, trigger_branch: str) -> list[str]:
+        """The branches the step judges and updates, in order, for one triggering event."""
+        result = self.select(event, trigger_branch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [line for line in result.stdout.splitlines() if line.startswith(("JUDGE ", "UPDATE "))]
+        judged = [line.removeprefix("JUDGE ") for line in lines[0::2]]
+        self.assertEqual(lines[1::2], [f"UPDATE {name}" for name in judged], "each judged branch is updated next")
+        return judged
+
+    def test_no_release_branch_judges_main_alone(self):
+        (self.fixtures / "branches.json").write_text(json.dumps([{"name": "main"}]), encoding="utf-8")
+        self.assertEqual(self.judged("workflow_run", "main"), ["main"])
+
+    def test_a_failed_branch_listing_fails_the_step(self):
+        # Judging main alone would leave a release branch's issue as it was without saying so.
+        (self.fixtures / "branches.json").unlink()
+        result = self.select("workflow_run", "release/0.9")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("JUDGE ", result.stdout)
+
+    def test_every_run_judges_main_and_every_release_branch(self):
+        for event, trigger_branch in (
+            ("workflow_run", "main"),
+            ("workflow_run", "release/0.9"),
+            ("workflow_run", "release/0.10"),
+            ("workflow_dispatch", ""),
+        ):
+            with self.subTest(event=event, trigger_branch=trigger_branch):
+                self.assertEqual(sorted(self.judged(event, trigger_branch)), sorted(self.BRANCHES))
+
+    def comments_on_update(self, trigger_branch: str, branch: str) -> list[str]:
+        """The issue calls update_issue makes for `branch`'s open, red issue after a CI failure on `trigger_branch`."""
+        (self.fixtures / "previous_body.txt").write_text("- **Sanitizers** (push): `failure`\n", encoding="utf-8")
+        calls = self.fixtures / "calls.log"
+        calls.write_text("", encoding="utf-8")
+        script = (
+            self.functions
+            + self.stub("gh_issues", ISSUE_GH_STUB)
+            + "red='- **CI** (push): `failure`'$'\\n'\n"
+            + f'update_issue "{branch}"\n'
+        )
+        result = run_bash(script, self.tmp, self.trigger_env("workflow_run", trigger_branch, "failure"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        made = calls.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any(call.startswith("api -X PATCH repos/owner/repo/issues/7 ") for call in made), made)
+        return [call for call in made if call.startswith("api repos/owner/repo/issues/7/comments ")]
+
+    def test_only_the_triggering_branch_gets_the_turned_red_comment(self):
+        for trigger_branch, branch, commented in (
+            ("main", "main", True),
+            ("main", "release/0.9", False),
+            ("release/0.9", "release/0.9", True),
+            ("release/0.9", "main", False),
+        ):
+            with self.subTest(trigger_branch=trigger_branch, branch=branch):
+                comments = self.comments_on_update(trigger_branch, branch)
+                self.assertEqual(len(comments), 1 if commented else 0, comments)
+                if commented:
+                    self.assertIn("**CI** turned red: failure on `01234567`", comments[0])
 
 
 @unittest.skipUnless(bash_has_jq(), "jq is not on bash's PATH")
