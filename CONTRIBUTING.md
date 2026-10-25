@@ -997,6 +997,20 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
+`tools/clang-tidy.sh` reads its compile database from one of three places (#2898):
+
+- `debug` (the default) or `relwithdebinfo`: `build/<type>`, configured with `cmake --preset <type>` if it
+  isn't yet, the stripped copy written to `build/<type>/clang-tidy-compdb/`.
+- Any other configure preset (`./tools/clang-tidy.sh tsan`, `asan-ubsan`, `release`, ...): the
+  `compile_commands.json` in the binaryDir that `CMakePresets.json` gives the preset. The script never configures
+  it: a missing database is an error that names the `cmake --preset` command to run.
+- `--build-dir DIR`: the `compile_commands.json` in any configured tree.
+
+For a preset other than `debug`/`relwithdebinfo` or a `--build-dir`, the module and PCH flags are stripped into a
+temporary copy that is removed when the run ends, so that tree's own files, including the `compile_commands.json`
+clangd reads, are never touched. Every other option works the same with each, for example
+`./tools/clang-tidy.sh tsan --changed-only`.
+
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
 blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
 this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). CI runs clang-tidy

@@ -54,7 +54,7 @@ cmake --workflow --preset dev       # Linux
 cmake --workflow --preset win-dev   # Windows
 
 # Lint
-./tools/clang-tidy.sh debug    # Linux
+./tools/clang-tidy.sh debug    # Linux (or a preset name, or --build-dir DIR)
 pwsh tools/clang-tidy.ps1 debug # Windows
 
 # Format before commit (REQUIRED)
