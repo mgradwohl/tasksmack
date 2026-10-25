@@ -137,6 +137,23 @@ TEST(StartupActionsDetailTest, WhichRowsCanChange)
     EXPECT_FALSE(AutoDetail::isApplicable(false, user, Platform::StartupActionCapabilities{}));
 }
 
+// #2541: Linux's XDG autostart. A system entry is switched by the user's own copy, so it needs no root;
+// one for another desktop says why it can't be switched.
+TEST(StartupActionsDetailTest, XdgAutostartEntries)
+{
+    const Platform::StartupActionCapabilities linux{.canSetEnabled = true, .elevated = false, .machineEntriesNeedElevation = false};
+    auto system = entry("Updater", StartupLocation::XdgAutostartSystem);
+    system.scope = Platform::StartupScope::Machine;
+    EXPECT_TRUE(AutoDetail::blockedReason(system, linux).empty());
+    EXPECT_TRUE(AutoDetail::isApplicable(false, system, linux));
+    auto other = entry("KDE Wallet", StartupLocation::XdgAutostartUser, false);
+    other.notSwitchableReason = "Starts only in KDE";
+    EXPECT_EQ(AutoDetail::blockedReason(other, linux), "Starts only in KDE");
+    EXPECT_FALSE(AutoDetail::isApplicable(true, other, linux));
+    EXPECT_FALSE(Platform::hasSwitchableState(other));
+    EXPECT_TRUE(AutoDetail::confirmQuestion({.enable = false, .entry = system}).contains("autostart file is kept"));
+}
+
 TEST(StartupActionsDetailTest, TextsNameTheEntryAndTheOutcome)
 {
     const StartupActionRequest disable{.enable = false, .entry = entry("OneDrive", StartupLocation::RunUser)};

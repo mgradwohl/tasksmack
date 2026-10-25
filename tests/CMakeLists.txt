@@ -215,6 +215,10 @@ add_test(NAME TidyCacheScript
 add_test(NAME HelperHandshakeScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_helper_handshake.py)
 
+# tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
+add_test(NAME UiCompareReportScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
+
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
@@ -358,6 +362,7 @@ set(COMMON_TEST_SOURCES
     UI/test_LineLayout.cpp
     UI/test_SeriesLabelAlignment.cpp
     UI/test_IconEncoding.cpp
+    App/test_AccessChoice.cpp  # Standard or Administrator: the notice decision and wording (#2728)
     App/test_DialogGeometry.cpp
     UI/test_ThemeCatalog.cpp
     UI/test_FormatProperties.cpp
@@ -541,9 +546,11 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsPathProviderMath.cpp
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
+    Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
+    Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
@@ -588,6 +595,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
+    Platform/test_WindowsEnergyMeter.cpp  # the EMI package energy through fake device calls, and the probe's reading (#2587)
     Platform/test_WindowsNVMLGPUProbe.cpp
     Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
@@ -624,6 +632,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
+    Platform/test_Nl80211.cpp  # Wi-Fi rates and standard from nl80211 (#2591)
     Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
@@ -634,6 +643,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
+    Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
@@ -692,6 +702,8 @@ set(THEME_REAL_TEST_SOURCES
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
+    App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
+    App/test_SettingsThemeApply.cpp  # a theme picked in Settings applies on Save, not before (#2713)
 )
 # Linux-only app tests, listed on every platform so the registration check below sees them
 set(APP_REAL_LINUX_TEST_SOURCES
@@ -847,6 +859,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
@@ -1122,7 +1135,14 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
 )
-tasksmack_gtest_add_suites(TaskSmackAppTests)
+# The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
+# once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
+# The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a
+# windows-2025 runner, which a slow one pushed past the CI steps' 60 s --timeout (main 82d9b173). The
+# same whole-suite limit as every other executable's entries.
+tasksmack_gtest_add_suites(TaskSmackAppTests
+    PROPERTIES TIMEOUT 300
+    SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

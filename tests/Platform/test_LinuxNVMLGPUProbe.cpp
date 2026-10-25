@@ -6,6 +6,7 @@
 #include "Platform/Linux/NVMLGPUProbeMath.h"
 #include "Platform/Linux/PciDisplayDevices.h"
 #include "Platform/Linux/PciRuntimePm.h"
+#include "Platform/NVMLProcessUtilization.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/ScopedTempDir.h"
 
@@ -177,6 +178,49 @@ struct FakeResolver
         return nullptr;
     }
 };
+
+// #2589: nvmlDeviceGetProcessUtilization's sized query, and each process's newest sample.
+TEST(NVMLProcessUtilizationTest, EachProcessKeepsItsNewestSample)
+{
+    std::vector<NVML::nvmlProcessUtilizationSample_t> driver{
+        {.pid = 7U, .timeStamp = 50ULL, .smUtil = 20U, .memUtil = 0U, .encUtil = 0U, .decUtil = 0U},
+        {.pid = 7U, .timeStamp = 90ULL, .smUtil = 140U, .memUtil = 0U, .encUtil = 3U, .decUtil = 0U}, // over 100: held
+        {.pid = 8U, .timeStamp = 70ULL, .smUtil = 5U, .memUtil = 0U, .encUtil = 0U, .decUtil = 9U},
+    };
+    const auto fn = [&driver](NVML::nvmlProcessUtilizationSample_t* samples, unsigned int* count, unsigned long long lastSeen)
+    {
+        if (lastSeen >= 90ULL)
+        {
+            return NVML::NVML_ERROR_NOT_FOUND;
+        }
+        if (samples == nullptr || *count < driver.size())
+        {
+            *count = static_cast<unsigned int>(driver.size());
+            return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+        }
+        std::ranges::copy(driver, samples);
+        *count = static_cast<unsigned int>(driver.size());
+        return NVML::NVML_SUCCESS;
+    };
+    const NVMLProcessUtilization::Query first = NVMLProcessUtilization::query(fn, 0);
+    ASSERT_TRUE(first.ok);
+    EXPECT_EQ(first.newestTimeStamp, 90ULL);
+    ASSERT_EQ(first.byPid.size(), 2U);
+    EXPECT_EQ(first.byPid.at(7).smPercent, 100U);
+    EXPECT_EQ(first.byPid.at(7).encoderPercent, 3U);
+    EXPECT_EQ(first.byPid.at(8).decoderPercent, 9U);
+
+    const NVMLProcessUtilization::Query none = NVMLProcessUtilization::query(fn, first.newestTimeStamp);
+    EXPECT_TRUE(none.ok) << "nothing newer is an answer: every process idle";
+    EXPECT_TRUE(none.byPid.empty());
+    EXPECT_EQ(none.newestTimeStamp, 90ULL);
+
+    const auto failing = [](NVML::nvmlProcessUtilizationSample_t*, unsigned int*, unsigned long long)
+    {
+        return NVML::NVML_ERROR_NOT_SUPPORTED;
+    };
+    EXPECT_FALSE(NVMLProcessUtilization::query(failing, 0).ok);
+}
 
 TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
 {
@@ -860,6 +904,17 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     const auto noMemory = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 789; });
     ASSERT_NE(noMemory, processCounters.end());
     EXPECT_EQ(noMemory->gpuMemoryBytes, 0U);
+    // Each process's newest utilization sample (#2589); 789 has none, so it's idle.
+    EXPECT_DOUBLE_EQ(merged->gpuUtilPercent, 37.0);
+    EXPECT_DOUBLE_EQ(merged->encoderUtilPercent, 4.0);
+    EXPECT_DOUBLE_EQ(merged->decoderUtilPercent, 6.0);
+    EXPECT_DOUBLE_EQ(graphicsOnly->gpuUtilPercent, 12.0);
+    EXPECT_DOUBLE_EQ(noMemory->gpuUtilPercent, 0.0);
+    EXPECT_TRUE(probe.capabilities().hasPerProcessUtilization);
+
+    // The next read asks only for newer samples: none, so every process is idle.
+    const auto later = probe.readProcessGPUCounters();
+    EXPECT_TRUE(std::ranges::all_of(later, [](const ProcessGPUCounters& counter) { return counter.gpuUtilPercent == 0.0; }));
 }
 
 // =============================================================================

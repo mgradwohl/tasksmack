@@ -10,7 +10,9 @@
 namespace App
 {
 
-/// Settings dialog layer. Opened by raising Core::OpenSettingsEvent.
+/// Settings dialog layer. Opened by raising Core::OpenSettingsEvent (the title bar's gear, F2, the status
+/// bar) or by TASKSMACK_OPEN=settings at startup, and closed by Core::CloseDialogEvent as Cancel closes it
+/// (#2827).
 /// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
 /// are guaranteed to be called from the main thread only, as required by SDL and ImGui.
 class SettingsLayer : public Core::Layer
@@ -32,6 +34,7 @@ class SettingsLayer : public Core::Layer
     SettingsLayer(SettingsLayer&&) = delete;
     SettingsLayer& operator=(SettingsLayer&&) = delete;
 
+    void onAttach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;

@@ -26,6 +26,7 @@ using TitleBarView::Action;
 constexpr float WIDTH = 1280.0F;
 constexpr float HEIGHT = 720.0F;
 constexpr float BAR = 32.0F;
+constexpr float BORDER = 8.0F; // the resize border at a 1.0 display scale, as TitleBarLayer passes it
 
 class TitleBarViewRenderTest : public ::testing::Test
 {
@@ -54,10 +55,37 @@ class TitleBarViewRenderTest : public ::testing::Test
                                                                   .windowHeight = HEIGHT,
                                                                   .barHeight = BAR,
                                                                   .maximized = maximized,
+                                                                  .resizeBorderPx = BORDER,
                                                                   .icon = &m_Icon,
                                                                   .openSystemMenu = openSystemMenu});
         ImGui::Render();
         return output;
+    }
+
+    /// The ID of the bar's item @p label, as ImGui hashes it.
+    [[nodiscard]] static ImGuiID itemId(const char* label)
+    {
+        const ImGuiWindow* bar = ImGui::FindWindowByName("##TitleBar");
+        return (bar != nullptr) ? ImHashStr(label, 0, bar->ID) : 0;
+    }
+
+    /// Moves the mouse to (@p x, @p y) and runs two frames (ImGui's hover settles on the frame after the
+    /// move), returning what the second one asked for.
+    TitleBarView::Output moveMouseTo(float x, float y, bool maximized = false)
+    {
+        ImGui::GetIO().AddMousePosEvent(x, y);
+        static_cast<void>(frame(maximized));
+        return frame(maximized);
+    }
+
+    /// A left click where the mouse is: the press on one frame, the release on the next, returning what
+    /// the release's frame asked for (ImGui::Button reports the click on the release).
+    TitleBarView::Output click(bool maximized = false)
+    {
+        ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(frame(maximized));
+        ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        return frame(maximized);
     }
 
     /// Presses the bar's button @p label on the next frame.
@@ -156,6 +184,43 @@ TEST_F(TitleBarViewRenderTest, AMaximizedWindowOffersRestore)
     static_cast<void>(frame(true));
     press(ICON_FA_WINDOW_RESTORE "##Restore");
     EXPECT_EQ(frame(true).action, Action::Restore);
+}
+
+// #2882: the Close button's slot reaches the window's top-right corner, which is the resize border's.
+// TitleBarLayer keeps the press from the button; the bar must keep ImGui from hovering and pressing
+// the button there too, or a corner resize would highlight the X and close the window on release.
+TEST_F(TitleBarViewRenderTest, TheTopRightResizeCornerIsNotTheCloseButtons)
+{
+    static_cast<void>(frame());
+    const ImGuiID corner = itemId(TitleBarView::TOP_RIGHT_RESIZE_CORNER_ID);
+    const ImGuiID close = itemId(ICON_FA_XMARK "##Close"); // the glyph is in the label: no chrome icon font here
+    ASSERT_NE(corner, 0U);
+    ASSERT_NE(close, 0U);
+
+    // The corner square, outermost and innermost pixel: the corner's item hovers, and a click closes nothing.
+    static_cast<void>(moveMouseTo(WIDTH - 1.0F, 0.0F));
+    EXPECT_EQ(GImGui->HoveredId, corner);
+    EXPECT_EQ(click().action, Action::None);
+    static_cast<void>(moveMouseTo(WIDTH - BORDER, BORDER - 1.0F));
+    EXPECT_EQ(GImGui->HoveredId, corner);
+    EXPECT_EQ(click().action, Action::None);
+
+    // One pixel past the square, left of it or below it: the Close button, which a click closes with.
+    static_cast<void>(moveMouseTo(WIDTH - BORDER - 1.0F, BORDER - 1.0F));
+    EXPECT_EQ(GImGui->HoveredId, close);
+    EXPECT_EQ(click().action, Action::Close);
+    static_cast<void>(moveMouseTo(WIDTH - 1.0F, BORDER));
+    EXPECT_EQ(GImGui->HoveredId, close);
+    EXPECT_EQ(click().action, Action::Close);
+}
+
+TEST_F(TitleBarViewRenderTest, AMaximizedWindowsCloseButtonReachesTheCorner)
+{
+    // No resize borders on a maximized window: the corner is the button's, as on Windows.
+    static_cast<void>(frame(true));
+    static_cast<void>(moveMouseTo(WIDTH - 1.0F, 0.0F, true));
+    EXPECT_EQ(GImGui->HoveredId, itemId(ICON_FA_XMARK "##Close"));
+    EXPECT_EQ(click(true).action, Action::Close);
 }
 
 TEST_F(TitleBarViewRenderTest, WithoutAnIconNoneIsDrawnOrBounded)

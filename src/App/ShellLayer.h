@@ -67,6 +67,12 @@ class ShellLayer : public Core::Layer
         return m_ProcessesPanel.treeViewEnabled();
     }
 
+    /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
+    [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
+    {
+        return m_ProcessesPanel;
+    }
+
     /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
     /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
     /// captures only once it is false (#2827).
@@ -78,9 +84,9 @@ class ShellLayer : public Core::Layer
     // TASKSMACK_DEMO's requests (#2827, DemoLayer), through the paths the startup hooks and the UI take.
     // None of them is counted by startupSelectionPending(): the screenshot hook's settle is for startup.
 
-    /// Selects the main tab @p name names, as TASKSMACK_TAB resolves one (a registered id, a visible
-    /// label or an alias), asked for until ImGui shows it selected. False, and nothing requested, when
-    /// no tab matches.
+    /// Selects the main tab @p name names, as TASKSMACK_TAB resolves one (a registered id, a documented
+    /// alias or a visible label, in that order, SelectOverride::findTab()), asked for until ImGui shows
+    /// it selected. False, and nothing requested, when no tab matches.
     [[nodiscard]] bool requestMainTab(std::string_view name);
 
     /// Selects @p target's process in the Processes table when it next appears in a snapshot, as a
@@ -90,6 +96,10 @@ class ShellLayer : public Core::Layer
     /// Brings @p tab of Process Details forward the next time its tabs are drawn, as TASKSMACK_DETAILS_TAB
     /// does; the Process Details main tab itself is selected by a ShowProcessDetailsEvent.
     void requestDetailsTab(SelectOverride::DetailsTab tab);
+
+    /// Brings @p tab of the machine (hostname) tab forward, asked for until it shows, as
+    /// TASKSMACK_MACHINE_TAB does (#2869); the machine tab itself is requestMainTab("machine")'s.
+    void requestMachineTab(SelectOverride::MachineTab tab);
 
     /// Draws @p section of Process Details' Overview open the next time the Overview is drawn.
     void requestDetailsSection(SelectOverride::DetailsSection section);
@@ -132,8 +142,9 @@ class ShellLayer : public Core::Layer
     // same way they get later changes (#1079).
     bool m_PendingStartupSettings = true;
 
-    // Deferred startup notice: set in onAttach() if the privilege notice should fire.
-    // Dispatched in the first onUpdate() call, after all layers are fully stacked.
+    // Deferred startup notice: set in onAttach() when Settings wants the privilege notice. Decided and
+    // dispatched in the first onUpdate() after the process probe's first generation (which says whether
+    // privileges are reduced, #2731), with all layers stacked.
     bool m_PendingPrivilegeNotice = false;
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
@@ -178,7 +189,15 @@ class ShellLayer : public Core::Layer
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     // Both carry a fixed "###" ID suffix (TabLabel.h), so a new name never changes which tab ImGui
     // thinks is selected (#1140).
-    std::string m_CachedSystemTabLabel;      // ICON + hostname: rebuilt in onAttach()
+    // ICON + hostname: built in onAttach() ("System") and again when the System panel's first sample
+    // brings the hostname (#2731), by updateSystemTabLabel(); m_TabBarMinimumLabels point into it, so
+    // they are rebuilt with it.
+    std::string m_CachedSystemTabLabel;
+    std::string m_SystemTabLabelHostname; // The hostname m_CachedSystemTabLabel was built from
+    bool m_SystemTabLabelBuilt = false;
+    /// Rebuilds m_CachedSystemTabLabel and m_TabBarMinimumLabels when the hostname differs from the one
+    /// the label shows; otherwise one string compare.
+    void updateSystemTabLabel();
     TabLabel::CachedLabel m_DetailsTabLabel; // ICON + process name: rebuilt when the name changes
     // The Process Details tab with the program's own icon (#1800): spaces the icon is drawn over, then
     // the name. Rebuilt when the name, or the number of spaces the icon takes, changes.
@@ -189,8 +208,9 @@ class ShellLayer : public Core::Layer
 
     // The tab bar's items, rebuilt each frame into the same storage (no per-frame allocation once grown).
     std::vector<MainTabBarView::Tab> m_TabBarItems;
-    // The tab labels the minimum window width covers (#1939), built in onAttach(): the Process Details
-    // tab's as it reads with no process selected, so the minimum stays tab- and selection-independent.
+    // The tab labels the minimum window width covers (#1939), built with the system tab's label
+    // (updateSystemTabLabel()): the Process Details tab's as it reads with no process selected, so the
+    // minimum stays tab- and selection-independent.
     std::string m_DetailsTabNoSelectionLabel;
     std::vector<const char*> m_TabBarMinimumLabels;
 

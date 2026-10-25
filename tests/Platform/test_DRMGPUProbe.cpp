@@ -15,6 +15,7 @@
 #include "Domain/GPUModel.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Linux/DRMGPUProbe.h"
+#include "Platform/Linux/LinuxGPUProbe.h"
 
 #include <algorithm>
 #include <array>
@@ -94,12 +95,14 @@ TEST(DRMGPUProbeIntegrationTest, ReadGPUCountersDoesNotCrash)
     EXPECT_NO_THROW({ [[maybe_unused]] auto counters = probe.readGPUCounters(); });
 }
 
-TEST(DRMGPUProbeIntegrationTest, ReadProcessGPUCountersReturnsEmpty)
+TEST(DRMGPUProbeIntegrationTest, ReadProcessGPUCountersDoesNotCrash)
 {
+    // Per-process figures come from the clients the last readGPUCounters() read (#2589): before one,
+    // there are none, and on an Intel machine after one there may be some.
     DRMGPUProbe probe;
-    // Per-process metrics are not yet supported via DRM sysfs
-    auto counters = probe.readProcessGPUCounters();
-    EXPECT_TRUE(counters.empty());
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    (void) probe.readGPUCounters();
+    EXPECT_NO_THROW({ [[maybe_unused]] auto counters = probe.readProcessGPUCounters(); });
 }
 
 TEST(DRMGPUProbeIntegrationTest, IsIntegratedFieldIsValidWhenPresent)
@@ -535,9 +538,9 @@ TEST_F(DRMGPUProbeUnitTest, Capabilities_AvailableProbe_ReportsBasicSupport)
     const auto caps = probe.capabilities();
     EXPECT_TRUE(caps.hasTemperature);
     EXPECT_TRUE(caps.hasClockSpeeds);
-    // Per-process and encode/decode metrics not supported via DRM sysfs
-    EXPECT_FALSE(caps.hasPerProcessMetrics);
-    EXPECT_FALSE(caps.hasPerProcessUtilization); // #1210
+    // Per process from the DRM clients' fdinfo (#2589); no encode/decode split
+    EXPECT_TRUE(caps.hasPerProcessMetrics);
+    EXPECT_TRUE(caps.hasPerProcessUtilization);
     EXPECT_FALSE(caps.hasEncoderDecoder);
 }
 
@@ -1941,7 +1944,38 @@ class DRMGPUProbeEngineTest : public DRMGPUProbeUnitTest
         const ScriptedVramQuery query; // No VRAM reply: keeps the real ioctl out of these tests
         return std::make_unique<DRMGPUProbe>(m_SysRoot.string(), query.fn(), m_ProcRoot.string(), std::move(clock));
     }
+
+    /// The probe reading amdgpu cards' clients for ROCm's GPUs (#2589).
+    [[nodiscard]] std::unique_ptr<DRMGPUProbe> makeAmdClientsProbe(DRMGPUProbe::MonotonicClock clock = {}) const
+    {
+        const ScriptedVramQuery query;
+        return std::make_unique<DRMGPUProbe>(
+            m_SysRoot.string(), query.fn(), m_ProcRoot.string(), std::move(clock), DRMGPUProbe::CardKind::AmdClients);
+    }
+
+    /// A Radeon on amdgpu beside the Arc: card2, render node renderD130, awake.
+    void addAmdgpuCard() const
+    {
+        const auto pci = makeCardAt("card2", AMDGPU_PCI, "amdgpu");
+        std::filesystem::create_directories(pci / "drm" / "renderD130");
+        std::filesystem::create_directories(pci / "power");
+        writeFile(pci / "power" / "runtime_status", "active");
+    }
+
+    static constexpr const char* AMDGPU_PCI = "0000:05:00.0";
 };
+
+/// An amdgpu client's fdinfo: busy nanoseconds per engine as amdgpu names them, and memory.
+[[nodiscard]] std::string amdgpuFdinfo(int clientId, std::uint64_t gfxNs, std::uint64_t decNs, std::uint64_t encNs, std::string_view memory)
+{
+    return std::format("drm-driver:\tamdgpu\ndrm-pdev:\t0000:05:00.0\ndrm-client-id:\t{}\ndrm-engine-gfx:\t{} ns\n"
+                       "drm-engine-compute:\t0 ns\ndrm-engine-dec:\t{} ns\ndrm-engine-enc:\t{} ns\n{}",
+                       clientId,
+                       gfxNs,
+                       decNs,
+                       encNs,
+                       memory);
+}
 
 TEST_F(DRMGPUProbeEngineTest, ClientsOfTheCardAreReadOnceEach)
 {
@@ -2156,6 +2190,127 @@ TEST_F(DRMGPUProbeEngineTest, GPUModelDerivesUtilizationFromTwoSamples)
     ASSERT_EQ(snapshots.size(), 1U);
     EXPECT_TRUE(snapshots[0].utilizationAvailable);
     EXPECT_DOUBLE_EQ(snapshots[0].utilizationPercent, 50.0);
+}
+
+// #2892: the composite the app uses passes the DRM probe's per-process figures on; it used to ask only
+// NVML and ROCm, so an Intel GPU's processes showed none.
+TEST_F(DRMGPUProbeEngineTest, TheLinuxCompositePassesTheDrmProcessesOn)
+{
+    makeFd(m_ProcRoot, 100, 4, "/dev/dri/renderD129", xeFdinfo(7, 1'000, 10'000) + "drm-resident-vram0:\t2048 KiB\n");
+    LinuxGPUProbe composite(makeProbe(), makeAmdClientsProbe(), (m_SysRoot / "no-pci").string(), (m_SysRoot / "no-accel").string());
+    (void) composite.readGPUCounters();
+    const std::vector<ProcessGPUCounters> processes = composite.readProcessGPUCounters();
+    const auto process = std::ranges::find(processes, 100, &ProcessGPUCounters::pid);
+    ASSERT_NE(process, processes.end());
+    EXPECT_EQ(process->gpuMemoryBytes, 2048U * 1024U);
+    EXPECT_TRUE(composite.capabilities().hasPerProcessMetrics);
+}
+
+// #2589: amdgpu cards' processes, for ROCm's GPUs. The clients-only probe lists no GPU and no card
+// counters, and labels each process with the id ROCm gave the card, by its PCI address.
+TEST_F(DRMGPUProbeEngineTest, TheAmdClientsProbeLabelsItsProcessesWithRocmsIds)
+{
+    addAmdgpuCard();
+    makeFd(m_ProcRoot,
+           100,
+           4,
+           "/dev/dri/renderD130",
+           amdgpuFdinfo(21, 1'000, 0, 0, "drm-memory-vram:\t4096 KiB\ndrm-memory-gtt:\t1024 KiB\n"));
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", xeFdinfo(7, 10, 100)); // the Arc's, not this probe's
+    std::uint64_t now = 10'000;
+    const auto probe = makeAmdClientsProbe([&now] { return now; });
+    ASSERT_TRUE(probe->isAvailable());
+    EXPECT_TRUE(probe->enumerateGPUs().empty()) << "ROCm lists the card";
+    EXPECT_TRUE(probe->readGPUCounters().empty()) << "and reads its sensors";
+    EXPECT_TRUE(probe->readProcessGPUCounters().empty()) << "no ROCm id for the card yet";
+
+    probe->setClientGpuIds({{AMDGPU_PCI, "amd-rocm-1"}});
+    (void) probe->readGPUCounters();
+    std::vector<ProcessGPUCounters> first = probe->readProcessGPUCounters();
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_EQ(first[0].pid, 100);
+    EXPECT_EQ(first[0].gpuId, "amd-rocm-1");
+    EXPECT_EQ(first[0].gpuMemoryBytes, 4096U * 1024U);
+    EXPECT_EQ(first[0].gpuSharedMemoryBytes, 1024U * 1024U);
+
+    // Over 1000 ns: gfx busy 500 (50%), the video engines 200 + 100 (30%): GPU% is the busiest class.
+    now = 11'000;
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << amdgpuFdinfo(21, 1'500, 200, 100, "");
+    (void) probe->readGPUCounters();
+    const std::vector<ProcessGPUCounters> second = probe->readProcessGPUCounters();
+    ASSERT_EQ(second.size(), 1U);
+    EXPECT_DOUBLE_EQ(second[0].gpuUtilPercent, 50.0);
+    EXPECT_EQ(second[0].activeEngines, (std::vector<std::string>{"3D", "Video"}));
+    EXPECT_TRUE(probe->capabilities().hasPerProcessUtilization);
+    EXPECT_FALSE(probe->capabilities().hasTemperature);
+}
+
+TEST_F(DRMGPUProbeEngineTest, TheIntelProbeLeavesAmdgpuCardsAlone)
+{
+    addAmdgpuCard();
+    const auto gpus = makeProbe()->enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].id, "0000:03:00.0");
+}
+
+TEST(DRMGPUProbeFdinfoTest, AmdgpusOlderMemoryKeysCountOnlyWithoutTheResidentOnes)
+{
+    const auto legacyOnly = DRMGPUProbe::parseFdinfo("drm-client-id:\t1\ndrm-memory-vram:\t2 KiB\n", 0);
+    ASSERT_TRUE(legacyOnly.has_value());
+    EXPECT_EQ(legacyOnly.value_or(DRMGPUProbe::DrmFdinfo{}).client.dedicatedMemoryBytes, 2048U);
+
+    const auto both = DRMGPUProbe::parseFdinfo("drm-client-id:\t1\ndrm-memory-vram:\t2 KiB\ndrm-resident-vram:\t2 KiB\n", 0);
+    ASSERT_TRUE(both.has_value());
+    EXPECT_EQ(both.value_or(DRMGPUProbe::DrmFdinfo{}).client.dedicatedMemoryBytes, 2048U)
+        << "the same figure under two names, counted once";
+}
+
+// #2589: each process gets its clients' memory and its share of the engines' time. Process 100 holds two
+// clients, process 200 one.
+TEST_F(DRMGPUProbeEngineTest, EachProcessGetsItsClientsMemoryAndBusyShare)
+{
+    const auto fdinfo = [](int clientId, std::uint64_t cycles, std::uint64_t total, std::string_view memory)
+    {
+        return xeFdinfo(clientId, cycles, total) + std::string(memory);
+    };
+    makeFd(
+        m_ProcRoot, 100, 4, "/dev/dri/renderD129", fdinfo(7, 1'000, 10'000, "drm-resident-vram0:\t2048 KiB\ndrm-total-vram0:\t4096 KiB\n"));
+    makeFd(m_ProcRoot, 100, 5, "/dev/dri/renderD129", fdinfo(9, 0, 10'000, "drm-total-system0:\t1 MiB\n"));
+    makeFd(m_ProcRoot, 200, 4, "/dev/dri/renderD129", fdinfo(8, 0, 10'000, "drm-resident-gtt:\t512\n"));
+    const auto probe = makeProbe();
+    (void) probe->readGPUCounters();
+    std::vector<ProcessGPUCounters> first = probe->readProcessGPUCounters();
+    std::ranges::sort(first, {}, &ProcessGPUCounters::pid);
+    ASSERT_EQ(first.size(), 2U);
+    EXPECT_EQ(first[0].pid, 100);
+    EXPECT_EQ(first[0].gpuMemoryBytes, 2048U * 1024U) << "resident wins over total";
+    EXPECT_EQ(first[0].gpuSharedMemoryBytes, 1024U * 1024U);
+    EXPECT_DOUBLE_EQ(first[0].gpuUtilPercent, 0.0) << "no baseline yet";
+    EXPECT_EQ(first[1].pid, 200);
+    EXPECT_EQ(first[1].gpuSharedMemoryBytes, 512U);
+
+    // Over 1000 cycles: process 100's clients kept the render engine busy 300 + 100 (40%), 200's 200 (20%).
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "4") << fdinfo(7, 1'300, 11'000, "");
+    std::ofstream(m_ProcRoot / "100" / "fdinfo" / "5") << fdinfo(9, 100, 11'000, "");
+    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 200, 11'000, "");
+    (void) probe->readGPUCounters();
+    std::vector<ProcessGPUCounters> second = probe->readProcessGPUCounters();
+    std::ranges::sort(second, {}, &ProcessGPUCounters::pid);
+    ASSERT_EQ(second.size(), 2U);
+    EXPECT_DOUBLE_EQ(second[0].gpuUtilPercent, 40.0);
+    EXPECT_EQ(second[0].activeEngines, (std::vector<std::string>{"3D"}));
+    EXPECT_DOUBLE_EQ(second[1].gpuUtilPercent, 20.0);
+
+    // A counter that goes back adds nothing, and its recovery up to the old value isn't busy time.
+    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 150, 12'000, "");
+    (void) probe->readGPUCounters();
+    (void) probe->readProcessGPUCounters();
+    std::ofstream(m_ProcRoot / "200" / "fdinfo" / "4") << fdinfo(8, 200, 13'000, "");
+    (void) probe->readGPUCounters();
+    std::vector<ProcessGPUCounters> third = probe->readProcessGPUCounters();
+    const auto p200 = std::ranges::find(third, 200, &ProcessGPUCounters::pid);
+    ASSERT_NE(p200, third.end());
+    EXPECT_DOUBLE_EQ(p200->gpuUtilPercent, 0.0);
 }
 
 TEST_F(DRMGPUProbeEngineTest, I915BusyNanosecondsAgainstTheClock)

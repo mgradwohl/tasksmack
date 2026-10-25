@@ -53,18 +53,41 @@ class Issue
         m_Shell->requestDetailsTab(action.tab);
     }
 
+    void operator()(const DemoOverride::MachineAction& action) const
+    {
+        // The machine tab as TASKSMACK_TAB=machine asks for it (its alias always resolves: the tab is
+        // always registered), and its sub-tab as TASKSMACK_MACHINE_TAB asks for one (#2869).
+        if (!m_Shell->requestMainTab("machine"))
+        {
+            spdlog::warn("{}: {}: the machine tab is not registered; skipped", DemoOverride::ENV_VAR, DemoOverride::describe(*m_Step));
+            return;
+        }
+        m_Shell->requestMachineTab(action.tab);
+    }
+
     void operator()(const DemoOverride::OpenAction& action) const
     {
-        // The events the title bar's buttons, F1 and Settings raise (#172).
-        if (action.dialog == SelectOverride::StartupDialog::Help)
+        // The events the title bar's buttons, F1, F2 and Settings raise (#172).
+        switch (action.dialog)
+        {
+        case SelectOverride::StartupDialog::Help:
         {
             Core::OpenHelpEvent event;
             Core::Application::get().raiseEvent(event);
+            break;
         }
-        else
+        case SelectOverride::StartupDialog::About:
         {
             Core::OpenAboutEvent event;
             Core::Application::get().raiseEvent(event);
+            break;
+        }
+        case SelectOverride::StartupDialog::Settings:
+        {
+            Core::OpenSettingsEvent event;
+            Core::Application::get().raiseEvent(event);
+            break;
+        }
         }
     }
 

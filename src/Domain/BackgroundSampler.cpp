@@ -1,6 +1,7 @@
 #include "BackgroundSampler.h"
 
 #include "Domain/ISamplable.h"
+#include "Platform/ThreadApartment.h"
 #include "Platform/ThreadName.h"
 #include "SamplingConfig.h"
 
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -98,10 +100,49 @@ std::chrono::steady_clock::time_point nextSampleTime(std::chrono::steady_clock::
     return passStart + passDuration + gap;
 }
 
+void BackgroundSampler::runStartHook(const std::function<void()>& hook, std::string_view threadName) noexcept
+{
+    if (!hook)
+    {
+        return;
+    }
+    // The hook builds probes and seeds models: slow, and allowed to fail. A failure is the owner's to
+    // notice (a model left without a probe publishes nothing); sampling goes on, so stop() and the
+    // metrics behave as for any other run (#2731).
+    try
+    {
+        const auto started = std::chrono::steady_clock::now();
+        hook();
+        spdlog::info("BackgroundSampler: start hook ran on {} in {} ms",
+                     threadName,
+                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+    }
+    catch (const std::exception& ex)
+    {
+        try
+        {
+            spdlog::error("BackgroundSampler: start hook failed on {}: {}", threadName, ex.what());
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a lost log line must not terminate the app
+        {}
+    }
+    catch (...)
+    {
+        try
+        {
+            spdlog::error("BackgroundSampler: start hook failed on {}: unknown exception", threadName);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a lost log line must not terminate the app
+        {}
+    }
+}
+
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
     : m_Config{.interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
                .firstSampleAfterInterval = config.firstSampleAfterInterval,
-               .threadName = std::move(config.threadName)}
+               .threadName = std::move(config.threadName),
+               .onThreadStart = std::move(config.onThreadStart),
+               .multiThreadedApartment = config.multiThreadedApartment}
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -139,15 +180,19 @@ void BackgroundSampler::start()
     m_OverrunsSinceLog = 0;
     // Everything that can throw before the thread exists comes before the state changes below.
     std::string threadName;
+    std::function<void()> startHook;
+    bool multiThreadedApartment = false;
     {
         const std::scoped_lock lock(m_ConfigMutex);
         threadName = m_Config.threadName;
+        startHook = m_Config.onThreadStart;
+        multiThreadedApartment = m_Config.multiThreadedApartment;
     }
     m_Running.store(true);
     try
     {
         m_SamplerThread = std::jthread(
-            [this, name = std::move(threadName)](const std::stop_token& st) noexcept
+            [this, name = std::move(threadName), hook = std::move(startHook), multiThreadedApartment](const std::stop_token& st) noexcept
             {
                 // Nothing may escape a thread's entry point: it would std::terminate the app. Each pass
                 // contains its own failures (samplerLoop()), so this only catches what is left -- the
@@ -158,6 +203,14 @@ void BackgroundSampler::start()
                     {
                         spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
                     }
+                    // For the thread's whole life, so it outlives everything the hook and the passes
+                    // create; an empty optional where the owner didn't ask for it (#2731).
+                    std::optional<Platform::MultiThreadedApartment> apartment;
+                    if (multiThreadedApartment)
+                    {
+                        apartment.emplace();
+                    }
+                    runStartHook(hook, name);
                     samplerLoop(st);
                 }
                 catch (...)

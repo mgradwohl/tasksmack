@@ -179,6 +179,14 @@ class TrainingShell : public Core::Layer
         }
         App::ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
         m_Panels.connectModels();
+        // The probes are built and the models seeded on the sampler threads (#2731); the app draws its
+        // empty state meanwhile, but a training run's frames should all show data (the plan's workloads
+        // select a running process on their first frames), so wait for the seed here. A training run is
+        // a build step, not the UI.
+        if (!m_Processes.waitForFirstSample() || !m_SystemMetrics.waitForFirstSample())
+        {
+            spdlog::warn("UI training: the panels' sampler threads did not seed their models in time");
+        }
         m_SystemTabLabel = App::TabLabel::make(ICON_FA_COMPUTER, m_SystemMetrics.hostname(), App::TabLabel::SYSTEM_TAB_ID);
 
         // Real probes: this process, which is always there and is ours. Synthetic: chosen once the

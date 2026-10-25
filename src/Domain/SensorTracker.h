@@ -31,9 +31,9 @@ struct SensorRange
 };
 
 /// One sensor's recent readings, for its row's chart (#1522), oldest first, `values` aligned with
-/// `times`: at most Sampling::SENSOR_HISTORY_CAPACITY of them, none more than
-/// Sampling::HISTORY_SECONDS_DEFAULT older than the newest. A NaN value marks a break where the reads
-/// paused.
+/// `times`: none more than the history window (the Settings history duration, #2796) older than the
+/// newest, and at most Sampling::historyCapacityForSeconds(window) of them. A NaN value marks a break
+/// where the reads paused.
 struct SensorHistory
 {
     std::vector<float> values;
@@ -46,10 +46,15 @@ struct SensorHistory
 inline constexpr double SENSOR_DEFAULT_INTERVAL_SECONDS = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
 
 /// Appends @p value read at @p nowSeconds to @p history, read every @p intervalSeconds: a NaN break
-/// first when the reads paused (sensorHistoryGapSeconds()), then the oldest dropped past the window or
-/// Sampling::SENSOR_HISTORY_CAPACITY. A time not after the newest is ignored, so the history stays in
-/// order.
-void appendSensorHistory(SensorHistory& history, double value, double nowSeconds, double intervalSeconds = SENSOR_DEFAULT_INTERVAL_SECONDS);
+/// first when the reads paused (sensorHistoryGapSeconds()), then the oldest dropped past
+/// @p windowSeconds (clamped as Sampling::clampHistorySeconds() clamps it) or past
+/// Sampling::historyCapacityForSeconds() of it. A time not after the newest is ignored, so the history
+/// stays in order.
+void appendSensorHistory(SensorHistory& history,
+                         double value,
+                         double nowSeconds,
+                         double intervalSeconds = SENSOR_DEFAULT_INTERVAL_SECONDS,
+                         double windowSeconds = Sampling::HISTORY_SECONDS_DEFAULT);
 
 /// A pause longer than this many sensor intervals breaks a sensor's history line...
 inline constexpr double SENSOR_HISTORY_GAP_INTERVALS = 3.0;
@@ -90,8 +95,12 @@ class SensorTracker
   public:
     /// Adds @p sensors, read at @p nowSeconds (steady_clock seconds), to each sensor's range and history,
     /// first dropping what was kept for a device that is gone or whose key another has taken (#2495).
-    /// @p intervalSeconds is how often they are read, which sizes the histories and their breaks.
-    void add(const Platform::SensorsInfo& sensors, double nowSeconds, double intervalSeconds = SENSOR_DEFAULT_INTERVAL_SECONDS);
+    /// @p intervalSeconds is how often they are read, which places the histories' breaks, and
+    /// @p windowSeconds how far back they reach (appendSensorHistory()).
+    void add(const Platform::SensorsInfo& sensors,
+             double nowSeconds,
+             double intervalSeconds = SENSOR_DEFAULT_INTERVAL_SECONDS,
+             double windowSeconds = Sampling::HISTORY_SECONDS_DEFAULT);
 
     [[nodiscard]] const std::map<std::string, SensorRange>& ranges() const noexcept
     {

@@ -699,6 +699,44 @@ Three established ways to get real coverage of such a file's logic:
    `tools/coverage.sh` runs this binary too. Example: `tests/App/test_UiLayersOnDisplay.cpp`, the title
    bar's buttons through `TitleBarLayer`, and the whole shell as `main.cpp` composes it.
 
+   **The UI scenarios** (`tests/App/test_UiScenariosOnDisplay.cpp`, ctest entry `UiScenarioTest`, #2711)
+   drive the whole shell through the steps a UI dependency bump is signed off on:
+   - **The steps:** the Processes list, then its tree and a collapsed branch; typing in the filter; the row
+     menu; a column reordered and resized by dragging; Process Details' Overview and Network and I/O; the
+     machine overview; System Information; Help; About; and a theme picked in Settings and saved.
+   - **How each one works:** a step injects its input through ImGui (mouse and key events, or
+     `ActivateItemByID()` for a button or tab), then waits, frame by frame, until the shell or ImGui shows
+     the effect. It asserts behaviour, never pixels.
+   - **The machine:** the ctest entry sets `TASKSMACK_SYNTHETIC` for its process, so the processes and charts
+     are the same on every runner. System Information still reads the real machine.
+   - **Capturing frames:** with `TASKSMACK_UI_CAPTURE_DIR=<dir>` set, each finished step's frame is saved
+     there as `<NN>-<step>.png`, read back before it is presented. The variable is read by this test only;
+     it isn't one of the app's hooks.
+
+     ```bash
+     TASKSMACK_UI_CAPTURE_DIR=/tmp/ui xvfb-run -a env -u WAYLAND_DISPLAY ctest --preset debug -R UiScenarioTest
+     ```
+
+   - **Adding a step:** add it to `signOffSteps()`. Each step starts where the last one left the shell, and the
+     first step that isn't done within its frame budget fails the test and names itself.
+   - **Comparing two refs:** `tools/ui-compare.sh <ref-a> <ref-b>` builds both refs in scratch worktrees (the
+     debug preset, `-j 4`, one at a time), runs the scenarios in capture mode on each, and writes a report
+     with an `index.html` into `ui-compare-<a>-vs-<b>/`. It shows each step's two frames, a diff with the
+     changed pixels in red and the share of pixels that changed, and each run's warnings, errors and ImGui
+     assertions. Use it to sign off a UI dependency bump (ImGui, ImPlot, SDL, FreeType):
+
+     ```bash
+     tools/ui-compare.sh origin/main renovate/imgui-1.94
+     ```
+
+     - **Dependencies:** each worktree reuses this checkout's FetchContent sources read-only for every
+       dependency it pins at the same commit. The bumped one is downloaded.
+     - **Reading the numbers:** live values (CPU %, times) and System Information's real-machine facts move a
+       little between runs, so a small change on every step is normal. Look at the diffs.
+     - **Where it runs:** under Xvfb with `WAYLAND_DISPLAY` unset, as CI runs it, even when a desktop is up,
+       because a real pointer's moves mix with the injected ones. `--use-display` runs it on the desktop.
+     - **Requirements:** both refs need the scenario suite.
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper (for example `Core::isEnvFlagEnabled()` in `Core/EnvUtils.h`), and reuse it instead.
 
@@ -784,15 +822,21 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-Process Details (overview, GPU, network, and the Overview with its Modules, Open files and
-Connections sections expanded by a one-step `TASKSMACK_DEMO` script: `details-modules`,
-`details-openfiles`, `details-connections`) for one process, Services, Startup, About and Help, named
-`<view>-<theme>.webp`, plus three animated WebPs at 12 fps built from frame sequences:
+the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+`TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
+Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
+`details-modules`, `details-openfiles`, `details-connections`, and on Linux, the only platform that
+reads them, Environment and Security too: `details-environment`, `details-security`) for one process,
+Services, Startup, Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
+plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
 Processes table, selects the process and brings up its Process Details' Network tab) and
 `themes-live.webp` (9 s: the Overview through the six themes, 1.5 s each). The `overview-*` shots and
 `themes-live` get `[sampling] history_max_seconds = 60` and are captured after 60 s (the hook's
-maximum), so their history charts are full; the other views are captured after 8 s.
+maximum), so their history charts are full; the other views are captured after 8 s (the GPU and
+network charts need a few samples). The expanded-section shots get their own window size,
+`--section-window` / `-SectionWindow`: 1440x1200 on Linux, where the taller Actions and Priority cards
+push every section below a 900 px fold, and `-Window`'s 1440x900 on Windows.
 `--webp` / `-WebP` converts with `cwebp -q 80` and `img2webp` from libwebp (`sudo apt install
 webp`; Windows: `winget install Google.Libwebp`); without it the PNGs are copied and the frames left
 in the work directory instead. Both scripts print a table of exit code, seconds and bytes per shot
@@ -801,10 +845,20 @@ and exit non-zero if any shot failed.
 Regenerate both sets at each minor release, from the release candidate's build, and commit them with it:
 
 ```bash
-# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images
+# Linux (WSL is fine): a throwaway host and user name (unshare -r -u) so no real name reaches the images.
+# SDL_VIDEO_X11_SCALING_FACTOR=1.75 renders at the Windows set's 175 % scale (SDL reads that hint,
+# Xft.dpi or GDK_SCALE, never Xvfb's -dpi); the expanded-section shots are taken at --section-window,
+# 1440x1200 by default, since on Linux the Actions and Priority cards are taller and push the sections
+# below a 900 px fold.
 cmake --preset release && cmake --build --preset release
-tools/screenshots.sh --webp --hostname tasksmack-demo
+SDL_VIDEO_X11_SCALING_FACTOR=1.75 tools/screenshots.sh --webp --hostname tasksmack-demo
 ```
+
+Under Xvfb, SDL warps the pointer to the window's centre at startup, which hovers a chart and draws its
+tooltip into the shot: keep the pointer parked outside the window for the run (python-xlib's
+`root.warp_pointer()` to a screen corner, repeated every quarter second). The selected process's command
+line is shown in Process Details, so run the binary from a path that names no user (a bind mount of the
+build's `bin/` at `/srv/tasksmack` inside the namespace, `--exe /srv/tasksmack/TaskSmack --process TaskSmack`).
 
 ```powershell
 # Windows: in a Windows Sandbox (its own processes, user and host name) with a win-release build made
@@ -833,24 +887,25 @@ the PR merges under release gating without waiting for the tag.
 
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so seven test-only environment variables (#1559, #172, #2827), read
-once at startup, select a process, open a tab, open the Help or About window, replay a timed script of
-such requests, or write a screenshot of the window and quit, by themselves. With `TASKSMACK_SELECT_PID` or
-`TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
-click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the seven variables, or
-`TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
-cover the capture. Unset, the variables do nothing.
+Agents must not inject clicks or keys, so eight test-only environment variables (#1559, #172, #2827,
+#2869), read once at startup, select a process, open a tab or a sub-tab, open the Help window, the About
+dialog or Settings, replay a timed script of such requests, or write a screenshot of the window and quit, by themselves. With
+`TASKSMACK_SELECT_PID` or `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a
+snapshot, exactly as a click and the row menu's **Details** do, and Process Details opens. If it has not
+appeared after 20 snapshots, one warning is logged and nothing is selected. While any of the eight
+variables, or `TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since
+it would cover the capture. Unset, the variables do nothing.
 
 | Variable | Value |
 |---|---|
 | `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu`, `npu` or `network`. `npu` selects the NPU tab only on a machine that has one. |
-| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
-| `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
+| `TASKSMACK_TAB` | The top-level tab to open, matched in this order: a tab's registered id (`SystemOverview`, `Processes`, `ProcessDetails`, `Services`, `Startup`, `SystemInfo`); one of the aliases `machine`/`overview` (the hostname tab), `details` and `system` (the System Information tab); or a tab's visible label (the hostname, the selected process's name). An id or an alias is never shadowed by another tab's label, so `system` opens System Information even while the machine tab still reads `System` -- its text until the first system sample brings the hostname (#2886); the hostname itself is matchable only once shown, so name the machine tab `machine` at startup. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
+| `TASKSMACK_MACHINE_TAB` | The machine (hostname) tab's sub-tab to bring forward (#2869): `overview`, `cores` (CPU Cores), `gpu`, `npu` or `network` (Network and I/O). Case-insensitive; any other value logs one warning and is ignored. It picks the sub-tab only; the main tab stays `TASKSMACK_TAB`'s (or the default, the machine tab). The sub-tab is asked for until it shows, so a request made before the first sample (CPU Cores and Network and I/O exist only once it is in) still takes effect; one for a sub-tab this machine never draws (`npu` without an accelerator, `network` without network counters) is dropped with one warning after 120 frames drawn with a sample. `TASKSMACK_SCREENSHOT` does not wait for it: give `after` a few seconds, as the screenshot scripts do. |
+| `TASKSMACK_OPEN` | `help` (the Help window), `about` (the About dialog) or `settings` (the Settings dialog, as the title bar's gear and F2 open it; #2827), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_SCREENSHOT` | `<file.png>`, followed in the same value by any of `;after=<seconds>`, `;frames=<N>` and `;fps=<F>` (#2827). Once the tab and selection above have taken effect and `after` seconds (default 3, at most 60) have passed, writes a PNG of the window at its drawable size -- the pixels TaskSmack drew, read back in-app, so no desktop capture is involved -- and quits by the normal close path, so `config.toml` is saved. `frames` above 1 (at most 600) writes `<stem>-0001.png`, `<stem>-0002.png`, ... beside the given path instead, one every 1/`fps` seconds (default 10, 1 to 60) on the app clock, and quits after the last; a frame that renders late is captured as it is and the next keeps its scheduled time. A relative path is taken from the working directory. Logs `Screenshot written: <path> (WxH)` or `Screenshots written: N frames at F fps -> <stem>-NNNN.png (WxH)`. A read or write that fails is logged and the exit code is non-zero, as it is when TaskSmack closed before the capture. An invalid value logs one warning and is ignored; a number out of range is clamped with one. |
-| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `open=<help|about>`; `close=dialog` (closes the Help window and the About dialog); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
+| `TASKSMACK_DEMO` | A comma-separated script of `<seconds>:<action>=<value>` steps (#2827), replayed from the moment the tab and selection above have taken effect -- the same point `TASKSMACK_SCREENSHOT` waits for, so with `after=0` a frame sequence records the script from its start. Each step is issued on the first frame at or after its time on the app clock, through the same in-process requests the variables above and the UI make; nothing is injected as input. Times have up to three decimals, must not decrease from step to step, and are at most 3600. Actions: `tab=<name>` (a main tab, as `TASKSMACK_TAB` names one); `select=name:<process name>` or `select=pid:<n>` (selects the row as a click does, when the process next appears in a snapshot; Process Details follows the selection but the main tab does not change); `details=<overview|gpu|npu|network>` (brings Process Details forward with that tab, as the row menu's **Details** does); `machine=<overview|cores|gpu|npu|network>` (brings the machine tab forward with that sub-tab, as `TASKSMACK_TAB=machine` with `TASKSMACK_MACHINE_TAB` does, #2869); `open=<help|about|settings>` (the Help window, the About dialog or the Settings dialog, as `TASKSMACK_OPEN` names them); `close=dialog` (closes the Help window, the About dialog and the Settings dialog, the last as **Cancel** does, saving nothing); `theme=<id>` (a loaded theme, applied as Settings applies one and saved with the settings); `section=<modules|openfiles|connections|environment|security|services>` (expands that section of Process Details' Overview the next time it is drawn, as a click on its header does; `openfiles` also starts the scan its **Scan** button starts, since the section lists nothing until then). A step naming a tab or theme the app doesn't have logs one warning and is skipped; a value that doesn't parse logs one warning naming the step and the whole script is ignored. The hook's own tab and selection requests are never waited for by `TASKSMACK_SCREENSHOT`: its settle is latched once, and the script's requests live in slots of their own. Example: `TASKSMACK_DEMO="1:tab=processes,3:select=name:explorer.exe,5:details=network,8:theme=dracula"` with `TASKSMACK_SCREENSHOT=walk.png;after=0;frames=120;fps=12` records those 10 s as `walk-0001.png` to `walk-0120.png`. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 | `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only the user's locale `LocaleSetup` builds and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
@@ -1389,7 +1444,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
-| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the same chart over the default window in a 480 px window (where its point budget follows the plot width, #843), the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
 | `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
 
@@ -2081,8 +2136,9 @@ Get-Help tools/measure-idle.ps1 -Full
 
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
-are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
-`ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
+are readable: the background samplers are `ts-sampler-proc` (process enumeration),
+`ts-sampler-sys` (CPU, memory, network, power), `ts-sampler-disk` (disks) and `ts-sampler-gpu`
+(GPUs and NPUs; one thread per domain, #2731), plus `ts-sampler-svc` (the Services tab's list, created
 the first time that tab is shown) and `ts-sampler-auto` (the Startup tab's list, while it's shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
@@ -2779,10 +2835,13 @@ That single push runs two independent workflows:
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
   Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
-  GitHub Release: it creates the release as a **draft**, uploads every asset and `.bundle`,
-  checks the draft's assets match `dist/` by name and size, and only then publishes it
-  (`gh release edit --draft=false --latest`), so a failure part-way leaves a draft, never a
-  public release with missing assets; re-running reuses that draft and overwrites its assets.
+  GitHub Release: it creates the release as a **draft** with a placeholder body ("Release notes
+  follow."; not GitHub's generated notes, which exceed the release-body limit on a big release,
+  #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
+  size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
+  part-way leaves a draft, never a public release with missing assets; re-running reuses that
+  draft and overwrites its assets. The maintainer's approved release notes then replace the
+  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`.
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.

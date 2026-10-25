@@ -2,6 +2,7 @@
 
 #include "App/FontSizeChange.h"
 #include "App/PlatformOpen.h"
+#include "App/SelectOverride.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/ThemeChange.h"
@@ -81,6 +82,16 @@ auto SettingsLayer::userThemesDir() const -> std::filesystem::path
 
 SettingsLayer::~SettingsLayer() = default;
 
+void SettingsLayer::onAttach()
+{
+    // TASKSMACK_OPEN=settings (#2827): open at startup, for an unattended capture. The themes the dialog
+    // lists are loaded by UILayer, pushed before this layer (main.cpp).
+    if (SelectOverride::startupDialog() == SelectOverride::StartupDialog::Settings)
+    {
+        requestOpen();
+    }
+}
+
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
     // No-op
@@ -134,6 +145,13 @@ void SettingsLayer::onEvent(Core::Event& event)
         {
             requestOpen();
             return false; // Don't consume
+        });
+    // TASKSMACK_DEMO's close=dialog (#2827): closes the dialog as Cancel does, on the next render.
+    dispatcher.dispatch<Core::CloseDialogEvent>(
+        [this](Core::CloseDialogEvent&)
+        {
+            m_State.closeRequested = true;
+            return false; // The Help window and the About dialog close on it too
         });
 }
 

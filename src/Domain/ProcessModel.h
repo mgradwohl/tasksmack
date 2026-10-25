@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
@@ -85,7 +86,16 @@ class ProcessModel : public ISamplable
     };
 
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now = [] { return Clock::now(); });
+    /// A model whose probe arrives later, through setProbe() (#2731): nothing is published and the
+    /// capabilities are the defaults until it does.
+    explicit ProcessModel(DeferredProbeTag /*tag*/, NowFunction now = [] { return Clock::now(); });
     ~ProcessModel() override = default;
+
+    /// Gives a model built with DeferredProbeTag its probe (#2731). Reads the probe's capabilities, ticks
+    /// per second and total memory, as the constructor did; the probe is not otherwise read. Meant for
+    /// the sampler thread, before its first sample (the sampler's start hook); thread-safe, and a probe
+    /// already held is replaced.
+    void setProbe(std::unique_ptr<Platform::IProcessProbe> probe);
 
     ProcessModel(const ProcessModel&) = delete;
     ProcessModel& operator=(const ProcessModel&) = delete;
@@ -218,6 +228,9 @@ class ProcessModel : public ISamplable
     void setServiceModel(std::shared_ptr<const ServiceModel> serviceModel);
 
   private:
+    // Set by the constructor or setProbe() (under m_SamplingMutex); refresh()'s null check reads it outside
+    // the lock, on the one sampling thread (the sampler's, which also runs setProbe() from its start
+    // hook), as before.
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     NowFunction m_Now;
     std::shared_ptr<GPUModel> m_GPUModel;               // For per-process GPU data

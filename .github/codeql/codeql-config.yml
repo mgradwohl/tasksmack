@@ -1,12 +1,16 @@
 name: "TaskSmack CodeQL Config"
 
 # Report results for application source code.
-# For the traced (manual) C/C++ build in codeql.yml, paths and paths-ignore filter which results
-# are reported; they do not stop compiled translation units from being extracted. Compiled code is
-# kept out of the database by compiling it outside the traced build step (see the "Configure" and
-# "Build third-party dependencies (untraced)" steps in .github/workflows/codeql.yml).
-# The tests are not built at all there (#1786), so tests/ is no longer listed: it could not report
-# anything.
+# paths and paths-ignore apply only to the interpreted languages and to compiled languages analyzed
+# with build-mode: none. For the traced (manual) C/C++ build in codeql.yml they filter nothing
+# (#2794): with this file in place, 110 of main's 113 results were in .cache/fetchcontent/ headers
+# that src/ includes. What keeps third-party and generated code out of the alerts is the "Keep
+# results under src/" step in .github/workflows/codeql.yml, which drops every SARIF result whose
+# primary location is outside src/ before the upload. The lists below state the same intent and
+# would take effect if the analysis ever moved to build-mode: none. Compiled code is kept out of
+# the database by compiling it outside the traced build step (see the "Configure" and "Build
+# third-party dependencies (untraced)" steps there). The tests are not built at all (#1786), so
+# tests/ is not listed: it could not report anything.
 paths:
   - src
 

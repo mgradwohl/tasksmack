@@ -298,6 +298,13 @@ TEST(StartupViewTest, Labels)
     EXPECT_EQ(startupEnabledLabel(disabled), "Disabled"); // no time recorded
     disabled.enabled = true;
     EXPECT_EQ(startupEnabledLabel(disabled), "Enabled");
+    // #2541: Linux's autostart entries, and one another desktop starts.
+    EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartUser), "Autostart (your folder)");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::XdgAutostartSystem), "Autostart (system)");
+    Platform::StartupEntry otherDesktop;
+    otherDesktop.enabled = false;
+    otherDesktop.notSwitchableReason = "Starts only in KDE";
+    EXPECT_EQ(startupEnabledLabel(otherDesktop), "Not started here");
 }
 
 // The Windows-only Startup tab's remaining branches (#1395, Windows half).

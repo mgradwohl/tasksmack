@@ -17,12 +17,25 @@
 namespace Platform
 {
 
-LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevicesRoot, std::string accelClassRoot)
+LinuxGPUProbe::LinuxGPUProbe(const std::string& drmBasePath, const std::string& pciDevicesRoot, std::string accelClassRoot)
+    : LinuxGPUProbe(std::make_unique<DRMGPUProbe>(drmBasePath),
+                    std::make_unique<DRMGPUProbe>(
+                        drmBasePath, DRMGPUProbe::VramQuery{}, "/proc", DRMGPUProbe::MonotonicClock{}, DRMGPUProbe::CardKind::AmdClients),
+                    pciDevicesRoot,
+                    std::move(accelClassRoot))
+{}
+
+LinuxGPUProbe::LinuxGPUProbe(std::unique_ptr<DRMGPUProbe> drmProbe,
+                             std::unique_ptr<DRMGPUProbe> amdClientsProbe,
+                             const std::string& pciDevicesRoot,
+                             std::string accelClassRoot)
     : m_NVMLProbe(std::make_unique<NVMLGPUProbe>(pciDevicesRoot)),
-      m_DRMProbe(std::make_unique<DRMGPUProbe>(std::move(drmBasePath))),
+      m_DRMProbe(std::move(drmProbe)),
       m_ROCmProbe(std::make_unique<ROCmGPUProbe>(pciDevicesRoot)),
+      m_AmdClientsProbe(std::move(amdClientsProbe)),
       m_AccelProbe(std::make_unique<AccelNpuProbe>(std::move(accelClassRoot)))
 {
+    shareRocmIds();
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())
     {
@@ -56,6 +69,19 @@ LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevi
 
 LinuxGPUProbe::~LinuxGPUProbe() = default;
 
+bool LinuxGPUProbe::amdClientsActive() const
+{
+    return m_AmdClientsProbe && m_AmdClientsProbe->isAvailable() && m_ROCmProbe && m_ROCmProbe->isAvailable();
+}
+
+void LinuxGPUProbe::shareRocmIds()
+{
+    if (m_AmdClientsProbe && m_ROCmProbe)
+    {
+        m_AmdClientsProbe->setClientGpuIds(m_ROCmProbe->gpuIdsByPciAddress());
+    }
+}
+
 std::vector<GPUInfo> LinuxGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
@@ -79,6 +105,7 @@ std::vector<GPUInfo> LinuxGPUProbe::enumerateGPUs()
     {
         auto rocmGPUs = m_ROCmProbe->enumerateGPUs();
         gpus.insert(gpus.end(), rocmGPUs.begin(), rocmGPUs.end());
+        shareRocmIds();
     }
 
     // NPUs and compute accelerators, from the accel subsystem (#1827). Listed even when none is now:
@@ -121,6 +148,11 @@ std::vector<GPUCounters> LinuxGPUProbe::readGPUCounters()
         auto rocmCounters = m_ROCmProbe->readGPUCounters();
         counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
     }
+    // The amdgpu cards' clients, read now for readProcessGPUCounters(); ROCm reports the cards (#2589).
+    if (amdClientsActive())
+    {
+        static_cast<void>(m_AmdClientsProbe->readGPUCounters());
+    }
 
     // NPU busy time (#1827)
     if (m_AccelProbe)
@@ -143,12 +175,20 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
         counters.insert(counters.end(), nvmlCounters.begin(), nvmlCounters.end());
     }
 
-    // Phase 5: DRM per-process metrics (not available via sysfs)
-    // Phase 6: ROCm per-process metrics (not available via ROCm SMI)
-    if (m_ROCmProbe && m_ROCmProbe->isAvailable())
+    // Phase 5: DRM per-process metrics for Intel GPUs, from the clients' fdinfo the last readGPUCounters()
+    // read (#2589, #2892)
+    if (m_DRMProbe && m_DRMProbe->isAvailable())
     {
-        auto rocmCounters = m_ROCmProbe->readProcessGPUCounters();
-        counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
+        auto drmCounters = m_DRMProbe->readProcessGPUCounters();
+        counters.insert(counters.end(), drmCounters.begin(), drmCounters.end());
+    }
+
+    // Phase 6: AMD per-process metrics: ROCm SMI has none, so they come from the amdgpu cards' DRM
+    // clients, under ROCm's GPU ids (#2589)
+    if (amdClientsActive())
+    {
+        auto amdCounters = m_AmdClientsProbe->readProcessGPUCounters();
+        counters.insert(counters.end(), amdCounters.begin(), amdCounters.end());
     }
 
     // NPU and compute-accelerator memory per process, from the accel clients' fdinfo (#1827).
@@ -167,6 +207,12 @@ bool LinuxGPUProbe::rescanGPUs(GPURescan depth)
     const bool nvmlChanged = m_NVMLProbe && m_NVMLProbe->rescanGPUs(depth);
     const bool drmChanged = m_DRMProbe && m_DRMProbe->rescanGPUs(depth);
     const bool rocmChanged = m_ROCmProbe && m_ROCmProbe->rescanGPUs(depth);
+    // Its cards are ROCm's, which reports a change in them; this only finds their clients again.
+    if (m_AmdClientsProbe)
+    {
+        static_cast<void>(m_AmdClientsProbe->rescanGPUs(depth));
+        shareRocmIds();
+    }
     const bool accelChanged = m_AccelProbe && m_AccelProbe->rescanGPUs(depth);
     return nvmlChanged || drmChanged || rocmChanged || accelChanged;
 }
@@ -221,6 +267,13 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || rocmCaps.hasPerProcessUtilization;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || rocmCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || rocmCaps.supportsMultiGPU;
+    }
+    // AMD per process, from the amdgpu cards' DRM clients (#2589)
+    if (amdClientsActive())
+    {
+        const GPUCapabilities clientCaps = m_AmdClientsProbe->capabilities();
+        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || clientCaps.hasPerProcessMetrics;
+        caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || clientCaps.hasPerProcessUtilization;
     }
 
     // The accel devices add per-process NPU memory, apart from the GPUs' per-process data, and no sensor

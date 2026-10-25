@@ -142,15 +142,21 @@ All platform-specific window behavior uses `Core::VideoBackend` abstraction:
 
 **Backend Queries:**
 - `VideoBackend::isWayland()`, `isX11()`, `isXWaylandFallback()`, `isWindows()`
-- `supportsClientSideMaximize()`, `supportsGlobalMouseState()`
+- `supportsClientSideMaximize()`, `supportsGlobalMouseState()`, `usesSystemDrag()`, `usesSystemResize()`
 - Never directly parse `SDL_GetCurrentVideoDriver()` outside VideoBackend
 
 **Maximize/Restore:** Native Wayland delegates to the compositor. X11/XWayland ask the window manager to maximize
 (`SDL_MaximizeWindow`) when it supports EWMH maximize (#1339), and otherwise position the window client-side.
 Windows always maximizes client-side.
 
-**Drag Handling:** Native Wayland hands title-bar drag to the compositor (`SDL_HITTEST_DRAGGABLE`, #744), and
-drag/resize tracking reads window-local mouse state; X11/XWayland/Windows use global mouse state
-(`TitleBarLayer::queryMouseState()`).
+**Drag Handling:** The window's SDL hit test (`TitleBarLayer::hitTest()`, decided by `computeWindowHitTestAt()` in
+`App/TitleBarGeometry.h` from the geometry the bar draws with) says who runs a title-bar drag and a border resize,
+per `VideoBackend::usesSystemDrag()`/`usesSystemResize()`. Native Wayland hands both to the compositor
+(`SDL_HITTEST_DRAGGABLE`, #744). Windows hands the empty title bar to its own move loop (`SDL_HITTEST_DRAGGABLE` ->
+`HTCAPTION`), which is where Aero Snap, the snap preview and drag-to-the-top live (#2716), but keeps the border resize
+client-side, since the OS resize loop would block SDL's event pump; a client-side maximized window's title bar stays
+client-side too, so the drag restores it under the pointer (#2715). X11/XWayland keep the client-side drag and hand
+the borders to the window manager. The client-side drag/resize reads window-local mouse state on native Wayland and
+global mouse state elsewhere (`TitleBarLayer::queryMouseState()`). Buttons answer `SDL_HITTEST_NORMAL` everywhere.
 
 **Compositor Safety:** Never assume GNOME/KDE/Sway/Hyprland specifics; implement graceful fallback. Test matrix: `docs/dev/wayland-test-matrix.md`.
