@@ -4,6 +4,7 @@
 /// draw no plot, the optional series (Shared, Power) follow the capabilities, and a gap-only
 /// history and a hovered gap render (the tooltip shows N/A rather than tripping on NaN).
 
+#include "App/Panels/ProcessDetailsChartHelpers.h"
 #include "App/Panels/ProcessDetailsCharts.h"
 #include "App/Panels/ProcessDetailsHistory.h"
 #include "App/Panels/ProcessDetailsPanel_HistoryHelpers.h"
@@ -11,6 +12,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -20,6 +22,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -27,6 +30,7 @@
 #include <functional>
 #include <limits>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -44,6 +48,7 @@ constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
 
 /// One plot's series, by legend label (series with a hidden "##" label are not listed).
 using SeriesLabels = std::set<std::string>;
+using Detail::ProcessSeries;
 
 /// What every supported reading of a busy process looks like at sample @p i.
 [[nodiscard]] Detail::ProcessHistoryPoint busyPoint(std::size_t i)
@@ -190,6 +195,10 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
         ImGui::End();
         ImGui::Render();
     }
+
+    /// Every axis of the Overview, Network and I/O, GPU and NPU tabs, for a history of @p makePoint
+    /// samples, against the bound its helper's series form gives (EveryAxisCoversTheSeriesItsHelperNames).
+    void expectEveryAxisCoversItsSeries(Detail::ProcessHistoryPoint (*makePoint)(std::size_t));
 
     /// The Overview's charts as the panel draws them: in a fill layout and an aligned chart stack.
     void renderOverview(ProcessDetailsCharts& charts, const ProcessChartContext& ctx)
@@ -1206,6 +1215,209 @@ TEST_F(ProcessDetailsChartsRenderTest, TheThreadsLineIsNotFlattenedByTheHandles)
     }
     ASSERT_GE(handlesAt, 0);
     EXPECT_GT(threadsAt, handlesAt);
+}
+
+/// The first plot ImPlot knows whose series include @p label, or null.
+[[nodiscard]] ImPlotPlot* findPlotWith(std::string_view label)
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    for (int i = 0; i < context.Plots.GetBufSize(); ++i)
+    {
+        ImPlotPlot* plot = context.Plots.GetByIndex(i);
+        if (plot == nullptr)
+        {
+            continue;
+        }
+        for (int item = 0; item < plot->Items.GetLegendCount(); ++item)
+        {
+            if (std::string_view(plot->Items.GetLegendLabel(item)) == label)
+            {
+                return plot;
+            }
+        }
+    }
+    return nullptr;
+}
+
+/// @p history's time axis as the charts build it, seconds before its newest sample. Every sample of
+/// ChartInputs' history is inside the 300 s window, so the window's maxima are the same as at any
+/// frame's "now".
+[[nodiscard]] std::vector<double> timeAxisOf(const Detail::ProcessDetailsHistory& history)
+{
+    const std::span<const double> stamps = history.timestamps();
+    std::vector<double> x;
+    x.reserve(stamps.size());
+    for (const double stamp : stamps)
+    {
+        x.push_back(stamp - stamps.back());
+    }
+    return x;
+}
+
+/// Each chart's Y range, against what @p expected says it is.
+void expectAxisMax(const char* chart, ImPlotPlot* plot, ImAxis axis, double expected)
+{
+    ASSERT_NE(plot, nullptr) << chart;
+    ASSERT_TRUE(plot->Axes[axis].Enabled) << chart;
+    EXPECT_DOUBLE_EQ(plot->Axes[axis].Range.Max, expected) << chart;
+}
+
+// The charts size their axes from the window's maxima kept between frames (windowSeriesMax(), #843),
+// through the helpers' "from the window's max" form; the helpers' tests use the form that takes the
+// series. This pins each call site to the series it must cover: every axis the Overview, Network and
+// I/O, GPU and NPU tabs draw has exactly the bound the series form gives, so a series dropped from
+// one (say Swap from Memory) fails here. On a chart's first frames its eased bound is its target.
+//
+// busyPoint() with series @p Big made the largest on its axis, so dropping it from its axis changes
+// the bound: the CPU series to half again the total (still under 100 %), the others to far above
+// every other series.
+template<ProcessSeries Big> [[nodiscard]] Detail::ProcessHistoryPoint dominantPoint(std::size_t i)
+{
+    Detail::ProcessHistoryPoint point = busyPoint(i);
+    constexpr bool CPU_SERIES = (Big == ProcessSeries::CpuTotal) || (Big == ProcessSeries::CpuUser) || (Big == ProcessSeries::CpuSystem);
+    point.*Detail::PROCESS_SERIES_FIELDS[static_cast<std::size_t>(Big)] =
+        CPU_SERIES ? 1.5 * point.cpuTotal : (static_cast<double>(i) + 1.0) * 1.0e9;
+    return point;
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, EveryAxisCoversTheSeriesItsHelperNames)
+{
+    struct Variant
+    {
+        const char* name;
+        Detail::ProcessHistoryPoint (*point)(std::size_t);
+    };
+    // The plain history, then each series that does not already set its axis made the one that does.
+    const std::array variants{
+        Variant{.name = "busy", .point = busyPoint},
+        Variant{.name = "User", .point = dominantPoint<ProcessSeries::CpuUser>},
+        Variant{.name = "System", .point = dominantPoint<ProcessSeries::CpuSystem>},
+        Variant{.name = "Shared", .point = dominantPoint<ProcessSeries::MemoryShared>},
+        Variant{.name = "Private", .point = dominantPoint<ProcessSeries::MemoryPrivate>},
+        Variant{.name = "Swap", .point = dominantPoint<ProcessSeries::MemorySwap>},
+        Variant{.name = "GDI Objects", .point = dominantPoint<ProcessSeries::GdiObjects>},
+        Variant{.name = "I/O Read", .point = dominantPoint<ProcessSeries::IoRead>},
+        Variant{.name = "Net Sent", .point = dominantPoint<ProcessSeries::NetSent>},
+        Variant{.name = "NPU Dedicated", .point = dominantPoint<ProcessSeries::NpuDedicatedMemory>},
+    };
+    bool first = true;
+    for (const Variant& variant : variants)
+    {
+        SCOPED_TRACE(variant.name);
+        if (!first)
+        {
+            // A new ImGui context: every chart's first frame again, so every bound is its target.
+            TearDown();
+            SetUp();
+        }
+        first = false;
+        expectEveryAxisCoversItsSeries(variant.point);
+    }
+}
+
+void ProcessDetailsChartsRenderTest::expectEveryAxisCoversItsSeries(Detail::ProcessHistoryPoint (*makePoint)(std::size_t))
+{
+    using UI::Widgets::percentAxisUpperBound;
+    using UI::Widgets::rateAxisUpperBound;
+    ChartInputs inputs(makePoint);
+    useTheNpu(inputs);
+    inputs.ctx.hasPowerUsage = true;
+    inputs.ctx.hasPrivateBytes = true;
+    inputs.ctx.hasSwapBytes = true;
+    const auto& history = inputs.history;
+    const auto& smoothed = inputs.smoothed;
+    const std::vector<double> xs = timeAxisOf(history);
+    const std::span<const double> x(xs);
+    const double xMin = -inputs.ctx.maxHistorySeconds;
+    const auto series = [&history](ProcessSeries which)
+    {
+        return history.series(which);
+    };
+
+    ProcessDetailsCharts charts;
+    renderOverview(charts, inputs.ctx);
+    renderOverview(charts, inputs.ctx);
+    expectAxisMax(
+        "CPU",
+        findPlotWith("Total"),
+        ImAxis_Y1,
+        percentAxisUpperBound(Detail::cpuAxisDataMax(
+            x, xMin, series(ProcessSeries::CpuTotal), series(ProcessSeries::CpuUser), series(ProcessSeries::CpuSystem), smoothed)));
+    ImPlotPlot* memory = findPlotWith("Virtual →");
+    expectAxisMax("Memory",
+                  memory,
+                  ImAxis_Y1,
+                  rateAxisUpperBound(Detail::memoryAxisDataMax(x,
+                                                               xMin,
+                                                               series(ProcessSeries::MemoryUsed),
+                                                               series(ProcessSeries::MemoryShared),
+                                                               smoothed,
+                                                               series(ProcessSeries::MemoryPrivate),
+                                                               series(ProcessSeries::MemorySwap)),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
+    expectAxisMax("Virtual",
+                  memory,
+                  ImAxis_Y2,
+                  rateAxisUpperBound(Detail::virtualAxisDataMax(x, xMin, series(ProcessSeries::Virtual), smoothed),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
+    expectAxisMax("Power",
+                  findPlotWith("Power"),
+                  ImAxis_Y1,
+                  rateAxisUpperBound(Detail::powerAxisDataMax(x, xMin, series(ProcessSeries::Power), smoothed),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
+    ImPlotPlot* resources = findPlotWith("Threads");
+#ifdef _WIN32
+    const double threads =
+        Detail::threadAxisDataMaxWithGdi(x, xMin, series(ProcessSeries::Threads), series(ProcessSeries::GdiObjects), smoothed);
+#else
+    const double threads = Detail::threadAxisDataMax(x, xMin, series(ProcessSeries::Threads), smoothed);
+#endif
+    expectAxisMax("Threads", resources, ImAxis_Y1, rateAxisUpperBound(threads, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
+    expectAxisMax("Page Faults",
+                  resources,
+                  ImAxis_Y2,
+                  rateAxisUpperBound(Detail::faultAxisDataMax(x, xMin, series(ProcessSeries::PageFaults), smoothed),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
+    expectAxisMax("Handles",
+                  resources,
+                  ImAxis_Y3,
+                  rateAxisUpperBound(Detail::handleAxisDataMax(x, xMin, series(ProcessSeries::Handles), smoothed),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
+
+    runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+    runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+    expectAxisMax(
+        "I/O",
+        findPlotWith("Write"),
+        ImAxis_Y1,
+        rateAxisUpperBound(Detail::ioAxisDataMax(x, xMin, series(ProcessSeries::IoRead), series(ProcessSeries::IoWrite), smoothed),
+                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+    expectAxisMax("Network",
+                  findPlotWith("Received"),
+                  ImAxis_Y1,
+                  rateAxisUpperBound(
+                      Detail::networkAxisDataMax(x, xMin, series(ProcessSeries::NetSent), series(ProcessSeries::NetReceived), smoothed),
+                      UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+
+    runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+    runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+    expectAxisMax("GPU Memory",
+                  findPlot(SeriesLabels{"Memory"}),
+                  ImAxis_Y1,
+                  rateAxisUpperBound(Detail::gpuMemoryAxisDataMax(x, xMin, series(ProcessSeries::GpuMemory), smoothed),
+                                     UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
+
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        runFrame([&] { charts.renderNpuTab(inputs.ctx); });
+    }
+    expectAxisMax(
+        "NPU Memory",
+        findPlotWith("Dedicated"),
+        ImAxis_Y1,
+        rateAxisUpperBound(Detail::npuMemoryAxisDataMax(
+                               x, xMin, series(ProcessSeries::NpuDedicatedMemory), series(ProcessSeries::NpuSharedMemory), smoothed),
+                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
 }
 
 #ifdef _WIN32

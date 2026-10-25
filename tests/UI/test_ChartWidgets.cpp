@@ -462,6 +462,49 @@ TEST(ReducedValuesStampTest, ValuesAreGatheredAgainOnlyWhenThePointsAreRebuilt)
     EXPECT_TRUE(stamp.stale(cache));
 }
 
+TEST(ReducedValuesStampTest, ACacheResetBetweenFramesIsNeverTakenForTheOneTheValuesCameFrom)
+{
+    // A reset (or replaced, or pruned and re-made) cache counts its rebuilds from 0 again, so after as
+    // many rebuilds as before its count matches the recorded one. Its points are other points, maybe
+    // of another length: the values must be gathered again, or x and its series would disagree in
+    // length and drawing would read past the end of a series (#843 review).
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.assign({ReducedPoint{.index = 0, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 0, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(key, rebuild);
+    stamp.markGathered(cache);
+    const std::uint64_t rebuildsBefore = cache.rebuildCount();
+
+    cache = ReducedPointsCache{};
+    EXPECT_TRUE(stamp.stale(cache)); // no points at all yet
+    std::ignore = cache.points(key, rebuild);
+    ASSERT_EQ(cache.rebuildCount(), rebuildsBefore); // the count the stamp recorded...
+    EXPECT_TRUE(stamp.stale(cache));                 // ...but other points
+    stamp.markGathered(cache);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // Two caches never name their points alike either.
+    ReducedPointsCache other;
+    std::ignore = other.points(key, rebuild);
+    EXPECT_NE(other.pointsId(), cache.pointsId());
+    EXPECT_TRUE(stamp.stale(other));
+}
+
+TEST(ChartWidgetsStackTest, DrawablePointCountNeverPassesTheShortestSeries)
+{
+    const std::vector<double> x{-3.0, -2.0, -1.0, 0.0};
+    const std::vector<double> held{1.0, 2.0, 3.0, 4.0, 4.0}; // gathered values with their held value
+    const std::vector<double> stale{1.0, 2.0};               // values gathered for other points
+    EXPECT_EQ(drawablePointCount(x, {&held}), 4);
+    EXPECT_EQ(drawablePointCount(x, {&held, &stale}), 2);
+    EXPECT_EQ(drawablePointCount(x, {}), 4);
+    EXPECT_EQ(drawablePointCount({}, {&held}), 0);
+}
+
 TEST(ReducedValuesStampTest, AnUncachedGenerationIsStaleEveryFrame)
 {
     // A chart that names no data generation rebuilds its points on every call, so its values too.

@@ -1121,6 +1121,7 @@ class ReducedPointsCache
             m_Key = key;
             m_Valid = key.generation != 0;
             ++m_RebuildCount;
+            m_PointsId = nextPointsId();
         }
         return m_Points;
     }
@@ -1137,10 +1138,26 @@ class ReducedPointsCache
         return m_RebuildCount;
     }
 
+    /// Names the points the last rebuild made, uniquely in the process (never 0 once points() has
+    /// run): unlike rebuildCount(), a cache reset or replaced -- or a frame-keyed entry pruned and made
+    /// again -- never names other points with a number it named before (ReducedValuesStamp).
+    [[nodiscard]] std::uint64_t pointsId() const noexcept
+    {
+        return m_PointsId;
+    }
+
   private:
+    /// A number no earlier call returned, for pointsId(). UI thread only, like the caches.
+    [[nodiscard]] static std::uint64_t nextPointsId() noexcept
+    {
+        static std::uint64_t id = 0;
+        return ++id;
+    }
+
     std::vector<ReducedPoint> m_Points;
     Key m_Key;
     std::uint64_t m_RebuildCount = 0;
+    std::uint64_t m_PointsId = 0;
     bool m_Valid = false;
 };
 
@@ -1148,21 +1165,24 @@ class ReducedPointsCache
 /// values (#843). They are until the cache rebuilds: an unchanged key names the same samples (see
 /// ReducedPointsCache). So a chart that draws straight from the points -- the stacked CPU charts' band
 /// edges and lines -- gathers its y values once per choice of points and, in the frames between
-/// samples, rebuilds only their x, which moves with now (gatherReducedTimes()).
+/// samples, rebuilds only their x, which moves with now (gatherReducedTimes()). The points are told
+/// apart by ReducedPointsCache::pointsId(), unique in the process, so a cache reset or replaced
+/// between two frames can never pass for the one the values were gathered from.
 class ReducedValuesStamp
 {
   public:
     /// Whether the values must be gathered again for @p cache's current points: nothing has been
-    /// gathered yet, or the cache has rebuilt them since. Call it after cache.points() for the frame.
+    /// gathered yet, or the points are not the ones they were gathered from. Call it after
+    /// cache.points() for the frame.
     [[nodiscard]] bool stale(const ReducedPointsCache& cache) const noexcept
     {
-        return !m_Valid || m_PointsRebuild != cache.rebuildCount();
+        return !m_Valid || cache.pointsId() == 0 || m_PointsId != cache.pointsId();
     }
 
     /// Records that the values were gathered from @p cache's current points.
     void markGathered(const ReducedPointsCache& cache) noexcept
     {
-        m_PointsRebuild = cache.rebuildCount();
+        m_PointsId = cache.pointsId();
         m_Valid = true;
         ++m_GatherCount;
     }
@@ -1174,7 +1194,7 @@ class ReducedValuesStamp
     }
 
   private:
-    std::uint64_t m_PointsRebuild = 0;
+    std::uint64_t m_PointsId = 0;
     std::uint64_t m_GatherCount = 0;
     bool m_Valid = false;
 };
@@ -1324,6 +1344,20 @@ inline void appendHeldValues(std::initializer_list<std::vector<double>*> ys)
             y->push_back(y->back());
         }
     }
+}
+
+/// How many points a chart drawing @p ys against @p x may read: x's length, or a shorter series'
+/// length should one be shorter, so drawing never reads past the end of a series (#843 review). With
+/// values gathered for x's points (ReducedValuesStamp) and their held value appended, each series
+/// holds x.size() points or one more, and this is x.size().
+[[nodiscard]] inline int drawablePointCount(const std::vector<double>& x, std::initializer_list<const std::vector<double>*> ys) noexcept
+{
+    std::size_t count = x.size();
+    for (const std::vector<double>* y : ys)
+    {
+        count = std::min(count, y->size());
+    }
+    return UI::Format::checkedCount(count);
 }
 
 /// `values` at each of a reduction's kept `points`, in `out` (resized to match): the sample at the

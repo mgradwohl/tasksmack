@@ -14,6 +14,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 namespace
 {
@@ -119,6 +120,27 @@ TEST(ChartFrameCachesTest, TheStackedChartGathersItsBandEdgesOncePerGeneration)
     static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
     EXPECT_EQ(state.cpuStackReduction.rebuildCount(), reductions + 1);
     EXPECT_EQ(state.cpuStackValues.gatherCount(), gathers + 1);
+}
+
+TEST(ChartFrameCachesTest, AStackedChartWhoseCacheIsResetGathersItsBandEdgesAgain)
+{
+    // The points cache reset between two frames under the same generation (a panel rebuilt, an entry
+    // pruned and made again) counts its rebuilds from 0 again; the band edges must still be gathered
+    // for its new points, each as long as their x or one longer, never shorter (#843 review).
+    const ChartGeometry::HeadlessChartContext context;
+    ChartGeometry::SceneState state;
+    static_cast<void>(ChartGeometry::renderSettledFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    const std::uint64_t gathers = state.cpuStackValues.gatherCount();
+
+    state.cpuStackReduction = UI::Widgets::ReducedPointsCache{};
+    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    EXPECT_EQ(state.cpuStackValues.gatherCount(), gathers + 1);
+    for (const std::vector<double>* edge :
+         {&state.cpuStack.base, &state.cpuStack.userTop, &state.cpuStack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop})
+    {
+        EXPECT_GE(edge->size(), state.cpuStack.x.size());
+        EXPECT_LE(edge->size(), state.cpuStack.x.size() + 1);
+    }
 }
 
 } // namespace

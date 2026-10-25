@@ -917,7 +917,9 @@ void ProcessDetailsCharts::drawCpuBandsAndLines(std::span<const double> timeData
     // tooltip's lookup over timeData still finds real samples only. Each series is drawn to x's
     // length, so its held value is drawn only when x reaches now.
     UI::Widgets::holdTimeToNow(stack.x, UI::Widgets::maxHoldSecondsForAxis(timeData));
-    const int drawCount = UI::Format::checkedCount(stack.x.size());
+    // Never past the end of a series' values, whatever they were gathered for (#843 review).
+    const int drawCount =
+        UI::Widgets::drawablePointCount(stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &m_CpuPlotTotal, &m_CpuPlotSystem});
 
     // The bands share their labels with the User and System lines below, so ImPlot treats each band
     // and its line as one item. Each band is filled only where both of its own edges have a reading,

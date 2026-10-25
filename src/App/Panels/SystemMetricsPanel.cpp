@@ -938,7 +938,9 @@ void SystemMetricsPanel::renderOverview()
                 // x = 0 (#1016), unless it is too old to pass for current (#1147). Each band is drawn
                 // to x's length, so its held value is drawn only when x reaches now.
                 UI::Widgets::holdTimeToNow(stack.x, UI::Widgets::maxHoldSecondsForAxis(breakdownTimeData));
-                const int stackCount = UI::Format::checkedCount(stack.x.size());
+                // Never past the end of a band's values, whatever they were gathered for (#843 review).
+                const int stackCount =
+                    UI::Widgets::drawablePointCount(stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &yIowaitTop, &yBusyTop});
 
                 // Each band is filled only where both of its edges have a reading (#1149).
                 const auto shadeBand =

@@ -323,7 +323,8 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state, std::size_t
         }
         gatherReducedTimes(points, time, stack.x);
         holdTimeToNow(stack.x, maxHoldSecondsForAxis(time));
-        const int stackCount = UI::Format::checkedCount(stack.x.size());
+        const int stackCount =
+            drawablePointCount(stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop});
 
         plotShadedBand(CPU_USER_LABEL, stack.x.data(), stack.base.data(), stack.userTop.data(), stackCount, scheme.cpuUserFill);
         plotShadedBand(CPU_SYSTEM_LABEL, stack.x.data(), stack.userTop.data(), stack.systemTop.data(), stackCount, scheme.cpuSystemFill);
