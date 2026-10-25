@@ -784,6 +784,8 @@ struct WindowDragObserved
     bool restoredByDrag = false;
     int frames = 0;
     int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
+    /// The simulated focus loss reached TitleBarLayer after the first press (loseFocusAfterFirstPress).
+    bool focusLossDelivered = false;
     bool timedOut = false;
 };
 
@@ -804,10 +806,34 @@ class WindowDragDriverLayer : public Core::Layer
 {
   public:
     /// @p loseFocusAfterFirstPress: send the window a focus loss right after the first drag's press,
-    /// as another window taking the focus would (#2221).
+    /// as another window taking the focus would (#2221). The pointer stays where it pressed until the
+    /// focus loss has been handled, and only then moves to where the drag goes (#2901): the frame's
+    /// event drain stops at Application's DRAIN_BUDGET_MS, so under load the press and the focus loss
+    /// can land in different frames, and a drag step between them, with the pointer already moved,
+    /// would move the window before the drag was lost and no press would ever be made again.
     WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar, bool loseFocusAfterFirstPress = false)
         : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar), m_LoseFocusAfterFirstPress(loseFocusAfterFirstPress)
     {}
+
+    /// Runs after TitleBarLayer's, for each event: the focus loss pushed after the first press has
+    /// ended the drag by the time it gets here.
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (event == nullptr || m_FocusLoss == FocusLoss::None || m_FocusLoss == FocusLoss::Delivered)
+        {
+            return;
+        }
+        const SDL_WindowID windowId = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        if (m_FocusLoss == FocusLoss::Pushed && event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.windowID == windowId)
+        {
+            m_FocusLoss = FocusLoss::PressHandled;
+        }
+        else if (m_FocusLoss == FocusLoss::PressHandled && event->type == SDL_EVENT_WINDOW_FOCUS_LOST && event->window.windowID == windowId)
+        {
+            m_FocusLoss = FocusLoss::Delivered;
+            m_Observed.focusLossDelivered = true;
+        }
+    }
 
     void onRender() override
     {
@@ -855,11 +881,18 @@ class WindowDragDriverLayer : public Core::Layer
             const char* driver = SDL_GetCurrentVideoDriver();
             m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
             m_Position = {x, y};
-            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
-            pushButton(titleX, TITLE_Y, true, 1);
             if (m_LoseFocusAfterFirstPress)
             {
+                // Still, until the focus loss has ended the drag (see the constructor).
+                hold(x + static_cast<int>(titleX), y + static_cast<int>(TITLE_Y));
+                pushButton(titleX, TITLE_Y, true, 1);
                 pushFocusLost();
+                m_FocusLoss = FocusLoss::Pushed;
+            }
+            else
+            {
+                hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                pushButton(titleX, TITLE_Y, true, 1);
             }
             m_PressedAt = frame;
             m_Deadline = frame + WAIT_LIMIT;
@@ -868,6 +901,19 @@ class WindowDragDriverLayer : public Core::Layer
         }
         case Phase::AwaitMoved:
             m_Observed.movedByDrag = std::pair{x, y} != m_Position;
+            if ((m_FocusLoss == FocusLoss::Pushed || m_FocusLoss == FocusLoss::PressHandled) && waiting())
+            {
+                next(Phase::AwaitMoved, 1); // the press and the focus loss aren't both handled yet
+                break;
+            }
+            if (m_FocusLoss == FocusLoss::Delivered && !m_DragTargetHeld)
+            {
+                // The drag is lost: the pointer moves on with the button held, and only a press made
+                // again can move the window, a full RETRY_EVERY frames from now.
+                hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                m_DragTargetHeld = true;
+                m_PressedAt = frame;
+            }
             if (!m_Observed.movedByDrag && m_Observed.positionsApply && waiting())
             {
                 if (retryDue())
@@ -1007,6 +1053,15 @@ class WindowDragDriverLayer : public Core::Layer
         static_cast<void>(SDL_PushEvent(&event));
     }
 
+    /// How far the focus loss pushed after the first press has got (loseFocusAfterFirstPress).
+    enum class FocusLoss : std::uint8_t
+    {
+        None,         ///< Not pushed: loseFocusAfterFirstPress is false, or the first press isn't made yet
+        Pushed,       ///< The press and then the focus loss are queued
+        PressHandled, ///< TitleBarLayer began the drag
+        Delivered,    ///< TitleBarLayer ended it on the focus loss
+    };
+
     /// The steps, in order; each waits m_NextFrame before running.
     enum class Phase : std::uint8_t
     {
@@ -1033,6 +1088,8 @@ class WindowDragDriverLayer : public Core::Layer
     WindowDragObserved& m_Observed;
     App::TitleBarLayer& m_TitleBar;
     bool m_LoseFocusAfterFirstPress = false;
+    FocusLoss m_FocusLoss = FocusLoss::None;
+    bool m_DragTargetHeld = false; ///< The pointer moved on after the focus loss
     Phase m_Phase = Phase::BeginDrag;
     int m_NextFrame = SETTLE;
     int m_Deadline = 0;
@@ -1078,7 +1135,9 @@ TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
 
 // #2221: TitleBarLayer ends a drag on a focus loss, so a focus loss right after the press (another
 // test's window mapping over this one, on the X server they share under `xvfb-run ctest -j`) left the
-// drag step waiting out its deadline with the window unmoved. The driver presses again.
+// drag step waiting out its deadline with the window unmoved. The driver presses again. The pointer
+// moves only once the focus loss has ended the drag, so the move can only come from that press made
+// again, however the frames split the events (#2901).
 TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress)
 {
     if (!hasDisplay())
@@ -1103,7 +1162,9 @@ TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress
         FAIL() << "Application failed after the display probe passed: " << e.what();
     }
 
+    RecordProperty("pressRetries", observed.pressRetries);
     EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.focusLossDelivered) << "TitleBarLayer handled the press, then the focus loss";
     if (observed.positionsApply)
     {
         EXPECT_TRUE(observed.movedByDrag);
