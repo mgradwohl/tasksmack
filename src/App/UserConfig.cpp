@@ -9,6 +9,7 @@
 #include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Theme.h"
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <format>
 #include <locale>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -657,6 +659,9 @@ using NewFileOwner::ownerForNewFiles;
 
 void UserConfig::load()
 {
+    // A background save still being written is finished first: the file is read as it leaves it.
+    m_Writer.flush();
+    const std::scoped_lock writeLock(m_WriteMutex);
     if (m_IsLoaded)
     {
         return;
@@ -719,8 +724,11 @@ bool UserConfig::saveStepFails(SaveStep step) const noexcept
     return true;
 }
 
-void UserConfig::save()
+bool UserConfig::writeSettings(const UserSettings& settings)
 {
+    // One write at a time, a background one or save()'s, and m_Synced with it.
+    const std::scoped_lock writeLock(m_WriteMutex);
+
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
     std::error_code ec;
@@ -743,7 +751,7 @@ void UserConfig::save()
         if (ec)
         {
             spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
-            return;
+            return false;
         }
 #ifndef _WIN32
         if (newFileOwner.has_value())
@@ -754,7 +762,7 @@ void UserConfig::save()
                 {
                     spdlog::error(
                         "Not saving settings: can't give {} to its user: {}", Core::pathToUtf8(dir), std::system_category().message(errno));
-                    return;
+                    return false;
                 }
             }
         }
@@ -784,7 +792,7 @@ void UserConfig::save()
         if (++linkHops > MAX_LINK_HOPS)
         {
             spdlog::error("Not saving settings: {} is a loop of links", Core::pathToUtf8(m_ConfigPath));
-            return;
+            return false;
         }
         const std::filesystem::path target = std::filesystem::read_symlink(destination, ec);
         if (ec)
@@ -796,7 +804,7 @@ void UserConfig::save()
     if (ec)
     {
         spdlog::error("Not saving settings: can't resolve the link {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
-        return;
+        return false;
     }
 
     // Start from the file as it is. One that exists but can't be read or parsed is left alone:
@@ -808,7 +816,7 @@ void UserConfig::save()
     if (ec)
     {
         spdlog::error("Not saving settings: can't check {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
-        return;
+        return false;
     }
     if (fileExists)
     {
@@ -820,7 +828,7 @@ void UserConfig::save()
         {
             spdlog::error(
                 "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
-            return;
+            return false;
         }
         // Fail closed: a file whose permissions can't be read must not be replaced by one with the
         // default mode, which could make a 0600 config world-readable.
@@ -828,14 +836,14 @@ void UserConfig::save()
         if (ec)
         {
             spdlog::error("Not saving settings: can't read the permissions of {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
-            return;
+            return false;
         }
         originalPermissions = status.permissions();
     }
 
     // Write only what TaskSmack changed since it last read or wrote the file; everything else in
     // the file, including edits made while TaskSmack runs, stays as it is (#1122).
-    const toml::table mine = buildTable(m_Settings);
+    const toml::table mine = buildTable(settings);
     // A file in the old format, listing every column, is rewritten to list only the chosen ones
     // (#1376), once; the version written below keeps it from being migrated again.
     migrateLegacyProcessColumns(document, mine);
@@ -900,7 +908,7 @@ void UserConfig::save()
     if (!text)
     {
         spdlog::error("Not saving settings: couldn't serialise them");
-        return;
+        return false;
     }
     const std::string contents = std::move(text).str();
 
@@ -964,7 +972,7 @@ void UserConfig::save()
             spdlog::error("Not saving settings: can't read the owner of {}: {}",
                           Core::pathToUtf8(m_ConfigPath),
                           std::system_category().message(errno));
-            return;
+            return false;
         }
         owner = FileOwner{.uid = original.st_uid, .gid = original.st_gid};
     }
@@ -991,7 +999,7 @@ void UserConfig::save()
             spdlog::error("Not saving settings: can't read the access control list of {}: {}",
                           Core::pathToUtf8(m_ConfigPath),
                           std::system_category().message(errno));
-            return;
+            return false;
         }
         accessAcl = std::move(acl);
     }
@@ -1012,7 +1020,7 @@ void UserConfig::save()
     {
         spdlog::error(
             "Failed to create a temporary file beside {}: {}", Core::pathToUtf8(m_ConfigPath), std::system_category().message(errno));
-        return;
+        return false;
     }
     stagingGuard.created(tempPath);
     const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl, [this](SaveStep step) { return saveStepFails(step); });
@@ -1034,7 +1042,7 @@ void UserConfig::save()
     if (!file.is_open())
     {
         spdlog::error("Failed to create a temporary file beside {}", Core::pathToUtf8(m_ConfigPath));
-        return;
+        return false;
     }
     stagingGuard.created(tempPath);
     file << contents;
@@ -1052,7 +1060,7 @@ void UserConfig::save()
         spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}",
                       Core::pathToUtf8(tempPath),
                       Core::pathToUtf8(m_ConfigPath));
-        return;
+        return false;
     }
 
     if (saveStepFails(SaveStep::Rename))
@@ -1066,16 +1074,54 @@ void UserConfig::save()
     if (ec)
     {
         spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
-        return;
+        return false;
     }
 
     stagingGuard.published();
-    spdlog::info("Saved config to {}", Core::pathToUtf8(m_ConfigPath));
-    m_Synced = m_Settings;
+    m_Synced = settings;
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).
     m_IsLoaded = false;
+    return true;
+}
+
+void UserConfig::save()
+{
+    // A background save still in flight or queued is written first, so it can't land over the newer
+    // settings written here (#2916): the last state always wins.
+    m_Writer.flush();
+    if (writeSettings(m_Settings))
+    {
+        spdlog::info("Saved config to {}", Core::pathToUtf8(m_ConfigPath));
+    }
+}
+
+void UserConfig::saveInBackground()
+{
+    // A copy: the UI thread goes on changing m_Settings while the worker writes this one.
+    m_Writer.submit(m_Settings);
+}
+
+void UserConfig::flushPendingSave()
+{
+    m_Writer.flush();
+}
+
+bool UserConfig::writeInBackground(const UserSettings& settings)
+{
+    if (!writeSettings(settings))
+    {
+        return false;
+    }
+    spdlog::info("Saved config to {} on {}", Core::pathToUtf8(m_ConfigPath), Platform::SETTINGS_SAVE_THREAD_NAME);
+    return true;
+}
+
+void UserConfig::reportBackgroundSaveFailure() const
+{
+    // Once for a run of failures (CoalescingWriter); each one's reason is logged by writeSettings().
+    spdlog::warn("Settings weren't saved to {}; the next change tries again", Core::pathToUtf8(m_ConfigPath));
 }
 
 void UserConfig::applyToApplication() const

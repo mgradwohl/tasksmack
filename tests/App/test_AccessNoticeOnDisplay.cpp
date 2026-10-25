@@ -13,6 +13,7 @@
 #include "App/ElevationNoticeLayer.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/AuthorizeWording.h"
+#include "App/ShellLayer.h"
 #include "Core/AnimationRequest.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -25,6 +26,7 @@
 #include "Mocks/FakeBroker.h"
 #include "UI/UILayer.h"
 
+#include <SDL3/SDL_video.h>
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its buttons
@@ -34,6 +36,7 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -63,9 +66,10 @@ constexpr bool LINUX = App::AccessChoice::HOST == App::AccessChoice::AccessPlatf
 /// What the driver saw.
 struct NoticeObserved
 {
-    bool opened = false;   ///< The notice was up
-    bool closed = false;   ///< And then wasn't
-    bool captured = false; ///< Saved to TASKSMACK_UI_CAPTURE_DIR
+    std::string titleAfter; ///< The OS window title once the notice closed and the shell caught up
+    bool opened = false;    ///< The notice was up
+    bool closed = false;    ///< And then wasn't
+    bool captured = false;  ///< Saved to TASKSMACK_UI_CAPTURE_DIR
     int frames = 0;
     bool timedOut = false;
 };
@@ -75,8 +79,11 @@ struct NoticeObserved
 class NoticeDriverLayer : public Core::Layer
 {
   public:
-    NoticeDriverLayer(NoticeObserved& observed, const char* label) : Layer("NoticeDriver"), m_Observed(observed), m_Label(label)
+    NoticeDriverLayer(NoticeObserved& observed, const char* label, bool waitForTitle = false)
+        : Layer("NoticeDriver"), m_Observed(observed), m_Label(label), m_WaitForTitle(waitForTitle)
     {}
+
+    static constexpr const char* ADMINISTRATOR_TITLE = "TaskSmack (Administrator)";
 
     void onAttach() override
     {
@@ -114,7 +121,13 @@ class NoticeDriverLayer : public Core::Layer
         if (m_Observed.opened && modal == nullptr)
         {
             m_Observed.closed = true;
-            Core::Application::get().stop();
+            // With the shell, wait for its title to follow the session (it checks each update).
+            const char* title = SDL_GetWindowTitle(Core::Application::get().getWindow().getHandle());
+            m_Observed.titleAfter = title != nullptr ? title : "";
+            if (!m_WaitForTitle || m_Observed.titleAfter == ADMINISTRATOR_TITLE || ++m_TitleFrames > TITLE_WAIT)
+            {
+                Core::Application::get().stop();
+            }
         }
     }
 
@@ -145,8 +158,12 @@ class NoticeDriverLayer : public Core::Layer
     static constexpr int RETRY = 10;
     static constexpr int MAX_FRAMES = 1200;
 
+    static constexpr int TITLE_WAIT = 120;
+
     NoticeObserved& m_Observed;
     const char* m_Label;
+    bool m_WaitForTitle = false;
+    int m_TitleFrames = 0;
     int m_PressAt = 0;
     bool m_CaptureNext = false;
 };
@@ -193,6 +210,43 @@ TEST(AccessNoticeOnDisplayTest, AdministratorHoldsTheHelperForTheSessionAndClose
     EXPECT_TRUE(observed.closed) << "a held session closes the notice";
     EXPECT_TRUE(broker->heldForSession());
     EXPECT_EQ(broker->connectCount(), 1) << "one prompt";
+}
+
+// #2728: once the session is Administrator, the OS window title says so; the shell sets it.
+TEST(AccessNoticeOnDisplayTest, AnAdministratorSessionTitlesTheWindowSo)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    if constexpr (!LINUX)
+    {
+        GTEST_SKIP() << "Windows' Administrator restarts TaskSmack elevated, which isn't built yet";
+    }
+    const auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    broker->setHoldsSessions(true);
+    App::Detail::setSharedPrivilegedBrokerForTesting(broker);
+    Core::ApplicationSpecification spec;
+    spec.Name = "TaskSmack";
+    spec.VSync = false;
+    NoticeObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::ShellLayer>();
+        app.pushLayer<App::ElevationNoticeLayer>();
+        app.pushLayer<NoticeDriverLayer>(observed, App::AuthorizeWording::LINUX_WORDING.switchSession, true);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        ADD_FAILURE() << "Application failed after the display probe passed: " << e.what();
+    }
+    App::Detail::setSharedPrivilegedBrokerForTesting(nullptr);
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(broker->heldForSession());
+    EXPECT_EQ(observed.titleAfter, NoticeDriverLayer::ADMINISTRATOR_TITLE);
 }
 
 TEST(AccessNoticeOnDisplayTest, ContinueAsStandardClosesItHoldingNothing)

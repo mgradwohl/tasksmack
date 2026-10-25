@@ -96,7 +96,7 @@ void ElevationNoticeLayer::suppressFutureNotices()
 {
     auto& config = UserConfig::get();
     config.settings().showPrivilegeNotice = false;
-    config.save();
+    config.saveInBackground(); // written by a worker, never in this render path (#2916)
     spdlog::info("ElevationNoticeLayer: user suppressed privilege notice");
 }
 

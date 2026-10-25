@@ -38,10 +38,27 @@ On Windows, acting on or reading another account's or an elevated process as an 
 
 ### Verifying a Release
 
-Every file on a release (each architecture's `.deb`, `.tar.gz` and `.zip`, and the SBOM) is signed with
-[Sigstore](https://www.sigstore.dev/) via keyless OIDC signing in the `release` GitHub Actions
-workflow. Each asset has a matching `<filename>.bundle` alongside it on the same release —
-download both, then verify with [cosign](https://github.com/sigstore/cosign):
+Every file on a release (each architecture's `.deb`, `.tar.gz` and `.zip`, the Windows build-inputs
+manifests and the source SBOM) is built and published by TaskSmack's `release` GitHub Actions
+workflow, and you can check that a download came from it in two ways. Either one is enough.
+
+**With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
+[artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
+(SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) installed and signed in
+(`gh auth login`), run this on the downloaded file:
+
+```bash
+gh attestation verify <asset> --repo mgradwohl/tasksmack
+```
+
+A successful check prints `Verification succeeded!` and the workflow run that built the file. To
+also require that it was the release workflow, rather than any workflow in the repository, add
+`--signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`.
+
+**With cosign:** every file is also signed with [Sigstore](https://www.sigstore.dev/) via keyless
+OIDC signing. Each asset has a matching `<filename>.bundle` alongside it on the same release —
+download both, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub
+account:
 
 ```bash
 cosign verify-blob \
@@ -55,10 +72,11 @@ Replace the filename with whichever asset you downloaded. The two `--certificate
 verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
 from any other source fails to verify. A successful check prints `Verified OK`.
 
-If a release asset has **no matching `.bundle` file**, or `cosign verify-blob` **fails**, do not
-trust that asset — treat it as potentially tampered with. Re-download from the
-[Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather than a mirror, and
-if the problem persists, report it per [SECURITY.md](https://github.com/mgradwohl/tasksmack/blob/main/SECURITY.md).
+If a release asset has **no matching `.bundle` file**, or either `gh attestation verify` or
+`cosign verify-blob` **fails**, do not trust that asset — treat it as potentially tampered with.
+Re-download from the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather
+than a mirror, and if the problem persists, report it per
+[SECURITY.md](https://github.com/mgradwohl/tasksmack/blob/main/SECURITY.md).
 
 ---
 

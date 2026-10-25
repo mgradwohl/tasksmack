@@ -2,6 +2,7 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/Linux/BrokerSocket.h"
+#include "Platform/Linux/HelperSandboxMode.h"
 
 #include <algorithm>
 #include <array>
@@ -43,8 +44,8 @@ constexpr const char* ALREADY_ASKING = "already asking for an administrator's pa
 
 } // namespace
 
-PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> launcher)
-    : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher))
+PkexecBroker::PkexecBroker(std::string helperPath, std::vector<std::string> launcher, HelperSandbox::Mode sandbox)
+    : m_HelperPath(std::move(helperPath)), m_Launcher(std::move(launcher)), m_Sandbox(sandbox)
 {}
 
 PkexecBroker::~PkexecBroker()
@@ -155,6 +156,10 @@ std::expected<void, std::string> PkexecBroker::connectWithin(const std::stop_tok
     std::vector<std::string> arguments = m_Launcher;
     arguments.push_back(m_HelperPath);
     arguments.emplace_back("--broker");
+    if (m_Sandbox == HelperSandbox::Mode::Enforce)
+    {
+        arguments.emplace_back(HelperSandbox::ENFORCE_ARGUMENT);
+    }
     std::vector<char*> argv;
     argv.reserve(arguments.size() + 1);
     for (std::string& argument : arguments)

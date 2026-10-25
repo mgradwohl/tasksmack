@@ -344,6 +344,8 @@ set(COMMON_TEST_SOURCES
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
+    # The chart caches that keep per-publication work out of the frames between samples (#843)
+    UI/test_ChartFrameCaches.cpp
     UI/test_NowBarsRender.cpp
     # ImPlot lines sample ImGui's baked line texture (#2744)
     UI/test_PlotLineTexture.cpp
@@ -494,6 +496,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_BackgroundTask.cpp
+    App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
@@ -649,6 +652,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_BrokerServer.cpp  # the privileged helper's server and tasksmack-helper itself (#2307)
+    Platform/test_HelperSandbox.cpp  # tasksmack-helper's seccomp allow-list (#2752)
     Platform/test_SyscallTrace.cpp
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp

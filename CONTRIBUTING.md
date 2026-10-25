@@ -2841,14 +2841,16 @@ That single push runs two independent workflows:
 
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
-  Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
-  GitHub Release: it creates the release as a **draft** with a placeholder body ("Release notes
-  follow."; not GitHub's generated notes, which exceed the release-body limit on a big release,
-  #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
+  Validation](#release-artifact-validation)), signs everything with Sigstore and attests its build
+  provenance, and publishes the GitHub Release: it creates the release as a **draft**
+  with a placeholder body ("Release notes follow." and the two verification commands; not GitHub's
+  generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
   size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. The maintainer's approved release notes then replace the
-  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`.
+  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
+  Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
+  placeholder has.
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
@@ -2898,17 +2900,41 @@ still run, emulated, on the ARM64 runner. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
 `Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
-no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
+no X server needed). Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout; a
 signed x64 `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
 one), checks a signed `.zip`'s Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
 launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
-llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Beyond the process staying up
-for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
+llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Each launch
+gets its own `TASKSMACK_CONFIG_DIR` and quits by itself rather than being killed (#2720):
+`TASKSMACK_SCREENSHOT=<png>;after=5` writes one frame 5 seconds after startup and closes the window through
+the normal close request, so `ShellLayer::onDetach()` saves `config.toml`. The launch must exit 0, log no
+`[error]` or `[critical]` line, and leave a `config.toml` with its `[theme]` table, which nothing writes before
+the shutdown's save in a run with no input. Each binary is launched twice (#2726): from an empty config dir,
+then from a copy of the `config.toml` v0.8.0 saved (`tests/App/fixtures/config-v0.8.0.toml`). The second
+launch must save the file in today's format (`config_version`, which v0.8.0 didn't write) and keep the
+settings changed in v0.8.0's UI when the fixture was made (theme, font size, refresh rate, history, the
+privilege notice, and the User and Threads columns; see `tests/App/fixtures/README.md`).
+On Windows the runs must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
+TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dirs and `%TEMP%`, and the folder
+they ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
 asset layout. These are still smoke checks, not a functional test suite.
+
+`validate-linux-upgrade` checks the upgrade from v0.8.0 (#2726), x64 only since v0.8.0 published no
+arm64 `.deb`. It runs in an `ubuntu:26.04` container, because v0.8.0's `.deb` depends on `libsdl3-0`,
+which Ubuntu 24.04 doesn't have. It fetches `TaskSmack-0.8.0-Linux.deb` from the v0.8.0 release and
+checks its SHA-256 against the pinned one and the release's asset digest. Then it installs it with apt
+and runs v0.8.0 for 5 seconds from the fixture `config.toml`, in `$HOME/.config/tasksmack`, where both
+versions read it. It installs this run's `.deb` over it, which must exit 0 with no dpkg file conflict
+and upgrade `tasksmack` in place. Every file the new `.deb` ships must be installed as it ships it (docs
+and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
+over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
+itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
+the fixture's settings kept. Windows has no package to upgrade while the `.zip` is portable; an NSIS
+upgrade check waits on the installer (#2302).
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
@@ -3060,7 +3086,7 @@ To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
 `cpack -G "TGZ;DEB"`, and compare `sha256sum` of the result against the published asset.
 
-Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`; see the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `cosign verify-blob` procedure.
+Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`. A tag run also records a GitHub artifact attestation (SLSA build provenance, `actions/attest-build-provenance`) covering the same files; a dry run skips it, since attestations are public and permanent, and lists the files a tag run would attest instead (#2673). See the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `gh attestation verify` and `cosign verify-blob` procedures.
 
 ### Changelog
 

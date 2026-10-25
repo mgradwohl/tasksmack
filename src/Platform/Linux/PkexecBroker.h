@@ -15,6 +15,7 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
+#include "Platform/Linux/HelperSandboxMode.h"
 
 #include <atomic>
 #include <chrono>
@@ -42,8 +43,11 @@ class PkexecBroker final : public IPrivilegedBroker
     static constexpr std::chrono::seconds CALL_TIMEOUT{10};
 
     /// @p launcher is the command the helper is started through, "pkexec" in the app; the tests pass
-    /// none and run the helper directly. @p helperPath is the helper to start.
-    explicit PkexecBroker(std::string helperPath, std::vector<std::string> launcher = {"pkexec"});
+    /// none and run the helper directly. @p helperPath is the helper to start. @p sandbox is what its
+    /// seccomp filter does with a call it doesn't list (#2752): the tests ask for Enforce.
+    explicit PkexecBroker(std::string helperPath,
+                          std::vector<std::string> launcher = {"pkexec"},
+                          HelperSandbox::Mode sandbox = HelperSandbox::Mode::Log);
     ~PkexecBroker() override;
     PkexecBroker(const PkexecBroker&) = delete;
     PkexecBroker& operator=(const PkexecBroker&) = delete;
@@ -92,6 +96,7 @@ class PkexecBroker final : public IPrivilegedBroker
 
     std::string m_HelperPath;
     std::vector<std::string> m_Launcher;
+    HelperSandbox::Mode m_Sandbox;
     mutable std::mutex m_Mutex;
     // Mutable: connected() lets go of a helper that has exited (#2449).
     mutable int m_Fd = -1;

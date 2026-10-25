@@ -34,6 +34,7 @@
 #include "Core/Window.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "ScratchConfigDir.h"
 #include "UI/IconTextureCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
@@ -298,7 +299,12 @@ class TitleBarDriverLayer : public Core::Layer
     int m_Deadline = 0;
 };
 
-TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
+/// Each test on its own, empty config directory (#2932): one doesn't open on what another, or the same
+/// test's last --gtest_repeat iteration, saved on close.
+class UiLayersOnDisplayTest : public TestSupport::ScratchConfigDirTest
+{};
+
+TEST_F(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
 {
     if (!hasDisplay())
     {
@@ -397,7 +403,7 @@ class DisplayScaleDriverLayer : public Core::Layer
     DisplayScaleObserved& m_Observed;
 };
 
-TEST(UiLayersOnDisplayTest, ADisplayScaleChangeRebuildsTheFontsAtTheMeasuredScale)
+TEST_F(UiLayersOnDisplayTest, ADisplayScaleChangeRebuildsTheFontsAtTheMeasuredScale)
 {
     if (!hasDisplay())
     {
@@ -474,7 +480,7 @@ class IconTextureDriverLayer : public Core::Layer
     IconTextureObserved& m_Observed;
 };
 
-TEST(UiLayersOnDisplayTest, TheOpenGLIconBackendMakesAndDeletesATexture)
+TEST_F(UiLayersOnDisplayTest, TheOpenGLIconBackendMakesAndDeletesATexture)
 {
     if (!hasDisplay())
     {
@@ -663,7 +669,7 @@ class WindowEventDriverLayer : public Core::Layer
     std::pair<int, int> m_Size;
 };
 
-TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
+TEST_F(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
 {
     if (!hasDisplay())
     {
@@ -743,7 +749,7 @@ class AboutDriverLayer : public Core::Layer
     AboutObserved& m_Observed;
 };
 
-TEST(UiLayersOnDisplayTest, AboutOpensWithItsIconAndTitleFont)
+TEST_F(UiLayersOnDisplayTest, AboutOpensWithItsIconAndTitleFont)
 {
     if (!hasDisplay())
     {
@@ -784,6 +790,8 @@ struct WindowDragObserved
     bool restoredByDrag = false;
     int frames = 0;
     int pressRetries = 0; ///< Presses made again because the one before had no effect (#2221)
+    /// The simulated focus loss reached TitleBarLayer after the first press (loseFocusAfterFirstPress).
+    bool focusLossDelivered = false;
     bool timedOut = false;
 };
 
@@ -804,10 +812,34 @@ class WindowDragDriverLayer : public Core::Layer
 {
   public:
     /// @p loseFocusAfterFirstPress: send the window a focus loss right after the first drag's press,
-    /// as another window taking the focus would (#2221).
+    /// as another window taking the focus would (#2221). The pointer stays where it pressed until the
+    /// focus loss has been handled, and only then moves to where the drag goes (#2901): the frame's
+    /// event drain stops at Application's DRAIN_BUDGET_MS, so under load the press and the focus loss
+    /// can land in different frames, and a drag step between them, with the pointer already moved,
+    /// would move the window before the drag was lost and no press would ever be made again.
     WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar, bool loseFocusAfterFirstPress = false)
         : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar), m_LoseFocusAfterFirstPress(loseFocusAfterFirstPress)
     {}
+
+    /// Runs after TitleBarLayer's, for each event: the focus loss pushed after the first press has
+    /// ended the drag by the time it gets here.
+    void onSDLEvent(SDL_Event* event) override
+    {
+        if (event == nullptr || m_FocusLoss == FocusLoss::None || m_FocusLoss == FocusLoss::Delivered)
+        {
+            return;
+        }
+        const SDL_WindowID windowId = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        if (m_FocusLoss == FocusLoss::Pushed && event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.windowID == windowId)
+        {
+            m_FocusLoss = FocusLoss::PressHandled;
+        }
+        else if (m_FocusLoss == FocusLoss::PressHandled && event->type == SDL_EVENT_WINDOW_FOCUS_LOST && event->window.windowID == windowId)
+        {
+            m_FocusLoss = FocusLoss::Delivered;
+            m_Observed.focusLossDelivered = true;
+        }
+    }
 
     void onRender() override
     {
@@ -855,11 +887,18 @@ class WindowDragDriverLayer : public Core::Layer
             const char* driver = SDL_GetCurrentVideoDriver();
             m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
             m_Position = {x, y};
-            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
-            pushButton(titleX, TITLE_Y, true, 1);
             if (m_LoseFocusAfterFirstPress)
             {
+                // Still, until the focus loss has ended the drag (see the constructor).
+                hold(x + static_cast<int>(titleX), y + static_cast<int>(TITLE_Y));
+                pushButton(titleX, TITLE_Y, true, 1);
                 pushFocusLost();
+                m_FocusLoss = FocusLoss::Pushed;
+            }
+            else
+            {
+                hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                pushButton(titleX, TITLE_Y, true, 1);
             }
             m_PressedAt = frame;
             m_Deadline = frame + WAIT_LIMIT;
@@ -868,6 +907,19 @@ class WindowDragDriverLayer : public Core::Layer
         }
         case Phase::AwaitMoved:
             m_Observed.movedByDrag = std::pair{x, y} != m_Position;
+            if ((m_FocusLoss == FocusLoss::Pushed || m_FocusLoss == FocusLoss::PressHandled) && waiting())
+            {
+                next(Phase::AwaitMoved, 1); // the press and the focus loss aren't both handled yet
+                break;
+            }
+            if (m_FocusLoss == FocusLoss::Delivered && !m_DragTargetHeld)
+            {
+                // The drag is lost: the pointer moves on with the button held, and only a press made
+                // again can move the window, a full RETRY_EVERY frames from now.
+                hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+                m_DragTargetHeld = true;
+                m_PressedAt = frame;
+            }
             if (!m_Observed.movedByDrag && m_Observed.positionsApply && waiting())
             {
                 if (retryDue())
@@ -1007,6 +1059,15 @@ class WindowDragDriverLayer : public Core::Layer
         static_cast<void>(SDL_PushEvent(&event));
     }
 
+    /// How far the focus loss pushed after the first press has got (loseFocusAfterFirstPress).
+    enum class FocusLoss : std::uint8_t
+    {
+        None,         ///< Not pushed: loseFocusAfterFirstPress is false, or the first press isn't made yet
+        Pushed,       ///< The press and then the focus loss are queued
+        PressHandled, ///< TitleBarLayer began the drag
+        Delivered,    ///< TitleBarLayer ended it on the focus loss
+    };
+
     /// The steps, in order; each waits m_NextFrame before running.
     enum class Phase : std::uint8_t
     {
@@ -1033,6 +1094,8 @@ class WindowDragDriverLayer : public Core::Layer
     WindowDragObserved& m_Observed;
     App::TitleBarLayer& m_TitleBar;
     bool m_LoseFocusAfterFirstPress = false;
+    FocusLoss m_FocusLoss = FocusLoss::None;
+    bool m_DragTargetHeld = false; ///< The pointer moved on after the focus loss
     Phase m_Phase = Phase::BeginDrag;
     int m_NextFrame = SETTLE;
     int m_Deadline = 0;
@@ -1041,7 +1104,7 @@ class WindowDragDriverLayer : public Core::Layer
     std::pair<int, int> m_Size;
 };
 
-TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
+TEST_F(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
 {
     if (!hasDisplay())
     {
@@ -1078,8 +1141,10 @@ TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
 
 // #2221: TitleBarLayer ends a drag on a focus loss, so a focus loss right after the press (another
 // test's window mapping over this one, on the X server they share under `xvfb-run ctest -j`) left the
-// drag step waiting out its deadline with the window unmoved. The driver presses again.
-TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress)
+// drag step waiting out its deadline with the window unmoved. The driver presses again. The pointer
+// moves only once the focus loss has ended the drag, so the move can only come from that press made
+// again, however the frames split the events (#2901).
+TEST_F(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress)
 {
     if (!hasDisplay())
     {
@@ -1103,7 +1168,9 @@ TEST(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePress
         FAIL() << "Application failed after the display probe passed: " << e.what();
     }
 
+    RecordProperty("pressRetries", observed.pressRetries);
     EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.focusLossDelivered) << "TitleBarLayer handled the press, then the focus loss";
     if (observed.positionsApply)
     {
         EXPECT_TRUE(observed.movedByDrag);
@@ -1545,7 +1612,7 @@ class DragGeometryDriverLayer : public Core::Layer
 // #2715: a plain title-bar drag follows the pointer 1:1, a right-edge resize keeps the left edge, and
 // a drag that restores a maximized window keeps the pointer where it pressed on the title bar, across
 // and down, pressed near either end.
-TEST(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
+TEST_F(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
 {
     if (!hasDisplay())
     {
@@ -2027,7 +2094,7 @@ class EdgeResizeDriverLayer : public Core::Layer
 // three although the Close button's slot reaches it: the corner square is the border's (#2882). The
 // maths is unit-tested in ComputeResizeGeometryTest and ResizeTrackerTest; this checks the window on
 // a display ends up where it says.
-TEST(UiLayersOnDisplayTest, TitleBarResizesFromEveryEdgeAndCornerAndStopsAtTheMinimumSize)
+TEST_F(UiLayersOnDisplayTest, TitleBarResizesFromEveryEdgeAndCornerAndStopsAtTheMinimumSize)
 {
     if (!hasDisplay())
     {
@@ -2317,7 +2384,7 @@ class FastLeftResizeDriverLayer : public Core::Layer
 // #2717: a fast resize from the left edge -- the pointer stepped STEP_PX on every frame, 600 px in
 // and back out -- leaves the right edge where it was and the top and bottom edges untouched, after
 // each leg and after the release: no drift.
-TEST(UiLayersOnDisplayTest, AFastLeftEdgeResizeKeepsTheRightEdgeWhereItWas)
+TEST_F(UiLayersOnDisplayTest, AFastLeftEdgeResizeKeepsTheRightEdgeWhereItWas)
 {
     if (!hasDisplay())
     {
@@ -2628,7 +2695,7 @@ class HitTestDriverLayer : public Core::Layer
 // (HTCAPTION to Windows, so its own move loop and Aero Snap run the drag) and the edges stay the app's
 // resize; on X11 the edges are the window manager's and the bar the app's; on native Wayland both are
 // the compositor's. Maximized, nothing is a resize edge.
-TEST(UiLayersOnDisplayTest, TheHitTestCallbackAnswersForTheRealWindow)
+TEST_F(UiLayersOnDisplayTest, TheHitTestCallbackAnswersForTheRealWindow)
 {
     if (!hasDisplay())
     {
@@ -2727,14 +2794,14 @@ class UiLayerDriverLayer : public Core::Layer
     UiLayerObserved& m_Observed;
 };
 
-TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
+TEST_F(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
 {
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
-    // A user theme beside config.toml (AppTestsMain.cpp's temporary directory): merged over the
-    // built-ins by its file name (#1127).
+    // A user theme beside config.toml (this test's own config directory): merged over the built-ins by
+    // its file name (#1127).
     const std::optional<std::filesystem::path>& configDir = Core::ConfigDirOverride::active();
     ASSERT_TRUE(configDir.has_value());
     const std::filesystem::path userThemes = configDir.value_or(std::filesystem::path{}) / "themes";
@@ -3044,7 +3111,7 @@ class ShellKeysDriverLayer : public Core::Layer
     UI::FontSize m_FontBefore = UI::FontSize::Medium;
 };
 
-TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
+TEST_F(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
 {
     if (!hasDisplay())
     {
@@ -3217,14 +3284,14 @@ class ShellDriverLayer : public Core::Layer
     int m_ClosePresses = 0;
 };
 
-TEST(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)
+TEST_F(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)
 {
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
-    // Never the user's own config: AppTestsMain.cpp points TASKSMACK_CONFIG_DIR at a temporary
-    // directory before any test, and the save on close must land there.
+    // Never the user's own config: the fixture points TASKSMACK_CONFIG_DIR's directory, and UserConfig,
+    // at this test's own temporary directory, and the save on close must land there.
     const std::optional<std::filesystem::path>& configDir = Core::ConfigDirOverride::active();
     ASSERT_TRUE(configDir.has_value());
     ASSERT_EQ(App::UserConfig::get().configPath().parent_path(), configDir.value_or(std::filesystem::path{}));
@@ -3545,25 +3612,21 @@ std::optional<std::string> readWholeFile(const std::filesystem::path& path)
     return std::move(text).str();
 }
 
-TEST(UiLayersOnDisplayTest, AFirstRunOpensAtTheDefaultsAndSavesTheGoldenConfig)
+TEST_F(UiLayersOnDisplayTest, AFirstRunOpensAtTheDefaultsAndSavesTheGoldenConfig)
 {
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
-    // A first launch: an empty TASKSMACK_CONFIG_DIR (AppTestsMain.cpp's temporary directory, which the
-    // tests before this one may have saved to) and UserConfig back at its defaults.
+    // A first launch: the fixture's empty TASKSMACK_CONFIG_DIR, and UserConfig at its defaults.
     const std::optional<std::filesystem::path>& configOverride = Core::ConfigDirOverride::active();
     ASSERT_TRUE(configOverride.has_value());
     const std::filesystem::path configDir = configOverride.value_or(std::filesystem::path{});
+    ASSERT_EQ(configDir, scratchConfigDir());
     std::error_code ec;
-    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(configDir, ec))
-    {
-        std::filesystem::remove_all(entry.path(), ec);
-    }
     ASSERT_TRUE(std::filesystem::is_empty(configDir, ec)) << ec.message();
     App::UserConfig& config = App::UserConfig::get();
-    config.resetConfigPathForTesting(configDir / "config.toml");
+    ASSERT_EQ(config.configPath(), configDir / "config.toml");
 
     // Composed as main.cpp's runApp() composes it: the size from the loaded settings, the saved
     // geometry applied, then the same layers in the same order.

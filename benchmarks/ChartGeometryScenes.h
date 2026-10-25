@@ -194,11 +194,13 @@ struct SceneData
 };
 
 /// What a scene keeps between frames, as the panels keep it in members: the stacked chart's point
-/// cache and band buffers, and the data generation its charts name (HistoryChartConfig::dataGeneration).
+/// cache, band buffers and whether they hold its points' values, and the data generation its charts
+/// name (HistoryChartConfig::dataGeneration).
 struct SceneState
 {
     std::uint64_t dataGeneration = UI::Widgets::nextChartDataGeneration();
     UI::Widgets::ReducedPointsCache cpuStackReduction;
+    UI::Widgets::ReducedValuesStamp cpuStackValues;
     UI::Widgets::UserSystemStack cpuStack;
     std::vector<double> cpuIowaitTop;
     std::vector<double> cpuBusyTop;
@@ -269,8 +271,9 @@ bar(std::string_view label, double percent, const ImVec4& color, ImPlotMarker ma
 }
 
 /// SystemMetricsPanel's Overview CPU chart: User, System and I/O Wait bands reduced together and
-/// cached per data generation, an edge along each band, the Total line, and the four now bars with
-/// their value strip.
+/// cached per data generation, their values gathered once per choice of points and their x rebuilt
+/// every frame (#843), an edge along each band, the Total line, and the four now bars with their value
+/// strip.
 ///
 /// Draws the newest @p samples of the history (all of it when there are fewer), on an axis spanning
 /// just those, as the app's history setting does.
@@ -304,18 +307,24 @@ inline void drawCpuStacked(const SceneData& data, SceneState& state, std::size_t
                                            { reduceAlignedPoints<float>(time, {user, system, iowait}, pointBudget, nowSeconds, out); });
 
         auto& stack = state.cpuStack;
-        buildUserSystemStack<float>(points, time, user, system, stack);
-        state.cpuIowaitTop.resize(points.size());
-        state.cpuBusyTop.resize(points.size());
-        for (std::size_t k = 0; k < points.size(); ++k)
+        if (state.cpuStackValues.stale(state.cpuStackReduction))
         {
-            const auto i = static_cast<std::size_t>(points[k].index);
-            state.cpuIowaitTop[k] = 100.0 - static_cast<double>(idle[i]);
-            state.cpuBusyTop[k] = state.cpuIowaitTop[k] - static_cast<double>(iowait[i]);
+            buildUserSystemStackValues<float>(points, user, system, stack);
+            state.cpuIowaitTop.resize(points.size());
+            state.cpuBusyTop.resize(points.size());
+            for (std::size_t k = 0; k < points.size(); ++k)
+            {
+                const auto i = static_cast<std::size_t>(points[k].index);
+                state.cpuIowaitTop[k] = 100.0 - static_cast<double>(idle[i]);
+                state.cpuBusyTop[k] = state.cpuIowaitTop[k] - static_cast<double>(iowait[i]);
+            }
+            appendHeldValues({&stack.base, &stack.userTop, &stack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop});
+            state.cpuStackValues.markGathered(state.cpuStackReduction);
         }
-        holdLastValuesToNow(
-            stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop}, maxHoldSecondsForAxis(time));
-        const int stackCount = UI::Format::checkedCount(stack.x.size());
+        gatherReducedTimes(points, time, stack.x);
+        holdTimeToNow(stack.x, maxHoldSecondsForAxis(time));
+        const int stackCount =
+            drawablePointCount(stack.x, {&stack.base, &stack.userTop, &stack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop});
 
         plotShadedBand(CPU_USER_LABEL, stack.x.data(), stack.base.data(), stack.userTop.data(), stackCount, scheme.cpuUserFill);
         plotShadedBand(CPU_SYSTEM_LABEL, stack.x.data(), stack.userTop.data(), stack.systemTop.data(), stackCount, scheme.cpuSystemFill);
@@ -403,7 +412,8 @@ inline void drawMemory(const SceneData& data, const SceneState& state)
     const auto& scheme = UI::Theme::get().scheme();
     const double xMin = -static_cast<double>(DEFAULT_WINDOW_SAMPLES) * SAMPLE_INTERVAL_SECONDS;
     const int count = UI::Format::checkedCount(data.windowTime.size());
-    const double peak = maxOfSeriesSince(std::span<const double>(data.windowTime), xMin, std::span<const float>(data.memUsed));
+    const double peak = windowSeriesMax(
+        "##MemoryPeak", state.dataGeneration, std::span<const double>(data.windowTime), xMin, std::span<const float>(data.memUsed));
     const SeriesStyle cachedStyle = seriesStyle(SeriesRole::Secondary, 0);
     const SeriesStyle swapStyle = seriesStyle(SeriesRole::Secondary, 1);
 

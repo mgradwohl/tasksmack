@@ -6,6 +6,7 @@
 #include "App/SelectOverride.h"
 #include "App/ShellLayer.h"
 #include "App/ThemeChange.h"
+#include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
@@ -107,11 +108,14 @@ class Issue
 
     void operator()(const DemoOverride::ThemeAction& action) const
     {
-        // As Settings' Apply: saved with the settings, applied at the next frame boundary.
+        // As Settings' Apply: saved with the settings (on the settings worker, #2916), applied at the next
+        // frame boundary.
         if (!changeTheme(action.id))
         {
             spdlog::warn("{}: {}: '{}' is not a loaded theme; skipped", DemoOverride::ENV_VAR, DemoOverride::describe(*m_Step), action.id);
+            return;
         }
+        UserConfig::get().saveInBackground();
     }
 
     void operator()(const DemoOverride::SectionAction& action) const

@@ -508,6 +508,14 @@ void Window::requestClose() noexcept
     m_ShouldClose = true;
 }
 
+void Window::setTitle(const std::string& title)
+{
+    if (m_Handle != nullptr && !SDL_SetWindowTitle(m_Handle, title.c_str()))
+    {
+        spdlog::warn("Window: could not set the title: {}", SDL_GetError());
+    }
+}
+
 void Window::clearCloseRequest() noexcept
 {
     m_ShouldClose = false;

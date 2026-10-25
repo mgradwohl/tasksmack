@@ -52,4 +52,10 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 /// the first call, which also creates the directory (a failure is logged as a warning). Thread-safe.
 [[nodiscard]] const std::optional<std::filesystem::path>& active();
 
+/// Testing only: active() returns @p dir from now on (nullopt: no override), so each test can have its
+/// own config directory (tests/App/ScratchConfigDir.h, #2932). The directory isn't created here, and
+/// the environment is left alone. Not thread-safe: call it only while nothing reads active(), with no
+/// Core::Application and none of its workers running. Application code never calls it.
+void setActiveForTesting(std::optional<std::filesystem::path> dir);
+
 } // namespace Core::ConfigDirOverride

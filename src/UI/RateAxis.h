@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -289,6 +290,84 @@ template<std::ranges::sized_range... Rs>
 [[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const Rs&... series) noexcept
 {
     return std::max({maxOfSeriesSince(x, xMin, series)...});
+}
+
+/// Remembers maxOfSeriesSince() for one axis from frame to frame (#843). A history chart's x is
+/// "seconds before now", so its window slides every frame, but the samples it shows change only when
+/// the data does (a new generation adopted) or the oldest one shown crosses the window's left edge.
+/// The maximum depends on nothing else: the series, the time axis's length and the index of its first
+/// sample at or after xMin (firstIndexAtOrAfter()). A Key names exactly those, so a frame between
+/// samples pays a binary search for its axis instead of a scan of every sample of every series it
+/// draws. As with ReducedPointsCache, a generation of 0 is never kept: value() then computes on every
+/// call.
+class VisibleMaxCache
+{
+  public:
+    /// Most series one cached maximum covers (the Network chart's totals and interface lines).
+    static constexpr std::size_t MAX_SERIES = 6;
+
+    /// One series, by where it is read: within one data generation the series are immutable, so the
+    /// same address and length are the same samples.
+    struct SeriesView
+    {
+        const void* data = nullptr;
+        std::size_t size = 0;
+
+        [[nodiscard]] bool operator==(const SeriesView&) const = default;
+    };
+
+    struct Key
+    {
+        std::uint64_t generation = 0; ///< The data generation the series were read under; 0: never kept
+        std::array<SeriesView, MAX_SERIES> series{};
+        std::size_t axisCount = 0;    ///< The time axis's length
+        std::size_t firstVisible = 0; ///< firstIndexAtOrAfter() of the window's left edge on it
+
+        [[nodiscard]] bool operator==(const Key&) const = default;
+    };
+
+    /// The maximum for @p key: the remembered one if it was computed for exactly this key, otherwise
+    /// `compute()`, remembered.
+    template<typename Compute> [[nodiscard]] double value(const Key& key, const Compute& compute)
+    {
+        if (!m_Valid || key.generation == 0 || key != m_Key)
+        {
+            m_Value = compute();
+            m_Key = key;
+            m_Valid = key.generation != 0;
+            ++m_ComputeCount;
+        }
+        return m_Value;
+    }
+
+    /// How many times value() has computed rather than replayed.
+    [[nodiscard]] std::uint64_t computeCount() const noexcept
+    {
+        return m_ComputeCount;
+    }
+
+  private:
+    Key m_Key;
+    double m_Value = 0.0;
+    std::uint64_t m_ComputeCount = 0;
+    bool m_Valid = false;
+};
+
+/// maxOfSeriesSince(x, xMin, series...), kept in @p cache from frame to frame while @p generation, the
+/// series, the length of @p x and the window's first sample on it stay the same (VisibleMaxCache).
+/// Returns exactly what maxOfSeriesSince() does; only the frames that change one of those scan.
+template<std::ranges::contiguous_range... Rs>
+    requires(sizeof...(Rs) >= 1 && sizeof...(Rs) <= VisibleMaxCache::MAX_SERIES)
+[[nodiscard]] double
+cachedMaxOfSeriesSince(VisibleMaxCache& cache, std::uint64_t generation, std::span<const double> x, double xMin, const Rs&... series)
+{
+    const VisibleMaxCache::Key key{
+        .generation = generation,
+        .series = {VisibleMaxCache::SeriesView{.data = std::ranges::data(series), .size = std::ranges::size(series)}...},
+        .axisCount = x.size(),
+        .firstVisible = firstIndexAtOrAfter(x, xMin),
+    };
+    return cache.value(key, [&] { return std::max({maxOfSeriesSince(x, xMin, series)...}); });
 }
 
 /// A current value a NowBar shows, or NaN -- which withCurrentValues() ignores -- when the bar shows

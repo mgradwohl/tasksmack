@@ -235,6 +235,25 @@ TEST(ChartWidgetsTest, HoldLastValuesToNowLeavesAnAxisAlreadyAtNowAlone)
 
 // ========== Stacked User/System CPU bands (#1180) ==========
 
+/// The whole stack for @p points, as the stacked charts build it: its x (gatherReducedTimes(), every
+/// frame) and its band edges (buildUserSystemStackValues(), once per choice of points, #843).
+template<typename T>
+void buildUserSystemStack(std::span<const ReducedPoint> points,
+                          std::span<const double> time,
+                          std::span<const T> user,
+                          std::span<const T> system,
+                          UserSystemStack& out)
+{
+    gatherReducedTimes(points, time, out.x);
+    buildUserSystemStackValues<T>(points, user, system, out);
+}
+
+/// Whether @p a and @p b are the same value, two NaNs (two gaps) included.
+[[nodiscard]] bool sameValue(double a, double b)
+{
+    return (std::isnan(a) && std::isnan(b)) || a == b; // Exact: both are copies of one sample
+}
+
 TEST(ChartWidgetsStackTest, GatherReducedValuesCopiesKeptSamplesAndGapsAsNaN)
 {
     const std::vector<float> values{1.5F, 2.5F, 3.5F, 4.5F};
@@ -343,6 +362,163 @@ TEST(ChartWidgetsStackTest, UserSystemStackReusesItsBuffersAcrossCalls)
     ASSERT_EQ(stack.base.size(), 1U);
     EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
     EXPECT_DOUBLE_EQ(stack.systemTop[0], 4.0);
+}
+
+TEST(ChartWidgetsStackTest, GatherReducedTimesTakesEachKeptPointsTime)
+{
+    const std::vector<double> time{-4.0, -3.0, -2.0, -1.0};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}};
+    std::vector<double> x{9.0, 9.0, 9.0, 9.0, 9.0}; // Reused buffer, longer than needed
+    gatherReducedTimes(points, time, x);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x[0], -4.0);
+    EXPECT_DOUBLE_EQ(x[1], -2.0); // A gap keeps its time
+    EXPECT_DOUBLE_EQ(x[2], -1.0);
+}
+
+// ========== Values kept across frames, x rebuilt each frame (#843) ==========
+
+TEST(ChartWidgetsStackTest, HeldValuesAndAHeldTimeDrawWhatHoldLastValuesToNowDoes)
+{
+    // The stacked charts keep their band edges across frames with the held value already appended
+    // (appendHeldValues(), once per choice of points) and rebuild only x each frame (holdTimeToNow()).
+    // Drawing x.size() points of each must draw exactly what holdLastValuesToNow() on fresh copies
+    // did: the held point when the last sample is recent, none when it is too old or already at now.
+    constexpr double MAX_HOLD_SECONDS = 4.0;
+    for (const double lastX : {-1.5, -5.0, 0.0})
+    {
+        const std::vector<double> time{-6.0, lastX};
+        const std::vector<double> bandValues{10.0, 20.0};
+        const std::vector<double> lineValues{1.0, std::numeric_limits<double>::quiet_NaN()};
+
+        std::vector<double> xBefore = time;
+        std::vector<double> bandBefore = bandValues;
+        std::vector<double> lineBefore = lineValues;
+        holdLastValuesToNow(xBefore, {&bandBefore, &lineBefore}, MAX_HOLD_SECONDS);
+
+        std::vector<double> band = bandValues;
+        std::vector<double> line = lineValues;
+        appendHeldValues({&band, &line});
+        std::vector<double> x = time;
+        holdTimeToNow(x, MAX_HOLD_SECONDS);
+
+        ASSERT_EQ(x.size(), xBefore.size()) << "last sample at " << lastX;
+        ASSERT_GE(band.size(), x.size());
+        ASSERT_GE(line.size(), x.size());
+        for (std::size_t k = 0; k < x.size(); ++k)
+        {
+            EXPECT_TRUE(sameValue(x[k], xBefore[k])) << "x[" << k << "], last sample at " << lastX;
+            EXPECT_TRUE(sameValue(band[k], bandBefore[k])) << "band[" << k << "], last sample at " << lastX;
+            EXPECT_TRUE(sameValue(line[k], lineBefore[k])) << "line[" << k << "], last sample at " << lastX;
+        }
+    }
+}
+
+TEST(ChartWidgetsStackTest, AppendHeldValuesLeavesAnEmptySeriesEmpty)
+{
+    std::vector<double> empty;
+    std::vector<double> one{3.0};
+    appendHeldValues({&empty, &one});
+    EXPECT_TRUE(empty.empty());
+    ASSERT_EQ(one.size(), 2U);
+    EXPECT_DOUBLE_EQ(one[1], 3.0);
+
+    std::vector<double> noTimes;
+    holdTimeToNow(noTimes, 4.0);
+    EXPECT_TRUE(noTimes.empty());
+}
+
+TEST(ReducedValuesStampTest, ValuesAreGatheredAgainOnlyWhenThePointsAreRebuilt)
+{
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.assign({ReducedPoint{.index = 0, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 0, .count = 100, .maxOut = 720};
+
+    std::ignore = cache.points(key, rebuild);
+    EXPECT_TRUE(stamp.stale(cache)); // nothing gathered yet
+    stamp.markGathered(cache);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // The next frame, between samples: the same points, so the gathered values stand.
+    std::ignore = cache.points(key, rebuild);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // A new publication: new points, gathered again.
+    auto next = key;
+    next.generation = 8;
+    std::ignore = cache.points(next, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
+    stamp.markGathered(cache);
+    EXPECT_EQ(stamp.gatherCount(), 2U);
+
+    // A resize that changes the budget rebuilds the points, so the values too.
+    auto narrower = next;
+    narrower.maxOut = 360;
+    std::ignore = cache.points(narrower, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
+}
+
+TEST(ReducedValuesStampTest, ACacheResetBetweenFramesIsNeverTakenForTheOneTheValuesCameFrom)
+{
+    // A reset (or replaced, or pruned and re-made) cache counts its rebuilds from 0 again, so after as
+    // many rebuilds as before its count matches the recorded one. Its points are other points, maybe
+    // of another length: the values must be gathered again, or x and its series would disagree in
+    // length and drawing would read past the end of a series (#843 review).
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.assign({ReducedPoint{.index = 0, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 0, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(key, rebuild);
+    stamp.markGathered(cache);
+    const std::uint64_t rebuildsBefore = cache.rebuildCount();
+
+    cache = ReducedPointsCache{};
+    EXPECT_TRUE(stamp.stale(cache)); // no points at all yet
+    std::ignore = cache.points(key, rebuild);
+    ASSERT_EQ(cache.rebuildCount(), rebuildsBefore); // the count the stamp recorded...
+    EXPECT_TRUE(stamp.stale(cache));                 // ...but other points
+    stamp.markGathered(cache);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // Two caches never name their points alike either.
+    ReducedPointsCache other;
+    std::ignore = other.points(key, rebuild);
+    EXPECT_NE(other.pointsId(), cache.pointsId());
+    EXPECT_TRUE(stamp.stale(other));
+}
+
+TEST(ChartWidgetsStackTest, DrawablePointCountNeverPassesTheShortestSeries)
+{
+    const std::vector<double> x{-3.0, -2.0, -1.0, 0.0};
+    const std::vector<double> held{1.0, 2.0, 3.0, 4.0, 4.0}; // gathered values with their held value
+    const std::vector<double> stale{1.0, 2.0};               // values gathered for other points
+    EXPECT_EQ(drawablePointCount(x, {&held}), 4);
+    EXPECT_EQ(drawablePointCount(x, {&held, &stale}), 2);
+    EXPECT_EQ(drawablePointCount(x, {}), 4);
+    EXPECT_EQ(drawablePointCount({}, {&held}), 0);
+}
+
+TEST(ReducedValuesStampTest, AnUncachedGenerationIsStaleEveryFrame)
+{
+    // A chart that names no data generation rebuilds its points on every call, so its values too.
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.clear();
+    };
+    const ReducedPointsCache::Key uncached{.generation = 0, .dataId = 0, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(uncached, rebuild);
+    stamp.markGathered(cache);
+    std::ignore = cache.points(uncached, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
 }
 
 // ========== NowBar ==========

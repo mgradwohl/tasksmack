@@ -131,8 +131,8 @@ inline void advanceFrameCacheGeneration() noexcept
 // Frame-keyed caches (#1181)
 // --------------------------
 // historyFrameNowSeconds(), frameTimeAxis() (its TimeAxisPool), plotLineWithFill() (its drawX/drawY),
-// seriesReductionCache(), easedChartUpperBound() and Detail::requestNowBarMotion() keep function-local
-// statics keyed on ImGui::GetFrameCount(). Their contract:
+// seriesReductionCache(), visibleMaxCache(), easedChartUpperBound() and Detail::requestNowBarMotion()
+// keep function-local statics keyed on ImGui::GetFrameCount(). Their contract:
 //
 //   - Call them only while an ImGui frame is being built (between ImGui::NewFrame() and
 //     ImGui::Render()), on the UI thread -- never from onUpdate(), which runs outside the frame, or
@@ -1121,6 +1121,7 @@ class ReducedPointsCache
             m_Key = key;
             m_Valid = key.generation != 0;
             ++m_RebuildCount;
+            m_PointsId = nextPointsId();
         }
         return m_Points;
     }
@@ -1137,10 +1138,64 @@ class ReducedPointsCache
         return m_RebuildCount;
     }
 
+    /// Names the points the last rebuild made, uniquely in the process (never 0 once points() has
+    /// run): unlike rebuildCount(), a cache reset or replaced -- or a frame-keyed entry pruned and made
+    /// again -- never names other points with a number it named before (ReducedValuesStamp).
+    [[nodiscard]] std::uint64_t pointsId() const noexcept
+    {
+        return m_PointsId;
+    }
+
   private:
+    /// A number no earlier call returned, for pointsId(). UI thread only, like the caches.
+    [[nodiscard]] static std::uint64_t nextPointsId() noexcept
+    {
+        static std::uint64_t id = 0;
+        return ++id;
+    }
+
     std::vector<ReducedPoint> m_Points;
     Key m_Key;
     std::uint64_t m_RebuildCount = 0;
+    std::uint64_t m_PointsId = 0;
+    bool m_Valid = false;
+};
+
+/// Whether the values a chart gathered from a ReducedPointsCache's points are still those points'
+/// values (#843). They are until the cache rebuilds: an unchanged key names the same samples (see
+/// ReducedPointsCache). So a chart that draws straight from the points -- the stacked CPU charts' band
+/// edges and lines -- gathers its y values once per choice of points and, in the frames between
+/// samples, rebuilds only their x, which moves with now (gatherReducedTimes()). The points are told
+/// apart by ReducedPointsCache::pointsId(), unique in the process, so a cache reset or replaced
+/// between two frames can never pass for the one the values were gathered from.
+class ReducedValuesStamp
+{
+  public:
+    /// Whether the values must be gathered again for @p cache's current points: nothing has been
+    /// gathered yet, or the points are not the ones they were gathered from. Call it after
+    /// cache.points() for the frame.
+    [[nodiscard]] bool stale(const ReducedPointsCache& cache) const noexcept
+    {
+        return !m_Valid || cache.pointsId() == 0 || m_PointsId != cache.pointsId();
+    }
+
+    /// Records that the values were gathered from @p cache's current points.
+    void markGathered(const ReducedPointsCache& cache) noexcept
+    {
+        m_PointsId = cache.pointsId();
+        m_Valid = true;
+        ++m_GatherCount;
+    }
+
+    /// How many times the values have been gathered.
+    [[nodiscard]] std::uint64_t gatherCount() const noexcept
+    {
+        return m_GatherCount;
+    }
+
+  private:
+    std::uint64_t m_PointsId = 0;
+    std::uint64_t m_GatherCount = 0;
     bool m_Valid = false;
 };
 
@@ -1248,7 +1303,9 @@ template<typename T> inline void holdLastValueToNow(std::vector<T>& x, std::vect
 
 /// holdLastValueToNow() for series drawn together on one time axis @p x -- a stacked chart's band
 /// edges -- so they all reach "now", or none does. Each series gets its own last value repeated
-/// (a trailing gap stays a gap: NaN repeated).
+/// (a trailing gap stays a gap: NaN repeated). A chart that keeps its series across frames and
+/// rebuilds only x does the same in two halves: appendHeldValues() when it gathers the values, and
+/// holdTimeToNow() each frame (#843).
 template<typename T> inline void holdLastValuesToNow(std::vector<T>& x, std::initializer_list<std::vector<T>*> ys, double maxHoldSeconds)
 {
     if (x.empty() || !lastSampleHoldsToNow(static_cast<double>(x.back()), maxHoldSeconds) ||
@@ -1261,6 +1318,46 @@ template<typename T> inline void holdLastValuesToNow(std::vector<T>& x, std::ini
     {
         y->push_back(y->back());
     }
+}
+
+/// The x half of holdLastValuesToNow(), for series whose held value is already in place
+/// (appendHeldValues()): appends x = 0 when the last sample holds to now (lastSampleHoldsToNow()).
+/// A chart that keeps its values across frames and rebuilds only x each frame (#843) draws x.size()
+/// points of each series: the held point exactly when holdLastValuesToNow() would have added it.
+inline void holdTimeToNow(std::vector<double>& x, double maxHoldSeconds)
+{
+    if (!x.empty() && lastSampleHoldsToNow(x.back(), maxHoldSeconds))
+    {
+        x.push_back(0.0);
+    }
+}
+
+/// Appends to each of @p ys a copy of its last value -- the one holdLastValuesToNow() holds to now; a
+/// trailing gap stays a gap -- so it is in place whether or not a frame's x reaches now
+/// (holdTimeToNow()). An empty series is left empty.
+inline void appendHeldValues(std::initializer_list<std::vector<double>*> ys)
+{
+    for (std::vector<double>* y : ys)
+    {
+        if (!y->empty())
+        {
+            y->push_back(y->back());
+        }
+    }
+}
+
+/// How many points a chart drawing @p ys against @p x may read: x's length, or a shorter series'
+/// length should one be shorter, so drawing never reads past the end of a series (#843 review). With
+/// values gathered for x's points (ReducedValuesStamp) and their held value appended, each series
+/// holds x.size() points or one more, and this is x.size().
+[[nodiscard]] inline int drawablePointCount(const std::vector<double>& x, std::initializer_list<const std::vector<double>*> ys) noexcept
+{
+    std::size_t count = x.size();
+    for (const std::vector<double>* y : ys)
+    {
+        count = std::min(count, y->size());
+    }
+    return UI::Format::checkedCount(count);
 }
 
 /// `values` at each of a reduction's kept `points`, in `out` (resized to match): the sample at the
@@ -1283,32 +1380,41 @@ inline void gatherReducedValues(std::span<const ReducedPoint> points, std::span<
 /// `systemTop` (User + System).
 struct UserSystemStack
 {
-    std::vector<double> x;         // The kept points' times, held to now by the caller (#1016)
+    std::vector<double> x;         // The kept points' times, rebuilt every frame and held to now by the caller (#1016)
     std::vector<double> base;      // 0: the User band's bottom
     std::vector<double> userTop;   // User
     std::vector<double> systemTop; // User + System
 };
 
-/// Builds `out` from a reduction's kept `points` over `time` and the User and System series: a gap
-/// point is NaN in every edge but `base` (see reduceAlignedSeries()). Every series must be as long
-/// as `time`. Buffers are resized in place, so a chart reusing one UserSystemStack across frames
-/// allocates only when it draws more points than before.
+/// The times of a reduction's kept `points` on `time`, in `x` (resized in place): what a chart drawing
+/// straight from the points rebuilds every frame, as x moves with now (#843). A gap point keeps its
+/// time, where the gap is drawn.
+inline void gatherReducedTimes(std::span<const ReducedPoint> points, std::span<const double> time, std::vector<double>& x)
+{
+    x.resize(points.size());
+    for (std::size_t k = 0; k < points.size(); ++k)
+    {
+        x[k] = time[static_cast<std::size_t>(points[k].index)];
+    }
+}
+
+/// The band edges of `out` -- base, userTop and systemTop, not x (gatherReducedTimes()) -- from a
+/// reduction's kept `points` over the User and System series: a gap point is NaN in every edge but
+/// `base` (see reduceAlignedSeries()). Both series must be as long as the time axis the points index.
+/// Buffers are resized in place, so a chart reusing one UserSystemStack across frames allocates only
+/// when it draws more points than before; it rebuilds them only when the points change
+/// (ReducedValuesStamp, #843).
 template<typename T>
-inline void buildUserSystemStack(std::span<const ReducedPoint> points,
-                                 std::span<const double> time,
-                                 std::span<const T> user,
-                                 std::span<const T> system,
-                                 UserSystemStack& out)
+inline void
+buildUserSystemStackValues(std::span<const ReducedPoint> points, std::span<const T> user, std::span<const T> system, UserSystemStack& out)
 {
     const std::size_t pointCount = points.size();
-    out.x.resize(pointCount);
     out.base.assign(pointCount, 0.0);
     out.userTop.resize(pointCount);
     out.systemTop.resize(pointCount);
     for (std::size_t k = 0; k < pointCount; ++k)
     {
         const auto i = static_cast<std::size_t>(points[k].index);
-        out.x[k] = time[i];
         if (points[k].gap)
         {
             out.userTop[k] = out.systemTop[k] = std::numeric_limits<double>::quiet_NaN();
@@ -1344,17 +1450,18 @@ inline ChartDataScope g_ActiveChartDataScope;
     return Detail::g_ActiveChartDataScope;
 }
 
-/// The reduction cache for one plotLineWithFill() series: its plot and its label. A collision
-/// between two series' hashes costs only caching, never correctness, since a cached entry is also
-/// keyed on the series' data (ReducedPointsCache::Key). Bounded like easedChartUpperBound()'s
-/// state: entries not drawn for a while are dropped once there are many (per-disk and per-interface
-/// charts come and go). Frame-keyed: see "Frame-keyed caches" above (#1181).
-[[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
+namespace Detail
 {
-    Detail::assertWithinImGuiFrame();
+/// The @p key entry of a frame-keyed cache of Ts (see "Frame-keyed caches" above): one map per T,
+/// cleared when a new ImGui context first uses it (#2163). Bounded like easedChartUpperBound()'s
+/// state: entries not asked for in a while are dropped once there are many (per-disk and
+/// per-interface charts come and go).
+template<typename T> [[nodiscard]] T& frameKeyedEntry(std::uint64_t key)
+{
+    assertWithinImGuiFrame();
     struct Entry
     {
-        ReducedPointsCache cache;
+        T value;
         int lastFrame = 0;
     };
     static std::unordered_map<std::uint64_t, Entry> entries;
@@ -1363,7 +1470,7 @@ inline ChartDataScope g_ActiveChartDataScope;
     constexpr std::size_t PRUNE_ABOVE = 256;
     constexpr int STALE_FRAMES = 600;
 
-    if (const std::uint64_t generation = Detail::frameCacheGeneration(); generation != entriesGeneration)
+    if (const std::uint64_t generation = frameCacheGeneration(); generation != entriesGeneration)
     {
         entries.clear(); // filled in another ImGui context (#2163)
         lastPruneFrame = -1;
@@ -1375,11 +1482,40 @@ inline ChartDataScope g_ActiveChartDataScope;
         lastPruneFrame = frame;
         std::erase_if(entries, [frame](const auto& entry) { return (frame - entry.second.lastFrame) > STALE_FRAMES; });
     }
-    const std::uint64_t key =
-        (static_cast<std::uint64_t>(plotId) << 32U) ^ static_cast<std::uint64_t>(std::hash<std::string_view>{}(label));
     Entry& entry = entries[key];
     entry.lastFrame = frame;
-    return entry.cache;
+    return entry.value;
+}
+} // namespace Detail
+
+/// The reduction cache for one plotLineWithFill() series: its plot and its label. A collision
+/// between two series' hashes costs only caching, never correctness, since a cached entry is also
+/// keyed on the series' data (ReducedPointsCache::Key). Bounded (Detail::frameKeyedEntry()).
+/// Frame-keyed: see "Frame-keyed caches" above (#1181).
+[[nodiscard]] inline ReducedPointsCache& seriesReductionCache(ImGuiID plotId, std::string_view label)
+{
+    const std::uint64_t key =
+        (static_cast<std::uint64_t>(plotId) << 32U) ^ static_cast<std::uint64_t>(std::hash<std::string_view>{}(label));
+    return Detail::frameKeyedEntry<ReducedPointsCache>(key);
+}
+
+/// The VisibleMaxCache of the axis @p key names, unique within the current ImGui ID scope: the key the
+/// axis's easedRateAxisUpperBound() takes ("##ProcIoHistory", "##.../Y2"), so per-disk and per-GPU
+/// charts under their own PushID() keep their own. Bounded (Detail::frameKeyedEntry()). Frame-keyed:
+/// see "Frame-keyed caches" above (#1181).
+[[nodiscard]] inline VisibleMaxCache& visibleMaxCache(const char* key)
+{
+    return Detail::frameKeyedEntry<VisibleMaxCache>(ImGui::GetID(key));
+}
+
+/// maxOfSeriesSince(x, xMin, series...) for the axis @p key names (visibleMaxCache()): exactly its
+/// value, but scanned only when @p generation (the chart's HistoryChartConfig::dataGeneration), the
+/// series or the window's first sample change, not every frame between samples (#843).
+template<std::ranges::contiguous_range... Rs>
+    requires(sizeof...(Rs) >= 1 && sizeof...(Rs) <= VisibleMaxCache::MAX_SERIES)
+[[nodiscard]] double windowSeriesMax(const char* key, std::uint64_t generation, std::span<const double> x, double xMin, const Rs&... series)
+{
+    return cachedMaxOfSeriesSince(visibleMaxCache(key), generation, x, xMin, series...);
 }
 
 /// The point budget for a series drawn in the current plot (#1411): plotPointBudget() for the plot

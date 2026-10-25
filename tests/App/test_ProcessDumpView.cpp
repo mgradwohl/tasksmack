@@ -933,6 +933,7 @@ TEST(ProcessDumpViewTest, TheDefaultViewSavesAChosenFolderToTheConfig)
         EXPECT_EQ(view.directory(), chosen);
     }
     EXPECT_EQ(config.settings().dumpFolder, Core::pathToUtf8(chosen));
+    config.flushPendingSave(); // saved on the settings worker, not the UI thread (#2916)
     std::error_code ec;
     ASSERT_TRUE(std::filesystem::exists(configFile, ec)) << "saved to the redirected config";
     const auto savedAt = std::filesystem::last_write_time(configFile, ec);

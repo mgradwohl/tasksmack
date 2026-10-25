@@ -247,6 +247,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/BrokerSocket.cpp
     src/Platform/Linux/BrokerServer.cpp
     src/Platform/Linux/HelperPrivileges.cpp
+    src/Platform/Linux/HelperSandbox.cpp
     src/Platform/Linux/PkexecBroker.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
@@ -813,6 +814,7 @@ if(UNIX AND NOT APPLE)
     add_executable(tasksmack-helper
         src/Platform/Linux/HelperMain.cpp
         src/Platform/Linux/HelperPrivileges.cpp # drops to the capabilities its requests need (#2640)
+        src/Platform/Linux/HelperSandbox.cpp # its seccomp allow-list (#2752)
         src/Platform/BrokerRequestMapping.cpp
         src/Platform/Linux/BrokerServer.cpp
         src/Platform/Linux/BrokerSocket.cpp

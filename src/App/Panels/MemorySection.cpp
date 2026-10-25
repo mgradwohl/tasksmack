@@ -6,7 +6,6 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
-#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -135,8 +134,9 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
 
     // The peak of Used over the window, drawn as a reference line labelled PEAK_LABEL. It was
     // "##MemPeak": no legend entry and no tooltip row, so nothing said what the line was (#1007).
-    // Over the samples the window shows, not the one trimming keeps left of it (#1145).
-    const double peakMemPercent = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, memData);
+    // Over the samples the window shows, not the one trimming keeps left of it (#1145), and kept
+    // between frames (UI::Widgets::windowSeriesMax(), #843).
+    const double peakMemPercent = UI::Widgets::windowSeriesMax("##MemoryPeak", ctx.chartDataGeneration, timeData, axisConfig.xMin, memData);
 
     // "N% (used / total)" when the RAM total is known: physical RAM is fixed, so bytes back-calculated
     // from a historical percent are exact. Swap is percent-only: its size can change at runtime.

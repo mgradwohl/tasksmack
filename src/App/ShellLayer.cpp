@@ -355,6 +355,9 @@ void ShellLayer::onDetach()
     // a panel writes back into the settings on detach is included in it (#1124, #1177).
     m_Tabs.onDetach();
 
+    // Synchronous, as nothing draws after it. save() first waits for a background save still in
+    // flight or queued (a click just before exit), then writes these settings over it: nothing is
+    // lost, and the last state wins (#2916).
     config.save();
 
     // TASKSMACK_RENDER_METRICS (#2923): the overlay's CSV -- the last completed frame's rows, the bytes its
@@ -439,6 +442,22 @@ void ShellLayer::onUpdate(float deltaTime)
         if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
         {
             m_AccessBroker = privilegedBroker(Synthetic::activeScenario());
+        }
+    }
+
+    // "TaskSmack (Administrator)" while the session is (#2728), on Linux, whose access chip says the same;
+    // set only when that changes.
+    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    {
+        if (m_ProcessesPanel.firstSnapshotAdopted())
+        {
+            const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+            const bool administrator = !m_ProcessesPanel.processCapabilities().hasReducedPrivileges || held;
+            if (m_TitleSaysAdministrator != administrator)
+            {
+                m_TitleSaysAdministrator = administrator;
+                m_Host->setWindowTitle(administrator ? "TaskSmack (Administrator)" : "TaskSmack");
+            }
         }
     }
 

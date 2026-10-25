@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <span>
 
@@ -152,6 +153,95 @@ TEST(RateAxisTest, FirstIndexAtOrAfterFindsTheWindowsFirstSample)
     EXPECT_EQ(firstIndexAtOrAfter(x, -60.0), 1U);
     EXPECT_EQ(firstIndexAtOrAfter(x, -100.0), 0U);
     EXPECT_EQ(firstIndexAtOrAfter(x, 1.0), 4U);
+}
+
+// ========== cachedMaxOfSeriesSince / VisibleMaxCache (#843) ==========
+
+/// @p x shifted by @p seconds, as a chart's axis moves from one frame to the next ("seconds before now").
+template<std::size_t N> [[nodiscard]] std::array<double, N> shifted(const std::array<double, N>& x, double seconds)
+{
+    std::array<double, N> out{};
+    for (std::size_t i = 0; i < N; ++i)
+    {
+        out[i] = x[i] - seconds;
+    }
+    return out;
+}
+
+TEST(VisibleMaxCacheTest, AFrameWithTheSameDataAndWindowDoesNotRescanTheSeries)
+{
+    const std::array<double, 4> x{-90.0, -45.0, -30.0, -1.0};
+    const std::array<float, 4> s{9.0F, 4.0F, 3.0F, 2.0F};
+    VisibleMaxCache cache;
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, s), 4.0);
+    EXPECT_EQ(cache.computeCount(), 1U);
+
+    // The next frame: now has moved on, but the window still starts at the same sample.
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, shifted(x, 0.016), -60.0, s), 4.0);
+    EXPECT_EQ(cache.computeCount(), 1U);
+}
+
+TEST(VisibleMaxCacheTest, ANewGenerationRescans)
+{
+    const std::array<double, 3> x{-50.0, -20.0, 0.0};
+    const std::array<float, 3> s{5.0F, 1.0F, 1.0F};
+    VisibleMaxCache cache;
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, s), 5.0);
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 8, x, -60.0, s), 5.0);
+    EXPECT_EQ(cache.computeCount(), 2U);
+}
+
+TEST(VisibleMaxCacheTest, APeakLeavingTheWindowRescans)
+{
+    // Between samples the only change is the oldest shown sample crossing the left edge.
+    const std::array<double, 4> x{-90.0, -45.0, -30.0, -1.0};
+    const std::array<float, 4> s{9.0F, 4.0F, 3.0F, 2.0F};
+    VisibleMaxCache cache;
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, s), 4.0);
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, shifted(x, 16.0), -60.0, s), 3.0); // -45 is now -61
+    EXPECT_EQ(cache.computeCount(), 2U);
+}
+
+TEST(VisibleMaxCacheTest, OtherSeriesUnderTheSameGenerationRescan)
+{
+    // The network chart switched to another interface: same axis, same generation, other series.
+    const std::array<double, 3> x{-50.0, -20.0, 0.0};
+    const std::array<float, 3> first{5.0F, 1.0F, 1.0F};
+    const std::array<float, 3> second{6.0F, 1.0F, 1.0F};
+    const std::array<float, 2> shorter{7.0F, 1.0F};
+    VisibleMaxCache cache;
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, first), 5.0);
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, second), 6.0);
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 7, x, -60.0, first, shorter), 7.0);
+    EXPECT_EQ(cache.computeCount(), 3U);
+}
+
+TEST(VisibleMaxCacheTest, GenerationZeroIsNeverKept)
+{
+    const std::array<double, 2> x{-10.0, 0.0};
+    const std::array<float, 2> s{1.0F, 2.0F};
+    VisibleMaxCache cache;
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 0, x, -60.0, s), 2.0);
+    EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 0, x, -60.0, s), 2.0);
+    EXPECT_EQ(cache.computeCount(), 2U);
+}
+
+TEST(VisibleMaxCacheTest, TheCachedMaxIsTheUncachedOneAsTheWindowSlides)
+{
+    // A history with NaN gaps and a trim anchor, its axis sliding by a frame's worth at a time across
+    // several samples' crossings of the left edge: every frame returns what a fresh scan does.
+    const std::array<double, 8> x{-62.0, -55.0, -48.5, -40.0, -31.0, -20.0, -9.5, -0.5};
+    const std::array<float, 8> a{80.0F, 70.0F, std::numeric_limits<float>::quiet_NaN(), 30.0F, 50.0F, 10.0F, 20.0F, 5.0F};
+    const std::array<double, 6> b{1.0, 90.0, 2.0, 3.0, 4.0, 6.0}; // shorter: tail-aligned
+    VisibleMaxCache cache;
+    for (int frame = 0; frame < 1200; ++frame)
+    {
+        const auto moved = shifted(x, static_cast<double>(frame) * 0.025);
+        EXPECT_DOUBLE_EQ(cachedMaxOfSeriesSince(cache, 3, moved, -60.0, a, b), maxOfSeriesSince(moved, -60.0, a, b)) << "frame " << frame;
+    }
+    // The first frame's scan, then one per sample crossing the left edge (-55, -48.5, -40 and -31 over
+    // the 30 s slid), not one per frame.
+    EXPECT_EQ(cache.computeCount(), 5U);
 }
 
 // ========== withCurrentValues (#1145 review) ==========

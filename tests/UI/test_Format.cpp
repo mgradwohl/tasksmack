@@ -1306,6 +1306,18 @@ TEST(FormatTest, FormatDurationShowsTheSizeOfANegativeDurationAndNAForNaN)
     EXPECT_FALSE(UI::Format::formatDuration(std::numeric_limits<double>::infinity()).empty());
 }
 
+TEST(FormatTest, FormatDurationOfTheLongestDurationIsWhole)
+{
+    // The cap (1e15 s) is the longest result formatDuration() builds in its 32-byte buffer (#843).
+    EXPECT_EQ(UI::Format::formatDuration(1e15), "11574074074d 01h");
+}
+
+TEST(FormatTest, FormatShortMatchesStdFormatAndCutsAtItsBuffer)
+{
+    EXPECT_EQ(UI::Format::Detail::formatShort("{}{} {:02}{}", 1, 'm', 5, 's'), std::format("{}{} {:02}{}", 1, 'm', 5, 's'));
+    EXPECT_EQ(UI::Format::Detail::formatShort("{}", std::string(40, 'x')), std::string(32, 'x'));
+}
+
 TEST(FormatTest, FormatDurationShowsUptimeInTheDurationGrammar)
 {
     EXPECT_EQ(UI::Format::formatDuration((2.0 * 86400.0) + (5.0 * 3600.0) + (30.0 * 60.0)), "2d 05h");

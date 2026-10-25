@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace App
@@ -39,6 +40,8 @@ class IShellHost
     [[nodiscard]] virtual float titleBarHeight() const = 0;
     /// The title bar Close button's path: a close request, vetoable.
     virtual void requestClose() = 0;
+    /// Core::Window::setTitle(): the OS window title, "TaskSmack (Administrator)" in such a session (#2728).
+    virtual void setWindowTitle(const std::string& title) = 0;
     /// The display the window is on, to notice a move to another (#1207).
     [[nodiscard]] virtual SDL_DisplayID displayId() const = 0;
     /// That display's usable size in pixels, when known.

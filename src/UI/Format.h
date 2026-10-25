@@ -338,6 +338,21 @@ enum class DurationStyle : std::uint8_t
     Compact,
 };
 
+namespace Detail
+{
+/// std::format() for a short result, built in a local buffer and copied into the string: std::format
+/// itself reserves room for its arguments' estimated width, which with MSVC's library is past the
+/// short-string buffer, so even "5m" cost a heap allocation. A history chart's time axis formats its
+/// tick labels every frame (formatAxisTimeAgo()), so that was one allocation per tick per chart per
+/// frame (#843). A result longer than the buffer is cut there; callers' results are far shorter.
+template<typename... Args> [[nodiscard]] std::string formatShort(std::format_string<Args...> fmt, Args&&... args)
+{
+    std::array<char, 32> buffer{};
+    const auto result = std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()), fmt, std::forward<Args>(args)...);
+    return {buffer.data(), static_cast<std::size_t>(result.out - buffer.data())};
+}
+} // namespace Detail
+
 /// A duration in the app's one grammar (#1202): "45s", "2m 05s", "1h 02m", "3d 04h" -- the two
 /// largest units, the second padded to two digits, rounded to the nearest second first. Negative
 /// durations are shown by their size and NaN as "N/A". Used for CPU Time, uptime and the history
@@ -358,13 +373,13 @@ enum class DurationStyle : std::uint8_t
     {
         if (style == DurationStyle::Compact && minor == 0)
         {
-            return std::format("{}{}", major, majorUnit);
+            return Detail::formatShort("{}{}", major, majorUnit);
         }
-        return std::format("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
+        return Detail::formatShort("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
     };
     if (total < MINUTE)
     {
-        return std::format("{}s", total);
+        return Detail::formatShort("{}s", total);
     }
     if (total < HOUR)
     {

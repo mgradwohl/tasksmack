@@ -161,6 +161,8 @@ class ShellLayer : public Core::Layer
     /// first update; null where there is none (no helper, a synthetic run) or off Linux.
     std::shared_ptr<Platform::IPrivilegedBroker> m_AccessBroker;
     bool m_AccessBrokerResolved = false;
+    /// The window title last set (#2728): whether it says "(Administrator)", nullopt before the first.
+    std::optional<bool> m_TitleSaysAdministrator;
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).

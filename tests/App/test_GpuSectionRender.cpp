@@ -258,6 +258,34 @@ TEST_F(GpuSectionRenderTest, OneGpuDrawsItsCoreAndThermalCharts)
     EXPECT_TRUE(plots[1].contains("Fan"));
 }
 
+TEST_F(GpuSectionRenderTest, TheScaledSeriesAreBuiltOncePerGenerationNotEveryFrame)
+{
+    // Clock, temperature and power are drawn as percentages of their scales. Between samples the
+    // same publication is drawn every frame, so they are scaled once per generation (#843).
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "NVIDIA GeForce RTX 4080");
+    GpuSection::RenderContext ctx = context(&publication);
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        static_cast<void>(renderAndCapture(ctx));
+    }
+    ASSERT_EQ(m_Cache.percentSeries.size(), 1U);
+    const GpuSection::GpuPercentSeries& series = m_Cache.percentSeries[0];
+    EXPECT_EQ(series.clock.rebuildCount(), 1U);
+    EXPECT_EQ(series.temperature.rebuildCount(), 1U);
+    EXPECT_EQ(series.power.rebuildCount(), 1U);
+
+    // The next publication's frame scales them again, once.
+    ctx.chartDataGeneration = 2;
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+    EXPECT_EQ(series.clock.rebuildCount(), 2U);
+    EXPECT_EQ(series.temperature.rebuildCount(), 2U);
+    EXPECT_EQ(series.power.rebuildCount(), 2U);
+}
+
 /// The card child windows drawn under the tab whose names contain @p id, in drawing order.
 std::vector<const ImGuiWindow*> cardsNamed(std::string_view id)
 {

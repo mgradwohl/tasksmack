@@ -11,10 +11,13 @@
 #include <toml++/toml.hpp>
 
 #include <array>
+#include <cerrno>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -578,6 +581,75 @@ TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
     const auto fontSize = savedConfig["font"]["size"].value<std::string>();
     ASSERT_TRUE(fontSize.has_value());
     EXPECT_EQ(*fontSize, "medium");
+}
+
+// ========== saveInBackground() (#2916): the UI thread's saves, written by a worker ==========
+
+TEST_F(UserConfigLoadSaveTest, BackgroundSaveIsWrittenAndLoadedBack)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+
+    ASSERT_TRUE(std::filesystem::exists(m_ConfigPath));
+    cfg.resetConfigPathForTesting(m_ConfigPath);
+    cfg.load();
+    EXPECT_EQ(cfg.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadWaitsForABackgroundSaveAndReadsWhatItWrote)
+{
+    auto& cfg = UserConfig::get();
+    cfg.load(); // no file yet: loaded, with defaults
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.settings().themeId = "nord"; // changed after the snapshot, never saved
+
+    cfg.load(); // the write finishes first, and makes the file worth re-reading
+    EXPECT_EQ(cfg.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigLoadSaveTest, SaveAfterABackgroundSaveWritesTheLastState)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.settings().themeId = "nord";
+    cfg.save(); // the exit path: the background write can't land over this one
+
+    const auto saved = toml::parse_file(m_ConfigPath.string());
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), std::optional<std::string>("nord"));
+}
+
+TEST_F(UserConfigLoadSaveTest, ARunOfFailedBackgroundSavesIsLoggedOnce)
+{
+    auto& cfg = UserConfig::get();
+    cfg.failSaveStepForTesting(UserConfig::SaveStep::Rename, EACCES);
+
+    std::ostringstream log;
+    const auto previousLogger = spdlog::default_logger();
+    // _mt: the worker logs while this thread holds the logger.
+    spdlog::set_default_logger(
+        std::make_shared<spdlog::logger>("background-save-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log)));
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+    cfg.settings().themeId = "nord";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+    spdlog::set_default_logger(previousLogger);
+
+    const std::string text = log.str();
+    const std::string_view report = "Settings weren't saved";
+    std::size_t reports = 0;
+    for (std::size_t at = text.find(report); at != std::string::npos; at = text.find(report, at + 1))
+    {
+        ++reports;
+    }
+    EXPECT_EQ(reports, 1U) << text;
+    EXPECT_NE(text.find("Failed to replace"), std::string::npos) << "each failure's reason is still logged: " << text;
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath));
 }
 
 // ========== parseSettings (the string seam the config fuzz target drives) ==========
