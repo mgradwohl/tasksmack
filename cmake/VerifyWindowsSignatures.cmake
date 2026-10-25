@@ -4,17 +4,21 @@
 # and TaskSmackHelper.exe both carry a signature that is:
 #   - Valid (a chain the machine trusts, and the file unchanged since it was signed);
 #   - from the expected publisher: the signer certificate's common name is TASKSMACK_EXPECTED_SIGNER,
-#     "SignPath Foundation" by default (#2302's decision, docs/code-signing-policy.md), so a test or
-#     internal certificate the build machine happens to trust doesn't pass;
+#     "Matt Gradwohl" by default (the Azure Artifact Signing certificate profile's subject, #2302;
+#     docs/code-signing-policy.md), so a test or internal certificate the build machine happens to
+#     trust doesn't pass;
 #   - timestamped, so it stays valid after the certificate expires;
-#   - from the same certificate for both.
+#   - from the same subject for both.
+# Artifact Signing certificates last about three days and rotate, so the publisher is matched by name,
+# never by a thumbprint or serial number: the two files may carry different certificates if a rotation
+# falls between them, as long as both name the same subject.
 # The decision is made in PowerShell, which prints OK or the reason. CMake needs both files' status
 # lines and that OK, so output it can't read is a refusal too.
 #
 # CPack runs it as a CPACK_PRE_BUILD_SCRIPTS script (cmake/CPackProjectConfig.cmake.in), with the staged
 # files in CPACK_TEMPORARY_INSTALL_DIRECTORY, only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on. An
 # unsigned dev build leaves that off, so this never runs for it. A pipeline that signs the packaged .zip
-# instead (TASKSMACK_SIGN_AFTER_PACKAGING; release.yml's SignPath step) runs it on the signed .zip's
+# instead (TASKSMACK_SIGN_AFTER_PACKAGING; release.yml's sign-windows job) runs it on the signed .zip's
 # extracted contents before publishing, as the tests run it on a folder:
 #   cmake -DTASKSMACK_VERIFY_DIR=<folder> [-DTASKSMACK_EXPECTED_SIGNER=<CN>] -P cmake/VerifyWindowsSignatures.cmake
 
@@ -26,7 +30,7 @@ else()
     message(FATAL_ERROR "VerifyWindowsSignatures: no folder to check (CPACK_TEMPORARY_INSTALL_DIRECTORY or TASKSMACK_VERIFY_DIR)")
 endif()
 if(NOT DEFINED TASKSMACK_EXPECTED_SIGNER OR TASKSMACK_EXPECTED_SIGNER STREQUAL "")
-    set(TASKSMACK_EXPECTED_SIGNER "SignPath Foundation")
+    set(TASKSMACK_EXPECTED_SIGNER "Matt Gradwohl")
 endif()
 
 # PowerShell's single-quoted string: a quote is doubled.
@@ -63,8 +67,9 @@ string(CONCAT _ts_script
     "    if ($x.Status -ne 'Valid') { $why = $name + \" isn't Authenticode-signed (\" + $x.Status + ')' } "
     "    elseif ($cn -ne $expected) { $why = $name + ' is signed by ' + $cn + ', not ' + $expected } "
     "    elseif (-not $stamped) { $why = $name + \"'s signature has no timestamp\" } } }; "
-    "if (-not $why -and $s[0].SignerCertificate.Thumbprint -ne $s[1].SignerCertificate.Thumbprint) { "
-    "  $why = \"TaskSmack.exe and TaskSmackHelper.exe aren't signed with the same certificate\" }; "
+    "if (-not $why -and $s[0].SignerCertificate.Subject -ne $s[1].SignerCertificate.Subject) { "
+    "  $why = \"TaskSmack.exe and TaskSmackHelper.exe aren't signed by the same subject (\" + "
+    "$s[0].SignerCertificate.Subject + ' and ' + $s[1].SignerCertificate.Subject + ')' }; "
     "if ($why) { Write-Output ('FAIL ' + $why) } else { Write-Output 'OK' }")
 execute_process(
     COMMAND "${_ts_powershell}" -NoProfile -NonInteractive -Command "${_ts_script}"
