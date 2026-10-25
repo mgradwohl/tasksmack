@@ -283,8 +283,10 @@ struct ProcessCountersEntry
     bool ioRead = false; ///< /proc/<pid>/io gave read_bytes and write_bytes
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
-    bool socketsRead = false;                ///< Asked for, and every /proc/<pid>/fd link was read
-    std::vector<std::uint64_t> socketInodes; ///< Its sockets' inodes, when socketsRead
+    bool socketsRead = false; ///< Asked for, and every /proc/<pid>/fd link was read
+    /// Its sockets' inodes, when socketsRead
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::vector<std::uint64_t> socketInodes{};
     friend bool operator==(const ProcessCountersEntry&, const ProcessCountersEntry&) = default;
 };
 

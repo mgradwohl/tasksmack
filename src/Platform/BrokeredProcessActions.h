@@ -204,7 +204,7 @@ class BrokeredProcessProbe final : public IProcessProbe
     /// doesn't need to): not asked again.
     bool m_CountersRefused = false;
     /// When the helper last read socket inodes: again every INODE_PID_CACHE_TTL_MS, as the inner map rebuilds.
-    std::chrono::steady_clock::time_point m_SocketsReadAt{};
+    std::chrono::steady_clock::time_point m_SocketsReadAt;
     /// From the last socket read: each inode's owner, and the processes whose sockets were all read.
     mutable std::mutex m_SocketOwnersMutex;
     std::unordered_map<std::uint64_t, SocketOwner> m_SocketOwners;
