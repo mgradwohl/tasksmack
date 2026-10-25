@@ -34,6 +34,7 @@
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
+#include "ScratchConfigDir.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/UILayer.h"
@@ -715,13 +716,11 @@ std::vector<Step> signOffSteps()
 
     steps.push_back({.name = "column-resized",
                      .tick =
-                         [widthBefore = std::optional<float>{}, grow = true, drag = RetriedDrag{}](StepContext& step) mutable
+                         [widthBefore = std::optional<float>{}, drag = RetriedDrag{}](StepContext& step) mutable
                      {
+                         // Always from the default layout: each run has its own config directory (#2932), so
+                         // none starts on the wider PID an earlier one saved.
                          constexpr float RESIZE_BY = 40.0F;
-                         // Wider than this, PID is made narrower instead: a run on the layout an earlier one
-                         // saved (--gtest_repeat) would otherwise widen it each time, until its right border
-                         // is out of view.
-                         constexpr float WIDEST_TO_GROW = 200.0F;
                          const ImGuiTable* table = processTable();
                          if (table != nullptr)
                          {
@@ -729,15 +728,13 @@ std::vector<Step> signOffSteps()
                              if (!widthBefore.has_value())
                              {
                                  widthBefore = pid.WidthGiven;
-                                 grow = pid.WidthGiven < WIDEST_TO_GROW && pid.MaxX + (RESIZE_BY * 2.0F) < table->InnerClipRect.Max.x;
                              }
-                             const float change = pid.WidthGiven - *widthBefore;
-                             if (drag.buttonUp(step.frame) && (grow ? change > RESIZE_BY * 0.5F : change < -RESIZE_BY * 0.5F))
+                             if (drag.buttonUp(step.frame) && pid.WidthGiven - *widthBefore > RESIZE_BY * 0.5F)
                              {
                                  return true;
                              }
                          }
-                         // PID's right border, where it is as the attempt starts, dragged RESIZE_BY px.
+                         // PID's right border, where it is as the attempt starts, dragged RESIZE_BY px right.
                          drag.tick(step.frame,
                                    [&](ImVec2& from, ImVec2& to)
                                    {
@@ -748,7 +745,7 @@ std::vector<Step> signOffSteps()
                                        const float border = tableColumn(*table, App::ProcessColumn::PID).MaxX;
                                        const float y = headerY(*table);
                                        from = ImVec2(border - 1.0F, y);
-                                       to = ImVec2(border - 1.0F + (grow ? RESIZE_BY : -RESIZE_BY), y);
+                                       to = ImVec2(border - 1.0F + RESIZE_BY, y);
                                        return true;
                                    });
                          return false;
@@ -906,7 +903,12 @@ std::vector<Step> signOffSteps()
     return steps;
 }
 
-TEST(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
+/// Each run on its own, empty config directory (#2932): a --gtest_repeat iteration doesn't open on the
+/// table layout, theme or window geometry the last one saved on close.
+class UiScenarioTest : public TestSupport::ScratchConfigDirTest
+{};
+
+TEST_F(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
 {
     if (!hasDisplay())
     {
