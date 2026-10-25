@@ -169,13 +169,22 @@ endif()
 # The fuzz build (.clusterfuzzlite/fetch-deps.sh, #1390) reads the GIT_TAG on the line after
 # GIT_REPOSITORY, so keep them adjacent. Renovate only tracks this pin while its comment reads
 # "# vX.Y.Z" (see .github/renovate.json5), so it leaves this untagged pin alone.
+#
+# The patch's path, defined once (#2779): PATCH_COMMAND below applies it, cmake/InstallRules.cmake
+# ships it beside the licences, and cmake/ThirdPartyNotices.cmake names it in THIRD_PARTY_NOTICES.txt.
+# install(FILES) only looks for its sources at install time, so a renamed patch that isn't here would
+# otherwise first fail the release's cpack.
+set(TASKSMACK_TOMLPLUSPLUS_PATCH "${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-assertions.patch")
+if(NOT EXISTS "${TASKSMACK_TOMLPLUSPLUS_PATCH}")
+    message(FATAL_ERROR "toml++ patch file not found: ${TASKSMACK_TOMLPLUSPLUS_PATCH}")
+endif()
 find_package(Git REQUIRED)
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
     GIT_TAG 1e8829b793b66ad17011732a146b8077d379b011  # master after v3.4.0 - pinned to SHA for supply chain security
     PATCH_COMMAND "${CMAKE_COMMAND}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
-                  "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-assertions.patch"
+                  "-DPATCH_FILE=${TASKSMACK_TOMLPLUSPLUS_PATCH}"
                   -P "${CMAKE_CURRENT_LIST_DIR}/patches/ApplyPatch.cmake"
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/tomlplusplus-build"  # per-preset build tree (#1308)

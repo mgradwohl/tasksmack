@@ -91,6 +91,31 @@ TEST(ShouldUseBorderlessTitleBarTest, OptIn_OnNonWayland_HasNoEffect)
     EXPECT_TRUE(VideoBackend::shouldUseBorderlessTitleBar(/*forceNativeDecorationsOnWayland=*/true, /*isWayland=*/false));
 }
 
+// ========== usesSystemDrag / usesSystemResize (#2716) ==========
+// Pure policy over the Backend enum: who runs a title-bar drag and a border resize once the
+// window's hit test answers DRAGGABLE or RESIZE_*. Table-tested like classifyBackend(), so the
+// Windows row holds on a Linux test run and the Wayland row on a Windows one.
+
+TEST(HitTestPolicyTest, TheSystemDragsOnNativeWaylandAndWindowsOnly)
+{
+    EXPECT_TRUE(VideoBackend::usesSystemDrag(VideoBackend::Backend::Wayland)); // the compositor, #744
+    EXPECT_TRUE(VideoBackend::usesSystemDrag(VideoBackend::Backend::Windows)); // the OS move loop: Aero Snap
+    EXPECT_FALSE(VideoBackend::usesSystemDrag(VideoBackend::Backend::X11));
+    EXPECT_FALSE(VideoBackend::usesSystemDrag(VideoBackend::Backend::XWaylandFallback));
+    EXPECT_FALSE(VideoBackend::usesSystemDrag(VideoBackend::Backend::Unknown));
+}
+
+TEST(HitTestPolicyTest, TheSystemResizesEverywhereButWindows)
+{
+    // Windows keeps the client-side resize: its own resize loop would block SDL's event pump, and
+    // nothing would be drawn until the button came up.
+    EXPECT_FALSE(VideoBackend::usesSystemResize(VideoBackend::Backend::Windows));
+    EXPECT_TRUE(VideoBackend::usesSystemResize(VideoBackend::Backend::Wayland));
+    EXPECT_TRUE(VideoBackend::usesSystemResize(VideoBackend::Backend::X11));
+    EXPECT_TRUE(VideoBackend::usesSystemResize(VideoBackend::Backend::XWaylandFallback));
+    EXPECT_TRUE(VideoBackend::usesSystemResize(VideoBackend::Backend::Unknown));
+}
+
 bool ensureVideoDriverInitialized()
 {
     if (SDL_Init(SDL_INIT_VIDEO))
@@ -201,6 +226,16 @@ TEST_F(VideoBackendTest, SupportsClientSideMaximizeIsFalseOnlyOnWayland)
 TEST_F(VideoBackendTest, SupportsGlobalMouseStateIsFalseOnlyOnWayland)
 {
     EXPECT_EQ(VideoBackend::supportsGlobalMouseState(), !VideoBackend::isWayland());
+}
+
+TEST_F(VideoBackendTest, UsesSystemDragIsTrueOnlyOnWaylandAndWindows)
+{
+    EXPECT_EQ(VideoBackend::usesSystemDrag(), VideoBackend::isWayland() || VideoBackend::isWindows());
+}
+
+TEST_F(VideoBackendTest, UsesSystemResizeIsFalseOnlyOnWindows)
+{
+    EXPECT_EQ(VideoBackend::usesSystemResize(), !VideoBackend::isWindows());
 }
 
 TEST_F(VideoBackendTest, IsWindowsIsFalseOnNonWindowsBuilds)

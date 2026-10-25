@@ -90,7 +90,7 @@ class SystemMetricsPanel : public Panel
     explicit SystemMetricsPanel(SystemMetricsProbeFactories factories);
 
     /// The one-factory test seam (#1546): @p makeProbes runs once, on whichever sampler thread reaches it
-    /// first, and each sampler takes its own probes from the result.
+    /// first, and each sampler takes its own probes from the result, run and takes under one mutex (#2731).
     explicit SystemMetricsPanel(std::function<SystemMetricsProbes()> makeProbes);
     ~SystemMetricsPanel() override;
 

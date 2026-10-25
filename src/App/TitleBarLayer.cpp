@@ -102,72 +102,33 @@ template<typename Fn> struct ScopeExit
     Fn m_Fn;
 };
 
-// Hit-test callback:
-// - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
-// - X11/XWayland: NORMAL for title bar and controls so SDL delivers mouse button events to the
-//   app and drag is handled client-side (matches Windows); RESIZE_* for window edges so the WM
-//   handles native resize.
-// - Native Wayland: same RESIZE_* border handling, but the title-bar drag area itself returns
-//   DRAGGABLE (compositor-managed drag, since client-side SDL_SetWindowPosition() doesn't work
-//   there -- #744). SDL consumes the button-down event entirely for any non-NORMAL hit-test
-//   result, so this file's onSDLEvent()-driven click/drag/double-click handling never runs for
-//   that area on native Wayland -- only the compositor sees the press. Buttons stay NORMAL on
-//   every backend so DRAGGABLE never consumes their clicks.
-SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
+// Hit-test callback, installed on the window by setupHitTest(). The decision is
+// TitleBarLayer::hitTest() -- computeWindowHitTestAt() over the geometry the bar drew with and the
+// backend's policy (Core::VideoBackend::usesSystemDrag()/usesSystemResize()) -- so what the OS asks
+// here and what a test asks are one function. Per backend:
+// - Windows (#2716): the empty title bar answers DRAGGABLE, which SDL turns into HTCAPTION, so
+//   Windows runs the move itself: Aero Snap to a screen edge, the snap preview, drag-to-the-top to
+//   maximize and a double-click to maximize all come from that loop. The borders stay NORMAL and the
+//   resize is client-side (updateResize()): the OS resize loop is modal inside SDL's event pump, and
+//   nothing would be drawn until the button came up. A client-side maximized window (#1208) is a
+//   normal window to the OS, so its title bar stays NORMAL too and the drag that restores it under
+//   the pointer stays client-side (#2715).
+// - X11/XWayland: NORMAL for the title bar, so SDL delivers the press and the drag is client-side;
+//   RESIZE_* for the borders, so the window manager resizes.
+// - Native Wayland: RESIZE_* for the borders and DRAGGABLE for the empty title bar (compositor
+//   drag; client-side SDL_SetWindowPosition() doesn't work there -- #744).
+// SDL consumes the button-down event entirely for any non-NORMAL answer, so this file's
+// onSDLEvent()-driven click/drag/double-click handling never runs for that area: only the OS or
+// compositor sees the press. Buttons stay NORMAL on every backend so DRAGGABLE never consumes
+// their clicks (#750).
+SDL_HitTestResult hitTestCallback(SDL_Window* /*sdlWindow*/, const SDL_Point* area, void* data)
 {
-#ifdef _WIN32
-    (void) sdlWindow;
-    (void) area;
-    (void) data;
-    // Always return NORMAL so SDL does not enter native modal move/resize loops
-    // that pause rendering. Drag/resize is handled in TitleBarLayer::onSDLEvent.
-    return SDL_HITTEST_NORMAL;
-#else
-    auto* layer = static_cast<TitleBarLayer*>(data);
+    const auto* layer = static_cast<const TitleBarLayer*>(data);
     if (layer == nullptr || area == nullptr)
     {
         return SDL_HITTEST_NORMAL;
     }
-
-    const auto x = static_cast<float>(area->x);
-    const auto y = static_cast<float>(area->y);
-    const float titleBarHeight = TitleBarLayer::height();
-
-    int windowWidth = 0;
-    int windowHeight = 0;
-    if (!SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight))
-    {
-        spdlog::error("SDL_GetWindowSize failed in hitTestCallback: {}", SDL_GetError());
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // The window's own answer, not SDL_WINDOW_MAXIMIZED: a client-side maximize (X11 without EWMH
-    // maximize, #1339) never sets that flag, and its edges would stay resize handles nobody serves (#2497).
-    // SDL calls this from its event pump, on the main thread on X11.
-    const bool isMaximized = Core::Application::get().getWindow().isMaximized();
-
-    // The actual decision tree lives in computeWindowHitTest() (TitleBarGeometry.h), pure and
-    // header-only so its ordering -- buttons must be excluded before any resize-border check,
-    // since a button can sit within RESIZE_BORDER_THICKNESS of a window edge -- is directly
-    // unit-testable without live SDL_Window/TitleBarLayer state (see #750 review). On native
-    // Wayland the empty drag area hands off to the compositor (#744): client-side
-    // SDL_SetWindowPosition() during a drag doesn't work there, and since SDL consumes the
-    // button-down event entirely for any non-NORMAL result, this file's onSDLEvent()-driven
-    // click/drag/double-click handling never runs for that area there -- only the compositor
-    // sees the press, which means double-click-to-maximize doesn't fire from the title bar on
-    // native Wayland (the maximize button remains available). X11/XWayland/Windows stay NORMAL
-    // so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for double-click
-    // maximize/restore detection there.
-    return computeWindowHitTest(x,
-                                y,
-                                windowWidth,
-                                windowHeight,
-                                titleBarHeight,
-                                resizeBorderThickness(),
-                                isMaximized,
-                                layer->isPointInControlArea(x, y),
-                                Core::VideoBackend::isWayland());
-#endif
+    return layer->hitTest(static_cast<float>(area->x), static_cast<float>(area->y));
 }
 
 } // namespace
@@ -203,7 +164,7 @@ void TitleBarLayer::onAttach()
 
     m_TraceEnabled = Core::resizePerfTraceRequested();
 
-    // Set up hit test for window dragging
+    // Hit testing: who runs a title-bar drag and a border resize (see hitTestCallback).
     setupHitTest();
     createSystemCursors();
 }
@@ -303,13 +264,14 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-    // On Windows and X11/XWayland, the title bar drag area returns SDL_HITTEST_NORMAL
-    // (see hitTestCallback), so SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here
-    // via SDL's built-in clicks field for double-click detection and the existing
-    // client-side drag/resize interaction for window movement. On native Wayland the drag
-    // area returns SDL_HITTEST_DRAGGABLE instead, so SDL consumes the button-down there and
-    // this handler never runs for that area -- drag and double-click-to-maximize are the
-    // compositor's responsibility on that backend (see hitTestCallback and #744).
+    // Where the hit test answers SDL_HITTEST_NORMAL (see hitTestCallback: the title bar on
+    // X11/XWayland and on a client-side maximized window on Windows, the borders on Windows),
+    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here via SDL's built-in clicks field
+    // for double-click detection and the client-side drag/resize interaction for window movement.
+    // Where it answers DRAGGABLE or RESIZE_* (the title bar on native Wayland, #744, and on a
+    // normal window on Windows, #2716; the borders off Windows), SDL consumes the button-down and
+    // this handler never runs for that area: the drag, the resize and a double-click to maximize
+    // are the OS's or the compositor's there.
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -341,6 +303,31 @@ auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
 {
     return computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, resizeBorderThickness());
+}
+
+auto TitleBarLayer::hitTestInput() const -> WindowHitTestInput
+{
+    const Core::Window& window = Core::Application::get().getWindow();
+    const auto [windowWidth, windowHeight] = window.getSize();
+    // The window's own answer, not SDL_WINDOW_MAXIMIZED: a client-side maximize (Windows, #1208; X11
+    // without EWMH maximize, #1339) never sets that flag, and its edges would stay resize handles
+    // nobody serves (#2497). SDL calls the hit test from its event pump, on the main thread.
+    const bool isMaximized = window.isMaximized();
+    return {.windowWidth = windowWidth,
+            .windowHeight = windowHeight,
+            .titleBarHeightPx = height(),
+            .resizeBorderPx = resizeBorderThickness(),
+            .buttons = m_ButtonLayout,
+            .icon = m_IconBounds,
+            .isMaximized = isMaximized,
+            .systemDrag = computeSystemDragApplies(
+                Core::VideoBackend::usesSystemDrag(), Core::VideoBackend::supportsClientSideMaximize(), isMaximized),
+            .systemResize = Core::VideoBackend::usesSystemResize()};
+}
+
+auto TitleBarLayer::hitTest(const float x, const float y) const -> SDL_HitTestResult
+{
+    return computeWindowHitTestAt(x, y, hitTestInput());
 }
 
 void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const

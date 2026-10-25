@@ -315,6 +315,24 @@ class ProcessesPanel : public Panel
         return m_TreeViewEnabled;
     }
 
+    /// The filter box's text, for the UI scenarios driving it through the whole shell (#2711).
+    [[nodiscard]] const std::string& searchTextForTesting() const noexcept
+    {
+        return m_SearchBuffer;
+    }
+
+    /// The row menu's popup ID (#2711): a scenario tells the row menu from another popup by it.
+    [[nodiscard]] unsigned int rowMenuPopupIdForTesting() const noexcept
+    {
+        return m_RowMenuPopupId;
+    }
+
+    /// How many tree branches are collapsed, the filter's own set included (#2711).
+    [[nodiscard]] std::size_t collapsedBranchCountForTesting() const noexcept
+    {
+        return m_CollapsedKeys.size() + m_FilterCollapsedKeys.size();
+    }
+
     /// Switches between list and tree view, as the toolbar's List | Tree control does (F5, #170).
     void toggleTreeView()
     {

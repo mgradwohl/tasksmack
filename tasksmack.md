@@ -237,7 +237,7 @@ The application throttles idle and minimized rendering; it never throttles sampl
 
 Custom title-bar behavior is intentionally platform-specific:
 
-- **Windows:** Client-side drag and resize interactions (`TitleBarLayer`) with resize cursors applied from the app.
+- **Windows:** The empty title bar is the OS's caption: the hit test answers `SDL_HITTEST_DRAGGABLE` (-> `HTCAPTION`), so Windows runs the move itself and Aero Snap, the snap preview, drag-to-the-top to maximize and a double-click to maximize all work as for a native window (#2716). Border resize stays client-side (`TitleBarLayer::updateResize()`, resize cursors applied from the app): the OS resize loop is modal inside SDL's event pump, so nothing would be drawn until the button came up. A client-side maximized window (#1208) is a normal window to the OS, so its title bar stays client-side too and a drag restores it under the pointer (#2715). Snap Layouts (hovering the maximize button) is not available: SDL has no `HTMAXBUTTON` hit-test result.
 - **Linux (X11/XWayland):** Delegates border resize to window manager via `SDL_HITTEST_RESIZE_*` results.
   - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`), client-side, same as Windows.
   - Window maximize asks the window manager (`SDL_MaximizeWindow`) when it supports EWMH maximize (`_NET_SUPPORTED` lists `_NET_WM_STATE_MAXIMIZED_VERT`/`_HORZ`, read by `Core::X11WindowManager`), so it fills the window manager's work area; `SDL_GetDisplayUsableBounds` is the whole display on a server without `_NET_WORKAREA` (WSLg), which covered the taskbar (#1339). Without EWMH maximize it falls back to client-side positioning with `SDL_GetDisplayUsableBounds`. The decision is `WindowGeometry::chooseBorderlessMaximize()`; Windows always maximizes client-side (#1208).
@@ -250,7 +250,7 @@ Custom title-bar behavior is intentionally platform-specific:
 
 Backend detection is centralized in `Core::VideoBackend`:
 - Detects whether the current video driver is native Wayland, X11, XWayland (X11 on Wayland), or Windows.
-- Provides semantic capability queries (`supportsClientSideMaximize`, `supportsGlobalMouseState`) used by `Window` and `TitleBarLayer`.
+- Provides semantic capability queries (`supportsClientSideMaximize`, `supportsGlobalMouseState`, `usesSystemDrag`, `usesSystemResize`) used by `Window` and `TitleBarLayer`.
 - Initialized once after SDL_Init in the Application constructor.
 
 XWayland is detected as a first-class fallback path (SDL driver `"x11"` with `WAYLAND_DISPLAY` set -- `DISPLAY` isn't consulted, since it's commonly set on native Wayland sessions too) and is treated like X11 for compatibility.

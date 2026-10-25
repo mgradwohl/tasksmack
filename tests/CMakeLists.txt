@@ -210,6 +210,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
+add_test(NAME UiCompareReportScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
+
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
@@ -694,6 +698,7 @@ set(THEME_REAL_TEST_SOURCES
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
+    App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
     App/test_AccessNoticeOnDisplay.cpp # the startup notice in a real application (#2728)
     App/test_SettingsThemeApply.cpp  # a theme picked in Settings applies on Save, not before (#2713)
 )
@@ -1128,7 +1133,14 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
     COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
 )
-tasksmack_gtest_add_suites(TaskSmackAppTests)
+# The UI scenarios (#2711) run on a synthetic machine, the same on every runner; TASKSMACK_SYNTHETIC is read
+# once per process, and each suite is its own process. TASKSMACK_UI_CAPTURE_DIR, when set, passes through.
+# The on-display suites open real windows and, since #2717, drive every resize edge live: 35-40 s on a
+# windows-2025 runner, which a slow one pushed past the CI steps' 60 s --timeout (main 82d9b173). The
+# same whole-suite limit as every other executable's entries.
+tasksmack_gtest_add_suites(TaskSmackAppTests
+    PROPERTIES TIMEOUT 300
+    SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

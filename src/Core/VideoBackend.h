@@ -57,6 +57,33 @@ class VideoBackend
     /// Used for drag/resize operations; on Wayland this may be unreliable.
     [[nodiscard]] static bool supportsGlobalMouseState() noexcept;
 
+    /// Pure policy, table-testable like classifyBackend(): whether @p backend runs a title-bar drag
+    /// itself once the window's hit test answers SDL_HITTEST_DRAGGABLE. Native Wayland does
+    /// (xdg_toplevel_move, #744), and so does Windows: its own move loop is where Aero Snap lives --
+    /// snapping to a screen edge, the snap preview and drag-to-the-top-to-maximize -- none of which a
+    /// window moved with SDL_SetWindowPosition() ever gets (#2716). X11/XWayland keep the client-side
+    /// drag (TitleBarLayer::updateDrag()), as does an unknown backend.
+    [[nodiscard]] static constexpr bool usesSystemDrag(const Backend backend) noexcept
+    {
+        return backend == Backend::Wayland || backend == Backend::Windows;
+    }
+
+    /// Pure policy: whether @p backend runs a border resize itself once the hit test answers
+    /// SDL_HITTEST_RESIZE_*. X11/XWayland and native Wayland do. Windows does not: its resize loop is
+    /// modal inside SDL's event pump, so the window would not repaint until the button is released,
+    /// where the client-side resize (TitleBarLayer::updateResize()) draws every size on the way --
+    /// and keeps the resize cursors and the #882 tracing on the one path.
+    [[nodiscard]] static constexpr bool usesSystemResize(const Backend backend) noexcept
+    {
+        return backend != Backend::Windows;
+    }
+
+    /// usesSystemDrag() for the detected backend.
+    [[nodiscard]] static bool usesSystemDrag() noexcept;
+
+    /// usesSystemResize() for the detected backend.
+    [[nodiscard]] static bool usesSystemResize() noexcept;
+
     /// Pure policy: should the window use the custom borderless title bar (true), or native
     /// OS/compositor decorations (false)? Parameterized rather than reading live isWayland()
     /// state, so it's directly unit-testable without live SDL video-backend state. See #745:

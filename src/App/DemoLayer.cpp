@@ -67,16 +67,27 @@ class Issue
 
     void operator()(const DemoOverride::OpenAction& action) const
     {
-        // The events the title bar's buttons, F1 and Settings raise (#172).
-        if (action.dialog == SelectOverride::StartupDialog::Help)
+        // The events the title bar's buttons, F1, F2 and Settings raise (#172).
+        switch (action.dialog)
+        {
+        case SelectOverride::StartupDialog::Help:
         {
             Core::OpenHelpEvent event;
             Core::Application::get().raiseEvent(event);
+            break;
         }
-        else
+        case SelectOverride::StartupDialog::About:
         {
             Core::OpenAboutEvent event;
             Core::Application::get().raiseEvent(event);
+            break;
+        }
+        case SelectOverride::StartupDialog::Settings:
+        {
+            Core::OpenSettingsEvent event;
+            Core::Application::get().raiseEvent(event);
+            break;
+        }
         }
     }
 

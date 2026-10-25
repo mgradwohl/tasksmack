@@ -35,6 +35,9 @@ inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per proc
 struct State
 {
     bool openRequested = false; ///< Set to open it on the next frame; cleared when it opens
+    /// Set to close it on the next frame as Cancel does, saving nothing (a CloseDialogEvent, TASKSMACK_DEMO's
+    /// close=dialog, #2827); cleared when it closes, or at once when it is not open.
+    bool closeRequested = false;
     // Whether one of the dialog's combos was open on the previous frame, so the Escape that closes
     // a combo does not also cancel the dialog (#1129).
     bool comboOpenLastFrame = false;
@@ -76,7 +79,8 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
 void resetToDefaults(State& state);
 
 /// Draw the Settings dialog for this frame: open it when @p state.openRequested is set, then draw it
-/// while it is open. Cancel and Escape close it; Reset to defaults changes @p state in place.
+/// while it is open. Cancel, Escape and @p state.closeRequested close it; Reset to defaults changes
+/// @p state in place.
 ///
 /// Split out of SettingsLayer, which keeps the event wiring and carries out the returned action
 /// (saving, opening files, raising the About event), so the dialog can be rendered headless in the

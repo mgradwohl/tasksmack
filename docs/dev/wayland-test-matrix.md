@@ -11,7 +11,7 @@ This document defines the test matrix and acceptance criteria for the Wayland na
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
 1. **Native Wayland:** Compositor-managed maximize/restore, event-consistent local-coordinate drag
 2. **X11/XWayland:** Maximize asks the window manager when it supports EWMH maximize (#1339), otherwise client-side maximize/restore; global-coordinate drag (existing behavior preserved)
-3. **Windows:** Client-side interactions (existing behavior preserved)
+3. **Windows:** Title-bar drag handed to the OS move loop (`SDL_HITTEST_DRAGGABLE` -> `HTCAPTION`, so Aero Snap works, #2716); client-side maximize/restore and border resize (existing behavior preserved)
 
 Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which env vars happen to be set. Native Wayland is `driver == "wayland"`, checked first -- this matters because `DISPLAY` is commonly set on a Wayland session too (e.g. XWayland running for other apps), so testers should not assume "DISPLAY is set" means an X11/XWayland run. XWayland fallback is `driver == "x11"` *and* `WAYLAND_DISPLAY` set; plain X11 is `driver == "x11"` with `WAYLAND_DISPLAY` unset.
 
@@ -23,7 +23,14 @@ Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which 
 queries -- the policy that gates platform-specific behavior. It does **not** exercise `Window`
 maximize/restore or `TitleBarLayer` drag/resize behavior directly; those depend on live SDL
 window/compositor state and are covered by the manual matrix below instead (drag on native
-Wayland is handed to the compositor since #750, which fixed #744).
+Wayland is handed to the compositor since #750, which fixed #744; on Windows to the OS move loop
+since #2716). What the window's hit test answers -- and so who runs each gesture -- is covered:
+`tests/App/test_TitleBarGeometry.cpp` (`ComputeWindowHitTestAtTest`: the empty bar, every button,
+the icon, every edge and corner, maximized, at a 1.0 and a 2.0 display scale, for each policy) and
+`tests/App/test_UiLayersOnDisplay.cpp` (`TheHitTestCallbackAnswersForTheRealWindow`: the callback
+installed on the real window, asked through `TitleBarLayer::hitTest()` and, on Windows, through
+`WM_NCHITTEST`; `TitleBarDragGeometryKeepsThePointerOnTheWindow` records the answer at each of its
+press points beside the client-side path it drives).
 
 #### VideoBackend Detection Tests (tests/Core/test_VideoBackend.cpp)
 
@@ -40,7 +47,9 @@ These tests verify the backend detection and capability query system that gates 
   - `NativeWaylandIsNeverClassifiedAsXWaylandFallback` - regression test for the native-Wayland-vs-XWayland bug fixed in this PR; self-skips unless the actual driver is `"wayland"`
   - `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
   - `SupportsGlobalMouseStateIsFalseOnlyOnWayland` - global mouse state is deliberately unsupported on native Wayland (`TitleBarLayer` uses the window-local query there instead)
+  - `UsesSystemDragIsTrueOnlyOnWaylandAndWindows` / `UsesSystemResizeIsFalseOnlyOnWindows` - the live backend's hit-test policy (#2716)
   - `IsWindowsIsFalseOnNonWindowsBuilds` (Linux/macOS builds only)
+- `HitTestPolicyTest` (2 cases) - table-tests `VideoBackend::usesSystemDrag(Backend)` / `usesSystemResize(Backend)`: the OS or compositor runs the title-bar drag on native Wayland and Windows only, and the border resize everywhere but Windows (#2716).
 
 **Run Unit Tests:**
 ```bash
@@ -84,6 +93,7 @@ ctest --preset debug              # Linux tests
 
 #### Windows
 - [ ] Windows 10/11 (verify no regressions)
+  - [ ] Single-monitor at 100% and at 150% DPI, and a two-monitor setup (the move loop is the OS's since #2716; see scenario 2)
 
 ### Test Scenarios for Each Platform
 
@@ -114,7 +124,7 @@ Test that borderless window maximize/restore works reliably:
 #### 2. **Window Dragging**
 Test that title-bar dragging is smooth and accurate:
 
-**Wayland (Native):** drag is delegated to the compositor (`SDL_HITTEST_DRAGGABLE` -> `xdg_toplevel_move()`, #744) rather than the client-side `updateDrag()` path X11/XWayland/Windows use -- the "~5px threshold before un-maximizing" and "no global mouse state artifacts" behaviors described for other platforms below do not apply here; the compositor owns the whole gesture once it starts.
+**Wayland (Native):** drag is delegated to the compositor (`SDL_HITTEST_DRAGGABLE` -> `xdg_toplevel_move()`, #744) rather than the client-side `updateDrag()` path X11/XWayland use -- the "~5px threshold before un-maximizing" and "no global mouse state artifacts" behaviors described for other platforms below do not apply here; the compositor owns the whole gesture once it starts.
 - [ ] Click and drag the empty title-bar area (not a button) to move window
   - Expected: Window follows cursor smoothly via the compositor's own move gesture
 - [ ] Drag from a maximized window
@@ -125,11 +135,31 @@ Test that title-bar dragging is smooth and accurate:
 - [ ] Double-click the empty title-bar area
   - Expected (accepted trade-off, not a bug): does NOT toggle maximize/restore on native Wayland, since the compositor consumes the button-down entirely. Use the maximize button instead.
 
-**X11/XWayland/Windows:**
+**X11/XWayland:**
 - [ ] Click and drag title bar (verify no regressions)
   - Expected: Same smooth client-side behavior as before, including the maximized-drag restore threshold
 - [ ] Double-click the title bar
   - Expected: Toggles maximize/restore (unaffected by the native-Wayland change above)
+
+**Windows (#2716):** a press on the empty title bar of a normal window is `HTCAPTION`, so Windows runs the move itself; the app's own drag (`updateDrag()`) runs only from a client-side maximized window, where the OS would otherwise drag the work-area-sized window around instead of restoring it. The borders stay the app's resize.
+- [ ] Click and drag the empty title bar
+  - Expected: the window follows the pointer; the app's frames pause for the duration of the drag (Windows' move loop is modal) and resume on release
+- [ ] Drag to the left or right screen edge
+  - Expected: the snap preview appears and the window snaps to that half on release; dragging it away again restores its size
+- [ ] Drag to the top edge
+  - Expected: the window maximizes (the OS maximize is adopted as the client-side one, #1208); the title bar shows Restore
+- [ ] Win+Left / Win+Right / Win+Up / Win+Down
+  - Expected: snap left/right, maximize, restore/minimize as for a native window
+- [ ] Drag a maximized window's title bar
+  - Expected: past ~5px the window is restored under the pointer and keeps following it (client-side, #2715); it does not snap in that same gesture -- release and drag again to snap
+- [ ] Double-click the empty title bar
+  - Expected: toggles maximize/restore (Windows' own caption double-click, then the app's for the maximized window)
+- [ ] Hover and click every button (icon/system menu, About, Help, Settings, Minimize, Maximize, Close)
+  - Expected: each works; none starts a drag (buttons stay `SDL_HITTEST_NORMAL`)
+- [ ] Hover the Maximize button
+  - Expected (known limitation): no Snap Layouts flyout; SDL has no `HTMAXBUTTON` hit-test result
+- [ ] Two monitors, one at 150% DPI: drag the window between them and snap on each
+  - Expected: the drag crosses over and the snap targets the monitor the pointer is on
 
 #### 3. **Window Resizing (Edges)**
 Test that custom border resize works:
@@ -274,12 +304,13 @@ export SDL_VIDEODRIVER=x11
 ## Known Limitations / Future Work
 
 - **Native Wayland:** Title-bar dragging is delegated to the compositor via `SDL_HITTEST_DRAGGABLE` (see #744); as a consequence, double-click-to-maximize does not fire from the title bar there (the maximize button remains available). Users who hit compositor-specific drag/resize quirks can switch to native window decorations via Settings > Advanced > "Use native window decorations instead of the custom title bar" (see #745; native Wayland only, takes effect on next launch).
+- **Windows:** Title-bar dragging is the OS move loop (`HTCAPTION`, #2716), so Aero Snap works, but Snap Layouts on the maximize button does not (SDL has no `HTMAXBUTTON` result), a drag from a maximized window restores it client-side and does not snap in the same gesture, and the app's frames pause while Windows' modal move loop runs. The border resize stays client-side for the same reason in reverse: the OS resize loop would freeze the window's contents until release.
 - **Multi-DPI:** Resize behavior on multi-DPI setups may vary by compositor. Log output will indicate which backend is active.
 - **Touch input:** Not tested (future enhancement).
 
 ## Documentation References
 
 - Architecture: tasksmack.md - Application and Rendering Lifecycle section (custom title-bar behavior per backend)
-- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::queryMouseState()`, `TitleBarLayer::hitTestCallback()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
-- Issue references: #593 (implementation), #865 (validation gate, consolidating #382 and #754), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression), #750 (drag/title-bar-button routing fix)
+- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp, `usesSystemDrag()`/`usesSystemResize()`), `Window::maximize()`, `TitleBarLayer::queryMouseState()`, `TitleBarLayer::hitTest()`/`hitTestInput()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeWindowHitTestAt()`/`computeWindowHitTest()`/`computeSystemDragApplies()`/`computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
+- Issue references: #593 (implementation), #865 (validation gate, consolidating #382 and #754), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression), #750 (drag/title-bar-button routing fix), #2716 (Windows title-bar drag handed to the OS move loop: Aero Snap)
 - Related: #373 (custom title bar intro, historical context)

@@ -155,6 +155,16 @@ class SettingsLayerRenderTest : public ::testing::Test
         return settle();
     }
 
+    /// Raises Core::CloseDialogEvent at the layer, as TASKSMACK_DEMO's close=dialog does (#2827), and lets
+    /// the dialog go; whether it is still open. The event is left for the Help and About layers.
+    bool closeDialog()
+    {
+        Core::CloseDialogEvent event;
+        m_Layer->onEvent(event);
+        EXPECT_FALSE(event.isHandled());
+        return settle();
+    }
+
     /// The modal's scrolling body, where the combos and the Advanced section's buttons are.
     static const ImGuiWindow* body()
     {
@@ -231,6 +241,18 @@ class SettingsLayerRenderTest : public ::testing::Test
 TEST_F(SettingsLayerRenderTest, StaysClosedUntilOpenSettingsIsRaised)
 {
     EXPECT_FALSE(settle());
+    EXPECT_TRUE(openDialog());
+}
+
+// #2827: Core::CloseDialogEvent (TASKSMACK_DEMO's close=dialog) closes the dialog as Cancel does: nothing
+// is saved, and the dialog opens again on the next request.
+TEST_F(SettingsLayerRenderTest, CloseDialogEventClosesItWithoutSaving)
+{
+    EXPECT_FALSE(closeDialog()); // nothing to close yet, and the request is not kept
+    ASSERT_TRUE(openDialog());
+    EXPECT_FALSE(closeDialog());
+    std::error_code ec;
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath, ec));
     EXPECT_TRUE(openDialog());
 }
 

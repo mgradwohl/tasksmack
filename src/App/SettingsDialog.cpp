@@ -96,6 +96,7 @@ Action render(State& state)
     const bool isOpen = ImGui::IsPopupOpen(POPUP_ID);
     if (!state.openRequested && !isOpen)
     {
+        state.closeRequested = false; // Nothing to close either
         return Action::None;
     }
 
@@ -135,8 +136,9 @@ Action render(State& state)
         // Escape cancels, as the Cancel button does -- unless one of the combos was open. With
         // keyboard navigation on (UILayer), ImGui's own Escape handling in NewFrame() closes that
         // combo and hands focus back to this dialog within the same frame, so the same key press
-        // would otherwise close the combo and then the whole dialog.
-        if (!state.comboOpenLastFrame && UI::Widgets::dialogEscapePressed())
+        // would otherwise close the combo and then the whole dialog. So does a close request (#2827): a
+        // popup can only be closed from inside it.
+        if ((!state.comboOpenLastFrame && UI::Widgets::dialogEscapePressed()) || std::exchange(state.closeRequested, false))
         {
             ImGui::CloseCurrentPopup();
         }
