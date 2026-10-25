@@ -754,7 +754,9 @@ jobs:
         #
         # The two build-inputs manifests then say what a difference means (#2802): inputs that
         # differ (toolset, CRT/UCRT library hashes, SDK, runner image, compiler) explain it as the
-        # runner image's serviced CRT, not the build; inputs that match make it the build's.
+        # runner image's serviced CRT, not the build; inputs that match make it the build's. Only
+        # the packages pass or fail the step: it exits 0 when they match, whatever the manifests
+        # say, and 1 when they differ (#2952; tests/tools/test_workflow_run_steps.py runs it).
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -859,6 +861,10 @@ jobs:
               Write-Host "::notice::The packages match although the build inputs differ (above): the serviced libraries didn't change TaskSmack.exe this time."
             }
             Write-Host "All Windows packages are reproducible across two independent builds of this tag (byte-for-byte, or file-for-file plus the original's matching TaskSmackHelper.exe)."
+            # The packages decide the result, not the manifests: compare-build-inputs.ps1's exit 1
+            # (inputs differ) or 2 is still $LASTEXITCODE here, and the pwsh shell exits with it
+            # unless the step exits first (#2952).
+            exit 0
           }
 
   validate-linux-package:
