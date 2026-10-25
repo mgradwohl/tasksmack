@@ -531,6 +531,7 @@ set(COMMON_TEST_SOURCES
     App/test_MainTabSelectionRender.cpp
     App/test_EnvHooks.cpp
     App/test_DemoOverride.cpp
+    App/test_RenderMetricsOverride.cpp
     App/test_ScreenshotOverride.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
@@ -764,6 +765,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
     ${CMAKE_SOURCE_DIR}/src/App/SelectOverride.cpp
+    # The Render Metrics hook's CSV writer (#2923): test_RenderMetricsOverride.cpp compares its file with toCsv()
+    ${CMAKE_SOURCE_DIR}/src/App/RenderMetricsOverride.cpp
     # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
@@ -1161,7 +1164,12 @@ add_custom_command(TARGET TaskSmackAppTests POST_BUILD
 tasksmack_gtest_add_suites(TaskSmackAppTests
     DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT}
     PROPERTIES TIMEOUT 300
-    SUITE_PROPERTIES UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711")
+    # UiScenarioTest also runs alone (RUN_SERIAL): it drives the mouse, and on Windows the cursor and the
+    # window under it are the desktop's, so another on-display suite's window opened beside it took the
+    # pointer's hover and its drags failed when ctest ran them in parallel.
+    SUITE_PROPERTIES
+        UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=processes=120,seed=2711"
+        UiScenarioTest RUN_SERIAL TRUE)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

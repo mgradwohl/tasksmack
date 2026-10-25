@@ -24,11 +24,15 @@
 //   theme=<id>                    a loaded theme, applied as Settings applies one
 //   section=<name>                expands that section of Process Details' Overview (modules,
 //                                 openfiles, connections, environment, security or services)
+//   metrics=<on|off|export>       the Render Metrics overlay shown or hidden as Ctrl+Shift+M does, or
+//                                 its CSV written to TASKSMACK_RENDER_METRICS' file, else beside the
+//                                 screenshot (#2923, RenderMetricsOverride.h)
 //
 // A value that doesn't parse is ignored whole, with one warning naming the step. A tab or theme
 // name is checked when its step runs (DemoLayer), since neither is known here. The parser is pure
 // and header-only (tests/App/test_DemoOverride.cpp); only active() reads the environment and logs.
 
+#include "App/RenderMetricsOverride.h"
 #include "App/SelectOverride.h"
 #include "Core/EnvUtils.h"
 #include "Platform/AsciiCase.h"
@@ -123,8 +127,23 @@ struct SectionAction
     [[nodiscard]] bool operator==(const SectionAction&) const = default;
 };
 
-using Action =
-    std::variant<TabAction, SelectAction, DetailsAction, MachineAction, OpenAction, CloseDialogAction, ThemeAction, SectionAction>;
+/// metrics=<on|off|export>: the Render Metrics overlay shown or hidden, or its CSV written (#2923).
+struct MetricsAction
+{
+    RenderMetricsOverride::MetricsRequest request = RenderMetricsOverride::MetricsRequest::On;
+
+    [[nodiscard]] bool operator==(const MetricsAction&) const = default;
+};
+
+using Action = std::variant<TabAction,
+                            SelectAction,
+                            DetailsAction,
+                            MachineAction,
+                            OpenAction,
+                            CloseDialogAction,
+                            ThemeAction,
+                            SectionAction,
+                            MetricsAction>;
 
 /// One step: what to request, and when.
 struct Step
@@ -274,6 +293,15 @@ namespace Detail
         }
         return std::unexpected(std::format("expands '{}', not modules, openfiles, connections, environment, security or services", value));
     }
+    if (equalsIgnoreCase(key, "metrics"))
+    {
+        if (const std::optional<RenderMetricsOverride::MetricsRequest> request = RenderMetricsOverride::parseMetricsRequest(value);
+            request.has_value())
+        {
+            return MetricsAction{.request = *request};
+        }
+        return std::unexpected(std::format("asks '{}' of the Render Metrics overlay, not on, off or export", value));
+    }
     return std::unexpected(std::format("has an unknown action '{}'", key));
 }
 
@@ -309,7 +337,7 @@ namespace Detail
     return Step{.timeMs = *timeMs, .action = std::move(*action)};
 }
 
-/// A step's action as the script spells it: "tab=processes", "select=pid:42", "close=dialog".
+/// A step's action as the script spells it: "tab=processes", "select=pid:42", "close=dialog", "metrics=export".
 struct Describe
 {
     [[nodiscard]] std::string operator()(const TabAction& action) const
@@ -343,6 +371,10 @@ struct Describe
     [[nodiscard]] std::string operator()(const SectionAction& action) const
     {
         return std::format("section={}", SelectOverride::sectionName(action.section));
+    }
+    [[nodiscard]] std::string operator()(const MetricsAction& action) const
+    {
+        return std::format("metrics={}", RenderMetricsOverride::metricsRequestName(action.request));
     }
 };
 

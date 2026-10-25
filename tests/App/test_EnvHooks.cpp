@@ -4,6 +4,7 @@
 /// value alone. The table must have a row per listed hook, so a new hook gets one.
 
 #include "App/DemoOverride.h"
+#include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotOverride.h"
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
@@ -46,9 +47,9 @@ struct HookParser
                        result.warnings.size());
 }
 
-const std::array<HookParser, 14>& hookParsers()
+const std::array<HookParser, 15>& hookParsers()
 {
-    static const std::array<HookParser, 14> parsers{
+    static const std::array<HookParser, 15> parsers{
         HookParser{.name = "TASKSMACK_CONFIG_DIR",
                    .value = "/tmp/tasksmack config",
                    .parse =
@@ -127,6 +128,14 @@ const std::array<HookParser, 14>& hookParsers()
                    {
                        const auto parsed = App::DemoOverride::parse(value);
                        return (parsed.steps ? App::DemoOverride::describe(*parsed.steps) : std::string("none")) + "|" + parsed.warning;
+                   }},
+        HookParser{.name = "TASKSMACK_RENDER_METRICS",
+                   .value = "perf-data/idle metrics.csv",
+                   .parse =
+                       [](const char* value)
+                   {
+                       const auto path = App::RenderMetricsOverride::parse(value);
+                       return path ? path->generic_string() : std::string("none");
                    }},
         HookParser{.name = "TASKSMACK_LOCALE",
                    .value = "de_DE",

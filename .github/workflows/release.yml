@@ -965,10 +965,13 @@ jobs:
         # tasksmack_apply_privileged_hardening()). A toolchain or flag change that silently drops
         # one fails here. The CET/BTI note survives only when every linked object has it, so it's
         # checked on the packaged binary, not assumed (the CET note is confirmed on release dry
-        # runs). On arm64 a missing BTI/PAC note is a warning, not a failure, until #2786: the
-        # LLVM 22 AArch64 static runtimes from apt.llvm.org (libc++, libc++abi, compiler-rt
-        # builtins) don't carry branch protection, so lld drops the note from the whole helper
-        # and no arm64 helper has shipped with it (#2784). RELRO and BIND_NOW stay fatal there.
+        # runs). On arm64 the BTI/PAC note can't survive the link (#2786): Ubuntu 24.04's glibc
+        # startup objects (Scrt1.o, crti.o, crtn.o) aren't built with branch protection and have
+        # no BTI landing pads, so lld drops the note from every executable linked there, and
+        # -z force-bti would fault at _start. A missing note is therefore a warning on arm64.
+        # PAC doesn't depend on the note, so what is fatal there is the helper's own code losing
+        # it: main() must open with paciasp, which -mbranch-protection=standard emits.
+        # RELRO and BIND_NOW are fatal on both.
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -994,14 +997,22 @@ jobs:
               echo "$HELPER: no x86 IBT/SHSTK property note (CET)" >&2
               failed=1
             fi
-          elif ! grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
-            # A warning, not a failure, until #2786 gets the note for real (see the step comment).
-            msg="$HELPER has no AArch64 BTI/PAC property note: the LLVM 22 AArch64 static runtimes"
-            msg+=" from apt.llvm.org (libc++, libc++abi, compiler-rt builtins) don't carry branch"
-            msg+=" protection, so lld drops the note from the whole helper. Fatal again once #2786"
-            msg+=" (v0.9.1) gets the note for real."
-            echo "::warning title=arm64 tasksmack-helper has no BTI/PAC note::$msg"
-            summary="full RELRO and BIND_NOW as expected; no AArch64 BTI/PAC note (warned, #2786)"
+          else
+            # PAC: the helper's own code signs its return addresses (see the step comment).
+            first=$(objdump -d --no-show-raw-insn --disassemble=main "$HELPER" |
+              awk '/<main>:/{getline; sub(/^[[:space:]]*[0-9a-f]+:[[:space:]]*/, ""); print $1; exit}')
+            if [[ "$first" != "paciasp" ]]; then
+              echo "$HELPER: main() opens with '${first:-nothing}', not paciasp: the helper lost -mbranch-protection=standard (PAC)" >&2
+              failed=1
+            fi
+            if grep -Eq 'AArch64 feature: BTI, PAC' <<<"$notes"; then
+              summary="full RELRO, BIND_NOW, PAC and the BTI/PAC note"
+            else
+              msg="$HELPER has no AArch64 BTI/PAC property note, as expected on Ubuntu 24.04: its glibc"
+              msg+=" startup objects lack BTI landing pads, so BTI isn't enforced. PAC is checked and present (#2786)."
+              echo "::warning title=arm64 tasksmack-helper: PAC, no BTI::$msg"
+              summary="full RELRO, BIND_NOW and PAC as expected; no BTI/PAC note (Ubuntu 24.04's glibc startup objects, #2786)"
+            fi
           fi
           if [[ "$failed" -ne 0 ]]; then
             exit 1

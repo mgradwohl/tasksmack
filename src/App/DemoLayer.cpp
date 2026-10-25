@@ -1,15 +1,22 @@
 #include "App/DemoLayer.h"
 
 #include "App/DemoOverride.h"
+#include "App/RenderMetricsOverride.h"
+#include "App/ScreenshotOverride.h"
 #include "App/SelectOverride.h"
 #include "App/ShellLayer.h"
 #include "App/ThemeChange.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
+#include "UI/RenderMetrics.h"
 
 #include <spdlog/spdlog.h>
 
+#include <filesystem>
+#include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -24,7 +31,8 @@ namespace
 class Issue
 {
   public:
-    Issue(ShellLayer& shell, const DemoOverride::Step& step) noexcept : m_Shell(&shell), m_Step(&step)
+    Issue(ShellLayer& shell, const DemoOverride::Step& step, const std::optional<std::filesystem::path>& metricsCsv) noexcept
+        : m_Shell(&shell), m_Step(&step), m_MetricsCsv(&metricsCsv)
     {}
 
     void operator()(const DemoOverride::TabAction& action) const
@@ -111,15 +119,67 @@ class Issue
         m_Shell->requestDetailsSection(action.section);
     }
 
+    void operator()(const DemoOverride::MetricsAction& action) const
+    {
+        using RenderMetricsOverride::MetricsRequest;
+        switch (action.request)
+        {
+        case MetricsRequest::On:
+        case MetricsRequest::Off:
+            // As Ctrl+Shift+M: the shell's flag the overlay and the status bar's FPS readout follow.
+            m_Shell->requestRenderMetrics(action.request == MetricsRequest::On);
+            break;
+        case MetricsRequest::Export:
+            exportMetrics();
+            break;
+        }
+    }
+
   private:
+    /// The overlay's Copy CSV, to a file: the last completed frame's rows, byte for byte what the clipboard
+    /// gets. Written here, on the UI thread, once per step: a test hook's one small write, taken knowingly
+    /// where the UI thread otherwise never touches a file (#2731); the exit write sits with the config save.
+    void exportMetrics() const
+    {
+        if (!m_MetricsCsv->has_value())
+        {
+            spdlog::warn("{}: {}: no file to write; set {}=<csv path>, or {} for a file beside the screenshot; skipped",
+                         DemoOverride::ENV_VAR,
+                         DemoOverride::describe(*m_Step),
+                         RenderMetricsOverride::ENV_VAR,
+                         ScreenshotOverride::ENV_VAR);
+            return;
+        }
+        const UI::RenderMetrics& metrics = UI::RenderMetrics::get();
+        const std::string csv = metrics.toCsv();
+        const std::filesystem::path& file = **m_MetricsCsv;
+        if (const auto written = RenderMetricsOverride::writeCsv(file, csv); !written.has_value())
+        {
+            spdlog::error("{}: {}: {}", DemoOverride::ENV_VAR, DemoOverride::describe(*m_Step), written.error());
+            return;
+        }
+        spdlog::info("{}: {}: Render Metrics CSV written: {} ({} rows)",
+                     DemoOverride::ENV_VAR,
+                     DemoOverride::describe(*m_Step),
+                     Core::pathToUtf8(file),
+                     RenderMetricsOverride::csvRowCount(csv));
+        if (!metrics.enabled())
+        {
+            spdlog::warn("{}: {}: the overlay is off, so the CSV has its header only; a metrics=on step before it records the charts",
+                         DemoOverride::ENV_VAR,
+                         DemoOverride::describe(*m_Step));
+        }
+    }
+
     ShellLayer* m_Shell;
     const DemoOverride::Step* m_Step;
+    const std::optional<std::filesystem::path>* m_MetricsCsv; ///< The layer's; never null
 };
 
 } // namespace
 
-DemoLayer::DemoLayer(std::vector<DemoOverride::Step> steps, ShellLayer& shell)
-    : Core::Layer("DemoLayer"), m_Steps(std::move(steps)), m_Shell(&shell)
+DemoLayer::DemoLayer(std::vector<DemoOverride::Step> steps, ShellLayer& shell, std::optional<std::filesystem::path> metricsCsv)
+    : Core::Layer("DemoLayer"), m_Steps(std::move(steps)), m_Shell(&shell), m_MetricsCsv(std::move(metricsCsv))
 {}
 
 void DemoLayer::onUpdate(float /*deltaTime*/)
@@ -154,7 +214,7 @@ void DemoLayer::onPostRender()
 
 void DemoLayer::issue(const DemoOverride::Step& step) const
 {
-    std::visit(Issue(*m_Shell, step), step.action);
+    std::visit(Issue(*m_Shell, step, m_MetricsCsv), step.action);
 }
 
 } // namespace App
