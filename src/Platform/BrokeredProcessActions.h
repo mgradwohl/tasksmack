@@ -163,7 +163,8 @@ class BrokeredConnectionsReader final : public IProcessConnectionsReader
 };
 
 /// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
-/// when the in-process read is refused (another user's process). Everything else is the inner probe's.
+/// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
+/// I/O bytes the same way, in one ReadProcessCounters (#2728). Everything else is the inner probe's.
 /// There is no prompt here: the figures follow once the user has authenticated for anything else.
 class BrokeredProcessProbe final : public IProcessProbe
 {
@@ -182,8 +183,14 @@ class BrokeredProcessProbe final : public IProcessProbe
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
 
   private:
+    /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread.
+    void readRefusedCounters(std::vector<ProcessCounters>& counters);
+
     std::unique_ptr<IProcessProbe> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
+    /// The helper answered ReadProcessCounters with an error (a helper that doesn't read them, as Windows'
+    /// doesn't need to): not asked again.
+    bool m_CountersRefused = false;
 };
 
 /// @p probe decorated with @p broker, or @p probe as it is when there is no broker.

@@ -2847,7 +2847,9 @@ That single push runs two independent workflows:
   generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
   size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
-  draft and overwrites its assets. The maintainer's approved release notes then replace the
+  draft and overwrites its assets. Then `verify-published-release` downloads the published assets
+  and checks them again (see [Release Artifact Validation](#release-artifact-validation)). The
+  maintainer's approved release notes then replace the
   placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
   Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
   placeholder has.
@@ -2940,6 +2942,24 @@ Both jobs also check what the packages contain, since a bundled dependency's own
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
 `usr/bin`, `usr/libexec/tasksmack` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}`, and the `.zip`
 may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
+
+`verify-published-release` runs after `create-release` and checks what users actually download (#2721),
+on one x64 Linux and one x64 Windows runner. A tag run downloads the published release (`gh release
+download`); a dry run, which publishes nothing, downloads its `release-assets-dry-run` artifact instead,
+so every dry run exercises the job, and where the files come from is the only difference. Each leg
+checks that the download holds exactly the files `create-release` hashed after signing (every asset and
+its `.bundle`, nothing extra), each with the SHA-256 of its `dist/` copy (the job's `sha256sums` output,
+not a rebuild). The Linux leg then runs `cosign verify-blob --bundle` on every asset with the User
+Guide's certificate identity and issuer (a dry run signs from a branch, so it pins the same workflow at
+its own ref), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
+on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
+`validate-linux-package`'s smoke check. The Windows leg checks the `.zip`'s Authenticode signatures
+with `validate-windows-package`'s check once signing is on (until #2302 signs it, the step says it's
+skipped), and relaunches it with that job's smoke check. Both jobs run the same scripts:
+`tools/release-smoke-check.sh`, `tools/release-smoke-check.ps1` and `tools/verify-windows-signatures.ps1`.
+On a tag run the release is already public by then, so a failure can't unpublish it: the job fails the
+run, its step summary names the check that failed, and the maintainer decides what to do about the
+live release.
 
 ### Windows code signing
 

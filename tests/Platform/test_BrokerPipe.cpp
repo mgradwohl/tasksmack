@@ -1308,7 +1308,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::MemoryRollupRequest{.target = TARGET}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::FirmwareFileRequest{}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::CrashesRequest{}));
-    static_assert(std::variant_size_v<Broker::Request> == 12, "a new request kind: add it above");
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ProcessCountersRequest{.targets = {TARGET}}));
+    static_assert(std::variant_size_v<Broker::Request> == 13, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

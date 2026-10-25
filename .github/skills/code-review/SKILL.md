@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Reviews TaskSmack pull requests for C++23 compliance, memory/exception safety, thread safety, layered architecture boundaries, naming/include conventions, and clang-tidy pitfalls. Use when reviewing any pull request or code change in this repository.
+description: Reviews TaskSmack pull requests for C++23 compliance, memory/exception safety, thread safety, layered architecture boundaries, naming/include conventions, clang-tidy pitfalls, CI and release workflows, and how to file issues from a codebase audit. Use when reviewing any pull request, code change or range of commits in this repository.
 ---
 
 # TaskSmack Code Review
@@ -31,6 +31,16 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Destructors, move constructors, and swap should be `noexcept`.
 - Check `std::optional` access is guarded (`has_value()`).
 
+### Per-frame caches (#843, #2937)
+
+- **The key names every input:** a cache that skips per-frame work must key on everything the uncached code read:
+  data generation, series identity and size, window start, axis length, scale or units, selection. Flag any input
+  left out, and any series whose contents can change while its size and generation stay the same.
+- **Identities stay unique across resets:** a stamp that records "gathered from this cache" must compare a
+  process-unique id, not a per-instance counter that restarts at 0 when the cache is reset, replaced or pruned.
+- **Draw counts stay in bounds:** when x and the y buffers are rebuilt at different times, the draw count is the
+  shortest buffer's length, never `x.size()` alone.
+
 ## 4. Thread safety
 
 - Verify mutex usage and `std::atomic` correctness in `BackgroundSampler` and snapshot publication paths.
@@ -53,6 +63,10 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
   - flag timing that counts frames instead of using a clock.
 - **Tests:** new timed work needs a test that its period doesn't depend on UI state or frame rate, and that a stalled
   sampler doesn't delay frames.
+- **Settings saves (#2916):** a save triggered from the UI goes through `UserConfig::saveInBackground()`, which a
+  worker coalesces. Flag a synchronous `save()` anywhere else. Only two are allowed: the shutdown save in
+  `ShellLayer::onDetach()`, which flushes the worker first, and the first-run save before Settings opens config.toml
+  in an editor.
 
 ## 5. Conventions
 
@@ -67,7 +81,74 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - New Domain logic should have Google Test coverage in `tests/` (mirroring `src/`) using mocks from `tests/Mocks/MockProbes.h`.
 - Flag `EXPECT_EQ` on floating-point values (use `EXPECT_DOUBLE_EQ`).
 - Flag mocks defined inside anonymous namespaces when used with `std::make_unique`.
+- **On-display UI tests:** they derive from `TestSupport::ScratchConfigDirTest` (`tests/App/ScratchConfigDir.h`,
+  #2932), so each test gets its own empty config dir. Flag a test that reads or writes the shared config, or that
+  only passes because an earlier `--gtest_repeat` run saved a layout.
+- **No frame-timing assumptions:** the event drain stops after `DRAIN_BUDGET_MS` (`src/Core/Application.cpp`), so two
+  events pushed together can be handled in different frames under load (#2901). A test waits on the state it
+  observes, not on a frame count. A scenario step retries from fresh geometry until it takes (#2906).
+- **Fuzz builds:** when a source a fuzzer compiles gains a dependency, the fuzzer's `build_fuzzer` line in
+  `.clusterfuzzlite/build.sh` needs it too. A missing one fails "Fuzz changed parsers" at link time (#2930).
 
 ## 7. clang-tidy pitfalls
 
 Flag: uninitialized members, missing `override`, `NULL`/`0` for pointers, `const` return by value, unnecessary copies (use `const&`), missing parentheses in math expressions, and exceptions escaping `noexcept` functions.
+
+- **spdlog in a `noexcept` function:** spdlog catches its own formatting and sink errors inside `log()`, so the
+  repo's convention is a `NOLINTNEXTLINE(bugprone-exception-escape)` with that reason, not a try/catch around each
+  call. See `src/App/CoalescingWriter.h`.
+- **Newer clang-tidy:** checks that only a newer LLVM than CI's runs, such as `readability-trailing-comma` on LLVM 23
+  while CI is on 22, aren't findings until CI's LLVM moves (#945).
+
+## 8. CI and release workflows
+
+Changes under `.github/workflows/` need the maintainer's explicit OK before they're pushed (AGENTS.md).
+
+- **Pinning and permissions:**
+  - every third-party action is pinned by full commit SHA with a version comment;
+  - each job declares only the permissions it uses;
+  - signing and cloud access go through OIDC, never a stored client secret;
+  - flag a secret that can reach a log, or an untrusted input (`github.event.*`, a PR title or branch name)
+    interpolated into a `run:` script.
+- **release.yml is proven by a dry run:** `gh workflow run release.yml --ref <branch> -f dry_run=true`. The PR states
+  the run and each affected job's result. Tag runs and dry runs differ only where they must: publishing, attesting,
+  and the signing gate.
+- **Skipped dependencies:** a job whose `needs:` include one that can be skipped (signing while it's off) uses
+  `if: ${{ !cancelled() && needs.<job>.result == 'success' }}`. The implicit `success()` treats a skipped
+  dependency as a failure and silently skips the job (#2721).
+- **Backports:** a change labelled `backport:0.9` must not depend on main-only features. The `TASKSMACK_SCREENSHOT`
+  clean-quit hook, the smoke checks built on it (#2720, #2726, #2721) and `TASKSMACK_RENDER_METRICS` (#2926) aren't
+  on `release/0.9`. The backport action can't push workflow changes, so those are cherry-picked by hand.
+- **Signatures:** match the signer's certificate subject (CN), never a thumbprint or serial. Azure Artifact Signing
+  certificates rotate every few days (#2302).
+
+## 9. Auditing the codebase and filing issues
+
+For a review of the codebase or of a range of commits, not a single diff. The findings go in GitHub issues, not in a
+document.
+
+- **Never commit a review document.** No audit report, findings list or notes file goes into the repo. Each finding
+  is its own issue, and an optional tracker issue links them.
+- **Check before filing.** Search open and closed issues and PRs first (`gh issue list --search "<words>" --state all`).
+  If one already covers the finding, comment there instead of filing a duplicate.
+- **Verify each finding.** Trace the code path, or reproduce it in a test or under the synthetic machine
+  (`TASKSMACK_SYNTHETIC`). File only what you can show, and say how sure you are.
+- **One self-contained issue per finding**, from `.github/ISSUE_TEMPLATE/bug_report.md` or `feature_request.md`, with:
+  - a title that states the defect;
+  - the location as a permalink at a commit SHA (`https://github.com/mgradwohl/tasksmack/blob/<sha>/<path>#L<n>`);
+  - a concrete failure scenario: inputs or state, then the wrong result;
+  - a suggested fix and a size (S, M or L);
+  - a body that ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)` when an agent wrote it.
+- **Labels:**
+  - the kind: `bug`, `enhancement`, `refactoring`, `performance`, `security` or `testing`;
+  - the area: `windows`, `linux`, `ui`, `gpu`, `ci`, `tooling` and so on;
+  - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;
+  - `priority: high` only for crashes, data loss, security, or a broken release;
+  - `code-review` on every issue an audit files, so the batch can be triaged with one query
+    (`gh issue list --label code-review --no-milestone`);
+  - no milestone. The maintainer sets those, and agents never put an issue on a release milestone.
+- **Skip** style nits that clang-format or clang-tidy already enforce, and anything a section above calls fine.
+- **Running TaskSmack to check a finding:**
+  - give it its own `TASKSMACK_CONFIG_DIR`, and launch it at most once;
+  - never inject input unless TaskSmack is the foreground window;
+  - never launch it on the maintainer's desktop without asking.

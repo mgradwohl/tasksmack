@@ -1228,6 +1228,27 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
 }
 
+// #2728: the sampler's batch of refused FD counts and I/O, through the real helper; a target whose start
+// time doesn't match is left out.
+TEST(PkexecBrokerTest, TheHelperReadsProcessCountersAndLeavesOutAStaleTarget)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const ProcessTarget stale{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    const auto response = broker.call(Broker::ProcessCountersRequest{.targets = {child.target(), stale}}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(*response));
+    const auto& entries = std::get<Broker::ProcessCountersReply>(*response).entries;
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries.front().target, child.target());
+    EXPECT_TRUE(entries.front().handleCountRead);
+    EXPECT_GT(entries.front().handleCount, 0) << "its stdin, stdout and stderr at least";
+    // A kernel without task I/O accounting (WSL's) has no /proc/[pid]/io to read.
+    EXPECT_EQ(entries.front().ioRead, std::filesystem::exists("/proc/self/io"));
+}
+
 TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
 {
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);

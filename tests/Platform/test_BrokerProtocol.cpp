@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,8 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
     EXPECT_EQ(roundTrip(Request{Hello{.forSession = true}}), Request{Hello{.forSession = true}});
+    const Request counters = ProcessCountersRequest{.targets = {TARGET, ProcessTarget{.pid = 7, .startTimeTicks = 9}}};
+    EXPECT_EQ(roundTrip(counters), counters);
     for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
@@ -106,6 +109,31 @@ TEST(BrokerProtocolTest, TheFrameIsLittleEndianWithItsLengthVersionKindAndId)
     EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::Hello));
     EXPECT_EQ(bytes[8], 0x04U); // request id, little-endian
     EXPECT_EQ(bytes[11], 0x01U);
+}
+
+TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
+{
+    const Response reply = ProcessCountersReply{
+        .entries = {
+            ProcessCountersEntry{
+                .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 123456, .writeBytes = 7890},
+            ProcessCountersEntry{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 3},
+        }};
+    EXPECT_EQ(roundTrip(reply), reply);
+    EXPECT_EQ(roundTrip(Response{ProcessCountersReply{}}), Response{ProcessCountersReply{}});
+
+    // A count past MAX_COUNTER_TARGETS is refused before any target is read.
+    std::vector<std::uint8_t> request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
+    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_COUNTER_TARGETS) + 1;
+    std::memcpy(request.data() + 4 + HEADER_BYTES, &tooMany, sizeof(tooMany));
+    EXPECT_FALSE(decodeRequest(request).has_value());
+
+    // An entry's flags byte has two bits; any other is refused.
+    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
+    const std::size_t firstFlags = 4 + HEADER_BYTES + 4 + 4 + 8;
+    ASSERT_EQ(bytes.at(firstFlags), 3U);
+    bytes.at(firstFlags) = 4;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
 TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)
@@ -649,6 +677,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ReadMemoryRollup,
                                    MessageKind::ReadFirmwareFile,
                                    MessageKind::ReadCrashes,
+                                   MessageKind::ReadProcessCounters,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
@@ -657,6 +686,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::MemoryRollupResult,
                                    MessageKind::FirmwareFileResult,
                                    MessageKind::CrashesResult,
+                                   MessageKind::ProcessCountersResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);

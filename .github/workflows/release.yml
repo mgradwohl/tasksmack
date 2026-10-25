@@ -1038,14 +1038,17 @@ jobs:
       # The config.toml v0.8.0 saved, for the smoke check's second launch of each binary (#2726).
       V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
     steps:
-      # Only the v0.8.0 config fixture is needed. The bare container has no git, so the action
-      # downloads this commit's tree through the REST API instead (sparse-checkout needs git), and
-      # installing git here would pull packages into the clean environment the .deb is checked in.
-      - name: Check out the v0.8.0 config fixture
+      # Only the smoke check and the v0.8.0 config fixture are needed. The bare container has no git,
+      # so the action downloads this commit's tree through the REST API instead (sparse-checkout needs
+      # git), and installing git here would pull packages into the clean environment the .deb is
+      # checked in.
+      - name: Check out the smoke check and the v0.8.0 config fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: repo
-          sparse-checkout: tests/App/fixtures/config-v0.8.0.toml
+          sparse-checkout: |
+            tools/release-smoke-check.sh
+            tests/App/fixtures/config-v0.8.0.toml
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1187,146 +1190,13 @@ jobs:
         # dev-toolchain install had already pulled both packages in for unrelated reasons.
         run: apt-get install -y libgl1-mesa-dri libegl1 libegl-mesa0
 
-      - name: Define asset-resolution smoke check
-        # A bounded "is it still running" check alone doesn't prove assets loaded --
-        # src/UI/AssetPath.cpp and Theme.cpp both fall back gracefully on missing
-        # fonts/themes, so a broken installed/extracted asset layout would still pass a
-        # plain liveness check. Assert the actual log lines that only appear once the
-        # icon font and at least one theme have loaded from the real assets directory.
-        #
-        # Each run quits by itself rather than being killed (#2720): TASKSMACK_SCREENSHOT (#2827)
-        # writes one frame ALIVE_SECONDS after startup and closes the window through the same close
-        # request as the title bar's Close button, so every layer detaches and
-        # ShellLayer::onDetach() saves config.toml into the run's own TASKSMACK_CONFIG_DIR. The run
-        # must exit 0 (one that wrote no frame exits non-zero) within QUIT_TIMEOUT_SECONDS, log no
-        # [error] or [critical] line, and leave a config.toml with its [theme] table: with no input
-        # nothing writes the file before the shutdown's save, so its being there proves that save ran.
-        #
-        # Each binary runs twice (#2726): from an empty config dir, then from a copy of the config.toml
-        # v0.8.0 saved (tests/App/fixtures/config-v0.8.0.toml). The second run must save the file in
-        # today's format (config_version) and keep the settings changed in v0.8.0's UI when the
-        # fixture was made (tests/App/fixtures/README.md), each of which differs from the default.
-        # validate-linux-upgrade checks the same settings; keep the two lists in step.
-        run: |
-          cat > /tmp/smoke-check.sh <<'SMOKE_CHECK'
-          #!/usr/bin/env bash
-          set -uo pipefail
-          label="$1"
-          bin="$2"
-          log_prefix="$3"
-          fixture="$4"
-          ALIVE_SECONDS=5
-          QUIT_TIMEOUT_SECONDS=60
-          # Section, key and the value as TaskSmack writes it.
-          FIXTURE_SETTINGS=(
-            "theme id 'dracula'"
-            "font size 'large'"
-            "sampling interval_ms 2000"
-            "sampling history_max_seconds 600"
-            "ui show_privilege_notice false"
-            "process_columns threads true"
-            "process_columns user false"
-          )
-
-          # The value of <key> in [<section>] of a config.toml, as written.
-          toml_value() {
-            awk -v want="$2" -v key="$3" '
-              /^\[/ { section = substr($0, 2, length($0) - 2); next }
-              section == want && $1 == key && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }
-            ' "$1"
-          }
-
-          # launch <run label> <log> [<config.toml to start from>]
-          launch() {
-            local run="$1" log="$2" seed="${3:-}"
-            local work config_dir shot config status
-            work=$(mktemp -d)
-            config_dir="$work/config"
-            shot="$work/smoke.png"
-            config="$config_dir/config.toml"
-            if [[ -n "$seed" ]]; then
-              mkdir -p "$config_dir"
-              cp "$seed" "$config"
-            fi
-            SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug TASKSMACK_CONFIG_DIR="$config_dir" \
-              TASKSMACK_SCREENSHOT="$shot;after=$ALIVE_SECONDS" timeout "$QUIT_TIMEOUT_SECONDS" "$bin" > "$log" 2>&1
-            status=$?
-            cat "$log"
-            if [[ "$status" -eq 124 ]]; then
-              echo "$run: TaskSmack didn't quit by itself within $QUIT_TIMEOUT_SECONDS s (TASKSMACK_SCREENSHOT asks it to after $ALIVE_SECONDS s); the timeout killed it." >&2
-              exit 1
-            fi
-            if [[ "$status" -ne 0 ]]; then
-              echo "$run: TaskSmack exited with status $status; a clean quit after its screenshot exits 0." >&2
-              exit 1
-            fi
-            if [[ ! -s "$shot" ]]; then
-              echo "$run: TaskSmack exited 0 but wrote no screenshot at $shot." >&2
-              exit 1
-            fi
-            if grep -E '\[(critical|error)\]' "$log" >&2; then
-              echo "$run: the log has the [critical]/[error] line(s) above." >&2
-              exit 1
-            fi
-            if [[ ! -f "$config" ]]; then
-              echo "$run: no config.toml in $config_dir after the quit; the settings weren't saved on exit." >&2
-              exit 1
-            fi
-            echo "=== $run config.toml ==="
-            cat "$config"
-            echo
-            echo "=== end of config.toml ==="
-            if ! grep -A1 -x '\[theme\]' "$config" | grep -Eqx "id = ('[^']+'|\"[^\"]+\")"; then
-              echo "$run: config.toml in $config_dir has no [theme] table with an id; the save wrote something else." >&2
-              exit 1
-            fi
-            if [[ -n "$seed" ]]; then
-              # v0.8.0 wrote no config_version, so its being there proves the shutdown's save ran.
-              if ! grep -Eqx 'config_version = [0-9]+' "$config"; then
-                echo "$run: config.toml has no config_version; the shutdown's save didn't rewrite v0.8.0's file." >&2
-                exit 1
-              fi
-              local entry section key expected actual lost=0
-              for entry in "${FIXTURE_SETTINGS[@]}"; do
-                read -r section key expected <<<"$entry"
-                actual=$(toml_value "$config" "$section" "$key")
-                if [[ "$actual" != "$expected" ]]; then
-                  echo "$run: [$section] $key is ${actual:-missing} after the save, not v0.8.0's $expected." >&2
-                  lost=1
-                fi
-              done
-              if [[ "$lost" -ne 0 ]]; then
-                exit 1
-              fi
-            fi
-            if ! grep -q "Assets directory found:" "$log"; then
-              echo "$run: assets directory was not found (see the 'Assets directory not found' fallback warning above, if present); installed/extracted asset layout is broken." >&2
-              exit 1
-            fi
-            if grep -q "Icon font not found" "$log"; then
-              echo "$run: icon font failed to load even though an assets directory was found." >&2
-              exit 1
-            fi
-            if ! grep -q "Loaded theme:" "$log"; then
-              echo "$run: no themes loaded; theme directory is missing or empty." >&2
-              exit 1
-            fi
-          }
-
-          if [[ ! -s "$fixture" ]]; then
-            echo "$label: the v0.8.0 config fixture $fixture is missing." >&2
-            exit 1
-          fi
-          launch "$label (fresh config)" "$log_prefix-fresh.log"
-          launch "$label (v0.8.0's config)" "$log_prefix-v080.log" "$fixture"
-          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack quit by itself after $ALIVE_SECONDS s with config.toml saved, from a fresh config and from v0.8.0's, whose settings it kept."
-          SMOKE_CHECK
-          chmod +x /tmp/smoke-check.sh
-
       - name: Smoke-check installed .deb binary
+        # tools/release-smoke-check.sh: two launches that must quit by themselves with config.toml saved,
+        # from a fresh config and from v0.8.0's, with the assets resolved (the script's header has the
+        # checks). verify-published-release runs it on the published .tar.gz too (#2721).
         run: |
           BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
-          /tmp/smoke-check.sh "deb" "$BIN" /tmp/deb-run "$V080_CONFIG"
+          bash repo/tools/release-smoke-check.sh "deb" "$BIN" /tmp/deb-run "$V080_CONFIG"
 
       - name: Extract and verify .tar.gz layout
         run: |
@@ -1341,7 +1211,7 @@ jobs:
           echo "TGZ_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Smoke-check extracted .tar.gz binary
-        run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run "$V080_CONFIG"
+        run: bash repo/tools/release-smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run "$V080_CONFIG"
 
   validate-linux-upgrade:
     name: Validate the Upgrade over v0.8.0's .deb (x64)
@@ -1677,15 +1547,17 @@ jobs:
     # The .zip is portable, so there is no package to upgrade over v0.8.0's here; an NSIS upgrade
     # check (install the previous release, then this one) waits on #2302's installer.
     steps:
-      # Only the signature check's script, for "Verify the Authenticode signatures", and the config.toml
-      # v0.8.0 saved, for the smoke check's second launch (#2726). In its own folder, since a checkout
-      # cleans the folder it checks out into.
-      - name: Check out the signature check and the v0.8.0 config fixture
+      # Only the signature and smoke checks' scripts, and the config.toml v0.8.0 saved, for the smoke
+      # check's second launch (#2726). In its own folder, since a checkout cleans the folder it checks
+      # out into.
+      - name: Check out the signature and smoke checks and the v0.8.0 config fixture
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: repo
           sparse-checkout: |
             cmake/VerifyWindowsSignatures.cmake
+            tools/verify-windows-signatures.ps1
+            tools/release-smoke-check.ps1
             tests/App/fixtures/config-v0.8.0.toml
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -1737,21 +1609,17 @@ jobs:
 
       - name: Verify the Authenticode signatures
         # The check CPack skipped for this .zip (TASKSMACK_SIGN_AFTER_PACKAGING; #2302), run on the
-        # signed .zip before create-release can publish it: cmake/VerifyWindowsSignatures.cmake
-        # requires TaskSmack.exe and TaskSmackHelper.exe to be validly signed (a chain this runner
-        # trusts, the files unchanged since signing) by WINDOWS_EXPECTED_SIGNER, from the workflow's
-        # env, and timestamped. A missing, invalid, wrongly signed or untimestamped signature fails
-        # the release here. The Public Trust certificate chains to a root Windows trusts, so nothing
-        # is added to the runner's trust store.
+        # signed .zip before create-release can publish it: tools/verify-windows-signatures.ps1 runs
+        # cmake/VerifyWindowsSignatures.cmake, which requires TaskSmack.exe and TaskSmackHelper.exe to
+        # be validly signed (a chain this runner trusts, the files unchanged since signing) by
+        # WINDOWS_EXPECTED_SIGNER, from the workflow's env, and timestamped. A missing, invalid, wrongly
+        # signed or untimestamped signature fails the release here. The Public Trust certificate chains
+        # to a root Windows trusts, so nothing is added to the runner's trust store.
         if: env.SIGNING_ENABLED == 'true'
         shell: pwsh
         run: |
-          $pkg = $env:TASKSMACK_PKG_ROOT
-          foreach ($name in 'TaskSmack.exe', 'TaskSmackHelper.exe') {
-            $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $pkg $name)
-            Write-Host "${name}: $($sig.Status); signer $($sig.SignerCertificate.Subject) ($($sig.SignerCertificate.Thumbprint)); issuer $($sig.SignerCertificate.Issuer); timestamped by $($sig.TimeStamperCertificate.Subject)"
-          }
-          cmake "-DTASKSMACK_VERIFY_DIR=$pkg" "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER" -P repo/cmake/VerifyWindowsSignatures.cmake
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify the executable's architecture
@@ -1878,225 +1746,18 @@ jobs:
           "MESA_DLL_DIR=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Smoke-check extracted executable
-        # Runs a temporary copy of the extracted package with llvmpipe beside the exe, its own
-        # TASKSMACK_CONFIG_DIR, a private %TEMP% and an info-level log captured from stdout. It quits by
-        # itself (#2720): TASKSMACK_SCREENSHOT (#2827) writes one frame ALIVE_SECONDS after startup and
-        # closes the window through the same close request as the title bar's Close button, so every
-        # layer detaches and ShellLayer::onDetach() saves config.toml; a run that wrote no frame exits
-        # non-zero. Fails unless it quits with exit code 0 in the time allowed, on any [critical] or
-        # [error] log line, unless the log shows OpenGL 3.3+ from llvmpipe (proof the real renderer
-        # came up, not an error box), and unless config.toml was saved with its [theme] table.
-        # It runs twice (#2726): from an empty config dir, then from a copy of the config.toml v0.8.0
-        # saved (tests/App/fixtures/config-v0.8.0.toml), which must be saved in today's format
-        # (config_version) with the settings changed in v0.8.0's UI when the fixture was made kept
-        # (tests/App/fixtures/README.md; each differs from the default). Keep that list in step with
-        # validate-linux-package's smoke check.
-        # Then, as a user deleting the portable .zip's folder would (#2488): no new TaskSmack-named
-        # entry may appear under %APPDATA% or %LOCALAPPDATA% outside the config dirs and %TEMP%, and
-        # the folder TaskSmack ran from must delete with no file still locked.
+        # tools/release-smoke-check.ps1 runs a temporary copy of the package with llvmpipe beside the
+        # exe, twice (from a fresh config and from v0.8.0's): each launch must quit by itself
+        # (TASKSMACK_SCREENSHOT, #2720) with exit code 0, no [critical] or [error] log line, OpenGL
+        # 3.3+ from llvmpipe and config.toml saved with v0.8.0's settings kept, and the runs must leave
+        # no trace (#2488). The script's header has the details; verify-published-release runs it on
+        # the published x64 .zip too (#2721).
         shell: pwsh
         timeout-minutes: 8
-        env:
-          GALLIUM_DRIVER: llvmpipe
-          TASKSMACK_LOG_LEVEL: info
-          STARTUP_TIMEOUT_SECONDS: "60"
-          ALIVE_SECONDS: "5"
-          # How deep under %APPDATA% and %LOCALAPPDATA% the leave-no-trace listing looks: deep enough
-          # for Local\Microsoft\Windows\WER\ReportArchive\<report>, and a few seconds' work.
-          TRACE_SCAN_DEPTH: "5"
-          V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
         run: |
-          $ErrorActionPreference = 'Stop'
-          $work = Join-Path $env:RUNNER_TEMP 'tasksmack-smoke'
-          $pkg = Join-Path $work 'pkg'
-          $tempDir = Join-Path $work 'temp'
-          foreach ($dir in @($pkg, $tempDir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-          Copy-Item -Path (Join-Path $env:TASKSMACK_PKG_ROOT '*') -Destination $pkg -Recurse
-          Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination $pkg
-          $exe = Join-Path $pkg 'TaskSmack.exe'
-          $fixture = (Resolve-Path -LiteralPath $env:V080_CONFIG).Path
-          # Section, key and the value as TaskSmack writes it.
-          $fixtureSettings = @(
-            @('theme', 'id', "'dracula'"),
-            @('font', 'size', "'large'"),
-            @('sampling', 'interval_ms', '2000'),
-            @('sampling', 'history_max_seconds', '600'),
-            @('ui', 'show_privilege_notice', 'false'),
-            @('process_columns', 'threads', 'true'),
-            @('process_columns', 'user', 'false')
-          )
-          # One config dir per launch: an empty one, then one holding v0.8.0's config.toml.
-          $launches = @(
-            @{ Name = 'fresh config'; ConfigDir = (Join-Path $work 'config'); Seed = $null },
-            @{ Name = "v0.8.0's config"; ConfigDir = (Join-Path $work 'config-v080'); Seed = $fixture }
-          )
-
-          # Every TaskSmack-named file or folder under %APPDATA% and %LOCALAPPDATA%, case-insensitively,
-          # listed before the launches and again after them. A new one is a trace the .zip leaves behind,
-          # unless it is under a config dir or a %TEMP% (the private one below, or the runner's own,
-          # which is under %LOCALAPPDATA% and may be named by its 8.3 short path, so both spellings).
-          $allowedRoots = @($launches.ConfigDir) + @($tempDir, [System.IO.Path]::GetTempPath(), (Join-Path $env:LOCALAPPDATA 'Temp')) |
-            ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd('\') + '\' }
-          function Get-TaskSmackEntries {
-            foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
-              Get-ChildItem -LiteralPath $root -Recurse -Depth ([int]$env:TRACE_SCAN_DEPTH) -Force -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match 'tasksmack' } | ForEach-Object { $_.FullName }
-            }
-          }
-          # The value of <key> in [<section>] of a config.toml, as written.
-          function Get-TomlValue([string[]]$Lines, [string]$Section, [string]$Key) {
-            $current = ''
-            foreach ($line in $Lines) {
-              if ($line -match '^\[(.+)\]$') { $current = $Matches[1]; continue }
-              if ($current -eq $Section -and $line -match '^(\S+) = (.*)$' -and $Matches[1] -eq $Key) { return $Matches[2] }
-            }
-            return $null
-          }
-          $entriesBefore = @(Get-TaskSmackEntries)
-
-          # A private %TEMP% for tasksmack-debug.log.
-          $env:TMP = $tempDir
-          $env:TEMP = $tempDir
-          # The wait covers startup, the ALIVE_SECONDS before the capture and the shutdown's save.
-          $quitSeconds = [int]$env:STARTUP_TIMEOUT_SECONDS + [int]$env:ALIVE_SECONDS + 30
-          $failure = $null
-          $renderer = ''
-          $version = ''
-          $configSaved = $false
-          $index = 0
-          foreach ($launch in $launches) {
-            $index++
-            $run = "TaskSmack.exe ($($launch.Name))"
-            $configDir = $launch.ConfigDir
-            New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-            $configFile = Join-Path $configDir 'config.toml'
-            if ($launch.Seed) { Copy-Item -LiteralPath $launch.Seed -Destination $configFile }
-            $shot = Join-Path $work "smoke-$index.png"
-            $stdoutLog = Join-Path $work "stdout-$index.log"
-            $stderrLog = Join-Path $work "stderr-$index.log"
-            $env:TASKSMACK_CONFIG_DIR = $configDir
-            $env:TASKSMACK_SCREENSHOT = "$shot;after=$env:ALIVE_SECONDS"
-
-            $proc = Start-Process -FilePath $exe -WorkingDirectory $pkg -PassThru `
-              -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
-            $null = $proc.Handle  # cache the handle, or ExitCode is empty once the process has gone
-            if ($proc.WaitForExit($quitSeconds * 1000)) {
-              if ($proc.ExitCode -ne 0) {
-                $failure = "$run exited with code $($proc.ExitCode); a clean quit after its screenshot exits 0"
-              }
-            } else {
-              $failure = "$run didn't quit by itself within $quitSeconds s of starting"
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-              $proc.WaitForExit(10000) | Out-Null
-            }
-
-            $lines = @(Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue) +
-              @(Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue)
-            Write-Host "=== $run log ==="
-            $lines | ForEach-Object { Write-Host $_ }
-            Write-Host "=== end of log ==="
-
-            $errorLines = @($lines | Where-Object { $_ -match '\[(critical|error)\]' })
-            $rendererLine = $lines | Where-Object { $_ -match '\]\s+Renderer:\s*(.+)$' } | Select-Object -First 1
-            $runRenderer = if ($rendererLine -match '\]\s+Renderer:\s*(.+)$') { $Matches[1].Trim() } else { '' }
-            $versionLine = $lines | Where-Object { $_ -match '\]\s+Version:\s*(.+)$' } | Select-Object -First 1
-            $runVersion = if ($versionLine -match '\]\s+Version:\s*(.+)$') { $Matches[1].Trim() } else { '' }
-            if ($index -eq 1) { $renderer = $runRenderer; $version = $runVersion }
-
-            if (-not $failure -and $errorLines.Count -gt 0) {
-              $failure = "$run's log has $($errorLines.Count) [critical]/[error] line(s):`n$($errorLines -join "`n")"
-            }
-            if (-not $failure -and -not ($lines -match '\]\s+Entering main loop')) {
-              $failure = "$run's log never reached 'Entering main loop' (Application::run): startup never finished"
-            }
-            if (-not $failure -and $runRenderer -notmatch 'llvmpipe') {
-              $failure = "Expected the llvmpipe renderer in $run's log, found '$runRenderer'"
-            }
-            if (-not $failure) {
-              if ($runVersion -match '^(\d+)\.(\d+)') {
-                $glVersion = [version]::new([int]$Matches[1], [int]$Matches[2])
-                if ($glVersion -lt [version]'3.3') { $failure = "$run got OpenGL $glVersion, below the required 3.3 ('$runVersion')" }
-              } else {
-                $failure = "No parseable OpenGL version in $run's log (found '$runVersion')"
-              }
-            }
-            if (-not $failure -and -not (Test-Path -LiteralPath $shot -PathType Leaf)) {
-              $failure = "$run exited 0 but wrote no screenshot at $shot"
-            }
-
-            # The settings saved on the way out: with no input nothing writes config.toml before then, so
-            # its being there proves the shutdown's save ran (for v0.8.0's file, so does config_version,
-            # which v0.8.0 didn't write). The [theme] table and its id are always written.
-            if (-not $failure) {
-              if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
-                $failure = "No config.toml in $configDir after $run quit: the settings weren't saved on exit"
-              } else {
-                $config = Get-Content -LiteralPath $configFile -Raw
-                Write-Host "=== $run config.toml ==="
-                Write-Host $config
-                Write-Host "=== end of config.toml ==="
-                if ($config -notmatch '(?m)^\[theme\]\r?\nid = (''[^''\r\n]+''|"[^"\r\n]+")\r?$') {
-                  $failure = "config.toml in $configDir has no [theme] table with an id: $run's save wrote something else"
-                } elseif ($launch.Seed) {
-                  $configLines = @(Get-Content -LiteralPath $configFile)
-                  if (-not ($configLines -match '^config_version = \d+$')) {
-                    $failure = "config.toml in $configDir has no config_version: $run's shutdown save didn't rewrite v0.8.0's file"
-                  } else {
-                    $lost = @(foreach ($setting in $fixtureSettings) {
-                      $actual = Get-TomlValue $configLines $setting[0] $setting[1]
-                      if ($actual -cne $setting[2]) {
-                        "[$($setting[0])] $($setting[1]) is $(if ($null -eq $actual) { 'missing' } else { $actual }), not v0.8.0's $($setting[2])"
-                      }
-                    })
-                    if ($lost.Count -gt 0) { $failure = "$run didn't keep v0.8.0's settings:`n$($lost -join "`n")" }
-                  }
-                }
-              }
-            }
-            if ($failure) { break }
-          }
-          $configSaved = -not $failure
-
-          # Leave no trace: no new TaskSmack-named entry outside the config dirs and %TEMP%, then the
-          # folder it ran from deletes, which fails on any file still locked.
-          $leftNoTrace = $false
-          if (-not $failure) {
-            $traces = @(Get-TaskSmackEntries | Where-Object {
-              $entry = $_
-              $entriesBefore -notcontains $entry -and
-                -not ($allowedRoots | Where-Object { ($entry + '\').StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
-            })
-            if ($traces.Count -gt 0) {
-              $failure = "TaskSmack left $($traces.Count) new TaskSmack-named entr$(if ($traces.Count -eq 1) { 'y' } else { 'ies' }) under %APPDATA%/%LOCALAPPDATA%, outside the config dirs and %TEMP%:`n$($traces -join "`n")"
-            }
-          }
-          if (-not $failure) {
-            try {
-              Remove-Item -LiteralPath $pkg -Recurse -Force -ErrorAction Stop
-              $leftNoTrace = $true
-            } catch {
-              $failure = "The folder TaskSmack.exe ran from ($pkg) didn't delete after it quit: $($_.Exception.Message)"
-            }
-          }
-
-          $summary = @(
-            "### Windows package smoke check ($env:RUNNER_ARCH)",
-            '',
-            "- Result: $(if ($failure) { 'FAILED' } else { 'passed' })",
-            "- OpenGL renderer: ``$renderer``",
-            "- OpenGL version: ``$version``",
-            "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)",
-            "- Quit by itself with config.toml saved, from a fresh config and from v0.8.0's (its settings kept): $(if ($configSaved) { 'yes' } else { 'no' })",
-            "- Left no trace (no new %APPDATA%/%LOCALAPPDATA% entries; its folder deleted): $(if ($leftNoTrace) { 'yes' } else { 'no' })"
-          )
-          if ($failure) { $summary += "- Failure: $failure" }
-          $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          if ($failure) {
-            Write-Error $failure
-            exit 1
-          }
-          Write-Host "Smoke check passed: TaskSmack.exe started on '$renderer' (OpenGL $version) with no errors, quit by itself after $env:ALIVE_SECONDS s with config.toml saved, from a fresh config and from v0.8.0's (whose settings it kept), and left no trace."
+          & repo/tools/release-smoke-check.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT -MesaDllDir $env:MESA_DLL_DIR `
+            -Fixture repo/tests/App/fixtures/config-v0.8.0.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   create-release:
     name: Create GitHub Release
@@ -2111,6 +1772,10 @@ jobs:
       (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      # `sha256sum` of every file in dist/ (the release's assets and their .bundle files), for
+      # verify-published-release to compare its downloads with (#2721).
+      sha256sums: ${{ steps.digests.outputs.sha256sums }}
     permissions:
       contents: write
       actions: read
@@ -2249,6 +1914,20 @@ jobs:
             cosign sign-blob --yes --bundle "${f}.bundle" "$f"
           done
 
+      - name: Record the release assets' digests
+        # What verify-published-release compares the published (or, on a dry run, the uploaded)
+        # files with: every file the release will carry, .bundle files included, hashed here rather
+        # than rebuilt there (#2721).
+        id: digests
+        run: |
+          sums=$(cd dist && find . -maxdepth 1 -type f -printf '%f\0' | LC_ALL=C sort -z | xargs -0 sha256sum --)
+          echo "$sums"
+          {
+            echo 'sha256sums<<SHA256SUMS_END'
+            echo "$sums"
+            echo 'SHA256SUMS_END'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload would-be release assets (dry run)
         # A dry run creates no release; keep exactly what would have been attached to it
         # (packages, source SBOM and their Sigstore bundles) for inspection instead.
@@ -2356,3 +2035,350 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: gh release edit "$TAG" --draft=false --latest
+
+  verify-published-release:
+    name: Verify the Published Release (${{ matrix.os }} x64)
+    # What users download, checked once it's there (#2721). A tag run downloads the published release's
+    # assets; a dry run, which publishes nothing, downloads the release-assets-dry-run artifact
+    # create-release uploads instead, so every dry run exercises this job. Where the files come from is
+    # the only difference between the two, apart from the two checks a dry run can't make: no
+    # attestation exists to verify, and its Sigstore certificate names a branch, not a tag.
+    #
+    # Ordering: on a tag run this runs after create-release has published the release, so a failure
+    # here can't unpublish it or stop anyone downloading it. It fails the run and writes what failed
+    # to its step summary, and the maintainer decides what to do about the live release (fix or remove
+    # the asset, or ship a patch release). The packages were validated and launched, then signed and
+    # hashed, in dist/ before publishing, so a failure here means users get something other than what
+    # was validated, or a signature or attestation they can't verify.
+    needs: [create-release]
+    # The default success() would skip this whenever sign-windows is skipped (signing off): it looks
+    # at every job upstream, not just create-release. create-release's own `if:` decides which skips
+    # are fine, so this only needs it to have succeeded.
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # x64 only, to bound the cost. Each leg checks that every asset is there and matches the
+        # digest create-release recorded. The Linux leg then verifies every asset's Sigstore bundle
+        # and attestation and relaunches the .tar.gz; the Windows leg checks the .zip's Authenticode
+        # signatures (once signing is on) and relaunches it.
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+          - os: windows
+            runner: windows-2025
+    permissions:
+      contents: read  # gh release download (the release is public)
+      actions: read  # A dry run downloads the release-assets-dry-run artifact from this run
+      attestations: read  # gh attestation verify
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      SHA256SUMS: ${{ needs.create-release.outputs.sha256sums }}
+      # The certificate identity and issuer the User Guide's "Verifying a Release" and the draft's
+      # placeholder notes give users (create-release). A dry run signs from a branch, so its check
+      # pins the same workflow at the run's own ref instead (the cosign step derives that from this).
+      COSIGN_IDENTITY_REGEXP: '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$'
+      COSIGN_OIDC_ISSUER: https://token.actions.githubusercontent.com
+      ATTESTATION_REPO: mgradwohl/tasksmack
+      ATTESTATION_SIGNER_WORKFLOW: mgradwohl/tasksmack/.github/workflows/release.yml
+      V080_CONFIG: repo/tests/App/fixtures/config-v0.8.0.toml
+      SUMMARY_TITLE: Verify the published release (${{ matrix.os }} x64)
+    steps:
+      - name: Start the step summary
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            source="the dry run's would-be release (the \`release-assets-dry-run\` artifact)"
+          else
+            source="the published release \`$TAG\` (\`gh release download\`)"
+          fi
+          printf '### %s\n\nChecked: %s.\n\n' "$SUMMARY_TITLE" "$source" >> "$GITHUB_STEP_SUMMARY"
+
+      # The smoke and signature checks validate-linux-package and validate-windows-package run, the
+      # config.toml v0.8.0 saved, and the Mesa llvmpipe action. In its own folder, since a checkout
+      # cleans the folder it checks out into.
+      - name: Check out the smoke and signature checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: |
+            .github/actions/setup-mesa-llvmpipe/action.yml
+            cmake/VerifyWindowsSignatures.cmake
+            tools/release-smoke-check.sh
+            tools/release-smoke-check.ps1
+            tools/verify-windows-signatures.ps1
+            tests/App/fixtures/config-v0.8.0.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The source, and the only step that differs between a tag run and a dry run.
+      - name: Download the published release
+        if: env.DRY_RUN != 'true'
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir published
+
+      - name: Download the would-be release (dry run)
+        if: env.DRY_RUN == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-assets-dry-run
+          path: published/
+
+      - name: Check the asset set and digests
+        # Exactly the files create-release hashed after signing (every RELEASE_ASSETS file and its
+        # .bundle), nothing missing and nothing extra, each with the SHA-256 of the dist/ copy built,
+        # validated and signed in this run.
+        run: |
+          set -uo pipefail
+          summary() { echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+          if [[ -z "${SHA256SUMS//[[:space:]]/}" ]]; then
+            echo "create-release passed no digests (its sha256sums output is empty)." >&2
+            summary "Assets and digests: **FAILED** (create-release passed no digests)"
+            exit 1
+          fi
+          declare -A want
+          while read -r sum name; do
+            [[ -n "$sum" ]] || continue
+            want["${name#\*}"]=$sum
+          done <<< "$SHA256SUMS"
+          shopt -s nullglob dotglob
+          found=()
+          for path in published/*; do found+=("${path#published/}"); done
+          expected=$(printf '%s\n' "${!want[@]}" | LC_ALL=C sort)
+          actual=$(printf '%s\n' "${found[@]}" | LC_ALL=C sort)
+          problems=()
+          if [[ "$expected" != "$actual" ]]; then
+            echo "The download doesn't hold exactly the files create-release hashed (< expected, > found):" >&2
+            diff <(echo "$expected") <(echo "$actual") >&2 || true
+            problems+=("the file set differs from create-release's")
+          fi
+          assets=0
+          for name in "${!want[@]}"; do
+            if [[ "$name" == *.bundle ]]; then
+              if [[ -z "${want[${name%.bundle}]+set}" ]]; then
+                problems+=("$name signs no asset")
+              fi
+            else
+              assets=$((assets + 1))
+              if [[ -z "${want[$name.bundle]+set}" ]]; then
+                problems+=("$name has no Sigstore bundle")
+              fi
+            fi
+          done
+          for name in "${found[@]}"; do
+            [[ -n "${want[$name]+set}" ]] || continue
+            if [[ ! -f "published/$name" ]]; then
+              problems+=("$name is not a regular file")
+              continue
+            fi
+            got=$(sha256sum -- "published/$name" | cut -d' ' -f1)
+            got=${got#\\}
+            if [[ "$got" != "${want[$name]}" ]]; then
+              echo "$name: SHA-256 $got, but create-release's dist/ copy has ${want[$name]}." >&2
+              problems+=("$name's SHA-256 differs from dist/")
+            fi
+          done
+          if (( ${#problems[@]} > 0 )); then
+            printf '%s\n' "${problems[@]}" >&2
+            joined=$(printf '%s; ' "${problems[@]}")
+            summary "Assets and digests: **FAILED** (${joined%; })"
+            exit 1
+          fi
+          echo "All ${#found[@]} files are there ($assets assets and their bundles), each with the SHA-256 of its dist/ copy:"
+          echo "$actual"
+          summary "Assets and digests: passed (${#found[@]} files: $assets assets and their \`.bundle\`s, each matching the SHA-256 of its \`dist/\` copy)"
+
+      - name: Install cosign
+        if: matrix.os == 'linux'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify the Sigstore bundles
+        # cosign verify-blob as the User Guide has users run it: the certificate must come from this
+        # repo's release.yml through GitHub's OIDC issuer. A tag run uses the documented identity
+        # (any refs/tags/ ref); a dry run pins the same workflow at the run's own ref, since it signed
+        # from a branch.
+        if: matrix.os == 'linux'
+        run: |
+          set -uo pipefail
+          if [[ "$DRY_RUN" == "true" ]]; then
+            # The run's ref as a literal in the regexp (git refs can't hold a backslash). The bracket
+            # starts with ']' and ends with '[': a '[' right before '.' would open a collating symbol.
+            ref=$(sed 's/[]*.+?(){}|^$[]/\\&/g' <<< "$GITHUB_REF")
+            identity="${COSIGN_IDENTITY_REGEXP%'refs/tags/.+$'}${ref}\$"
+          else
+            identity="$COSIGN_IDENTITY_REGEXP"
+          fi
+          echo "Certificate identity: $identity"
+          echo "OIDC issuer: $COSIGN_OIDC_ISSUER"
+          shopt -s nullglob
+          failed=()
+          verified=0
+          for f in published/*; do
+            [[ "$f" == *.bundle ]] && continue
+            if cosign verify-blob --bundle "$f.bundle" --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" "$f"; then
+              verified=$((verified + 1))
+            else
+              failed+=("${f#published/}")
+            fi
+          done
+          if (( ${#failed[@]} > 0 || verified == 0 )); then
+            echo "- Sigstore bundles: **FAILED** for ${failed[*]:-every asset (none verified)}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- Sigstore bundles: passed ($verified assets, identity \`$identity\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the build-provenance attestations
+        # gh attestation verify as the User Guide has users run it, pinned to this repo's release.yml as
+        # the signer. A dry run makes no attestation (create-release attests on tag runs only), so it
+        # says so and checks nothing.
+        if: matrix.os == 'linux'
+        run: |
+          set -uo pipefail
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "A dry run makes no attestations; nothing to verify."
+            echo "- Build-provenance attestations: skipped (a dry run makes none)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          shopt -s nullglob
+          failed=()
+          verified=0
+          for f in published/*; do
+            [[ "$f" == *.bundle ]] && continue
+            if gh attestation verify "$f" --repo "$ATTESTATION_REPO" --signer-workflow "$ATTESTATION_SIGNER_WORKFLOW"; then
+              verified=$((verified + 1))
+            else
+              failed+=("${f#published/}")
+            fi
+          done
+          if (( ${#failed[@]} > 0 || verified == 0 )); then
+            echo "- Build-provenance attestations: **FAILED** for ${failed[*]:-every asset (none verified)}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- Build-provenance attestations: passed ($verified assets, signer workflow \`$ATTESTATION_SIGNER_WORKFLOW\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install the published .deb and mesa software rendering
+        # The .tar.gz declares no dependencies, so its runtime libraries (libOpenGL.so.0, libc++ and
+        # the rest) come from installing the downloaded x64 .deb, which also proves the published
+        # .deb installs: validate-linux-package's .tar.gz check relies on its .deb install the same
+        # way. Then llvmpipe through SDL's offscreen driver, no X server, as validate-linux-package does.
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(published/TaskSmack-*-Linux.deb)
+          if (( ${#debs[@]} != 1 )); then
+            echo "Expected one TaskSmack-*-Linux.deb in the download, found ${#debs[@]}." >&2
+            echo "- Install of the Linux x64 \`.deb\`: **FAILED** (no single x64 \`.deb\`)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y "./${debs[0]}" libgl1-mesa-dri libegl1 libegl-mesa0
+          echo "- Install of the Linux x64 \`.deb\`: passed (\`${debs[0]#published/}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Relaunch the published Linux x64 .tar.gz
+        # validate-linux-package's smoke check (tools/release-smoke-check.sh), on the downloaded copy.
+        if: matrix.os == 'linux'
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          summary() { echo "- Relaunch of the Linux x64 \`.tar.gz\`: $1" >> "$GITHUB_STEP_SUMMARY"; }
+          tgz=(published/TaskSmack-*-Linux.tar.gz)
+          if (( ${#tgz[@]} != 1 )); then
+            echo "Expected one TaskSmack-*-Linux.tar.gz in the download, found ${#tgz[@]}." >&2
+            summary "**FAILED** (no single x64 \`.tar.gz\`)"
+            exit 1
+          fi
+          extract="$RUNNER_TEMP/tgz-extract"
+          mkdir -p "$extract"
+          tar -xzf "${tgz[0]}" -C "$extract"
+          bin=$(find "$extract" -mindepth 3 -maxdepth 3 -type f -path '*/bin/TaskSmack')
+          if [[ -z "$bin" || ! -x "$bin" ]]; then
+            echo "TaskSmack binary missing or not executable in ${tgz[0]}" >&2
+            summary "**FAILED** (no executable bin/TaskSmack)"
+            exit 1
+          fi
+          if ! bash repo/tools/release-smoke-check.sh "published tar.gz" "$bin" "$RUNNER_TEMP/tgz-run" "$V080_CONFIG"; then
+            summary "**FAILED** (see the step log)"
+            exit 1
+          fi
+          summary "passed (quit by itself with \`config.toml\` saved, from a fresh config and from v0.8.0's, assets resolved)"
+
+      - name: Extract the published Windows x64 .zip
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem -Path published -Filter 'TaskSmack-*-win64.zip' -File)
+          if ($zips.Count -ne 1) {
+            "- Relaunch of the Windows x64 ``.zip``: **FAILED** (no single x64 ``.zip``)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Write-Error "Expected one TaskSmack-*-win64.zip in the download, found $($zips.Count)."
+            exit 1
+          }
+          $dest = Join-Path $env:RUNNER_TEMP 'published-zip'
+          Expand-Archive -Path $zips[0].FullName -DestinationPath $dest
+          $topLevelDirs = @(Get-ChildItem -Path $dest -Directory)
+          $exe = if ($topLevelDirs.Count -eq 1) { Join-Path $topLevelDirs[0].FullName 'TaskSmack.exe' } else { $null }
+          if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            "- Relaunch of the Windows x64 ``.zip``: **FAILED** (no TaskSmack.exe under one top-level directory)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Write-Error "$($zips[0].Name) doesn't hold TaskSmack.exe directly under a single top-level directory."
+            exit 1
+          }
+          Write-Host "Found executable: $exe"
+          "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the Authenticode signatures
+        # validate-windows-package's signature check (tools/verify-windows-signatures.ps1), on the
+        # downloaded .zip. It runs only when signing is on (SIGNING_ENABLED, the switch sign-windows
+        # and validate-windows-package's check use).
+        if: matrix.os == 'windows' && env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          $code = $LASTEXITCODE
+          $result = if ($code -eq 0) { "passed (signer ``$env:WINDOWS_EXPECTED_SIGNER``)" } else { '**FAILED** (see the step log)' }
+          "- Authenticode signatures: $result" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          exit $code
+
+      - name: Report the Authenticode check as skipped
+        # On a ref that doesn't sign (a feature-branch dry run), the .zip carries no signature to check.
+        if: matrix.os == 'windows' && env.SIGNING_ENABLED != 'true'
+        run: |
+          echo "Signing is off for this ref (SIGNING_ENABLED isn't 'true': only v* tags and main, release/* and candidate/* sign), so the .zip isn't Authenticode-signed; the check is skipped."
+          echo "- Authenticode signatures: skipped (signing is off for this ref)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch Mesa llvmpipe
+        if: matrix.os == 'windows'
+        uses: ./repo/.github/actions/setup-mesa-llvmpipe
+
+      - name: Relaunch the published Windows x64 .zip
+        # validate-windows-package's smoke check (tools/release-smoke-check.ps1), on the downloaded
+        # copy; it writes its own step summary section.
+        if: matrix.os == 'windows'
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          & repo/tools/release-smoke-check.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT -MesaDllDir $env:MESA_DLL_DIR `
+            -Fixture $env:V080_CONFIG -Title 'Relaunch of the published Windows x64 .zip'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Finish the step summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            printf '\n**Result: passed.**\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$DRY_RUN" == "true" ]]; then
+            msg="The dry run's would-be release failed verification ($JOB_STATUS); a tag run of this commit would publish it."
+          else
+            msg="The published release $TAG failed verification ($JOB_STATUS). It is already public: this job can't unpublish it, so decide what to do about the live release."
+          fi
+          printf '\n**Result: %s**\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=${SUMMARY_TITLE}::$msg"

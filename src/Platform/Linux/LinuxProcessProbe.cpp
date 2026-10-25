@@ -23,6 +23,7 @@
 #include "Platform/ProcessTypes.h"
 #include "PosixGuards.h"
 #include "ProcFdScan.h"
+#include "ProcIoParser.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
@@ -1055,57 +1056,14 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
         return;
     }
 
-    bool hasRead = false;
-    bool hasWrite = false;
-    const char* p = buf.data();
-    const char* const end = buf.data() + len;
-    while (p < end)
+    // read_bytes and write_bytes, parsed as tasksmack-helper parses them for other users' processes (#2728).
+    const std::optional<Linux::ProcIoParser::ProcIo> io = Linux::ProcIoParser::parse(std::string_view(buf.data(), len));
+    counters.ioCountersAvailable = io.has_value();
+    if (io.has_value())
     {
-        const char* lineEnd = p;
-        while (lineEnd < end && *lineEnd != '\n')
-        {
-            ++lineEnd;
-        }
-
-        constexpr std::string_view readPrefix = "read_bytes:";
-        constexpr std::string_view writePrefix = "write_bytes:";
-
-        const std::string_view lineView(p, static_cast<std::size_t>(lineEnd - p));
-
-        if (lineView.starts_with(readPrefix))
-        {
-            // Parse value with from_chars: no substr alloc, no istringstream alloc
-            const char* ptr = p + readPrefix.size();
-            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
-            {
-                ++ptr;
-            }
-            uint64_t readBytes = 0;
-            if (std::from_chars(ptr, lineEnd, readBytes).ec == std::errc{})
-            {
-                counters.readBytes = readBytes;
-                hasRead = true;
-            }
-        }
-        else if (lineView.starts_with(writePrefix))
-        {
-            const char* ptr = p + writePrefix.size();
-            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
-            {
-                ++ptr;
-            }
-            uint64_t writeBytes = 0;
-            if (std::from_chars(ptr, lineEnd, writeBytes).ec == std::errc{})
-            {
-                counters.writeBytes = writeBytes;
-                hasWrite = true;
-            }
-        }
-
-        p = (lineEnd < end) ? lineEnd + 1 : end;
+        counters.readBytes = io->readBytes;
+        counters.writeBytes = io->writeBytes;
     }
-
-    counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
 bool LinuxProcessProbe::inAnotherNetworkNamespace(int pidDirFd) const

@@ -16,6 +16,7 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
@@ -30,6 +31,7 @@
 #include "Platform/Linux/LinuxProcessModulesReader.h"
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 #include "Platform/Linux/MemoryRollupRead.h"
+#include "Platform/Linux/ProcessCountersRead.h"
 #include "Platform/Linux/SystemdJournal.h"
 #include "Platform/PlatformConfig.h"
 
@@ -161,6 +163,9 @@ int main(int argc, char** argv)
             .connections = &connections,
             .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
+            // Other users' FD counts and I/O bytes, for the sampler (#2728)
+            .processCounters = [](const Platform::ProcessTarget& target)
+            { return Platform::Linux::readProcessCountersAt("/proc", target); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
             // Every user's crashes: the journal and core files as root (#2310)

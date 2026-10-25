@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 namespace Platform::BrokerServer
 {
@@ -34,6 +35,10 @@ struct Readers
     /// PSS and USS: process ID and start time to the read's result.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<MemoryRollupRead(std::int32_t, std::uint64_t)> memoryRollup{};
+    /// One process's FD count and I/O bytes, for ReadProcessCounters (#2728); nullopt when the target has
+    /// exited or its PID now names another process.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<std::optional<Broker::ProcessCountersEntry>(const ProcessTarget&)> processCounters{};
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};

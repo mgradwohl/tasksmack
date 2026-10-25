@@ -38,6 +38,7 @@ HEADER = struct.Struct("<HHI")
 HELLO_PAYLOADS = {
     2: lambda version: struct.pack("<H", version),
     3: lambda version: struct.pack("<HB", version, 0),  # forSession off (#2728)
+    4: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters added (#2728)
 }
 
 

@@ -10,6 +10,7 @@
 
 #include <exception>
 #include <expected>
+#include <optional>
 #include <utility>
 #include <variant>
 
@@ -148,6 +149,32 @@ namespace
     }
 }
 
+/// Many processes' FD counts and I/O bytes (#2728): an entry for each target its reader still finds, in order.
+[[nodiscard]] Broker::Response handleProcessCounters(const Broker::ProcessCountersRequest& read, const Readers& readers)
+{
+    if (!readers.processCounters)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read process counters"};
+    }
+    Broker::ProcessCountersReply reply;
+    reply.entries.reserve(read.targets.size());
+    for (const ProcessTarget& target : read.targets)
+    {
+        try
+        {
+            if (std::optional<Broker::ProcessCountersEntry> entry = readers.processCounters(target))
+            {
+                reply.entries.push_back(*entry);
+            }
+        }
+        catch (...)
+        {
+            continue; // that one process is left out; the others' counters still go back
+        }
+    }
+    return reply;
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -233,6 +260,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
     {
         return handleFirmwareFile(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ProcessCountersRequest>(&request))
+    {
+        return handleProcessCounters(*read, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {
