@@ -21,7 +21,7 @@ This script repeats llvm-cov's lookup for each binary and sorts the mismatches i
 and real records. A real-record mismatch -- a function compiled with a different structural hash
 in two binaries -- would drop real counts, and is reported as an error (exit status 1).
 
-ELF only: it reads the __llvm_covfun section. Records are as of LLVM 22 (coverage mapping format
+ELF only: it reads the __llvm_covfun section. Records are as of LLVM 23 (coverage mapping format
 version 6): name MD5 (u64), data size (u32), function hash (u64), filenames hash (u64), data,
 8-byte aligned.
 """

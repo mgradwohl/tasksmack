@@ -15,7 +15,7 @@ FILES=()
 FIX=false
 REPORT_ONLY=false
 # IWYU must be built against this Clang major (the project LLVM CI pins); see the version check below
-MIN_IWYU_CLANG_MAJOR=22
+MIN_IWYU_CLANG_MAJOR=23
 
 usage() {
     cat <<EOF
@@ -25,7 +25,7 @@ Run include-what-you-use (IWYU) analysis on source files.
 IWYU analyzes #include directives and suggests additions/removals.
 
 Prerequisites:
-  - IWYU built against Clang 22, the project's LLVM. CI builds it from source (the clang_22 branch
+  - IWYU built against Clang 23, the project's LLVM. CI builds it from source (the clang_23 branch
     of https://github.com/include-what-you-use/include-what-you-use); distro packages
     (apt install iwyu) are usually built against an older Clang and are reported below.
   - Python 3.6+ available as 'python3' on PATH (for embedded helper scripts)
@@ -146,7 +146,7 @@ elif [[ -n "$IWYU" ]]; then
 fi
 
 # Version check: iwyu must be built against a compatible Clang major version.
-# Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 22+)
+# Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 23+)
 # cause assertion failures in iwyu_include_picker.
 # Check the Clang base version from the 'based on ... clang version X' line.
 # Use the already-selected binary so the version check matches what the script will actually run.

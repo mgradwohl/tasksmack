@@ -110,7 +110,7 @@ try {
     )
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value @(
         'set(CMAKE_CXX_COMPILER_ID "Clang")'
-        'set(CMAKE_CXX_COMPILER_VERSION "22.1.8")'
+        'set(CMAKE_CXX_COMPILER_VERSION "23.1.3")'
     )
 
     # The stub benchmark binary: an ASCII batch file running a small script that writes Google
@@ -437,7 +437,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($manifest.binary.name -eq 'TaskSmackBenchmarks.cmd') 'Binary name must be the leaf only'
     Assert-True ($manifest.binary.sha256 -eq (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()) 'Binary SHA-256'
     Assert-True ($manifest.build.build_type -eq 'Release' -and $manifest.build.compiler -eq 'clang++.exe' -and $manifest.build.compiler_id -eq 'Clang' -and
-        $manifest.build.compiler_version -eq '22.1.8' -and $manifest.build.ipo -eq 'ON' -and $manifest.build.ipo_source -eq 'TASKSMACK_ENABLE_IPO') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
+        $manifest.build.compiler_version -eq '23.1.3' -and $manifest.build.ipo -eq 'ON' -and $manifest.build.ipo_source -eq 'TASKSMACK_ENABLE_IPO') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
     Assert-True ($manifest.benchmark.raw_repetitions -eq $true -and $manifest.benchmark.report_aggregates_only -eq $false) 'Raw repetitions must be kept'
     $recordedArgs = @($manifest.benchmark.args)
     Assert-True ($recordedArgs -notcontains '--benchmark_report_aggregates_only=true') 'Aggregates-only reporting must not be forced on'
@@ -521,7 +521,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $relative = $outcomes['relative']
     Assert-True ($relative.ExitCode -eq 0 -and $relative.Manifest.Count -eq 1) "Relative-binary run failed:`n$($relative.Log)"
     $relativeBuild = (Get-Content -LiteralPath $relative.Manifest[0].FullName -Raw | ConvertFrom-Json).build
-    Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '22.1.8') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
+    Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '23.1.3') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
 
     # ── #1445 review: a preset named after the user or the machine reaches no name ─────────────
     # The file names are checked for the names as plain substrings; the manifest with the
@@ -634,7 +634,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         'CMAKE_CACHE_MINOR_VERSION:INTERNAL=1'
         'CMAKE_CACHE_PATCH_VERSION:INTERNAL=0'
     )
-    Set-Content -LiteralPath (Join-Path $multiDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "22.1.8")'
+    Set-Content -LiteralPath (Join-Path $multiDir 'CMakeFiles\4.1.0\CMakeCXXCompiler.cmake') -Encoding utf8 -Value 'set(CMAKE_CXX_COMPILER_ID "Clang")', 'set(CMAKE_CXX_COMPILER_VERSION "23.1.3")'
     $tree = Find-BuildTree -Binary (Join-Path $multiDir 'bin\RelWithDebInfo\TaskSmackBenchmarks.cmd')
     Assert-True ($tree.Directory -eq $multiDir -and $tree.Config -eq 'RelWithDebInfo') "Multi-config tree: $($tree | ConvertTo-Json -Compress)"
     $flatTree = Find-BuildTree -Binary $stub
@@ -644,7 +644,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $benchBin = Join-Path $multiDir 'bin\RelWithDebInfo\TaskSmackBenchmarks.cmd'
     $multiBuild = Get-BuildProvenance
     Assert-True ($multiBuild.build_type -eq 'RelWithDebInfo' -and $multiBuild.generator -eq 'Ninja Multi-Config' -and
-        $multiBuild.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 '-O2 -g -DNDEBUG') -and $multiBuild.compiler_version -eq '22.1.8') "Multi-config build provenance: $($multiBuild | ConvertTo-Json -Compress)"
+        $multiBuild.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 '-O2 -g -DNDEBUG') -and $multiBuild.compiler_version -eq '23.1.3') "Multi-config build provenance: $($multiBuild | ConvertTo-Json -Compress)"
 
     # ── #1445: equal flags hash equally across build trees; a changed flag changes the hash ────
     $benchBin = $stub
@@ -1022,14 +1022,14 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         generator      = 'tools/bench.ps1'
         preset         = 'Linux-preset'
         git            = [ordered]@{ commit = 'a' * 40; branch = 'clang/Linux'; dirty = $false }
-        build          = [ordered]@{ build_type = 'Release'; generator = 'Ninja'; compiler = 'clang'; compiler_id = 'Clang'; compiler_version = '22.1.8'; cxx_flags_sha256 = 'a' * 64 }
+        build          = [ordered]@{ build_type = 'Release'; generator = 'Ninja'; compiler = 'clang'; compiler_id = 'Clang'; compiler_version = '23.1.3'; cxx_flags_sha256 = 'a' * 64 }
         benchmark      = [ordered]@{ args = [string[]]@('--benchmark_context=os=Windows', '-DHOST=Linux', '-DBY=clang', '-DCC=GNU'); raw_repetitions = $true }
         machine        = [ordered]@{ label = 'x'; cpu_model = 'Linux Box CPU'; logical_cores = 8; os_name = 'Linux'; os_version = '6.1'; arch = 'X64' }
     }
     foreach ($os in @('Linux', 'Windows')) {
         $hidden = Hide-ManifestIdentity $sample -Homes @() -User 'clang' -Hosts @($os, 'GNU')
         Assert-True ($hidden.machine.os_name -ceq 'Linux' -and $hidden.machine.os_version -ceq '6.1' -and $hidden.machine.arch -ceq 'X64') "Validated machine fields changed: $($hidden.machine | ConvertTo-Json -Compress)"
-        Assert-True ($hidden.build.compiler_id -ceq 'Clang' -and $hidden.build.compiler_version -ceq '22.1.8' -and $hidden.build.build_type -ceq 'Release' -and $hidden.build.generator -ceq 'Ninja') "Validated build fields changed: $($hidden.build | ConvertTo-Json -Compress)"
+        Assert-True ($hidden.build.compiler_id -ceq 'Clang' -and $hidden.build.compiler_version -ceq '23.1.3' -and $hidden.build.build_type -ceq 'Release' -and $hidden.build.generator -ceq 'Ninja') "Validated build fields changed: $($hidden.build | ConvertTo-Json -Compress)"
         Assert-True ($hidden.git.commit -ceq ('a' * 40) -and $hidden.git.dirty -eq $false -and $hidden.schema_version -eq 1 -and $hidden.benchmark.raw_repetitions -eq $true) 'Schema, commit and boolean fields changed'
         # Free-form fields are still scrubbed.
         Assert-True ($hidden.build.compiler -ceq '<user>' -and $hidden.git.branch -ceq '<user>/' + $(if ($os -eq 'Linux') { '<host>' } else { 'Linux' })) "Free-form fields: compiler=$($hidden.build.compiler) branch=$($hidden.git.branch)"

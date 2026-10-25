@@ -34,7 +34,7 @@ assignees: ''
 
 Built from source only:
 
-- **Compiler:** <!-- e.g., clang 22.1.7 -->
+- **Compiler:** <!-- e.g., clang 23.1.3 -->
 - **CMake version:** <!-- e.g., 3.31.6 (3.29 or later is required) -->
 - **Preset:** <!-- e.g., debug, win-release -->
 

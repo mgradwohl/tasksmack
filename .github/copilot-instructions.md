@@ -1,6 +1,6 @@
 # TaskSmack - Copilot Instructions
 
-Linux and Windows system monitor (macOS is not supported) (C++23 / Clang/LLVM 22 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
+Linux and Windows system monitor (macOS is not supported) (C++23 / Clang/LLVM 23 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
 
 > **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../docs/dev/completed-features.md) (implemented features), [AGENTS.md](../AGENTS.md) (shared rules for every agent)
 
@@ -144,7 +144,7 @@ void renderContent() override { /* draw into ShellLayer's tab (no ImGui::Begin/E
 
 ### Language & Style
 - **C++ Standard:** C++23 (required)
-- **Compiler:** Clang/LLVM 22 with lld by default
+- **Compiler:** Clang/LLVM 23 with lld by default
 - **Formatting:** `.clang-format` (LLVM base, Allman braces) - run before commits
 - **Static Analysis:** `.clang-tidy` - run regularly
 

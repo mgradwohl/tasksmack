@@ -25,13 +25,13 @@ validate_build_prereqs() {
     local clangpp
     clangpp="$(find_llvm_tool "clang++" 2>/dev/null || true)"
     if [[ -z "$clangpp" ]]; then
-        echo "Error: clang++ not found. Install via: apt install clang-22 lld-22 (or later)" >&2
+        echo "Error: clang++ not found. Install via: apt install clang-23 lld-23 (or later)" >&2
         return 1
     fi
     local clangpp_version
     clangpp_version="$(get_llvm_tool_major_version "$clangpp" 2>/dev/null || true)"
-    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 22 ]]; then
-        echo "Error: clang++ >= 22 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
+    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 23 ]]; then
+        echo "Error: clang++ >= 23 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
         return 1
     fi
     return 0
@@ -52,7 +52,7 @@ find_llvm_tool() {
     local tool="$1"
 
     # Try versioned LLVM installations first
-    for ver in 22 21 20 19 18 17; do
+    for ver in 23 22 21 20 19 18 17; do
         if [[ -x "/usr/lib/llvm-$ver/bin/$tool" ]]; then
             echo "/usr/lib/llvm-$ver/bin/$tool"
             return 0

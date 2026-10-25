@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/common.sh"
 
 # Required versions (minimum)
 MIN_CMAKE_VERSION="3.29"
-MIN_CLANG_VERSION="22"
+MIN_CLANG_VERSION="23"
 MIN_CCACHE_VERSION="4.9.1"
 MIN_GIT_VERSION="2.30"
 MIN_PYTHON_VERSION="3.14"
@@ -131,8 +131,8 @@ get_ninja_version() {
 }
 
 # Get lld version
-# The ld.lld this script reports: unversioned on PATH, else the pinned LLVM's (/usr/lib/llvm-22/bin,
-# /usr/bin/ld.lld-22). A bare `lld` is the generic driver, which prints no version.
+# The ld.lld this script reports: unversioned on PATH, else the pinned LLVM's (/usr/lib/llvm-23/bin,
+# /usr/bin/ld.lld-23). A bare `lld` is the generic driver, which prints no version.
 get_lld_path() {
     command -v ld.lld 2>/dev/null || find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
 }
@@ -310,7 +310,7 @@ main() {
         fi
     fi
 
-    # The Linux presets name their compilers clang-22/clang++-22 and build against libc++, so the
+    # The Linux presets name their compilers clang-23/clang++-23 and build against libc++, so the
     # unversioned clang above passing is not enough for `cmake --preset debug` to work.
     local preset_cc="clang-${MIN_CLANG_VERSION}" preset_cxx="clang++-${MIN_CLANG_VERSION}"
     if command -v "${preset_cc}" &>/dev/null && command -v "${preset_cxx}" &>/dev/null; then

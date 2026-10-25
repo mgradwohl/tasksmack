@@ -44,7 +44,7 @@ echo "Applying clang-format to source files..."
 # shellcheck source=tools/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Find clang-format: the CI-pinned LLVM's (/usr/lib/llvm-22/bin) before an older unversioned one on PATH
+# Find clang-format: the CI-pinned LLVM's (/usr/lib/llvm-23/bin) before an older unversioned one on PATH
 CLANG_FORMAT="$(find_llvm_tool clang-format || true)"
 if [[ -z "$CLANG_FORMAT" ]]; then
     echo "Error: clang-format not found. Install via: apt install clang-format-$(pinned_llvm_major)" >&2

@@ -21,7 +21,7 @@
 # profile data.
 #
 # Requirements:
-#   - LLVM/Clang 22 (LLVM_ROOT must point to your LLVM 22 install, see CONTRIBUTING.md)
+#   - LLVM/Clang 23 (LLVM_ROOT must point to your LLVM 23 install, see CONTRIBUTING.md)
 #   - cmake, ninja
 #
 # Background: Clang PGO works in four steps:
@@ -155,9 +155,9 @@ function Resolve-LlvmProfdata {
         if (Test-Path $candidate) {
             $verLine = & $candidate --version 2>&1 | Where-Object { $_ -match 'LLVM version' } | Select-Object -First 1
             $foundMajor = if ($verLine -match 'LLVM version (\d+)\.') { [int]$Matches[1] } else { 0 }
-            if ($foundMajor -ne 22) {
-                Write-Error ("llvm-profdata in LLVM_ROOT is LLVM $foundMajor, but the win-pgo-generate preset requires LLVM 22. " +
-                             "Update LLVM_ROOT to point to your LLVM 22 install directory.")
+            if ($foundMajor -ne 23) {
+                Write-Error ("llvm-profdata in LLVM_ROOT is LLVM $foundMajor, but the win-pgo-generate preset requires LLVM 23. " +
+                             "Update LLVM_ROOT to point to your LLVM 23 install directory.")
                 exit 1
             }
             $llvmProfdata = $candidate
@@ -169,16 +169,16 @@ function Resolve-LlvmProfdata {
             # Verify the major version matches clang used by win-pgo-generate/win-pgo-use.
             $verLine = & $cmd.Source --version 2>&1 | Where-Object { $_ -match 'LLVM version' } | Select-Object -First 1
             $foundMajor = if ($verLine -match 'LLVM version (\d+)\.') { [int]$Matches[1] } else { 0 }
-            if ($foundMajor -ne 22) {
-                Write-Error ("llvm-profdata on PATH is LLVM $foundMajor, but the win-pgo-generate preset requires LLVM 22. " +
-                             "Set LLVM_ROOT to your LLVM 22 install directory or add LLVM 22 bin to PATH.")
+            if ($foundMajor -ne 23) {
+                Write-Error ("llvm-profdata on PATH is LLVM $foundMajor, but the win-pgo-generate preset requires LLVM 23. " +
+                             "Set LLVM_ROOT to your LLVM 23 install directory or add LLVM 23 bin to PATH.")
                 exit 1
             }
             $llvmProfdata = $cmd.Source
         }
     }
     if (-not $llvmProfdata) {
-        Write-Error "llvm-profdata not found. Set LLVM_ROOT to your LLVM 22 install directory or add LLVM 22 bin to PATH."
+        Write-Error "llvm-profdata not found. Set LLVM_ROOT to your LLVM 23 install directory or add LLVM 23 bin to PATH."
         exit 1
     }
     return $llvmProfdata

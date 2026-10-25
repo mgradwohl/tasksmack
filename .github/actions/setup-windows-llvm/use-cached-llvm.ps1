@@ -69,7 +69,7 @@ if (Test-Path -LiteralPath $Destination) {
 
     if (-not $renamed) {
         # Overlay fallback. Files that only the image's LLVM ships stay behind (e.g. its
-        # lib\clang\<major> headers); clang 22 doesn't look at another major's resource directory.
+        # lib\clang\<major> headers); clang doesn't look at another major's resource directory.
         # /COPY:DAT keeps the cached timestamps, which ccache's compiler check depends on.
         Write-Host "::warning title=Overlaying cached LLVM::could not rename $Destination aside after $MaxAttempts attempts; copying the cached LLVM over it instead"
         robocopy $Source $Destination /E /IS /IT /COPY:DAT /DCOPY:DAT /R:5 /W:5 /NFL /NDL /NP
