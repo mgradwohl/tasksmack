@@ -144,6 +144,8 @@ document.
   - the area: `windows`, `linux`, `ui`, `gpu`, `ci`, `tooling` and so on;
   - a lane if the platform is clear: `agent:Windows` or `agent:WSL`;
   - `priority: high` only for crashes, data loss, security, or a broken release;
+  - `code-review` on every issue an audit files, so the batch can be triaged with one query
+    (`gh issue list --label code-review --no-milestone`);
   - no milestone. The maintainer sets those, and agents never put an issue on a release milestone.
 - **Skip** style nits that clang-format or clang-tidy already enforce, and anything a section above calls fine.
 - **Running TaskSmack to check a finding:**
