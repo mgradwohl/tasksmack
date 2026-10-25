@@ -46,6 +46,8 @@ class Window
     /// WindowCloseEvent, so a layer can veto it like an OS close request (#1077).
     void requestClose() noexcept;
     void clearCloseRequest() noexcept; // Reset the close flag once run() has raised WindowCloseEvent
+    /// The OS window title (taskbar, window switcher; the custom title bar draws its own).
+    void setTitle(const std::string& title);
 
     /// Return the current logical width in screen coordinates.
     /// Queries SDL directly so the value stays accurate after user-initiated

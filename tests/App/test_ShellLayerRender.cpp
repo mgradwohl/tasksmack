@@ -43,6 +43,7 @@ struct HostLog
 {
     std::vector<Core::EventType> events;
     int closeRequests = 0;
+    std::string title; ///< The last setWindowTitle() (#2728)
     std::vector<std::pair<int, int>> minimumSizes;
     std::vector<Core::WindowGeometry::MinimumSizeChange> minimumSizeChanges;
     WindowOverride::CapturedWindow window; // what captureWindow() reports
@@ -73,6 +74,10 @@ class FakeShellHost final : public IShellHost
     void requestClose() override
     {
         ++m_Log.closeRequests;
+    }
+    void setWindowTitle(const std::string& title) override
+    {
+        m_Log.title = title;
     }
     [[nodiscard]] SDL_DisplayID displayId() const override
     {

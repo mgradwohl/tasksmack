@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace App
@@ -43,6 +44,11 @@ class ApplicationShellHost final : public IShellHost
     void requestClose() override
     {
         Core::Application::get().getWindow().requestClose();
+    }
+
+    void setWindowTitle(const std::string& title) override
+    {
+        Core::Application::get().getWindow().setTitle(title);
     }
 
     [[nodiscard]] SDL_DisplayID displayId() const override

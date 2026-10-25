@@ -406,6 +406,22 @@ void ShellLayer::onUpdate(float deltaTime)
         }
     }
 
+    // "TaskSmack (Administrator)" while the session is (#2728), on Linux, whose access chip says the same;
+    // set only when that changes.
+    if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
+    {
+        if (m_ProcessesPanel.firstSnapshotAdopted())
+        {
+            const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+            const bool administrator = !m_ProcessesPanel.processCapabilities().hasReducedPrivileges || held;
+            if (m_TitleSaysAdministrator != administrator)
+            {
+                m_TitleSaysAdministrator = administrator;
+                m_Host->setWindowTitle(administrator ? "TaskSmack (Administrator)" : "TaskSmack");
+            }
+        }
+    }
+
     // Dispatch the startup privilege notice on the first update after the process probe's first
     // generation (#2731), with all layers stacked: that generation says whether the probe runs with
     // reduced privileges, which onAttach() could not know.
