@@ -533,6 +533,30 @@ jobs:
           cd build/win-release
           cpack -G "ZIP"
 
+      - name: Record build inputs
+        # build-inputs/<package>-build-inputs.json (#2802): the MSVC toolset, the SHA-256 of the
+        # CRT/UCRT libraries the link consumed, the Windows SDK, the runner image and the compiler.
+        # Two runs of one commit can link different bytes when the runner image's serviced CRT
+        # changes under an unchanged directory name (VS 18.10 vs 18.11, both VC\Tools\MSVC\14.51.36231),
+        # so a differing TaskSmack.exe is explained when the manifests differ and is a build problem
+        # only when they match. verify-reproducibility-windows compares against this one, and
+        # create-release ships it beside the .zip.
+        uses: ./.github/actions/windows-build-inputs
+        with:
+          job: build-windows
+
+      - name: Upload the build-inputs manifest
+        # Its own artifact, on every leg: the signed leg's .zip travels alone (SignPath's artifact
+        # configuration wants the .zip at the artifact's root) and sign-windows re-uploads only the
+        # .zip, so the manifest can't ride windows-packages-<arch>. verify-reproducibility-windows
+        # and create-release download it by this name.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-build-inputs-${{ matrix.arch }}
+          path: build-inputs/*-build-inputs.json
+          if-no-files-found: error
+          retention-days: 90
+
       # The signed leg's .zip isn't a release package yet: it goes to sign-windows as
       # windows-unsigned-<arch>, a name create-release's '*-packages-*' download never matches, and
       # sign-windows uploads the signed .zip as windows-packages-<arch>. Only the .zip, at the
@@ -699,11 +723,24 @@ jobs:
           cd build/win-release
           cpack -G "ZIP"
 
+      - name: Record build inputs
+        # This rebuild's manifest (see build-windows' step, #2802), for "Compare digests" to set
+        # against build-windows'.
+        uses: ./.github/actions/windows-build-inputs
+        with:
+          job: verify-reproducibility-windows
+
       - name: Download build-windows's unsigned package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ (matrix.arch == 'x64' && env.SIGNING_ENABLED == 'true') && 'windows-unsigned-x64' || format('windows-packages-{0}', matrix.arch) }}
           path: original-dist/
+
+      - name: Download build-windows's build-inputs manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-build-inputs-${{ matrix.arch }}
+          path: original-build-inputs/
 
       - name: Compare digests
         # This job's own cpack leaves CPack's _CPack_Packages staging directory in dist/
@@ -714,6 +751,10 @@ jobs:
         # Identical .zip digests pass. Otherwise every file in the two .zips is compared, and the
         # only difference allowed is a TaskSmackHelper.exe only the original packages (x64, see the
         # matrix), which must match the one this rebuild built in build/win-release/bin.
+        #
+        # The two build-inputs manifests then say what a difference means (#2802): inputs that
+        # differ (toolset, CRT/UCRT library hashes, SDK, runner image, compiler) explain it as the
+        # runner image's serviced CRT, not the build; inputs that match make it the build's.
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -790,10 +831,33 @@ jobs:
               Write-Host "$($rebuiltZip.Name): every file matches; the original also packages the matching TaskSmackHelper.exe."
             }
           }
+
+          $originalManifest = Get-ChildItem original-build-inputs/*-build-inputs.json -File | Select-Object -First 1
+          $rebuiltManifest = Get-ChildItem build-inputs/*-build-inputs.json -File | Select-Object -First 1
+          $inputs = 'unknown'
+          if ($originalManifest -and $rebuiltManifest) {
+            & .github/actions/windows-build-inputs/compare-build-inputs.ps1 $originalManifest.FullName $rebuiltManifest.FullName
+            switch ($LASTEXITCODE) {
+              0 { $inputs = 'same' }
+              1 { $inputs = 'differ' }
+              default { Write-Host "::warning::Could not compare the build-inputs manifests (compare-build-inputs.ps1 exited $LASTEXITCODE)." }
+            }
+          } else {
+            Write-Host "::warning::A build-inputs manifest is missing (build-windows': $($null -ne $originalManifest), this rebuild's: $($null -ne $rebuiltManifest)), so a CRT change can't be told from a build change."
+          }
+
           if ($failed) {
+            if ($inputs -eq 'differ') {
+              Write-Host "::warning::The build inputs differ too (above): the runner image's MSVC toolset, CRT/UCRT libraries or Windows SDK changed between build-windows' runner and this one, which explains the difference without the build being non-reproducible (#2802). Pinning the toolset is the fix if byte-identity across images is wanted."
+            } elseif ($inputs -eq 'same') {
+              Write-Host "::warning::The build inputs match (same MSVC toolset, CRT/UCRT library hashes, Windows SDK, runner image and compiler), so the difference is in the build itself, not the runner image."
+            }
             Write-Host "Reproducibility check found differences (advisory only; did not block the release)."
             exit 1
           } else {
+            if ($inputs -eq 'differ') {
+              Write-Host "::notice::The packages match although the build inputs differ (above): the serviced libraries didn't change TaskSmack.exe this time."
+            }
             Write-Host "All Windows packages are reproducible across two independent builds of this tag (byte-for-byte, or file-for-file plus the original's matching TaskSmackHelper.exe)."
           }
 
@@ -1414,19 +1478,32 @@ jobs:
         # Windows .zip is sign-windows' signed one (windows-unsigned-x64 never matches). Package
         # names differ by architecture (cmake/Packaging.cmake), so nothing in one artifact
         # overwrites another's, and each artifact holds only its packages (#2799), so dist/ is
-        # exactly the release's package set: signing, the upload and the asset-count check below
-        # all see the same files.
+        # exactly the release's package set plus the manifests below: signing, the upload and the
+        # asset-count check all see the same files.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: '*-packages-*'
           path: dist/
           merge-multiple: true
 
+      - name: Download the Windows build-inputs manifests
+        # windows-build-inputs-{x64,arm64} (#2802): TaskSmack-<version>-win64-build-inputs.json and
+        # TaskSmack-<version>-windows-arm64-build-inputs.json ship beside the .zips, with Sigstore
+        # bundles like every asset, so a rebuilder can check their toolchain against the release's
+        # and the post-release dry-run comparison can tell a CRT change from a build change
+        # (compare-build-inputs.ps1 beside the action).
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: 'windows-build-inputs-*'
+          path: dist/
+          merge-multiple: true
+
       - name: Verify the package set
-        # Exactly the expected packages, before anything is signed: x64 keeps the names earlier
+        # Exactly the expected files, before anything is signed: x64 keeps the names earlier
         # releases used (win64 / Linux), so existing download links still work, and ARM64's are
-        # windows-arm64 / linux-aarch64 (#2214). A missing, extra or renamed package fails here. A new
-        # package (such as #2302's NSIS installers) has to be added to this list.
+        # windows-arm64 / linux-aarch64 (#2214); each Windows .zip has its build-inputs manifest
+        # (#2802). A missing, extra or renamed file fails here. A new package (such as #2302's NSIS
+        # installers) has to be added to this list.
         run: |
           version=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
           if [[ -z "$version" ]]; then
@@ -1435,15 +1512,16 @@ jobs:
           fi
           expected=$(printf 'TaskSmack-%s-%s\n' \
             "$version" Linux.deb "$version" Linux.tar.gz "$version" win64.zip \
-            "$version" linux-aarch64.deb "$version" linux-aarch64.tar.gz "$version" windows-arm64.zip |
+            "$version" linux-aarch64.deb "$version" linux-aarch64.tar.gz "$version" windows-arm64.zip \
+            "$version" win64-build-inputs.json "$version" windows-arm64-build-inputs.json |
             LC_ALL=C sort)
           actual=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
           if [[ "$expected" != "$actual" ]]; then
-            echo "dist/ does not hold exactly the expected packages (< expected, > found):" >&2
+            echo "dist/ does not hold exactly the expected packages and manifests (< expected, > found):" >&2
             diff <(echo "$expected") <(echo "$actual") >&2 || true
             exit 1
           fi
-          echo "dist/ holds the $(wc -l <<< "$actual") expected packages:"
+          echo "dist/ holds the $(wc -l <<< "$actual") expected packages and manifests:"
           echo "$actual"
 
       - name: Stage SBOM into dist
