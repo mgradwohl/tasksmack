@@ -613,7 +613,7 @@ bool Window::applyMinimumSize(std::pair<int, int> minimum)
         spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
         return false;
     }
-    m_AppliedMinimum = minimum;
+    m_AppliedMinimum = std::move(minimum);
     // SDL_SetWindowMinimumSize() has just resized the window to SDL's saved floating size, which
     // native Wayland leaves stale while the compositor tiles the window (#1777); put the size the
     // compositor gave back. X11 and Windows refresh the floating size on every configure, so there it

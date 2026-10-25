@@ -178,6 +178,7 @@ const char* realSetLocale(const int category, const char* name)
     return std::setlocale(category, name);
 }
 
+// NOLINTNEXTLINE(modernize-use-string-view) - the signature CRuntime::userLocaleName takes; Windows returns a converted std::string
 std::string realUserLocaleName()
 {
 #ifdef _WIN32

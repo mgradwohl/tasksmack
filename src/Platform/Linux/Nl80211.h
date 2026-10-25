@@ -45,7 +45,7 @@ struct Station
 /// neither rate was reported.
 /// Inline, with no socket code, since LinuxNetworkAdapters.h calls it and that header is also built on
 /// Windows, where its parsers are unit-tested and this file's .cpp isn't compiled.
-[[nodiscard]] inline std::string standardName(const Station& station, std::uint32_t frequencyMhz)
+[[nodiscard]] inline std::string_view standardName(const Station& station, std::uint32_t frequencyMhz)
 {
     if (!station.tx && !station.rx)
     {

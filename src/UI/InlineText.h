@@ -47,7 +47,7 @@ class InlineText
 
     constexpr InlineText() noexcept = default;
 
-    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions) - stands in for the string literals it replaced
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - stands in for the string literals it replaced
     constexpr InlineText(const char* text) noexcept : InlineText(std::string_view(text))
     {}
 
@@ -72,7 +72,7 @@ class InlineText
         return {m_Data.data(), m_Size};
     }
 
-    // NOLINTNEXTLINE(google-explicit-constructor,hicpp-explicit-conversions) - read wherever a std::string_view is
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - read wherever a std::string_view is
     constexpr operator std::string_view() const noexcept
     {
         return view();

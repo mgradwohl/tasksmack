@@ -419,7 +419,7 @@ void Application::run()
 
     double lastTime = getTime();
 
-    const auto computeDeltaTime = [this, &lastTime]() -> float
+    const auto computeDeltaTime = [this, &lastTime] -> float
     {
         const double currentTime = getTime();
         const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
@@ -429,7 +429,7 @@ void Application::run()
     };
 
     // The display's refresh rate, which frame pacing rounds to (#1126); re-read on a display change.
-    const auto refreshDisplayRate = [this]()
+    const auto refreshDisplayRate = [this]
     {
         const double queried = m_Window->getDisplayRefreshRate();
         const double effective = FramePacing::effectiveRefreshHz(queried, FALLBACK_REFRESH_HZ);
@@ -499,7 +499,7 @@ void Application::run()
     // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
     // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
     // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
-    const auto recordDeliveredFrame = [&]()
+    const auto recordDeliveredFrame = [&]
     {
         resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
     };
@@ -534,7 +534,7 @@ void Application::run()
         const auto eventDrainStart = std::chrono::steady_clock::now();
         // Handle the next event, false once the queue is empty. The event that woke the previous
         // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
-        const auto pollAndDispatch = [&]() -> bool
+        const auto pollAndDispatch = [&] -> bool
         {
             if (idleWakeEvent.has_value())
             {

@@ -68,7 +68,7 @@ constexpr long NETLINK_RECV_TIMEOUT_MS = 2000;
 {
     std::array<char, 256> buffer{};
 
-    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - using thread-safe strerror_r, include-cleaner false positive for POSIX
+    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner,misc-const-correctness) - thread-safe strerror_r; include-cleaner false positive for POSIX; not const, as the branches below test decltype(result)
     auto* result = strerror_r(errnum, buffer.data(), buffer.size());
 
     // Handle both GNU (returns char*) and POSIX (returns int) variants
@@ -692,7 +692,7 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
         // Check if directory name is a PID (numeric)
         const std::string& pidStr = procEntry.path().filename().string();
         std::int32_t pid = 0;
-        auto result = std::from_chars(pidStr.data(), (pidStr.data() + pidStr.size()), pid);
+        const auto result = std::from_chars(pidStr.data(), (pidStr.data() + pidStr.size()), pid);
         if (result.ec != std::errc{} || pid <= 0)
         {
             continue;

@@ -714,7 +714,7 @@ void renderUtilizationChartCard(const UtilizationChartIds& ids,
                                 UI::Widgets::FillPlotLayout& fill)
 {
     const auto& scheme = UI::Theme::get().scheme();
-    auto plot = [&]()
+    const auto plot = [&]
     {
         drawGpuHistoryPlot(
             UI::Widgets::withDataGeneration(
@@ -817,7 +817,7 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
                               .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuSystemPercent, cpuAxisUpper),
                               .color = theme.scheme().cpuSystem};
 
-    auto cpuPlot = [&]()
+    const auto cpuPlot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(
@@ -1005,7 +1005,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
 
     const NowBarList memoryBars = memoryNowBars(smoothed, showShared, memAxisUpper, virtAxisUpper);
 
-    auto memoryPlot = [&]()
+    const auto memoryPlot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(
@@ -1167,7 +1167,7 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
 
     const NowBarList bars = resourceNowBars(smoothed, bounds, ctx.hasPageFaults);
 
-    auto plot = [&]()
+    const auto plot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
@@ -1235,7 +1235,7 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.powerWatts, powerAxisUpper),
                           .color = theme.scheme().chartPower};
 
-    auto plot = [&]()
+    const auto plot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
@@ -1345,7 +1345,7 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
 
     // Keep the plot and its hover tooltip together: both consume the same aligned vectors, and the
     // lambda is rendered alongside the matching NowBars below.
-    auto plot = [&]()
+    const auto plot = [&]
     {
         drawTwoSeriesPlot(
             "##ProcIoHistory",
@@ -1420,7 +1420,7 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
     // The plot lambda owns rendering and hover lookup over the same aligned buffers;
     // renderHistoryWithNowBars composes it with the summary bars. The tooltip's rates are averages
     // since the process was first seen, as the chart's heading says.
-    auto plot = [&]()
+    const auto plot = [&]
     {
         drawTwoSeriesPlot(
             "##ProcNetworkHistory",
@@ -1711,7 +1711,7 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
         Detail::gpuMemoryAxisDataMax(
             UI::Widgets::windowSeriesMax("##GPUMemPlot", ctx.historyGeneration, axis.timeData, axis.axisConfig.xMin, gpuMemVec), smoothed),
         UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
-    auto plotGpuMem = [&]()
+    const auto plotGpuMem = [&]
     {
         drawGpuHistoryPlot(
             UI::Widgets::withDataGeneration(
@@ -1850,7 +1850,7 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
     };
     const NowBar dedicatedBar = memBar(NPU_DEDICATED_LABEL, smoothed.npuDedicatedMemoryBytes, scheme.gpuMemory);
     const NowBar sharedBar = memBar(NPU_SHARED_LABEL, smoothed.npuSharedMemoryBytes, scheme.chartMemoryShared);
-    auto plotMem = [&]()
+    const auto plotMem = [&]
     {
         drawTwoSeriesPlot(
             "##NPUMemPlot",

@@ -141,7 +141,7 @@ inline constexpr std::string_view SECURE_BOOT_VARIABLE = "SecureBoot-8be4df61-93
 /// The dm-crypt flavour a device-mapper UUID names (#2585): cryptsetup prefixes it "CRYPT-LUKS2-",
 /// "CRYPT-LUKS1-" or "CRYPT-PLAIN-". Empty for any other device (an LVM volume's "LVM-...", dm-verity's
 /// "CRYPT-VERITY-", which doesn't encrypt, or no UUID at all).
-[[nodiscard]] inline std::string cryptType(std::string_view uuid)
+[[nodiscard]] inline std::string_view cryptType(std::string_view uuid)
 {
     if (uuid.starts_with("CRYPT-LUKS2-"))
     {
@@ -226,7 +226,7 @@ struct DmDevice
     std::vector<EncryptedVolume> volumes;
     for (const DmDevice& crypt : devices)
     {
-        std::string type = cryptType(crypt.uuid);
+        std::string type(cryptType(crypt.uuid));
         if (type.empty())
         {
             continue;

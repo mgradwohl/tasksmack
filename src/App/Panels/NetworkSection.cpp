@@ -55,7 +55,7 @@ using UI::Widgets::seriesStyle;
 /// Update smoothed network values. A target of NaN is no reading (#2129): the bar holds NaN, shown
 /// as N/A, and the first reading after it starts the bar afresh rather than easing from a value
 /// before the gap.
-void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
+void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, const RenderContext& ctx)
 {
     if (ctx.smoothedNetSentBytesPerSec == nullptr || ctx.smoothedNetRecvBytesPerSec == nullptr || ctx.smoothedNetInitialized == nullptr)
     {
@@ -86,7 +86,7 @@ constexpr const char* TOTAL_RECV_BEHIND_LABEL = "Received (Total)";
 
 } // namespace
 
-void renderDiskIOSection(RenderContext& ctx)
+void renderDiskIOSection(const RenderContext& ctx)
 {
     // Delegate to StorageSection - this wrapper maintains API compatibility
     StorageSection::RenderContext storageCtx{
@@ -464,7 +464,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         plotTitle = cache.unavailableTitle.c_str();
     }
 
-    auto plot = [&]()
+    const auto plot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(

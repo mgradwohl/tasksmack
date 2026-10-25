@@ -99,7 +99,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     };
 
     auto& theme = Theme::get();
-    ImGuiIO& imguiIO = ImGui::GetIO();
+    const ImGuiIO& imguiIO = ImGui::GetIO();
 
     // Configure FreeType for better hinting at small sizes
     // Note: IMGUI_ENABLE_FREETYPE is defined at compile time, so FreeType is always used

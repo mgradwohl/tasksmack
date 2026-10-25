@@ -48,12 +48,9 @@ inline constexpr std::string_view HEADER_ICON_GAP = "  ";
         length += take;
         return take == part.size();
     };
-    if (!icon.empty())
+    if (!icon.empty() && append(icon))
     {
-        if (append(icon))
-        {
-            (void) append(HEADER_ICON_GAP);
-        }
+        (void) append(HEADER_ICON_GAP);
     }
     (void) append(title);
     return {out.data(), length};

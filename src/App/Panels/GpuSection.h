@@ -580,6 +580,6 @@ void renderGpuSection(RenderContext& ctx);
 /// @param gpuId The GPU identifier
 /// @param snap Current GPU snapshot
 /// @param ctx Render context (uses refreshInterval and lastDeltaSeconds)
-void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, RenderContext& ctx);
+void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, const RenderContext& ctx);
 
 } // namespace App::GpuSection

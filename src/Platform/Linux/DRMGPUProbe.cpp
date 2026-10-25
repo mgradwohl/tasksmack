@@ -165,6 +165,7 @@ using PciDisplayDevices::PCI_VENDOR_INTEL;
 
 #if TASKSMACK_HAS_DRM_QUERY_UAPI
 /// An ioctl retried on EINTR/EAGAIN, as libdrm's drmIoctl() does.
+// NOLINTNEXTLINE(misc-const-correctness) - the kernel writes its answer through arg
 [[nodiscard]] int drmIoctl(int fd, unsigned long request, void* arg)
 {
     while (true)
@@ -1569,7 +1570,7 @@ std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
         }
         for (const auto& [pid, share] : shares)
         {
-            auto process =
+            const auto process =
                 std::ranges::find_if(processes, [&](const ProcessGPUCounters& p) { return p.pid == pid && p.gpuId == card.gpuId; });
             for (std::size_t engineClass = 0; engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
             {

@@ -14,7 +14,7 @@ namespace App::DemoOverride
 const std::optional<std::vector<Step>>& active()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<std::vector<Step>> steps = []() -> std::optional<std::vector<Step>>
+    static const std::optional<std::vector<Step>> steps = [] -> std::optional<std::vector<Step>>
     {
         ParseResult parsed = parse(Core::readEnv(ENV_VAR));
         if (!parsed.warning.empty())

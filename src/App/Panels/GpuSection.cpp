@@ -223,7 +223,7 @@ void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publica
 
 } // namespace
 
-void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, RenderContext& ctx)
+void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, const RenderContext& ctx)
 {
     if (ctx.smoothedGPUs == nullptr)
     {
@@ -495,7 +495,7 @@ void renderGpuSection(RenderContext& ctx)
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        auto gpuCorePlot = [&]()
+        const auto gpuCorePlot = [&]
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax),
@@ -819,7 +819,7 @@ void renderGpuSection(RenderContext& ctx)
             // reading above the chart's locked 0-100 range renders clipped at the top; an
             // unavailable sample is NaN (a gap in the line), not a misleading 0%.
 
-            auto gpuThermalPlot = [&]()
+            const auto gpuThermalPlot = [&]
             {
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                     UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax),

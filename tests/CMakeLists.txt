@@ -30,7 +30,7 @@ FetchContent_MakeAvailable(googletest)
 FetchContent_Declare(
     rapidcheck
     GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git
-    GIT_TAG 6e8dadfdafa3a74eabb52ead87f8787f72eccd0b  # master 2026-08-06 - pinned to SHA for supply chain security
+    GIT_TAG 2c3c4365aca21ef4e612768fdc95b1ce8b39a651  # master 2026-10-05 (#348: the <algorithm>/<iterator> includes libc++ 23 no longer pulls in) - pinned to SHA for supply chain security
     GIT_SUBMODULES ""
     SYSTEM  # Treat as system headers to suppress warnings from rapidcheck
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/rapidcheck-build"  # per-preset build tree (#1308)

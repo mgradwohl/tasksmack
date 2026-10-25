@@ -281,7 +281,7 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
              launcher = m_Launcher,
              token = launchStop.get_token(),
              result = std::move(fallback),
-             tooLate = std::move(tooLate)]() mutable
+             tooLate = std::move(tooLate)] mutable
             {
                 static_cast<void>(setCurrentThreadName(HELPER_LAUNCH_THREAD_NAME));
                 try

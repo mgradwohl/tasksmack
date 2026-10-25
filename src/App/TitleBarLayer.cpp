@@ -121,6 +121,7 @@ template<typename Fn> struct ScopeExit
 // onSDLEvent()-driven click/drag/double-click handling never runs for that area: only the OS or
 // compositor sees the press. Buttons stay NORMAL on every backend so DRAGGABLE never consumes
 // their clicks (#750).
+// NOLINTNEXTLINE(misc-const-correctness) - SDL_HitTest's signature
 SDL_HitTestResult hitTestCallback(SDL_Window* /*sdlWindow*/, const SDL_Point* area, void* data)
 {
     const auto* layer = static_cast<const TitleBarLayer*>(data);
@@ -377,7 +378,7 @@ void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
 
 void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
 {
-    auto& window = Core::Application::get().getWindow();
+    const auto& window = Core::Application::get().getWindow();
     SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
@@ -441,7 +442,7 @@ auto TitleBarLayer::queryMouseState() -> std::tuple<int, int, SDL_MouseButtonFla
         // Native Wayland: SDL_GetGlobalMouseState() is unreliable there, so use the window-local
         // query for both position and button mask -- the button mask stays accurate as long as
         // the pointer is over this window, which holds while a drag/resize we started is active.
-        auto& window = Core::Application::get().getWindow();
+        const auto& window = Core::Application::get().getWindow();
         const auto [windowOriginX, windowOriginY] = window.getPosition();
         float localX = 0.0F;
         float localY = 0.0F;
@@ -762,7 +763,7 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 
 void TitleBarLayer::updateResizeCursor()
 {
-    auto& window = Core::Application::get().getWindow();
+    const auto& window = Core::Application::get().getWindow();
     const SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {

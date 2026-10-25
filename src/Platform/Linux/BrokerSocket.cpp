@@ -144,7 +144,7 @@ receiveFrame(int fd, std::chrono::milliseconds timeout, const std::stop_token& s
     // A frame larger than one packet follows in full packets, its last one shorter or exactly what its
     // length prefix (the first four bytes, little-endian) still lacks (#2367). Anything else -- a short
     // or malformed frame -- is returned as it is, for the decoder to refuse, as before.
-    const auto declaredTotal = [&frame]() -> std::size_t
+    const auto declaredTotal = [&frame] -> std::size_t
     {
         const std::vector<std::uint8_t>& bytes = *frame;
         const std::size_t length = static_cast<std::size_t>(bytes[0]) | (static_cast<std::size_t>(bytes[1]) << 8U) |

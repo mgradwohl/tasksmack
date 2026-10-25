@@ -428,7 +428,7 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
         const std::scoped_lock writerLock(m_WriterMutex);
 
         // Calculate time delta
-        auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
+        const auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
         const double timeDeltaSeconds = static_cast<double>(timeDelta.count()) / 1000.0;
 
         // Compute snapshots
@@ -437,14 +437,14 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
         {
             // Look for previous counters
             const Platform::GPUCounters* previous = nullptr;
-            auto prevIt = m_PrevCounters.find(current.gpuId);
+            const auto prevIt = m_PrevCounters.find(current.gpuId);
             if (prevIt != m_PrevCounters.end())
             {
                 previous = &prevIt->second;
             }
 
             // Compute snapshot
-            auto snapshot = computeSnapshot(current, previous, currentGPUInfo, timeDeltaSeconds);
+            const auto snapshot = computeSnapshot(current, previous, currentGPUInfo, timeDeltaSeconds);
             newSnapshots[current.gpuId] = snapshot;
         }
 
@@ -837,7 +837,7 @@ GPUSnapshot GPUModel::computeSnapshot(const Platform::GPUCounters& current,
     snapshot.kind = current.kind;
 
     // Find GPU info for this ID
-    auto infoIt = std::ranges::find_if(gpuInfo, [&](const auto& info) { return info.id == current.gpuId; });
+    const auto infoIt = std::ranges::find_if(gpuInfo, [&](const auto& info) { return info.id == current.gpuId; });
     if (infoIt != gpuInfo.end())
     {
         snapshot.name = infoIt->name;

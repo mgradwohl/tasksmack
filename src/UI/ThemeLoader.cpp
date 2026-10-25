@@ -184,12 +184,9 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 
     if (view.is_array())
     {
-        if (const auto* arr = view.as_array())
+        if (const auto* arr = view.as_array(); arr != nullptr && arr->size() >= 3)
         {
-            if (arr->size() >= 3)
-            {
-                return parseColorArray(*arr);
-            }
+            return parseColorArray(*arr);
         }
     }
 
@@ -201,7 +198,7 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 /// If the key is missing and no default is provided, logs a warning and returns errorColor()
 auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4> defaultColor = std::nullopt) -> ImVec4
 {
-    if (auto node = tbl.at_path(key))
+    if (const auto node = tbl.at_path(key))
     {
         return parseColorView(node);
     }

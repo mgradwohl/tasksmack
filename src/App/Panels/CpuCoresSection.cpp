@@ -407,7 +407,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
 }
 
-void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ctx)
+void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, const RenderContext& ctx)
 {
     if (ctx.smoothedPerCore == nullptr)
     {

@@ -616,7 +616,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     m_CrashHistoryView.render(proc.name);
     ImGui::Spacing();
 
-    const auto computeLabelColumnWidth = []() -> float
+    const auto computeLabelColumnWidth = [] -> float
     {
         // Use std::to_array for automatic size deduction — no manual count to maintain.
         constexpr auto labels = std::to_array<const char*>({
@@ -832,7 +832,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Each block is capped at a readable width instead of taking half the pane, so a label and its
     // value stay together however wide the window is (#925). The blocks pack to the left and the
     // remaining width is left empty.
-    auto blockWidthFor = [&](std::span<const InfoRow> rows) -> float
+    const auto blockWidthFor = [&](std::span<const InfoRow> rows) -> float
     {
         float widestValue = 0.0F;
         for (const auto& row : rows)

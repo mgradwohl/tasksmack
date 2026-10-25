@@ -25,10 +25,10 @@ class SharedNames
   public:
     SharedNames() = default;
     // Implicit on purpose: `snapshot.serviceNames = names;` and `= {"Dhcp"}` read as for the vector it replaces.
-    SharedNames(std::vector<std::string> names) // NOLINT(google-explicit-constructor, hicpp-explicit-conversions)
+    SharedNames(std::vector<std::string> names) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
         : m_Names(names.empty() ? nullptr : std::make_shared<const std::vector<std::string>>(std::move(names)))
     {}
-    SharedNames(std::initializer_list<std::string> names) // NOLINT(google-explicit-constructor, hicpp-explicit-conversions)
+    SharedNames(std::initializer_list<std::string> names) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
         : SharedNames(std::vector<std::string>(names))
     {}
 

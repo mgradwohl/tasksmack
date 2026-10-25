@@ -620,7 +620,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             const std::int32_t parentPid = newSnapshots[i].parentPid;
             if (parentPid > 0)
             {
-                auto parentIt = pidToIndex.find(parentPid);
+                const auto parentIt = pidToIndex.find(parentPid);
                 if (parentIt != pidToIndex.end() && parentIt->second != i)
                 {
                     // Guard against PID reuse: pidToIndex maps parentPid to whichever *currently
@@ -1069,7 +1069,7 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
             snapshot.gpuFieldsRead = false;
             continue;
         }
-        auto it = pidToGPU.find(snapshot.pid);
+        const auto it = pidToGPU.find(snapshot.pid);
         if (it == pidToGPU.end())
         {
             // Listed at the read and not using a GPU then: a measured zero.
@@ -1309,13 +1309,10 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         // need (networkInterval, held rates).
     }
 
-    if (previous != nullptr && timeDeltaUs > 0)
+    if (previous != nullptr && timeDeltaUs > 0 && current.energyMicrojoules >= previous->energyMicrojoules)
     {
-        if (current.energyMicrojoules >= previous->energyMicrojoules)
-        {
-            const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
-            snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
-        }
+        const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
+        snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
     }
 
     return snapshot;

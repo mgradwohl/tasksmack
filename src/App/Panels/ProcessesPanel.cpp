@@ -1877,40 +1877,37 @@ void ProcessesPanel::renderContent()
         }
 
         // Sorting, in both views: the list shows the sorted indices as they are, and the tree view
-        // walks them, so each parent's children come out in this order under it (#838).
-        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
+        // walks them, so each parent's children come out in this order under it (#838). Only re-sort
+        // when the sort spec changed (SpecsDirty) or when the filtered data changed (filterDirty).
+        // Clearing SpecsDirty prevents a redundant O(n log n) sort on every frame when neither the
+        // data nor the sort column has changed. m_SortPending covers rows reset to natural order with
+        // no sort spec change (#1174).
+        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            sortSpecs != nullptr && sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
         {
-            // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
-            // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
-            // on every frame when neither the data nor the sort column has changed.
-            // m_SortPending covers rows reset to natural order with no sort spec change (#1174).
-            if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
+            const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+            const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+
+            // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+            const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
+            if (!sortColOpt.has_value())
             {
-                const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
-                const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-
-                // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
-                const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
-                if (!sortColOpt.has_value())
-                {
-                    sortSpecs->SpecsDirty = true;
-                    ImGui::EndTable();
-                    return;
-                }
-
-                const ProcessColumn sortCol = *sortColOpt;
-
-                // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
-                // in natural order for the next sort to start from.
-                m_CachedSortedIndices = m_CachedFilteredIndices;
-                std::ranges::sort(
-                    m_CachedSortedIndices,
-                    [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                    { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
-                sortSpecs->SpecsDirty = false;
-                m_SortPending = false;
-                ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
+                sortSpecs->SpecsDirty = true;
+                ImGui::EndTable();
+                return;
             }
+
+            const ProcessColumn sortCol = *sortColOpt;
+
+            // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
+            // in natural order for the next sort to start from.
+            m_CachedSortedIndices = m_CachedFilteredIndices;
+            std::ranges::sort(m_CachedSortedIndices,
+                              [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
+                              { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+            sortSpecs->SpecsDirty = false;
+            m_SortPending = false;
+            ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
         }
 
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
@@ -2200,7 +2197,8 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     // The ImGui ID from the full identity too, so two rows can never share one (#1503):
     // "##pid_select_" + an int32 + '_' + a uint64 fits in 64.
     std::array<char, 64> selectableIdBuf{};
-    auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}_{}", proc.pid, proc.startTimeTicks);
+    const auto selRes =
+        std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}_{}", proc.pid, proc.startTimeTicks);
     *selRes.out = '\0';
     // ImGui fills a hovered row with HeaderHovered even when it is selected, so
     // the row just clicked would show the weaker hover tint until the pointer
@@ -2309,7 +2307,7 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
         // same slot a leaf's spacer takes, as tall as the text so the row keeps its height.
         // Stack-allocated button ID: avoids heap allocation per visible row per frame
         std::array<char, 40> buttonIdBuf{};
-        auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
+        const auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
         *btnRes.out = '\0';
         const ImVec2 slotPos = ImGui::GetCursorScreenPos();
         const float slotWidth = ImGui::GetFrameHeight();
@@ -2399,12 +2397,9 @@ void ProcessesPanel::renderTreeFoldButtons(const std::vector<Domain::ProcessSnap
     }
     ImGui::SetItemTooltip("Expand all");
     ImGui::SameLine();
-    if (ImGui::Button(COLLAPSE_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)))
+    if (ImGui::Button(COLLAPSE_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)) && ProcessTreeFlatten::collapseAll(snapshots, activeCollapsedKeys()))
     {
-        if (ProcessTreeFlatten::collapseAll(snapshots, activeCollapsedKeys()))
-        {
-            ++m_CollapseGeneration;
-        }
+        ++m_CollapseGeneration;
     }
     ImGui::SetItemTooltip("Collapse all: only the top-level processes stay in view");
 }

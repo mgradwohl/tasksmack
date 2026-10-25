@@ -42,7 +42,7 @@ std::expected<void, std::string> writeCsv(const std::filesystem::path& path, con
 const std::optional<std::filesystem::path>& active()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<std::filesystem::path> path = []() -> std::optional<std::filesystem::path>
+    static const std::optional<std::filesystem::path> path = [] -> std::optional<std::filesystem::path>
     {
         std::optional<std::filesystem::path> parsed = parse(Core::readEnv(ENV_VAR));
         if (parsed)

@@ -42,7 +42,7 @@ std::filesystem::path LinuxPathProvider::getExecutableDir() const
 {
     // Read /proc/self/exe symlink to get executable path
     std::error_code errorCode;
-    auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
+    const auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
     if (!errorCode)
     {
         return exePath.parent_path();

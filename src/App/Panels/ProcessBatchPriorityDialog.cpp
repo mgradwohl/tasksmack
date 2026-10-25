@@ -72,31 +72,29 @@ void renderTargetList(const ProcessBatch::ListedTargets& listed)
     // A card, as the CPU Cores grid draws its cells: bordered, in the theme's child background.
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
     ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-    if (ImGui::BeginChild("##BatchTargets", ImVec2(-FLT_MIN, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar))
+    if (ImGui::BeginChild("##BatchTargets", ImVec2(-FLT_MIN, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar) &&
+        ImGui::BeginTable("##BatchTargetRows", 3, ImGuiTableFlags_SizingStretchProp))
     {
-        if (ImGui::BeginTable("##BatchTargetRows", 3, ImGuiTableFlags_SizingStretchProp))
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0F);
+        ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+        ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthStretch, 2.0F);
+        for (const ProcessBatch::BatchTarget* target : listed.listed)
         {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0F);
-            ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthStretch, 1.0F);
-            ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthStretch, 2.0F);
-            for (const ProcessBatch::BatchTarget* target : listed.listed)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(target->name.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(std::to_string(target->target.pid).c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextColored(theme.scheme().textMuted, "%s", target->priority.empty() ? "-" : target->priority.c_str());
-            }
-            if (listed.more > 0)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextColored(theme.scheme().textMuted, "+%zu more", listed.more);
-            }
-            ImGui::EndTable();
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(target->name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(std::to_string(target->target.pid).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextColored(theme.scheme().textMuted, "%s", target->priority.empty() ? "-" : target->priority.c_str());
         }
+        if (listed.more > 0)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(theme.scheme().textMuted, "+%zu more", listed.more);
+        }
+        ImGui::EndTable();
     }
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
