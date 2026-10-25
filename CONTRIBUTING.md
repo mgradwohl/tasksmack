@@ -2862,6 +2862,14 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   executables are Authenticode-signed; until then it is unsigned and has no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; not Authenticode-signed yet, and without `TaskSmackHelper.exe`)
+- Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
+  `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
+  `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
+  version, the SHA-256 of the CRT, STL and UCRT libraries the link consumed (`libcmt.lib`,
+  `libvcruntime.lib`, `libcpmt.lib`, `libucrt.lib` and their import-library counterparts), the
+  Windows SDK version, the runner image (`ImageOS`/`ImageVersion`), the compiler and the commit. Two
+  builds of one commit with equal `inputs` should give the same bytes; see [Release
+  Reproducibility](#release-reproducibility) for how a mismatch is read.
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
 
 The x64 names are the ones earlier releases used, so existing download links keep working; only the
@@ -2869,8 +2877,9 @@ ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/
 from the compiler's target). Each package's build, test, reproducibility check and validation runs
 natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
-`windows-packages-arm64`). `create-release` checks that `dist/` holds exactly these six packages
-before signing anything, so a missing or renamed package fails the release.
+`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`.
+`create-release` checks that `dist/` holds exactly these six packages and the two manifests before
+signing anything, so a missing or renamed file fails the release.
 
 ### Release Artifact Validation
 
@@ -3018,6 +3027,27 @@ true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workfl
 investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism
 (e.g. absolute build-path fragments a future dependency might embed in debug info).
+
+On Windows the build is deterministic but its inputs may not be: the runner image's serviced MSVC
+CRT and Windows SDK payload can change under an unchanged directory name (v0.9.0's arm64
+`TaskSmack.exe` differed between the dry run and the tag run because one image carried VS 18.10's
+libraries and the other 18.11's, both as `VC\Tools\MSVC\14.51.36231` and SDK `10.0.26100.0`; #2802).
+Each Windows build and rebuild therefore records a build-inputs manifest (see [Release
+Artifacts](#release-artifacts)), and `verify-reproducibility-windows`'s "Compare digests" diffs the
+two manifests' `inputs` with `.github/actions/windows-build-inputs/compare-build-inputs.ps1`: a
+differing `.zip` whose inputs also differ is reported as the runner image's CRT changing, and one
+whose inputs match as the build itself not being reproducible. The post-release check does the
+same for the dry run's and the published release's manifests of the same commit (both carry them):
+
+```powershell
+pwsh .github/actions/windows-build-inputs/compare-build-inputs.ps1 `
+    dry-run/TaskSmack-<version>-windows-arm64-build-inputs.json `
+    release/TaskSmack-<version>-windows-arm64-build-inputs.json   # exit 0: same inputs; 1: differ
+```
+
+Byte-identity across runner images would need the toolset pinned by content (a cached, hash-checked
+MSVC and SDK overlay, as `setup-windows-llvm` does for LLVM); the manifest is the record that makes
+that a deliberate follow-up rather than a guess.
 
 To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with

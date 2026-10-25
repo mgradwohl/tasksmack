@@ -1,0 +1,38 @@
+name: 'Record Windows build inputs'
+description: >-
+  Write a <package>-build-inputs.json manifest beside a packaged Windows .zip: the MSVC toolset,
+  the SHA-256 of the CRT/UCRT libraries the link consumed, the Windows SDK, the runner image and the
+  compiler (#2802), so a TaskSmack.exe that differs between two runs of one commit can be explained.
+  Appends the manifest to the job summary. compare-build-inputs.ps1 beside this action diffs two.
+inputs:
+  package:
+    description: 'Glob for the packaged .zip (exactly one match); its base name names the manifest.'
+    required: false
+    default: 'dist/*.zip'
+  output-dir:
+    description: 'Directory the manifest is written to; created when missing.'
+    required: false
+    default: 'build-inputs'
+  job:
+    description: 'The job writing the manifest, recorded under provenance (ignored by the comparison).'
+    required: true
+outputs:
+  manifest:
+    description: 'Path of the manifest written.'
+    value: ${{ steps.record.outputs.manifest }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Record build inputs
+      id: record
+      shell: pwsh
+      env:
+        PACKAGE_GLOB: ${{ inputs.package }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+        JOB: ${{ inputs.job }}
+      run: |
+        & "$env:GITHUB_ACTION_PATH\record-build-inputs.ps1" -PackageGlob $env:PACKAGE_GLOB -OutputDir $env:OUTPUT_DIR -Job $env:JOB
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $manifest = Get-ChildItem -Path (Join-Path $env:OUTPUT_DIR '*-build-inputs.json') -File | Select-Object -First 1
+        "manifest=$($manifest.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
