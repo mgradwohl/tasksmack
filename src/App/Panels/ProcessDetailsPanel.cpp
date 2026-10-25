@@ -213,6 +213,11 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
 
+    // The Priority card's I/O priority read (#2734): on its worker, started here and never from render(),
+    // and only when the control was drawn last frame (ProcessIoPriorityView::updateRead()).
+    static_cast<void>(
+        m_PriorityView.updateReads(m_ActionCapabilities.canSetIoPriority ? m_ProcessActions.get() : nullptr, selectedTarget(), deltaTime));
+
     // The Recent crashes line's shared cache (#1675): read on a worker only while the line was drawn and
     // the cache is stale, whatever the selection; matching it to the process is done per read, not here.
     static_cast<void>(m_CrashHistoryView.update(deltaTime));

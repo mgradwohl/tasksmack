@@ -31,6 +31,8 @@ inline constexpr std::string_view MODULES_READ_THREAD_NAME = "ts-mod-read";
 /// The worker that runs one Process Details Open files read at a time (#183).
 inline constexpr std::string_view OPEN_FILES_READ_THREAD_NAME = "ts-files-read";
 inline constexpr std::string_view SECURITY_READ_THREAD_NAME = "ts-sec-read";
+/// The worker that runs one Process Details I/O priority read at a time (#2734).
+inline constexpr std::string_view IO_PRIORITY_READ_THREAD_NAME = "ts-ioprio-read";
 /// The worker that runs one Process Details Environment read at a time (#2116).
 inline constexpr std::string_view ENVIRONMENT_READ_THREAD_NAME = "ts-env-read";
 /// The thread that types and names a Windows process's File handles for one read (#183).
