@@ -1913,6 +1913,10 @@ jobs:
     # hashed, in dist/ before publishing, so a failure here means users get something other than what
     # was validated, or a signature or attestation they can't verify.
     needs: [create-release]
+    # The default success() would skip this whenever sign-windows is skipped (signing off): it looks
+    # at every job upstream, not just create-release. create-release's own `if:` decides which skips
+    # are fine, so this only needs it to have succeeded.
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
