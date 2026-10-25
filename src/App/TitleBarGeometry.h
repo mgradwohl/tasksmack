@@ -509,8 +509,9 @@ computeTitleBarButtonLayout(const float rightEdgePx, const float buttonWidthPx, 
     return layout;
 }
 
-/// Whether (x, y) is on any of the title bar's right-hand buttons, so neither a drag nor a resize
-/// may start there.
+/// Whether (x, y) is on any of the title bar's right-hand buttons, as laid out. Where a press may
+/// not start a drag or a resize is computeIsPointInControlArea() below, which takes the window's
+/// top-right resize corner back out of the Close button's slot (#2882).
 [[nodiscard]] inline auto computeIsPointOnTitleBarButton(const float x, const float y, const TitleBarButtonLayout& layout) -> bool
 {
     return computeIsPointInBounds(x, y, layout.about) || computeIsPointInBounds(x, y, layout.help) ||
@@ -789,7 +790,9 @@ computeSystemDragApplies(const bool usesSystemDrag, const bool clientSideMaximiz
 /// within resizeBorderThickness of a window edge (the close button's rightmost pixels reach the
 /// window's right edge; the icon's top pixels sit inside the top resize strip), so the control-area
 /// check below must run before any resize-border branch, or SDL would consume the click as a resize
-/// instead of delivering it to the app (see #750 review).
+/// instead of delivering it to the app (see #750 review). @p isInControlArea is that decision made,
+/// with the one point where the border wins over a control already taken out of it: the top-right
+/// resize corner (computeIsPointInControlArea(), #2882).
 ///
 /// The resize strips are found with computeDetectResizeEdge(), the same decision the client-side
 /// resize starts from, so the two cannot disagree about where an edge is. @p systemResize says who
@@ -851,12 +854,34 @@ struct WindowHitTestInput
     bool systemResize = false; ///< Core::VideoBackend::usesSystemResize()
 };
 
+/// Whether a title-bar control -- the icon or one of the six buttons -- takes window-local (@p x,
+/// @p y), so that neither a drag nor a resize may start there (the controls are tested before the
+/// resize borders, #750). The one exception is the window's top-right resize corner (#2882): the
+/// Close button's slot reaches the window's top and right edges, so that corner was the only one of
+/// the four that could not start a resize, on any backend. The corner square -- the resize border's
+/// thickness on each side, the square where the other three corners show the diagonal cursor, and
+/// the same computeDetectResizeEdge() answer the resize and the cursor start from -- is the
+/// border's, as the outermost pixels of a Close button are on Windows' own frames. The rest of the
+/// Close button stays the button's, and so does every other overlap of a control with a border: the
+/// top strip over the other buttons and the icon's top pixels. A maximized window has no borders,
+/// so its Close button reaches the screen's corner, as a maximized window's does on Windows.
+[[nodiscard]] inline auto computeIsPointInControlArea(const float x, const float y, const WindowHitTestInput& input) -> bool
+{
+    if (!computeIsPointInBounds(x, y, input.icon) && !computeIsPointOnTitleBarButton(x, y, input.buttons))
+    {
+        return false;
+    }
+    return computeDetectResizeEdge(x, y, input.windowWidth, input.windowHeight, input.isMaximized, input.resizeBorderPx) !=
+           ResizeEdge::TopRight;
+}
+
 /// What the SDL hit-test callback answers for window-local (@p x, @p y): the buttons and the icon are
-/// the control area, then computeWindowHitTest() decides. The one function the callback forwards to,
-/// so a test over a WindowHitTestInput exercises exactly what the real window answers.
+/// the control area (computeIsPointInControlArea()), then computeWindowHitTest() decides. The one
+/// function the callback forwards to, so a test over a WindowHitTestInput exercises exactly what the
+/// real window answers.
 [[nodiscard]] inline auto computeWindowHitTestAt(const float x, const float y, const WindowHitTestInput& input) -> SDL_HitTestResult
 {
-    const bool isInControlArea = computeIsPointInBounds(x, y, input.icon) || computeIsPointOnTitleBarButton(x, y, input.buttons);
+    const bool isInControlArea = computeIsPointInControlArea(x, y, input);
     return computeWindowHitTest(x,
                                 y,
                                 input.windowWidth,
