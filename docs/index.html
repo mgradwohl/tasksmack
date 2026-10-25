@@ -22,6 +22,9 @@
       name: 'TaskSmack',
       repo: 'mgradwohl/tasksmack',
       homepage: 'guide/user-guide.md',
+      // Links and images resolve from the page they're in, as GitHub renders them: the guide's
+      // ../images/... and faq.md#... otherwise resolve from the site root and 404.
+      relativePath: true,
       loadSidebar: true,
       coverpage: false,
       notFoundPage: '_404.md',

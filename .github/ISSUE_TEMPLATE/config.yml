@@ -1,0 +1,9 @@
+# The new-issue page: the two templates, plus Discussions for questions and ideas.
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/mgradwohl/tasksmack/discussions/categories/q-a
+    about: Questions about using, building or contributing to TaskSmack go in Discussions Q&A.
+  - name: Share an idea
+    url: https://github.com/mgradwohl/tasksmack/discussions/categories/ideas
+    about: Not sure it's a feature request yet? Start in Discussions Ideas.
