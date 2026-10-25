@@ -8,6 +8,8 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsProcAddress.h"
 
 #include <spdlog/spdlog.h>
 
@@ -372,7 +374,7 @@ struct PDHGPUProbe::Impl
     static constexpr const wchar_t* ADAPTER_DEDICATED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Dedicated Usage";
     static constexpr const wchar_t* ADAPTER_SHARED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Shared Usage";
 
-    HMODULE pdhModule = nullptr;
+    Windows::UniqueModule pdhModule;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
     PdhCloseQueryFn pdhCloseQuery = nullptr;
     PdhAddEnglishCounterFn pdhAddEnglishCounter = nullptr;
@@ -491,6 +493,14 @@ struct PDHGPUProbe::Impl
         shutdown();
     }
 
+    /// Whether every PDH function the probe calls was resolved. True whenever pdhModule is held:
+    /// loadPDH() frees the module again if any is missing.
+    [[nodiscard]] bool pdhFunctionsLoaded() const noexcept
+    {
+        return pdhOpenQuery != nullptr && pdhCloseQuery != nullptr && pdhAddEnglishCounter != nullptr && pdhCollectQueryData != nullptr &&
+               pdhGetFormattedCounterArray != nullptr;
+    }
+
     bool loadPDH()
     {
         // Defensive guard: today loadPDH() is only ever called once (from the constructor), so
@@ -499,10 +509,11 @@ struct PDHGPUProbe::Impl
         // leaking one DLL reference count (#781).
         if (pdhModule != nullptr)
         {
-            return true;
+            return pdhFunctionsLoaded();
         }
 
-        pdhModule = LoadLibraryW(L"pdh.dll");
+        // System32 only, so a pdh.dll next to a portable TaskSmack.exe is never loaded (#2530).
+        pdhModule.reset(LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
         if (pdhModule == nullptr)
         {
             spdlog::debug("PDHGPUProbe: Failed to load pdh.dll");
@@ -510,21 +521,17 @@ struct PDHGPUProbe::Impl
         }
 
         // Load function pointers
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - Required for GetProcAddress
-        pdhOpenQuery = reinterpret_cast<PdhOpenQueryFn>(GetProcAddress(pdhModule, "PdhOpenQueryW"));
-        pdhCloseQuery = reinterpret_cast<PdhCloseQueryFn>(GetProcAddress(pdhModule, "PdhCloseQuery"));
-        pdhAddEnglishCounter = reinterpret_cast<PdhAddEnglishCounterFn>(GetProcAddress(pdhModule, "PdhAddEnglishCounterW"));
-        pdhCollectQueryData = reinterpret_cast<PdhCollectQueryDataFn>(GetProcAddress(pdhModule, "PdhCollectQueryData"));
-        pdhGetFormattedCounterArray =
-            reinterpret_cast<PdhGetFormattedCounterArrayFn>(GetProcAddress(pdhModule, "PdhGetFormattedCounterArrayW"));
-        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+        HMODULE pdh = pdhModule.get();
+        pdhOpenQuery = Windows::getProcAddress<PdhOpenQueryFn>(pdh, "PdhOpenQueryW");
+        pdhCloseQuery = Windows::getProcAddress<PdhCloseQueryFn>(pdh, "PdhCloseQuery");
+        pdhAddEnglishCounter = Windows::getProcAddress<PdhAddEnglishCounterFn>(pdh, "PdhAddEnglishCounterW");
+        pdhCollectQueryData = Windows::getProcAddress<PdhCollectQueryDataFn>(pdh, "PdhCollectQueryData");
+        pdhGetFormattedCounterArray = Windows::getProcAddress<PdhGetFormattedCounterArrayFn>(pdh, "PdhGetFormattedCounterArrayW");
 
-        if (pdhOpenQuery == nullptr || pdhCloseQuery == nullptr || pdhAddEnglishCounter == nullptr || pdhCollectQueryData == nullptr ||
-            pdhGetFormattedCounterArray == nullptr)
+        if (!pdhFunctionsLoaded())
         {
             spdlog::debug("PDHGPUProbe: Failed to load required PDH functions");
-            FreeLibrary(pdhModule);
-            pdhModule = nullptr;
+            pdhModule.reset();
             return false;
         }
 
@@ -757,11 +764,7 @@ struct PDHGPUProbe::Impl
             query = nullptr;
         }
 
-        if (pdhModule != nullptr)
-        {
-            FreeLibrary(pdhModule);
-            pdhModule = nullptr;
-        }
+        pdhModule.reset(); // After the query is closed
 
         initialized = false;
     }

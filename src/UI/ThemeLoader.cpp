@@ -1,6 +1,8 @@
 #include "ThemeLoader.h"
 
+#include "Core/Utf8Path.h"
 #include "Theme.h"
+#include "UI/ColorContrast.h"
 #include "UI/Format.h"
 
 #include <imgui.h>
@@ -9,10 +11,12 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -102,6 +106,41 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
 namespace
 {
 
+/// One [r, g, b(, a)] component, read as a double so nothing narrows before it is checked (#2318).
+/// nullopt for a component that is not a number, or is NaN or infinite: TOML accepts nan and inf,
+/// and ImGui's float-to-byte colour conversion is undefined for them. A finite value outside
+/// [0, 1] is clamped into it (which also keeps it in float range).
+[[nodiscard]] auto parseColorComponent(const toml::node* node, std::size_t index) -> std::optional<float>
+{
+    const std::optional<double> value = (node != nullptr) ? node->value<double>() : std::nullopt;
+    if (!value.has_value() || !std::isfinite(*value))
+    {
+        spdlog::warn("Invalid color component {} (expected a finite number)", index);
+        return std::nullopt;
+    }
+    if (*value < 0.0 || *value > 1.0)
+    {
+        spdlog::warn("Color component {} = {} is outside [0, 1]; clamped", index, *value);
+    }
+    return static_cast<float>(std::clamp(*value, 0.0, 1.0));
+}
+
+/// Parse an [r, g, b] or [r, g, b, a] array (the caller has checked it has at least three
+/// elements; alpha defaults to 1). A component that is not a finite number makes the whole colour
+/// error magenta, as an invalid hex string does (#2318).
+[[nodiscard]] auto parseColorArray(const toml::array& arr) -> ImVec4
+{
+    const std::optional<float> r = parseColorComponent(arr.get(0), 0);
+    const std::optional<float> g = parseColorComponent(arr.get(1), 1);
+    const std::optional<float> b = parseColorComponent(arr.get(2), 2);
+    const std::optional<float> a = (arr.size() >= 4) ? parseColorComponent(arr.get(3), 3) : std::optional<float>{1.0F};
+    if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
+    {
+        return errorColor();
+    }
+    return {*r, *g, *b, *a};
+}
+
 /// Parse a color from a TOML node (hex string or [r,g,b,a] array)
 auto parseColorNode(const toml::node& node) -> ImVec4
 {
@@ -121,11 +160,7 @@ auto parseColorNode(const toml::node& node) -> ImVec4
         const auto* arr = node.as_array();
         if (arr && arr->size() >= 3)
         {
-            const float r = arr->get(0)->value_or(0.0F);
-            const float g = arr->get(1)->value_or(0.0F);
-            const float b = arr->get(2)->value_or(0.0F);
-            const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-            return {r, g, b, a};
+            return parseColorArray(*arr);
         }
     }
 
@@ -149,16 +184,9 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 
     if (view.is_array())
     {
-        if (const auto* arr = view.as_array())
+        if (const auto* arr = view.as_array(); arr != nullptr && arr->size() >= 3)
         {
-            if (arr->size() >= 3)
-            {
-                const float r = arr->get(0)->value_or(0.0F);
-                const float g = arr->get(1)->value_or(0.0F);
-                const float b = arr->get(2)->value_or(0.0F);
-                const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-                return {r, g, b, a};
-            }
+            return parseColorArray(*arr);
         }
     }
 
@@ -170,7 +198,7 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 /// If the key is missing and no default is provided, logs a warning and returns errorColor()
 auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4> defaultColor = std::nullopt) -> ImVec4
 {
-    if (auto node = tbl.at_path(key))
+    if (const auto node = tbl.at_path(key))
     {
         return parseColorView(node);
     }
@@ -183,6 +211,30 @@ auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4
     return errorColor();
 }
 
+/// A metric role's line and fill colours (#1196).
+struct RoleColors
+{
+    ImVec4 line;
+    ImVec4 fill;
+};
+
+/// A metric role's line and fill. A theme that sets the line but not the fill gets the line at ~0.35
+/// alpha, like the other chart fills; a theme without the role keeps the colours the role used to
+/// borrow (@p borrowedLine, @p borrowedFill), so older user themes draw as they did.
+auto getRoleColors(const toml::table& tbl,
+                   std::string_view key,
+                   std::string_view fillKey,
+                   const ImVec4& borrowedLine,
+                   const ImVec4& borrowedFill) -> RoleColors
+{
+    if (tbl.at_path(key))
+    {
+        const ImVec4 line = parseColorView(tbl.at_path(key));
+        return {.line = line, .fill = getColor(tbl, fillKey, withAlpha(line, line.w * 0.35F))};
+    }
+    return {.line = borrowedLine, .fill = getColor(tbl, fillKey, borrowedFill)};
+}
+
 /// Load a color array (e.g., accent colors)
 template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
@@ -193,6 +245,180 @@ template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_
             colors[i] = parseColorNode(*arr->get(i));
         }
     }
+}
+
+/// The inline meters' fallback alphas (#1528): a faint amber at 0, a stronger red at full scale.
+constexpr float PROCESS_METER_LOW_ALPHA = 0.15F;
+constexpr float PROCESS_METER_HIGH_ALPHA = 0.30F;
+constexpr float PROCESS_METER_ALPHA_STEP = 0.01F;
+
+/// A theme without [process_meter] colours: @p color at the strongest alpha up to @p maxAlpha at
+/// which text_primary keeps ColorContrast::TEXT_CONTRAST_MIN on it over a plain, striped and
+/// selected row, so the meter never makes a cell's text unreadable, in a light or dark theme.
+/// Needs the scheme's text, window, table row and header colours loaded.
+auto readableMeterFill(const ImVec4& color, float maxAlpha, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 row = ColorContrast::flattenOver(scheme.tableRowBg, window);
+    const ImVec4 stripe = ColorContrast::flattenOver(scheme.tableRowBgAlt, window);
+    const std::array<ImVec4, 3> rows{row, stripe, ColorContrast::flattenOver(scheme.header, row)};
+    const auto steps = static_cast<int>(std::lround(maxAlpha / PROCESS_METER_ALPHA_STEP));
+    for (int step = steps; step > 0; --step)
+    {
+        const ImVec4 fill = withAlpha(color, static_cast<float>(step) * PROCESS_METER_ALPHA_STEP);
+        if (std::ranges::all_of(rows,
+                                [&](const ImVec4& under)
+                                {
+                                    return ColorContrast::contrastRatio(scheme.textPrimary, ColorContrast::flattenOver(fill, under)) >=
+                                           ColorContrast::TEXT_CONTRAST_MIN;
+                                }))
+        {
+            return fill;
+        }
+    }
+    return withAlpha(color, 0.0F); // Text already below the minimum on a bare row: no meter would help
+}
+
+/// The outline of a frame-drawn control (#1923): @p start (ui.frame.border, else ui.window.border)
+/// made opaque over the window, then moved toward text_primary just far enough to reach
+/// ColorContrast::FRAME_BORDER_CONTRAST_MIN on each surface such a control is drawn on -- the window,
+/// a card (child_background over the window), and a popup or modal (popup_background over the modal
+/// backdrop, as Theme::applyImGuiStyle() flattens it). The frame fills themselves are within 1.0:1 to
+/// 1.8:1 of those surfaces in the bundled themes, so without an outline an unchecked checkbox read as
+/// a plain label. Needs the scheme's text, window and misc colours loaded.
+auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 3> surfaces{
+        window,
+        ColorContrast::flattenOver(scheme.childBg, window),
+        ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window)),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+}
+
+/// One of a plain button's fills (#1976): @p color as the theme gives it when it already reaches
+/// ColorContrast::BUTTON_FILL_CONTRAST_MIN on each surface a button is drawn on -- the window, a card
+/// and a popup or modal, as frameBorderFor() takes them -- and is ColorContrast::BUTTON_STATE_CONTRAST_MIN
+/// from each of @p distinctFrom (the resting fill, for the hovered and pressed ones), both composited
+/// over each of those surfaces, since either may be translucent. Otherwise it is
+/// made opaque over the window and moved toward text_primary, in steps of
+/// 1 / ColorContrast::READABLE_TINT_STEPS, until it does -- but never past the last step on which
+/// text_primary, the button's label, still reaches ColorContrast::TEXT_CONTRAST_MIN: the label is
+/// what names the button, so it comes first. Nord and Solarized Dark filled buttons with their popup
+/// colour, so a dialog's OK was a bare word. Needs the scheme's text, window and misc colours loaded.
+auto buttonFillFor(const ImVec4& color, const ColorScheme& scheme, std::span<const ImVec4> distinctFrom) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 3> surfaces{
+        window,
+        ColorContrast::flattenOver(scheme.childBg, window),
+        ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window)),
+    };
+    const auto standsOut = [&](const ImVec4& fill)
+    {
+        const bool onSurfaces =
+            std::ranges::all_of(surfaces,
+                                [&fill](const ImVec4& surface)
+                                {
+                                    return ColorContrast::contrastRatio(ColorContrast::flattenOver(fill, surface), surface) >=
+                                           ColorContrast::BUTTON_FILL_CONTRAST_MIN;
+                                });
+        // Each state against the resting fill as both are seen on every surface: a translucent fill
+        // can differ enough over the window and blend into the resting one on a card or popup.
+        const bool fromStates = std::ranges::all_of(
+            surfaces,
+            [&fill, &distinctFrom](const ImVec4& surface)
+            {
+                const ImVec4 shown = ColorContrast::flattenOver(fill, surface);
+                return std::ranges::all_of(distinctFrom,
+                                           [&shown, &surface](const ImVec4& other)
+                                           {
+                                               return ColorContrast::contrastRatio(shown, ColorContrast::flattenOver(other, surface)) >=
+                                                      ColorContrast::BUTTON_STATE_CONTRAST_MIN;
+                                           });
+            });
+        return onSurfaces && fromStates;
+    };
+    if (standsOut(color))
+    {
+        return color;
+    }
+
+    const ImVec4 start = ColorContrast::flattenOver(color, window);
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    ImVec4 fill = color;
+    for (int step = 1; step <= ColorContrast::READABLE_TINT_STEPS; ++step)
+    {
+        const float t = static_cast<float>(step) / static_cast<float>(ColorContrast::READABLE_TINT_STEPS);
+        const ImVec4 mix{
+            start.x + ((toward.x - start.x) * t), start.y + ((toward.y - start.y) * t), start.z + ((toward.z - start.z) * t), 1.0F};
+        if (ColorContrast::contrastRatio(scheme.textPrimary, mix) < ColorContrast::TEXT_CONTRAST_MIN)
+        {
+            break; // One step further would cost the label its contrast: keep the last that didn't
+        }
+        fill = mix;
+        if (standsOut(fill))
+        {
+            break;
+        }
+    }
+    return fill;
+}
+
+/// The hatch of a NowBar with no reading (#1935): @p start (text_disabled) made opaque over the window,
+/// then moved toward text_primary just far enough to reach ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN
+/// on each surface it is drawn on -- the bar's track (the frame fill) over the window and over a card,
+/// and the window and card around it. text_disabled alone fell to 1.7:1 on the track in some bundled
+/// themes, too faint to tell an N/A bar from an empty one. Needs the scheme's text, window and frame
+/// colours loaded.
+auto unavailableHatchFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 card = ColorContrast::flattenOver(scheme.childBg, window);
+    const std::array<ImVec4, 4> surfaces{
+        window,
+        card,
+        ColorContrast::flattenOver(scheme.frameBg, window),
+        ColorContrast::flattenOver(scheme.frameBg, card),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN);
+}
+
+/// The marker of a multi-selection's primary row (#1926): @p start (ui.table.selection_primary, else
+/// ui.misc.nav_highlight) made opaque over the selection fill, then moved toward text_primary just far
+/// enough to reach ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill (header) of a
+/// plain row and of a striped one, the backgrounds it is drawn on. Needs the scheme's text, window,
+/// header and table row colours loaded.
+auto selectionPrimaryFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 2> surfaces{
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBg, window)),
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBgAlt, window)),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, surfaces[0]), toward, surfaces, ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+}
+
+/// The Processes tree's depth guide lines (#838): @p start (ui.table.border_light) made opaque over the
+/// window, then moved toward text_primary just far enough to reach ColorContrast::TREE_LINES_CONTRAST_MIN
+/// on a plain and a striped row, the backgrounds they cross. Needs the scheme's text, window and table
+/// row colours loaded.
+auto treeLinesFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 2> rows{
+        ColorContrast::flattenOver(scheme.tableRowBg, window),
+        ColorContrast::flattenOver(scheme.tableRowBgAlt, window),
+    };
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), withAlpha(scheme.textPrimary, 1.0F), rows, ColorContrast::TREE_LINES_CONTRAST_MIN);
 }
 
 /// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
@@ -210,11 +436,6 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     // Accents
     loadColorArray(tbl, "accents.colors", scheme.accents);
 
-    // Progress colors
-    scheme.progressLow = getColor(tbl, "progress.low");
-    scheme.progressMedium = getColor(tbl, "progress.medium");
-    scheme.progressHigh = getColor(tbl, "progress.high");
-
     // Semantic colors
     scheme.textMuted = getColor(tbl, "semantic.text_muted");
     scheme.textError = getColor(tbl, "semantic.text_error");
@@ -223,6 +444,9 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.textInfo = getColor(tbl, "semantic.text_info");
     scheme.textPrimary = getColor(tbl, "semantic.text_primary", scheme.textInfo);
     scheme.textDisabled = getColor(tbl, "semantic.text_disabled", scheme.textMuted);
+    scheme.corePerformance = getColor(tbl, "semantic.core_performance", scheme.textWarning);
+    scheme.coreEfficiency = getColor(tbl, "semantic.core_efficiency", scheme.textSuccess);
+    scheme.coreLowPower = getColor(tbl, "semantic.core_low_power", scheme.textMuted);
 
     // Status colors
     scheme.statusRunning = getColor(tbl, "status.running");
@@ -279,6 +503,47 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
     scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", withAlpha(scheme.gpuClock, (scheme.gpuClock.w * 0.35F)));
     scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
+
+    // Metric roles (#1196). Each falls back to the field it borrowed before it had its own, so a
+    // theme that predates them draws as it did -- except process Power, which was semantic.text_info
+    // and now matches system Power (charts.cpu unless charts.power is set): Power is one colour on
+    // every screen. Shared and Virtual fall back through Cached and Swap, which in turn fall back to
+    // what they borrowed.
+    // CPU Total is a line over the User/System bands, which are its fill, so it has no fill of its own.
+    scheme.chartCpuTotal = getColor(tbl, "charts.cpu_total", scheme.chartCpu);
+    const auto cached = getRoleColors(tbl, "charts.memory_cached", "charts.memory_cached_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartMemoryCached = cached.line;
+    scheme.chartMemoryCachedFill = cached.fill;
+    const auto shared = getRoleColors(tbl, "charts.memory_shared", "charts.memory_shared_fill", cached.line, cached.fill);
+    scheme.chartMemoryShared = shared.line;
+    scheme.chartMemorySharedFill = shared.fill;
+    const auto swap = getRoleColors(tbl, "charts.swap", "charts.swap_fill", scheme.chartIo, scheme.chartIoFill);
+    scheme.chartSwap = swap.line;
+    scheme.chartSwapFill = swap.fill;
+    const auto virt = getRoleColors(tbl, "charts.memory_virtual", "charts.memory_virtual_fill", swap.line, swap.fill);
+    scheme.chartMemoryVirtual = virt.line;
+    scheme.chartMemoryVirtualFill = virt.fill;
+    // Process Private and Swap (#1885) fall back to the colours they sit nearest: Shared, and system Swap.
+    const auto privateBytes = getRoleColors(tbl, "charts.memory_private", "charts.memory_private_fill", shared.line, shared.fill);
+    scheme.chartMemoryPrivate = privateBytes.line;
+    scheme.chartMemoryPrivateFill = privateBytes.fill;
+    const auto processSwap = getRoleColors(tbl, "charts.memory_swap", "charts.memory_swap_fill", swap.line, swap.fill);
+    scheme.chartMemorySwap = processSwap.line;
+    scheme.chartMemorySwapFill = processSwap.fill;
+    const auto power = getRoleColors(tbl, "charts.power", "charts.power_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartPower = power.line;
+    scheme.chartPowerFill = power.fill;
+    const auto battery = getRoleColors(tbl, "charts.battery", "charts.battery_fill", scheme.chartMemory, scheme.chartMemoryFill);
+    scheme.chartBattery = battery.line;
+    scheme.chartBatteryFill = battery.fill;
+    const auto threads = getRoleColors(tbl, "charts.threads", "charts.threads_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartThreads = threads.line;
+    scheme.chartThreadsFill = threads.fill;
+    const auto handles = getRoleColors(tbl, "charts.handles", "charts.handles_fill", scheme.chartMemory, scheme.chartMemoryFill);
+    scheme.chartHandles = handles.line;
+    scheme.chartHandlesFill = handles.fill;
+    scheme.chartPageFaults = getColor(tbl, "charts.page_faults", scheme.accents[3]);
+    scheme.chartGdi = getColor(tbl, "charts.gdi", scheme.accents[4]);
 
     // Chart overlays
     scheme.chartPeakLine = getColor(tbl, "charts.peak_line", scheme.textWarning);
@@ -394,6 +659,26 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
     scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
 
+    // Control outlines (#1923), after the window, text and modal-backdrop colours they are fitted to.
+    scheme.frameBorder = frameBorderFor(getColor(tbl, "ui.frame.border", scheme.border), scheme);
+    // Button fills (#1976), likewise: the resting fill first, then hovered and pressed kept apart from it.
+    scheme.button = buttonFillFor(scheme.button, scheme, {});
+    const std::array<ImVec4, 1> resting{scheme.button};
+    scheme.buttonHovered = buttonFillFor(scheme.buttonHovered, scheme, resting);
+    scheme.buttonActive = buttonFillFor(scheme.buttonActive, scheme, resting);
+    // The N/A NowBar hatch (#1935), fitted to the frame fill it is drawn on and the surfaces round it.
+    scheme.unavailableHatch = unavailableHatchFor(scheme.textDisabled, scheme);
+    // The primary row's marker (#1926), after the header, table row and focus colours it is fitted to.
+    scheme.selectionPrimary = selectionPrimaryFor(getColor(tbl, "ui.table.selection_primary", scheme.navHighlight), scheme);
+    // The tree's guide lines (#838), fitted to the table rows they cross.
+    scheme.treeLines = treeLinesFor(scheme.tableBorderLight, scheme);
+
+    // Inline meters (#1528), last: their fallbacks are fitted to the rows they are drawn on.
+    scheme.processMeterLow = tbl.at_path("process_meter.low") ? getColor(tbl, "process_meter.low")
+                                                              : readableMeterFill(scheme.textWarning, PROCESS_METER_LOW_ALPHA, scheme);
+    scheme.processMeterHigh = tbl.at_path("process_meter.high") ? getColor(tbl, "process_meter.high")
+                                                                : readableMeterFill(scheme.textError, PROCESS_METER_HIGH_ALPHA, scheme);
+
     return scheme;
 }
 
@@ -408,14 +693,14 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     std::error_code ec;
     if (!std::filesystem::is_directory(themesDir, ec))
     {
-        spdlog::warn("Themes directory does not exist or can't be read: {}", themesDir.string());
+        spdlog::warn("Themes directory does not exist or can't be read: {}", Core::pathToUtf8(themesDir));
         return themes;
     }
 
     std::filesystem::directory_iterator it(themesDir, ec);
     if (ec)
     {
-        spdlog::warn("Can't list themes directory {}: {}", themesDir.string(), ec.message());
+        spdlog::warn("Can't list themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
         return themes;
     }
     for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
@@ -431,7 +716,7 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     }
     if (ec)
     {
-        spdlog::warn("Stopped listing themes directory {}: {}", themesDir.string(), ec.message());
+        spdlog::warn("Stopped listing themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
     }
 
     // Sort by name for consistent UI ordering
@@ -440,15 +725,20 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     return themes;
 }
 
+auto ThemeLoader::userThemesSkippedMessage(const std::filesystem::path& userThemesDir, const std::error_code& error) -> std::string
+{
+    return "Skipping user themes in " + Core::pathToUtf8(userThemesDir) + ": " + error.message();
+}
+
 auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
     try
     {
-        auto tbl = toml::parse_file(path.string());
+        auto tbl = toml::parse_file(Core::pathToUtf8(path));
 
         ThemeInfo info;
         info.path = path;
-        info.id = path.stem().string(); // filename without extension
+        info.id = Core::pathToUtf8(path.stem()); // filename without extension
 
         // Read meta section. Index through node_view, which is null-safe: table::get() returns
         // nullptr for a missing key, and calling value_or() on that crashed at startup (#1095).
@@ -466,7 +756,7 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
+        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
         return std::nullopt;
     }
 }
@@ -475,18 +765,18 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 {
     try
     {
-        ColorScheme scheme = schemeFromTable(toml::parse_file(path.string()));
-        spdlog::info("Loaded theme: {} from {}", scheme.name, path.string());
+        ColorScheme scheme = schemeFromTable(toml::parse_file(Core::pathToUtf8(path)));
+        spdlog::info("Loaded theme: {} from {}", scheme.name, Core::pathToUtf8(path));
         return scheme;
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
+        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
         return std::nullopt;
     }
     catch (const std::exception& ex)
     {
-        spdlog::error("Failed to load theme {}: {}", path.string(), ex.what());
+        spdlog::error("Failed to load theme {}: {}", Core::pathToUtf8(path), ex.what());
         return std::nullopt;
     }
 }

@@ -2,33 +2,40 @@ name: CI
 
 on:
   push:
-    branches: [main, 'dev/**']
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main, 'dev/**']
-  merge_group:
+    branches: [main, 'release/**']
   schedule:
-    # Run weekly on Sundays at 09:00 UTC
+    # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
+    # touch; files unchanged since a clean run are skipped, #1785), Linux and Windows release
+    # builds (no longer run on every push to main, #1406). A red nightly opens or updates
+    # main-health.yml's single `ci-red-main` issue, and the tidy jobs' summaries count findings by check.
+    - cron: '0 6 * * 1-6'
+    # Sundays at 09:00 UTC: the same full run plus the unity build, with clang-tidy's per-file result
+    # cache ignored, so every file is analyzed from scratch once a week (#1785). Sunday is left out
+    # of the nightly cron above, which would otherwise run the full checks twice that day.
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
-# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
-# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# Pushes to main or a release/* branch get one group per commit and are never cancelled, so
+# back-to-back merges each get a complete run and a regression is blamed on the commit that caused
+# it (#1187). A run on any other ref (a PR, a manual run off another branch) still cancels the run
+# it supersedes.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
   LLVM_VERSION: '23'
-  LLVM_SEMVER_VERSION: '23.1.2'
+  LLVM_SEMVER_VERSION: '23.1.3'
   # IWYU tracks LLVM's major version via its own "clang_<N>" branches, but a branch ref is
   # mutable -- pin to the exact commit this branch pointed to instead, matching every other
   # SHA-pinned dependency/action in this repo. Verified compatible with LLVM 23 directly: this
-  # is the tip of upstream's clang_23 branch, whose own "[ci] Pin to LLVM 23 for clang_23 branch"
-  # commit (cced1904e983) confirms the branch's intent. To update: check
+  # is the tip of upstream's clang_23 branch, and its own commit message ("[ci] Pin to LLVM 23
+  # for clang_23 branch") confirms the branch's intent. To update: check
   # https://github.com/include-what-you-use/include-what-you-use/commits/clang_23 for a newer
   # commit, review the diff, then update this value.
-  IWYU_COMMIT_SHA: '889a219c6eaefede6c0dd9dbd8779cf5fa3519e3'
+  IWYU_COMMIT_SHA: 'c9cbc836a1af631610266c53cf1671b1671a0fdc'
 
 permissions: {}
 
@@ -46,12 +53,7 @@ jobs:
     steps:
       - name: Detect docs-only and platform-only pull request changes
         id: filter
-        # merge_group is included: dorny/paths-filter natively supports it (it uses the
-        # merge_group event's own base/head commits when `base`/`ref` are left unset), and
-        # without this, docs_only always defaulted to "false" for merge_group runs below,
-        # so a docs-only PR entering the merge queue still ran the full (and, for
-        # static-analysis, ~9-minute) build/lint matrix.
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
           # With predicate-quantifier=every a FILE matches a filter only if it matches all of the
@@ -71,12 +73,17 @@ jobs:
               - '!.github/pull_request_template.md'
               - '!.github/PULL_REQUEST_TEMPLATE/**'
               - '!LICENSE'
+            # Only a platform's .cpp files are its own. Its headers can be compiled into the other
+            # OS's build: the shared test binary includes about 20 header-only Linux parsers
+            # (test_LinuxOsInfo.cpp and others in COMMON_TEST_SOURCES), and Linux builds the Windows
+            # *Math.h headers (WINDOWS_MATH_TEST_SOURCES). So a header change runs both OSes' builds,
+            # or a break in the other OS's compile would only show on main (#2130).
             outside_linux_platform:
               - '**'
-              - '!src/Platform/Linux/**'
+              - '!src/Platform/Linux/**/*.cpp'
             outside_windows_platform:
               - '**'
-              - '!src/Platform/Windows/**'
+              - '!src/Platform/Windows/**/*.cpp'
 
       - name: Normalize outputs
         id: set_output
@@ -86,12 +93,11 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Shared by both the pull_request (non-bot-PR) and merge_group branches below --
-          # steps.filter only actually ran (see its own `if:`) for those two event types.
+          # steps.filter only ran (see its own `if:`) for pull_request events.
           emit_platform_outputs() {
             # A set's "only" output is true when no changed file lies outside it (see the filter
             # step). paths-filter reports 'false' for a filter no file matched, and an empty
-            # change set can't occur for a pull request or merge group.
+            # change set can't occur for a pull request.
             if [[ "${{ steps.filter.outputs.outside_docs }}" = 'false' ]]; then
               echo "docs_only=true" >> "$GITHUB_OUTPUT"
             else
@@ -119,19 +125,23 @@ jobs:
             else
               emit_platform_outputs
             fi
-          elif [[ "${{ github.event_name }}" = 'merge_group' ]]; then
-            emit_platform_outputs
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "linux_only=false" >> "$GITHUB_OUTPUT"
             echo "windows_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Linux debug build and test, plus the Linux clang-tidy run (#2047), the same way as Windows
+  # below: clang-tidy runs after the tests on the tree this job configured, so it reuses its LLVM
+  # setup, configure and generated headers instead of a separate job doing them all again. PRs
+  # check changed files only, the nightly schedule and manual runs everything, and push to main
+  # or a release/* branch never (the PR already checked the same tree). The nightly only runs
+  # clang-tidy here (no build). "CI Success" gates on the tidy-outcome output; skipped for
+  # docs-only and Windows-only changes, whose Linux file selection would be empty anyway.
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      github.event_name != 'schedule' &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -140,16 +150,18 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: debug
+      build: ${{ github.event_name != 'schedule' }}
+      clang_tidy: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) }}
 
   # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
   # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
-  # at release time (#1134). Linux only on PRs: it runs in parallel with the longer Windows debug
-  # and static-analysis jobs, so it adds runner minutes but no wall-clock time. It also builds
+  # at release time (#1134). Linux only on PRs: it runs in parallel with the debug jobs (each with
+  # its clang-tidy run), so it adds runner minutes but little or no wall-clock time. It also builds
   # the benchmark target (build only), the one PR job that does.
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -162,11 +174,16 @@ jobs:
       # benchmark build fails here rather than on main (#1348).
       build_benchmarks: true
 
+  # Windows debug build and test, plus the Windows clang-tidy run (#1875): one job, so the LLVM
+  # restore, configure-check seed, configure and FetchContent restore happen once per PR head
+  # instead of twice. clang-tidy runs after the tests (PRs check changed files only, the nightly
+  # schedule and manual runs everything), never on push to main or a release/* branch (the PR
+  # already checked the same tree). The nightly only runs clang-tidy here: it builds Windows
+  # release instead.
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      github.event_name != 'schedule' &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -175,14 +192,15 @@ jobs:
     with:
       os: windows-2025
       build_type: debug
+      build: ${{ github.event_name != 'schedule' }}
+      clang_tidy: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) }}
 
-  # Windows release (~9 min) runs after merge -- on push to main/dev/** -- plus the weekly schedule
-  # and manual runs, rather than on every PR, to keep PR runner usage down; Linux release above
-  # covers the PR gate (#1134).
+  # Windows release (~12 min) runs nightly and on manual runs, not on every PR or every push to
+  # main (#1134, #1406); Linux release above covers the PR gate and every push.
   build-windows-release:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -196,7 +214,9 @@ jobs:
   # and unity builds break on file-local name clashes that normal builds never see (#1134).
   build-linux-unity:
     needs: [detect-docs-only]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0') ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       checks: write
@@ -216,143 +236,64 @@ jobs:
       - name: Audit markdown links
         run: ./tools/md-link-audit.sh
 
-  static-analysis:
-    needs: [detect-docs-only]
-    # Runs on pull_request and merge_group (the actual PR/merge-queue gate -- #833) plus the
-    # existing schedule/workflow_dispatch coverage, skipping docs-only changes for both event
-    # types (detect-docs-only computes docs_only for merge_group too, not just pull_request).
-    # Deliberately excludes push to main specifically: static-analysis.yml already runs this
-    # identical job on every push to main (but not to dev/**, which this workflow also triggers
-    # on and static-analysis.yml does not cover), so excluding all pushes here would leave
-    # dev/** pushes with no clang-tidy coverage at all.
-    if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name != 'push' || github.ref != 'refs/heads/main')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-clang-tidy: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: linux-tidy-llvm${{ env.LLVM_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
-
-      - name: Build GLAD
-        run: cmake --build --preset debug --target glad_gl_core_33
-
-      - name: Run clang-tidy
-        shell: bash
-        run: |
-          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
-          test "${PIPESTATUS[0]}" -eq 0
-
-      - name: Upload clang-tidy results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: clang-tidy-results
-          path: clang-tidy-output.txt
-          retention-days: 14
-
-  # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
+  # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
-  # without failing anything. Same event rules as static-analysis (push to main is covered by
-  # static-analysis.yml), and also skipped when every change is Linux-only.
+  # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
+  # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
+  # as before: skipped on push to main or a release/* branch, for docs-only changes and when every
+  # change is Linux-only.
+  # always(): a failed or cancelled build-windows-debug must fail this check, not skip it (a
+  # skipped required check counts as passing).
   static-analysis-windows:
     name: Static Analysis (Windows)
-    needs: [detect-docs-only]
+    needs: [detect-docs-only, build-windows-debug]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
+      always() &&
+      needs.detect-docs-only.result == 'success' &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/'))) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
-    runs-on: windows-2025
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      LLVM_ROOT: C:\Program Files\LLVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Windows LLVM
-        uses: ./.github/actions/setup-windows-llvm
-        with:
-          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Configure
-        shell: pwsh
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
-
-      - name: Build GLAD
-        shell: pwsh
-        run: cmake --build --preset win-debug --target glad_gl_core_33
-
-      - name: Run clang-tidy (Windows)
-        shell: pwsh
+      - name: Report the clang-tidy (Windows) result
+        env:
+          JOB_RESULT: ${{ needs.build-windows-debug.result }}
+          TIDY_MODE: ${{ needs.build-windows-debug.outputs.tidy-mode }}
+          TIDY_OUTCOME: ${{ needs.build-windows-debug.outputs.tidy-outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          pwsh -File tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
-          exit $LASTEXITCODE
-
-      - name: Upload clang-tidy results (Windows)
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: clang-tidy-results-windows
-          path: clang-tidy-windows-output.txt
-          retention-days: 14
+          where="the \"Run clang-tidy (Windows)\" step of build-windows-debug / Build & Test (windows-2025 debug), ${RUN_URL}"
+          if [[ "$TIDY_OUTCOME" == 'success' ]]; then
+            echo "✅ clang-tidy (Windows) passed (${TIDY_MODE} files)."
+            exit 0
+          fi
+          if [[ "$TIDY_MODE" == 'none' ]]; then
+            echo "✅ No translation unit affected by this change; clang-tidy (Windows) skipped."
+            exit 0
+          fi
+          if [[ "$TIDY_OUTCOME" == 'failure' ]]; then
+            msg="clang-tidy (Windows) found problems: see ${where}, and its job summary."
+          else
+            msg="clang-tidy (Windows) did not run (build-windows-debug: ${JOB_RESULT:-not run}, clang-tidy step: ${TIDY_OUTCOME:-not reached}); see ${RUN_URL}."
+          fi
+          echo "::error title=Static Analysis (Windows)::${msg}"
+          echo "## Static Analysis (Windows)" >> "$GITHUB_STEP_SUMMARY"
+          echo "❌ ${msg}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   include-analysis:
     needs: [detect-docs-only, build-linux-debug]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Dispatch-only, so the cap never delays a pull request. 45 was the job's normal duration, not
+    # headroom (#2798): 31 minutes on a normal runner (debug build 12, IWYU 17) and over 55 on a
+    # slow one (build 20, IWYU 24+ with a quarter of the translation units still to go), where two
+    # runs hit the cap. tools/iwyu.sh already runs nproc IWYU jobs. A job that hits the cap reports
+    # "cancelled", as a manual cancel does; the summary step flags a cut-off IWYU run so its
+    # partial report is not read as complete.
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -410,19 +351,22 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-iwyu-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure (debug preset)
         run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
@@ -431,13 +375,24 @@ jobs:
         run: cmake --build --preset debug
 
       - name: Run include-what-you-use
+        id: iwyu
         run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
 
       - name: Add IWYU summary to workflow summary
         if: always()
+        env:
+          IWYU_OUTCOME: ${{ steps.iwyu.outcome }}
         run: |
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # A cancelled IWYU step (the job's timeout-minutes cap, or a manual cancel) stops where
+          # IWYU did, so this report and the artifact below are partial (#2798).
+          if [[ "$IWYU_OUTCOME" == "cancelled" ]]; then
+            echo "::warning title=include-analysis::Run include-what-you-use was cancelled before it finished (the job's timeout-minutes cap, or a manual cancel); the IWYU report is partial."
+            echo "⚠️ **Status:** IWYU was cancelled before it finished (the job's timeout-minutes cap, or a manual cancel), so this report and the artifact are partial" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [[ ! -f iwyu-output.txt ]] || [[ ! -s iwyu-output.txt ]]; then
             echo "⚠️ **Status:** No IWYU output file generated" >> $GITHUB_STEP_SUMMARY
@@ -486,28 +441,34 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 Full report available in artifacts (retention: 14 days)" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Full report available in artifacts (retention: 5 days)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "💡 **Tip:** IWYU suggestions are advisory and context-dependent. Review each suggestion before applying." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload IWYU results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: iwyu-results
           path: iwyu-output.txt
-          retention-days: 14
+          retention-days: 5
 
-  # Advisory asan-ubsan run on PRs — non-blocking; promotes awareness of memory/UB issues
-  # before they reach main.  Promoted to blocking in sanitizers.yml on push to main.
-  asan-ubsan-advisory:
+  # Blocking ASan+UBSan run on PRs (#1406). It used to be advisory (`|| true` plus
+  # continue-on-error), so a PR could merge with a sanitizer finding and only the push-to-main run
+  # in sanitizers.yml failed -- after the fact, where nothing gated on it (#1541). It is now one of
+  # CI Success's needs, and sanitizers.yml no longer repeats it on every push (nightly in
+  # heavy-checks.yml and on manual dispatch instead).
+  asan-ubsan:
+    name: ASan+UBSan
     needs: [detect-docs-only]
     if: >-
       github.event_name == 'pull_request' &&
       needs.detect-docs-only.outputs.docs_only != 'true'
-    continue-on-error: true
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45, not 30: a PR into release/X.Y restores main's ccache, which matches little of the release
+    # branch's sources, so its build runs near cold. Backport #2862 took 28 minutes and backport
+    # #2820 was cancelled three times at 30 with one test left; main's PRs take 15 to 21.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -524,19 +485,24 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
-          key: linux-asan-ubsan-advisory-llvm${{ env.LLVM_VERSION }}
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
+          # Same key as sanitizers.yml's asan-ubsan job, so this PR-only job restores the cache
+          # main's runs save (it never saves one itself).
+          key: linux-asan-ubsan-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
         run: cmake --preset asan-ubsan -DPython3_EXECUTABLE="$(which python)"
@@ -544,29 +510,49 @@ jobs:
       - name: Build
         run: cmake --build --preset asan-ubsan
 
-      - name: Test (advisory — failure annotates but does not block)
+      - name: Test
+        env:
+          # The D-Bus fake suites must run under the sanitizers, not skip (#2133).
+          TASKSMACK_REQUIRE_SDBUS: '1'
         run: |
+          set +e
           ctest --preset asan-ubsan -j "$(nproc)" --output-on-failure --timeout 120 \
-            2>&1 | tee asan-ubsan-output.txt || true
-          echo "## ASan+UBSan Advisory" >> "$GITHUB_STEP_SUMMARY"
-          if grep -qE "ERROR:|runtime error:|SUMMARY:" asan-ubsan-output.txt; then
-            echo "⚠️ **Status:** Issues detected (advisory — does not block merge)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "✅ **Status:** No sanitizer issues detected" >> "$GITHUB_STEP_SUMMARY"
+            2>&1 | tee asan-ubsan-output.txt
+          ctest_exit=${PIPESTATUS[0]}
+          set -e
+          echo "## ASan+UBSan" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$ctest_exit" -ne 0 ]]; then
+            echo "❌ **Status:** tests failed under ASan+UBSan (ctest exit $ctest_exit)" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              # Diagnostic only: under pipefail, head closing early (SIGPIPE, 141) or no match (1)
+              # must not end the step before it reports ctest's own exit status.
+              grep -E "runtime error:|ERROR: AddressSanitizer|SUMMARY:|\*\*\*Failed|\(Failed\)" asan-ubsan-output.txt | head -30 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            grep -m 10 -E "runtime error:|ERROR: AddressSanitizer" asan-ubsan-output.txt | while IFS= read -r finding; do
+              echo "::error title=ASan+UBSan::${finding//%/%25}"
+            done || true
+            exit "$ctest_exit"
           fi
+          echo "✅ **Status:** all tests passed under ASan+UBSan" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sanitizer output
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: asan-ubsan-advisory
+          name: asan-ubsan
           path: asan-ubsan-output.txt
-          retention-days: 7
+          retention-days: 5
 
   # ── Gate job ────────────────────────────────────────────────────────────────
   # A single required check for branch protection.  All required jobs must succeed
   # for this job to pass, giving a single status check to configure in branch settings.
-  # Uses `always()` so the gate always runs even when upstream jobs are skipped.
+  # Uses `always()` so the gate always runs even when upstream jobs are skipped or cancelled.
+  # Never change that to `!cancelled()`: a skipped required check counts as passing, so a
+  # cancelled run would then look green. A cancelled job therefore still fails the gate, but the
+  # first step says plainly that it was a cancellation (superseded push or a manual stop), not a
+  # code failure, so nobody goes looking for a bug that isn't there.
   ci-success:
     name: CI Success
     if: always()
@@ -578,19 +564,47 @@ jobs:
       - build-windows-release
       - build-linux-unity
       - docs-hygiene
-      - static-analysis
       - static-analysis-windows
+      - asan-ubsan
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
+      # Both steps use always(): when the run itself was cancelled a step's default success()
+      # condition can be false, which would skip the check and leave the gate green.
+      - name: Report cancelled jobs
+        if: always()
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          cancelled="$(jq -r 'to_entries[] | select(.value.result == "cancelled") | .key' <<<"$NEEDS_JSON")"
+          failed="$(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS_JSON")"
+          if [[ -z "$cancelled" ]]; then
+            exit 0
+          fi
+          list="$(paste -sd, - <<<"$cancelled" | sed 's/,/, /g')"
+          if [[ -z "$failed" ]]; then
+            msg="CANCELLED, not a code failure: ${list} did not finish (superseded by a newer push or stopped by hand). Re-run the workflow if this head still needs a result."
+          else
+            msg="Cancelled: ${list}. Other jobs also FAILED; see the next step for the real failures."
+          fi
+          echo "::error title=CI cancelled::${msg}"
+          {
+            echo "## CI Success: cancelled"
+            echo ""
+            echo "${msg}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Keep going: the next step lists every job's result and fails the gate.
+
       - name: Check all required jobs passed
+        if: always()
         env:
           DETECT_RESULT:  ${{ needs.detect-docs-only.result }}
           DOCS_ONLY:      ${{ needs.detect-docs-only.outputs.docs_only }}
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
           EVENT_NAME:     ${{ github.event_name }}
+          SCHEDULE:       ${{ github.event.schedule }}
           REF:            ${{ github.ref }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
@@ -598,8 +612,11 @@ jobs:
           WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
           LINUX_UNITY_RESULT:     ${{ needs.build-linux-unity.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
-          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
+          LINUX_TIDY_MODE:    ${{ needs.build-linux-debug.outputs.tidy-mode }}
+          LINUX_TIDY_OUTCOME: ${{ needs.build-linux-debug.outputs.tidy-outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           STATIC_ANALYSIS_WINDOWS_RESULT: ${{ needs.static-analysis-windows.result }}
+          ASAN_UBSAN_RESULT: ${{ needs.asan-ubsan.result }}
         run: |
           failed=false
 
@@ -635,29 +652,46 @@ jobs:
             failed=true
           fi
 
-          # Windows release runs on push, schedule and workflow_dispatch only (skipped on PRs and
-          # merge_group by design).
-          if [[ "$EVENT_NAME" == 'push' || "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+          # Windows release runs on schedule and workflow_dispatch only (skipped on PRs and pushes
+          # by design, #1406).
+          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
               failed=true
             fi
           fi
 
-          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+          if [[ ("$EVENT_NAME" == 'schedule' && "$SCHEDULE" == '0 9 * * 0') || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$LINUX_UNITY_RESULT" != 'success' ]]; then
               echo "❌ Linux unity build did not succeed: $LINUX_UNITY_RESULT"
               failed=true
             fi
           fi
 
-          # static-analysis is skipped on push to main specifically (static-analysis.yml
-          # already covers that) and on docs-only PRs (both intentional); require success
-          # everywhere else, including push to dev/** branches.
-          if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
-            if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
-                  ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
-              echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"
+          # clang-tidy (Linux) runs inside build-linux-debug (#2047) on every event but push to
+          # main or a release/* branch (the PR already checked the same tree; the nightly runs
+          # every file). Its step is
+          # continue-on-error, so the job result can't show a finding: read the step's outcome.
+          # Like the job, it skips docs-only and Windows-only changes; a selection with no
+          # translation unit ('none') passes. Anything else -- a finding, or a tidy step that
+          # never ran because the job failed or was cancelled first -- fails the gate.
+          if [[ "$EVENT_NAME" != 'push' || ("$REF" != 'refs/heads/main' && "$REF" != refs/heads/release/*) ]]; then
+            if [[ "$LINUX_RESULT" == 'skipped' && ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true') ]]; then
+              echo "✅ clang-tidy (Linux) skipped: no Linux-relevant change."
+            elif [[ "$LINUX_TIDY_OUTCOME" == 'success' ]]; then
+              echo "✅ clang-tidy (Linux) passed (${LINUX_TIDY_MODE} files)."
+            elif [[ "$LINUX_TIDY_MODE" == 'none' ]]; then
+              echo "✅ No translation unit affected by this change; clang-tidy (Linux) skipped."
+            else
+              if [[ "$LINUX_TIDY_OUTCOME" == 'failure' ]]; then
+                msg="clang-tidy (Linux) found problems: see the \"Run clang-tidy (Linux)\" step of build-linux-debug / Build & Test (ubuntu-24.04 debug), and its job summary, ${RUN_URL}"
+              else
+                msg="clang-tidy (Linux) did not run (build-linux-debug: ${LINUX_RESULT:-not run}, clang-tidy step: ${LINUX_TIDY_OUTCOME:-not reached}); see ${RUN_URL}"
+              fi
+              echo "::error title=clang-tidy (Linux)::${msg}"
+              echo "## clang-tidy (Linux)" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ ${msg}" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ ${msg}"
               failed=true
             fi
             # The Windows job is also skipped, intentionally, when every change is Linux-only.
@@ -665,6 +699,16 @@ jobs:
                   ! ("$STATIC_ANALYSIS_WINDOWS_RESULT" == 'skipped' &&
                      ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
               echo "❌ Windows static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_WINDOWS_RESULT"
+              failed=true
+            fi
+          fi
+
+          # ASan+UBSan runs on pull requests only (push/schedule/dispatch get it from sanitizers.yml
+          # and heavy-checks.yml), and is skipped for docs-only PRs.
+          if [[ "$EVENT_NAME" == 'pull_request' ]]; then
+            if [[ "$ASAN_UBSAN_RESULT" != 'success' &&
+                  ! ("$ASAN_UBSAN_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
+              echo "❌ ASan+UBSan did not succeed or have an intentional skip: $ASAN_UBSAN_RESULT"
               failed=true
             fi
           fi

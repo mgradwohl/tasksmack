@@ -6,7 +6,8 @@
 
 #include <chrono>
 #include <cstdint>
-#include <vector>
+#include <span>
+#include <string>
 
 namespace App::MemorySection
 {
@@ -28,7 +29,6 @@ struct RenderContext
     // so the chart keeps its reduced points until it changes (HistoryChartConfig::dataGeneration, #1139).
     std::uint64_t chartDataGeneration = 0;
     double maxHistorySeconds = 60.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
     std::chrono::milliseconds refreshInterval{1000};
 
@@ -50,11 +50,19 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
                           float deltaTimeSeconds,
                           std::chrono::milliseconds refreshInterval);
 
+/// The value strip's Commit entry (#1627): "35.0 GiB / 73.7 GiB (48%)", commit charge against the
+/// commit limit; empty when the snapshot has no commit charge.
+[[nodiscard]] std::string commitStripValue(const Domain::SystemSnapshot& snap);
+
+/// The Commit entry's hover text: what it measures, and the peak commit when the platform keeps one
+/// (Windows); empty when the snapshot has no commit charge.
+[[nodiscard]] std::string commitStripTooltip(const Domain::SystemSnapshot& snap);
+
 /// Render the Memory & Swap history chart with now bars
 /// @param ctx Render context with model, history config, and smoothed values
 /// @param timestamps History timestamps from system model
 /// @param nowSeconds Current time in seconds
 /// @param nowBarColumns Number of columns for now bars layout
-void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns);
+void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps, double nowSeconds, int nowBarColumns);
 
 } // namespace App::MemorySection

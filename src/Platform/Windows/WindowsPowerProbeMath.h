@@ -1,8 +1,15 @@
 #pragma once
 
+#include "Platform/BatteryCapacity.h"
 #include "Platform/PowerTypes.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace Platform
 {
@@ -107,6 +114,136 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
     }
 
     return counters;
+}
+
+/// What the battery device reported (WindowsBatteryInfo.h's BatteryInfo), as
+/// powerCapabilitiesFrom() takes it, so that stays includable without windows.h.
+struct BatteryDetailsReported
+{
+    bool found = false; ///< A battery answered IOCTL_BATTERY_QUERY_INFORMATION
+    double designWh = 0.0;
+    double fullChargeWh = 0.0;
+    int healthPercent = -1;
+    std::uint64_t cycleCount = 0; ///< 0 is the driver's "no cycle counter"
+    bool hasTechnology = false;
+};
+
+/// WindowsPowerProbe's capabilities from one GetSystemPowerStatus snapshot and the battery device's
+/// latest answer. Recomputed on every read (#2413), so a battery inserted after start, or details the
+/// device first answered late, are offered. With no battery (hasBatteryFromFlag() false, the
+/// NotPresent state, #2408) nothing is offered, whatever the device last said. GetSystemPowerStatus
+/// has no live capacity, rate or voltage, and each device fact is offered only when the battery gave
+/// it: relative-unit capacities are not Wh, and a cycle count of 0 is the driver's "no counter".
+[[nodiscard]] inline PowerCapabilities powerCapabilitiesFrom(std::uint8_t batteryFlag,
+                                                             std::uint8_t batteryLifePercent,
+                                                             std::uint32_t batteryLifeTimeSec,
+                                                             const BatteryDetailsReported& details) noexcept
+{
+    constexpr std::uint32_t BATTERY_LIFE_TIME_UNKNOWN = 0xFFFFFFFFU;
+
+    PowerCapabilities caps;
+    caps.hasBattery = hasBatteryFromFlag(batteryFlag);
+    if (!caps.hasBattery)
+    {
+        return caps;
+    }
+    caps.hasChargePercent = batteryLifePercent <= 100;
+    caps.hasTimeEstimates = batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN;
+    caps.hasDesignCapacity = details.found && details.designWh > 0.0 && details.fullChargeWh > 0.0;
+    caps.hasHealthPercent = details.found && details.healthPercent >= 0;
+    caps.hasCycleCount = details.found && details.cycleCount > 0;
+    caps.hasTechnology = details.found && details.hasTechnology;
+    return caps;
+}
+
+// ---- Battery details (#1523): IOCTL_BATTERY_QUERY_INFORMATION's BATTERY_INFORMATION fields ----
+
+/// BATTERY_CAPACITY_RELATIVE (poclass.h): the capacities are relative units, not mWh.
+inline constexpr std::uint32_t BATTERY_CAPACITY_RELATIVE_BIT = 0x40000000U;
+/// BATTERY_UNKNOWN_CAPACITY (poclass.h)
+inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
+
+/// BATTERY_INFORMATION::Chemistry, four bytes and not NUL-terminated, as the text Linux's
+/// power_supply "technology" uses ("LION" -> "Li-ion"), ignoring case. An unlisted code is returned
+/// as reported; one that is blank or not printable ASCII is empty (unknown).
+[[nodiscard]] inline std::string chemistryText(std::string_view code)
+{
+    while (!code.empty() && (code.back() == '\0' || code.back() == ' '))
+    {
+        code.remove_suffix(1);
+    }
+    if (code.empty() || !std::ranges::all_of(code, [](char c) { return c > ' ' && c < 0x7F; }))
+    {
+        return {};
+    }
+    std::string upper(code);
+    std::ranges::transform(upper, upper.begin(), [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; });
+    constexpr std::array<std::array<std::string_view, 2>, 8> NAMES{{{"LION", "Li-ion"},
+                                                                    {"LI-I", "Li-ion"},
+                                                                    {"LIP", "Li-poly"},
+                                                                    {"PBAC", "Lead-acid"},
+                                                                    {"NICD", "NiCd"},
+                                                                    {"NIMH", "NiMH"},
+                                                                    {"NIZN", "NiZn"},
+                                                                    {"RAM", "Alkaline-manganese"}}};
+    const auto known = std::ranges::find(NAMES, std::string_view(upper), [](const auto& name) { return name[0]; });
+    return known != NAMES.end() ? std::string((*known)[1]) : std::string(code);
+}
+
+/// A BATTERY_INFORMATION capacity (mWh) as Wh; 0 when it is not a known mWh figure: relative units
+/// (whose scale is the driver's own), zero or BATTERY_UNKNOWN_CAPACITY.
+[[nodiscard]] constexpr double capacityWh(std::uint32_t capacity, std::uint32_t capabilities) noexcept
+{
+    const bool known = (capabilities & BATTERY_CAPACITY_RELATIVE_BIT) == 0 && capacity != BATTERY_CAPACITY_UNKNOWN_VALUE;
+    return known ? static_cast<double>(capacity) / 1000.0 : 0.0;
+}
+
+/// One battery's BATTERY_INFORMATION capacity fields, as combineBatteryCapacities() takes them.
+struct BatteryCapacityReading
+{
+    std::uint32_t designed = 0;     ///< DesignedCapacity
+    std::uint32_t fullCharged = 0;  ///< FullChargedCapacity
+    std::uint32_t capabilities = 0; ///< Capabilities (BATTERY_CAPACITY_RELATIVE_BIT)
+    std::uint64_t cycleCount = 0;   ///< CycleCount; 0 is "no cycle counter"
+};
+
+/// Every battery's capacity facts together.
+struct BatteryCapacityTotals
+{
+    bool relativeCapacity = false; ///< Every battery reports relative units: no Wh figure is known
+    double designWh = 0.0;
+    double fullChargeWh = 0.0;
+    int healthPercent = -1;
+    std::uint64_t cycleCount = 0;
+};
+
+/// The batteries' capacities combined (#2151), so they describe the same packs as
+/// GetSystemPowerStatus's charge percent, which covers every battery, by the rule Linux uses too
+/// (combinePackCapacities(), #2409): design and full-charge Wh are the sums over the packs that report
+/// both as known mWh, and health comes from those sums. Relative-unit packs are skipped. The cycle
+/// count is the most-cycled pack's.
+[[nodiscard]] inline BatteryCapacityTotals combineBatteryCapacities(std::span<const BatteryCapacityReading> batteries)
+{
+    BatteryCapacityTotals totals;
+    totals.relativeCapacity = !batteries.empty();
+    std::vector<PackCapacity> capacities;
+    capacities.reserve(batteries.size());
+    for (const BatteryCapacityReading& battery : batteries)
+    {
+        totals.cycleCount = std::max(totals.cycleCount, battery.cycleCount);
+        if ((battery.capabilities & BATTERY_CAPACITY_RELATIVE_BIT) != 0)
+        {
+            continue;
+        }
+        totals.relativeCapacity = false;
+        capacities.push_back(PackCapacity{.fullCharge = capacityWh(battery.fullCharged, battery.capabilities),
+                                          .design = capacityWh(battery.designed, battery.capabilities)});
+    }
+    const CombinedCapacity combined = combinePackCapacities(capacities);
+    totals.designWh = combined.design;
+    totals.fullChargeWh = combined.fullCharge;
+    totals.healthPercent = combined.healthPercent;
+    return totals;
 }
 
 } // namespace Platform

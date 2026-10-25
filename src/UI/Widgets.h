@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <span>
 
 namespace UI::Widgets
@@ -43,6 +44,18 @@ inline void keepCurrentWindowInViewport()
     {
         ImGui::SetWindowPos(clamped);
     }
+}
+
+/// Centre the next dialog on the main viewport's work area (#1539): when it appears, and again whenever
+/// that work area has changed size since the last frame (@p lastWorkSize, the caller's, holds it), so a
+/// resize while it is open brings it back to the middle rather than leaving it off to one side. Call
+/// it before BeginPopupModal() every frame the dialog may be drawn.
+inline void centerNextDialog(ImVec2& lastWorkSize)
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const bool resized = viewport->WorkSize.x != lastWorkSize.x || viewport->WorkSize.y != lastWorkSize.y;
+    lastWorkSize = viewport->WorkSize;
+    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), resized ? ImGuiCond_Always : ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
 }
 
 /// Minimum height in pixels for bar fill rendering.
@@ -195,6 +208,41 @@ inline void drawVerticalBarWithValue(const char* id,
         ImGui::TextUnformatted(tooltip);
         ImGui::EndTooltip();
     }
+}
+
+/// Spacing of the hatch drawUnavailableVerticalBar() draws, in ems.
+inline constexpr float UNAVAILABLE_BAR_HATCH_SPACING_EM = 0.5F;
+
+/// Draw a vertical bar that has no reading (N/A): its track hatched, with no fill and none of the
+/// MIN_BAR_FILL_HEIGHT baseline drawVerticalBarWithValue() gives a zero, so it can't read as a measured
+/// 0 (#1918). Takes the same box as drawVerticalBarWithValue() without text. @p hatchColor is the
+/// theme's unavailableHatch, held to 3:1 on the track and the card round it (#1935).
+inline void drawUnavailableVerticalBar(const char* id, float barHeight, float barWidth, const ImVec4& hatchColor)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 barPos = ImGui::GetCursorScreenPos();
+    const ImVec2 barEnd(barPos.x + barWidth, barPos.y + barHeight);
+
+    ImGui::InvisibleButton(id, ImVec2(barWidth, barHeight));
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(barPos, barEnd, ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding);
+
+    // Diagonal lines, bottom-left to top-right, clipped to the track; in the theme's muted hatch colour
+    // (text_disabled, raised to 3:1 where it is fainter, #1935), as the other "no reading" marks are muted.
+    const float spacing = std::max(1.0F, ImGui::GetFontSize() * UNAVAILABLE_BAR_HATCH_SPACING_EM);
+    const float rise = std::max(0.0F, barHeight);
+    const int lineCount = static_cast<int>(std::ceil((std::max(0.0F, barWidth) + rise) / spacing));
+    const ImU32 hatchCol = ImGui::ColorConvertFloat4ToU32(hatchColor);
+    dl->PushClipRect(barPos, barEnd, true);
+    for (int line = 0; line <= lineCount; ++line)
+    {
+        const float x = barPos.x - rise + (static_cast<float>(line) * spacing);
+        dl->AddLine(ImVec2(x, barEnd.y), ImVec2(x + rise, barPos.y), hatchCol);
+    }
+    dl->PopClipRect();
+
+    dl->AddRect(barPos, barEnd, ImGui::GetColorU32(ImGuiCol_Border), style.FrameRounding);
 }
 
 inline void drawVerticalBarWithValue(const char* id,

@@ -4,7 +4,9 @@
 // unit-tested directly, without going through dlopen()/the NVML mock library. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
+#include "Platform/AsciiTrim.h"
 #include "Platform/Linux/PciRuntimePm.h"
+#include "Platform/NVMLEngineUtilization.h"
 #include "Platform/NVMLRunningProcesses.h"
 #include "Platform/NVMLTypes.h"
 
@@ -43,6 +45,13 @@ using NVMLRunningProcesses::queryRunningProcesses;
 using NVMLRunningProcesses::RunningProcess;
 using NVMLRunningProcesses::RunningProcessesSymbol;
 using NVMLRunningProcesses::VALUE_NOT_AVAILABLE;
+
+// The video-engine helpers live in the platform-neutral Platform/NVMLEngineUtilization.h so the
+// Windows probe shares them (#1485); re-exported here so the Linux probe and its tests are unchanged.
+using NVMLEngineUtilization::EngineUtilizationFn;
+using NVMLEngineUtilization::EngineUtilizationReading;
+using NVMLEngineUtilization::engineUtilizationSupported;
+using NVMLEngineUtilization::readEngineUtilization;
 
 // Trailing-return spelling: clang-format 22 and 23 disagree on the space in `const char* (*)(...)` (#916).
 using StatusStringFn = auto (*)(Platform::NVML::nvmlReturn_t) -> const char*;
@@ -127,16 +136,6 @@ struct NvidiaProcGpuInfo
 /// yet (printed with '?' placeholders, "GPU-????????-...") is treated as absent.
 [[nodiscard]] inline NvidiaProcGpuInfo parseNvidiaProcGpuInformation(std::string_view text)
 {
-    const auto trim = [](std::string_view value)
-    {
-        constexpr std::string_view WHITESPACE = " \t\r\n";
-        const auto first = value.find_first_not_of(WHITESPACE);
-        if (first == std::string_view::npos)
-        {
-            return std::string_view{};
-        }
-        return value.substr(first, value.find_last_not_of(WHITESPACE) - first + 1);
-    };
     NvidiaProcGpuInfo info;
     while (!text.empty())
     {
@@ -148,8 +147,8 @@ struct NvidiaProcGpuInfo
         {
             continue;
         }
-        const auto key = trim(line.substr(0, colon));
-        const auto value = trim(line.substr(colon + 1));
+        const auto key = Platform::trimAscii(line.substr(0, colon));
+        const auto value = Platform::trimAscii(line.substr(colon + 1));
         if (key == "Model")
         {
             info.model = std::string(value);

@@ -2,6 +2,7 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/PDHGPUProbeImpl.h"
+#include "Platform/Windows/PerfProviderApartment.h"
 
 #include <spdlog/spdlog.h>
 
@@ -44,6 +45,8 @@ PDHGPUProbe::PDHGPUProbe(Role role) : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->role = role;
     m_Impl->initialize();
+    // Initialising connected PDH, which may have loaded perf providers holding COM objects (#1898).
+    Windows::keepComForPerfProviders();
 }
 
 PDHGPUProbe::PDHGPUProbe(std::unique_ptr<Impl> impl) : m_Impl(std::move(impl))
@@ -81,8 +84,8 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         return m_Impl->freshCachedResults();
     }
 
-    // Collect query data BEFORE checking warm-up to avoid race with refreshCounters()
-    // This ensures we always have fresh data when warmedUp is checked
+    // Collect query data BEFORE checking warm-up: the warm-up call's collect is the baseline sample
+    // PDH needs before the next collect can produce rates
     PDH_STATUS status = m_Impl->pdhCollectQueryData(m_Impl->query);
     if (status != ERROR_SUCCESS)
     {
@@ -401,6 +404,11 @@ GPUCapabilities PDHGPUProbe::capabilities() const
         const bool perProcess = m_Impl->role == Role::Process;
         caps.hasPerProcessMetrics = perProcess;
         caps.hasPerProcessUtilization = perProcess; // GPU Engine counters: the busiest engine per process
+        // The same counters are per adapter LUID and cover every WDDM/MCDM adapter, so an NPU's or
+        // compute accelerator's engines and memory come with them (WindowsGPUProbe tags those
+        // samples with the adapter's kind, #1799): per-process NPU data and utilization (#1973).
+        caps.hasPerProcessNpuMetrics = perProcess;
+        caps.hasPerProcessNpuUtilization = perProcess;
         caps.hasEngineUtilization = true;
         caps.supportsMultiGPU = true;
     }

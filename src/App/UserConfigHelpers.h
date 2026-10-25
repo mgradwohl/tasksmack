@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/Numeric.h"
+#include "Platform/ConfigDirectory.h"
 
 #include <toml++/toml.hpp>
 
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,23 +76,11 @@ inline void loadAndNarrowIntWithClamp(
     }
 }
 
-/// Validates a candidate config directory path derived from user/environment input.
-/// Returns true if the path is safe to use as a config directory:
-///   - must be absolute after lexical normalization
-///   - must not contain any ".." traversal components after normalization
-///
-/// This is a purely lexical check (no filesystem access). Callers that need
-/// symlink-safe validation should resolve the path with weakly_canonical() first
-/// and then call this function on the result.
-[[nodiscard]] inline auto isValidConfigDir(const std::filesystem::path& candidate) -> bool
-{
-    const auto normalized = candidate.lexically_normal();
-    if (!normalized.is_absolute())
-    {
-        return false;
-    }
-    return !std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
-}
+// The config directory rules (#1891) live in Platform/ConfigDirectory.h, shared with the Linux path
+// provider so user themes and config.toml are in one directory (#2438).
+using Platform::ConfigDirectory::ConfigDirectoryChoice;
+using Platform::ConfigDirectory::configDirectoryFrom;
+using Platform::ConfigDirectory::isValidConfigDir;
 
 /// Three-way merge of TaskSmack's own settings into `document`, the config file as it is now
 /// (#1122). `base` holds TaskSmack's keys as it last read or wrote them, `mine` as they are now;

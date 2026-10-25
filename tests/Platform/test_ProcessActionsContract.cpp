@@ -61,6 +61,19 @@ TEST(ProcessActionsContractTest, FactoryConstructs)
     ASSERT_NE(actions, nullptr);
 }
 
+TEST(ProcessActionsContractTest, DumpsFromSnapshotOnlyWhereThePlatformTakesOne)
+{
+    // How long a dump pauses the process, which the confirm and result say (#2241): Windows takes a
+    // snapshot first (PssCaptureSnapshot, #2001); Linux's gcore stops it for the whole write.
+    const auto actions = makeProcessActions();
+    ASSERT_NE(actions, nullptr);
+#ifdef _WIN32
+    EXPECT_TRUE(actions->actionCapabilities().dumpsFromSnapshot);
+#else
+    EXPECT_FALSE(actions->actionCapabilities().dumpsFromSnapshot);
+#endif
+}
+
 TEST(ProcessActionsContractTest, NonExistentPidFailsGracefully)
 {
     const auto actions = makeProcessActions();
@@ -158,6 +171,14 @@ TEST(ProcessActionsContractTest, RefusesWhenThePidBelongsToADifferentProcess)
         const auto resume = actions->resume(reused);
         EXPECT_FALSE(resume.success);
         EXPECT_NE(resume.errorMessage.find("different process"), std::string::npos) << resume.errorMessage;
+    }
+
+    if (actions->actionCapabilities().canSetAffinity && !own.cpuAffinity.empty())
+    {
+        // Its own affinity, so even a wrongly accepted call would change nothing (#1881).
+        const auto affinity = actions->setAffinity(reused, own.cpuAffinity);
+        EXPECT_FALSE(affinity.success);
+        EXPECT_NE(affinity.errorMessage.find("different process"), std::string::npos) << affinity.errorMessage;
     }
 }
 

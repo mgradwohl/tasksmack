@@ -5,7 +5,9 @@
 #include "PathService.h"
 #include "Window.h"
 
+#include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -25,6 +27,11 @@ struct ApplicationSpecification
     /// Platform/Domain/Core/UI/App layering: Core must not depend on App. Only has an effect
     /// combined with VideoBackend::isWayland() at window-creation time (see #745).
     bool ForceNativeDecorationsOnWayland = false;
+    /// No window, no OpenGL context and no SDL video subsystem: an event hub and clock for code that
+    /// drives the App layer's panels itself, without run() (#880: the headless PGO UI training
+    /// driver, training/). getWindow() and run() throw in this mode; hasWindow() says which it is.
+    /// The shipping app never sets it.
+    bool Headless = false;
 };
 
 class Application
@@ -79,7 +86,17 @@ class Application
 
     [[nodiscard]] Window& getWindow() const
     {
+        if (!m_Window)
+        {
+            throw std::logic_error("Application has no window (ApplicationSpecification::Headless)");
+        }
         return *m_Window;
+    }
+
+    /// False only for a headless application (ApplicationSpecification::Headless, #880).
+    [[nodiscard]] bool hasWindow() const noexcept
+    {
+        return m_Window != nullptr;
     }
 
     [[nodiscard]] const PathService& paths() const noexcept
@@ -117,7 +134,8 @@ class Application
     // calling signalWindowGeometryChanged(), which has no other observable effect (it's
     // noexcept and only consumed internally by run()'s idle-sleep gate). Same pattern as
     // NVMLGPUProbeTestAccessor in Platform/Windows/NVMLGPUProbe.h. Production code never
-    // touches this -- only test_Application.cpp uses it.
+    // touches this -- only test_Application.cpp uses it. It also reads the idle-wait seam
+    // (m_IdleWaitCount, m_LastIdleWaitWoke, m_LastIdleWaitPolledEvent; #1446, #1450).
     friend struct ApplicationTestAccessor;
 
     /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
@@ -146,6 +164,13 @@ class Application
     /// only when geometry was in flux last frame, avoiding ~20 wasted renders after
     /// the user releases the mouse while the window is stationary.
     bool m_WindowGeometryChangedThisFrame = false;
+    /// Read-only test seam (#1446), read through ApplicationTestAccessor: how many idle waits run()
+    /// has done, whether the last one was woken by an event, and whether it timed out but the poll
+    /// after it found an event already queued (#1450; both false for a plain timeout). Written only
+    /// where the idle wait returns, on the loop thread; nothing in the app reads them.
+    std::uint64_t m_IdleWaitCount = 0;
+    bool m_LastIdleWaitWoke = false;
+    bool m_LastIdleWaitPolledEvent = false;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic. Detailed

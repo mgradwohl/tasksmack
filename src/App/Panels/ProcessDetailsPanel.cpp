@@ -1,206 +1,142 @@
 #include "ProcessDetailsPanel.h"
 
 #include "App/Panel.h"
+#include "App/PanelPlatforms.h"
+#include "App/Panels/ProcessArchitectureNote.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
-#include "App/TabLabel.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
+#include "Domain/ProcessServices.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Platform/IProcessActions.h"
-#include "ProcessActionConfirm.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessSecurity.h"
+#include "Platform/IServiceProbe.h"
+#include "ProcessActionsBlock.h"
+#include "ProcessActionsView.h"
+#include "ProcessConnectionsView.h"
+#include "ProcessCrashHistoryView.h"
+#include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
-#include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "ProcessDetailsPanel_ResourceHelpers.h" // NOLINT(misc-include-cleaner) - used by the _WIN32 GDI code, which Linux analysis doesn't see
+#include "ProcessEnvironmentView.h"
+#include "ProcessModulesView.h"
+#include "ProcessOpenFilesView.h"
+#include "ProcessOverviewCard.h"
+#include "ProcessPriorityView.h"
+#include "ProcessRowSelection.h"
+#include "ProcessSecurityView.h"
+#include "ProcessSmoothedUsage.h"
+#include "ServicesView.h"
 #include "UI/ChartWidgets.h"
-#include "UI/DialogMetrics.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/InlineText.h"
-#include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
 #include <imgui.h>
-#include <implot.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
-
-namespace
-{
-
-using UI::Widgets::computeAlpha;
-using UI::Widgets::formatAxisBytesPerSec;
-using UI::Widgets::formatAxisLocalized;
-using UI::Widgets::formatAxisWatts;
-using UI::Widgets::frameTimeAxis;
-using UI::Widgets::hoveredIndexFromPlotX;
-using UI::Widgets::initializeOrSmooth;
-using UI::Widgets::makeTimeAxisConfig;
-using UI::Widgets::NowBar;
-using UI::Widgets::NowBarList;
-using UI::Widgets::plotLineWithFill;
-using UI::Widgets::plotSeries;
-using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::SeriesRole;
-using UI::Widgets::seriesStyle;
-
-// The NowBar columns each Process Details tab's charts reserve: the most bars any chart on that tab
-// has, so charts stacked on one tab are the same width and their time axes line up (#1206), without
-// a tab of one- or two-bar charts keeping empty columns for another tab's widest chart.
-//
-// Overview (CPU, Memory, Power, Resources): Resources has four on Windows (with GDI Objects); with a
-// column of its own it was narrower than the CPU and Memory charts above it, and its time axis shorter.
-#ifdef _WIN32
-constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 4;
-#else
-constexpr size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 3;
-#endif
-// Network and I/O: Read and Write, Sent and Received.
-constexpr size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
-// GPU: Utilization, and Memory, one bar each.
-constexpr size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
-
-// The newest @p count samples of a history, viewed in place (#1018: this was a per-frame copy).
-[[nodiscard]] auto tailSpan(std::span<const double> data, std::size_t count) -> std::span<const double>
-{
-    return UI::Widgets::tailAlignedSpan(data, count).values;
-}
-
-// ImPlot series counts are int; keep conversion explicit + checked.
-
-// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
-constexpr const char* CPU_TOTAL_LABEL = "Total";
-constexpr const char* CPU_USER_LABEL = "User";
-constexpr const char* CPU_SYSTEM_LABEL = "System";
-// The resident and peak pair carry the Processes table's column names, so the chart and the table
-// call one quantity by one name (#1273).
-constexpr const char* MEM_USED_LABEL = "Memory";
-constexpr const char* MEM_SHARED_LABEL = "Shared";
-// A series on a chart's right-hand axis ends in " →", pointing at it (setupSecondaryRateAxis(), #1206); in
-// its value-strip entry and tooltip rows the mark follows the value (SECONDARY_AXIS_MARK, #1300).
-constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
-// A peak is named "Peak " plus the series it tracks: this chart's series is "Memory", as the
-// System chart's "Peak Used" tracks "Used" (#1342). The Processes table keeps its short "Peak Mem"
-// header for width, as it does "Mem %".
-constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
-constexpr const char* THREADS_LABEL = "Threads";
-constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
-#ifdef _WIN32
-constexpr const char* GDI_LABEL = "GDI Objects";
-#endif
-constexpr const char* IO_READ_LABEL = "Read";
-constexpr const char* IO_WRITE_LABEL = "Write";
-constexpr const char* NET_SENT_LABEL = "Sent";
-constexpr const char* NET_RECV_LABEL = "Received";
-constexpr const char* POWER_LABEL = "Power";
-constexpr const char* GPU_UTIL_LABEL = "Utilization";
-constexpr const char* GPU_MEMORY_LABEL = "Memory";
-
-/// Percent of system RAM per byte for this process's memory figures, from its own resident size and
-/// resident percent (memoryPercent = memoryBytes / totalSystemMemoryBytes * 100). 0 when either is
-/// zero, so every percent derived from it is 0 rather than a division by zero.
-[[nodiscard]] double memoryPercentPerByte(const Domain::ProcessSnapshot& snapshot)
-{
-    const double usedPercent = std::clamp(snapshot.memoryPercent, 0.0, 100.0);
-    if (usedPercent <= 0.0 || snapshot.memoryBytes == 0)
-    {
-        return 0.0;
-    }
-    return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
-}
-
-using App::ProcessActionConfirm::dangerButtonFills;
-
-/// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
-/// of NaN is unspecified, so it must not reach formatIntLocalized().
-[[nodiscard]] std::string formatCountOrNA(double value)
-{
-    return UI::Widgets::formatSampleOrNA(value, [](double v) { return UI::Format::formatIntLocalized(std::llround(v)); });
-}
-
-} // namespace
 
 namespace App
 {
 
-// Import priority slider constants and helpers selectively
-using Detail::getNiceColor;
-using Detail::getNiceFromPosition;
-using Detail::getNicePosition;
-using Detail::NICE_MAX;
-using Detail::NICE_MIN;
-using Detail::NICE_RANGE;
-using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
-using Detail::PRIORITY_GRADIENT_SEGMENTS;
-using Detail::ProcessSeries;
-
 // Constructor (inside App namespace)
-ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()))
+ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
+    : ProcessDetailsPanel(std::move(readers.actions),
+                          std::move(readers.environment),
+                          std::move(readers.connections),
+                          std::move(readers.modules),
+                          std::move(readers.security),
+                          std::move(readers.openFiles))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
-    : Panel("Process Details"),
-      m_ProcessActions(std::move(processActions)),
-      m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
+    : ProcessDetailsPanel(std::move(processActions), nullptr, nullptr)
 {}
 
-/// Captures all computed layout values in one place for helper methods
-struct ProcessDetailsPanel::PrioritySliderContext
-{
-    ImDrawList* drawList = nullptr;
-    ImVec2 cursorStart;         // Screen position where badge area starts
-    ImVec2 sliderMin;           // Top-left of slider bar (screen coords)
-    ImVec2 sliderMax;           // Bottom-right of slider bar (screen coords)
-    float sliderLocalX = 0.0F;  // Slider X position in window-local coords (for cursor positioning)
-    float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
-    int32_t niceValue = 0;      // Current nice value
-    const ImGuiStyle* style = nullptr;
-    ImVec4 priorityHighColor;              // Theme color for high-priority end
-    ImVec4 priorityNormalColor;            // Theme color for normal priority
-    ImVec4 priorityLowColor;               // Theme color for low-priority end
-    Detail::PrioritySliderMetrics metrics; // Font-derived pixel geometry for this frame
-};
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader)
+    : ProcessDetailsPanel(std::move(processActions), std::move(environmentReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader)
+    : ProcessDetailsPanel(std::move(processActions), std::move(environmentReader), std::move(connectionsReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader)
+    : ProcessDetailsPanel(
+          std::move(processActions), std::move(environmentReader), std::move(connectionsReader), std::move(modulesReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                                         std::unique_ptr<Platform::IProcessSecurityReader> securityReader,
+                                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader)
+    : Panel("Process Details"),
+      m_ProcessActions(std::move(processActions)),
+      m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{}),
+      m_EnvironmentReader(std::move(environmentReader)),
+      m_HasEnvironment(m_EnvironmentReader != nullptr && m_EnvironmentReader->hasEnvironment()),
+      m_ConnectionsReader(std::move(connectionsReader)),
+      m_HasConnections(m_ConnectionsReader != nullptr && m_ConnectionsReader->hasConnections()),
+      m_ModulesReader(std::move(modulesReader)),
+      m_HasModules(m_ModulesReader != nullptr && m_ModulesReader->hasModules()),
+      m_SecurityReader(std::move(securityReader)),
+      m_HasSecurity(m_SecurityReader != nullptr && m_SecurityReader->hasSecurity()),
+      m_OpenFilesReader(std::move(openFilesReader)),
+      m_HasOpenFiles(m_OpenFilesReader != nullptr && m_OpenFilesReader->hasOpenFiles())
+{}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
 {
     m_LastDeltaSeconds = deltaTime;
 
     // Fade out action result message
-    if (m_ActionResultTimer > 0.0F)
-    {
-        m_ActionResultTimer -= deltaTime;
-        if (m_ActionResultTimer <= 0.0F)
-        {
-            m_LastActionResult = {};
-        }
-    }
+    m_ActionsView.tick(deltaTime);
+
+    // The Services section wants the service list kept current only while it was drawn open on the last
+    // frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
+    m_ServicesSectionOpen = std::exchange(m_ServicesDrawnOpen, false);
 
     if (m_SelectedPid == -1)
     {
@@ -217,7 +153,7 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     bool recorded = false;
     Detail::takeSamples(samples,
                         m_SelectedPid,
-                        m_SelectedUniqueKey,
+                        m_SelectedStartTicks,
                         m_SampleIntake,
                         [this, &recorded](const Domain::ProcessSample& sample, bool gapBefore)
                         {
@@ -253,8 +189,38 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
 
     if (m_HasSnapshot && !m_ProcessExited)
     {
-        updateSmoothedUsage(*m_CachedSnapshot, deltaTime);
+        m_SmoothedUsage.update(*m_CachedSnapshot, m_CachedRateReadings, deltaTime, m_RefreshInterval);
     }
+
+    // The Environment section's on-demand read (#179): here in the update path, never in render(), and
+    // only when the section was drawn open last frame and a read is due (ProcessEnvironmentView::update()),
+    // for the selected process alone, identified by PID and start time so a reused PID is not read.
+    const bool canReadEnvironment = m_HasEnvironment && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_EnvironmentView.update(canReadEnvironment ? m_EnvironmentReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Connections section's on-demand read (#799), on the same terms.
+    const bool canReadConnections = m_HasConnections && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_ConnectionsView.update(canReadConnections ? m_ConnectionsReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Modules section's on-demand read (#802), on the same terms.
+    const bool canReadModules = m_HasModules && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_ModulesView.update(canReadModules ? m_ModulesReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Security section's on-demand read (#1526), on the same terms.
+    const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_SecurityView.update(canReadSecurity ? m_SecurityReader.get() : nullptr, selectedTarget(), deltaTime));
+    // The Open files section's on-demand read (#183), on the same terms.
+    const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Priority card's I/O priority read (#2734): on its worker, started here and never from render(),
+    // and only when the control was drawn last frame (ProcessIoPriorityView::updateRead()).
+    static_cast<void>(
+        m_PriorityView.updateReads(m_ActionCapabilities.canSetIoPriority ? m_ProcessActions.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Recent crashes line's shared cache (#1675): read on a worker only while the line was drawn and
+    // the cache is stale, whatever the selection; matching it to the process is done per read, not here.
+    static_cast<void>(m_CrashHistoryView.update(deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -275,38 +241,131 @@ const Domain::ProcessSnapshot& ProcessDetailsPanel::cachedSnapshot() const
     return m_CachedSnapshot ? *m_CachedSnapshot : empty;
 }
 
-void ProcessDetailsPanel::render(bool* open)
+ProcessChartContext ProcessDetailsPanel::chartContext() const
 {
-    // Keyed on the name shown (empty for none): the label is rebuilt only when it changes (#1326), and
-    // shows all of the name, "#"s included, under the fixed ID "###ProcessDetails" (#1244).
-    const std::string_view processName =
-        (m_HasSnapshot && (m_SelectedPid != -1)) ? std::string_view{cachedSnapshot().name} : std::string_view{};
-    const std::string& windowLabel = m_WindowLabel.get(
-        processName, [](std::string_view name) { return TabLabel::makeProcessDetailsWindowLabel(ICON_FA_CIRCLE_INFO, name); });
+    return ProcessChartContext{
+        .history = &m_History,
+        .smoothed = &m_SmoothedUsage,
+        .snapshot = &cachedSnapshot(),
+        .historyGeneration = m_HistoryGeneration,
+        .maxHistorySeconds = m_MaxHistorySeconds,
+        .peakMemoryBytes = m_PeakMemoryBytes,
+        .rateReadings = m_CachedRateReadings,
+        .hasSharedMemory = m_ProcessCapabilities.hasSharedMemory,
+        .hasPowerUsage = m_ProcessCapabilities.hasPowerUsage,
+        .hasPageFaults = m_ProcessCapabilities.hasPageFaults,
+        .hasPrivateBytes = m_ProcessCapabilities.hasPrivateBytes,
+        .hasSwapBytes = m_ProcessCapabilities.hasSwapBytes,
+    };
+}
 
-    if (!ImGui::Begin(windowLabel.c_str(), open))
+void ProcessDetailsPanel::renderServicesSection(const Domain::ProcessSnapshot& proc)
+{
+    if (proc.services.empty() || !ImGui::CollapsingHeader(ICON_FA_GEARS "  Services###ProcessServices"))
     {
-        ImGui::End();
         return;
     }
-
-    renderContent();
-
-    ImGui::End();
+    // Open: ShellLayer keeps the service list current (#1880), whose display names and states are shown
+    // beside the names when it lists them (Windows; on Linux until systemd's list is read, the names alone).
+    m_ServicesDrawnOpen = true;
+    std::shared_ptr<const Domain::ServicePublication> list;
+    if (m_ServiceModel != nullptr)
+    {
+        list = m_ServiceModel->publication();
+        if (!Domain::ProcessServices::isCurrent(*list, std::chrono::steady_clock::now()))
+        {
+            list.reset();
+        }
+    }
+    const auto& scheme = UI::Theme::get().scheme();
+    // One line per service ("a.service, b.service" on a platform that hosts several in one process).
+    std::string_view rest = proc.services;
+    while (!rest.empty())
+    {
+        const std::size_t comma = rest.find(", ");
+        const std::string name(rest.substr(0, comma));
+        rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 2);
+        ImGui::PushID(name.c_str());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(name.c_str());
+        if (const Platform::ServiceInfo* service = (list != nullptr) ? Domain::findService(*list, name) : nullptr; service != nullptr)
+        {
+            if (!service->displayName.empty())
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(scheme.textMuted, "%s", service->displayName.c_str());
+            }
+            ImGui::SameLine();
+            const std::string_view state = serviceStateLabel(service->state);
+            ImGui::PushStyleColor(ImGuiCol_Text, serviceStateColor(service->state, scheme));
+            ImGui::TextUnformatted(state.data(), state.data() + state.size());
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(ICON_FA_ARROW_RIGHT "  Show in Services"))
+        {
+            Core::ShowServiceEvent show(name);
+            if (m_RaiseEvent)
+            {
+                m_RaiseEvent(show);
+            }
+            else
+            {
+                Core::Application::get().raiseEvent(show);
+            }
+        }
+        ImGui::SetItemTooltip("Select %s in the Services tab", name.c_str());
+        ImGui::PopID();
+    }
 }
 
 const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !cachedSnapshot().name.empty())
     {
-        return cachedSnapshot().name;
+        if (m_SelectionCount < 2)
+        {
+            return cachedSnapshot().name;
+        }
+        // Several processes selected, often some of one name: the PID says which one this is (#1926).
+        ProcessRowSelection::formatDetailsTabText(m_TabLabelWithPid, cachedSnapshot().name, m_SelectedPid, m_SelectionCount);
+        return m_TabLabelWithPid;
     }
     // Use static string to avoid heap allocation every frame for the default label
-    static const std::string defaultLabel{"Select a process"};
+    static const std::string defaultLabel{NO_SELECTION_TAB_TEXT};
     return defaultLabel;
 }
 
 void ProcessDetailsPanel::renderContent()
+{
+    // F9 (#170), taken now so it can only act on this frame: by the time renderPane() draws the tabs,
+    // every reason not to (no selection, not on show, exited, not yet sampled) has returned early.
+    const bool killRequested = m_KillShortcut.take();
+
+    // What the actions can do, as of this frame: not all of it is fixed at construction. Once the
+    // privileged helper connects (an "Authenticate and retry"), BrokeredProcessActions can set the
+    // Realtime I/O class, so the I/O slider gains its Realtime stops (#2407). A struct copy and an
+    // atomic read.
+    if (m_ProcessActions)
+    {
+        m_ActionCapabilities = m_ProcessActions->actionCapabilities();
+    }
+
+    renderPane(killRequested);
+
+    // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
+    // block's child is skipped while the Overview is scrolled so that it is out of view, which left
+    // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493). Submitted after
+    // the pane whatever it showed, the exited and empty states included: skipped there, a Kill confirm
+    // stayed pending and refused F9, a modal could be left on ImGui's popup stack, which turns off the
+    // shortcuts, and a dump's progress (its only Cancel) and result went with it (#2117). Once the pane no longer shows a running process,
+    // the dialogs are given no live target, so a confirm or the affinity dialog closes unconfirmed, while a dump in flight keeps its
+    // progress and then shows its result.
+    const Platform::ProcessTarget noTarget{.pid = -1, .startTimeTicks = 0};
+    m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess() ? selectedTarget() : noTarget);
+}
+
+void ProcessDetailsPanel::renderPane(bool killRequested)
 {
     if (m_SelectedPid == -1)
     {
@@ -323,8 +382,8 @@ void ProcessDetailsPanel::renderContent()
 
     if (m_ProcessExited)
     {
-        // Replaces the whole pane, Actions tab included: nothing here may act on a PID that no
-        // longer belongs to this process.
+        // Replaces the whole pane, the Overview's Actions block included: nothing here may act on a
+        // PID that no longer belongs to this process.
         const std::string detail = std::format(
             "{} (PID {}) is no longer running. Select another process in the Processes tab.", cachedSnapshot().name, m_SelectedPid);
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process exited", detail.c_str());
@@ -340,6 +399,13 @@ void ProcessDetailsPanel::renderContent()
         return;
     }
 
+    // F9: the Actions block's Kill confirm for the process shown, its target captured now; the
+    // Overview, which holds the block (#1493), is brought forward below.
+    if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
+    {
+        m_RequestedTab = SelectOverride::DetailsTab::Overview;
+    }
+
     // Tabs for different info sections
     // Add padding inside tabs for better spacing, scaled like the style it overrides (#971)
     const float tabPaddingScale = UI::Theme::get().styleScale();
@@ -348,117 +414,101 @@ void ProcessDetailsPanel::renderContent()
 
     if (ImGui::BeginTabBar("DetailsTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
-        // 1. Overview
+        // 1. Overview, with the Actions block beside Identity and Runtime (#1493). Brought forward by
+        // F9, so its Kill confirm shows over the block it belongs to (#170).
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
-        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
+        // The test hook's TASKSMACK_DETAILS_TAB may ask for another tab instead (#1559).
+        const std::optional<SelectOverride::DetailsTab> requestedTab = std::exchange(m_RequestedTab, std::nullopt);
+        const auto tabFlags = [&requestedTab](const SelectOverride::DetailsTab tab) -> ImGuiTabItemFlags
+        {
+            return requestedTab == tab ? ImGuiTabItemFlags_SetSelected : 0;
+        };
+        const ImGuiTabItemFlags overviewFlags = tabFlags(SelectOverride::DetailsTab::Overview);
+        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview", nullptr, overviewFlags))
         {
             {
                 const UI::Widgets::TabContentScope content("##OverviewContent");
-                // The charts on this tab share its height (#959). The Identity/Runtime block above
-                // them is inside the scope, so it is counted as non-plot height.
+                // The charts on this tab share its height (#959). The Identity/Runtime/Actions row
+                // above them is inside the scope, so it is counted as non-plot height.
                 UI::Widgets::FillPlotLayout fill(m_OverviewFill);
                 // Its charts share their plot edges, with or without a right-hand axis (#1206).
                 const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
                 renderBasicInfo(cachedSnapshot());
-                ImGui::Separator();
-                renderResourceUsage(cachedSnapshot(), fill);
-                ImGui::Separator();
-                // Only where the platform measures it: Windows does not, and used to chart a
-                // fabricated figure (#1028).
-                if (m_ProcessCapabilities.hasPowerUsage)
+                // A section asked for (requestSection(), TASKSMACK_DEMO's section=, #2827) is drawn open
+                // this frame through ImGui's own open state, as a click on its header would: SetNextItemOpen()
+                // applies to the very next item, each view's CollapsingHeader(), so it is set only for a
+                // section the view will draw. Taken here, so a request made while another tab shows waits.
+                const std::optional<SelectOverride::DetailsSection> section = std::exchange(m_RequestedSection, std::nullopt);
+                const auto openIfRequested = [section](const SelectOverride::DetailsSection which, const bool drawn)
                 {
-                    renderPowerUsage(cachedSnapshot(), fill);
-                    ImGui::Separator();
+                    if (section == which && drawn)
+                    {
+                        ImGui::SetNextItemOpen(true);
+                    }
+                };
+                // Collapsed by default, and hidden where the platform cannot read environments (#179)
+                openIfRequested(SelectOverride::DetailsSection::Environment, m_HasEnvironment);
+                m_EnvironmentView.render(m_HasEnvironment);
+                // Likewise collapsed by default, and hidden where the platform cannot list sockets (#799)
+                openIfRequested(SelectOverride::DetailsSection::Connections, m_HasConnections);
+                m_ConnectionsView.render(m_HasConnections);
+                // Likewise collapsed by default; hidden only in synthetic runs (#802)
+                openIfRequested(SelectOverride::DetailsSection::Modules, m_HasModules);
+                m_ModulesView.render(m_HasModules);
+                // Likewise collapsed by default; hidden only in synthetic runs (#1526)
+                openIfRequested(SelectOverride::DetailsSection::Security, m_HasSecurity);
+                m_SecurityView.render(m_HasSecurity);
+                // Likewise collapsed by default; hidden only in synthetic runs (#183). Opened on request, its
+                // scan starts too, as its Scan button does: the section lists nothing until a scan.
+                openIfRequested(SelectOverride::DetailsSection::OpenFiles, m_HasOpenFiles);
+                m_OpenFilesView.render(m_HasOpenFiles);
+                if (section == SelectOverride::DetailsSection::OpenFiles && m_HasOpenFiles)
+                {
+                    m_OpenFilesView.requestScan();
                 }
-                renderThreadAndFaultHistory(fill);
+                // Likewise collapsed by default; only for a process that runs a service (#1886)
+                openIfRequested(SelectOverride::DetailsSection::Services, !cachedSnapshot().services.empty());
+                renderServicesSection(cachedSnapshot());
+                ImGui::Separator();
+                // Ensure smoothing is initialized even if render is called before an update tick
+                if (!m_SmoothedUsage.initialized)
+                {
+                    m_SmoothedUsage.update(cachedSnapshot(), m_CachedRateReadings, m_LastDeltaSeconds, m_RefreshInterval);
+                }
+                // The CPU, Memory, Power and Resources charts are ProcessDetailsCharts' (#1179).
+                m_Charts.renderOverviewCharts(chartContext(), fill);
             }
             ImGui::EndTabItem();
         }
 
         // 2. GPU (always show, with message if data unavailable)
-        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
+        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU", nullptr, tabFlags(SelectOverride::DetailsTab::Gpu)))
         {
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
-                const auto& proc = cachedSnapshot();
-                const Detail::GpuTabContent gpuContent =
-                    Detail::gpuTabContent(m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
-                                          Detail::hasGpuUsageToShow(proc.gpuMemoryBytes,
-                                                                    proc.gpuUtilPercent,
-                                                                    !proc.gpuDevices.empty(),
-                                                                    m_History.series(ProcessSeries::GpuUtil),
-                                                                    m_History.series(ProcessSeries::GpuMemory)),
-                                          Detail::hasAnyReading(m_History.series(ProcessSeries::GpuUtil)) ||
-                                              Detail::hasAnyReading(m_History.series(ProcessSeries::GpuMemory)));
-                if (gpuContent == Detail::GpuTabContent::Unavailable)
-                {
-                    // Not "no usage": without per-process metrics none can be seen (#1210).
-                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
-                                                  "This system's GPU monitoring does not report GPU usage per process.");
-                }
-                else if (gpuContent == Detail::GpuTabContent::NoReadings)
-                {
-                    // Every retained read failed: nothing is known yet about this process's GPU use (#1210).
-                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU readings yet",
-                                                  "Reading this process's GPU usage has not succeeded yet.");
-                }
-                else if (gpuContent == Detail::GpuTabContent::NoUsage)
-                {
-                    // Only the retained history is looked at, so the text names that window (#1210);
-                    // rebuilt only when the window changes.
-                    if (m_NoGpuUsageDetail.empty())
-                    {
-                        m_NoGpuUsageDetail = Detail::noGpuUsageDetail(m_MaxHistorySeconds);
-                    }
-                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage", m_NoGpuUsageDetail.c_str());
-                }
-                else
-                {
-                    // The two history charts share the tab's height, like the other tabs' charts
-                    // (#959). The metrics table and per-GPU breakdown above them count as non-plot.
-                    UI::Widgets::FillPlotLayout fill(m_GpuFill);
-                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcGpuCharts"); // #1206
-                    renderGpuUsage(cachedSnapshot(), fill);
-                }
+                m_Charts.renderGpuTab(chartContext());
             }
             ImGui::EndTabItem();
         }
 
-        // 3. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
+        // 3. NPU, beside the GPU tab, only on a machine with an NPU or compute accelerator, like the
+        // machine view's NPU tab (#1869). The GPU tab is GPU-only.
+        if (m_HasAccelerator && ImGui::BeginTabItem(ICON_FA_BRAIN "  NPU", nullptr, tabFlags(SelectOverride::DetailsTab::Npu)))
+        {
+            {
+                const UI::Widgets::TabContentScope content("##NpuContent");
+                m_Charts.renderNpuTab(chartContext());
+            }
+            ImGui::EndTabItem();
+        }
+
+        // 4. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
         // process stays selected; an empty state stands in until there is data (#1210).
-        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O", nullptr, tabFlags(SelectOverride::DetailsTab::Network)))
         {
             {
                 const UI::Widgets::TabContentScope content("##NetworkContent");
-                // Readings only: every sample adds a point, a gap where there was no reading, so a
-                // history that is merely non-empty is not data (#1210).
-                if (!Detail::hasNetworkOrIoReadings(m_History.series(ProcessSeries::IoRead),
-                                                    m_History.series(ProcessSeries::IoWrite),
-                                                    m_History.series(ProcessSeries::NetSent),
-                                                    m_History.series(ProcessSeries::NetReceived)))
-                {
-                    UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  No network or disk I/O yet",
-                                                  "Disk and network rates for this process appear here once they have been sampled.");
-                }
-                else
-                {
-                    UI::Widgets::FillPlotLayout fill(m_NetworkFill);
-                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
-                    // Render I/O stats first (at the top)
-                    renderIoStats(fill);
-                    ImGui::Separator();
-                    renderNetworkStats(fill);
-                }
-            }
-            ImGui::EndTabItem();
-        }
-
-        // 4. Actions (last)
-        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
-        {
-            {
-                const UI::Widgets::TabContentScope content("##ActionsContent");
-                renderActions();
+                m_Charts.renderNetworkTab(chartContext());
             }
             ImGui::EndTabItem();
         }
@@ -485,7 +535,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ProcessSelectedEvent>(
         [this](Core::ProcessSelectedEvent& e)
         {
-            setSelectedPid(e.getPid(), e.getUniqueKey());
+            setSelectedPid(e.getPid(), e.getStartTimeTicks());
             return false; // Don't consume - other panels might care
         });
 
@@ -505,7 +555,6 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             // charts kept the old window's data and scale until then -- indefinitely for a process
             // that is no longer sampled (#1145).
             m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
-            m_NoGpuUsageDetail.clear(); // It names the window (#1210)
             if (!m_History.empty())
             {
                 m_History.trimToWindow(m_MaxHistorySeconds);
@@ -520,120 +569,39 @@ void ProcessDetailsPanel::setProcessCapabilities(const Platform::ProcessCapabili
     m_ProcessCapabilities = capabilities;
 }
 
-void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
+void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTimeTicks)
 {
-    // A different key under the same PID is a different process (the PID was reused), so it is a
-    // new selection and resets the pane like any other. An unknown key on either side is not a
-    // different process: re-selecting what is already shown must not wipe its history.
-    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, pid, uniqueKey))
+    // A different start time under the same PID is a different process (the PID was reused), so it is
+    // a new selection and resets the pane like any other. Re-selecting what is already shown must not
+    // wipe its history.
+    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedStartTicks, pid, startTimeTicks))
     {
-        if (m_SelectedUniqueKey == 0)
-        {
-            m_SelectedUniqueKey = uniqueKey;
-        }
         return;
     }
 
     m_SelectedPid = pid;
-    m_SelectedUniqueKey = uniqueKey;
+    m_SelectedStartTicks = startTimeTicks;
     m_History.clear();
     m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
     m_SampleIntake = {};
     m_CachedSnapshot.reset();
     m_HasSnapshot = false;
     m_ProcessExited = false;
-    m_ShowConfirmDialog = false;
-    m_LastActionResult = {};
-    m_SmoothedUsage = {};
+    m_ActionsView.onSelectionChanged();
+    m_SmoothedUsage.reset();
     m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
-    m_PriorityChanged = false;
-    m_PriorityNiceValue = 0;
-    m_PriorityError.clear(); // Clear priority error when switching processes
+    m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
+    m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
+    m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
+    m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
+    m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
+    m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
 
     if (pid != -1)
     {
         spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
     }
-}
-
-void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    const double targetCpu = UI::Format::clampPercent(snapshot.cpuPercent);
-    const double targetResident = Domain::Numeric::toDouble(snapshot.memoryBytes);
-    const double targetVirtual = Domain::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
-    const double targetCpuUser = UI::Format::clampPercent(snapshot.cpuUserPercent);
-    const double targetCpuSystem = UI::Format::clampPercent(snapshot.cpuSystemPercent);
-    const double targetThreads = Domain::Numeric::toDouble(snapshot.threadCount);
-    const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
-    const double targetPower = std::max(0.0, snapshot.powerWatts);
-    const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
-    const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
-    const double targetMemShared = Domain::Numeric::toDouble(snapshot.sharedBytes);
-
-    const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
-
-    m_SmoothedUsage.cpuPercent = UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuPercent, targetCpu, alpha, initialized));
-    m_SmoothedUsage.residentBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.residentBytes, targetResident, alpha, initialized));
-    m_SmoothedUsage.virtualBytes = initializeOrSmooth(m_SmoothedUsage.virtualBytes, targetVirtual, alpha, initialized);
-    m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
-    m_SmoothedUsage.cpuUserPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha, initialized));
-    m_SmoothedUsage.cpuSystemPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha, initialized));
-    m_SmoothedUsage.threadCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.threadCount, targetThreads, alpha, initialized));
-    m_SmoothedUsage.pageFaultsPerSec =
-        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha, initialized));
-    // Handle/FD count, I/O and network rates the probe could not read (#1110) aren't smoothed toward 0:
-    // their NowBars show N/A, as their lines show a gap, and the next reading starts afresh.
-    const auto smoothReading = [alpha, initialized](double& value, bool wasAvailable, bool available, double reading)
-    {
-        const auto next = Detail::smoothOptionalReading(
-            {.value = value, .available = wasAvailable}, available ? std::optional<double>(reading) : std::nullopt, alpha, initialized);
-        value = next.value;
-    };
-    smoothReading(m_SmoothedUsage.handleCount,
-                  m_SmoothedUsage.handleCountAvailable,
-                  snapshot.handleCountAvailable,
-                  Domain::Numeric::toDouble(snapshot.handleCount));
-    m_SmoothedUsage.handleCountAvailable = snapshot.handleCountAvailable;
-    // A rate the probe could not supply at all when the shown sample was taken is not a reading
-    // either (#1210); judged with that sample's own generation, as its history point was.
-    const bool ioReading = m_CachedRateReadings.io;
-    const bool networkReading = m_CachedRateReadings.network;
-    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioReadBytesPerSec);
-    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioWriteBytesPerSec);
-    m_SmoothedUsage.ioAvailable = ioReading;
-    smoothReading(m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netSentBytesPerSec);
-    smoothReading(m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netReceivedBytesPerSec);
-    m_SmoothedUsage.networkAvailable = networkReading;
-    m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
-    // GPU utilization and memory the GPU probe did not supply for the shown sample's generation are
-    // not readings either (#1210): not smoothed toward 0, so once support arrives the first real
-    // reading starts afresh rather than easing up from placeholder zeros.
-    const bool gpuUtilSupplied = m_CachedRateReadings.gpuUtilization;
-    const bool gpuMemSupplied = m_CachedRateReadings.gpuPerProcess;
-    smoothReading(m_SmoothedUsage.gpuUtilPercent, m_SmoothedUsage.gpuUtilAvailable, gpuUtilSupplied, targetGpuUtil);
-    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(m_SmoothedUsage.gpuUtilPercent);
-    m_SmoothedUsage.gpuUtilAvailable = gpuUtilSupplied;
-    smoothReading(m_SmoothedUsage.gpuMemoryBytes, m_SmoothedUsage.gpuMemoryAvailable, gpuMemSupplied, targetGpuMem);
-    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, m_SmoothedUsage.gpuMemoryBytes);
-    m_SmoothedUsage.gpuMemoryAvailable = gpuMemSupplied;
-    // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
-    // matching the gap in the line, and the next reading starts afresh (#1148).
-    const auto gdi = Detail::smoothOptionalReading(
-        {.value = m_SmoothedUsage.gdiObjectCount, .available = m_SmoothedUsage.gdiInitialized},
-        snapshot.gdiObjectCount.has_value() ? std::optional<double>(Domain::Numeric::toDouble(*snapshot.gdiObjectCount)) : std::nullopt,
-        alpha,
-        initialized);
-    m_SmoothedUsage.gdiObjectCount = gdi.value;
-    m_SmoothedUsage.gdiInitialized = gdi.available;
-    m_SmoothedUsage.memorySharedBytes =
-        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.memorySharedBytes, targetMemShared, alpha, initialized));
-    m_SmoothedUsage.memoryPercentPerByte = memoryPercentPerByte(snapshot);
-    m_SmoothedUsage.initialized = true;
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
@@ -643,9 +611,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Note: ImGui requires null-terminated const char*; .c_str() is the correct approach here.
     const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
     ImGui::TextWrapped("Command Line: %s", titleCommand);
+    // Beside the command line, which names the executable, rather than as a row of the Identity card:
+    // the card is full with a Publisher, and the line's value is wider than a card's (#1675).
+    m_CrashHistoryView.render(proc.name);
     ImGui::Spacing();
 
-    const auto computeLabelColumnWidth = []() -> float
+    const auto computeLabelColumnWidth = [] -> float
     {
         // Use std::to_array for automatic size deduction — no manual count to maintain.
         constexpr auto labels = std::to_array<const char*>({
@@ -661,16 +632,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Priority",
             "Publisher",
             "Type",
+            "Container",
+            "Affinity",
+            "Services",
+            "Architecture",
         });
 
-        float maxTextWidth = 0.0F;
-        for (const char* label : labels)
-        {
-            maxTextWidth = std::max(maxTextWidth, ImGui::CalcTextSize(label).x);
-        }
-
-        const ImGuiStyle& style = ImGui::GetStyle();
-        return maxTextWidth + (style.CellPadding.x * 2.0F) + 8.0F;
+        // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
+        // in place of a fixed 8px that stayed 8px at every font size and display density (#1200).
+        return UI::Widgets::measureLabelColumnWidth(labels) + (ImGui::GetStyle().CellPadding.x * 2.0F);
     };
 
     const float labelColWidth = computeLabelColumnWidth();
@@ -679,7 +649,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float halfWidth = (contentWidth - spacing) * 0.5F;
 
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
-    const float basePadding = ImGui::GetStyle().WindowPadding.y * 2.0F;
 
     auto rightAlignedText = [](std::string_view text, const ImVec4& color)
     {
@@ -700,11 +669,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view label;
         std::string_view value;
         ImVec4 color;
+        // Shown on hovering the value; else a clipped value's own text. The initializer keeps the rows that
+        // leave it out free of -Wmissing-designated-field-initializers.
+        std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
-    // At most six rows a table (Publisher and Type are optional), held in place.
+    // At most eight rows a table (Publisher, Affinity, Services, Type, Container and Architecture are optional), held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 6> rows{};
+        std::array<InfoRow, 8> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -736,6 +708,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
                 ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
                 rightAlignedText(row.value, row.color);
+                if (!row.tooltip.empty())
+                {
+                    ImGui::SetItemTooltip("%.*s", static_cast<int>(row.tooltip.size()), row.tooltip.data());
+                }
+                // A value wider than its column (a long affinity list, #1878) is clipped: its tooltip has it all.
+                else if (ImGui::CalcTextSize(row.value.data(), row.value.data() + row.value.size()).x > ImGui::GetColumnWidth())
+                {
+                    ImGui::SetItemTooltip("%.*s", static_cast<int>(row.value.size()), row.value.data());
+                }
             }
 
             ImGui::EndTable();
@@ -775,6 +756,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
         fresh.cpuTime = UI::Format::formatDuration(proc.cpuTimeSeconds);
         fresh.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
+        // The Processes table's Status column (Suspended, Efficiency Mode) joins the State it qualifies,
+        // as the Runtime card is full (#1878).
+        fresh.state = proc.displayState;
+        if (m_ProcessCapabilities.hasStatus && !proc.status.empty())
+        {
+            fresh.state += (fresh.state.empty() ? "" : " \xC2\xB7 ") + proc.status; // a middle dot
+        }
+        // An empty affinity was not read (another user's process), as the Affinity column says.
+        fresh.affinity = proc.cpuAffinity.empty() ? std::string("N/A") : UI::Format::formatCpuAffinity(proc.cpuAffinity.words());
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
         text = std::move(fresh);
@@ -788,18 +778,31 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "User",
                       .value = proc.user.empty() ? std::string_view{"-"} : std::string_view{proc.user},
                       .color = theme.scheme().textPrimary});
+    if (!proc.realUser.empty())
+    {
+        // A setuid program run by another user: User is who it runs as, this who started it (#2475).
+        identityRows.add({.label = "Started by", .value = proc.realUser, .color = theme.scheme().textPrimary});
+    }
     identityRows.add({.label = "Started", .value = text.started, .color = theme.scheme().textMuted});
     if (!proc.publisher.empty())
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
     }
-    const auto identityRowCount = static_cast<float>(identityRows.count);
-    const float leftHeight = (rowHeight * identityRowCount) + basePadding;
+    if (!proc.services.empty())
+    {
+        // The Processes table's Services column (#1886): the systemd service it runs under, on Linux.
+        identityRows.add({.label = "Services", .value = proc.services, .color = theme.scheme().textPrimary});
+    }
+    if (m_ProcessCapabilities.hasCpuAffinity)
+    {
+        // The Processes table's Affinity column (#1878); a long list is clipped, its tooltip in full.
+        identityRows.add({.label = "Affinity", .value = text.affinity, .color = theme.scheme().textPrimary});
+    }
 
     // Build runtime rows (conditionally include Type if available)
     InfoRows runtimeRows;
     // Same name as the table's State column (#1203)
-    runtimeRows.add({.label = "State", .value = proc.displayState, .color = processStateColor(proc.displayState, theme.scheme())});
+    runtimeRows.add({.label = "State", .value = text.state, .color = processStateColor(proc.displayState, theme.scheme())});
     runtimeRows.add({.label = "Threads", .value = text.threads, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});
@@ -809,13 +812,27 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // The same colour as the table's Type column (#1180)
         runtimeRows.add({.label = "Type", .value = proc.processType, .color = processTypeColor(proc.processType, theme.scheme())});
     }
-    const auto runtimeRowCount = static_cast<float>(runtimeRows.count);
-    const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
+    if (!proc.container.empty())
+    {
+        runtimeRows.add({.label = "Container", .value = proc.container, .color = theme.scheme().textMuted});
+    }
+    if (!proc.architecture.empty())
+    {
+        // The Processes table's Architecture column (#2394), with what emulation costs on hover.
+        runtimeRows.add({.label = "Architecture",
+                         .value = proc.architecture,
+                         .color = theme.scheme().textPrimary,
+                         .tooltip = ProcessArchitectureNote::architectureNote(proc.architecture)});
+    }
+    // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
+    // the two, so their edges line up -- or as tall as Actions or Priority beside them, if taller.
+    const auto tallerRowCount = static_cast<float>(std::max(identityRows.count, runtimeRows.count));
+    const float cardHeight = ProcessDetailsLayout::computeInfoCardHeight(tallerRowCount, rowHeight, ImGui::GetStyle().WindowPadding.y);
 
     // Each block is capped at a readable width instead of taking half the pane, so a label and its
     // value stay together however wide the window is (#925). The blocks pack to the left and the
     // remaining width is left empty.
-    auto blockWidthFor = [&](std::span<const InfoRow> rows) -> float
+    const auto blockWidthFor = [&](std::span<const InfoRow> rows) -> float
     {
         float widestValue = 0.0F;
         for (const auto& row : rows)
@@ -829,1908 +846,88 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float leftWidth = blockWidthFor(identityRows.view());
     const float rightWidth = blockWidthFor(runtimeRows.view());
 
+    // Actions and Priority: what can be done to this process? Two cards, each as wide as its content:
+    // on this row to the right of Runtime when the pane has room for all four, otherwise wrapped to a
+    // row below (#1789). Every card on a row takes the tallest one's height (the Actions and Priority
+    // cards' as last drawn), so their edges line up.
+    const bool hasControls = ProcessActionsBlock::hasAnyAction(m_ActionCapabilities);
+    ProcessDetailsLayout::TopRowLayout controlsLayout{};
+    float topRowHeight = cardHeight;
+    float controlsHeight = 0.0F;
+    if (hasControls)
+    {
+        const ProcessActionsBlock::Widths controlWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
+        controlsLayout = ProcessDetailsLayout::chooseTopRowLayout(
+            contentWidth, leftWidth + spacing + rightWidth, spacing, controlWidths.actionsCard(), controlWidths.priorityCard());
+        // Only the heights of the cards drawn this frame count: a stale one must not stretch the row.
+        const float actionsHeight = controlsLayout.actionsWidth > 0.0F ? m_ActionsCardHeight : 0.0F;
+        const float priorityHeight = controlsLayout.priorityWidth > 0.0F ? m_PriorityCardHeight : 0.0F;
+        if (controlsLayout.besideInfo)
+        {
+            topRowHeight = ProcessDetailsLayout::computeRowCardHeight(cardHeight, actionsHeight, priorityHeight);
+            controlsHeight = topRowHeight;
+        }
+        else if (controlsLayout.priorityBesideActions)
+        {
+            // Wrapped side by side: a row of their own, its height the taller of theirs (0 before either
+            // has been drawn, so each fits its content).
+            controlsHeight = ProcessDetailsLayout::computeRowCardHeight(0.0F, actionsHeight, priorityHeight);
+        }
+        // Wrapped one under the other: each as tall as its content (controlsHeight 0).
+    }
+
     // Identity section: Who is this process?
-    ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
-    ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
-    renderInfoTable("BasicInfoLeftTable", identityRows.view());
-    ImGui::EndChild();
-    ImGui::EndGroup();
+    (void) ProcessOverviewCard::render("BasicInfoLeft",
+                                       ICON_FA_ID_CARD,
+                                       "Identity",
+                                       ImVec2(leftWidth, topRowHeight),
+                                       ImGuiChildFlags_None,
+                                       [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
 
     ImGui::SameLine();
 
     // Runtime section: What is this process doing?
-    ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
-    ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    (void) ProcessOverviewCard::render("BasicInfoRight",
+                                       ICON_FA_CLOCK,
+                                       "Runtime",
+                                       ImVec2(rightWidth, topRowHeight),
+                                       ImGuiChildFlags_None,
+                                       [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
 
-    renderInfoTable("BasicInfoRightTable", runtimeRows.view());
-    ImGui::EndChild();
-    ImGui::EndGroup();
-}
-
-void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
-{
-    // Ensure smoothing is initialized even if render is called before an update tick
-    if (!m_SmoothedUsage.initialized)
+    // The buttons, confirm dialog and result line are ProcessActionsView's, the priority rows
+    // ProcessPriorityView's (#1179); both act through m_ProcessActions, which the panel owns.
+    if (hasControls)
     {
-        updateSmoothedUsage(proc, m_LastDeltaSeconds);
-    }
-
-    renderCpuUsageSection(fill);
-    renderMemoryUsageSection(fill);
-}
-
-// Renders the inline CPU history chart (total/user/system) plus paired "now" bars.
-void ProcessDetailsPanel::renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill)
-{
-    const auto& theme = UI::Theme::get();
-
-    // Inline CPU history with paired now bar
-    if (!m_History.empty())
-    {
-        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-        const size_t alignedCount = m_History.size();
-
-        const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-        const auto cpuData = tailSpan(m_History.series(ProcessSeries::CpuTotal), alignedCount);
-        const auto cpuUserData = tailSpan(m_History.series(ProcessSeries::CpuUser), alignedCount);
-        const auto cpuSystemData = tailSpan(m_History.series(ProcessSeries::CpuSystem), alignedCount);
-
-        const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-        const auto cpuTimeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-        // The process's CPU is a percent of the whole machine, so a fixed 0-100 axis drew a flat line
-        // for any typical process: one busy thread on 16 logical CPUs is 6.25 %. The axis scales to the
-        // data instead, from a 5 % floor up to 100, eased like a rate axis, and the bars share its bound
-        // so each bar meets its line (#1195, #1003). Values show one decimal, as the table does. Every
-        // axis here is sized to the samples in the window, not the one trimming keeps left of it (#1145).
-        const double cpuAxisUpper = UI::Widgets::easedPercentAxisUpperBound(
-            "##ProcOverviewCPU",
-            std::max({UI::Widgets::maxOfSeriesSince(cpuTimeData, axisConfig.xMin, cpuData, cpuUserData, cpuSystemData),
-                      m_SmoothedUsage.cpuPercent,
-                      m_SmoothedUsage.cpuUserPercent,
-                      m_SmoothedUsage.cpuSystemPercent}));
-
-        // Use smoothed values for NowBars for consistent animation
-        const NowBar cpuTotalNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuPercent),
-                                 .label = CPU_TOTAL_LABEL,
-                                 .tooltipText = {},
-                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuPercent, cpuAxisUpper),
-                                 .color = theme.scheme().chartCpu}; // The Total line's colour (#1192)
-        const NowBar cpuUserNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuUserPercent),
-                                .label = CPU_USER_LABEL,
-                                .tooltipText = {},
-                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuUserPercent, cpuAxisUpper),
-                                .color = theme.scheme().cpuUser};
-        const NowBar cpuSystemNow{.valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.cpuSystemPercent),
-                                  .label = CPU_SYSTEM_LABEL,
-                                  .tooltipText = {},
-                                  .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.cpuSystemPercent, cpuAxisUpper),
-                                  .color = theme.scheme().cpuSystem};
-
-        auto cpuPlot = [&]()
+        if (controlsLayout.besideInfo)
         {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                UI::Widgets::withHeight(
-                    UI::Widgets::rateHistoryConfigWithUpper(
-                        "##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisPercent, cpuAxisUpper),
-                    fill.plotHeight()),
-                m_HistoryGeneration));
-            if (chart.active())
-            {
-                UI::Widgets::drawCollectingHint(alignedCount);
-                // alignedCount > 0 here: the section only renders with history (see above).
-
-                // These bands and lines are drawn with ImPlot directly, so they are capped here like
-                // every plotLineWithFill series (#1022). Reduced together, so the bands still line
-                // up with each other and with the lines. Points are chosen by each drawn value --
-                // User (also the user band's top), System and Total -- not by the cumulative system
-                // top, which stays flat when System rises as User falls and would drop that spike.
-                //
-                // The choice of points is kept until the history changes (m_HistoryGeneration,
-                // #1139): reducing and copying the whole history every frame was most of this chart's
-                // cost at the largest history settings. Each frame only builds the kept points, at
-                // most LINE_PLOT_MAX_POINTS_DENSE of them, into reused member buffers.
-                const std::span<const UI::Widgets::ReducedPoint> points = m_CpuPlotReduction.points(
-                    {.generation = m_HistoryGeneration,
-                     .dataId = 0,
-                     .count = alignedCount,
-                     .maxOut = UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE},
-                    [&](std::vector<UI::Widgets::ReducedPoint>& out)
-                    {
-                        UI::Widgets::reduceAlignedPoints<double>(
-                            cpuTimeData, {cpuUserData, cpuSystemData, cpuData}, UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE, nowSeconds, out);
-                    });
-
-                // The User and System bands' edges (shared with the Overview, #1180), plus the Total and
-                // System lines. A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries).
-                // The User line is the User band's top, so it is drawn from that.
-                auto& stack = m_CpuStack;
-                UI::Widgets::buildUserSystemStack<double>(points, cpuTimeData, cpuUserData, cpuSystemData, stack);
-                UI::Widgets::gatherReducedValues<double>(points, cpuData, m_CpuPlotTotal);
-                UI::Widgets::gatherReducedValues<double>(points, cpuSystemData, m_CpuPlotSystem);
-
-                // Bands and lines reach "now" like every plotLineWithFill series: the last sample
-                // held to x = 0 (#1016), unless it is too old to pass for current (#1147). Built in
-                // their own buffers, so the tooltip's lookup over cpuTimeData still finds real samples only.
-                UI::Widgets::holdLastValuesToNow(stack.x,
-                                                 {&stack.base, &stack.userTop, &stack.systemTop, &m_CpuPlotTotal, &m_CpuPlotSystem},
-                                                 UI::Widgets::maxHoldSecondsForAxis(cpuTimeData));
-                const int drawCount = UI::Format::checkedCount(stack.x.size());
-
-                // The bands share their labels with the User and System lines below, so ImPlot
-                // treats each band and its line as one item. Each band is filled only where both of
-                // its own edges have a reading, so a reading missing from one band alone can't feed
-                // NaN to the other (#1149).
-                UI::Widgets::plotShadedBand(
-                    CPU_USER_LABEL, stack.x.data(), stack.base.data(), stack.userTop.data(), drawCount, theme.scheme().cpuUserFill);
-                UI::Widgets::plotShadedBand(CPU_SYSTEM_LABEL,
-                                            stack.x.data(),
-                                            stack.userTop.data(),
-                                            stack.systemTop.data(),
-                                            drawCount,
-                                            theme.scheme().cpuSystemFill);
-
-                // Total at the primary series' weight; it has no fill of its own, the bands above are
-                // the fill. User and System are secondaries: lighter lines, each with its own marker
-                // shape (shown on its value-strip swatch too), so they differ by more than colour (#1198).
-                ImPlot::PlotLine(CPU_TOTAL_LABEL,
-                                 stack.x.data(),
-                                 m_CpuPlotTotal.data(),
-                                 drawCount,
-                                 {ImPlotProp_LineColor,
-                                  theme.scheme().chartCpu,
-                                  ImPlotProp_LineWeight,
-                                  UI::Widgets::lineWeight(UI::Widgets::PRIMARY_SERIES_WEIGHT)});
-                UI::Widgets::plotStyledLine(CPU_USER_LABEL,
-                                            stack.x.data(),
-                                            stack.userTop.data(),
-                                            drawCount,
-                                            theme.scheme().cpuUser,
-                                            seriesStyle(SeriesRole::Secondary, 0));
-                UI::Widgets::plotStyledLine(CPU_SYSTEM_LABEL,
-                                            stack.x.data(),
-                                            m_CpuPlotSystem.data(),
-                                            drawCount,
-                                            theme.scheme().cpuSystem,
-                                            seriesStyle(SeriesRole::Secondary, 1));
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
-                    {
-                        if (*idxVal < alignedCount)
-                        {
-                            // Total in its line's colour, not progressColor, which matched nothing on the chart.
-                            const std::array rows{
-                                UI::Widgets::TooltipRow{.label = CPU_TOTAL_LABEL,
-                                                        .color = theme.scheme().chartCpu,
-                                                        .value = UI::Format::percentOneDecimal(cpuData[*idxVal])},
-                                UI::Widgets::TooltipRow{.label = CPU_USER_LABEL,
-                                                        .color = theme.scheme().cpuUser,
-                                                        .value = UI::Format::percentOneDecimal(cpuUserData[*idxVal])},
-                                UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
-                                                        .color = theme.scheme().cpuSystem,
-                                                        .value = UI::Format::percentOneDecimal(cpuSystemData[*idxVal])},
-                            };
-                            UI::Widgets::renderHistoryTooltip(cpuTimeData[*idxVal], rows);
-                        }
-                    }
-                }
-            }
+            ImGui::SameLine();
+        }
+        const ProcessActionsBlock::Context actions{
+            .actionsView = &m_ActionsView,
+            .priorityView = &m_PriorityView,
+            .actions = m_ProcessActions.get(),
+            .capabilities = m_ActionCapabilities,
+            .processName = &proc.name,
+            .target = selectedTarget(),
+            .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
+            .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
         };
-
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessCPUHistoryOverview",
-                                 fill.plotHeight(),
-                                 cpuPlot,
-                                 {cpuTotalNow, cpuUserNow, cpuSystemNow},
-                                 false,
-                                 PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
-        fill.addPlot();
-        ImGui::Spacing();
-    }
-}
-
-// Renders the inline memory history chart (used/shared/virtual, with a peak-line overlay)
-// plus paired "now" bars.
-void ProcessDetailsPanel::renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill)
-{
-    const auto& theme = UI::Theme::get();
-
-    // Inline history for memory (overview) mirroring system memory chart layout
-    if (!m_History.empty())
-    {
-        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-        const size_t alignedCount = m_History.size();
-
-        if (alignedCount > 0)
+        // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
+        const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);
+        if (needed.actions > 0.0F)
         {
-            const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-            const auto usedData = tailSpan(m_History.series(ProcessSeries::MemoryUsed), alignedCount);
-            // Shared is not reported on Windows; its line, tooltip row and bar are left out there
-            // rather than shown as a permanent 0 (#1035).
-            const bool showShared = m_ProcessCapabilities.hasSharedMemory;
-            const auto sharedData =
-                showShared ? tailSpan(m_History.series(ProcessSeries::MemoryShared), alignedCount) : std::span<const double>{};
-            const auto virtData = tailSpan(m_History.series(ProcessSeries::Virtual), alignedCount);
-
-            const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-            const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-            // Smoothed like every other NowBar (#1012); these were the raw latest history sample, so
-            // they stepped while the bars around them glided.
-            const double usedNow = m_SmoothedUsage.residentBytes;
-            const double sharedNow = m_SmoothedUsage.memorySharedBytes;
-            // Used and Shared in bytes on an axis that scales to them (#1195), eased like a rate axis and
-            // shared with their bars. The lifetime peak is left out of the scale: one far above today's
-            // usage would flatten the line again; its value is in the strip and the tooltip.
-            const double memAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-                "##ProcOverviewMemory",
-                std::max({UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, usedData, sharedData), usedNow, sharedNow}),
-                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
-            // "412.0 MB (1.3% of RAM)": the bytes the chart plots and the share of RAM the table shows.
-            const double percentPerByte = m_SmoothedUsage.memoryPercentPerByte;
-            const auto withRamShare = [percentPerByte](double bytes) -> std::string
-            {
-                if (!std::isfinite(bytes))
-                {
-                    return "N/A"; // a gap point (#1098)
-                }
-                return std::format("{} ({} of RAM)",
-                                   UI::Format::formatBytes(bytes),
-                                   UI::Format::percentOneDecimal(std::clamp(bytes * percentPerByte, 0.0, 100.0)));
-            };
-            // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared
-            // with its bar, whose smoothed value it covers too.
-            const double virtAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-                "##ProcOverviewMemory/Y2",
-                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, virtData),
-                                               {m_SmoothedUsage.virtualBytes}),
-                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
-
-            NowBarList memoryBars;
-            // Used and Shared carry their share of RAM in tooltipText (shown on hover and in the value
-            // strip); Virtual has none, being mostly reserved address space.
-            memoryBars.push_back({.valueText = UI::Format::formatBytes(usedNow),
-                                  .label = MEM_USED_LABEL,
-                                  .tooltipText = UI::InlineText::format("{}: {}", MEM_USED_LABEL, withRamShare(usedNow)),
-                                  .value01 = UI::Widgets::normalizeToUnitInterval(usedNow, memAxisUpper),
-                                  .color = theme.scheme().chartMemory});
-            if (showShared)
-            {
-                memoryBars.push_back({
-                    .valueText = UI::Format::formatBytes(sharedNow),
-                    .label = MEM_SHARED_LABEL,
-                    .tooltipText = UI::InlineText::format("{}: {}", MEM_SHARED_LABEL, withRamShare(sharedNow)),
-                    .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
-                    .color = theme.scheme().chartCpu,
-                });
-            }
-            memoryBars.push_back({.valueText = UI::Format::formatBytes(m_SmoothedUsage.virtualBytes),
-                                  .label = MEM_VIRTUAL_LABEL,
-                                  .tooltipText = {},
-                                  .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.virtualBytes, virtAxisUpper),
-                                  .color = theme.scheme().chartIo});
-
-            auto memoryPlot = [&]()
-            {
-                const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                    UI::Widgets::withHeight(
-                        UI::Widgets::rateHistoryConfigWithUpper(
-                            "##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, memAxisUpper),
-                        fill.plotHeight()),
-                    m_HistoryGeneration));
-                if (chart.active())
-                {
-                    UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes, theme.scheme().chartIo);
-                    UI::Widgets::drawCollectingHint(alignedCount);
-                    // Draw peak working set as a horizontal reference line (never decreases)
-                    if (m_PeakMemoryBytes > 0.0)
-                    {
-                        // Draw horizontal line at peak value across the entire X range
-                        const double peakY = m_PeakMemoryBytes;
-                        std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};
-                        std::array<double, 2> peakYVals = {peakY, peakY};
-                        ImPlot::PlotLine(
-                            MEM_PEAK_LABEL,
-                            peakX.data(),
-                            peakYVals.data(),
-                            2,
-                            {ImPlotProp_LineColor, theme.scheme().chartPeakLine, ImPlotProp_LineWeight, UI::Widgets::lineWeight(1.5F)});
-                    }
-
-                    if (!usedData.empty())
-                    {
-                        plotSeries(MEM_USED_LABEL,
-                                   timeData.data(),
-                                   usedData.data(),
-                                   UI::Format::checkedCount(usedData.size()),
-                                   theme.scheme().chartMemory,
-                                   theme.scheme().chartMemoryFill,
-                                   seriesStyle(SeriesRole::Primary));
-                    }
-
-                    if (!sharedData.empty())
-                    {
-                        plotSeries(MEM_SHARED_LABEL,
-                                   timeData.data(),
-                                   sharedData.data(),
-                                   UI::Format::checkedCount(sharedData.size()),
-                                   theme.scheme().chartCpu,
-                                   theme.scheme().chartCpuFill,
-                                   seriesStyle(SeriesRole::Secondary, 0));
-                    }
-
-                    if (!virtData.empty())
-                    {
-                        // Line only: a fill on its own scale would cover the Used and Shared areas.
-                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                        plotSeries(MEM_VIRTUAL_LABEL,
-                                   timeData.data(),
-                                   virtData.data(),
-                                   UI::Format::checkedCount(virtData.size()),
-                                   theme.scheme().chartIo,
-                                   theme.scheme().chartIoFill,
-                                   seriesStyle(SeriesRole::Secondary, 1));
-                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-                    }
-
-                    if (ImPlot::IsPlotHovered())
-                    {
-                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                        {
-                            std::vector<UI::Widgets::TooltipRow> rows;
-                            if (*idxVal < usedData.size())
-                            {
-                                rows.push_back({.label = MEM_USED_LABEL,
-                                                .color = theme.scheme().chartMemory,
-                                                .value = withRamShare(usedData[*idxVal])});
-                            }
-                            if (*idxVal < sharedData.size())
-                            {
-                                rows.push_back({.label = MEM_SHARED_LABEL,
-                                                .color = theme.scheme().chartCpu,
-                                                .value = withRamShare(sharedData[*idxVal])});
-                            }
-                            if (*idxVal < virtData.size())
-                            {
-                                rows.push_back({.label = MEM_VIRTUAL_LABEL,
-                                                .color = theme.scheme().chartIo,
-                                                .value = UI::Widgets::formatSampleOrNA(
-                                                    virtData[*idxVal], [](double v) { return UI::Format::formatBytes(v); })});
-                            }
-                            if (m_PeakMemoryBytes > 0.0)
-                            {
-                                // The line's colour: this row was textWarning, which matched nothing (#1005).
-                                rows.push_back({.label = MEM_PEAK_LABEL,
-                                                .color = theme.scheme().chartPeakLine,
-                                                .value = UI::Format::formatBytes(m_PeakMemoryBytes)});
-                            }
-                            UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                        }
-                    }
-                }
-            };
-
-            ImGui::Spacing();
-            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
-            // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193).
-            const std::array peakEntry{UI::Widgets::ValueStripEntry{
-                .label = MEM_PEAK_LABEL,
-                .value = UI::Format::formatBytes(m_PeakMemoryBytes),
-                .color = theme.scheme().chartPeakLine,
-            }};
-            const std::span<const UI::Widgets::ValueStripEntry> stripExtras = (m_PeakMemoryBytes > 0.0)
-                                                                                ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry)
-                                                                                : std::span<const UI::Widgets::ValueStripEntry>{};
-            renderHistoryWithNowBars("ProcessMemoryOverviewLayout",
-                                     fill.plotHeight(),
-                                     memoryPlot,
-                                     memoryBars,
-                                     false,
-                                     PROCESS_OVERVIEW_NOW_BAR_COLUMNS,
-                                     false,
-                                     UI::Widgets::NowBarValues::Strip,
-                                     stripExtras);
-            fill.addPlot();
-            ImGui::Spacing();
+            m_ActionsCardHeight = needed.actions;
         }
-    }
-}
-
-// Renders the thread/handle/page-fault history plot plus matching "now" bars.
-// Aligns history buffers by their shared tail, smooths the latest sample for the
-// bars, and returns early when no aligned data is available.
-void ProcessDetailsPanel::renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill)
-{
-    if (m_History.empty())
-    {
-        return;
-    }
-
-    // Every series has one value per timestamp (Detail::ProcessDetailsHistory), so every plotted value
-    // and tooltip lookup refers to the same point in time.
-    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-    const size_t alignedCount = m_History.size();
-
-    const auto& theme = UI::Theme::get();
-
-    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-    const auto threadData = tailSpan(m_History.series(ProcessSeries::Threads), alignedCount);
-    const auto handleData = tailSpan(m_History.series(ProcessSeries::Handles), alignedCount);
-    const auto faultData = tailSpan(m_History.series(ProcessSeries::PageFaults), alignedCount);
-
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-#ifdef _WIN32
-    // The GDI history can be shorter than the others, and ends at the same newest sample, so it
-    // starts gdiTimeOffset timestamps in (#1001).
-    const size_t gdiAlignedCount = std::min(alignedCount, m_History.series(ProcessSeries::GdiObjects).size());
-    const auto gdiData = tailSpan(m_History.series(ProcessSeries::GdiObjects), gdiAlignedCount);
-    const size_t gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, gdiData.size());
-    const bool hasGdiSamples = Detail::hasAnySample(gdiData);
-#endif
-
-    // Threads, handles (and GDI objects) are counts on the left axis; page faults are a rate, on
-    // their own right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each
-    // bound covers every series drawn on its axis, and each bar is scaled to its series' axis, so a
-    // bar and its line show a value at the same height (#1003). Each also covers its bars' smoothed
-    // values, which can still be easing down from a peak that has just left the window (#1145).
-    const double handlesNow = UI::Widgets::currentIfAvailable(m_SmoothedUsage.handleCountAvailable, m_SmoothedUsage.handleCount);
-#ifdef _WIN32
-    const double countSeriesMax =
-        UI::Widgets::withCurrentValues(std::max(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData),
-                                                UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gdiData)),
-                                       {m_SmoothedUsage.threadCount,
-                                        handlesNow,
-                                        UI::Widgets::currentIfAvailable(m_SmoothedUsage.gdiInitialized, m_SmoothedUsage.gdiObjectCount)});
-#else
-    const double countSeriesMax = UI::Widgets::withCurrentValues(
-        UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, threadData, handleData), {m_SmoothedUsage.threadCount, handlesNow});
-#endif
-    const double countAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcThreadsFaults/Y2",
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, faultData),
-                                       {m_SmoothedUsage.pageFaultsPerSec}),
-        UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-
-    const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount)),
-                            .label = THREADS_LABEL,
-                            .tooltipText = {}, // The fallback, "Threads: <value>", says it all (#1019)
-                            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.threadCount, countAxisUpper),
-                            .color = theme.scheme().chartCpu};
-
-#ifdef _WIN32
-    constexpr const char* handleLabel = "Handles";
-#else
-    constexpr const char* handleLabel = "FDs";
-#endif
-
-    // An unreadable count (#1110) shows N/A, as its line shows a gap.
-    const std::string handlesText = m_SmoothedUsage.handleCountAvailable
-                                      ? UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount))
-                                      : std::string("N/A");
-    const NowBar handlesBar{.valueText = handlesText,
-                            .label = handleLabel,
-                            .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
-                            .value01 = m_SmoothedUsage.handleCountAvailable
-                                         ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.handleCount, countAxisUpper)
-                                         : 0.0,
-                            .color = theme.scheme().chartMemory};
-
-    const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
-                           .label = FAULTS_LABEL,
-                           .tooltipText = {},
-                           .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.pageFaultsPerSec, faultAxisUpper),
-                           // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
-                           .color = theme.accentColor(3)};
-
-#ifdef _WIN32
-    // GDI objects NowBar (Windows-only). A missing reading is NaN: it is skipped by the axis bound
-    // and shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is
-    // not drawn (#1000).
-    const NowBar gdiBar{
-        .valueText = m_SmoothedUsage.gdiInitialized ? UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))
-                                                    : std::string("N/A"),
-        .label = GDI_LABEL,
-        .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
-        .value01 =
-            m_SmoothedUsage.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gdiObjectCount, countAxisUpper) : 0.0,
-        .color = theme.accentColor(4)};
-#endif
-
-    auto plot = [&]()
-    {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized, countAxisUpper),
-                                    fill.plotHeight()),
-            m_HistoryGeneration));
-        if (chart.active())
+        if (needed.priority > 0.0F)
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
-            UI::Widgets::drawCollectingHint(alignedCount);
-            const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotSeries(THREADS_LABEL,
-                       timeData.data(),
-                       threadData.data(),
-                       plotCount,
-                       theme.scheme().chartCpu,
-                       theme.scheme().chartCpuFill,
-                       seriesStyle(SeriesRole::Primary));
-            plotSeries(handleLabel,
-                       timeData.data(),
-                       handleData.data(),
-                       plotCount,
-                       theme.scheme().chartMemory,
-                       theme.scheme().chartMemoryFill,
-                       seriesStyle(SeriesRole::Secondary, 0));
-            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-            plotSeries(FAULTS_LABEL,
-                       timeData.data(),
-                       faultData.data(),
-                       plotCount,
-                       theme.accentColor(3),
-                       std::nullopt,
-                       seriesStyle(SeriesRole::Secondary, 1));
-            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-
-#ifdef _WIN32
-            if (hasGdiSamples && gdiTimeOffset < timeData.size())
-            {
-                const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiData.size(), timeData.size() - gdiTimeOffset));
-                plotSeries(GDI_LABEL,
-                           std::span(timeData).subspan(gdiTimeOffset).data(),
-                           gdiData.data(),
-                           gdiPlotCount,
-                           theme.accentColor(4),
-                           std::nullopt,
-                           seriesStyle(SeriesRole::Secondary, 2));
-            }
-#endif
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                {
-                    if (*idxVal < alignedCount)
-                    {
-                        std::vector<UI::Widgets::TooltipRow> rows{
-                            {.label = THREADS_LABEL, .color = theme.scheme().chartCpu, .value = formatCountOrNA(threadData[*idxVal])},
-                            {.label = handleLabel, .color = theme.scheme().chartMemory, .value = formatCountOrNA(handleData[*idxVal])},
-                            {.label = FAULTS_LABEL,
-                             .color = theme.accentColor(3),
-                             .value = UI::Widgets::formatSampleOrNA(faultData[*idxVal],
-                                                                    [](double v) { return UI::Format::formatCountPerSecond(v); })},
-                        };
-#ifdef _WIN32
-                        if (hasGdiSamples)
-                        {
-                            const auto gdiValue = Detail::seriesValueAt(gdiData, gdiTimeOffset, *idxVal);
-                            rows.push_back(
-                                {.label = GDI_LABEL,
-                                 .color = theme.accentColor(4),
-                                 .value = gdiValue ? UI::Format::formatIntLocalized(std::llround(*gdiValue)) : std::string("N/A")});
-                        }
-#endif
-                        UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                    }
-                }
-            }
+            m_PriorityCardHeight = needed.priority;
         }
-    };
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
-#ifdef _WIN32
-    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects (PROCESS_OVERVIEW_NOW_BAR_COLUMNS)
-    renderHistoryWithNowBars("ProcessResourceHistory",
-                             fill.plotHeight(),
-                             plot,
-                             {threadsBar, handlesBar, faultsBar, gdiBar},
-                             false,
-                             PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
-    fill.addPlot();
-#else
-    renderHistoryWithNowBars(
-        "ProcessResourceHistory", fill.plotHeight(), plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
-    fill.addPlot();
-#endif
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderIoStats(UI::Widgets::FillPlotLayout& fill)
-{
-    const size_t alignedCount = m_History.size();
-    if (alignedCount == 0)
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-
-    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-    const auto readData = tailSpan(m_History.series(ProcessSeries::IoRead), alignedCount);
-    const auto writeData = tailSpan(m_History.series(ProcessSeries::IoWrite), alignedCount);
-
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-    // Unreadable I/O counters (#1110) show N/A, as their lines show a gap.
-    const bool ioAvailable = m_SmoothedUsage.ioAvailable;
-
-    // Compare the smoothed current rates with the visible history when scaling the NowBars, so either
-    // a visible or newly observed peak remains representable, and a bar still easing down from a peak
-    // that has just left the window is not clamped to full height (#1145).
-    const double ioAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcIoHistory",
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, readData, writeData),
-                                       {UI::Widgets::currentIfAvailable(ioAvailable, m_SmoothedUsage.ioReadBytesPerSec),
-                                        UI::Widgets::currentIfAvailable(ioAvailable, m_SmoothedUsage.ioWriteBytesPerSec)}),
-        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-
-    const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
-    const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
-    const NowBar readBar{
-        .valueText = ioAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit) : std::string("N/A"),
-        .label = IO_READ_LABEL,
-        .tooltipText = {},
-        .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.ioReadBytesPerSec, ioAxisUpper) : 0.0,
-        .color = theme.scheme().chartIo};
-
-    const NowBar writeBar{.valueText = ioAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit)
-                                                   : std::string("N/A"),
-                          .label = IO_WRITE_LABEL,
-                          .tooltipText = {},
-                          .value01 =
-                              ioAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.ioWriteBytesPerSec, ioAxisUpper) : 0.0,
-                          .color = theme.scheme().chartIoWrite};
-
-    // Keep the plot and its hover tooltip together: both consume the same aligned
-    // vectors, and the lambda is rendered alongside the matching NowBars below.
-    auto plot = [&]()
-    {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcIoHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, ioAxisUpper),
-                                    fill.plotHeight()),
-            m_HistoryGeneration));
-        if (chart.active())
-        {
-            UI::Widgets::drawCollectingHint(alignedCount);
-            const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotSeries(IO_READ_LABEL,
-                       timeData.data(),
-                       readData.data(),
-                       plotCount,
-                       theme.scheme().chartIo,
-                       theme.scheme().chartIoFill,
-                       seriesStyle(SeriesRole::Primary));
-
-            plotSeries(IO_WRITE_LABEL,
-                       timeData.data(),
-                       writeData.data(),
-                       plotCount,
-                       theme.scheme().chartIoWrite,
-                       theme.scheme().chartIoWriteFill,
-                       seriesStyle(SeriesRole::Secondary, 0));
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                {
-                    if (*idxVal < alignedCount)
-                    {
-                        const std::array rows{
-                            UI::Widgets::TooltipRow{.label = IO_READ_LABEL,
-                                                    .color = theme.scheme().chartIo,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(readData[*idxVal])},
-                            UI::Widgets::TooltipRow{.label = IO_WRITE_LABEL,
-                                                    .color = theme.scheme().chartIoWrite,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(writeData[*idxVal])},
-                        };
-                        UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                    }
-                }
-            }
-        }
-    };
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
-    fill.addPlot();
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderNetworkStats(UI::Widgets::FillPlotLayout& fill)
-{
-    const size_t alignedCount = m_History.size();
-    if (alignedCount == 0)
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-
-    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-    const auto sentData = tailSpan(m_History.series(ProcessSeries::NetSent), alignedCount);
-    const auto recvData = tailSpan(m_History.series(ProcessSeries::NetReceived), alignedCount);
-
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-    // Network counters that couldn't be attributed to the process (#1110) show N/A, as their lines
-    // show a gap.
-    const bool netAvailable = m_SmoothedUsage.networkAvailable;
-
-    // Scale the NowBars against both the visible peak and the smoothed current values, so a new
-    // traffic burst cannot exceed the normalized range, nor a bar still easing down from a peak that
-    // has just left the window (#1145).
-    const double netAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcNetworkHistory",
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, sentData, recvData),
-                                       {UI::Widgets::currentIfAvailable(netAvailable, m_SmoothedUsage.netSentBytesPerSec),
-                                        UI::Widgets::currentIfAvailable(netAvailable, m_SmoothedUsage.netRecvBytesPerSec)}),
-        UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-
-    const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
-    const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
-    const NowBar sentBar{.valueText = netAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit)
-                                                   : std::string("N/A"),
-                         .label = NET_SENT_LABEL,
-                         .tooltipText = {},
-                         .value01 =
-                             netAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.netSentBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetTx};
-
-    const NowBar recvBar{.valueText = netAvailable ? UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit)
-                                                   : std::string("N/A"),
-                         .label = NET_RECV_LABEL,
-                         .tooltipText = {},
-                         .value01 =
-                             netAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.netRecvBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetRx};
-
-    // The plot lambda owns rendering and hover lookup over the same aligned
-    // buffers; renderHistoryWithNowBars composes it with the summary bars.
-    auto plot = [&]()
-    {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcNetworkHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, netAxisUpper),
-                                    fill.plotHeight()),
-            m_HistoryGeneration));
-        if (chart.active())
-        {
-            UI::Widgets::drawCollectingHint(alignedCount);
-            const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotSeries(NET_SENT_LABEL,
-                       timeData.data(),
-                       sentData.data(),
-                       plotCount,
-                       theme.scheme().chartNetTx,
-                       theme.scheme().chartNetTxFill,
-                       seriesStyle(SeriesRole::Primary));
-
-            plotSeries(NET_RECV_LABEL,
-                       timeData.data(),
-                       recvData.data(),
-                       plotCount,
-                       theme.scheme().chartNetRx,
-                       theme.scheme().chartNetRxFill,
-                       seriesStyle(SeriesRole::Secondary, 0));
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                {
-                    if (*idxVal < alignedCount)
-                    {
-                        // Averages since the process was first seen, as the chart's heading says.
-                        const std::array rows{
-                            UI::Widgets::TooltipRow{.label = NET_SENT_LABEL,
-                                                    .color = theme.scheme().chartNetTx,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(sentData[*idxVal])},
-                            UI::Widgets::TooltipRow{.label = NET_RECV_LABEL,
-                                                    .color = theme.scheme().chartNetRx,
-                                                    .value = UI::Format::formatBytesPerSecOrNA(recvData[*idxVal])},
-                        };
-                        UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                    }
-                }
-            }
-        }
-    };
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", alignedCount);
-    // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,
-    // the item drawn just before it, so nothing else is submitted between the two.
-    const bool headingHovered = ImGui::IsItemHovered();
-    renderHistoryWithNowBars(
-        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
-    if (headingHovered)
-    {
-        ImGui::SetTooltip("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached reading "
-                          "shows the last rate.");
-    }
-    fill.addPlot();
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
-{
-    const bool hasCurrent = proc.powerWatts > 0.0;
-    if (m_History.empty() && !hasCurrent)
-    {
-        return;
-    }
-
-    const size_t alignedCount = m_History.size();
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-
-    const auto powerData = tailSpan(m_History.series(ProcessSeries::Power), alignedCount);
-    const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-    const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-    // Use smoothed value for NowBar; the axis covers it too, so the bar is not clamped while it eases
-    // down from a peak that has just left the window (#1145).
-    const double powerAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##ProcPowerHistory",
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, powerData), {m_SmoothedUsage.powerWatts}),
-        UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS);
-
-    const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
-                          .label = POWER_LABEL,
-                          .tooltipText = {},
-                          .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.powerWatts, powerAxisUpper),
-                          .color = theme.scheme().textInfo};
-
-    auto plot = [&]()
-    {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-            UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcPowerHistory", axisConfig.xMin, axisConfig.xMax, formatAxisWatts, powerAxisUpper),
-                                    fill.plotHeight()),
-            m_HistoryGeneration));
-        if (chart.active())
-        {
-            UI::Widgets::drawCollectingHint(powerData.size());
-            if (!powerData.empty())
-            {
-                plotLineWithFill(
-                    POWER_LABEL, timeData.data(), powerData.data(), UI::Format::checkedCount(powerData.size()), theme.scheme().textInfo);
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                    {
-                        if (*idxVal < powerData.size())
-                        {
-                            const std::array rows{UI::Widgets::TooltipRow{
-                                .label = POWER_LABEL,
-                                .color = theme.scheme().textInfo,
-                                .value = UI::Widgets::formatSampleOrNA(powerData[*idxVal],
-                                                                       [](double v) { return UI::Format::formatPowerOrZero(v); })}};
-                            UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                ImPlot::PlotDummy("Power");
-            }
-        }
-    };
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
-    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
-    fill.addPlot();
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill)
-{
-    auto& theme = UI::Theme::get();
-
-    // Throttle debug logging to avoid per-frame spam
-    // Only log when GPU data changes or on first render of a new process
-    // Using member variables ensures per-panel state tracking (not static)
-    if (proc.pid != m_LastGpuLogPid || proc.gpuMemoryBytes != m_LastGpuLogMemoryBytes)
-    {
-        spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'",
-                      proc.pid,
-                      proc.gpuUtilPercent,
-                      proc.gpuMemoryBytes,
-                      proc.gpuDevices);
-
-        m_LastGpuLogPid = proc.pid;
-        m_LastGpuLogMemoryBytes = proc.gpuMemoryBytes;
-    }
-
-    // Show GPU info
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
-    ImGui::Spacing();
-
-    renderGpuCurrentMetricsTable(proc);
-
-    ImGui::Spacing();
-    // With one GPU the breakdown repeats the table above (#1207).
-    if (Detail::shouldShowPerGpuBreakdown(proc.perGpuUsage.size()))
-    {
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        renderPerGpuBreakdown(proc);
-    }
-
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    renderGpuHistoryGraphs(fill);
-}
-
-// Renders the current-value GPU metrics table (utilization, memory, devices, engines,
-// encoder/decoder) for the selected process.
-void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const
-{
-    const auto& theme = UI::Theme::get();
-
-    // Every label this table can show. The label column is measured from them (#966), so a label
-    // added below must be added here too -- which is why the rows use these constants rather than
-    // repeating the strings.
-    constexpr const char* LABEL_UTILIZATION = "GPU Utilization:";
-    constexpr const char* LABEL_MEMORY = "GPU Memory:";
-    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
-    constexpr const char* LABEL_SHARED = "  Shared:";
-    constexpr const char* LABEL_DEVICES = "GPU Device(s):";
-    constexpr const char* LABEL_ENGINES = "Active Engines:";
-    constexpr const char* LABEL_ENCODER = "Video Encoder:";
-    constexpr const char* LABEL_DECODER = "Video Decoder:";
-    constexpr auto LABELS = std::to_array<const char*>(
-        {LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
-
-    // Current GPU metrics
-    if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
-    {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-
-        // GPU Utilization
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(LABEL_UTILIZATION);
-        ImGui::TableNextColumn();
-        const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        ImGui::TextColored(
-            gpuUtilColor, "%s", Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent).c_str());
-
-        // GPU Memory
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(LABEL_MEMORY);
-        ImGui::TableNextColumn();
-        const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-        const std::string memStr =
-            m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A");
-        ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
-
-        // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
-        // listed beneath it whenever that total doesn't already show them: shared memory is mapped, or
-        // the dedicated bytes aren't what was counted (a shared-segment GPU with no shared use yet).
-        if (proc.gpuSharedMemoryBytes > 0 || proc.gpuDedicatedMemoryBytes != proc.gpuMemoryBytes)
-        {
-            for (const auto& [label, bytes] :
-                 {std::pair{LABEL_DEDICATED, proc.gpuDedicatedMemoryBytes}, std::pair{LABEL_SHARED, proc.gpuSharedMemoryBytes}})
-            {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(label);
-                ImGui::TableNextColumn();
-                const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
-                ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
-            }
-        }
-
-        // GPU Device(s)
-        if (!proc.gpuDevices.empty())
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(LABEL_DEVICES);
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(proc.gpuDevices.c_str());
-        }
-
-        // GPU Engines
-        if (!proc.gpuEngines.empty())
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(LABEL_ENGINES);
-            ImGui::TableNextColumn();
-            std::string enginesStr;
-            for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
-            {
-                if (i > 0)
-                {
-                    enginesStr += ", ";
-                }
-                enginesStr += proc.gpuEngines[i];
-            }
-            ImGui::TextUnformatted(enginesStr.c_str());
-        }
-
-        // Encoder/Decoder utilization
-        if (proc.gpuEncoderUtil > 0.0)
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(LABEL_ENCODER);
-            ImGui::TableNextColumn();
-            const ImVec4 encColor = theme.scheme().gpuEncoder;
-            ImGui::TextColored(encColor, "%s", UI::Format::percentOneDecimal(proc.gpuEncoderUtil).c_str());
-        }
-
-        if (proc.gpuDecoderUtil > 0.0)
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(LABEL_DECODER);
-            ImGui::TableNextColumn();
-            const ImVec4 decColor = theme.scheme().gpuDecoder;
-            ImGui::TextColored(decColor, "%s", UI::Format::percentOneDecimal(proc.gpuDecoderUtil).c_str());
-        }
-
-        ImGui::EndTable();
-    }
-}
-
-// Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
-// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
-// skips it for a single GPU (#1207).
-void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const
-{
-    const auto& theme = UI::Theme::get();
-
-    // Per-GPU breakdown if available
-    if (!proc.perGpuUsage.empty())
-    {
-        ImGui::Text("Per-GPU Breakdown:");
-        ImGui::Spacing();
-
-        const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-
-        // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
-        constexpr const char* LABEL_UTILIZATION = "Utilization:";
-        constexpr const char* LABEL_MEMORY = "Memory:";
-        constexpr const char* LABEL_DEDICATED = "  Dedicated:";
-        constexpr const char* LABEL_SHARED = "  Shared:";
-        constexpr const char* LABEL_ENGINES = "Engines:";
-        constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_ENGINES});
-        const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
-
-        for (const auto& gpuUsage : proc.perGpuUsage)
-        {
-            // Same words as the system GPU tab (GpuSection.cpp), so one adapter is not described
-            // two ways depending on which tab is open (#963).
-            const std::string gpuLabel =
-                std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Shared Memory" : "Discrete");
-
-            if (ImGui::CollapsingHeader(gpuLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
-            {
-                ImGui::Indent();
-
-                if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
-                {
-                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColumnWidth);
-                    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(LABEL_UTILIZATION);
-                    ImGui::TableNextColumn();
-                    ImGui::TextColored(
-                        gpuUtilColor, "%s", Detail::gpuUtilizationText(m_CachedRateReadings.gpuUtilization, gpuUsage.utilPercent).c_str());
-
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(LABEL_MEMORY);
-                    ImGui::TableNextColumn();
-                    const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
-                    ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
-
-                    // As in renderGpuCurrentMetricsTable(): both kinds whenever the total doesn't show them (#1164).
-                    if (gpuUsage.sharedMemoryBytes > 0 || gpuUsage.dedicatedMemoryBytes != gpuUsage.memoryBytes)
-                    {
-                        for (const auto& [label, bytes] : {std::pair{LABEL_DEDICATED, gpuUsage.dedicatedMemoryBytes},
-                                                           std::pair{LABEL_SHARED, gpuUsage.sharedMemoryBytes}})
-                        {
-                            ImGui::TableNextRow();
-                            ImGui::TableNextColumn();
-                            ImGui::TextUnformatted(label);
-                            ImGui::TableNextColumn();
-                            const std::string bytesStr = UI::Format::formatBytes(Domain::Numeric::toDouble(bytes));
-                            ImGui::TextColored(gpuMemColor, "%s", bytesStr.c_str());
-                        }
-                    }
-
-                    if (!gpuUsage.engines.empty())
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                        ImGui::TextUnformatted(LABEL_ENGINES);
-                        ImGui::TableNextColumn();
-                        std::string engStr;
-                        for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
-                        {
-                            if (i > 0)
-                            {
-                                engStr += ", ";
-                            }
-                            engStr += gpuUsage.engines[i];
-                        }
-                        ImGui::TextUnformatted(engStr.c_str());
-                    }
-
-                    ImGui::EndTable();
-                }
-
-                ImGui::Unindent();
-                ImGui::Spacing();
-            }
-        }
-    }
-}
-
-// Renders the GPU utilization and memory history charts, or a "collecting data" placeholder
-// until enough history has accumulated.
-void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill)
-{
-    auto& theme = UI::Theme::get();
-
-    // GPU history graphs: drawn from the start, with the collecting hint until samples arrive, like
-    // every other chart (#1013); this was a line of text until there was history.
-    {
-        // Every series has one value per timestamp (Detail::ProcessDetailsHistory), so none can be read
-        // past its end (#1149).
-        const size_t alignedCount = m_History.size();
-        const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-
-        // Extract only what we need for the graphs
-        const auto timestamps = tailSpan(m_History.timestamps(), alignedCount);
-        const auto gpuUtilVec = tailSpan(m_History.series(ProcessSeries::GpuUtil), alignedCount);
-        const auto gpuMemVec = tailSpan(m_History.series(ProcessSeries::GpuMemory), alignedCount);
-
-        const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-        const auto timeData = frameTimeAxis(timestamps, alignedCount, nowSeconds);
-
-        const int plotCount = UI::Format::checkedCount(alignedCount);
-
-        // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
-        auto plotGpuUtil = [&]()
-        {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax),
-                                        fill.plotHeight()),
-                m_HistoryGeneration));
-            if (chart.active())
-            {
-                UI::Widgets::drawCollectingHint(alignedCount);
-                if (plotCount > 0)
-                {
-                    plotLineWithFill(GPU_UTIL_LABEL,
-                                     timeData.data(),
-                                     gpuUtilVec.data(),
-                                     plotCount,
-                                     theme.scheme().gpuUtilization,
-                                     theme.scheme().gpuUtilizationFill,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-
-                    // Tooltip
-                    if (ImPlot::IsPlotHovered())
-                    {
-                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                        {
-                            if (*idxVal < alignedCount)
-                            {
-                                const std::array rows{UI::Widgets::TooltipRow{
-                                    .label = GPU_UTIL_LABEL,
-                                    .color = theme.scheme().gpuUtilization,
-                                    .value = UI::Format::percentOneDecimal(static_cast<double>(gpuUtilVec[*idxVal])),
-                                }};
-                                UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    ImPlot::PlotDummy(GPU_UTIL_LABEL);
-                }
-            }
-        };
-
-        // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003), from the
-        // samples in the window, not the one trimming keeps left of it (#1145), and the bar's smoothed
-        // value, which can still be easing down from a peak that has just left it.
-        const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##GPUMemPlot",
-            UI::Widgets::withCurrentValues(
-                UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
-                {UI::Widgets::currentIfAvailable(m_SmoothedUsage.gpuMemoryAvailable, m_SmoothedUsage.gpuMemoryBytes)}),
-            UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
-        auto plotGpuMem = [&]()
-        {
-            const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
-                UI::Widgets::withHeight(
-                    UI::Widgets::rateHistoryConfigWithUpper(
-                        "##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, UI::Widgets::formatAxisBytes, gpuMemAxisUpper),
-                    fill.plotHeight()),
-                m_HistoryGeneration));
-            if (chart.active())
-            {
-                UI::Widgets::drawCollectingHint(alignedCount);
-                if (plotCount > 0)
-                {
-                    plotLineWithFill(GPU_MEMORY_LABEL,
-                                     timeData.data(),
-                                     gpuMemVec.data(),
-                                     plotCount,
-                                     theme.scheme().gpuMemory,
-                                     theme.scheme().gpuMemoryFill,
-                                     2.0F,
-                                     true,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-
-                    // Tooltip
-                    if (ImPlot::IsPlotHovered())
-                    {
-                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                        {
-                            if (*idxVal < alignedCount)
-                            {
-                                const std::array rows{
-                                    UI::Widgets::TooltipRow{.label = GPU_MEMORY_LABEL,
-                                                            .color = theme.scheme().gpuMemory,
-                                                            .value = UI::Widgets::formatSampleOrNA(
-                                                                gpuMemVec[*idxVal], [](double v) { return UI::Format::formatBytes(v); })}};
-                                UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    ImPlot::PlotDummy("GPU Memory");
-                }
-            }
-        };
-
-        // Now bars for current values
-        const NowBar gpuUtilBar{
-            .valueText = Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent),
-            .label = GPU_UTIL_LABEL,
-            .tooltipText = {},
-            .value01 = m_SmoothedUsage.gpuUtilAvailable ? UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent) : 0.0,
-            .color = theme.scheme().gpuUtilization,
-        };
-
-        const NowBar gpuMemBar{
-            .valueText = m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A"),
-            .label = GPU_MEMORY_LABEL,
-            .tooltipText = {},
-            .value01 = m_SmoothedUsage.gpuMemoryAvailable
-                         ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper)
-                         : 0.0,
-            .color = theme.scheme().gpuMemory,
-        };
-
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
-        fill.addPlot();
-        ImGui::Spacing();
-
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, PROCESS_GPU_NOW_BAR_COLUMNS);
-        fill.addPlot();
-        ImGui::Spacing();
-    }
-}
-
-void ProcessDetailsPanel::renderActions()
-{
-    const auto& theme = UI::Theme::get();
-
-    ImGui::Text("%s (PID %d)", cachedSnapshot().name.c_str(), m_SelectedPid);
-    ImGui::Spacing();
-
-    // Section: Process Control
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Process Control");
-    ImGui::Spacing();
-
-    renderActionResultFeedback();
-    renderConfirmDialog();
-    renderActionButtons();
-    renderPrioritySection();
-}
-
-void ProcessDetailsPanel::renderActionResultFeedback()
-{
-    if (m_LastActionResult.empty())
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-    // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
-    const ImVec4 color = m_LastActionResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
-    ImGui::TextColored(color, "%s", m_LastActionResult.text.c_str());
-    ImGui::Spacing();
-}
-
-void ProcessDetailsPanel::renderConfirmDialog()
-{
-    // The same dialog the Processes table's row menu confirms with (#1209).
-    if (ProcessActionConfirm::render(m_ShowConfirmDialog, m_ConfirmAction, cachedSnapshot().name, m_SelectedPid) ==
-        ProcessActionConfirm::Outcome::Confirmed)
-    {
-        dispatchConfirmedAction();
     }
 }
 
 Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const
 {
     return Detail::targetForSelection(m_SelectedPid, m_HasSnapshot ? m_CachedSnapshot.get() : nullptr);
-}
-
-void ProcessDetailsPanel::dispatchConfirmedAction()
-{
-    // m_ProcessActions can be null: the injection constructor doesn't reject a null
-    // unique_ptr (m_ActionCapabilities already handles that case), so guard here too rather
-    // than dereferencing unconditionally.
-    const Platform::ProcessActionResult result = m_ProcessActions
-                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, selectedTarget())
-                                                   : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_LastActionResult = Detail::formatActionResultMessage(m_ConfirmAction, m_SelectedPid, result);
-    m_ActionResultTimer = 5.0F;
-}
-
-void ProcessDetailsPanel::renderActionButtons()
-{
-    // Action buttons - use consistent sizing and 2x2 grid layout
-    constexpr const char* TERMINATE_LABEL = ICON_FA_XMARK " Terminate";
-    constexpr const char* KILL_LABEL = ICON_FA_SKULL " Kill";
-    // "Suspend", not "Pause": the same word as the confirm dialog and the result line (#1203).
-    constexpr const char* SUSPEND_LABEL = ICON_FA_PAUSE " Suspend";
-    constexpr const char* RESUME_LABEL = ICON_FA_PLAY " Resume";
-
-    // One width for all four, from the widest label and the font, capped to the pane (#949). See
-    // ProcessDetailsLayout::computeActionButtonWidth() for why it is no longer a fixed 180px.
-    const float emPx = ImGui::GetFontSize();
-    const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
-    const float widestLabel = std::max({ImGui::CalcTextSize(TERMINATE_LABEL).x,
-                                        ImGui::CalcTextSize(KILL_LABEL).x,
-                                        ImGui::CalcTextSize(SUSPEND_LABEL).x,
-                                        ImGui::CalcTextSize(RESUME_LABEL).x});
-    // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
-    // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
-    // *between* columns. Two columns have one gap, so the table is 2 * (width + gutter) plus
-    // 2 * CellPadding.x in total -- one CellPadding.x per column.
-    const float buttonWidth = ProcessDetailsLayout::computeActionButtonWidth(
-        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + ImGui::GetStyle().CellPadding.x);
-    constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
-    const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
-
-    // Terminate and Kill end the process, so they are drawn in the theme's danger colour, apart from
-    // Suspend and Resume, which can be undone (#1273).
-    const auto& theme = UI::Theme::get();
-
-    // Use a table for consistent alignment
-    if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
-    {
-        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-
-        // Row 1: Terminate and Kill
-        ImGui::TableNextRow();
-
-        // Terminate - graceful shutdown
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canTerminate)
-        {
-            if (UI::Widgets::filledButton(
-                    TERMINATE_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
-            {
-                m_ConfirmAction = ProcessAction::Terminate;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Ask the process to exit: it can save its work first, or refuse");
-            }
-        }
-
-        // Kill - force terminate
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canKill)
-        {
-            if (UI::Widgets::filledButton(KILL_LABEL, buttonSize, dangerButtonFills(), theme.scheme().textPrimary, theme.scheme().windowBg))
-            {
-                m_ConfirmAction = ProcessAction::Kill;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Force terminate (cannot be caught or ignored)");
-            }
-        }
-
-        // Row 2: Stop and Resume
-        ImGui::TableNextRow();
-
-        // Suspend - stop the process running until it is resumed
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canStop)
-        {
-            if (ImGui::Button(SUSPEND_LABEL, buttonSize))
-            {
-                m_ConfirmAction = ProcessAction::Stop;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Suspend the process until it is resumed");
-            }
-        }
-
-        // Resume - continue a suspended process
-        ImGui::TableNextColumn();
-        if (m_ActionCapabilities.canContinue)
-        {
-            if (ImGui::Button(RESUME_LABEL, buttonSize))
-            {
-                m_ConfirmAction = ProcessAction::Resume;
-                m_ShowConfirmDialog = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Resume a suspended process");
-            }
-        }
-
-        ImGui::EndTable();
-    }
-}
-
-// Renders the process-priority section: current nice value, the gradient slider (drawn via
-// the drawPriority*/handlePrioritySliderInput helpers below), and the Apply button. No-op if
-// the process actions probe doesn't support setting priority.
-void ProcessDetailsPanel::renderPrioritySection()
-{
-    if (!m_ActionCapabilities.canSetPriority)
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    const int currentNice = m_HasSnapshot ? cachedSnapshot().nice : 0;
-
-    // Initialize the control from the current process nice value if not changed
-    if (!m_PriorityChanged && m_HasSnapshot)
-    {
-        m_PriorityNiceValue = cachedSnapshot().nice;
-    }
-
-    const float emPx = ImGui::GetFontSize();
-    // Where the priority control ends, for right-aligning the Apply button under it.
-    float controlRightEdge = 0.0F;
-
-#ifdef _WIN32
-    // Windows has priority classes, not nice values (#1204): name the current class and offer the five
-    // settable ones in a combo. Each writes its representative nice value through setPriority(), which
-    // maps it back to that class; Realtime can only be shown.
-    const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current: %s)", currentClassName.c_str());
-    ImGui::Spacing();
-
-    const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_PriorityNiceValue);
-    const std::string selectedClassName{Detail::windowsPriorityClassName(selectedClass)};
-    const float comboWidth = std::min(Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, std::max(ImGui::GetContentRegionAvail().x, 1.0F));
-    ImGui::SetNextItemWidth(comboWidth);
-    if (ImGui::BeginCombo("##priority_class", selectedClassName.c_str()))
-    {
-        for (const Detail::WindowsPriorityClass priorityClass : Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES)
-        {
-            const std::string optionName{Detail::windowsPriorityClassName(priorityClass)};
-            const bool isSelected = priorityClass == selectedClass;
-            if (ImGui::Selectable(optionName.c_str(), isSelected) && !isSelected)
-            {
-                m_PriorityNiceValue = Detail::windowsPriorityClassNice(priorityClass);
-                m_PriorityChanged = true;
-                m_PriorityError.clear();
-            }
-            if (isSelected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("Windows priority class: higher classes get CPU time first.\n"
-                          "Realtime cannot be set here.\n\n"
-                          "Note: Changing another user's or an elevated process typically requires administrator privileges");
-    }
-    controlRightEdge = comboWidth;
-    if (selectedClass == Detail::WindowsPriorityClass::Realtime)
-    {
-        ImGui::TextColored(theme.scheme().textWarning,
-                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
-    }
-#else
-    // Show current nice value in the header
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
-    ImGui::Spacing();
-
-    auto* drawList = ImGui::GetWindowDrawList();
-    const ImGuiStyle& style = ImGui::GetStyle();
-
-    // ========================================
-    // Custom gradient priority slider (refactored into helper methods)
-    // Layout: High [====gradient====] Low
-    //                   Default
-    // ========================================
-
-    // Calculate "High" label width for offsetting the slider
-    const float labelPadding = Detail::PRIORITY_LABEL_PADDING_EM * emPx;
-    const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
-    const float highLabelOffset = highLabelSize.x + labelPadding;
-
-    // The track gets whatever the panel has left once both labels and their padding are placed, so a
-    // large font on a narrow panel shortens the track rather than pushing "Low" out of view.
-    const float availableTrackWidth = ImGui::GetContentRegionAvail().x - highLabelOffset - labelPadding - ImGui::CalcTextSize("Low").x;
-
-    // Build context for helper methods
-    PrioritySliderContext ctx;
-    ctx.drawList = drawList;
-    ctx.niceValue = m_PriorityNiceValue;
-    ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
-    ctx.style = &style;
-    ctx.priorityHighColor = theme.scheme().priorityHighColor;
-    ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
-    ctx.priorityLowColor = theme.scheme().priorityLowColor;
-    // A panel too narrow to leave any room is not "unconstrained": pass the smallest positive width
-    // so the track shrinks to that instead of taking its full authored width and being clipped.
-    ctx.metrics = Detail::computePrioritySliderMetrics(emPx, std::max(availableTrackWidth, 1.0F));
-    const Detail::PrioritySliderMetrics& metrics = ctx.metrics;
-
-    // Reserve space for badge above slider (offset by High label width)
-    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
-    ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
-    ImGui::Dummy(ImVec2(highLabelOffset + metrics.sliderWidth, metrics.badgeHeight + metrics.badgeArrowSize));
-
-    // Draw the value badge/callout above the slider position
-    drawPriorityBadge(drawList, ctx);
-
-    // Draw "High" label (left of slider, vertically centered with slider)
-    // Note: 'theme' is already declared in the outer scope
-    const float sliderRowY = ImGui::GetCursorPosY();
-    const float labelCenterY = sliderRowY + ((metrics.sliderHeight - highLabelSize.y) * 0.5F);
-    ImGui::SetCursorPosY(labelCenterY);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
-    ImGui::TextUnformatted("High");
-    ImGui::PopStyleColor();
-
-    // Position the slider after "High" label on same line
-    ImGui::SameLine();
-    ImGui::SetCursorPosY(sliderRowY);
-
-    // Draw the gradient slider bar
-    ctx.sliderMin = ImGui::GetCursorScreenPos();
-    ctx.sliderMax = ImVec2(ctx.sliderMin.x + metrics.sliderWidth, ctx.sliderMin.y + metrics.sliderHeight);
-    // Store window-local X coordinate for scale label positioning
-    ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
-
-    // Draw gradient background (red -> green -> blue)
-    drawPriorityGradient(drawList, ctx);
-
-    // Draw slider border
-    drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), metrics.sliderCornerRadius);
-
-    // Draw slider thumb/handle
-    drawPriorityThumb(drawList, ctx);
-
-    // Make the slider interactive with an invisible button
-    ImGui::InvisibleButton("##priority_slider", ImVec2(metrics.sliderWidth, metrics.sliderHeight));
-    handlePrioritySliderInput(ctx);
-
-    // Draw "Low" label and "Default" label
-    drawPriorityScaleLabels(ctx);
-
-    // Tooltip on hover with keyboard shortcut hints
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
-                          "Lower values = higher priority (more CPU time)\n"
-                          "Normal priority = 0\n\n"
-                          "Keyboard shortcuts:\n"
-                          "  Left/Right: Adjust by 1\n"
-                          "  PgUp/PgDown: Adjust by 5\n"
-                          "  Home/End: Min/Max priority\n"
-                          "  0: Reset to default\n\n"
-                          "Note: Setting values below 0 typically requires root/admin privileges");
-    }
-    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
-    // Apply button stopped that far short of the track's right edge.
-    controlRightEdge = highLabelOffset + metrics.sliderWidth;
-#endif
-
-    ImGui::Spacing();
-
-    // ========================================
-    // Action button (right-aligned)
-    // ========================================
-    const bool canApply = m_PriorityChanged && m_HasSnapshot;
-
-    // Right-align the Apply button
-    // Capped to the panel for the same reason the track is: the content area does not scroll
-    // horizontally, so a button wider than the space available would be clipped.
-    const float applyButtonWidth =
-        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
-                 std::max(ImGui::GetContentRegionAvail().x, 1.0F));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, controlRightEdge - applyButtonWidth));
-
-    // Apply button with success (green) styling
-    {
-        if (!canApply)
-        {
-            ImGui::BeginDisabled();
-        }
-        // As for the Settings dialog's Apply: the label is drawn in whichever of the theme's text
-        // colour and window background reads better on the fill showing in the current state (#969).
-        if (UI::Widgets::filledButton("Apply",
-                                      ImVec2(applyButtonWidth, 0.0F),
-                                      {
-                                          .resting = theme.scheme().successButton,
-                                          .hovered = theme.scheme().successButtonHovered,
-                                          .pressed = theme.scheme().successButtonActive,
-                                      },
-                                      theme.scheme().textPrimary,
-                                      theme.scheme().windowBg))
-        {
-            const auto result = m_ProcessActions->setPriority(selectedTarget(), m_PriorityNiceValue);
-            if (result.success)
-            {
-                m_PriorityError.clear(); // Clear any previous error
-                m_PriorityChanged = false;
-            }
-            else
-            {
-                m_PriorityError = result.errorMessage; // Persistent error message
-                // Revert slider to the actual process priority since the change failed
-                m_PriorityNiceValue = cachedSnapshot().nice;
-                m_PriorityChanged = false;
-            }
-        }
-        if (!canApply)
-        {
-            ImGui::EndDisabled();
-        }
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    {
-        ImGui::SetTooltip("Apply the selected priority to the process");
-    }
-
-    // Display persistent error message if priority change failed
-    if (!m_PriorityError.empty())
-    {
-        ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_PriorityError.c_str());
-    }
-}
-
-// =============================================================================
-// Priority Slider Helper Methods
-// =============================================================================
-
-void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
-{
-    const float badgeX = ctx.cursorStart.x + (ctx.normalizedPos * ctx.metrics.sliderWidth);
-    const float badgeY = ctx.cursorStart.y;
-
-    // Badge text
-    const std::string valueText = std::to_string(ctx.niceValue);
-    const ImVec2 textSize = ImGui::CalcTextSize(valueText.c_str());
-    const float badgeWidth = textSize.x + (ctx.style->FramePadding.x * 2.0F);
-    const float badgeHalfWidth = badgeWidth * 0.5F;
-
-    // Keep the badge over the slider rather than hanging off either end
-    const float clampedBadgeX = Detail::computeBadgeCenterX(badgeX, ctx.cursorStart.x, ctx.metrics.sliderWidth, badgeHalfWidth);
-
-    // Badge rectangle
-    const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
-    const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + ctx.metrics.badgeHeight);
-
-    // Badge color based on nice value
-    const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
-
-    // Draw badge rectangle with rounded corners
-    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, ctx.metrics.badgeCornerRadius);
-
-    // Draw arrow pointing down from badge
-    const ImVec2 arrowTip(badgeX, badgeMax.y + ctx.metrics.badgeArrowSize);
-    const ImVec2 arrowLeft(badgeX - ctx.metrics.badgeArrowSize, badgeMax.y);
-    const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
-    drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
-
-    // The theme's badge text colour when it reaches 4.5:1 on this badge's fill, else its window
-    // background when that does, else black or white (badgeTextFor): a fixed colour was unreadable on
-    // the nice-0 badge in most dark themes (#1130).
-    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
-    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(
-        Detail::badgeTextFor(Detail::unpackColor(badgeColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
-
-    // Draw badge text
-    const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((ctx.metrics.badgeHeight - textSize.y) * 0.5F));
-    drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
-}
-
-void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
-{
-    constexpr auto SEGMENTS = static_cast<int>(PRIORITY_GRADIENT_SEGMENTS);
-    const float segmentWidth = ctx.metrics.sliderWidth / PRIORITY_GRADIENT_SEGMENTS;
-
-    for (int i = 0; i < SEGMENTS; ++i)
-    {
-        const float t1 = static_cast<float>(i) / PRIORITY_GRADIENT_SEGMENTS;
-        const float t2 = static_cast<float>(i + 1) / PRIORITY_GRADIENT_SEGMENTS;
-        const int nice1 = NICE_MIN + static_cast<int>(t1 * static_cast<float>(NICE_RANGE));
-        const int nice2 = NICE_MIN + static_cast<int>(t2 * static_cast<float>(NICE_RANGE));
-        const ImU32 col1 = getNiceColor(nice1, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
-        const ImU32 col2 = getNiceColor(nice2, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
-
-        const ImVec2 segMin(ctx.sliderMin.x + (static_cast<float>(i) * segmentWidth), ctx.sliderMin.y);
-        const ImVec2 segMax(ctx.sliderMin.x + (static_cast<float>(i + 1) * segmentWidth), ctx.sliderMax.y);
-
-        drawList->AddRectFilledMultiColor(segMin, segMax, col1, col2, col2, col1);
-    }
-}
-
-void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx)
-{
-    const float thumbX = ctx.sliderMin.x + (ctx.normalizedPos * ctx.metrics.sliderWidth);
-    const float thumbRadius = ctx.metrics.thumbRadius;
-    const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (ctx.metrics.sliderHeight * 0.5F));
-
-    // The thumb sits on the track at the current nice value, which is the badge's fill, so it takes the
-    // badge text's colour: readable there by construction rather than a fixed colour that vanished into
-    // the light green middle of the track on dark themes (#1130).
-    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
-    const ImU32 trackColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
-    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(
-        Detail::badgeTextFor(Detail::unpackColor(trackColorU32), scheme.priorityBadgeTextColor, scheme.windowBg));
-
-    // Thumb outline
-    drawList->AddCircleFilled(thumbCenter, thumbRadius + ctx.metrics.thumbOutlineThickness, ImGui::GetColorU32(ImGuiCol_Border));
-    // Thumb fill
-    drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
-}
-
-void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext& ctx)
-{
-    // Mouse input: drag to set value
-    if (ImGui::IsItemActive())
-    {
-        const float mouseX = ImGui::GetIO().MousePos.x;
-        const float relX = std::clamp((mouseX - ctx.sliderMin.x) / ctx.metrics.sliderWidth, 0.0F, 1.0F);
-        const int32_t newNice = getNiceFromPosition(relX);
-        if (newNice != m_PriorityNiceValue)
-        {
-            m_PriorityNiceValue = newNice;
-            m_PriorityChanged = true;
-            // Clear any previous error when user interacts with slider
-            // This provides fresher feedback rather than showing stale errors
-            m_PriorityError.clear();
-        }
-    }
-
-    // Keyboard input: adjust value when focused
-    // Keys: Left/Right (±1), PgUp/PgDown (±5), Home/End (min/max), 0 (default)
-    if (ImGui::IsItemFocused())
-    {
-        int32_t newNice = m_PriorityNiceValue;
-
-        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
-        {
-            newNice = std::max(NICE_MIN, m_PriorityNiceValue - 1);
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
-        {
-            newNice = std::min(NICE_MAX, m_PriorityNiceValue + 1);
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_PageUp))
-        {
-            // Page Up = higher priority = lower nice value
-            newNice = std::max(NICE_MIN, m_PriorityNiceValue - 5);
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_PageDown))
-        {
-            // Page Down = lower priority = higher nice value
-            newNice = std::min(NICE_MAX, m_PriorityNiceValue + 5);
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_Home))
-        {
-            newNice = NICE_MIN; // Highest priority (-20)
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_End))
-        {
-            newNice = NICE_MAX; // Lowest priority (19)
-        }
-        else if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Keypad0))
-        {
-            newNice = 0; // Default priority
-        }
-
-        if (newNice != m_PriorityNiceValue)
-        {
-            m_PriorityNiceValue = newNice;
-            m_PriorityChanged = true;
-            m_PriorityError.clear();
-        }
-    }
-}
-
-void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& ctx)
-{
-    const auto& theme = UI::Theme::get();
-
-    // "Low" label (right of slider, colored blue)
-    // Position it after the slider with padding (sliderLocalX + width = right edge)
-    const float lowLabelX = ctx.sliderLocalX + ctx.metrics.sliderWidth + ctx.metrics.labelPadding;
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(lowLabelX);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
-    ImGui::TextUnformatted("Low");
-    ImGui::PopStyleColor();
-
-    // "Default" label centered below the 0 position on the slider
-    // Use getNicePosition(0) for consistency with other position calculations
-    const float defaultX = ctx.sliderLocalX + (getNicePosition(0) * ctx.metrics.sliderWidth);
-    const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
-    ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-    ImGui::TextUnformatted("Default");
-    ImGui::PopStyleColor();
 }
 
 } // namespace App

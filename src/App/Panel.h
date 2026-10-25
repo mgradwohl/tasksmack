@@ -9,8 +9,8 @@ namespace App
 {
 
 /// Base class for all UI panels in the application.
-/// Panels are ImGui-based windows that can be shown/hidden and managed by ShellLayer.
-/// New panels should implement render() and renderContent().
+/// Panels are ImGui content that ShellLayer shows as tabs of its main window (PanelTabs).
+/// New panels should implement renderContent().
 class Panel
 {
   public:
@@ -43,12 +43,6 @@ class Panel
     /// Return true from your handler to mark the event as handled and stop propagation
     virtual void onEvent([[maybe_unused]] Core::Event& event)
     {}
-
-    /// Render the panel. Must be implemented by derived classes.
-    /// Should call ImGui::Begin/End with the panel name.
-    /// @param open Pointer to visibility flag. Set to false to hide panel.
-    ///             If nullptr, the close button is not shown.
-    virtual void render(bool* open) = 0;
 
     /// Render content without an ImGui window wrapper, for embedding in a shell tab.
     virtual void renderContent() = 0;

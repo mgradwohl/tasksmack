@@ -1,0 +1,12 @@
+{
+  "thresholds": {
+    "BM_ProcessModel_GetSnapshots": {
+      "threshold": 60,
+      "reason": "#2336: copies ~150 ProcessSnapshots, so it is allocator/memory-bound and depends on the hosted-runner class far more than most benchmarks. Against linux-ci-baseline.json it measured 1.18-1.40x on 34 of 47 main captures (2026-10-15 to 10-17) with no code change, crossing 40% once (+40.4%). 60% clears that by about 14%."
+    },
+    "BM_ChartWidgets_ComputeAlpha": {
+      "threshold": 60,
+      "reason": "#2336: moves with GetSnapshots across runner classes (sd of the log ratio between them 0.05 over the same 47 captures), measuring up to 1.44x with no code change and crossing 40% twice (+44.2%). 60% clears that by about 11%."
+    }
+  }
+}

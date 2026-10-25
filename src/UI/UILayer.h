@@ -32,8 +32,6 @@ class UILayer : public Core::Layer
   private:
     void beginFrame();
     void endFrame();
-    static void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
-    static void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
     void rebuildForDisplayScaleChange();
 
     // Where the fonts were loaded from, kept to rebuild them at a new display scale (#943).

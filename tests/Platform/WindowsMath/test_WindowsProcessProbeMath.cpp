@@ -1,5 +1,5 @@
 /// @file test_WindowsProcessProbeMath.cpp
-/// @brief Unit tests for WindowsProcessProbeMath.h's pure process-state, detail-cache and EStats logic
+/// @brief Unit tests for WindowsProcessProbeMath.h's pure process-state, detail-cache, EStats and memory-field logic
 ///
 /// WindowsProcessProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -175,6 +175,47 @@ TEST(DeriveProcessStateTest, SystemIdleProcessIsIdle)
     EXPECT_EQ(deriveProcessState(tallyOf({{THREAD_STATE_RUNNING, 0}, {THREAD_STATE_RUNNING, 0}}), true), 'I');
 }
 
+// ==========================================================================
+// windowsProcessStatus: the Status column from its two independent reads (#2312)
+// ==========================================================================
+
+constexpr PowerThrottlingMasks ECO_QOS{.controlMask = POWER_THROTTLING_EXECUTION_SPEED, .stateMask = POWER_THROTTLING_EXECUTION_SPEED};
+
+TEST(WindowsProcessStatusTest, NeitherFrozenNorThrottledIsAnEmptyStatus)
+{
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, FrozenIsSuspendedAndWinsOverEfficiencyMode)
+{
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, PowerThrottlingMasks{}), "Suspended");
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, ECO_QOS), "Suspended");
+    EXPECT_EQ(windowsProcessStatus(EXTENDED_BASIC_IS_FROZEN, std::nullopt), "Suspended");
+}
+
+TEST(WindowsProcessStatusTest, EcoQosIsEfficiencyModeAndTheBackgroundFlagIsNot)
+{
+    constexpr std::uint32_t IS_BACKGROUND = 0x20;
+    EXPECT_EQ(windowsProcessStatus(0U, ECO_QOS), "Efficiency Mode");
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, ECO_QOS), "Efficiency Mode");
+    EXPECT_EQ(windowsProcessStatus(IS_BACKGROUND, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, ThrottlingTakenControlOfButSwitchedOffIsNotEfficiencyMode)
+{
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{.controlMask = POWER_THROTTLING_EXECUTION_SPEED, .stateMask = 0}),
+              std::optional<std::string_view>{""});
+    EXPECT_EQ(windowsProcessStatus(0U, PowerThrottlingMasks{.controlMask = 0, .stateMask = POWER_THROTTLING_EXECUTION_SPEED}),
+              std::optional<std::string_view>{""});
+}
+
+TEST(WindowsProcessStatusTest, OnlyNeitherReadIsUnknown)
+{
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, std::nullopt), std::nullopt);
+    EXPECT_EQ(windowsProcessStatus(0U, std::nullopt), std::optional<std::string_view>{""});
+    EXPECT_EQ(windowsProcessStatus(std::nullopt, PowerThrottlingMasks{}), std::optional<std::string_view>{""});
+}
+
 TEST(PlanDetailRefreshTest, FirstSampleRefreshesEverything)
 {
     const auto plan = planDetailRefresh(true, false, false, false);
@@ -248,6 +289,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .total = 10,
         .established = 4,
         .enabled = 4,
+        .alreadyEnabled = 0,
         .readOk = 3,
         .saneReads = 2,
         .readNotFound = 1,
@@ -255,11 +297,13 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .accessDenied = 0,
         .hasData = 2,
         .garbage = 1,
+        .collectionOff = 2,
     };
     const EStatsSampleCounts v6{
         .total = 5,
         .established = 2,
         .enabled = 1,
+        .alreadyEnabled = 1,
         .readOk = 2,
         .saneReads = 2,
         .readNotFound = 0,
@@ -267,11 +311,13 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
         .accessDenied = 1,
         .hasData = 1,
         .garbage = 0,
+        .collectionOff = 1,
     };
     v4 += v6;
     EXPECT_EQ(v4.total, 15U);
     EXPECT_EQ(v4.established, 6U);
     EXPECT_EQ(v4.enabled, 5U);
+    EXPECT_EQ(v4.alreadyEnabled, 1U);
     EXPECT_EQ(v4.readOk, 5U);
     EXPECT_EQ(v4.saneReads, 4U);
     EXPECT_EQ(v4.readNotFound, 1U);
@@ -279,6 +325,7 @@ TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
     EXPECT_EQ(v4.accessDenied, 1U);
     EXPECT_EQ(v4.hasData, 3U);
     EXPECT_EQ(v4.garbage, 1U);
+    EXPECT_EQ(v4.collectionOff, 3U);
 }
 
 TEST(RecordEStatsRowTest, TalliesEachOutcome)
@@ -460,6 +507,282 @@ TEST(ClassifyEStatsProbeTest, InconclusiveSamplesInARowBecomeUnavailable)
 
     // An idle sample is never inconclusive in that sense, whatever the streak.
     EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}, MAX_INCONCLUSIVE_ESTATS_SAMPLES), EStatsProbeResult::Undetermined);
+}
+
+// ---------------------------------------------------------------------------
+// EStatsEnableTracker (#1418): enable EStats collection once per connection, not every sample
+// ---------------------------------------------------------------------------
+
+constexpr std::uint64_t KEY_A = 0x1111;
+constexpr std::uint64_t KEY_B = 0x2222;
+constexpr std::uint64_t KEY_C = 0x3333;
+
+/// Record a sane read with data for @p key, as the probe would after a successful enable (or with
+/// none attempted when needsEnable() said it was already on).
+void recordSaneRead(EStatsEnableTracker& tracker, std::uint64_t key)
+{
+    const std::optional<std::uint32_t> enableStatus =
+        tracker.needsEnable(key) ? std::optional<std::uint32_t>{ESTATS_NO_ERROR} : std::nullopt;
+    tracker.record(key, enableStatus, EStatsRowOutcome::Accumulated, true);
+}
+
+TEST(EStatsEnableTrackerTest, NewConnectionNeedsEnable)
+{
+    const EStatsEnableTracker tracker;
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+    EXPECT_EQ(tracker.size(), 0U);
+}
+
+TEST(EStatsEnableTrackerTest, EnabledConnectionIsNotEnabledAgain)
+{
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, ESTATS_NO_ERROR, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+
+    // Next sample: no enable attempted (nullopt) and the read works, so it stays known.
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, FailedEnableIsNotRemembered)
+{
+    // Every failed enable must reach recordEStatsRow() again next sample, so the #1161 / #1358
+    // access-denied detection sees it.
+    for (const std::uint32_t status : {ESTATS_ERROR_ACCESS_DENIED, ESTATS_ERROR_NOT_FOUND, std::uint32_t{87}})
+    {
+        EStatsEnableTracker tracker;
+        // Even if the read works (another process enabled collection), our enable did not.
+        tracker.record(KEY_A, status, EStatsRowOutcome::Accumulated, true);
+        tracker.endSample(true);
+        EXPECT_TRUE(tracker.needsEnable(KEY_A)) << status;
+    }
+}
+
+TEST(EStatsEnableTrackerTest, ReadWithoutAnyEnableIsNotRemembered)
+{
+    // No Set function: nothing was enabled, whatever the read says.
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, true);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, FailedReadEnablesAgainNextSample)
+{
+    for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
+    {
+        EStatsEnableTracker tracker;
+        recordSaneRead(tracker, KEY_A);
+        tracker.endSample(true);
+        ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+        tracker.record(KEY_A, std::nullopt, outcome, false);
+        tracker.endSample(true);
+        EXPECT_TRUE(tracker.needsEnable(KEY_A)) << static_cast<int>(outcome);
+    }
+}
+
+TEST(EStatsEnableTrackerTest, CollectionOffReadEnablesAgainNextSample)
+{
+    // Collection read back off (another tool, or a reused 4-tuple): forgotten even with data.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::CollectionOff, true);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, ReadWithNoDataEnablesAgainNextSample)
+{
+    // Both counters 0: collection may be off (a reused 4-tuple, or another tool disabled it).
+    EStatsEnableTracker tracker;
+    tracker.record(KEY_A, ESTATS_NO_ERROR, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, ReusedFourTupleIsReEnabled)
+{
+    // A connection closes and a new one takes the same 4-tuple (same key) between samples. The new
+    // one was never enabled, so its read fails or reads 0 bytes: forgotten, enabled next sample.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    ASSERT_FALSE(tracker.needsEnable(KEY_A));
+
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::Accumulated, false);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, ClosedConnectionsArePruned)
+{
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    recordSaneRead(tracker, KEY_B);
+    tracker.endSample(true);
+    ASSERT_EQ(tracker.size(), 2U);
+
+    // KEY_B closed: not in this complete walk.
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    EXPECT_EQ(tracker.size(), 1U);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+}
+
+TEST(EStatsEnableTrackerTest, IncompleteWalkPrunesNothing)
+{
+    // A table that could not be read leaves its connections out of the walk; they may still be open.
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    recordSaneRead(tracker, KEY_B);
+    tracker.endSample(true);
+
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(false);
+    EXPECT_FALSE(tracker.needsEnable(KEY_B));
+
+    // The next complete walk prunes whatever it does not see.
+    recordSaneRead(tracker, KEY_A);
+    tracker.endSample(true);
+    EXPECT_TRUE(tracker.needsEnable(KEY_B));
+}
+
+TEST(EStatsEnableTrackerTest, SkippedRowsAreIgnored)
+{
+    EStatsEnableTracker tracker;
+    recordSaneRead(tracker, KEY_A);
+    tracker.record(KEY_A, std::nullopt, EStatsRowOutcome::SkippedState, false);
+    tracker.endSample(true);
+    EXPECT_FALSE(tracker.needsEnable(KEY_A));
+}
+
+TEST(EStatsEnableTrackerTest, SteadyConnectionsAreEnabledOnce)
+{
+    // The #1418 regression: three busy connections over five samples take three enables, not 15.
+    EStatsEnableTracker tracker;
+    std::size_t enables = 0;
+    for (int sample = 0; sample < 5; ++sample)
+    {
+        for (const std::uint64_t key : {KEY_A, KEY_B, KEY_C})
+        {
+            enables += tracker.needsEnable(key) ? 1U : 0U;
+            recordSaneRead(tracker, key);
+        }
+        tracker.endSample(true);
+    }
+    EXPECT_EQ(enables, 3U);
+}
+
+// A successful read that reports collection off (#1418): its counters are undefined.
+
+TEST(ClassifyEStatsRowTest, CollectionOffReadIsNotAccepted)
+{
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, 5'000, 7'000, false), EStatsRowOutcome::CollectionOff);
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, 5'000, 7'000, true), EStatsRowOutcome::Accumulated);
+    // A failed read stays a failed read; a skipped row stays skipped.
+    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ESTATS_ERROR_NOT_FOUND, 0, 0, false), EStatsRowOutcome::ReadFailed);
+    EXPECT_EQ(classifyEStatsRow(2, ESTATS_NO_ERROR, 0, 0, false), EStatsRowOutcome::SkippedState);
+}
+
+TEST(RecordEStatsRowTest, CollectionOffIsAReadButNeitherSaneNorDenied)
+{
+    EStatsSampleCounts counts;
+    EXPECT_EQ(recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, ESTATS_NO_ERROR, 5'000, 7'000, false),
+              EStatsRowOutcome::CollectionOff);
+    EXPECT_EQ(counts.established, 1U);
+    EXPECT_EQ(counts.readOk, 1U);
+    EXPECT_EQ(counts.collectionOff, 1U);
+    EXPECT_EQ(counts.saneReads, 0U);
+    EXPECT_EQ(counts.hasData, 0U);
+    EXPECT_EQ(counts.garbage, 0U);
+    EXPECT_EQ(counts.accessDenied, 0U);
+    EXPECT_EQ(counts.readFailedOther, 0U);
+}
+
+TEST(ClassifyEStatsProbeTest, CollectionOffReadsAreInconclusive)
+{
+    // Not proof EStats works (no sane read), not proof it is denied: inconclusive, like garbage,
+    // so a streak of them still ends in Unavailable.
+    EStatsSampleCounts off;
+    (void) recordEStatsRow(off, TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, ESTATS_NO_ERROR, 5'000, 7'000, false);
+    EXPECT_EQ(classifyEStatsProbe(off, 0), EStatsProbeResult::Undetermined);
+    EXPECT_EQ(classifyEStatsProbe(off, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
+
+    // Beside a sane read, the sample proves EStats works.
+    (void) recordEStatsRow(off, TCP_STATE_ESTABLISHED, std::nullopt, ESTATS_NO_ERROR, 10, 10);
+    EXPECT_EQ(classifyEStatsProbe(off), EStatsProbeResult::Available);
+}
+
+TEST(BuildSocketTrafficSamplesTest, CollectionOffConnectionIsUnreadable)
+{
+    const std::vector<EStatsConnectionRead> reads{
+        {.key = KEY_A, .pid = 7, .outcome = EStatsRowOutcome::CollectionOff, .bytesReceived = 7'000, .bytesSent = 5'000},
+    };
+    const auto samples = buildSocketTrafficSamples(reads);
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_EQ(samples.front().key, KEY_A);
+    EXPECT_FALSE(samples.front().readable);
+    EXPECT_EQ(samples.front().bytesReceived, 0U);
+    EXPECT_EQ(samples.front().bytesSent, 0U);
+}
+
+// classifyEStatsProbe() on samples where every connection was enabled earlier (#1418): the
+// rows are tallied with no enable status, and the verdicts must match re-enabling them first.
+
+EStatsSampleCounts tallyKnownRows(std::initializer_list<std::uint32_t> readStatuses, std::uint64_t bytes)
+{
+    EStatsSampleCounts counts;
+    for (const std::uint32_t readStatus : readStatuses)
+    {
+        (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, readStatus, bytes, bytes);
+    }
+    return counts;
+}
+
+TEST(ClassifyEStatsProbeTest, AllKnownConnectionsReadingSanelyAreAvailable)
+{
+    const EStatsSampleCounts counts = tallyKnownRows({ESTATS_NO_ERROR, ESTATS_NO_ERROR}, 100);
+    EXPECT_EQ(counts.enabled, 0U);
+    EXPECT_EQ(counts.established, 2U);
+    EXPECT_EQ(counts.saneReads, 2U);
+    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
+    EXPECT_EQ(classifyEStatsProbe(counts, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Available);
+
+    // Idle known connections (0 bytes) still read sanely.
+    EXPECT_EQ(classifyEStatsProbe(tallyKnownRows({ESTATS_NO_ERROR}, 0)), EStatsProbeResult::Available);
+}
+
+TEST(ClassifyEStatsProbeTest, AllKnownConnectionsMatchTheReEnabledVerdicts)
+{
+    // Same reads, with and without a (successful) enable first: same verdict every time.
+    for (const std::uint32_t readStatus : {ESTATS_NO_ERROR, ESTATS_ERROR_ACCESS_DENIED, ESTATS_ERROR_NOT_FOUND, std::uint32_t{87}})
+    {
+        EStatsSampleCounts known;
+        EStatsSampleCounts reEnabled;
+        (void) recordEStatsRow(known, TCP_STATE_ESTABLISHED, std::nullopt, readStatus, 10, 10);
+        (void) recordEStatsRow(reEnabled, TCP_STATE_ESTABLISHED, ESTATS_NO_ERROR, readStatus, 10, 10);
+        for (std::size_t prior = 0; prior < MAX_INCONCLUSIVE_ESTATS_SAMPLES; ++prior)
+        {
+            EXPECT_EQ(classifyEStatsProbe(known, prior), classifyEStatsProbe(reEnabled, prior)) << readStatus << " " << prior;
+        }
+    }
+    // A read denied on a known connection is still caught (#1161, #1358).
+    EXPECT_EQ(classifyEStatsProbe(tallyKnownRows({ESTATS_ERROR_ACCESS_DENIED}, 0)), EStatsProbeResult::Unavailable);
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,6 +1356,126 @@ TEST(ClassifyNetworkCounterDenialTest, ElevatedSampleWithEveryEStatsAccessDenied
     const NetworkCounterDenial denial = classifyNetworkCounterDenial(/*isElevated=*/true, /*hasNetworkCounters=*/false, accessDenied);
     EXPECT_TRUE(denial.blocked);
     EXPECT_FALSE(denial.reducedPrivileges);
+}
+
+// ==========================================================================
+// windowsProcessMemory: which SYSTEM_PROCESS_INFORMATION figure each memory
+// column shows (#1184)
+// ==========================================================================
+
+constexpr std::uint64_t ONE_MIB = 1024ULL * 1024;
+
+TEST(WindowsProcessMemoryTest, MemoryIsThePrivateWorkingSetNotTheWholeWorkingSet)
+{
+    // A process with 40 MiB of its own pages in RAM and 160 MiB of shared DLL and mapped-file pages:
+    // Task Manager's Memory column shows 40 MiB, not 200.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 40 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, VirtualIsTheCommitSizeNotReservedAddressSpace)
+{
+    // Control Flow Guard reserves about 2 TiB of address space in every 64-bit process that uses it;
+    // VirtualSize counts it, Task Manager's Commit size does not.
+    constexpr std::uint64_t CFG_RESERVATION = 2048 * ONE_GIB;
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = CFG_RESERVATION + (300 * ONE_MIB),
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.virtualBytes, 60 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, PeakIsThePeakWorkingSet)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.peakRssBytes, 250 * ONE_MIB);
+    EXPECT_GE(memory.peakRssBytes, memory.rssBytes);
+}
+
+TEST(WindowsProcessMemoryTest, NegativePrivateWorkingSetReadsAsZero)
+{
+    // WorkingSetPrivateSize is a signed LARGE_INTEGER; a negative value is not a size.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = -1,
+        .workingSetSize = 8 * ONE_MIB,
+        .peakWorkingSetSize = 8 * ONE_MIB,
+        .virtualSize = 16 * ONE_MIB,
+        .pagefileUsage = 4 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, SharedIsTheShareableWorkingSet)
+{
+    // The same process: 160 MiB of its 200 MiB working set is DLL and mapped-file pages, which other
+    // processes can share (#2583). Memory and Shared add up to the whole working set.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.sharedBytes, 160 * ONE_MIB);
+    EXPECT_EQ(memory.rssBytes + memory.sharedBytes, 200 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, AnAllPrivateWorkingSetHasNoSharedPart)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(64 * ONE_MIB),
+        .workingSetSize = 64 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 64 * ONE_MIB);
+    EXPECT_EQ(memory.sharedBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, SharedClampsAtZeroWhenThePrivateWorkingSetIsTheLarger)
+{
+    // The two figures are not read atomically: a private working set read after the working set grew
+    // can exceed it. Shared reads 0 then, not a wrapped-around 16 EiB.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(48 * ONE_MIB),
+        .workingSetSize = 40 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 48 * ONE_MIB);
+    EXPECT_EQ(memory.sharedBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, ANegativePrivateWorkingSetLeavesTheWholeWorkingSetShared)
+{
+    // A negative WorkingSetPrivateSize counts as 0 for Memory, so it counts as 0 for Shared too: Shared
+    // is the whole working set, never more than it.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = -1,
+        .workingSetSize = 8 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 0U);
+    EXPECT_EQ(memory.sharedBytes, 8 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, KernelPseudoProcessWithNoMemoryReadsZero)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({});
+    EXPECT_EQ(memory.rssBytes, 0U);
+    EXPECT_EQ(memory.sharedBytes, 0U);
+    EXPECT_EQ(memory.peakRssBytes, 0U);
+    EXPECT_EQ(memory.virtualBytes, 0U);
 }
 
 } // namespace

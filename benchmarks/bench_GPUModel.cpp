@@ -168,7 +168,9 @@ static void BM_GPUModel_GpuInfo(benchmark::State& state)
 }
 BENCHMARK(BM_GPUModel_GpuInfo);
 
-// Benchmark historyTimestamps() – used to align chart X axes
+// Benchmark reading a GPU's timestamps from the latest publication – used to align chart X axes.
+// The history reads here used to time per-series copy accessors that only tests called, removed in
+// #1185; the charts read the published views (#1412).
 static void BM_GPUModel_HistoryTimestamps(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -184,17 +186,28 @@ static void BM_GPUModel_HistoryTimestamps(benchmark::State& state)
         model.refresh();
     }
 
+    // A GPU ID to query (the probe found a GPU, so the model lists it, but guard anyway)
+    auto info = model.gpuInfo();
+    if (info.empty())
+    {
+        state.SkipWithMessage("No GPUs available");
+        return;
+    }
+
+    const std::string gpuId = info[0].id;
+
     for (auto _ : state)
     {
-        auto ts = model.historyTimestamps();
-        benchmark::DoNotOptimize(ts.data());
-        benchmark::DoNotOptimize(ts.size());
+        const auto publication = model.publication();
+        const auto it = publication->histories.find(gpuId);
+        const std::size_t size = (it != publication->histories.end()) ? it->second.timestamps.size() : 0;
+        benchmark::DoNotOptimize(size);
     }
 }
 BENCHMARK(BM_GPUModel_HistoryTimestamps);
 
-// Benchmark utilizationHistory() – extracts float utilization values from
-// per-GPU ring buffer. Called per-GPU per-frame for chart rendering.
+// Benchmark reading a GPU's utilization series from the latest publication. Read per-GPU per-frame
+// for chart rendering.
 static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -222,15 +235,17 @@ static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.utilizationHistory(gpuId);
-        benchmark::DoNotOptimize(hist.data());
-        benchmark::DoNotOptimize(hist.size());
+        const auto publication = model.publication();
+        const auto it = publication->histories.find(gpuId);
+        const std::size_t size = (it != publication->histories.end()) ? it->second.utilization.size() : 0;
+        benchmark::DoNotOptimize(size);
     }
 }
 BENCHMARK(BM_GPUModel_UtilizationHistory);
 
-// Benchmark readProcessGPUCounters() – per-process GPU usage, called by ProcessModel
-// to enrich process snapshots with GPU data.
+// Benchmark the probe's readProcessGPUCounters() – the per-process GPU read that each
+// GPUModel::refresh() makes on the GPU sampler and publishes for ProcessModel to merge (#1417).
+// GPUModel has no direct per-process read any more (#2155), so this calls the probe it would.
 static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -239,19 +254,18 @@ static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
     }
 
     auto probe = Platform::makeGPUProbe();
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
+    static_cast<void>(probe->readProcessGPUCounters()); // warm up, as GPUModel's first refresh would
 
     BenchmarkUtils::MemoryDeltaTracker memTracker;
 
     for (auto _ : state)
     {
-        auto counters = model.readProcessGPUCounters();
+        auto counters = probe->readProcessGPUCounters();
         benchmark::DoNotOptimize(counters.data());
         benchmark::DoNotOptimize(counters.size());
     }
 
-    auto counters = model.readProcessGPUCounters();
+    auto counters = probe->readProcessGPUCounters();
     state.counters["gpu_process_entries"] = benchmark::Counter(static_cast<double>(counters.size()));
 
     BenchmarkUtils::reportMemoryCounters(state);

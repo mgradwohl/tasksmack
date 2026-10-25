@@ -1,17 +1,27 @@
 #include "SyntheticScenario.h"
 
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
+#include "Platform/AsciiCase.h"
+#include "Platform/AsciiTrim.h"
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/Synthetic/SyntheticProbes.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
@@ -21,7 +31,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -47,27 +56,10 @@ namespace Sampling = Domain::Sampling;
 /// The spacing of preloaded samples: the fastest refresh interval.
 constexpr std::chrono::milliseconds PRELOAD_INTERVAL{Sampling::REFRESH_INTERVAL_MIN_MS};
 
-[[nodiscard]] std::string_view trim(std::string_view text) noexcept
-{
-    const auto isSpace = [](char c)
-    {
-        return std::isspace(static_cast<unsigned char>(c)) != 0;
-    };
-    while (!text.empty() && isSpace(text.front()))
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && isSpace(text.back()))
-    {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
 [[nodiscard]] std::string lower(std::string_view text)
 {
     std::string result(text);
-    std::ranges::transform(result, result.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+    std::ranges::transform(result, result.begin(), Platform::foldAscii);
     return result;
 }
 
@@ -231,7 +223,7 @@ ParseResult parseScenario(const char* value)
     {
         return result;
     }
-    const std::string_view text = trim(value);
+    const std::string_view text = Platform::trimAscii(value);
     if (text.empty() || !Core::isEnvFlagEnabled(std::string(text).c_str()))
     {
         return result;
@@ -243,7 +235,7 @@ ParseResult parseScenario(const char* value)
     while (!rest.empty())
     {
         const std::size_t comma = rest.find(',');
-        const std::string_view token = trim(rest.substr(0, comma));
+        const std::string_view token = Platform::trimAscii(rest.substr(0, comma));
         rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 1);
         if (token.empty())
         {
@@ -259,8 +251,8 @@ ParseResult parseScenario(const char* value)
             }
             continue;
         }
-        const std::string key = lower(trim(token.substr(0, equals)));
-        const std::string_view setting = trim(token.substr(equals + 1));
+        const std::string key = lower(Platform::trimAscii(token.substr(0, equals)));
+        const std::string_view setting = Platform::trimAscii(token.substr(equals + 1));
         applySetting(key, setting, config, result.warnings);
     }
     result.config = config;
@@ -298,10 +290,9 @@ std::size_t Scenario::historySamples() const noexcept
 const Scenario* activeScenario()
 {
     // Read once: a function-local static is initialised exactly once, thread-safely.
-    static const std::optional<Scenario> scenario = []() -> std::optional<Scenario>
+    static const std::optional<Scenario> scenario = [] -> std::optional<Scenario>
     {
-        const std::string name(ENV_VAR);
-        ParseResult parsed = parseScenario(SDL_getenv(name.c_str()));
+        ParseResult parsed = parseScenario(Core::readEnv(ENV_VAR));
         for (const auto& warning : parsed.warnings)
         {
             spdlog::warn("{}: {}", ENV_VAR, warning);
@@ -327,6 +318,15 @@ std::unique_ptr<Platform::IProcessProbe> makeProcessProbe(const Scenario* scenar
     return Platform::makeProcessProbe();
 }
 
+std::shared_ptr<Platform::IUdpTrafficCollector> makeUdpTrafficCollector(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return nullptr;
+    }
+    return Platform::makeUdpTrafficCollector();
+}
+
 std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* scenario)
 {
     if (scenario != nullptr)
@@ -334,6 +334,60 @@ std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* sc
         return std::make_unique<Platform::Synthetic::SyntheticProcessActions>();
     }
     return Platform::makeProcessActions();
+}
+
+std::unique_ptr<Platform::IProcessIconSource> makeProcessIconSource(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessIconSource>();
+    }
+    return Platform::makeProcessIconSource();
+}
+
+std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessEnvironmentReader>();
+    }
+    return Platform::makeProcessEnvironmentReader();
+}
+
+std::unique_ptr<Platform::IProcessConnectionsReader> makeProcessConnectionsReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessConnectionsReader>();
+    }
+    return Platform::makeProcessConnectionsReader();
+}
+
+std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessModulesReader>();
+    }
+    return Platform::makeProcessModulesReader();
+}
+
+std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessOpenFilesReader>();
+    }
+    return Platform::makeProcessOpenFilesReader();
+}
+
+std::unique_ptr<Platform::IProcessSecurityReader> makeProcessSecurityReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessSecurityReader>();
+    }
+    return Platform::makeProcessSecurityReader();
 }
 
 std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario)
@@ -438,8 +492,6 @@ void preloadProcessHistory(const Scenario* scenario, Domain::ProcessModel& model
             const auto when = readingTime(now, readings, index++);
             const Platform::Synthetic::ProcessTotals totals = workload.processTotalsAt(workload.uptimeAt(when));
             sample = Domain::ProcessSystemHistorySample{.timeSeconds = steadySeconds(when),
-                                                        .netSentBytesPerSec = totals.netSentBytesPerSec,
-                                                        .netReceivedBytesPerSec = totals.netReceivedBytesPerSec,
                                                         .pageFaultsPerSec = totals.pageFaultsPerSec,
                                                         .threadCount = totals.threadCount,
                                                         .handleCount = totals.handleCount,

@@ -1,16 +1,21 @@
 #include "Application.h"
 
 #include "Core/AnimationRequest.h"
+#include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/FramePacing.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
+#ifndef _WIN32
+#include "Core/RuntimeDir.h"
+#endif
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
+#include "Core/X11ConnectionLoss.h"
 #include "Platform/ThreadName.h"
 #include "version.h"
 
@@ -45,9 +50,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <system_error>
 
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -96,6 +99,15 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr double INTERACTION_REDRAW_GRACE_SECONDS = 0.35;
+// How long after an input event (a wheel, a button, a key, text: WindowEventRouting::isInputEvent) the
+// regular frame stays paced at MAX_FRAME_RATE instead of dropping to the idle wait (#843). Dear ImGui
+// finishes reacting to input over the next frame or two (a popup or combo list is drawn the frame after
+// it opens, a clicked tab's content the frame after the click, hover and tooltip delays tick per frame),
+// and at the 20 fps idle rate each of those frames came 50 ms apart. Long enough to cover ImGui's
+// hover delays and the gap between keystrokes while typing; short enough that a single click costs
+// about a dozen extra frames. Does not touch sampling, the hidden-window throttle (#1125) or the
+// move/resize vsync transition, which stays tied to resize/move events.
+constexpr double INPUT_REDRAW_GRACE_SECONDS = 0.2;
 // Whether an OS maximize of the borderless window is replaced by the client-side one
 // (Window::adoptSystemMaximize(), #1208): on Windows only; see the SystemMaximized case in run().
 #ifdef _WIN32
@@ -103,7 +115,6 @@ constexpr bool ADOPT_SYSTEM_MAXIMIZE = true;
 #else
 constexpr bool ADOPT_SYSTEM_MAXIMIZE = false;
 #endif
-constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr double RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5;
 // Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
 // interaction is a short, bounded burst where frequent logging is useful, but idle frames run
@@ -160,107 +171,6 @@ void logResizePerfAnchor()
 }
 
 #ifndef _WIN32
-[[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
-{
-    // Require that group/other bits are entirely clear (no world/group access)
-    // and that the owner has at least read, write, and execute so that the
-    // directory is actually usable as an XDG runtime dir.
-    constexpr auto forbidden = std::filesystem::perms::group_all | std::filesystem::perms::others_all;
-    constexpr auto required = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec;
-    return ((perms & forbidden) == std::filesystem::perms::none) && ((perms & required) == required);
-}
-
-[[nodiscard]] bool isUsableRuntimeDir(const std::filesystem::path& path)
-{
-    std::error_code ec;
-    const auto symlink = std::filesystem::symlink_status(path, ec);
-    if (ec)
-    {
-        return false;
-    }
-    if (std::filesystem::is_symlink(symlink) || !std::filesystem::is_directory(symlink))
-    {
-        return false;
-    }
-
-    const auto status = std::filesystem::status(path, ec);
-    if (ec)
-    {
-        return false;
-    }
-
-    struct stat st{};
-    if (::stat(path.c_str(), &st) != 0)
-    {
-        return false;
-    }
-
-    return (st.st_uid == getuid()) && hasSafeOwnerOnlyPermissions(status.permissions());
-}
-
-[[nodiscard]] std::optional<std::string> chooseRuntimeDir(const std::string& systemdPath, const std::string& fallbackPath)
-{
-    std::error_code ec;
-
-    if (std::filesystem::exists(systemdPath, ec) && !ec && isUsableRuntimeDir(systemdPath))
-    {
-        return systemdPath;
-    }
-
-    // Guard against symlink and non-directory attacks on predictable /tmp path.
-    const auto fallbackSymlink = std::filesystem::symlink_status(fallbackPath, ec);
-    if (!ec && std::filesystem::exists(fallbackPath, ec))
-    {
-        if (std::filesystem::is_symlink(fallbackSymlink) || !std::filesystem::is_directory(fallbackSymlink))
-        {
-            spdlog::warn("Refusing unsafe XDG fallback path '{}': expected a real directory, not symlink/non-directory", fallbackPath);
-            return std::nullopt;
-        }
-    }
-
-    std::filesystem::create_directories(fallbackPath, ec);
-    if (ec)
-    {
-        spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
-        return std::nullopt;
-    }
-
-    // Guard against applying permissions to a directory we don't own (e.g. on
-    // multi-user systems the predictable /tmp path may have been created by a
-    // different UID). Chmod on an unowned directory is a side-effect we avoid.
-    struct stat stFallback{};
-    if (::stat(fallbackPath.c_str(), &stFallback) != 0 || stFallback.st_uid != getuid())
-    {
-        spdlog::warn("XDG fallback path '{}' is not owned by current user; cannot use it", fallbackPath);
-        return std::nullopt;
-    }
-
-    // Re-validate with lstat (symlink_status) immediately before chmod to close
-    // the TOCTOU window between the ownership check and the permission change.
-    // An attacker could swap the directory for a symlink in that window.
-    const auto preChmodStatus = std::filesystem::symlink_status(fallbackPath, ec);
-    if (ec || std::filesystem::is_symlink(preChmodStatus) || !std::filesystem::is_directory(preChmodStatus))
-    {
-        spdlog::warn("XDG fallback path '{}' changed to a symlink or non-directory before chmod; aborting", fallbackPath);
-        return std::nullopt;
-    }
-
-    std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
-    if (ec)
-    {
-        spdlog::warn("Could not set permissions on '{}': {}", fallbackPath, ec.message());
-        return std::nullopt;
-    }
-
-    if (!isUsableRuntimeDir(fallbackPath))
-    {
-        spdlog::warn("XDG fallback path '{}' is not usable after creation", fallbackPath);
-        return std::nullopt;
-    }
-
-    return fallbackPath;
-}
-
 // Ensure XDG_RUNTIME_DIR is set before SDL initializes. When tasksmack is run
 // as root (e.g. via sudo) the session manager never sets this variable, causing
 // libwayland-client to emit "XDG_RUNTIME_DIR is invalid or not set" and SDL to
@@ -274,7 +184,7 @@ void ensureXdgRuntimeDir()
     if (const char* existing = SDL_getenv("XDG_RUNTIME_DIR"); existing != nullptr)
     {
         const std::string existingPath(existing);
-        if (!existingPath.empty() && isUsableRuntimeDir(existingPath))
+        if (!existingPath.empty() && RuntimeDir::isUsableRuntimeDir(existingPath))
         {
             return; // valid path already provided by session manager
         }
@@ -286,7 +196,7 @@ void ensureXdgRuntimeDir()
     const std::string systemdPath = std::format("/run/user/{}", uid);
     const std::string fallbackPath = std::format("/tmp/runtime-{}", uid);
 
-    const auto chosen = chooseRuntimeDir(systemdPath, fallbackPath);
+    const auto chosen = RuntimeDir::chooseRuntimeDir(systemdPath, fallbackPath);
     if (!chosen.has_value())
     {
         return;
@@ -360,12 +270,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     bool sdlInitialized = false;
     try
     {
-        m_ResizePerfTraceEnabled = isEnvFlagEnabled(SDL_getenv(RESIZE_PERF_TRACE_ENV));
+        m_ResizePerfTraceEnabled = resizePerfTraceRequested();
         resizePerfOperations() = {};
         spdlog::info("Initializing {} application", m_Spec.Name);
         if (m_ResizePerfTraceEnabled)
         {
-            spdlog::info("Resize performance tracing enabled via {}", RESIZE_PERF_TRACE_ENV);
+            spdlog::info("Resize performance tracing enabled via {}", TRACE_RESIZE_PERF_ENV_VAR);
             logResizePerfAnchor();
         }
 
@@ -379,6 +289,14 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
                 "Invalid window dimensions {}x{}, using defaults {}x{}", m_Spec.Width, m_Spec.Height, DEFAULT_WIDTH, DEFAULT_HEIGHT);
             m_Spec.Width = DEFAULT_WIDTH;
             m_Spec.Height = DEFAULT_HEIGHT;
+        }
+
+        // A headless application (#880) stops here: no video subsystem, no window, no GL context.
+        // SDL's clock (getTime()) needs no initialization, and raiseEvent() needs only the layers.
+        if (m_Spec.Headless)
+        {
+            spdlog::info("Headless: no window is created");
+            return;
         }
 
         // Initialize SDL video subsystem
@@ -407,6 +325,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 
         // Initialize video backend detection (must happen after SDL_Init)
         VideoBackend::initialize();
+        // Losing the X connection ends the process without running static destructors under the
+        // sampler threads, instead of Xlib's exit() (#2657)
+        if ((VideoBackend::isX11() || VideoBackend::isXWaylandFallback()) && !X11ConnectionLoss::install())
+        {
+            spdlog::warn("Could not install the X connection-loss handler; libX11 isn't loaded");
+        }
 
         WindowSpecification windowSpec;
         windowSpec.Title = m_Spec.Name;
@@ -484,6 +408,10 @@ void Application::detachAllLayers()
 
 void Application::run()
 {
+    if (!m_Window)
+    {
+        throw std::logic_error("Application::run() needs a window; a headless application is driven by its owner (#880)");
+    }
     m_Running = true;
     // The UI thread is whichever thread runs the loop. A no-op on Linux, where the main thread's
     // name is the process name (see Platform::setMainThreadName).
@@ -491,7 +419,7 @@ void Application::run()
 
     double lastTime = getTime();
 
-    const auto computeDeltaTime = [this, &lastTime]() -> float
+    const auto computeDeltaTime = [this, &lastTime] -> float
     {
         const double currentTime = getTime();
         const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
@@ -501,7 +429,7 @@ void Application::run()
     };
 
     // The display's refresh rate, which frame pacing rounds to (#1126); re-read on a display change.
-    const auto refreshDisplayRate = [this]()
+    const auto refreshDisplayRate = [this]
     {
         const double queried = m_Window->getDisplayRefreshRate();
         const double effective = FramePacing::effectiveRefreshHz(queried, FALLBACK_REFRESH_HZ);
@@ -538,6 +466,10 @@ void Application::run()
     std::optional<SDL_Event> idleWakeEvent;
     // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
     std::uint32_t consecutiveSkippedRenders = 0;
+    // When the input redraw grace ends (FramePacing::computeInputRedrawUntil, #843): until then the
+    // regular frame is paced as an input frame, so the frames after a click or a key come at the full
+    // rate, not the idle one. 0 = no input yet.
+    double inputRedrawUntil = 0.0;
     std::uint64_t loopStart = 0;
     ResizePerfLoopTiming loopTiming;
     const auto finishTracedLoop = [&](std::uint64_t end)
@@ -567,7 +499,7 @@ void Application::run()
     // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
     // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
     // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
-    const auto recordDeliveredFrame = [&]()
+    const auto recordDeliveredFrame = [&]
     {
         resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
     };
@@ -590,6 +522,8 @@ void Application::run()
         // Process SDL events
         bool needsResizeRedraw = false;
         std::uint32_t resizeEventCount = 0;
+        // Wheel, button, key and text events this drain: they start the input redraw grace (#843).
+        std::uint32_t inputEventCount = 0;
         SDL_Event sdlEvent;
         const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
         // Snapshot geometry-changed flag from previous frame, then reset for this frame.
@@ -600,7 +534,7 @@ void Application::run()
         const auto eventDrainStart = std::chrono::steady_clock::now();
         // Handle the next event, false once the queue is empty. The event that woke the previous
         // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
-        const auto pollAndDispatch = [&]() -> bool
+        const auto pollAndDispatch = [&] -> bool
         {
             if (idleWakeEvent.has_value())
             {
@@ -610,6 +544,10 @@ void Application::run()
             else if (!SDL_PollEvent(&sdlEvent))
             {
                 return false;
+            }
+            if (WindowEventRouting::isInputEvent(sdlEvent.type))
+            {
+                ++inputEventCount;
             }
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
@@ -726,6 +664,10 @@ void Application::run()
         {
             loopTiming.drainMs = totalDrainMs;
         }
+        // Input this drain restarts the input redraw grace (#843); while it runs, the regular frame below
+        // is paced as an input frame (FramePacing::computeFrameRateCap) rather than taking the idle wait.
+        inputRedrawUntil = FramePacing::computeInputRedrawUntil(getTime(), inputEventCount, inputRedrawUntil, INPUT_REDRAW_GRACE_SECONDS);
+        const bool inputGraceActive = FramePacing::isWithinInteractionGrace(getTime(), inputRedrawUntil);
         // recordEventBatch() for THIS drain is deferred until after the interaction-transition
         // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
         // same drain), so the batch that triggers a transition lands in the correctly-reset
@@ -794,6 +736,7 @@ void Application::run()
         {
             resizeTraceStats.recordEventBatch(
                 drain.eventCount, resizeEventCount, totalDrainMs, drain.maxSingleEventMs, drain.budgetExceeded);
+            resizeTraceStats.inputEvents += inputEventCount;
         }
 
         // Deferred from just after the drain (see comment above) so this frame's batch is
@@ -870,11 +813,12 @@ void Application::run()
         }
 
         // Pace the regular frame:
-        // - Something moving visibly asked for more frames than idling gives, or input arrived:
-        //   cap the frame rate (FramePacing::computeFrameRateCap) at a whole number of display
-        //   refreshes. Charts keep a steady rate whatever the input (#1037), only as fast as their
-        //   motion needs (#1125); input frames are capped too (#1153). Events that arrive during
-        //   the wait are handled by the next drain, at most one period later.
+        // - Something moving visibly asked for more frames than idling gives, or input arrived --
+        //   this drain, or recently enough that its grace still runs (#843): cap the frame rate
+        //   (FramePacing::computeFrameRateCap) at a whole number of display refreshes. Charts keep a
+        //   steady rate whatever the input (#1037), only as fast as their motion needs (#1125); input
+        //   frames are capped too (#1153). Events that arrive during the wait are handled by the next
+        //   drain, at most one period later.
         // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
         //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
         //     display stays current during burst gaps between resize/move events.
@@ -883,7 +827,7 @@ void Application::run()
         //     sleep immediately, keeping interactive frame rate unaffected. The waking event is
         //     dispatched before the next frame renders (#1409): see idleWakeEvent.
         const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
-        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents, isHidden, MAX_FRAME_RATE);
+        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FRAME_RATE);
         if (frameRateCap > 0.0 && !isInteracting)
         {
             const double waitSeconds = FramePacing::computeFrameWaitSeconds(
@@ -915,11 +859,20 @@ void Application::run()
                 // off the queue here and handed to the next iteration's drain, which dispatches it
                 // before rendering (#1409). With nullptr the event stayed queued and the frame below
                 // rendered straight after the wake, showing the state from before the input.
+                // A wait that times out polls once more (#1450): a wake from another thread can
+                // reach it late, with the event already queued, and that event is a wake too.
                 SDL_Event wakeEvent;
-                if (SDL_WaitEventTimeout(&wakeEvent, sleepMs))
+                const auto waitOutcome = FramePacing::waitForIdleEvent(
+                    wakeEvent,
+                    [sleepMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, sleepMs); },
+                    [](SDL_Event& event) { return SDL_PollEvent(&event); });
+                if (waitOutcome != FramePacing::IdleWaitOutcome::TimedOut)
                 {
                     idleWakeEvent = wakeEvent;
                 }
+                ++m_IdleWaitCount;
+                m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
+                m_LastIdleWaitPolledEvent = waitOutcome == FramePacing::IdleWaitOutcome::PolledAfterTimeout;
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());

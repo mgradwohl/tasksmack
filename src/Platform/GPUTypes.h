@@ -14,20 +14,36 @@ namespace Platform
 struct GPUCapabilities
 {
     bool hasTemperature = false;
-    bool hasHotspotTemp = false;
     bool hasPowerMetrics = false;
     bool hasClockSpeeds = false;
     bool hasFanSpeed = false;
-    bool hasPCIeMetrics = false;
     bool hasEngineUtilization = false;
     bool hasPerProcessMetrics = false; // Per-process GPU usage
     // Of those, per-process utilization (ProcessGPUCounters::gpuUtilPercent). Some backends report a
     // process's GPU memory and engines but not its utilization (NVML's running-process lists), which
     // then reads 0 for every process (#1210).
     bool hasPerProcessUtilization = false;
+    // Per-process NPU / compute-accelerator usage (ProcessGPUCounters with an accelerator's gpuId,
+    // #1827), apart from the GPU's: on Linux an NPU's per-process memory comes from its own fdinfo,
+    // while the iGPU beside it may have no per-process data at all (#1210). Read through
+    // perProcessNpuMetricsSupported(), not directly (see there).
+    bool hasPerProcessNpuMetrics = false;
+    bool hasPerProcessNpuUtilization = false; // ...and per-process NPU utilization among it
     bool hasEncoderDecoder = false;
     bool supportsMultiGPU = false;
 };
+
+// Whether @p caps report per-process NPU data, and NPU utilization among it (#1827). Only the NPU
+// flags count, on every platform: the GPU's per-process support says nothing about the NPU's (#1973).
+[[nodiscard]] constexpr bool perProcessNpuMetricsSupported(const GPUCapabilities& caps) noexcept
+{
+    return caps.hasPerProcessNpuMetrics;
+}
+
+[[nodiscard]] constexpr bool perProcessNpuUtilizationSupported(const GPUCapabilities& caps) noexcept
+{
+    return caps.hasPerProcessNpuUtilization;
+}
 
 /// How thoroughly IGPUProbe::rescanGPUs() looks for changes to the GPU set (#1116).
 enum class GPURescan : std::uint8_t
@@ -58,24 +74,37 @@ struct PciLocation
     return a.bus == b.bus && a.device == b.device && (!a.function.has_value() || !b.function.has_value() || *a.function == *b.function);
 }
 
-// Identifies a physical GPU
+/// What kind of adapter a GPUInfo describes (#1799). GPUs and the compute-only accelerators Windows
+/// drives through MCDM -- an NPU such as Intel AI Boost, or another compute accelerator -- share the
+/// adapter pipeline (enumeration by LUID, PDH counters, history) but never each other's figures: GPU
+/// views and totals take Gpu alone, and a process's use of an accelerator is kept apart from its GPU
+/// usage.
+enum class DeviceKind : std::uint8_t
+{
+    Gpu,                ///< A graphics adapter: the default, and every adapter Linux lists today
+    Npu,                ///< A neural processing unit (DXCore's hardware type NPU)
+    ComputeAccelerator, ///< Another compute-only accelerator (DXCore's hardware type COMPUTE_ACCELERATOR)
+};
+
+// Identifies a physical GPU, or a compute accelerator (see kind)
 struct GPUInfo
 {
-    std::string id;     // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
-    std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
-    std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
-    std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
-    std::string driverVersion;
-    bool isIntegrated = false;     // Integrated vs discrete
-    std::uint32_t deviceIndex = 0; // Vendor-specific index (on Windows, DXGI's display order, not identity)
+    std::string id;            // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
+    std::string luidId;        // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
+    std::string name;          // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
+    std::string vendor;        // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
+    std::string driverVersion; // Windows: the device's PnP driver version, or "Unknown" (#1799)
+    DeviceKind kind = DeviceKind::Gpu; // A GPU, or an NPU or other compute accelerator (#1799)
+    bool isIntegrated = false;         // Integrated vs discrete
+    std::uint32_t deviceIndex = 0;     // Vendor-specific index (on Windows, DXGI's display order, not identity)
     /// Which memory segment the adapter's used/total figures count: true for its shared segment
     /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
     /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
     /// segment). Set by the probe that reads the figure, so per-process memory is counted against
     /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
     bool memoryIsShared = false;
-    /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
-    /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
+    /// The sensor metrics this particular adapter reports (temperature, power, clocks, fan,
+    /// encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
     /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged. Set on
@@ -119,13 +148,20 @@ struct GPUEngineClientCounters
 {
     std::uint64_t clientId = 0; // drm-client-id: one per open DRM file, shared by dup'd and inherited fds
     std::array<GPUEngineBusyCounter, GPU_ENGINE_CLASS_COUNT> engines{};
+    // For per-process figures (#2589): the process whose fd the client was read through, and its memory
+    // (drm-resident-*, else drm-total-*) in the GPU's own memory (vram*, local*) and in system memory
+    // the GPU maps (system*, gtt*). 0 when unknown.
+    std::int32_t pid = 0;
+    std::uint64_t dedicatedMemoryBytes = 0;
+    std::uint64_t sharedMemoryBytes = 0;
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
 // Derived metrics (rates, percentages) are computed by Domain layer
 struct GPUCounters
 {
-    std::string gpuId; // Associates with GPUInfo
+    std::string gpuId;                 // Associates with GPUInfo
+    DeviceKind kind = DeviceKind::Gpu; // The adapter's GPUInfo::kind (#1799)
 
     // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
     // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,
@@ -136,6 +172,8 @@ struct GPUCounters
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
     bool memoryAvailable = true; // used/total bytes, and so the memory percent
+    bool encoderAvailable = true;
+    bool decoderAvailable = true;
 
     // The GPU was asleep (PCI runtime-suspended) this sample, so the probe left it alone rather than
     // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
@@ -152,10 +190,12 @@ struct GPUCounters
     // Memory (bytes - raw counters)
     std::uint64_t memoryUsedBytes = 0;
     std::uint64_t memoryTotalBytes = 0;
+    // Memory in use where the device reports no total to set it against, so memoryAvailable stays false
+    // and no percent is drawn: a Linux NPU's npu_memory_utilization (bytes, #1827). nullopt elsewhere.
+    std::optional<std::uint64_t> memoryInUseBytes;
 
     // Temperature (°C)
     std::int32_t temperatureC = 0;
-    std::int32_t hotspotTempC = -1; // -1 if not available
 
     // Power (watts)
     double powerDrawWatts = 0.0;
@@ -163,7 +203,7 @@ struct GPUCounters
 
     // Cumulative energy (µJ), for a GPU whose driver reports an energy counter rather than power
     // (Intel i915/xe hwmon energy1_input, #1269). When energyAvailable, Domain derives powerDrawWatts
-    // from the counter's change since the previous sample, as it does for the PCIe byte counters;
+    // from the counter's change since the previous sample;
     // a sample without a readable previous counter (the first, or after a failed read, a suspend or
     // a counter reset) has no power.
     bool energyAvailable = false;
@@ -180,24 +220,19 @@ struct GPUCounters
 
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;
-    std::uint32_t memoryClockMHz = 0;
 
     // Fan speed, raw (0 if not available) plus the device-reported max needed to normalize it.
     // Vendors report fan speed in different native units (NVML: already 0-100%; ROCm: a value
     // relative to RSMI_MAX_FAN_SPEED, not RPM despite older code here having assumed so -- see
     // #734), so Platform stores both raw numbers unconverted and Domain computes the
-    // percentage (GPUSnapshot::fanSpeedPercent), consistent with how memoryUsedPercent and
-    // powerUtilPercent are derived from raw counter pairs. NVML probes set fanSpeedMaxRaw to
+    // percentage (GPUSnapshot::fanSpeedPercent), consistent with how memoryUsedPercent is
+    // derived from a raw counter pair. NVML probes set fanSpeedMaxRaw to
     // 100 since their raw reading already is a percentage.
     std::uint32_t fanSpeedRaw = 0;
     std::uint32_t fanSpeedMaxRaw = 0;
 
-    // PCIe throughput (cumulative bytes)
-    std::uint64_t pcieTxBytes = 0;
-    std::uint64_t pcieRxBytes = 0;
-
-    // Engine utilization (0-100, instantaneous)
-    double computeUtilPercent = 0.0;
+    // Video encoder/decoder utilization (0-100), as the driver reports it: NVML averages it over its
+    // own sampling period (#1477). Read only where GPUCapabilities::hasEncoderDecoder says so.
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
 };
@@ -207,6 +242,9 @@ struct ProcessGPUCounters
 {
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
+    // The adapter's GPUInfo::kind (#1799): a process's samples on an NPU or another compute
+    // accelerator are its NPU figures, never counted in its GPU ones.
+    DeviceKind kind = DeviceKind::Gpu;
 
     // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
     // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
@@ -222,6 +260,23 @@ struct ProcessGPUCounters
 
     // Active engines (bitmask or string set)
     // Engines: 3D, Compute, Video Encode, Video Decode, Copy
+    std::vector<std::string> activeEngines;
+};
+
+/// One process's use of one adapter TaskSmack doesn't list (#1826): a software adapter such as the
+/// Basic Render Driver, or an NPU or compute accelerator DXCore couldn't enumerate. Kept apart from
+/// ProcessGPUCounters, so it is never counted in a GPU or NPU figure. An enumerated NPU's or compute
+/// accelerator's samples are ProcessGPUCounters of its kind instead (#1799).
+struct OtherAdapterProcessUsage
+{
+    std::int32_t pid = 0;
+    std::string adapterLuid; // "GPU_0x{High}_0x{Low}", the format of GPUInfo::luidId
+
+    // The busiest engine's utilization (0-100), and the process's memory on the adapter, as
+    // ProcessGPUCounters' figures are read
+    double utilPercent = 0.0;
+    std::uint64_t dedicatedMemoryBytes = 0;
+    std::uint64_t sharedMemoryBytes = 0;
     std::vector<std::string> activeEngines;
 };
 

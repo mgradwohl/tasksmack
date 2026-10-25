@@ -3,6 +3,7 @@
 #include "ComPtr.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 
 #include <cstdint>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward declare DXGI interfaces to avoid including d3d headers in header
@@ -46,9 +48,23 @@ class DXGIGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
     /// Full: replace the DXGI factory when it is no longer current (or was never created) and report
-    /// a change, so the next enumerateGPUs() lists the adapters present now. Quick: no change -- DXGI
-    /// adapters don't sleep, so there is nothing to find between full rescans (#1294).
+    /// a change, so the next enumerateGPUs() lists the adapters present now. A full rescan also
+    /// reports a change when the compute accelerators DXCore lists differ from the last
+    /// enumerateAccelerators()'s (#1799). Quick: no change -- DXGI adapters don't sleep, so there is
+    /// nothing to find between full rescans (#1294).
     [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
+
+    /// The NPUs and other compute accelerators present (#1799): MCDM adapters, which DXGI never
+    /// lists, enumerated through DXCore by hardware type (selectAcceleratorAdapters()). Each has its
+    /// kind, a stable id and LUID as a GPU has, its name, its memory (shared system memory for an
+    /// NPU without dedicated memory) and no sensors; the driver version is left "Unknown" for the
+    /// caller to read from PnP. Empty without DXCore (Windows 10) or where the OS doesn't know the
+    /// hardware-type attributes.
+    [[nodiscard]] std::vector<GPUInfo> enumerateAccelerators();
+
+    /// The last enumerateAccelerators()'s adapters' counters: their id, kind and memory size, with
+    /// utilization and memory in use unread for PDH to supply, as DXGI's are (makeDXGIAdapterCounters()).
+    [[nodiscard]] std::vector<GPUCounters> readAcceleratorCounters() const;
 
   private:
     // Test-only: substitutes a fake DXGI factory and fake D3DKMT calls (tests/Mocks/WindowsDXGIFake.h).
@@ -56,6 +72,25 @@ class DXGIGPUProbe : public IGPUProbe
 
     /// Makes a DXGI factory: CreateDXGIFactory1() in production, a fake in tests. Null on failure.
     using FactoryCreator = std::function<ComPtr<IDXGIFactory1>()>;
+
+    /// Lists DXCore's NPU and compute-accelerator adapters: listDXCoreAccelerators() in production,
+    /// a fake in tests (#1799).
+    using AcceleratorLister = std::function<std::vector<DXCoreAdapterRecord>()>;
+
+    /// The adapters of DXCore's NPU and compute-accelerator lists, read from m_DXCoreFactory (empty
+    /// without one).
+    [[nodiscard]] std::vector<DXCoreAdapterRecord> listDXCoreAccelerators() const;
+
+    /// adapterLuidKey() of every adapter the DXGI factory enumerates, listed as a GPU or not.
+    [[nodiscard]] std::unordered_set<std::uint64_t> dxgiAdapterLuids() const;
+
+    /// The LUIDs of the hardware accelerators @p records lists, sorted: what a full rescan compares.
+    [[nodiscard]] static std::vector<std::uint64_t> acceleratorLuids(const std::vector<DXCoreAdapterRecord>& records);
+
+    /// Whether DXCore's accelerators differ from the last enumerateAccelerators()'s (false before
+    /// the first). A removed one's id is forgotten, so one back under a new LUID -- after a driver
+    /// update or reset -- takes its PCI id, and its history, again (#1317).
+    [[nodiscard]] bool acceleratorsChanged();
 
     bool initialize();
     /// Create m_DXCoreFactory from the loaded dxcore.dll. False (and no factory) when it can't.
@@ -109,6 +144,19 @@ class DXGIGPUProbe : public IGPUProbe
     /// The module stays loaded while the factory lives (#1263).
     void* m_DXCoreModule{nullptr};
     ComPtr<IDXCoreAdapterFactory> m_DXCoreFactory;
+
+    AcceleratorLister m_ListAccelerators;
+    /// One enumerated compute accelerator's counter identity: what readAcceleratorCounters() reports.
+    struct AcceleratorEntry
+    {
+        std::string id;
+        DeviceKind kind = DeviceKind::Npu;
+        std::uint64_t memoryTotalBytes = 0;
+    };
+    /// The last enumerateAccelerators()'s adapters (#1799).
+    std::vector<AcceleratorEntry> m_Accelerators;
+    /// acceleratorLuids() at the last enumerateAccelerators(); unset before the first.
+    std::optional<std::vector<std::uint64_t>> m_AcceleratorLuids;
 };
 
 } // namespace Platform

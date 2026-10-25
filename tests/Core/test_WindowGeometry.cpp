@@ -324,6 +324,24 @@ TEST(WindowGeometryTest, FitIsUsableInConstantExpressions)
     EXPECT_EQ(fitted.x, 0);
 }
 
+// ---- moveInside (#2735) ----
+
+TEST(WindowGeometryTest, AWindowWithNoSavedPositionIsMovedWhollyOntoTheDisplay)
+{
+    // Created centred at 1280 x 720 on a 1024 x 768 display with a 48 px taskbar, then shrunk to fit:
+    // it kept x = -128, and its bottom edge sat 24 px under the taskbar.
+    constexpr Rect workArea{.x = 0, .y = 0, .width = 1024, .height = 720};
+    static_assert(moveInside(Rect{.x = -128, .y = 24, .width = 1024, .height = 720}, workArea) == workArea);
+    // Larger than the display: shrunk as well, at the display's origin.
+    EXPECT_EQ(moveInside(Rect{.x = -128, .y = 24, .width = 1280, .height = 800}, workArea), workArea);
+    // Already inside: unchanged. Off the far edges, on a second display: moved back by as little as it takes.
+    constexpr Rect second{.x = 1920, .y = 0, .width = 1920, .height = 1040};
+    EXPECT_EQ(moveInside(Rect{.x = 2000, .y = 100, .width = 1280, .height = 720}, second),
+              (Rect{.x = 2000, .y = 100, .width = 1280, .height = 720}));
+    EXPECT_EQ(moveInside(Rect{.x = 3000, .y = 500, .width = 1280, .height = 720}, second),
+              (Rect{.x = 2560, .y = 320, .width = 1280, .height = 720}));
+}
+
 // ---- rescaleWindowSize / targetDisplayIndex (#1168) ----
 
 TEST(WindowGeometryTest, SizeSavedAtOneScaleKeepsItsApparentSizeAtAnother)
@@ -601,6 +619,81 @@ TEST(NormalGeometryTrackerTest, RestoreSpendsTheRestoreTarget)
     // Not maximized: the live geometry is saved.
     EXPECT_EQ(savedNormal(tracker, false, NORMAL_B), NORMAL_B);
 }
+
+// #1777: SDL_SetWindowMinimumSize() resizes to SDL's floating size, stale on a tiled Wayland window.
+TEST(WindowGeometrySizeAfterMinimumChangeTest, KeepsACurrentSizeThatMeetsTheMinimum)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 1000}, 800, 500, false), (std::pair{1600, 1000}));
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, GrowsEachSideToTheMinimum)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({700, 1000}, 800, 500, false), (std::pair{800, 1000}));
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 400}, 800, 500, false), (std::pair{1600, 500}));
+    EXPECT_EQ(sizeAfterMinimumChange({700, 400}, 800, 500, false), (std::pair{800, 500}));
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, LeavesAMaximizedOrFullscreenWindowAlone)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 1000}, 800, 500, true), std::nullopt);
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, DoesNotRestoreAnUnknownSize)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({0, 0}, 800, 500, false), std::nullopt);
+    EXPECT_EQ(sizeAfterMinimumChange({1600, -1}, 800, 500, false), std::nullopt);
+}
+
+static_assert(sizeAfterMinimumChange({1600, 1000}, 0, 0, false) == std::pair{1600, 1000});
+
+// #1945: a minimum that rises with the content on show (a tab switch, a font change) must not grow
+// the window. Huge font at 175 %: Processes wants 1809 x 900, the machine tab 1809 x 1296.
+TEST(WindowGeometryMinimumKeepingSizeTest, ARisenMinimumKeepsTheWindowsSize)
+{
+    // Just changed: applied = wanted.
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 900}, {1809, 1296}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({2031, 1460}, {1600, 900}, {2031, 1460}), (std::pair{1600, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AMinimumTheWindowMeetsAppliesAsWanted)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 900}, {1809, 900}, {1809, 900}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({800, 500}, {1600, 1000}, {800, 500}), (std::pair{800, 500}));
+    // Back on Processes: a lower minimum is handed to SDL as it is.
+    EXPECT_EQ(minimumKeepingSize({1809, 900}, {1809, 1000}, {1809, 900}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, EachSideIsDecidedOnItsOwn)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {2000, 900}, {1809, 1296}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1600, 1400}, {1809, 1296}), (std::pair{1600, 1296}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeShortOfTheWantedMinimumDoesNotRatchet)
+{
+    // Held at 900; the user drags the window to 1000 tall: the minimum stays 900, so it can go back.
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 1000}, {1809, 900}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeToTheWantedMinimumTakesIt)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 1296}, {1809, 900}), (std::pair{1809, 1296}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1900, 1400}, {1809, 900}), (std::pair{1809, 1296}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AnUnknownSizeTakesTheWantedMinimum)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {0, 0}, {1809, 1296}), (std::pair{1809, 1296}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {-1, 900}, {1809, 1296}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, NeverBelowZero)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1000, 700}, {-5, -5}), (std::pair{0, 0}));
+}
+
+static_assert(minimumKeepingSize({0, 0}, {1600, 900}, {0, 0}) == std::pair{0, 0});
+static_assert(minimumKeepingSize({1809, 1296}, {1809, 900}, {1809, 1296}) == std::pair{1809, 900});
 
 } // namespace
 } // namespace Core::WindowGeometry

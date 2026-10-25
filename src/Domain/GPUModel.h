@@ -1,7 +1,8 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "Domain/GPUSnapshot.h"
-#include "Domain/History.h"
+#include "Domain/SharedHistory.h"
 #include "ISamplable.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
@@ -28,35 +29,81 @@ namespace Domain
 {
 
 /// One GPU's history as published to the UI: numeric series only, all the same length and aligned
-/// sample-for-sample. Whole GPUSnapshots are not republished: each carries four identity strings,
-/// and with the history sized to the window (up to 18,001 samples at 1800 s / 100 ms) copying them
-/// on every refresh was the bulk of the sampler thread's work. GPUModel::history() still returns
-/// them for a caller that needs one.
+/// sample-for-sample. Each is a view of the model's own shared series, so a publish is O(series),
+/// not a copy of the history (#1412); a view stays as published whatever the model does later, and
+/// converts to std::span for the charts. Whole GPUSnapshots are not kept as history at all: each
+/// carries four identity strings, and with the history sized to the window (up to 18,001 samples at
+/// 1800 s / 100 ms) copying them was the bulk of the sampler thread's work.
 struct GPUPublishedHistory
 {
-    std::vector<double> timestamps;
-    std::vector<std::uint64_t> memoryUsedBytes;
-    std::vector<std::uint64_t> memoryTotalBytes;
-    std::vector<float> utilization;
-    std::vector<float> memoryPercent;
-    std::vector<float> gpuClock;
-    std::vector<float> encoder;
-    std::vector<float> decoder;
-    std::vector<float> temperature;
-    std::vector<float> power;
-    std::vector<float> fanSpeed;
+    HistoryView<double> timestamps;
+    HistoryView<std::uint64_t> memoryUsedBytes; ///< 0 (with memoryTotalBytes 0) where memory was unread (#1111)
+    HistoryView<std::uint64_t> memoryTotalBytes;
+    HistoryView<float> utilization; ///< NaN where unread or the GPU was missing (#1111, #1146); likewise below
+    HistoryView<float> memoryPercent;
+    HistoryView<float> gpuClock;
+    HistoryView<float> encoder;
+    HistoryView<float> decoder;
+    HistoryView<float> temperature;
+    HistoryView<float> power;
+    HistoryView<float> fanSpeed;
 };
 
 struct GPUPublication
 {
     std::uint64_t version = 0;
+    /// The GPUs only (DeviceKind::Gpu), so every GPU view and total -- the GPU tab, the Overview's
+    /// GPU tile and VRAM total -- sees no NPU or compute accelerator (#1799).
     std::vector<GPUSnapshot> snapshots;
     std::vector<Platform::GPUInfo> gpuInfo;
+    /// The NPUs and other compute accelerators (every other kind), in the same enumeration order
+    /// (#1799). Their history is in histories, by id, as a GPU's is.
+    std::vector<GPUSnapshot> acceleratorSnapshots;
+    std::vector<Platform::GPUInfo> acceleratorInfo;
     /// False if enumerating the GPUs failed, in which case an empty gpuInfo means "could not look",
     /// not "looked and found none". Consumers that report the absence of a GPU must check this.
     bool gpuInfoKnown = false;
     Platform::GPUCapabilities capabilities;
     std::unordered_map<std::string, GPUPublishedHistory> histories;
+};
+
+/// What the per-process GPU breakdown needs to know about one adapter: its ids (a per-process
+/// counter names its GPU by either), its name, and which memory segment its "used" figure counts.
+struct GPUAdapterIdentity
+{
+    std::string id;
+    std::string luidId; ///< Empty where the platform has no LUID
+    std::string name;
+    Platform::DeviceKind kind = Platform::DeviceKind::Gpu; ///< GPUInfo::kind (#1799)
+    bool isIntegrated = false;
+    bool memoryIsShared = false; ///< GPUInfo::memoryIsShared
+};
+
+/// Per-process GPU counters as the GPU sampler last read them (#1417). GPUModel is the single owner
+/// of GPU acquisition: each refresh reads the system and the per-process counters in one probe-locked
+/// section and publishes these beside GPUPublication, in a slot of their own, so the process sampler
+/// merges the newest publication without ever calling the probe or waiting on its lock.
+///
+/// The two samplers run on their own cadences, so a process generation merges whatever was last
+/// published: one publication may be merged into several process generations, and one may be
+/// skipped. The per-process values stay right: the probe computes each process's utilization over
+/// the interval between its own consecutive reads, which are now all made by the GPU sampler, so
+/// each published figure is a rate over one GPU interval, and memory is a point reading. A consumer
+/// judges how stale a publication is by captureTime (Sampling::PROCESS_GPU_DATA_MAX_AGE_MS).
+struct ProcessGPUPublication
+{
+    std::uint64_t version = 0; ///< 0 until the first refresh has read (or tried to read) per-process data
+    /// The time of the refresh that read the counters (refreshAt()'s `now`), on the steady clock.
+    std::chrono::steady_clock::time_point captureTime;
+    std::vector<Platform::ProcessGPUCounters> counters;
+    /// The adapters as that refresh knew them (from the GPU info), to name and classify the counters' GPUs.
+    std::vector<GPUAdapterIdentity> adapters;
+    bool perProcessSupported = false;     ///< Read under per-process support (#1210)
+    bool utilizationSupported = false;    ///< ...including per-process utilization
+    bool npuSupported = false;            ///< Read under per-process NPU support (#1827)
+    bool npuUtilizationSupported = false; ///< ...including per-process NPU utilization
+    /// Supported (GPU or NPU), but the probe's read threw: counters is empty, a gap rather than idle processes.
+    bool readFailed = false;
 };
 
 struct TransparentStringHash
@@ -98,8 +145,20 @@ using GPUSnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentS
 class GPUModel : public ISamplable
 {
   public:
+    /// With a probe, or null for a machine with no GPU probe at all: a known answer (no per-process GPU
+    /// data), not an unknown one.
     explicit GPUModel(std::unique_ptr<Platform::IGPUProbe> probe);
+    /// A model whose probe arrives later, through setProbe() (#2731): until then nothing is published and
+    /// nothing is known -- not the GPUs, not whether per-process data exists -- so the consumers that
+    /// wait for the capabilities (the GPU columns' defaults, #1210) keep waiting.
+    explicit GPUModel(DeferredProbeTag /*tag*/);
     ~GPUModel() override = default;
+
+    /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no GPU probe (as the
+    /// constructor takes it). Reads the probe's capabilities and enumerates its GPUs, as the constructor
+    /// did, so the first refresh has the device list. Meant for the sampler thread, before its first
+    /// sample (the sampler's start hook); thread-safe, and a probe already held is replaced.
+    void setProbe(std::unique_ptr<Platform::IGPUProbe> probe);
 
     GPUModel(const GPUModel&) = delete;
     GPUModel& operator=(const GPUModel&) = delete;
@@ -126,41 +185,18 @@ class GPUModel : public ISamplable
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const;
 
-    // Get current snapshots (thread-safe)
+    // Test seam (#2155): the app reads publication(). The GPUs' current snapshots only, as
+    // GPUPublication::snapshots (#1799). Thread-safe.
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
-    // Get history for specific GPU (returns copy for thread safety)
-    [[nodiscard]] std::vector<GPUSnapshot> history(std::string_view gpuId) const;
-
-    // Get a single historical snapshot by logical index (0 = oldest).
-    // Returns nullopt if gpuId is unknown or index is out of range.
-    // Prefer this over history() when only one sample is needed (avoids copying the full vector).
-    [[nodiscard]] std::optional<GPUSnapshot> snapshotAt(std::string_view gpuId, std::size_t index) const;
-
-    // Get flattened history arrays for specific GPU (for chart plotting)
-    [[nodiscard]] std::vector<float> utilizationHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> memoryPercentHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> gpuClockHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> encoderHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> decoderHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> temperatureHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> powerHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> fanSpeedHistory(std::string_view gpuId) const;
-
-    // Get global timestamps for all GPU history samples (one per refresh call)
-    [[nodiscard]] std::vector<double> historyTimestamps() const;
-
-    // Get per-GPU timestamps: one per refresh since the GPU was first seen, including refreshes it
-    // was missing from, whose history entries are NaN gaps (#1146). Length matches the per-GPU
-    // history vectors (utilizationHistory, etc.).
-    [[nodiscard]] std::vector<double> historyTimestamps(std::string_view gpuId) const;
-
-    // GPU info: enumerated at construction, and again whenever the probe's rescanGPUs() reports a
-    // change (a GPU added, removed or lost, or a sleeping adapter's sensors now discoverable) (#1116,
-    // #1289). Each refresh's publication carries the current list.
+    // Test seam (#2155): the app reads GPUPublication::gpuInfo. GPU info: enumerated at construction,
+    // and again whenever the probe's rescanGPUs() reports a change (a GPU added, removed or lost, or a
+    // sleeping adapter's sensors now discoverable) (#1116, #1289). It is what the tests read before
+    // the first refresh publishes anything. The GPUs only; the NPUs and compute accelerators are in
+    // GPUPublication::acceleratorInfo (#1799).
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
 
-    // Capabilities (re-read along with the GPU info)
+    // Test seam (#2155): the app reads GPUPublication::capabilities. Re-read along with the GPU info.
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
 
     /// True once the probe's capabilities are known and say it has no per-process GPU metrics (DRM-
@@ -179,66 +215,157 @@ class GPUModel : public ISamplable
         return m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
     }
 
+    /// As perProcessMetricsKnownUnsupported(), for a process's NPU / compute-accelerator usage
+    /// (Platform::perProcessNpuMetricsSupported(), #1827): apart from the GPU's, so an NPU's figures
+    /// don't switch on the GPU columns, nor the GPU's the NPU columns.
+    [[nodiscard]] bool perProcessNpuMetricsKnownUnsupported() const noexcept
+    {
+        return m_PerProcessNpuKnownUnsupported.load(std::memory_order_acquire);
+    }
+
+    /// As perProcessUtilizationKnownUnsupported(), for NPU utilization (#1827).
+    [[nodiscard]] bool perProcessNpuUtilizationKnownUnsupported() const noexcept
+    {
+        return m_PerProcessNpuUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
-    // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
-    [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
+    /// The newest per-process GPU publication (#1417): a shared_ptr copy, never a probe call, so the
+    /// process sampler can take it on every refresh. Version 0 (empty) until the first refresh().
+    [[nodiscard]] std::shared_ptr<const ProcessGPUPublication> processGPUPublication() const noexcept
+    {
+        return m_ProcessPublication.load();
+    }
 
+  private:
     /// Per-process GPU counters together with the per-process support they were read under (#1210).
     struct ProcessGPUReading
     {
         std::vector<Platform::ProcessGPUCounters> counters;
-        bool perProcessSupported = false;  ///< Not known to lack per-process metrics
-        bool utilizationSupported = false; ///< ...nor per-process utilization among them
+        bool perProcessSupported = false;     ///< Not known to lack per-process metrics
+        bool utilizationSupported = false;    ///< ...nor per-process utilization among them
+        bool npuSupported = false;            ///< Not known to lack per-process NPU metrics (#1827)
+        bool npuUtilizationSupported = false; ///< ...nor per-process NPU utilization among them
         /// What the probe's read threw, if it did. It is carried here rather than thrown, so the
         /// caller still learns the support the failed read ran under (#1210); rethrow it with
         /// std::rethrow_exception() after taking the flags.
         std::exception_ptr failure;
     };
 
-    /// readProcessGPUCounters() and the support it was read under, from one operation: the flags are
-    /// read under the probe lock, which a re-enumeration that changes them holds, so the counters
-    /// and the flags always agree. Reading the flags separately could stamp a generation supported
-    /// while the read short-circuited empty, or the reverse (#1210).
-    [[nodiscard]] ProcessGPUReading readProcessGPUData() const;
+    /// The four "known unsupported" flags from m_Capabilities, once they are known (under m_Mutex, unique).
+    void storePerProcessSupport() noexcept;
 
-  private:
+    // Set by the constructor or setProbe() (under m_ProbeMutex); refreshAt()'s null check reads it
+    // outside the lock, on the one sampling thread (the sampler's, which also runs setProbe() from its
+    // start hook), as before.
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
-    // The GPU info, its known flag and the capabilities are written only on the sampler thread
-    // (the constructor, then rescanGPUs() inside refreshAt()), always under a unique m_Mutex, so the
-    // sampler thread may read them without a lock; any other thread takes m_Mutex shared.
+    // The per-process GPU publication (#1417). Committed by refreshAt() while it holds m_ProbeMutex,
+    // which therefore also guards the version counter and the failure streak flag: generations are
+    // committed in read order even if two refreshes race. The slot's own lock is a leaf.
+    PublicationSlot<ProcessGPUPublication> m_ProcessPublication;
+    std::uint64_t m_ProcessPublicationVersion = 0; // guarded by m_ProbeMutex
+    bool m_ProcessReadFailing = false;             // guarded by m_ProbeMutex; logs a failing read once per streak
+    // The GPU info, its known flag and the capabilities are written only by setProbe() (the constructor's
+    // too) and by rescanGPUs() inside refreshAt(), each holding m_ProbeMutex and taking a unique m_Mutex
+    // to write. So code holding m_ProbeMutex may read them without m_Mutex; anything else takes m_Mutex shared.
+    // refreshAt() copies the GPU info it computes snapshots from while it holds m_ProbeMutex, so two
+    // racing refreshes never read the list while the other replaces it (#2153).
     std::vector<Platform::GPUInfo> m_GPUInfo;
     // False while no enumerateGPUs() has succeeded, leaving m_GPUInfo empty for a reason other
     // than there being no GPUs. Published as GPUPublication::gpuInfoKnown.
     bool m_GPUInfoKnown = false;
     Platform::GPUCapabilities m_Capabilities;
     // False while no capabilities() query has succeeded, leaving m_Capabilities at its
-    // default (all-false) values. readProcessGPUCounters() must not treat that as proof
-    // per-process metrics are unsupported -- see its use of this flag for why.
+    // default (all-false) values. The per-process read must not treat that as proof per-process
+    // metrics are unsupported: a one-time query failure would silence a probe that has them (#862).
     bool m_CapabilitiesKnown = false;
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics, kept in step with both
-    // (written with them, under the unique m_Mutex). readProcessGPUCounters() is called from
-    // the process sampler on every refresh and, on a backend that has no per-process data,
-    // returns straight away: reading this flag instead of taking m_Mutex shared for the two
-    // fields keeps that early exit to a single atomic load (#1322).
+    // (written with them, under the unique m_Mutex). Each refresh's per-process read returns straight
+    // away on a backend that has no per-process data, and ProcessModel reads it before the first
+    // publication (#1417): a single atomic load, never m_Mutex (#1322).
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
+    // The same two for per-process NPU data (Platform::perProcessNpuMetricsSupported() /
+    // perProcessNpuUtilizationSupported(), #1827).
+    std::atomic<bool> m_PerProcessNpuKnownUnsupported{false};
+    std::atomic<bool> m_PerProcessNpuUtilizationKnownUnsupported{false};
+
+    /// One sample of a GPU's history, as its series record it: a field that was not read, or a
+    /// placeholder for a refresh the GPU was missing from, is NaN (#1111, #1146).
+    struct HistorySample
+    {
+        double timestamp = 0.0;
+        std::uint64_t memoryUsedBytes = 0; // 0 with memoryTotalBytes 0: no byte figures (#1111)
+        std::uint64_t memoryTotalBytes = 0;
+        float utilization = 0.0F;
+        float memoryPercent = 0.0F;
+        float gpuClock = 0.0F;
+        float encoder = 0.0F;
+        float decoder = 0.0F;
+        float temperature = 0.0F;
+        float power = 0.0F;
+        float fanSpeed = 0.0F;
+        bool sampled = true; // false for a placeholder
+    };
+    /// What @p sample's history records: the same values the publication carries.
+    [[nodiscard]] static HistorySample historySample(const GPUSnapshot& sample) noexcept;
+    /// The placeholder recorded at @p nowSeconds for a GPU missing from a read (#1146): every reading NaN.
+    [[nodiscard]] static HistorySample placeholderSample(double nowSeconds) noexcept;
+
+    /// One GPU's history: a shared series per published field, all the same length and aligned
+    /// sample-for-sample, so publishing it is a view of each (#1412). Appends are staged: reserve()
+    /// makes every allocation, and the push() that follows cannot fail part way.
+    struct GPUSeries
+    {
+        SharedHistoryBuffer<double> timestamps;
+        SharedHistoryBuffer<std::uint64_t> memoryUsedBytes;
+        SharedHistoryBuffer<std::uint64_t> memoryTotalBytes;
+        SharedHistoryBuffer<float> utilization;
+        SharedHistoryBuffer<float> memoryPercent;
+        SharedHistoryBuffer<float> gpuClock;
+        SharedHistoryBuffer<float> encoder;
+        SharedHistoryBuffer<float> decoder;
+        SharedHistoryBuffer<float> temperature;
+        SharedHistoryBuffer<float> power;
+        SharedHistoryBuffer<float> fanSpeed;
+        // Placeholders at the newest end. The window holds a real sample while this is below size().
+        std::size_t trailingPlaceholders = 0;
+
+        explicit GPUSeries(std::size_t capacity) noexcept;
+        void setCapacity(std::size_t capacity) noexcept;
+        /// Room for @p count more samples in every series. Throws std::bad_alloc with nothing observable changed.
+        void reserve(std::size_t count);
+        /// Append one sample to every series. Doesn't allocate after reserve(1), so doesn't throw then.
+        void push(const HistorySample& sample);
+        void discardFront(std::size_t count) noexcept;
+        [[nodiscard]] std::size_t size() const noexcept
+        {
+            return timestamps.size();
+        }
+        [[nodiscard]] bool hasReading() const noexcept
+        {
+            return trailingPlaceholders < size();
+        }
+        [[nodiscard]] GPUPublishedHistory view() const noexcept;
+    };
 
     // Current snapshots per GPU
     using SnapshotMap = GPUSnapshotMap;
-    using HistoryMap = std::unordered_map<std::string, HistoryBuffer<GPUSnapshot>, TransparentStringHash, TransparentStringEqual>;
+    using HistoryMap = std::unordered_map<std::string, GPUSeries, TransparentStringHash, TransparentStringEqual>;
     using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
 
     SnapshotMap m_Snapshots;
 
-    // History buffers per GPU
+    // History per GPU, from its first sample: a refresh it was missing from has a placeholder (#1146).
     HistoryMap m_Histories;
 
-    // Timestamps for history data
-    std::vector<double> m_HistoryTimestamps;
+    // When the newest refresh that appended to the history ran (the per-GPU series carry their own
+    // timestamps): setMaxHistorySeconds() trims to the window ending there. Empty before the first.
+    std::optional<double> m_LatestRefreshSeconds;
 
     // History window; ring capacities are sized from it by applyHistoryCapacity().
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT;
@@ -250,34 +377,40 @@ class GPUModel : public ISamplable
     std::chrono::steady_clock::time_point m_LastFullRescan;
 
     // Thread safety. Lock order: m_WriterMutex -> m_Mutex -> the publication slot's mutex, and
-    // m_ProbeMutex -> m_Mutex; m_ProbeMutex and m_WriterMutex are never held together, so a slow probe
-    // read never holds up setMaxHistorySeconds() on the UI thread.
+    // m_ProbeMutex -> m_Mutex, and m_ProbeMutex -> m_ProcessPublication's mutex (a leaf); m_ProbeMutex and m_WriterMutex are never held
+    // together, so a slow probe read never holds up setMaxHistorySeconds() on the UI thread.
     //
     // m_WriterMutex serialises the writers, refreshAt() (from computing the snapshots) and
     // setMaxHistorySeconds(), through the publication commit, so generations are numbered and
     // committed in order. Readers never take it, and it is never taken while holding m_Mutex.
     // m_PrevCounters and m_PrevSampleTime are writer-only state under it.
     std::mutex m_WriterMutex;
-    // Guards the state above for the per-field accessors: writers mutate it exclusively, and
-    // publish() reads it under a shared lock, so neither publication() nor those accessors wait on
-    // a publication's copy.
+    // Guards the state above for the snapshot and GPU-info accessors: writers mutate it exclusively,
+    // and publish() reads it under a shared lock, so neither publication() nor those accessors wait
+    // on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     PublicationSlot<GPUPublication> m_Publication;
     std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
 
-    // Helper: compute snapshot from current/previous counters
-    [[nodiscard]] GPUSnapshot
-    computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
+    // Helper: compute snapshot from current/previous counters, naming the GPU from @p gpuInfo: the
+    // GPU info copied under m_ProbeMutex with the counters, never m_GPUInfo itself (#2153)
+    [[nodiscard]] static GPUSnapshot computeSnapshot(const Platform::GPUCounters& current,
+                                                     const Platform::GPUCounters* previous,
+                                                     const std::vector<Platform::GPUInfo>& gpuInfo,
+                                                     double timeDeltaSeconds);
 
-    // Helper template: extract a field from GPU history and return as float vector
-    template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(std::string_view gpuId, FieldPtr field) const;
-    // Underlying helper shared with getHistoryField(): a per-sample projection instead of a
-    // plain member pointer, for accessors whose value depends on more than one field.
-    template<typename Projection>
-    [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
+
+    /// The per-process counters and the support they were read under, for publishProcessGPUData(),
+    /// which holds m_ProbeMutex. Never throws the probe's exception: it is carried in the result.
+    [[nodiscard]] ProcessGPUReading readProcessGPUDataLocked() const;
+
+    /// Read the per-process counters and commit them as the next ProcessGPUPublication, stamped
+    /// @p now (#1417). Caller holds m_ProbeMutex. A failed probe read is published as readFailed; a
+    /// failure to build the publication (bad_alloc) is logged and leaves the previous one in place.
+    void publishProcessGPUData(std::chrono::steady_clock::time_point now);
 
     // Ask the probe whether the GPU set or its GPUInfo changed (a full rescan every
     // GPU_RESCAN_INTERVAL_SECONDS, a quick one otherwise) and, if so, re-enumerate and take the new
@@ -285,11 +418,27 @@ class GPUModel : public ISamplable
     // capabilities query at the full-rescan rate. Caller holds m_ProbeMutex, not m_Mutex.
     void rescanGPUs(std::chrono::steady_clock::time_point now);
 
-    // Size every history ring for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
-    void applyHistoryCapacity();
+    /// One refresh's history append, staged: every allocation it needs is made here, so applying it
+    /// cannot fail part way (#1412).
+    struct PendingHistory
+    {
+        HistoryMap newGpus; // GPUs this read reports that have no history yet, with room for the sample
+    };
+    /// Create the series of the GPUs @p snapshots introduces in @p pending, and reserve room for one
+    /// more sample in every series and the hash buckets the new GPUs will use. May throw; changes
+    /// nothing observable. Caller holds m_Mutex exclusively.
+    void stageHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots);
+    /// Apply a staged append: adopt the new GPUs' series, then append @p snapshots' samples, and a
+    /// placeholder for every GPU with a history that is missing from them (#1146). Uses only what
+    /// stageHistoryAppend() reserved, so it does not allocate or throw. Caller holds m_Mutex exclusively.
+    void commitHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots, double nowSeconds) noexcept;
+
+    // Size every history series for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
+    void applyHistoryCapacity() noexcept;
     // Drop samples older than m_MaxHistorySeconds before nowSeconds, except the newest of them while a
-    // newer sample remains, like HistoryUtils::discardBefore (#1016) (caller holds m_Mutex).
-    void trimHistory(double nowSeconds);
+    // newer sample remains, like HistoryUtils::discardBefore (#1016), and forget a GPU whose window
+    // holds only placeholders (caller holds m_Mutex).
+    void trimHistory(double nowSeconds) noexcept;
 };
 
 } // namespace Domain

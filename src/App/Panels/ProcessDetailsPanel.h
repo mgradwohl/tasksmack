@@ -1,30 +1,58 @@
 #pragma once
 
+#include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
-#include "App/TabLabel.h"
+#include "App/SelectOverride.h"
+#include "Core/Event.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ProcessTypes.h"
+#include "ProcessActionsView.h"
+#include "ProcessConnectionsView.h"
+#include "ProcessCrashHistoryView.h"
+#include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
-#include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
-#include "UI/ChartWidgets.h"
+#include "ProcessEnvironmentView.h"
+#include "ProcessModulesView.h"
+#include "ProcessOpenFilesView.h"
+#include "ProcessPriorityView.h"
+#include "ProcessSecurityView.h"
+#include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
-#include <vector>
-
-// Forward declaration for ImGui draw list
-struct ImDrawList;
+#include <utility>
 
 namespace App
 {
+
+/// Process Details' actions and per-process readers (made by PanelPlatforms.h's makeProcessDetailsReaders(), #2137).
+struct ProcessDetailsReaders
+{
+    std::unique_ptr<Platform::IProcessActions> actions;
+    std::unique_ptr<Platform::IProcessEnvironmentReader> environment;
+    std::unique_ptr<Platform::IProcessConnectionsReader> connections;
+    std::unique_ptr<Platform::IProcessModulesReader> modules;
+    std::unique_ptr<Platform::IProcessSecurityReader> security;
+    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles;
+};
 
 /// Panel displaying detailed information for a selected process.
 /// Includes resource usage, I/O stats, and process actions.
@@ -40,7 +68,38 @@ class ProcessDetailsPanel : public Panel
     /// refusing actions: App/SyntheticScenario.h).
     explicit ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions);
 
+    /// Construct with injected IProcessActions and IProcessEnvironmentReader implementations (tests: mocks).
+    /// A null reader, like the one-argument constructor's, hides the Environment section.
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader);
+
+    /// Construct with injected IProcessActions, IProcessEnvironmentReader and IProcessConnectionsReader
+    /// implementations (tests: mocks). A null connections reader, like the shorter constructors', hides
+    /// the Connections section.
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader);
+
+    /// As above, with an injected IProcessModulesReader too (tests: mocks). A null modules reader, like
+    /// the shorter constructors', hides the Modules section (#802).
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader);
+
+    /// As above, with an injected IProcessSecurityReader and IProcessOpenFilesReader too (tests: mocks). A
+    /// null reader, like the shorter constructors', hides its section (Security #1526, Open files #183).
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                        std::unique_ptr<Platform::IProcessSecurityReader> securityReader,
+                        std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
+
     ~ProcessDetailsPanel() override = default;
+
+    /// With @p readers (PanelPlatforms.h): the default constructor's, made for the active scenario (#2137).
+    explicit ProcessDetailsPanel(ProcessDetailsReaders readers);
 
     ProcessDetailsPanel(const ProcessDetailsPanel&) = delete;
     ProcessDetailsPanel& operator=(const ProcessDetailsPanel&) = delete;
@@ -68,29 +127,68 @@ class ProcessDetailsPanel : public Panel
         return m_HasSnapshot ? m_CachedSnapshot.get() : nullptr;
     }
 
-    /// Render the panel (with ImGui window wrapper).
-    /// @param open Pointer to visibility flag (for window close button).
-    void render(bool* open) override;
-
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
 
-    /// Get a label for this panel (process name or "Select a process").
+    /// The tab's text while no process is selected; the main tab bar's minimum width is measured
+    /// with it (#1939).
+    static constexpr const char* NO_SELECTION_TAB_TEXT = "Select a process";
+
+    /// Get a label for this panel (process name or NO_SELECTION_TAB_TEXT); with several processes
+    /// selected in the Processes table, "name (PID n)", so it says which of them is shown (#1926).
     /// Returned by reference so a caller can compare it against a cached copy every frame without
-    /// allocating. The reference is valid until the next updateWithSamples() or selection change.
+    /// allocating. The reference is valid until the next tabLabel(), updateWithSamples() or selection
+    /// change.
     [[nodiscard]] const std::string& tabLabel() const;
+
+    /// How many processes are selected in the Processes table (#804), each frame from the composition
+    /// root: with more than one, tabLabel() names the shown process's PID too (#1926).
+    void setSelectionCount(std::size_t count) noexcept
+    {
+        m_SelectionCount = count;
+    }
 
     /// Handle application events (process selection, active tab, refresh interval, history window)
     void onEvent(Core::Event& event) override;
 
     /// Set the process to display.
-    /// @param uniqueKey Identity of the process (hash of PID and start time), or 0 if not known.
-    ///        With it, a later process that reuses the PID is not mistaken for the selected one.
-    void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
+    /// @param startTimeTicks The process's raw start time (Domain::ProcessSnapshot::startTimeTicks).
+    ///        With it, a later process that reuses the PID is not mistaken for the selected one (#1503).
+    void setSelectedPid(std::int32_t pid, std::uint64_t startTimeTicks);
 
     /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
     void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
+
+    /// The shared crash cache the Overview's Recent crashes line reads (#1675), from the composition root
+    /// (ShellLayer); null (the default) hides the line.
+    void setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept
+    {
+        m_CrashHistoryView.setHistory(std::move(crashHistory));
+    }
+
+    /// Whether the machine has an NPU or compute accelerator: the NPU tab is shown beside the GPU tab
+    /// only then, on the machine view's NPU tab's condition (GpuSection::showAcceleratorTab(), #1869).
+    /// Set each frame by ShellLayer; false (the default) hides it.
+    void setHasAccelerator(bool hasAccelerator) noexcept
+    {
+        m_HasAccelerator = hasAccelerator;
+    }
+
+    /// Brings @p tab forward the next time the tabs are drawn: the test hook's TASKSMACK_DETAILS_TAB (#1559).
+    void requestTab(SelectOverride::DetailsTab tab)
+    {
+        m_RequestedTab = tab;
+    }
+
+    /// Draws @p section of the Overview open the next time the Overview is drawn, through ImGui's own
+    /// open state, as a click on its header does (TASKSMACK_DEMO's section=, #2827). Kept until then; a
+    /// section this platform hides, or (Services) this process has none of, is left alone. Open files'
+    /// scan is started with it, as its Scan button does, since the section lists nothing until then.
+    void requestSection(SelectOverride::DetailsSection section)
+    {
+        m_RequestedSection = section;
+    }
 
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
@@ -98,50 +196,92 @@ class ProcessDetailsPanel : public Panel
         return m_SelectedPid;
     }
 
-    /// What process actions the underlying IProcessActions supports. Exposed publicly so
-    /// tests constructing this panel with an injected mock can assert the capability flags
-    /// were actually pulled from it.
+    /// Whether the pane shows a running process: one is selected, a sample of it has arrived, and it
+    /// has not exited. False while it shows the empty, "Process not found" or "Process exited" state.
+    [[nodiscard]] bool showsRunningProcess() const noexcept
+    {
+        return m_SelectedPid != -1 && m_HasSnapshot && !m_ProcessExited;
+    }
+
+    /// Whether the selected process has left the process list since it was sampled, so the pane shows
+    /// "Process exited" (#927) until another process is selected.
+    [[nodiscard]] bool selectedProcessExited() const noexcept
+    {
+        return m_ProcessExited;
+    }
+
+    /// What process actions the underlying IProcessActions supports, read at construction and again
+    /// every renderContent() (some, like the Realtime I/O class, follow the privileged helper, #2407).
+    /// Exposed publicly so tests constructing this panel with an injected mock can assert the
+    /// capability flags were actually pulled from it.
     [[nodiscard]] const Platform::ProcessActionCapabilities& actionCapabilities() const
     {
         return m_ActionCapabilities;
     }
 
-  private:
-    /// Action pending confirmation in the "Confirm Action" popup - see
-    /// ProcessDetailsPanel_ActionHelpers.h for why this is a type alias rather than a
-    /// member enum.
-    using ProcessAction = Detail::ProcessAction;
+    /// F9 (#170): on this frame's render, opens the Actions block's Kill confirm for the process shown,
+    /// through ProcessActionsView::requestKillShortcut() (target captured then, never a direct kill),
+    /// and brings the Overview tab, which holds that block (#1493), forward. Does nothing while this pane is not
+    /// showing a running process, or when the platform cannot kill. Lives for this frame only:
+    /// expireFrameRequests() drops it if the tabs were not drawn.
+    void requestKillSelected() noexcept
+    {
+        m_KillShortcut.request();
+    }
 
+    /// End of frame: drop a shortcut request this frame's render did not take (#170).
+    void expireFrameRequests() noexcept
+    {
+        m_KillShortcut.expire();
+    }
+
+    /// The service list the Overview's Services section takes display names and states from (#1880), from
+    /// the composition root (ShellLayer: the Services panel's model). Null (the default): names alone.
+    void setServiceModel(std::shared_ptr<const Domain::ServiceModel> serviceModel) noexcept
+    {
+        m_ServiceModel = std::move(serviceModel);
+    }
+
+    /// Whether the Overview's Services section was drawn open on the last frame, as of the last
+    /// updateWithSamples() (#1880): ShellLayer then keeps the service list sampled.
+    [[nodiscard]] bool servicesSectionOpen() const noexcept
+    {
+        return m_ServicesSectionOpen;
+    }
+
+    /// Test seam (#1886): events the panel raises (Show in Services) go to @p raise instead of
+    /// Core::Application.
+    void setEventSinkForTesting(std::function<void(Core::Event&)> raise)
+    {
+        m_RaiseEvent = std::move(raise);
+    }
+
+    /// Test seam (#2117): the Actions block's view, with the dump's state (ProcessActionsView::dumpView()).
+    [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
+    {
+        return m_ActionsView;
+    }
+
+    /// Test seam (#2407): the Priority card's view, with the I/O priority control's state.
+    [[nodiscard]] ProcessPriorityView& priorityViewForTesting() noexcept
+    {
+        return m_PriorityView;
+    }
+
+  private:
+    /// The pane renderContent() draws before the dialogs: the empty or exited state, or the tabs. Takes
+    /// F9's request (@p killRequested) only once the tabs are drawn.
+    void renderPane(bool killRequested);
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
-    void renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
-    void renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill);
-    void renderThreadAndFaultHistory(UI::Widgets::FillPlotLayout& fill);
-    void renderIoStats(UI::Widgets::FillPlotLayout& fill);
-    void renderNetworkStats(UI::Widgets::FillPlotLayout& fill);
-    void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
-    void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
-    void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
-    void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
-    void renderActions();
-    void renderActionResultFeedback();
-    void renderConfirmDialog();
-    void dispatchConfirmedAction();
+    /// The Overview's collapsed Services section (#1886): each service the process runs, with a button
+    /// that shows it in the Services tab. Not drawn for a process that runs none.
+    void renderServicesSection(const Domain::ProcessSnapshot& proc);
+    /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
+    /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
+    [[nodiscard]] ProcessChartContext chartContext() const;
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
-    void renderActionButtons();
-    void renderPrioritySection();
-
-    // Priority slider helper methods (extracted for testability and clarity)
-    struct PrioritySliderContext;
-    static void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    static void drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    static void drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx);
-    void handlePrioritySliderInput(const PrioritySliderContext& ctx);
-    static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
-    void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
     /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
     /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.
@@ -153,8 +293,8 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
     std::int32_t m_SelectedPid = -1;
-    std::uint64_t m_SelectedUniqueKey = 0; // 0 = not known; adopted from the first snapshot
-    Detail::SampleIntake m_SampleIntake;   // Where history recording is in the watched process's samples (#1098)
+    std::uint64_t m_SelectedStartTicks = 0; // With m_SelectedPid, the selected process's exact identity (#1503)
+    Detail::SampleIntake m_SampleIntake;    // Where history recording is in the watched process's samples (#1098)
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
@@ -172,24 +312,11 @@ class ProcessDetailsPanel : public Panel
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     double m_PeakMemoryBytes = 0.0; // Peak working set (never decreases)
 
-    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
-    // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
-    // The User and System bands, their x axis held to now (#1016), shared with the Overview (#1180);
-    // the User line is the User band's top.
-    UI::Widgets::UserSystemStack m_CpuStack;
-    std::vector<double> m_CpuPlotTotal;
-    std::vector<double> m_CpuPlotSystem;
-    UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
-
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
     // Which of m_CachedSnapshot's I/O and network rates are readings, by its own generation (#1210).
     Detail::SampleRateReadings m_CachedRateReadings;
-
-    // render()'s window title, rebuilt only when the selected process's name changes rather than
-    // every frame (#1326).
-    TabLabel::CachedLabel m_WindowLabel;
 
     // The Overview's Identity/Runtime values formatted from one snapshot, kept until a different one
     // is shown, so the block is not reformatted every frame (#1171). keepAlive holds that snapshot,
@@ -205,12 +332,19 @@ class ProcessDetailsPanel : public Panel
         std::string handles;
         std::string cpuTime;
         std::string priority;
+        std::string state;    ///< The State with its Status: "Sleeping · Suspended" (#1878)
+        std::string affinity; ///< The CPUs it may run on, as the Affinity column writes them (#1878)
     } m_BasicInfoText;
-    // Per-tab state for the shared chart-height rule (#959)
+    // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
+    // m_Charts'.
     UI::Widgets::PlotFillState m_OverviewFill;
-    UI::Widgets::PlotFillState m_NetworkFill;
-    UI::Widgets::PlotFillState m_GpuFill;
 
+    std::function<void(Core::Event&)> m_RaiseEvent; // Set by the test seam only
+    // The Services section's display names and states (#1880), and whether it was drawn open: set by
+    // renderServicesSection(), taken into m_ServicesSectionOpen by updateWithSamples().
+    std::shared_ptr<const Domain::ServiceModel> m_ServiceModel;
+    bool m_ServicesDrawnOpen = false;
+    bool m_ServicesSectionOpen = false;
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 
@@ -218,61 +352,72 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
-    // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
-    // and cleared when the window changes so the next frame rebuilds it.
-    std::string m_NoGpuUsageDetail;
+    bool m_HasAccelerator = false;    // Shows the NPU tab (setHasAccelerator(), #1869)
+    std::size_t m_SelectionCount = 0; // Rows selected in the Processes table (setSelectionCount(), #1926)
+    // tabLabel()'s "name (PID n)" while several processes are selected (#1926): rebuilt in place on each
+    // call, its capacity kept, so a steady label allocates nothing.
+    mutable std::string m_TabLabelWithPid;
 
-    // Confirmation dialog state
-    bool m_ShowConfirmDialog = false;
-    ProcessAction m_ConfirmAction = ProcessAction::None;
-    Detail::ActionResultMessage m_LastActionResult;
-    float m_ActionResultTimer = 0.0F;
+    // The Overview's Actions block (#1493): the buttons, confirm dialog and result line, and the
+    // priority control beside them (#1179). Both act through m_ProcessActions, which the panel keeps
+    // owning.
+    ProcessActionsView m_ActionsView;
+    KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
+    // The tab to bring forward when the tabs are next drawn: the Overview when F9 asked for the Kill
+    // confirm, which shows over the Actions block there; or the test hook's tab (#1559).
+    std::optional<SelectOverride::DetailsTab> m_RequestedTab;
+    // The Overview section to draw open when the Overview is next drawn (requestSection(), #2827).
+    std::optional<SelectOverride::DetailsSection> m_RequestedSection;
+    ProcessPriorityView m_PriorityView;
+    // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
+    // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).
+    float m_ActionsCardHeight = 0.0F;
+    float m_PriorityCardHeight = 0.0F;
 
-    // Priority adjustment state
-    int32_t m_PriorityNiceValue = 0;
-    bool m_PriorityChanged = false;
-    std::string m_PriorityError; // Persistent error message for priority changes
+    // The Overview's Environment section (#179). The reader is created by the composition root (the
+    // default constructor) and called only from updateWithSamples(), through the view, while the
+    // section is open: never from render(), and never for any process but the selected one.
+    std::unique_ptr<Platform::IProcessEnvironmentReader> m_EnvironmentReader;
+    bool m_HasEnvironment = false; // m_EnvironmentReader can read environments here (Linux)
+    ProcessEnvironmentView m_EnvironmentView;
 
-    struct SmoothedUsage
-    {
-        double cpuPercent = 0.0;
-        double cpuUserPercent = 0.0;
-        double cpuSystemPercent = 0.0;
-        double residentBytes = 0.0;
-        double virtualBytes = 0.0;
-        double threadCount = 0.0;
-        double handleCount = 0.0;
-        double pageFaultsPerSec = 0.0;
-        double ioReadBytesPerSec = 0.0;
-        double ioWriteBytesPerSec = 0.0;
-        double netSentBytesPerSec = 0.0;
-        double netRecvBytesPerSec = 0.0;
-        double powerWatts = 0.0;
-        double gpuUtilPercent = 0.0;
-        double gpuMemoryBytes = 0.0;
-        // Whether the latest sample's generation had these from the GPU probe (#1210): one it did not
-        // leaves the value where it was and shows N/A, like the I/O and network readings above.
-        bool gpuUtilAvailable = false;
-        bool gpuMemoryAvailable = false;
-        // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
-        // was and shows N/A, as its line shows a gap, like the GDI count below.
-        bool handleCountAvailable = false;
-        bool ioAvailable = false;
-        bool networkAvailable = false;
-        double gdiObjectCount = 0.0;
-        // Whether the latest sample had a GDI reading. A missing one leaves gdiObjectCount where it
-        // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
-        bool gdiInitialized = false;
-        // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
-        // of system RAM is shown only in the hover text, via memoryPercentPerByte.
-        double memorySharedBytes = 0.0;
-        double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
-        bool initialized = false;
-    } m_SmoothedUsage;
+    // The Overview's Connections section (#799), on the same terms as the Environment section: the
+    // reader comes from the composition root and is called only from updateWithSamples(), through the
+    // view, while the section is open, and only for the selected process. The view runs each read on a
+    // worker and its destructor waits for one in flight, so the reader is declared before the view:
+    // members are destroyed in reverse order, and the reader must outlive any read using it.
+    std::unique_ptr<Platform::IProcessConnectionsReader> m_ConnectionsReader;
+    bool m_HasConnections = false; // m_ConnectionsReader can list sockets here (Linux)
+    ProcessConnectionsView m_ConnectionsView;
 
-    // GPU logging throttle state (per-panel tracking)
-    std::int32_t m_LastGpuLogPid = -1;
-    std::uint64_t m_LastGpuLogMemoryBytes = std::numeric_limits<std::uint64_t>::max();
+    // The Overview's Modules section (#802), on the same terms as the Connections section, and for the
+    // same reason its reader is declared before its view.
+    std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
+    bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
+    ProcessModulesView m_ModulesView;
+
+    // The Overview's Security section (#1526), on the same terms, its reader declared before its view.
+    std::unique_ptr<Platform::IProcessSecurityReader> m_SecurityReader;
+    bool m_HasSecurity = false; // m_SecurityReader can read security contexts here (Linux; not Windows yet, not synthetic runs)
+    ProcessSecurityView m_SecurityView;
+
+    // The Overview's Open files section (#183), on the same terms; its reader declared before its view.
+    std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;
+    bool m_HasOpenFiles = false; // m_OpenFilesReader can list open files here (Windows, Linux; not synthetic runs)
+    ProcessOpenFilesView m_OpenFilesView;
+
+    // The Overview's Recent crashes line (#1675): the selected executable's crashes and hangs from the
+    // shared Domain::CrashHistory, read on a worker at most once a refresh interval while the line is
+    // drawn, never per frame or per selection change. Its destructor waits for a read in flight, which
+    // holds its own reference to the history.
+    ProcessCrashHistoryView m_CrashHistoryView;
+
+    // The smoothed NowBar values, eased toward each shown sample (#1179).
+    Detail::ProcessSmoothedUsage m_SmoothedUsage;
+
+    // The Overview's charts and the GPU, NPU and Network and I/O tabs (#1179, #1869). They read m_History,
+    // m_SmoothedUsage and the snapshot through chartContext(), passed in each frame.
+    ProcessDetailsCharts m_Charts;
 };
 
 } // namespace App

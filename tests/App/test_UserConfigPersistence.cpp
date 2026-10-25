@@ -1,22 +1,33 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+#include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessTableSettings.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
+#include "Core/LocaleSetup.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
+#include "UI/Format.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <locale>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
@@ -666,6 +677,170 @@ TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
 }
 
+// ========== cpuDetailsExpanded Persistence (#809) ==========
+
+TEST(UserSettingsTest, CpuDetailsExpandedDefaultsToTrue)
+{
+    const UserSettings settings;
+    EXPECT_TRUE(settings.cpuDetailsExpanded);
+}
+
+TEST_F(UserConfigSaveLoadFixture, CpuDetailsCollapsedIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().cpuDetailsExpanded = false;
+    config.save();
+    config.settings().cpuDetailsExpanded = true;
+    config.load();
+    EXPECT_FALSE(config.settings().cpuDetailsExpanded);
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigFromBeforeTheCpuDetailsBlockLoadsExpanded)
+{
+    // Written by a version without the key: the block opens expanded
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[ui]\nshow_privilege_notice = false\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{}; // A fresh start: load() fills in only the keys the file has
+    config.load();
+    EXPECT_TRUE(config.settings().cpuDetailsExpanded);
+    EXPECT_FALSE(config.settings().showPrivilegeNotice);
+}
+
+// ========== Inline meters (#1528) ==========
+
+TEST(UserSettingsTest, ProcessMetersDefaultToCpuOnly)
+{
+    const UserSettings settings;
+    EXPECT_TRUE(settings.processMeters.isOn(ProcessColumn::CpuPercent));
+    EXPECT_FALSE(settings.processMeters.isOn(ProcessColumn::Resident));
+    EXPECT_FALSE(settings.processMeters.isOn(ProcessColumn::NetReceived));
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersAreSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().processMeters.set(ProcessColumn::CpuPercent, false);
+    config.settings().processMeters.set(ProcessColumn::Resident, true);
+    config.settings().processMeters.set(ProcessColumn::GpuMemory, true);
+    const ProcessRowMeter::Settings saved = config.settings().processMeters;
+    config.save();
+    config.settings().processMeters = ProcessRowMeter::Settings{};
+    config.load();
+    EXPECT_EQ(config.settings().processMeters, saved);
+    EXPECT_FALSE(config.settings().processMeters.isOn(ProcessColumn::CpuPercent));
+    EXPECT_TRUE(config.settings().processMeters.isOn(ProcessColumn::Resident));
+    config.settings().processMeters = ProcessRowMeter::Settings{}; // The singleton outlives this test
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersMissingOrInvalidKeepDefaults)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\nio_read = true\ncpu_percent = \"yes\"\npid = true\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    const ProcessRowMeter::Settings& meters = config.settings().processMeters;
+    EXPECT_TRUE(meters.isOn(ProcessColumn::IoRead));
+    EXPECT_TRUE(meters.isOn(ProcessColumn::CpuPercent)); // Not a boolean: the default
+    EXPECT_FALSE(meters.isOn(ProcessColumn::PID));       // No meter column: ignored
+    EXPECT_FALSE(meters.isOn(ProcessColumn::IoWrite));   // Not listed: the default
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersSavedAsBooleansReadAsOffAndBar)
+{
+    // A config.toml written before sparklines (#1528's booleans) keeps its choices (#1612).
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\ncpu_percent = false\nresident = true\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    const ProcessRowMeter::Settings& meters = config.settings().processMeters;
+    EXPECT_EQ(meters.style(ProcessColumn::CpuPercent), ProcessRowMeter::Style::Off);
+    EXPECT_EQ(meters.style(ProcessColumn::Resident), ProcessRowMeter::Style::Bar);
+    EXPECT_EQ(meters.style(ProcessColumn::IoRead), ProcessRowMeter::Style::Off); // Not listed: the default
+    EXPECT_EQ(meters.sparklineMetrics(), 0U);
+    config.settings() = UserSettings{};
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMeterStylesAreSavedAndLoaded)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\ncpu_percent = \"sparkline\"\nresident = \"bar\"\nio_read = \"off\"\nnet_sent = \"line\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    ProcessRowMeter::Settings expected;
+    expected.setStyle(ProcessColumn::CpuPercent, ProcessRowMeter::Style::Sparkline);
+    expected.setStyle(ProcessColumn::Resident, ProcessRowMeter::Style::Bar);
+    EXPECT_EQ(config.settings().processMeters, expected); // "line" is not a style: net_sent keeps its default
+
+    config.settings().processMeters.setStyle(ProcessColumn::GpuPercent, ProcessRowMeter::Style::Sparkline);
+    const ProcessRowMeter::Settings saved = config.settings().processMeters;
+    config.save();
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_EQ(config.settings().processMeters, saved);
+    config.settings() = UserSettings{}; // The singleton outlives this test
+}
+
+// #1799: the NPU columns and their meters are saved and loaded under their own keys, like every
+// other column's; a config written before them leaves them at their defaults (off).
+TEST_F(UserConfigSaveLoadFixture, NpuColumnsAndMetersAreSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.settings().processColumns.setVisible(ProcessColumn::NpuPercent, true);
+    config.settings().processColumns.setVisible(ProcessColumn::NpuMemory, true);
+    config.settings().processColumns.setVisible(ProcessColumn::NpuEngine, true);
+    config.settings().processMeters.setStyle(ProcessColumn::NpuPercent, ProcessRowMeter::Style::Sparkline);
+    config.settings().processMeters.setStyle(ProcessColumn::NpuMemory, ProcessRowMeter::Style::Bar);
+    config.save();
+    {
+        std::ifstream file(m_ConfigPath);
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(content.contains("npu_percent")) << content;
+        EXPECT_TRUE(content.contains("npu_memory")) << content;
+        EXPECT_TRUE(content.contains("npu_engine")) << content;
+    }
+
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuMemory));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuEngine));
+    EXPECT_EQ(config.settings().processMeters.style(ProcessColumn::NpuPercent), ProcessRowMeter::Style::Sparkline);
+    EXPECT_EQ(config.settings().processMeters.style(ProcessColumn::NpuMemory), ProcessRowMeter::Style::Bar);
+    config.settings() = UserSettings{}; // The singleton outlives this test
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigFromBeforeTheNpuColumnsLeavesThemOff)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_columns]\ngpu_percent = true\n[process_meters]\ngpu_percent = \"bar\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::GpuPercent));
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        EXPECT_FALSE(config.settings().processColumns.isVisible(col)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(config.settings().processColumns.isChosen(col)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(config.settings().processMeters.isOn(col)) << getColumnInfo(col).configKey;
+    }
+    config.settings() = UserSettings{};
+}
+
 // ========== Process table layout persistence (#952) ==========
 
 TEST(UserSettingsTest, ProcessTableLayoutDefaultsToEmpty)
@@ -837,6 +1012,79 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
     EXPECT_TRUE(config.settings().chartAntiAliasing);
 }
 
+TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocumentedDefault)
+{
+    // #2727: the whole first-run picture, not four settings. Each default is spelled out here (or
+    // named by the constant its comment in UserConfig.h points to), so changing one is deliberate.
+    auto& config = UserConfig::get();
+    ASSERT_FALSE(std::filesystem::exists(config.configPath()));
+    config.load();
+
+    // One name per UserSettings member, in declaration order: a structured binding must name them
+    // all, so a new setting stops this test compiling until its default is asserted below.
+    const auto& [themeId,
+                 fontSize,
+                 processColumns,
+                 processMeters,
+                 processTableLayout,
+                 refreshIntervalMs,
+                 maxHistorySeconds,
+                 socketStatsCacheTtlMs,
+                 udpEventTrace,
+                 maxSaneRateBps,
+                 chartSmoothFactor,
+                 chartTauMsMin,
+                 chartTauMsMax,
+                 chartAntiAliasing,
+                 windowWidth,
+                 windowHeight,
+                 windowScale,
+                 windowPosX,
+                 windowPosY,
+                 windowMaximized,
+                 showPrivilegeNotice,
+                 showProcessIcons,
+                 cpuDetailsExpanded,
+                 dumpFolder,
+                 forceNativeWindowDecorationsOnWayland] = config.settings();
+
+    EXPECT_EQ(themeId, "arctic-fire");
+    EXPECT_EQ(fontSize, UI::FontSize::Medium);
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        // The catalogue's defaults, none chosen: the ones this system can't fill follow its
+        // capabilities later (ProcessColumnAvailability), and nothing is written to [process_columns].
+        EXPECT_EQ(processColumns.isVisible(col), getColumnInfo(col).defaultVisible) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(processColumns.isChosen(col)) << getColumnInfo(col).configKey;
+        const ProcessRowMeter::Style meter = ProcessRowMeter::defaultOn(col) ? ProcessRowMeter::Style::Bar : ProcessRowMeter::Style::Off;
+        EXPECT_EQ(processMeters.style(col), meter) << getColumnInfo(col).configKey;
+    }
+    EXPECT_TRUE(processTableLayout.empty()); // ImGui's own default widths, order and sort (CPU %, descending)
+    EXPECT_EQ(refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(refreshIntervalMs, 1000);
+    EXPECT_EQ(maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+    EXPECT_EQ(maxHistorySeconds, 300);
+    EXPECT_EQ(socketStatsCacheTtlMs, Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT);
+    EXPECT_FALSE(udpEventTrace);
+    EXPECT_DOUBLE_EQ(maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT);
+    EXPECT_DOUBLE_EQ(chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT);
+    EXPECT_EQ(chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+    EXPECT_EQ(chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+    EXPECT_TRUE(chartAntiAliasing);
+    EXPECT_EQ(windowWidth, 1280);
+    EXPECT_EQ(windowHeight, 720);
+    ASSERT_TRUE(windowScale.has_value()); // the default size is for 100 %, converted to the display's scale
+    EXPECT_FLOAT_EQ(windowScale.value_or(0.0F), 1.0F);
+    EXPECT_FALSE(windowPosX.has_value()); // no position: the window opens where it is created
+    EXPECT_FALSE(windowPosY.has_value());
+    EXPECT_FALSE(windowMaximized);
+    EXPECT_TRUE(showPrivilegeNotice);
+    EXPECT_TRUE(showProcessIcons);
+    EXPECT_TRUE(cpuDetailsExpanded);
+    EXPECT_TRUE(dumpFolder.empty()); // the temp folder
+    EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);
+}
+
 // ========== Load: is-loaded guard ==========
 
 TEST_F(UserConfigSaveLoadFixture, LoadIsIdempotentAfterFirstCall)
@@ -905,6 +1153,37 @@ TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
     config.captureFromApplication();
     EXPECT_EQ(config.settings().themeId, "dracula");
     EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
+
+    // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
+    theme.setThemeById(originalId);
+    theme.setFontSize(originalSize);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeSurviveSaveLoadApply)
+{
+    // #1187 regression: the whole shutdown -> startup path a user's theme takes. ShellLayer captures
+    // the live Theme and saves on shutdown, then loads and applies on the next start. Each step is
+    // covered alone elsewhere; this checks the file in between carries what the Theme held.
+    auto& theme = UI::Theme::get();
+    const std::string originalId = theme.currentThemeId();
+    const UI::FontSize originalSize = theme.currentFontSize();
+
+    auto& config = UserConfig::get();
+    theme.setThemeById("dracula");
+    theme.setFontSize(UI::FontSize::Large);
+    config.captureFromApplication();
+    config.save();
+
+    // Simulate a fresh start: neither the Theme nor the in-memory settings remember the session.
+    theme.setThemeById("arctic-fire");
+    theme.setFontSize(UI::FontSize::Small);
+    config.settings().themeId = "arctic-fire";
+    config.settings().fontSize = UI::FontSize::Small;
+
+    config.load();
+    config.applyToApplication();
+    EXPECT_EQ(theme.currentThemeId(), "dracula");
+    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::Large);
 
     // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
     theme.setThemeById(originalId);
@@ -1125,6 +1404,67 @@ TEST_F(UserConfigSaveLoadFixture, ChartTauRangeRoundTrip)
     config.load();
     EXPECT_EQ(config.settings().chartTauMsMin, 50);
     EXPECT_EQ(config.settings().chartTauMsMax, 1000);
+}
+
+// #1648, slice E: config.toml is machine-readable, so it is written and read in the classic locale
+// however the user's numbers are displayed. Even with de-DE's numeric facets in the global locale
+// (more than TaskSmack installs: it keeps the classic ones) and as the display punctuation, a
+// fraction keeps its '.' and a large integer gets no thousands separator, and both load back.
+TEST_F(UserConfigSaveLoadFixture, NumbersRoundTripInTheClassicFormatUnderADecimalCommaLocale)
+{
+#ifdef _WIN32
+    constexpr const char* DE_DE = "de-DE.UTF-8";
+#else
+    constexpr const char* DE_DE = "de_DE.UTF-8";
+#endif
+    std::locale german;
+    try
+    {
+        german = std::locale(DE_DE);
+    }
+    catch (const std::exception&)
+    {
+        GTEST_SKIP() << DE_DE << " is not available on this machine";
+    }
+    /// Makes @p locale global and puts the previous one back however the test ends.
+    class ScopedGlobalLocale
+    {
+      public:
+        explicit ScopedGlobalLocale(const std::locale& locale) : m_Previous(std::locale::global(locale))
+        {}
+        ~ScopedGlobalLocale()
+        {
+            std::locale::global(m_Previous);
+        }
+        ScopedGlobalLocale(const ScopedGlobalLocale&) = delete;
+        ScopedGlobalLocale& operator=(const ScopedGlobalLocale&) = delete;
+        ScopedGlobalLocale(ScopedGlobalLocale&&) = delete;
+        ScopedGlobalLocale& operator=(ScopedGlobalLocale&&) = delete;
+
+      private:
+        std::locale m_Previous;
+    };
+    const ScopedGlobalLocale globalGerman(german);
+    const UI::Format::ScopedDisplayPunctuation display(Core::LocaleSetup::numberPunctuation(german, DE_DE));
+    ASSERT_EQ(UI::Format::formatFixedLocalized(0.25, 2, {}), "0,25") << "the display punctuation is de-DE's";
+
+    auto& config = UserConfig::get();
+    config.settings().chartSmoothFactor = 0.25;
+    config.settings().windowWidth = 2560;
+    config.save();
+
+    std::ifstream file(m_ConfigPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("0.25"), std::string::npos) << text;
+    EXPECT_EQ(text.find("0,25"), std::string::npos) << text;
+    EXPECT_NE(text.find("2560"), std::string::npos) << text;
+    EXPECT_EQ(text.find("2.560"), std::string::npos) << text;
+
+    config.settings().chartSmoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    config.settings().windowWidth = 1280;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().chartSmoothFactor, 0.25);
+    EXPECT_EQ(config.settings().windowWidth, 2560);
 }
 
 /// Restores UI's chart smoothing to its defaults however a test ends, so later tests in this
@@ -1369,6 +1709,11 @@ TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEdite
 
     auto document = parsed(path);
     const bool secondWas = document["process_columns"][second].value_or(true);
+    // A saved config lists only chosen columns (#1376), so with none chosen there is no section yet.
+    if (document["process_columns"].as_table() == nullptr)
+    {
+        document.insert_or_assign("process_columns", toml::table{});
+    }
     document["process_columns"].as_table()->insert_or_assign(second, !secondWas);
     {
         std::ofstream out(path, std::ios::trunc);
@@ -1381,6 +1726,382 @@ TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEdite
     const auto saved = parsed(path);
     EXPECT_EQ(saved["process_columns"][second].value<bool>(), !secondWas);
     EXPECT_EQ(saved["process_columns"][first].value<bool>(), config.settings().processColumns.isVisible(columns[0]));
+}
+
+// ========== Sparse [process_columns] and its migration (#1376) ==========
+
+/// A [process_columns] section as a config written before config_version 2 has it: every column,
+/// each at getColumnInfo()'s default except those named in `changed`, which are flipped.
+[[nodiscard]] std::string legacyFullColumns(const std::vector<ProcessColumn>& changed)
+{
+    std::string text = "[process_columns]\n";
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        const bool flipped = std::ranges::find(changed, col) != changed.end();
+        text += std::string(info.configKey) + ((info.defaultVisible != flipped) ? " = true\n" : " = false\n");
+    }
+    return text;
+}
+
+/// Capabilities of a system that can fill every column but Power (Linux without RAPL).
+[[nodiscard]] Platform::ProcessCapabilities capabilitiesWithoutPower()
+{
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasThreadCount = true;
+    caps.hasHandleCount = true;
+    caps.hasUser = true;
+    caps.hasCommand = true;
+    caps.hasNice = true;
+    caps.hasPageFaults = true;
+    caps.hasPeakRss = true;
+    caps.hasCpuAffinity = true;
+    caps.hasNetworkCounters = true;
+    caps.hasPowerUsage = false;
+    return caps;
+}
+
+/// The keys of the file's [process_columns] section, sorted; empty without one.
+[[nodiscard]] std::vector<std::string> savedColumnKeys(const toml::table& document)
+{
+    std::vector<std::string> keys;
+    if (const auto* columns = document["process_columns"].as_table())
+    {
+        for (const auto& [key, value] : *columns)
+        {
+            keys.emplace_back(key.str());
+        }
+    }
+    std::ranges::sort(keys);
+    return keys;
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveWritesOnlyChosenColumnsAndTheFormatVersion)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    {
+        // Nothing chosen: no column is written, so every one follows the defaults.
+        const auto document = parsed(m_ConfigPath);
+        EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+        EXPECT_EQ(document["process_columns"].as_table(), nullptr);
+    }
+
+    // A column chosen at its default is still a choice, and is written.
+    config.settings().processColumns.setVisible(ProcessColumn::User, false);
+    config.settings().processColumns.setVisible(ProcessColumn::Power, true);
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"power", "user"}));
+    EXPECT_EQ(document["process_columns"]["user"].value<bool>(), false);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+
+    // Round trip: the chosen columns come back chosen, the rest at their defaults, unchosen.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    const auto& columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::Power));
+    EXPECT_TRUE(columns.isVisible(ProcessColumn::Power));
+    for (const auto col : allProcessColumns())
+    {
+        if (col != ProcessColumn::User && col != ProcessColumn::Power)
+        {
+            EXPECT_FALSE(columns.isChosen(col)) << getColumnInfo(col).configKey;
+            EXPECT_EQ(columns.isVisible(col), getColumnInfo(col).defaultVisible) << getColumnInfo(col).configKey;
+        }
+    }
+}
+
+TEST_F(UserConfigSaveLoadFixture, LegacyFullConfigKeepsOnlyTheColumnsTheUserChanged)
+{
+    // An old config: every column listed, two of them changed from their defaults by the user.
+    ASSERT_TRUE(getColumnInfo(ProcessColumn::User).defaultVisible);
+    ASSERT_FALSE(getColumnInfo(ProcessColumn::Virtual).defaultVisible);
+    writeFile(m_ConfigPath, "[sampling]\ninterval_ms = 750\n\n" + legacyFullColumns({ProcessColumn::User, ProcessColumn::Virtual}));
+
+    auto& config = UserConfig::get();
+    config.load();
+    {
+        const auto& columns = config.settings().processColumns;
+        EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+        EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+        EXPECT_TRUE(columns.isChosen(ProcessColumn::Virtual));
+        EXPECT_TRUE(columns.isVisible(ProcessColumn::Virtual));
+        for (const auto col : allProcessColumns())
+        {
+            if (col != ProcessColumn::User && col != ProcessColumn::Virtual)
+            {
+                EXPECT_FALSE(columns.isChosen(col)) << getColumnInfo(col).configKey;
+            }
+        }
+    }
+
+    // The next save rewrites the section in the new format, leaving everything else alone.
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"user", "virtual"}));
+    EXPECT_EQ(document["process_columns"]["user"].value<bool>(), false);
+    EXPECT_EQ(document["process_columns"]["virtual"].value<bool>(), true);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750);
+
+    // And reads back with the same choices.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(config.settings().processColumns.isVisible(ProcessColumn::User));
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::Virtual));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::Virtual));
+    EXPECT_FALSE(config.settings().processColumns.isChosen(ProcessColumn::Power));
+}
+
+TEST_F(UserConfigSaveLoadFixture, CapabilityDefaultReachesMigratedLegacyConfig)
+{
+    // The issue's case: an old config lists "power = true" only because Power was shown by default.
+    // On a system without power readings Power must now follow the capability-aware default and be
+    // hidden, rather than stay a column of dashes as if the user had chosen it.
+    ASSERT_TRUE(getColumnInfo(ProcessColumn::Power).defaultVisible);
+    writeFile(m_ConfigPath, legacyFullColumns({ProcessColumn::User}));
+
+    auto& config = UserConfig::get();
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, capabilitiesWithoutPower());
+    EXPECT_FALSE(columns.isChosen(ProcessColumn::Power));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::Power));
+    // The column the user did change is still theirs.
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+
+    // Saved and read again, Power still follows the default, which now shows it on a system that has
+    // power readings.
+    config.settings().processColumns = columns;
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["power"].node(), nullptr);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    ProcessColumnSettings withPower = config.settings().processColumns;
+    Platform::ProcessCapabilities caps = capabilitiesWithoutPower();
+    caps.hasPowerUsage = true;
+    ProcessColumnAvailability::applyCapabilityDefaults(withPower, caps);
+    EXPECT_FALSE(withPower.isChosen(ProcessColumn::Power));
+    EXPECT_TRUE(withPower.isVisible(ProcessColumn::Power));
+}
+
+TEST_F(UserConfigSaveLoadFixture, VersionedConfigIsNotMigratedAgain)
+{
+    // In the new format every listed column is a choice, even one equal to its default: the user
+    // showed Power on purpose, and it stays shown on a system that can't fill it.
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\npower = true\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::Power));
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, capabilitiesWithoutPower());
+    EXPECT_TRUE(columns.isVisible(ProcessColumn::Power));
+
+    config.settings().themeId = "dracula";
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+}
+
+TEST_F(UserConfigSaveLoadFixture, NewerFormatVersionIsKept)
+{
+    writeFile(m_ConfigPath, "config_version = 99\n\n[process_columns]\npower = true\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::Power));
+    config.settings().themeId = "dracula";
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), 99);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+}
+
+// #1870: NPU % shown by default because the machine has an NPU is not a choice, so it is not written
+// and keeps following the default; "npu_percent = false" in the file is one, and keeps it off.
+TEST_F(UserConfigSaveLoadFixture, NpuPercentShownByDefaultIsNotSavedButAnExplicitChoiceIs)
+{
+    const Platform::ProcessCapabilities caps = capabilitiesWithoutPower();
+    constexpr ProcessColumnAvailability::GpuSupport NPU_LISTED{
+        .perProcess = true,
+        .utilization = true,
+        .accelerator = true,
+        .acceleratorListed = true,
+    };
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    ProcessColumnAvailability::applyCapabilityDefaults(config.settings().processColumns, caps, NPU_LISTED);
+    ASSERT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["npu_percent"].node(), nullptr);
+
+    // Read back: unchosen, so it follows the system again -- hidden on one without an NPU.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_FALSE(config.settings().processColumns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+
+    // The user turns it off: written, read back as a choice, and kept off with an NPU.
+    config.settings().processColumns.requestVisible(ProcessColumn::NpuPercent, false);
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["npu_percent"].value<bool>(), false);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::NpuPercent));
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, caps, NPU_LISTED);
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::NpuPercent));
+
+    // A file written before #1870 that lists "npu_percent = false" keeps it off too.
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\nnpu_percent = false\n");
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    columns = config.settings().processColumns;
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, caps, NPU_LISTED);
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::NpuPercent));
+    config.settings() = UserSettings{}; // The singleton outlives this test
+}
+
+TEST_F(UserConfigSaveLoadFixture, ResetColumnsRemovesThemFromTheFile)
+{
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\nuser = false\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::User));
+
+    // "Reset columns" leaves every column unchosen; none is left in the file.
+    config.settings().processColumns = ProcessColumnSettings::defaults();
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"].as_table(), nullptr);
+}
+
+TEST_F(UserConfigSaveLoadFixture, LegacyConfigIsParsedWithTheMigrationRule)
+{
+    // parseSettings() (the fuzz seam) reads the same way load() does.
+    UserSettings settings;
+    ASSERT_TRUE(UserConfig::parseSettings(legacyFullColumns({ProcessColumn::Virtual}), settings));
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::Virtual));
+    EXPECT_FALSE(settings.processColumns.isChosen(ProcessColumn::Power));
+
+    UserSettings versioned;
+    ASSERT_TRUE(UserConfig::parseSettings("config_version = 2\n" + legacyFullColumns({ProcessColumn::Virtual}), versioned));
+    EXPECT_TRUE(versioned.processColumns.isChosen(ProcessColumn::Power));
+}
+
+// ========== A config.toml saved by the released v0.8.0 (#2725) ==========
+
+/// tests/App/fixtures/config-v0.8.0.toml: saved by v0.8.0 itself (tests/App/fixtures/README.md says
+/// how), not written by hand to look like it.
+[[nodiscard]] std::filesystem::path v080ConfigFixture()
+{
+    return std::filesystem::path(TASKSMACK_APP_TEST_FIXTURES_DIR) / "config-v0.8.0.toml";
+}
+
+/// Every value in the v0.8.0 fixture, as today's TaskSmack should read it.
+void expectV080Settings(const UserSettings& settings)
+{
+    // Changed in v0.8.0's Settings dialog.
+    EXPECT_EQ(settings.themeId, "dracula");
+    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_EQ(settings.refreshIntervalMs, 2000);
+    EXPECT_EQ(settings.maxHistorySeconds, 600);
+    // "Don't show again" on the privilege notice.
+    EXPECT_FALSE(settings.showPrivilegeNotice);
+
+    // The window, resized and moved. v0.8.0 recorded no scale, so the size is restored unconverted (#1168).
+    EXPECT_EQ(settings.windowWidth, 1500);
+    EXPECT_EQ(settings.windowHeight, 860);
+    EXPECT_EQ(settings.windowPosX, std::optional<int>{150});
+    EXPECT_EQ(settings.windowPosY, std::optional<int>{90});
+    EXPECT_FALSE(settings.windowMaximized);
+    EXPECT_FALSE(settings.windowScale.has_value());
+
+    // v0.8.0 listed every column. User was hidden and Threads shown from the header's menu: those two
+    // are the user's choices. Every other column was at its default and keeps following the defaults,
+    // including the ones v0.8.0 didn't have (#1376).
+    const auto& columns = settings.processColumns;
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        if (col == ProcessColumn::User || col == ProcessColumn::Threads)
+        {
+            EXPECT_TRUE(columns.isChosen(col)) << info.configKey;
+            EXPECT_EQ(columns.isVisible(col), col == ProcessColumn::Threads) << info.configKey;
+        }
+        else
+        {
+            EXPECT_FALSE(columns.isChosen(col)) << info.configKey;
+            EXPECT_EQ(columns.isVisible(col), info.defaultVisible) << info.configKey;
+        }
+    }
+
+    // Written by v0.8.0 at their defaults.
+    EXPECT_EQ(settings.socketStatsCacheTtlMs, 500);
+    EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, 12'500'000'000.0);
+    EXPECT_DOUBLE_EQ(settings.chartSmoothFactor, 0.5);
+    EXPECT_EQ(settings.chartTauMsMin, 20);
+    EXPECT_EQ(settings.chartTauMsMax, 400);
+
+    // Settings v0.8.0 didn't have keep today's defaults.
+    const UserSettings defaults;
+    EXPECT_EQ(settings.processMeters, defaults.processMeters);
+    EXPECT_EQ(settings.udpEventTrace, defaults.udpEventTrace);
+    EXPECT_EQ(settings.chartAntiAliasing, defaults.chartAntiAliasing);
+    EXPECT_EQ(settings.showProcessIcons, defaults.showProcessIcons);
+    EXPECT_EQ(settings.cpuDetailsExpanded, defaults.cpuDetailsExpanded);
+    EXPECT_EQ(settings.dumpFolder, defaults.dumpFolder);
+    EXPECT_EQ(settings.forceNativeWindowDecorationsOnWayland, defaults.forceNativeWindowDecorationsOnWayland);
+
+    // v0.8.0 saved no Processes table layout (ImGui's .ini was off, and there was no [process_table]):
+    // the table opens at its default widths, order and sort, and nothing is handed to ImGui.
+    EXPECT_TRUE(settings.processTableLayout.empty());
+    EXPECT_EQ(ProcessTableSettings::withExplicitOrder(settings.processTableLayout), "");
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigSavedByV080LoadsEveryValueAndSavesThemBack)
+{
+    const std::string saved080 = readFile(v080ConfigFixture());
+    ASSERT_FALSE(saved080.empty()) << "can't read " << v080ConfigFixture().string();
+    // v0.8.0 predates config_version: its [process_columns] goes through the migration rule.
+    ASSERT_FALSE(toml::parse(saved080).contains("config_version"));
+
+    std::filesystem::copy_file(v080ConfigFixture(), m_ConfigPath, std::filesystem::copy_options::overwrite_existing);
+    auto& config = UserConfig::get();
+    config.load();
+    expectV080Settings(config.settings());
+
+    // The fuzz seam reads it the same way.
+    UserSettings parsedSettings;
+    ASSERT_TRUE(UserConfig::parseSettings(saved080, parsedSettings));
+    expectV080Settings(parsedSettings);
+
+    // Saved by today's TaskSmack: the current format, only the chosen columns, and the keys v0.8.0
+    // wrote that nothing reads any more gone.
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"threads", "user"}));
+    for (const auto& retired : UserConfigHelpers::RETIRED_KEYS)
+    {
+        EXPECT_EQ(document[retired.section][retired.key].node(), nullptr) << retired.section << "." << retired.key;
+    }
+    EXPECT_EQ(document["theme"]["id"].value<std::string>(), "dracula");
+    EXPECT_EQ(document["window"]["width"].value<int>(), 1500);
+
+    // Read back, every value holds.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    expectV080Settings(config.settings());
 }
 
 TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
@@ -1514,6 +2235,28 @@ TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
 
     EXPECT_TRUE(std::filesystem::is_symlink(link));
     EXPECT_TRUE(std::filesystem::is_symlink(other));
+}
+
+TEST_F(UserConfigSaveLoadFixture, ALinkIntoAFolderThatCantBeSearchedIsNotSaved)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can search a mode-000 folder";
+    }
+    // The link's target can't be looked at (EACCES): the save stops rather than replace the link.
+    const auto& link = m_ConfigPath;
+    const auto locked = m_TempDir / "locked";
+    std::filesystem::create_directory(locked);
+    std::filesystem::create_symlink(locked / "config.toml", link);
+    std::filesystem::permissions(locked, std::filesystem::perms::none);
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    EXPECT_NO_THROW(config.save());
+
+    std::filesystem::permissions(locked, std::filesystem::perms::owner_all);
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_FALSE(std::filesystem::exists(locked / "config.toml"));
 }
 #endif
 
@@ -1681,6 +2424,93 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
     EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
 }
 #endif
+
+// #1395: whichever step of save() fails -- through the fault seam, so each error path runs in this
+// process -- the existing config is left byte for byte, the staging file goes, and the next save that
+// works still writes the change.
+TEST_F(UserConfigSaveLoadFixture, AnyStepOfSaveThatFailsLeavesTheConfigIntact)
+{
+    using SaveStep = UserConfig::SaveStep;
+    // POSIX only, like the rest of this block.
+    std::vector<SaveStep> steps{
+        SaveStep::Rename, SaveStep::OwnerStat, SaveStep::CreateStaging, SaveStep::Write, SaveStep::Chown, SaveStep::Chmod, SaveStep::Close};
+#if defined(__linux__)
+    steps.insert(steps.end(), {SaveStep::AclRead, SaveStep::Acl});
+#endif
+    for (const SaveStep step : steps)
+    {
+        SCOPED_TRACE(static_cast<int>(step));
+        auto& config = UserConfig::get();
+        config.resetConfigPathForTesting(m_ConfigPath);
+        const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+        writeFile(m_ConfigPath, original);
+        config.load();
+        config.settings().themeId = "mocha";
+
+        config.failSaveStepForTesting(step, EIO);
+        config.save();
+        std::ifstream in(m_ConfigPath, std::ios::binary);
+        EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+        for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+        {
+            EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+        }
+
+        config.failSaveStepForTesting(SaveStep::None, 0);
+        config.save();
+        EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha");
+    }
+}
+
+// #2121: run as root under another user's home (sudo -E), a config TaskSmack creates -- and the
+// directories it makes for it -- go to that home's owner, or the user's next normal run can't read or
+// save it. As root is simulated here, each hand-over is shown by making it fail: the save then stops.
+TEST_F(UserConfigSaveLoadFixture, AsRootANewConfigAndItsDirectoriesGoToTheHomesOwner)
+{
+    using SaveStep = UserConfig::SaveStep;
+    auto& config = UserConfig::get();
+    const std::filesystem::path nested = m_TempDir / "made" / "for-it" / "config.toml";
+
+    // Not root: a new config is created as the process, with no owner to hand it to.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    std::filesystem::remove(m_ConfigPath);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::Chown, EPERM);
+    config.save();
+    EXPECT_TRUE(std::filesystem::exists(m_ConfigPath)) << "no chown attempted for the process's own file";
+
+    // Root, the home (m_TempDir) owned by this test's user: the new file is handed over...
+    config.resetConfigPathForTesting(m_ConfigPath);
+    std::filesystem::remove(m_ConfigPath);
+    config.setEffectiveUidForTesting(0);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::Chown, EPERM);
+    config.save();
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath)) << "the new file's owner was set";
+
+    // ...and so is each directory made for it.
+    config.resetConfigPathForTesting(nested);
+    config.setEffectiveUidForTesting(0);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::ChownDirectory, EPERM);
+    config.save();
+    EXPECT_FALSE(std::filesystem::exists(nested)) << "the directories' owner was set";
+
+    // All of it works (handing this user's files to this user): saved, and owned by the home's owner.
+    config.failSaveStepForTesting(SaveStep::None, 0);
+    config.save();
+    ASSERT_TRUE(std::filesystem::exists(nested));
+    EXPECT_EQ(parsed(nested)["theme"]["id"].value<std::string>(), "mocha");
+    struct stat home = {};
+    struct stat made = {};
+    struct stat file = {};
+    ASSERT_EQ(::stat(m_TempDir.c_str(), &home), 0);
+    ASSERT_EQ(::stat((m_TempDir / "made").c_str(), &made), 0);
+    ASSERT_EQ(::stat(nested.c_str(), &file), 0);
+    EXPECT_EQ(made.st_uid, home.st_uid);
+    EXPECT_EQ(file.st_uid, home.st_uid);
+    config.setEffectiveUidForTesting(std::nullopt);
+}
 
 TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
 {

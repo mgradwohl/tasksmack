@@ -10,6 +10,7 @@
 /// - Per-core CPU tracking
 
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
 #include "Mocks/MockProbes.h"
@@ -30,6 +31,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -40,6 +42,29 @@ using TestMocks::makeMemoryCounters;
 using TestMocks::makeSystemCounters;
 using TestMocks::MockPowerProbe;
 using TestMocks::MockSystemProbe;
+
+namespace
+{
+
+/// The latest publication's series for one interface: empty when the publication has none for it.
+Domain::HistoryView<float> interfaceSeries(const std::unordered_map<std::string, Domain::HistoryView<float>>& series,
+                                           const std::string& name)
+{
+    const auto it = series.find(name);
+    return it != series.end() ? it->second : Domain::HistoryView<float>{};
+}
+
+Domain::HistoryView<float> netRxFor(const Domain::SystemModel& model, const std::string& name)
+{
+    return interfaceSeries(model.publication()->perInterfaceRxHistory, name);
+}
+
+Domain::HistoryView<float> netTxFor(const Domain::SystemModel& model, const std::string& name)
+{
+    return interfaceSeries(model.publication()->perInterfaceTxHistory, name);
+}
+
+} // namespace
 
 // =============================================================================
 // Platform::CpuCounters Tests (SystemTypes.h)
@@ -153,6 +178,21 @@ TEST(SystemModelTest, SampleDelegatesToRefresh)
 
     auto snap = model.snapshot();
     EXPECT_EQ(snap.coreCount, 4);
+}
+
+TEST(SystemModelTest, CpuDetailsAreCopiedIntoTheSnapshot)
+{
+    // The probe's static CPU facts reach the UI unchanged (#809)
+    Domain::SystemModel model(nullptr);
+    auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1000, 400));
+    counters.cpuDetails.sockets = 2;
+    counters.cpuDetails.physicalCores = 32;
+    counters.cpuDetails.logicalProcessors = 64;
+    counters.cpuDetails.l3CacheBytes = 64ULL * 1024 * 1024;
+    counters.cpuDetails.vbsRunning = false;
+
+    model.updateFromCounters(counters, 1.0);
+    EXPECT_EQ(model.snapshot().cpuDetails, counters.cpuDetails);
 }
 
 TEST(SystemModelTest, PublishesCoherentVersionedState)
@@ -336,7 +376,7 @@ TEST(SystemModelTest, SampleIsStampedBeforeThePowerRead)
     model.refresh();
     model.refresh();
 
-    const auto timestamps = model.timestamps();
+    const auto timestamps = model.publication()->timestamps;
     ASSERT_FALSE(timestamps.empty());
     EXPECT_LE(timestamps.back(), std::chrono::duration<double>(powerReadAt.time_since_epoch()).count());
 }
@@ -392,6 +432,62 @@ TEST(SystemModelTest, SwapFreeAboveTotalReadsAsZeroUsed)
     const auto snap = model.snapshot();
     EXPECT_EQ(snap.swapUsedBytes, 0ULL);
     EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 0.0);
+}
+
+// =============================================================================
+// Commit Charge Tests (#1627)
+// =============================================================================
+
+namespace
+{
+[[nodiscard]] Platform::MemoryCounters commitMemory(bool hasCommit, std::uint64_t charge, std::uint64_t limit, std::uint64_t peak)
+{
+    auto mem = makeMemoryCounters(16ULL << 30U, 8ULL << 30U);
+    mem.hasCommitCharge = hasCommit;
+    mem.commitChargeBytes = charge;
+    mem.commitLimitBytes = limit;
+    mem.commitPeakBytes = peak;
+    return mem;
+}
+
+[[nodiscard]] Domain::SystemSnapshot snapshotWithCommit(bool capability, const Platform::MemoryCounters& mem)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    Platform::SystemCapabilities caps;
+    caps.hasCommitCharge = capability;
+    probe->setCapabilities(caps);
+    probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    return model.snapshot();
+}
+} // namespace
+
+TEST(SystemModelTest, CommitChargePassesThroughWhenSupportedAndRead)
+{
+    const auto snap = snapshotWithCommit(true, commitMemory(true, 35ULL << 30U, 73ULL << 30U, 40ULL << 30U));
+    EXPECT_TRUE(snap.hasCommitCharge);
+    EXPECT_EQ(snap.commitChargeBytes, 35ULL << 30U);
+    EXPECT_EQ(snap.commitLimitBytes, 73ULL << 30U);
+    EXPECT_EQ(snap.commitPeakBytes, 40ULL << 30U);
+}
+
+TEST(SystemModelTest, CommitChargeIsLeftOutWithoutTheCapabilityOrAReading)
+{
+    // A probe without the capability: the counters are ignored even if set.
+    const auto unsupported = snapshotWithCommit(false, commitMemory(true, 35ULL << 30U, 73ULL << 30U, 0));
+    EXPECT_FALSE(unsupported.hasCommitCharge);
+    EXPECT_EQ(unsupported.commitChargeBytes, 0ULL);
+    EXPECT_EQ(unsupported.commitLimitBytes, 0ULL);
+
+    // Supported, but this sample's read failed (GetPerformanceInfo, or no Committed_AS line).
+    const auto unread = snapshotWithCommit(true, commitMemory(false, 35ULL << 30U, 73ULL << 30U, 0));
+    EXPECT_FALSE(unread.hasCommitCharge);
+    EXPECT_EQ(unread.commitChargeBytes, 0ULL);
+
+    // A zero limit has no percentage to show.
+    const auto noLimit = snapshotWithCommit(true, commitMemory(true, 35ULL << 30U, 0, 0));
+    EXPECT_FALSE(noLimit.hasCommitCharge);
 }
 
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
@@ -623,8 +719,8 @@ TEST(SystemModelTest, HistoryTracksMultipleSamples)
                                              ));
     model.refresh();
 
-    auto cpuHist = model.cpuHistory();
-    auto memHist = model.memoryHistory();
+    auto cpuHist = model.publication()->cpuHistory;
+    auto memHist = model.publication()->memoryHistory;
 
     EXPECT_EQ(cpuHist.size(), 2);
     EXPECT_EQ(memHist.size(), 2);
@@ -641,9 +737,9 @@ TEST(SystemModelTest, HistoryInitiallyEmpty)
     auto probe = std::make_unique<MockSystemProbe>();
     Domain::SystemModel model(std::move(probe));
 
-    EXPECT_TRUE(model.cpuHistory().empty());
-    EXPECT_TRUE(model.memoryHistory().empty());
-    EXPECT_TRUE(model.swapHistory().empty());
+    EXPECT_TRUE(model.publication()->cpuHistory.empty());
+    EXPECT_TRUE(model.publication()->memoryHistory.empty());
+    EXPECT_TRUE(model.publication()->swapHistory.empty());
 }
 
 TEST(SystemModelTest, PerCoreHistoryTracked)
@@ -662,7 +758,7 @@ TEST(SystemModelTest, PerCoreHistoryTracked)
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2500, 0, 2500, 15000), makeMemoryCounters(1024, 512), 0, cores2));
     model.refresh();
 
-    auto perCoreHist = model.perCoreHistory();
+    auto perCoreHist = model.publication()->perCoreHistory;
     ASSERT_EQ(perCoreHist.size(), 1);
     EXPECT_EQ(perCoreHist[0].size(), 1);
     EXPECT_FLOAT_EQ(perCoreHist[0][0], 50.0F); // 50% CPU on core 0
@@ -691,8 +787,8 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
 
     // Verify both rings have 1 entry after sample 2
     {
-        auto ts = model.timestamps();
-        auto cores = model.perCoreHistory();
+        auto ts = model.publication()->timestamps;
+        auto cores = model.publication()->perCoreHistory;
         ASSERT_EQ(cores.size(), 2);
         EXPECT_EQ(ts.size(), cores[0].size());
         EXPECT_EQ(ts.size(), cores[1].size());
@@ -704,8 +800,8 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
     model.refresh();
 
     {
-        auto ts = model.timestamps();
-        auto cores = model.perCoreHistory();
+        auto ts = model.publication()->timestamps;
+        auto cores = model.publication()->perCoreHistory;
         ASSERT_EQ(cores.size(), 2);
         // All series must be the same length as the timestamp axis
         EXPECT_EQ(cores[0].size(), ts.size());
@@ -722,8 +818,8 @@ TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
     model.refresh();
 
     {
-        auto ts = model.timestamps();
-        auto cores = model.perCoreHistory();
+        auto ts = model.publication()->timestamps;
+        auto cores = model.publication()->perCoreHistory;
         ASSERT_EQ(cores.size(), 2);
         EXPECT_EQ(cores[0].size(), ts.size());
         EXPECT_EQ(cores[1].size(), ts.size());
@@ -783,8 +879,8 @@ TEST(SystemModelTest, OfflineInteriorCoreKeepsEveryOtherCoreOnItsOwnHistory)
     setSample(4, {0, 1, 2, 3});
     model.refresh();
 
-    const auto ts = model.timestamps();
-    const auto cores = model.perCoreHistory();
+    const auto ts = model.publication()->timestamps;
+    const auto cores = model.publication()->perCoreHistory;
     ASSERT_EQ(ts.size(), 4U);
     ASSERT_EQ(cores.size(), 4U);
     for (const auto& core : cores)
@@ -832,7 +928,7 @@ TEST(SystemModelTest, ImplausibleCoreIdIsDropped)
     const auto snap = model.snapshot();
     ASSERT_EQ(snap.cpuPerCore.size(), 1U);
     EXPECT_DOUBLE_EQ(snap.cpuPerCore[0].totalPercent, 50.0);
-    EXPECT_EQ(model.perCoreHistory().size(), 1U);
+    EXPECT_EQ(model.publication()->perCoreHistory.size(), 1U);
     EXPECT_EQ(snap.coreCount, 1); // the dropped id isn't counted as a core either
 }
 
@@ -910,7 +1006,7 @@ TEST(SystemModelTest, ACoreSeenThenOfflineStaysInSeenCoreIds)
     setCoreSample(*rawProbe, 4, {0, 1});
     model.refresh();
     EXPECT_EQ(model.snapshot().seenCoreIds, (std::vector<std::size_t>{0, 1, 2, 3}));
-    EXPECT_EQ(model.perCoreHistory().size(), 4U); // history keeps their slots for the charts
+    EXPECT_EQ(model.publication()->perCoreHistory.size(), 4U); // history keeps their slots for the charts
 }
 
 TEST(SystemModelTest, ImplausibleCoreIdIsNotSeen)
@@ -955,8 +1051,8 @@ TEST(SystemModelTest, HotAddedCoreIsBackfilledWithGaps)
     twoCores(400, 400);
     model.refresh();
 
-    const auto ts = model.timestamps();
-    const auto cores = model.perCoreHistory();
+    const auto ts = model.publication()->timestamps;
+    const auto cores = model.publication()->perCoreHistory;
     ASSERT_EQ(cores.size(), 2U);
     ASSERT_EQ(cores[0].size(), ts.size());
     ASSERT_EQ(cores[1].size(), ts.size());
@@ -1024,8 +1120,8 @@ TEST(SystemModelTest, ConcurrentSnapshotAccess)
                 for (int j = 0; j < 100; ++j)
                 {
                     auto snap = model.snapshot();
-                    auto cpuHist = model.cpuHistory();
-                    auto memHist = model.memoryHistory();
+                    auto cpuHist = model.publication()->cpuHistory;
+                    auto memHist = model.publication()->memoryHistory;
                     (void) snap;
                     (void) cpuHist;
                     (void) memHist;
@@ -1077,7 +1173,7 @@ TEST(SystemModelTest, ConcurrentRefreshAndRead)
                 while (!done)
                 {
                     auto snap = model.snapshot();
-                    auto cpuHist = model.cpuHistory();
+                    auto cpuHist = model.publication()->cpuHistory;
                     (void) snap;
                     (void) cpuHist;
                 }
@@ -1109,12 +1205,14 @@ TEST(SystemModelTest, ZeroTotalCpuDeltaHandled)
     Domain::SystemModel model(std::move(probe));
     model.refresh();
 
-    // Same counters (no delta) - shouldn't crash
+    // Same counters (no delta), as from a stalled or failing probe - shouldn't crash
     model.refresh();
 
-    auto snap = model.snapshot();
-    // CPU should be 0 when no delta
-    EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 0.0);
+    // No CPU time passed: no reading, a gap, not 0% busy (#2534)
+    const auto snap = model.snapshot();
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.totalPercent)) << snap.cpuTotal.totalPercent;
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.userPercent));
+    EXPECT_TRUE(std::isnan(snap.cpuTotal.idlePercent));
 }
 
 TEST(SystemModelTest, RegressedCpuFieldDoesNotUnderflowIntoPinned100Percent)
@@ -1289,6 +1387,232 @@ TEST(SystemModelTest, ChangingTheHistoryWindowBeforeAnySamplePublishesNothing)
 }
 
 // =============================================================================
+// Shared history (#1412)
+// =============================================================================
+
+namespace
+{
+
+/// Counters for sample @p step of a 4-core, 2-interface system whose every counter advances.
+Platform::SystemCounters sharedHistoryCounters(std::uint64_t step)
+{
+    const auto cpu = [step](std::uint64_t salt)
+    {
+        const std::uint64_t busy = 1 + ((step + salt) % 5);
+        return makeCpuCounters(step * busy, 0, step, step * (10 - busy));
+    };
+    std::vector<Platform::CpuCounters> perCore;
+    for (std::uint64_t core = 0; core < 4; ++core)
+    {
+        perCore.push_back(cpu(core));
+        perCore.back().coreId = static_cast<std::size_t>(core);
+    }
+    return makeSystemCounters(
+        cpu(7),
+        makeMemoryCounters(1024, 512),
+        step,
+        std::move(perCore),
+        0,
+        0,
+        {makeInterfaceCounters("eth0", step * 1000, step * 500), makeInterfaceCounters("wlan0", step * 300, step * 100)});
+}
+
+/// Every series of @p publication, copied out, so a later comparison sees whether any changed.
+struct PublishedValues
+{
+    std::vector<double> timestamps;
+    std::vector<std::vector<float>> series;
+
+    explicit PublishedValues(const Domain::SystemPublication& publication)
+        : timestamps(publication.timestamps.begin(), publication.timestamps.end())
+    {
+        const auto add = [this](const Domain::HistoryView<float>& view)
+        {
+            series.emplace_back(view.begin(), view.end());
+        };
+        for (const auto* view : {&publication.cpuHistory,
+                                 &publication.cpuUserHistory,
+                                 &publication.cpuSystemHistory,
+                                 &publication.cpuIowaitHistory,
+                                 &publication.cpuIdleHistory,
+                                 &publication.memoryHistory,
+                                 &publication.memoryCachedHistory,
+                                 &publication.swapHistory,
+                                 &publication.batteryChargeHistory,
+                                 &publication.netRxHistory,
+                                 &publication.netTxHistory})
+        {
+            add(*view);
+        }
+        for (const auto& core : publication.perCoreHistory)
+        {
+            add(core);
+        }
+        for (const char* name : {"eth0", "wlan0"})
+        {
+            add(publication.perInterfaceRxHistory.at(name));
+            add(publication.perInterfaceTxHistory.at(name));
+        }
+    }
+
+    // NaN ("no reading", e.g. battery charge without a battery, #2159) counts as equal to itself: the
+    // question is whether the published samples changed, not whether they are numbers.
+    bool operator==(const PublishedValues& other) const
+    {
+        const auto sameSample = [](float a, float b)
+        {
+            return a == b || (std::isnan(a) && std::isnan(b));
+        };
+        return timestamps == other.timestamps && std::ranges::equal(series,
+                                                                    other.series,
+                                                                    [&](const std::vector<float>& a, const std::vector<float>& b)
+                                                                    { return std::ranges::equal(a, b, sameSample); });
+    }
+};
+
+} // namespace
+
+// A publication shares its samples with the model rather than copying them, so it must stay exactly
+// as published while the model appends, trims (by time and by a window change), and moves its
+// samples to new blocks.
+TEST(SystemModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(60.0);
+    std::uint64_t step = 0;
+    for (; step < 100; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+    }
+    const auto old = model.publication();
+    const PublishedValues expected(*old);
+    ASSERT_GT(expected.timestamps.size(), 50U);
+    ASSERT_EQ(old->perCoreHistory.size(), 4U);
+
+    for (; step < 1000; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+        if (step == 500)
+        {
+            model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+        }
+    }
+    EXPECT_EQ(PublishedValues(*old), expected);
+    // The window, plus the sample kept just before its left edge (#1016).
+    EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+}
+
+// Consecutive publications share their history (an O(series) publish, not O(history x series)), and
+// every series stays aligned with the timestamps.
+TEST(SystemModelTest, ConsecutivePublicationsShareTheirHistory)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(120.0);
+    std::uint64_t step = 0;
+    for (; step < 300; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+    }
+
+    constexpr int GENERATIONS = 200;
+    int shared = 0;
+    auto previous = model.publication();
+    for (int i = 0; i < GENERATIONS; ++i, ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+        const auto next = model.publication();
+        const std::size_t samples = next->timestamps.size();
+        ASSERT_EQ(next->cpuHistory.size(), samples);
+        ASSERT_EQ(next->perInterfaceRxHistory.at("eth0").size(), samples);
+        for (const auto& core : next->perCoreHistory)
+        {
+            ASSERT_EQ(core.size(), samples);
+        }
+        if (next->timestamps.sharesStorageWith(previous->timestamps) && next->cpuHistory.sharesStorageWith(previous->cpuHistory) &&
+            next->perCoreHistory[0].sharesStorageWith(previous->perCoreHistory[0]))
+        {
+            ++shared;
+            // The same samples in place: the newer view starts one sample later in the same memory.
+            EXPECT_EQ(next->timestamps.data(), previous->timestamps.data() + 1);
+        }
+        previous = next;
+    }
+    // Only a compaction into a new block -- about once per window's worth of samples -- copies.
+    EXPECT_GE(shared, GENERATIONS - 4);
+}
+
+// A UI-style reader walks every sample of the latest publication while the sampler appends, trims and
+// compacts the shared history underneath it. Under TSan this shows the reader never reads a slot the
+// writer writes: published samples are never written again (#1412). The sampler is paced on the reader
+// (TestPublication::ReadPacer): it starts only once the reader has completed a traversal, and waits for a
+// new one every PACE_EVERY samples, so the reads really overlap the sampling however the threads are
+// scheduled.
+TEST(SystemModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
+{
+    constexpr int SAMPLES = 1998;
+    constexpr int PACE_EVERY = 9;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    model.updateFromCounters(sharedHistoryCounters(0), 0.0);
+    model.updateFromCounters(sharedHistoryCounters(1), 1.0);
+
+    TestPublication::ReadPacer pacer;
+    std::atomic<bool> done{false};
+    std::atomic<std::size_t> misaligned{0};
+    std::thread reader(
+        [&]
+        {
+            while (!done.load(std::memory_order_acquire))
+            {
+                const auto publication = model.publication();
+                const PublishedValues values(*publication); // reads every sample of every series
+                for (std::size_t i = 1; i < values.timestamps.size(); ++i)
+                {
+                    if (values.timestamps[i] <= values.timestamps[i - 1])
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                for (const auto& series : values.series)
+                {
+                    if (series.size() != values.timestamps.size())
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                pacer.readDone(); // one full traversal of a publication
+            }
+        });
+
+    // Start sampling only once the reader is running, then count the traversals made while sampling.
+    std::size_t readsSeen = 0;
+    const bool readerStarted = pacer.awaitReadSince(readsSeen);
+    const std::size_t readsBeforeSampling = readsSeen;
+    int paced = 0;
+    for (int i = 0; readerStarted && i < SAMPLES; ++i)
+    {
+        if (i % PACE_EVERY == 0)
+        {
+            if (!pacer.awaitReadSince(readsSeen))
+            {
+                break;
+            }
+            ++paced;
+        }
+        const auto step = static_cast<std::uint64_t>(i) + 2;
+        model.updateFromCounters(sharedHistoryCounters(step), 1.0 + (static_cast<double>(step) * 0.25));
+    }
+    done.store(true, std::memory_order_release);
+    reader.join();
+    ASSERT_TRUE(readerStarted) << "the reader never completed a traversal";
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped making progress while sampling";
+    // Every paced wait saw a traversal completed after the previous one, while sampling was under way.
+    EXPECT_EQ(paced, SAMPLES / PACE_EVERY);
+    EXPECT_GE(readsSeen - readsBeforeSampling, static_cast<std::size_t>(SAMPLES / PACE_EVERY));
+    EXPECT_EQ(misaligned.load(), 0U);
+}
+
+// =============================================================================
 // Network Monitoring Tests
 // =============================================================================
 
@@ -1428,8 +1752,8 @@ TEST(SystemModelTest, NetworkHistoryTracked)
         model.updateFromCounters(counters, static_cast<double>(i));
     }
 
-    auto rxHistory = model.netRxHistory();
-    auto txHistory = model.netTxHistory();
+    auto rxHistory = model.publication()->netRxHistory;
+    auto txHistory = model.publication()->netTxHistory;
 
     // 5 deltas recorded (from samples 1-5)
     EXPECT_EQ(rxHistory.size(), 5);
@@ -1525,8 +1849,8 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
         model.updateFromCounters(c, static_cast<double>(i));
     }
 
-    auto rxHistory = model.netRxHistory();
-    auto timestamps = model.timestamps();
+    auto rxHistory = model.publication()->netRxHistory;
+    auto timestamps = model.publication()->timestamps;
 
     // Time-based trimming keeps the samples within the 10-second window plus the newest one
     // before it (#1016): cutoff = 15 - 10 = 5, so samples t=4..15 remain (12 entries).
@@ -1708,20 +2032,115 @@ TEST(SystemModelTest, AnInterfaceCounterJumpAboveTheCeilingIsAGapNotASpike)
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 700.0) << "the other direction is measured";
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 100.0);
 
-    const auto eth0Rx = model.netRxHistoryForInterface("eth0");
-    const auto eth0Tx = model.netTxHistoryForInterface("eth0");
+    const auto eth0Rx = netRxFor(model, "eth0");
+    const auto eth0Tx = netTxFor(model, "eth0");
     ASSERT_EQ(eth0Rx.size(), 2U);
     EXPECT_FLOAT_EQ(eth0Rx[0], 5'000.0F);
     EXPECT_TRUE(std::isnan(eth0Rx[1])) << "a gap, not a spike or a false 0";
     EXPECT_FLOAT_EQ(eth0Tx[1], 700.0F);
-    EXPECT_FLOAT_EQ(model.netRxHistoryForInterface("wlan0")[1], 100.0F);
+    EXPECT_FLOAT_EQ(netRxFor(model, "wlan0")[1], 100.0F);
 
-    const auto totalRx = model.netRxHistory();
-    const auto totalTx = model.netTxHistory();
+    const auto totalRx = model.publication()->netRxHistory;
+    const auto totalTx = model.publication()->netTxHistory;
     ASSERT_EQ(totalRx.size(), 2U);
     EXPECT_FLOAT_EQ(totalRx[0], 5'100.0F);
     EXPECT_TRUE(std::isnan(totalRx[1])) << "a Total missing a counted interface's sample is a gap too";
     EXPECT_FLOAT_EQ(totalTx[1], 710.0F);
+}
+
+TEST(SystemModelTest, ANewInterfacesFirstSampleIsAGapInItsHistoryNotAZero)
+{
+    // #2129: an interface appearing (a VPN connecting, WSL adding an adapter) has no rate on its first
+    // sample. Its history starts with a gap there, not a 0 B/s point, and has a rate on the next.
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE + 1'000, BASE + 100}}, 2.0);                                  // history[0]
+    sampleInterfaces(model, {{"eth0", BASE + 2'000, BASE + 200}, {"tun0", BASE, BASE}}, 3.0);            // history[1]
+    sampleInterfaces(model, {{"eth0", BASE + 3'000, BASE + 300}, {"tun0", BASE + 400, BASE + 40}}, 4.0); // history[2]
+
+    const auto tunRx = netRxFor(model, "tun0");
+    const auto tunTx = netTxFor(model, "tun0");
+    ASSERT_EQ(tunRx.size(), 3U);
+    ASSERT_EQ(tunTx.size(), 3U);
+    EXPECT_TRUE(std::isnan(tunRx[0])) << "before it appeared";
+    EXPECT_TRUE(std::isnan(tunRx[1])) << "its first sample: no rate yet, a gap, not 0";
+    EXPECT_TRUE(std::isnan(tunTx[1]));
+    EXPECT_FLOAT_EQ(tunRx[2], 400.0F) << "a rate from its second sample";
+    EXPECT_FLOAT_EQ(tunTx[2], 40.0F);
+
+    // The Total is still a reading on tun0's first sample: tun0 wasn't in the previous Total, and eth0
+    // was measured (as StorageModel's totals).
+    const auto totalRx = model.publication()->netRxHistory;
+    ASSERT_EQ(totalRx.size(), 3U);
+    EXPECT_FLOAT_EQ(totalRx[1], 1'000.0F);
+    EXPECT_FLOAT_EQ(totalRx[2], 1'400.0F);
+}
+
+TEST(SystemModelTest, AnInterfaceCounterResetIsAGapAndRebaselinesNotAZero)
+{
+    // #2129: an interface recreated under the same name (a VPN reconnecting, a driver reload) restarts
+    // its counters. That sample is CounterReset: a gap in its own history and in the Total, not a 0
+    // dip, and the next sample rates from the new counters.
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}, {"wlan0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE + 1'000, BASE + 100}, {"wlan0", BASE + 50, BASE + 5}}, 2.0); // history[0]
+    sampleInterfaces(model, {{"eth0", 500, 50}, {"wlan0", BASE + 100, BASE + 10}}, 3.0);                // history[1]: eth0 reset
+    sampleInterfaces(model, {{"eth0", 1'300, 130}, {"wlan0", BASE + 150, BASE + 15}}, 4.0);             // history[2]
+
+    const auto eth0Rx = netRxFor(model, "eth0");
+    const auto eth0Tx = netTxFor(model, "eth0");
+    ASSERT_EQ(eth0Rx.size(), 3U);
+    EXPECT_FLOAT_EQ(eth0Rx[0], 1'000.0F);
+    EXPECT_TRUE(std::isnan(eth0Rx[1])) << "a counter reset is a gap, not 0";
+    EXPECT_TRUE(std::isnan(eth0Tx[1]));
+    EXPECT_FLOAT_EQ(eth0Rx[2], 800.0F) << "re-baselined on the reset sample's counters";
+    EXPECT_FLOAT_EQ(eth0Tx[2], 80.0F);
+    EXPECT_FLOAT_EQ(netRxFor(model, "wlan0")[1], 50.0F) << "the other interface is unaffected";
+
+    const auto totalRx = model.publication()->netRxHistory;
+    const auto totalTx = model.publication()->netTxHistory;
+    ASSERT_EQ(totalRx.size(), 3U);
+    EXPECT_FLOAT_EQ(totalRx[0], 1'050.0F);
+    EXPECT_TRUE(std::isnan(totalRx[1])) << "a Total missing a counted interface's reset sample is a gap, not a dip";
+    EXPECT_TRUE(std::isnan(totalTx[1]));
+    EXPECT_FLOAT_EQ(totalRx[2], 850.0F);
+
+    sampleInterfaces(model, {{"eth0", 1'000, 1'000}, {"wlan0", BASE + 150, BASE + 15}}, 5.0);
+    EXPECT_EQ(model.snapshot().networkInterfaces[0].rxRateStatus, InterfaceRateStatus::CounterReset);
+}
+
+TEST(SystemModelTest, AMeasuredZeroInterfaceRateStaysZeroInItsHistory)
+{
+    // #2129 gaps only what wasn't measured: an idle interface whose counters didn't move is a measured
+    // 0 B/s, a point at 0 in its history and the Total, with status Measured (#1375).
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 2.0);
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 3.0);
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+
+    const auto rx = netRxFor(model, "eth0");
+    const auto tx = netTxFor(model, "eth0");
+    ASSERT_EQ(rx.size(), 2U);
+    ASSERT_EQ(tx.size(), 2U);
+    for (std::size_t i = 0; i < rx.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(rx[i], 0.0F) << i;
+        EXPECT_FLOAT_EQ(tx[i], 0.0F) << i;
+    }
+    const auto totalRx = model.publication()->netRxHistory;
+    ASSERT_EQ(totalRx.size(), 2U);
+    EXPECT_FLOAT_EQ(totalRx[1], 0.0F) << "a Total of measured zeros is a measured 0";
 }
 
 TEST(SystemModelTest, InterfaceRateStatusTellsAMeasuredZeroFromNoReading)
@@ -1773,7 +2192,7 @@ TEST(SystemModelTest, TheConfiguredNetworkCeilingAppliesToInterfaceRates)
     ASSERT_EQ(snap.networkInterfaces.size(), 1U);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
-    EXPECT_TRUE(std::isnan(model.netRxHistoryForInterface("eth0")[0]));
+    EXPECT_TRUE(std::isnan(netRxFor(model, "eth0")[0]));
 }
 
 TEST(SystemModelTest, TheNetworkCeilingAppliesToTheAggregateCounterFallback)
@@ -1799,8 +2218,8 @@ TEST(SystemModelTest, TheNetworkCeilingAppliesToTheAggregateCounterFallback)
     EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0) << "over the ceiling is a glitch, not traffic";
     EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, Domain::Sampling::MAX_SANE_RATE_BPS_MIN) << "at the ceiling is kept";
 
-    auto rxHistory = model.netRxHistory();
-    auto txHistory = model.netTxHistory();
+    auto rxHistory = model.publication()->netRxHistory;
+    auto txHistory = model.publication()->netTxHistory;
     ASSERT_EQ(rxHistory.size(), 1U);
     ASSERT_EQ(txHistory.size(), 1U);
     EXPECT_TRUE(std::isnan(rxHistory[0])) << "a gap, not a spike or a false 0";
@@ -1813,8 +2232,8 @@ TEST(SystemModelTest, TheNetworkCeilingAppliesToTheAggregateCounterFallback)
     snap = model.snapshot();
     EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1'000.0);
     EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 500.0);
-    rxHistory = model.netRxHistory();
-    txHistory = model.netTxHistory();
+    rxHistory = model.publication()->netRxHistory;
+    txHistory = model.publication()->netTxHistory;
     ASSERT_EQ(rxHistory.size(), 3U);
     ASSERT_EQ(txHistory.size(), 3U);
     EXPECT_FLOAT_EQ(rxHistory[1], static_cast<float>(Domain::Sampling::MAX_SANE_RATE_BPS_MIN));
@@ -2017,8 +2436,8 @@ TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
     model.updateFromCounters(countersWithBoth, 2.0);
 
     // wlan0 has just been seen, so it should have real history.
-    EXPECT_FALSE(model.netRxHistoryForInterface("wlan0").empty());
-    EXPECT_FALSE(model.netTxHistoryForInterface("wlan0").empty());
+    EXPECT_FALSE(netRxFor(model, "wlan0").empty());
+    EXPECT_FALSE(netTxFor(model, "wlan0").empty());
 
     // wlan0 disappears (e.g. Wi-Fi disabled) for longer than the entire history window.
     auto countersWithoutWlan = makeSystemCounters(
@@ -2027,11 +2446,11 @@ TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
 
     // wlan0's entry must be fully pruned (empty, not merely zero-padded), so the map doesn't
     // retain one entry per interface name forever.
-    EXPECT_TRUE(model.netRxHistoryForInterface("wlan0").empty());
-    EXPECT_TRUE(model.netTxHistoryForInterface("wlan0").empty());
+    EXPECT_TRUE(netRxFor(model, "wlan0").empty());
+    EXPECT_TRUE(netTxFor(model, "wlan0").empty());
 
     // eth0, still present every cycle, must be unaffected.
-    EXPECT_FALSE(model.netRxHistoryForInterface("eth0").empty());
+    EXPECT_FALSE(netRxFor(model, "eth0").empty());
 }
 
 // #1015: a sample where an interface was not present is a NaN gap in its history, not a false 0 --
@@ -2056,25 +2475,28 @@ TEST(SystemModelTest, PerInterfaceHistoryRecordsMissingSamplesAsNaN)
     // History starts with the second sample (the first has nothing to take a delta against).
     model.updateFromCounters(withoutWlan, 1.0);
     model.updateFromCounters(withoutWlan, 2.0); // history[0]: wlan0 not seen yet
-    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present
-    model.updateFromCounters(withoutWlan, 4.0); // history[2]: wlan0 gone
+    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present, its first sample
+    model.updateFromCounters(withWlan, 4.0);    // history[2]: wlan0's first rate
+    model.updateFromCounters(withoutWlan, 5.0); // history[3]: wlan0 gone
 
-    const auto timestamps = model.timestamps();
-    const auto rx = model.netRxHistoryForInterface("wlan0");
-    const auto tx = model.netTxHistoryForInterface("wlan0");
+    const auto timestamps = model.publication()->timestamps;
+    const auto rx = netRxFor(model, "wlan0");
+    const auto tx = netTxFor(model, "wlan0");
     ASSERT_EQ(rx.size(), timestamps.size());
     ASSERT_EQ(tx.size(), timestamps.size());
-    ASSERT_EQ(rx.size(), 3U);
+    ASSERT_EQ(rx.size(), 4U);
 
     EXPECT_TRUE(std::isnan(rx[0]));
     EXPECT_TRUE(std::isnan(tx[0]));
-    EXPECT_TRUE(std::isfinite(rx[1]));
-    EXPECT_TRUE(std::isfinite(tx[1]));
-    EXPECT_TRUE(std::isnan(rx[2]));
-    EXPECT_TRUE(std::isnan(tx[2]));
+    EXPECT_TRUE(std::isnan(rx[1])) << "a rate needs two samples (#2129)";
+    EXPECT_TRUE(std::isnan(tx[1]));
+    EXPECT_TRUE(std::isfinite(rx[2]));
+    EXPECT_TRUE(std::isfinite(tx[2]));
+    EXPECT_TRUE(std::isnan(rx[3]));
+    EXPECT_TRUE(std::isnan(tx[3]));
 
     // eth0, present every sample, has no gaps.
-    for (const float value : model.netRxHistoryForInterface("eth0"))
+    for (const float value : netRxFor(model, "eth0"))
     {
         EXPECT_TRUE(std::isfinite(value));
     }
@@ -2175,7 +2597,7 @@ TEST(SystemModelTest, CpuIowaitHistoryTracked)
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 1000, 16000, 1000), makeMemoryCounters(1024, 512)));
     model.refresh();
 
-    auto iowaitHistory = model.cpuIowaitHistory();
+    auto iowaitHistory = model.publication()->cpuIowaitHistory;
     EXPECT_FALSE(iowaitHistory.empty());
 }
 
@@ -2194,7 +2616,7 @@ TEST(SystemModelTest, CpuIdleHistoryTracked)
     rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 1000, 16000), makeMemoryCounters(1024, 512)));
     model.refresh();
 
-    auto idleHistory = model.cpuIdleHistory();
+    auto idleHistory = model.publication()->cpuIdleHistory;
     EXPECT_FALSE(idleHistory.empty());
 }
 
@@ -2215,7 +2637,7 @@ TEST(SystemModelTest, MemoryCachedHistoryTracked)
     model.refresh();
     model.refresh(); // Need two samples for history
 
-    auto cachedHistory = model.memoryCachedHistory();
+    auto cachedHistory = model.publication()->memoryCachedHistory;
     EXPECT_FALSE(cachedHistory.empty());
 }
 
@@ -2237,11 +2659,11 @@ TEST(SystemModelTest, PerInterfaceRxHistoryTracked)
     model.updateFromCounters(counters2, 2.0);
 
     // Query per-interface history
-    auto eth0RxHistory = model.netRxHistoryForInterface("eth0");
+    auto eth0RxHistory = netRxFor(model, "eth0");
     EXPECT_FALSE(eth0RxHistory.empty());
 
     // Non-existent interface should return empty
-    auto fakeHistory = model.netRxHistoryForInterface("nonexistent");
+    auto fakeHistory = netRxFor(model, "nonexistent");
     EXPECT_TRUE(fakeHistory.empty());
 }
 
@@ -2263,25 +2685,8 @@ TEST(SystemModelTest, PerInterfaceTxHistoryTracked)
     model.updateFromCounters(counters2, 2.0);
 
     // Query per-interface TX history
-    auto eth0TxHistory = model.netTxHistoryForInterface("eth0");
+    auto eth0TxHistory = netTxFor(model, "eth0");
     EXPECT_FALSE(eth0TxHistory.empty());
-}
-
-TEST(SystemModelTest, PowerHistoryTracked)
-{
-    auto probe = std::make_unique<MockSystemProbe>();
-    auto* rawProbe = probe.get();
-
-    // Setup basic counters
-    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500), makeMemoryCounters(1024, 512)));
-
-    Domain::SystemModel model(std::move(probe));
-    model.refresh();
-    model.refresh();
-
-    // Power history should exist (even if values are 0)
-    auto powerHist = model.powerHistory();
-    EXPECT_FALSE(powerHist.empty());
 }
 
 TEST(SystemModelTest, BatteryChargeHistoryTracked)
@@ -2297,8 +2702,108 @@ TEST(SystemModelTest, BatteryChargeHistoryTracked)
     model.refresh();
 
     // Battery charge history should exist
-    auto chargeHist = model.batteryChargeHistory();
+    auto chargeHist = model.publication()->batteryChargeHistory;
     EXPECT_FALSE(chargeHist.empty());
+}
+
+TEST(SystemModelTest, BatteryChargeHistoryIsNaNWithoutABattery)
+{
+    // #2159: no battery is "no reading", NaN like every other unread history value -- not a -1 that
+    // each reader had to know to convert.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    powerProbe->setCapabilities({}); // No battery
+    powerProbe->setCounters(Platform::PowerCounters{});
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    model.refresh();
+
+    ASSERT_FALSE(model.snapshot().power.hasBattery);
+    const auto chargeHist = model.publication()->batteryChargeHistory;
+    ASSERT_FALSE(chargeHist.empty());
+    for (const float value : chargeHist)
+    {
+        EXPECT_TRUE(std::isnan(value)) << "got " << value;
+    }
+}
+
+TEST(SystemModelTest, BatteryChargeHistoryHoldsTheChargeAndNaNForAnUnreadCharge)
+{
+    // #2159: a battery's charge is stored as is; one it could not read (the probe's -1) is NaN, a gap.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({.hasBattery = true});
+    Platform::PowerCounters counters;
+    counters.chargePercent = 75;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh(); // The baseline: history starts with the second sample
+    model.refresh();
+    counters.chargePercent = -1;
+    rawPowerProbe->setCounters(counters);
+    model.refresh();
+
+    const auto chargeHist = model.publication()->batteryChargeHistory;
+    ASSERT_EQ(chargeHist.size(), 2U);
+    EXPECT_DOUBLE_EQ(chargeHist[0], 75.0F);
+    EXPECT_TRUE(std::isnan(chargeHist[1]));
+}
+
+TEST(SystemModelTest, ABatteryInsertedAfterStartIsShown)
+{
+    // #2380: a machine started with no pack gains its battery once one is inserted.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({});
+    Platform::PowerCounters counters;
+    counters.chargePercent = 60;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    EXPECT_FALSE(model.snapshot().power.hasBattery);
+
+    rawPowerProbe->setCapabilities({.hasBattery = true, .hasChargePercent = true});
+    model.refresh();
+    EXPECT_TRUE(model.snapshot().power.hasBattery);
+    EXPECT_EQ(model.snapshot().power.chargePercent, 60);
+}
+
+TEST(SystemModelTest, ABatteryWhoseReadingIsNotPresentIsNoBattery)
+{
+    // #2408: the probe offers a battery (an empty bay the driver lists, a battery removed after
+    // start) while its reading says none is in. That is a battery-less machine, not one at -1%.
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    auto* rawPowerProbe = powerProbe.get();
+    powerProbe->setCapabilities({.hasBattery = true, .hasChargePercent = true});
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Discharging;
+    counters.chargePercent = 60;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+    ASSERT_TRUE(model.snapshot().power.hasBattery);
+
+    counters = {};
+    counters.state = Platform::BatteryState::NotPresent;
+    counters.isOnAc = true;
+    rawPowerProbe->setCounters(counters);
+    model.refresh();
+
+    const auto power = model.snapshot().power;
+    EXPECT_FALSE(power.hasBattery);
+    EXPECT_TRUE(power.isOnAc) << "the adapter's state is still reported";
+    EXPECT_FALSE(power.isDischarging);
 }
 
 // =============================================================================
@@ -2353,6 +2858,39 @@ TEST(SystemModelTest, PowerStatus_HasBattery_WhenPowerProbeReportsIt)
     EXPECT_EQ(power.technology, "Li-ion");
     EXPECT_EQ(power.model, "TestBattery");
     EXPECT_EQ(power.timeToEmptySec, 7200ULL);
+}
+
+TEST(SystemModelTest, PowerStatus_BatteryDetailsFollowTheProbesCapabilities)
+{
+    // #1523: capacities and cycle count pass through only when the probe says it reports them
+    const auto powerFor = [](bool reported)
+    {
+        auto sysProbe = std::make_unique<MockSystemProbe>();
+        sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+        auto powerProbe = std::make_unique<MockPowerProbe>();
+        powerProbe->setCapabilities(
+            {.hasBattery = true, .hasTechnology = reported, .hasCycleCount = reported, .hasDesignCapacity = reported});
+        Platform::PowerCounters counters;
+        counters.chargeDesignWh = 52.6;
+        counters.chargeFullWh = 47.3;
+        counters.cycleCount = 123;
+        counters.manufacturer = "Contoso";
+        powerProbe->setCounters(counters);
+        Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+        model.refresh();
+        return model.snapshot().power;
+    };
+    const Domain::PowerStatus reported = powerFor(true);
+    EXPECT_TRUE(reported.reportsCapacity && reported.reportsCycleCount && reported.reportsTechnology);
+    EXPECT_DOUBLE_EQ(reported.designCapacityWh, 52.6);
+    EXPECT_DOUBLE_EQ(reported.fullChargeCapacityWh, 47.3);
+    EXPECT_EQ(reported.cycleCount, 123U);
+    EXPECT_EQ(reported.manufacturer, "Contoso");
+
+    const Domain::PowerStatus unreported = powerFor(false);
+    EXPECT_FALSE(unreported.reportsCapacity || unreported.reportsCycleCount || unreported.reportsTechnology);
+    EXPECT_DOUBLE_EQ(unreported.designCapacityWh, 0.0);
+    EXPECT_EQ(unreported.cycleCount, 0U);
 }
 
 TEST(SystemModelTest, PowerStatus_Charging)
@@ -2513,7 +3051,7 @@ constexpr std::size_t PUBLICATION_TEST_CORES = 4;
     };
     const bool fixedSeries = sized(publication.cpuHistory) && sized(publication.cpuUserHistory) && sized(publication.cpuSystemHistory) &&
                              sized(publication.cpuIowaitHistory) && sized(publication.cpuIdleHistory) && sized(publication.memoryHistory) &&
-                             sized(publication.memoryCachedHistory) && sized(publication.swapHistory) && sized(publication.powerHistory) &&
+                             sized(publication.memoryCachedHistory) && sized(publication.swapHistory) &&
                              sized(publication.batteryChargeHistory) && sized(publication.netRxHistory) && sized(publication.netTxHistory);
     const bool perCore =
         (n == 0 || publication.perCoreHistory.size() == PUBLICATION_TEST_CORES) && std::ranges::all_of(publication.perCoreHistory, sized);
@@ -2716,7 +3254,7 @@ TEST(SystemModelTest, InterfaceRatesAndGapsHoldAtHundredsOfChurningInterfaces)
         else
         {
             EXPECT_TRUE(std::isnan(rx[0])) << name(i) << " arrived later: backfilled with a gap";
-            EXPECT_FLOAT_EQ(rx[1], 0.0F) << name(i) << " arrived: no rate before its second sample";
+            EXPECT_TRUE(std::isnan(rx[1])) << name(i) << " arrived: no rate before its second sample, a gap (#2129)";
             EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
         }
     }

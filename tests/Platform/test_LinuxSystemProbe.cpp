@@ -22,10 +22,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -324,16 +327,35 @@ TEST(LinuxSystemProbeTest, NetworkCountersReadMultipleTimes)
 // Per-Interface Network Counter Tests
 // =============================================================================
 
-TEST(LinuxSystemProbeTest, PerInterfaceNetworkCountersAreAccessible)
+// #2165: every interface the kernel lists in /sys/class/net, an independent source from the probe's
+// /proc/net/dev, is read, except loopback; and nothing else is.
+TEST(LinuxSystemProbeTest, PerInterfaceCountersCoverEveryNonLoopbackInterface)
 {
     LinuxSystemProbe probe;
-    auto counters = probe.read();
+    const auto counters = probe.read();
 
-    // The vector should be accessible even if empty.
-    // Note: loopback (lo) is filtered out, so systems with only loopback may have 0 interfaces.
-    // Most systems have at least one physical or virtual interface besides loopback.
-    // size() is always >= 0 by type; just verify the vector is accessible.
-    (void) counters.networkInterfaces.size();
+    std::vector<std::string> expected;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator("/sys/class/net", ec))
+    {
+        if (std::string name = entry.path().filename().string(); name != "lo")
+        {
+            expected.push_back(std::move(name));
+        }
+    }
+    if (ec)
+    {
+        GTEST_SKIP() << "/sys/class/net isn't readable here: " << ec.message();
+    }
+    std::vector<std::string> read;
+    read.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        read.push_back(iface.name);
+    }
+    std::ranges::sort(expected);
+    std::ranges::sort(read);
+    EXPECT_EQ(read, expected);
 }
 
 TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
@@ -348,20 +370,6 @@ TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
 
         // Display name should not be empty (may be same as name on Linux)
         EXPECT_FALSE(iface.displayName.empty()) << "Display name should not be empty";
-    }
-}
-
-TEST(LinuxSystemProbeTest, PerInterfaceCountersAreNonNegative)
-{
-    LinuxSystemProbe probe;
-    auto counters = probe.read();
-
-    for (const auto& iface : counters.networkInterfaces)
-    {
-        // Counters are uint64_t, so always non-negative by type.
-        // Access the fields to verify the structure is correctly populated.
-        (void) iface.rxBytes;
-        (void) iface.txBytes;
     }
 }
 
@@ -465,18 +473,22 @@ TEST(LinuxSystemProbeTest, PerInterfaceStatusConsistent)
 {
     LinuxSystemProbe probe;
 
-    // Read multiple times - interface status should be stable
-    for (int i = 0; i < 3; ++i)
+    // Consecutive reads list the same interfaces in the same state: the claim is now checked (#2165).
+    // An interface coming or going between two reads a few microseconds apart would be a coincidence.
+    const auto snapshot = [&probe]
     {
-        auto counters = probe.read();
-
-        // Just verify structure is valid
-        for (const auto& iface : counters.networkInterfaces)
+        std::vector<std::pair<std::string, bool>> interfaces;
+        for (const auto& iface : probe.read().networkInterfaces)
         {
-            // isUp is a boolean - no specific value check needed
-            // Just ensure the field is accessible
-            (void) iface.isUp;
+            interfaces.emplace_back(iface.name, iface.isUp);
         }
+        std::ranges::sort(interfaces);
+        return interfaces;
+    };
+    const auto first = snapshot();
+    for (int i = 0; i < 2; ++i)
+    {
+        EXPECT_EQ(snapshot(), first) << "read " << (i + 2);
     }
 }
 
@@ -600,6 +612,197 @@ TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
     EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
 }
 
+// #1891: a meminfo line without a colon is passed over, and the fields after it are still read.
+TEST(LinuxSystemProbeTest, AMeminfoLineWithoutAColonIsSkipped)
+{
+    ScopedTempDir scoped("ts_test_sys_meminfo_stray");
+    std::ofstream(scoped.path / "meminfo") << "MemTotal: 1000 kB\nnot a field\nMemAvailable: 400 kB\n";
+    const auto memory = LinuxSystemProbe(scoped.path).read().memory;
+    EXPECT_EQ(memory.totalBytes, 1000ULL * 1024);
+    EXPECT_TRUE(memory.hasAvailableBytes);
+}
+
+TEST(LinuxSystemProbeTest, CommitChargeComesFromTheMeminfoAlreadyRead)
+{
+    // Committed_AS and CommitLimit come from the same /proc/meminfo pass as the rest of memory (#1627);
+    // the kernel keeps no peak. Committed_AS above CommitLimit is normal outside strict overcommit.
+    EXPECT_TRUE(LinuxSystemProbe().capabilities().hasCommitCharge);
+
+    ScopedTempDir both("ts_test_sys_commit");
+    std::ofstream(both.path / "meminfo") << "MemTotal: 16000000 kB\nMemFree: 1000000 kB\nMemAvailable: 8000000 kB\n"
+                                            "SwapTotal: 2000000 kB\nSwapFree: 2000000 kB\n"
+                                            "CommitLimit:    10000000 kB\nCommitted_AS:   12345678 kB\n";
+    const MemoryCounters memory = LinuxSystemProbe(both.path).read().memory;
+    EXPECT_TRUE(memory.hasCommitCharge);
+    EXPECT_EQ(memory.commitChargeBytes, 12'345'678ULL * 1024);
+    EXPECT_EQ(memory.commitLimitBytes, 10'000'000ULL * 1024);
+    EXPECT_EQ(memory.commitPeakBytes, 0ULL);
+    EXPECT_EQ(memory.totalBytes, 16'000'000ULL * 1024); // the other lines are still read
+
+    // Either line missing, or unparsable, and there is no commit charge this sample.
+    ScopedTempDir noLimit("ts_test_sys_commit_nolimit");
+    std::ofstream(noLimit.path / "meminfo") << "MemTotal: 1000 kB\nCommitted_AS: 500 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(noLimit.path).read().memory.hasCommitCharge);
+
+    ScopedTempDir garbled("ts_test_sys_commit_garbled");
+    std::ofstream(garbled.path / "meminfo") << "MemTotal: 1000 kB\nCommitLimit: x kB\nCommitted_AS: 500 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(garbled.path).read().memory.hasCommitCharge);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
+{
+    // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)
+    ScopedTempDir proc("ts_test_sys_cpudetails_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_cpu");
+    std::ofstream(proc.path / "cpuinfo") << "processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+                                            "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n";
+    std::filesystem::create_directories(cpuSysfs.path / "cpu0" / "cpufreq");
+    std::ofstream(cpuSysfs.path / "cpu0" / "cpufreq" / "base_frequency") << "2900000\n";
+    for (const char* cpu : {"cpu0", "cpu1"})
+    {
+        const auto index = cpuSysfs.path / cpu / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "type") << "Unified\n";
+        std::ofstream(index / "size") << "1024K\n";
+        std::ofstream(index / "shared_cpu_list") << "0-1\n";
+    }
+
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_TRUE(probe.capabilities().hasVirtualizationInfo);          // vmx/svm, /dev/kvm, hypervisor (#2592)
+    EXPECT_FALSE(probe.capabilities().hasVirtualizationSecurityInfo); // VBS/HVCI are Windows facts (#809)
+    const auto details = probe.read().cpuDetails;
+    EXPECT_EQ(details.sockets, 1U);
+    EXPECT_EQ(details.physicalCores, 1U);
+    EXPECT_EQ(details.logicalProcessors, 2U);
+    EXPECT_EQ(details.l2CacheBytes, 1024ULL * 1024ULL); // One instance, shared by both siblings
+    EXPECT_EQ(details.baseSpeedMHz, 2900U);
+}
+
+TEST(LinuxSystemProbeTest, CpuVirtualizationComesFromTheInjectedRoots)
+{
+    // Read once at construction from the proc root's cpuinfo and the file system root's /dev/kvm and
+    // hypervisor hints, and kept when the details are re-read for a CPU coming online (#2592)
+    ScopedTempDir root("ts_test_sys_virt_root");
+    const auto proc = root.path / "proc";
+    std::filesystem::create_directories(proc);
+    std::filesystem::create_directories(root.path / "dev");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc / "stat");
+        std::ofstream cpuInfo(proc / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\nflags\t\t: fpu vmx ept\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(1);
+    std::ofstream(root.path / "dev" / "kvm") << "";
+
+    LinuxSystemProbe probe(proc, proc / "no-sys-class-net", root.path / "no-cpu-sysfs", root.path);
+    auto details = probe.read().cpuDetails;
+    EXPECT_EQ(details.virtualizationFirmwareEnabled, true);
+    EXPECT_EQ(details.slatSupported, true);
+    EXPECT_EQ(details.hypervisorPresent, false);
+    EXPECT_EQ(details.kvmAvailable, true);
+    EXPECT_FALSE(details.vbsRunning.has_value());
+    EXPECT_FALSE(details.hvciEnabled.has_value());
+
+    // Not re-read: removing /dev/kvm changes nothing, even across a re-read of the topology
+    std::filesystem::remove(root.path / "dev" / "kvm");
+    writeOnline(2);
+    details = probe.read().cpuDetails;
+    EXPECT_EQ(details.logicalProcessors, 2U);
+    EXPECT_EQ(details.kvmAvailable, true);
+    EXPECT_EQ(details.virtualizationFirmwareEnabled, true);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)
+{
+    // The details describe the CPUs online when they were read; bringing one online changes the
+    // count in /proc/stat, and the next sample re-reads them (#809). Unchanged samples do not.
+    ScopedTempDir proc("ts_test_sys_cpudetails_online_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_online_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 2U);
+
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
+    EXPECT_EQ(probe.read().cpuDetails.physicalCores, 4U);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuIsSwappedForAnother)
+{
+    // cpu1 goes offline and cpu2 comes online: the count is the same, the set is not (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_swap_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_swap_cpu");
+    const auto writeOnline = [&](std::initializer_list<int> cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (const int cpu : cpus)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    const auto writeL2 = [&](int cpu, const char* size)
+    {
+        const auto index = cpuSysfs.path / std::format("cpu{}", cpu) / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "size") << size << "\n";
+        std::ofstream(index / "shared_cpu_list") << cpu << "\n";
+    };
+    writeL2(0, "1024K");
+    writeL2(1, "1024K");
+    writeL2(2, "2048K");
+    writeOnline({0, 1});
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 2ULL * 1024 * 1024);
+
+    writeOnline({0, 2});
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 3ULL * 1024 * 1024); // cpu2's L2 in place of cpu1's
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsFollowACpuThatComesOnlineBeforeTheFirstRead)
+{
+    // The details read at construction are tied to the CPUs listed then, so a change before the
+    // first read() is caught too (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_first_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_first_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
+}
+
 namespace
 {
 constexpr std::string_view NET_DEV_HEADER = "Inter-|   Receive                                                |  Transmit\n"
@@ -654,6 +857,103 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
         EXPECT_EQ(iface.isVirtual, expectVirtual) << iface.name;
         EXPECT_TRUE(iface.isVirtualKnown) << iface.name << ": in sysfs, so classified (#1260)";
     }
+}
+
+// #2568: each interface's link kind comes from its uevent DEVTYPE, its wireless directory and its
+// ARPHRD type, for the Interface Status table's Type icon.
+TEST(LinuxSystemProbeTest, AnInterfacesKindComesFromItsSysfsTypeAndDevType)
+{
+    ScopedTempDir proc("ts_test_sys_net_kind");
+    ScopedTempDir sys("ts_test_sys_class_net_kind");
+    std::filesystem::create_directories(proc.path / "net");
+    const std::vector<std::string_view> names{
+        "eth0", "wlan0", "wlp2s0", "bnep0", "wwan0", "wwan1", "wg0", "tun0", "docker0", "sit0", "ib0", "odd0"};
+    {
+        std::ofstream netDev(proc.path / "net" / "dev");
+        netDev << NET_DEV_HEADER;
+        for (const auto name : names)
+        {
+            netDev << netDevLine(name, 100, 10);
+        }
+    }
+    const auto addInterface = [&sys](std::string_view name, bool hardware, std::string_view arpType, std::string_view devType)
+    {
+        addSysfsInterface(sys.path, name, hardware);
+        std::ofstream(sys.path / name / "type") << arpType << "\n";
+        std::ofstream uevent(sys.path / name / "uevent");
+        if (!devType.empty())
+        {
+            uevent << "DEVTYPE=" << devType << "\n";
+        }
+        uevent << "INTERFACE=" << name << "\nIFINDEX=2\n";
+    };
+    addInterface("eth0", true, "1", "");
+    addInterface("wlan0", true, "1", "wlan");
+    addInterface("wlp2s0", true, "1", ""); // no DEVTYPE, but wireless extensions
+    std::filesystem::create_directories(sys.path / "wlp2s0" / "wireless");
+    addInterface("bnep0", true, "1", "bluetooth");
+    addInterface("wwan0", true, "1", "wwan");
+    addInterface("wwan1", true, "519", ""); // a raw-IP modem (qmi_wwan)
+    addInterface("wg0", false, "65534", "wireguard");
+    addInterface("tun0", false, "65534", "");
+    addInterface("docker0", false, "1", "bridge");
+    addInterface("sit0", false, "776", "");
+    addInterface("ib0", true, "32", "");       // InfiniBand
+    addSysfsInterface(sys.path, "odd0", true); // no type or uevent to read
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    using Platform::NetInterfaceKind;
+    const std::unordered_map<std::string, NetInterfaceKind> expected{
+        {"eth0", NetInterfaceKind::Ethernet},
+        {"wlan0", NetInterfaceKind::WiFi},
+        {"wlp2s0", NetInterfaceKind::WiFi},
+        {"bnep0", NetInterfaceKind::Bluetooth},
+        {"wwan0", NetInterfaceKind::Cellular},
+        {"wwan1", NetInterfaceKind::Cellular},
+        {"wg0", NetInterfaceKind::Tunnel},
+        {"tun0", NetInterfaceKind::Tunnel},
+        {"docker0", NetInterfaceKind::Ethernet}, // an Ethernet bridge; isVirtual makes it a cloud
+        {"sit0", NetInterfaceKind::Tunnel},
+        {"ib0", NetInterfaceKind::Other},
+        {"odd0", NetInterfaceKind::Unknown},
+    };
+    ASSERT_EQ(counters.networkInterfaces.size(), names.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        ASSERT_TRUE(expected.contains(iface.name)) << iface.name;
+        EXPECT_EQ(iface.kind, expected.at(iface.name)) << iface.name;
+    }
+}
+
+TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsHasAnUnknownKind)
+{
+    ScopedTempDir proc("ts_test_sys_net_kind_missing");
+    ScopedTempDir sys("ts_test_sys_class_net_kind_missing");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_EQ(counters.networkInterfaces[0].kind, Platform::NetInterfaceKind::Unknown);
+}
+
+// #1891: whitespace between an interface's name and its colon is trimmed from the name.
+TEST(LinuxSystemProbeTest, AnInterfaceNameIsTrimmedBeforeItsColon)
+{
+    ScopedTempDir proc("ts_test_sys_net_trim");
+    ScopedTempDir sys("ts_test_sys_class_net_trim");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << "  eth0 \t: 5000 10 0 0 0 0 0 0 700 10 0 0 0 0 0 0\n";
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_EQ(counters.networkInterfaces[0].name, "eth0");
+    EXPECT_EQ(counters.netRxBytes, 5000U);
+    EXPECT_EQ(counters.netTxBytes, 700U);
 }
 
 TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsIsUnclassified)
@@ -816,6 +1116,36 @@ TEST(LinuxSystemProbeTest, OperStateAndLinkSpeedAreReadFromTheInjectedSysClassNe
     EXPECT_EQ(counters.networkInterfaces[1].name, "tsdown0");
     EXPECT_FALSE(counters.networkInterfaces[1].isUp);
     EXPECT_EQ(counters.networkInterfaces[1].linkSpeedMbps, 0U);
+}
+
+// #2433: operstate "unknown" (a driver that never reports it: an LTE modem's wwan0, a tun VPN) is up when
+// the interface has a carrier, as the kernel's operstates documentation says; down without one.
+TEST(LinuxSystemProbeTest, AnUnknownOperStateIsUpWhenTheInterfaceHasACarrier)
+{
+    ScopedTempDir proc("ts_test_sys_net_unknown");
+    ScopedTempDir sys("ts_test_sys_class_net_unknown");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("tswwan0", 5000, 700) << netDevLine("tstun0", 300, 30)
+                                             << netDevLine("tsoff0", 10, 1);
+    for (const char* name : {"tswwan0", "tstun0", "tsoff0"})
+    {
+        addSysfsInterface(sys.path, name, true);
+        std::ofstream(sys.path / name / "operstate") << "unknown\n";
+    }
+    std::ofstream(sys.path / "tswwan0" / "carrier") << "1\n";
+    std::ofstream(sys.path / "tstun0" / "carrier") << "0\n";
+    // tsoff0: no readable carrier (administratively down)
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    const auto isUp = [&counters](std::string_view name)
+    {
+        const auto it = std::ranges::find(counters.networkInterfaces, name, &SystemCounters::InterfaceCounters::name);
+        return it != counters.networkInterfaces.end() && it->isUp;
+    };
+    EXPECT_TRUE(isUp("tswwan0"));
+    EXPECT_FALSE(isUp("tstun0"));
+    EXPECT_FALSE(isUp("tsoff0"));
 }
 
 TEST(LinuxSystemProbeTest, CpuFrequencyIsReadFromTheInjectedCpuSysfsRoot)

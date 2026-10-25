@@ -1,11 +1,15 @@
 #include "UserConfig.h"
 
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
+#include "Core/ConfigDirOverride.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Theme.h"
@@ -18,6 +22,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <locale>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -41,8 +47,11 @@
 #include <ios>
 // clang-format on
 #else
+#include "App/NewFileOwner.h"
+
 #include <array>
 #include <cerrno>
+#include <functional>
 #include <vector>
 
 #include <fcntl.h>
@@ -73,6 +82,47 @@ namespace
     return static_cast<ProcessColumn>(index);
 }
 
+/// The top-level key that records the config file's format (CONFIG_FORMAT_VERSION, #1376).
+constexpr std::string_view CONFIG_VERSION_KEY = "config_version";
+
+/// The format version of a parsed config file. A file without the key -- or with a value that is not
+/// an integer -- predates it and is version 1.
+[[nodiscard]] std::int64_t configVersionOf(const toml::table& config)
+{
+    return config[CONFIG_VERSION_KEY].value<std::int64_t>().value_or(1);
+}
+
+/// Brings the [process_columns] section of a version 1 document (one that lists every column) to the
+/// sparse format before save() merges into it (#1376): a column whose value equals its default
+/// (ProcessColumnSettings::isLegacyChoice()) and that `mine` does not list as chosen is dropped, the
+/// same rule readSettings() migrates by. Values that are not booleans, and keys that are not column
+/// keys, are left alone. A document already in the sparse format is not touched.
+void migrateLegacyProcessColumns(toml::table& document, const toml::table& mine)
+{
+    if (configVersionOf(document) >= CONFIG_FORMAT_VERSION)
+    {
+        return;
+    }
+    auto* columns = document.get_as<toml::table>("process_columns");
+    if (columns == nullptr)
+    {
+        return;
+    }
+    const auto* chosen = mine.get_as<toml::table>("process_columns");
+    for (const auto col : allProcessColumns())
+    {
+        const std::string_view key = getColumnInfo(col).configKey;
+        if (chosen != nullptr && chosen->contains(key))
+        {
+            continue;
+        }
+        if (const auto saved = (*columns)[key].value<bool>(); saved.has_value() && !ProcessColumnSettings::isLegacyChoice(col, *saved))
+        {
+            columns->erase(key);
+        }
+    }
+}
+
 constexpr int WINDOW_POS_ABS_MAX = 100'000;
 
 [[nodiscard]] bool isSaneWindowPositionComponent(int value)
@@ -99,35 +149,17 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     return std::string(value);
 }
 
-[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate, const std::filesystem::path& fallback) -> std::filesystem::path
+/// This user's home directory from the passwd entry (thread-safe getpwuid_r), for when $HOME is unset.
+[[nodiscard]] auto passwdHomeDirectory() -> std::optional<std::filesystem::path>
 {
-    auto normalized = candidate.lexically_normal();
-    if (!UserConfigHelpers::isValidConfigDir(normalized))
-    {
-        spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());
-        return fallback;
-    }
-
-    return normalized;
-}
-
-[[nodiscard]] auto resolveHomeConfigDir() -> std::filesystem::path
-{
-    if (auto homeEnv = readEnvVarString("HOME"))
-    {
-        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
-    }
-
-    // Last resort: use passwd entry (thread-safe version)
     struct passwd pwBuf = {};
     struct passwd* pwResult = nullptr;
     std::array<char, 1024> buffer{};
     if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
     {
-        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
+        return std::filesystem::path(pwResult->pw_dir);
     }
-
-    return std::filesystem::current_path();
+    return std::nullopt;
 }
 #endif
 
@@ -159,6 +191,12 @@ void readSettings(const toml::table& config, UserSettings& settings)
                                           settings.socketStatsCacheTtlMs,
                                           Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
                                           [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
+
+    // Opt-in per-process UDP counting through an ETW session (Windows, elevated, #1492)
+    if (auto val = config["sampling"]["udp_event_trace"].value<bool>())
+    {
+        settings.udpEventTrace = *val;
+    }
 
     // Metrics calculation parameters
     UserConfigHelpers::loadAndClamp(
@@ -283,6 +321,25 @@ void readSettings(const toml::table& config, UserSettings& settings)
     {
         settings.showPrivilegeNotice = *val;
     }
+    if (auto val = config["ui"]["show_process_icons"].value<bool>())
+    {
+        settings.showProcessIcons = *val;
+    }
+    if (auto val = config["ui"]["cpu_details_expanded"].value<bool>())
+    {
+        settings.cpuDetailsExpanded = *val;
+    }
+
+    // The dump folder (#2001): a path, so no longer than the longest Windows allows (32767 UTF-16
+    // units, at most 3 UTF-8 bytes each). Whether it still exists is checked where it is used.
+    if (auto folder = config["dumps"]["folder"].value<std::string>())
+    {
+        constexpr std::size_t MAX_DUMP_FOLDER_BYTES = std::size_t{32767} * 3U;
+        if (folder->size() <= MAX_DUMP_FOLDER_BYTES)
+        {
+            settings.dumpFolder = std::move(*folder);
+        }
+    }
 
     // Process table column layout (widths, order, sort). Length-capped here; its content is
     // filtered where it is used, before ImGui parses it.
@@ -294,16 +351,20 @@ void readSettings(const toml::table& config, UserSettings& settings)
         }
     }
 
-    // Process panel column visibility
+    // Process panel column visibility. Since CONFIG_FORMAT_VERSION 2 the section lists only the
+    // columns the user chose (#1376). An older file lists every column, so a value equal to the
+    // column's default is taken for one the user never touched and left to follow the defaults,
+    // including the capability-aware ones applied when the Processes panel attaches (#1210).
     if (const auto* cols = config["process_columns"].as_table())
     {
+        const bool legacyFormat = configVersionOf(config) < CONFIG_FORMAT_VERSION;
         for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
         {
             const auto col = processColumnFromIndex(i);
             const auto info = getColumnInfo(col);
             if (const auto* node = cols->get(info.configKey); node != nullptr)
             {
-                if (auto val = node->value<bool>())
+                if (auto val = node->value<bool>(); val.has_value() && (!legacyFormat || ProcessColumnSettings::isLegacyChoice(col, *val)))
                 {
                     settings.processColumns.setVisible(col, *val);
                 }
@@ -312,6 +373,28 @@ void readSettings(const toml::table& config, UserSettings& settings)
         // "pid = false" or "name = false" in the file is not honoured: those columns cannot be hidden
         // (#1209), and the table would otherwise be told to hide them.
         settings.processColumns.keepUnhideableColumnsVisible();
+    }
+
+    // Inline meters (#1528): a key per meter column, "off", "bar" or "sparkline" (#1612); the
+    // booleans saved before sparklines read as off and bar. One not listed, or not one of those, keeps
+    // its default.
+    if (const auto* meters = config["process_meters"].as_table())
+    {
+        for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+        {
+            const auto node = (*meters)[getColumnInfo(col).configKey];
+            if (const auto legacy = node.value<bool>(); legacy.has_value())
+            {
+                settings.processMeters.setStyle(col, ProcessRowMeter::styleFromLegacyBool(*legacy));
+            }
+            else if (const auto key = node.value<std::string>(); key.has_value())
+            {
+                if (const auto style = ProcessRowMeter::parseStyle(*key); style.has_value())
+                {
+                    settings.processMeters.setStyle(col, *style);
+                }
+            }
+        }
     }
 
     // Note: imgui_layout is no longer used (removed in favor of tabbed UI)
@@ -347,13 +430,25 @@ void readSettings(const toml::table& config, UserSettings& settings)
         break;
     }
 
-    // Build process columns table
+    // Build process columns table: only the columns whose visibility the user chose (#1376). The
+    // others are left out so they keep following the defaults, which can change -- a new column, or
+    // one this system can't fill (#1210) -- and a column the user resets is removed from the file.
     auto processColumnsTable = toml::table{};
     for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
     {
         const auto col = processColumnFromIndex(i);
-        const auto info = getColumnInfo(col);
-        processColumnsTable.insert(std::string(info.configKey), settings.processColumns.isVisible(col));
+        if (settings.processColumns.isChosen(col))
+        {
+            processColumnsTable.insert(std::string(getColumnInfo(col).configKey), settings.processColumns.isVisible(col));
+        }
+    }
+
+    // Inline meters (#1528): every meter column, keyed like [process_columns].
+    auto processMetersTable = toml::table{};
+    for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+    {
+        processMetersTable.insert(std::string(getColumnInfo(col).configKey),
+                                  std::string(ProcessRowMeter::styleKey(settings.processMeters.style(col))));
     }
 
     // Build TOML document
@@ -383,6 +478,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(settings.maxHistorySeconds)},
              {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(settings.socketStatsCacheTtlMs)},
+             {"udp_event_trace", settings.udpEventTrace},
          }},
         {"metrics",
          toml::table{
@@ -394,13 +490,17 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
              {"show_privilege_notice", settings.showPrivilegeNotice},
+             {"show_process_icons", settings.showProcessIcons},
+             {"cpu_details_expanded", settings.cpuDetailsExpanded},
              {"chart_anti_aliasing", settings.chartAntiAliasing},
          }},
         {"theme", toml::table{{"id", settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
+        {"process_meters", processMetersTable},
         {"process_table", toml::table{{"layout", settings.processTableLayout}}},
+        {"dumps", toml::table{{"folder", settings.dumpFolder}}},
     };
 }
 
@@ -415,11 +515,16 @@ auto UserConfig::get() -> UserConfig&
 UserConfig::UserConfig()
 {
     m_ConfigPath = getConfigDirectory() / "config.toml";
-    spdlog::debug("Config path: {}", m_ConfigPath.string());
+    spdlog::debug("Config path: {}", Core::pathToUtf8(m_ConfigPath));
 }
 
 auto UserConfig::getConfigDirectory() -> std::filesystem::path
 {
+    // TASKSMACK_CONFIG_DIR (#1596): a test launch's own directory, for config.toml and the lock beside it.
+    if (const auto& overrideDir = Core::ConfigDirOverride::active(); overrideDir.has_value())
+    {
+        return *overrideDir;
+    }
 #ifdef _WIN32
     // Windows: %APPDATA%/TaskSmack
     wchar_t* appDataPath = nullptr;
@@ -432,22 +537,14 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     // Fallback to current directory
     return std::filesystem::current_path();
 #else
-    // Linux: XDG_CONFIG_HOME or ~/.config
-    // Ensure fallback is always safe; it comes from resolveHomeConfigDir() which returns absolute paths
-    auto fallback = resolveHomeConfigDir();
-    if (!fallback.is_absolute())
+    // Linux: XDG_CONFIG_HOME or ~/.config, decided by UserConfigHelpers::configDirectoryFrom() (#1891).
+    const UserConfigHelpers::ConfigDirectoryChoice choice = UserConfigHelpers::configDirectoryFrom(
+        readEnvVarString("XDG_CONFIG_HOME"), readEnvVarString("HOME"), passwdHomeDirectory, std::filesystem::current_path());
+    if (!choice.warning.empty())
     {
-        spdlog::error("Fallback config directory is not absolute: {}", fallback.string());
-        return std::filesystem::current_path();
+        spdlog::warn("{}", choice.warning);
     }
-
-    if (auto xdgConfig = readEnvVarString("XDG_CONFIG_HOME"))
-    {
-        return sanitizeConfigDir(std::filesystem::path(*xdgConfig) / "tasksmack", fallback);
-    }
-
-    // Fallback is guaranteed absolute, so just return it directly
-    return fallback;
+    return choice.directory;
 #endif
 }
 
@@ -496,22 +593,21 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
 /// mode chmod would then change (#1222 review).
 /// The original config's owner, so the replacement keeps it: in a setgid directory the staging file
 /// would otherwise take the directory's group, whose members could then read it (#1222 review).
-struct FileOwner
-{
-    uid_t uid;
-    gid_t gid;
-};
+using NewFileOwner::FileOwner;
 
+/// @p fails(step): whether a test made that step fail (UserConfig::failSaveStepForTesting(); sets errno).
 [[nodiscard]] bool writeAllAndClose(int fd,
                                     std::string_view contents,
                                     std::optional<FileOwner> owner,
                                     std::optional<mode_t> mode,
-                                    const std::optional<std::vector<char>>& accessAcl)
+                                    const std::optional<std::vector<char>>& accessAcl,
+                                    const std::function<bool(UserConfig::SaveStep)>& fails)
 {
+    using SaveStep = UserConfig::SaveStep;
     bool ok = true;
     while (ok && !contents.empty())
     {
-        const auto n = ::write(fd, contents.data(), contents.size());
+        const auto n = fails(SaveStep::Write) ? -1 : ::write(fd, contents.data(), contents.size());
         if (n < 0)
         {
             ok = (errno == EINTR);
@@ -520,7 +616,7 @@ struct FileOwner
         contents.remove_prefix(static_cast<std::size_t>(n));
     }
     // Owner first: changing it can clear mode bits, and the ACL's owning-group entry refers to it.
-    if (ok && owner.has_value() && ::fchown(fd, owner->uid, owner->gid) != 0)
+    if (ok && owner.has_value() && (fails(SaveStep::Chown) || ::fchown(fd, owner->uid, owner->gid) != 0))
     {
         ok = false;
     }
@@ -533,9 +629,9 @@ struct FileOwner
     {
         if (!accessAcl->empty())
         {
-            ok = ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl->data(), accessAcl->size(), 0) == 0;
+            ok = !fails(SaveStep::Acl) && ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl->data(), accessAcl->size(), 0) == 0;
         }
-        else if (::fremovexattr(fd, POSIX_ACL_ACCESS_XATTR) != 0)
+        else if (fails(SaveStep::Acl) || ::fremovexattr(fd, POSIX_ACL_ACCESS_XATTR) != 0)
         {
             ok = (errno == ENODATA || errno == ENOTSUP);
         }
@@ -543,22 +639,29 @@ struct FileOwner
 #else
     (void) accessAcl;
 #endif
-    if (ok && mode.has_value() && ::fchmod(fd, *mode) != 0)
+    if (ok && mode.has_value() && (fails(SaveStep::Chmod) || ::fchmod(fd, *mode) != 0))
     {
         ok = false;
     }
-    if (::close(fd) != 0)
+    // Closed whatever a test asks for, so the descriptor never leaks.
+    if (::close(fd) != 0 || fails(SaveStep::Close))
     {
         ok = false;
     }
     return ok;
 }
 
+using NewFileOwner::chownCreatedDirectory;
+using NewFileOwner::ownerForNewFiles;
+
 } // namespace
 #endif
 
 void UserConfig::load()
 {
+    // A background save still being written is finished first: the file is read as it leaves it.
+    m_Writer.flush();
+    const std::scoped_lock writeLock(m_WriteMutex);
     if (m_IsLoaded)
     {
         return;
@@ -574,21 +677,21 @@ void UserConfig::load()
     {
         if (ec)
         {
-            spdlog::warn("Can't check config file {}: {}; using defaults", m_ConfigPath.string(), ec.message());
+            spdlog::warn("Can't check config file {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), ec.message());
         }
         else
         {
-            spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
+            spdlog::info("No config file found at {}, using defaults", Core::pathToUtf8(m_ConfigPath));
         }
         return;
     }
 
     try
     {
-        const auto config = toml::parse_file(m_ConfigPath.string());
+        const auto config = toml::parse_file(Core::pathToUtf8(m_ConfigPath));
         readSettings(config, m_Settings);
         m_Synced = m_Settings;
-        spdlog::info("Loaded config from {}", m_ConfigPath.string());
+        spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
     }
     catch (const toml::parse_error& err)
     {
@@ -611,19 +714,59 @@ auto UserConfig::parseSettings(std::string_view tomlText, UserSettings& settings
     }
 }
 
-void UserConfig::save()
+bool UserConfig::saveStepFails(SaveStep step) const noexcept
 {
+    if (step == SaveStep::None || step != m_FailingSaveStep)
+    {
+        return false;
+    }
+    errno = m_FailingSaveErrno;
+    return true;
+}
+
+bool UserConfig::writeSettings(const UserSettings& settings)
+{
+    // One write at a time, a background one or save()'s, and m_Synced with it.
+    const std::scoped_lock writeLock(m_WriteMutex);
+
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
     std::error_code ec;
+#ifndef _WIN32
+    const std::optional<FileOwner> newFileOwner =
+        ownerForNewFiles(configDir, m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid());
+#endif
     if (!std::filesystem::exists(configDir, ec))
     {
+#ifndef _WIN32
+        // The directories about to be made, outermost first, to hand to the user afterwards (#2121).
+        std::vector<std::filesystem::path> created;
+        for (std::filesystem::path at = configDir; !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec);
+             at = at.parent_path())
+        {
+            created.insert(created.begin(), at);
+        }
+#endif
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
-            spdlog::error("Failed to create config directory {}: {}", configDir.string(), ec.message());
-            return;
+            spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
+            return false;
         }
+#ifndef _WIN32
+        if (newFileOwner.has_value())
+        {
+            for (const std::filesystem::path& dir : created)
+            {
+                if (saveStepFails(SaveStep::ChownDirectory) || !chownCreatedDirectory(dir, *newFileOwner))
+                {
+                    spdlog::error(
+                        "Not saving settings: can't give {} to its user: {}", Core::pathToUtf8(dir), std::system_category().message(errno));
+                    return false;
+                }
+            }
+        }
+#endif
     }
 
     // A symlinked config is written through the link: the temporary file goes beside the link's
@@ -648,8 +791,8 @@ void UserConfig::save()
         }
         if (++linkHops > MAX_LINK_HOPS)
         {
-            spdlog::error("Not saving settings: {} is a loop of links", m_ConfigPath.string());
-            return;
+            spdlog::error("Not saving settings: {} is a loop of links", Core::pathToUtf8(m_ConfigPath));
+            return false;
         }
         const std::filesystem::path target = std::filesystem::read_symlink(destination, ec);
         if (ec)
@@ -660,8 +803,8 @@ void UserConfig::save()
     }
     if (ec)
     {
-        spdlog::error("Not saving settings: can't resolve the link {}: {}", m_ConfigPath.string(), ec.message());
-        return;
+        spdlog::error("Not saving settings: can't resolve the link {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        return false;
     }
 
     // Start from the file as it is. One that exists but can't be read or parsed is left alone:
@@ -672,37 +815,51 @@ void UserConfig::save()
     const bool fileExists = std::filesystem::exists(destination, ec);
     if (ec)
     {
-        spdlog::error("Not saving settings: can't check {}: {}", m_ConfigPath.string(), ec.message());
-        return;
+        spdlog::error("Not saving settings: can't check {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        return false;
     }
     if (fileExists)
     {
         try
         {
-            document = toml::parse_file(destination.string());
+            document = toml::parse_file(Core::pathToUtf8(destination));
         }
         catch (const toml::parse_error& err)
         {
-            spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", m_ConfigPath.string(), err.what());
-            return;
+            spdlog::error(
+                "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
+            return false;
         }
         // Fail closed: a file whose permissions can't be read must not be replaced by one with the
         // default mode, which could make a 0600 config world-readable.
         const std::filesystem::file_status status = std::filesystem::status(destination, ec);
         if (ec)
         {
-            spdlog::error("Not saving settings: can't read the permissions of {}: {}", m_ConfigPath.string(), ec.message());
-            return;
+            spdlog::error("Not saving settings: can't read the permissions of {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+            return false;
         }
         originalPermissions = status.permissions();
     }
 
     // Write only what TaskSmack changed since it last read or wrote the file; everything else in
     // the file, including edits made while TaskSmack runs, stays as it is (#1122).
-    const toml::table mine = buildTable(m_Settings);
+    const toml::table mine = buildTable(settings);
+    // A file in the old format, listing every column, is rewritten to list only the chosen ones
+    // (#1376), once; the version written below keeps it from being migrated again.
+    migrateLegacyProcessColumns(document, mine);
     // A new file gets every setting; an existing one -- even one created or repaired since startup --
     // gets only the keys whose value TaskSmack changed from its baseline.
     UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
+    // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
+    if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
+    {
+        document.erase("process_columns");
+    }
+    // A file written by a newer TaskSmack keeps its higher version.
+    if (configVersionOf(document) < CONFIG_FORMAT_VERSION)
+    {
+        document.insert_or_assign(CONFIG_VERSION_KEY, CONFIG_FORMAT_VERSION);
+    }
     // Settings TaskSmack wrote once but never applied, and has since dropped (#1123): removed, so
     // the file doesn't keep advertising tuning that does nothing.
     UserConfigHelpers::eraseRetiredKeys(document);
@@ -712,6 +869,9 @@ void UserConfig::save()
     // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
     // temporary file, so two TaskSmack instances can't write into the same one.
     std::ostringstream text;
+    // Classic, not the global locale: config.toml is machine-read, so a decimal-comma or digit-grouping
+    // user locale must never reach it (#1648). toml++ also formats its numbers in the classic locale.
+    text.imbue(std::locale::classic());
     text << "# TaskSmack user configuration\n";
     text << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
     text << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
@@ -719,6 +879,8 @@ void UserConfig::save()
     text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
     text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
     text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    text << "#   [sampling] udp_event_trace: Windows only; count UDP per process through a kernel network event trace "
+            "when TaskSmack runs as administrator (true/false, default false: TCP only)\n";
     text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
             "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
             "a gap in its chart); read at startup\n";
@@ -726,12 +888,18 @@ void UserConfig::save()
             "as a fraction of the refresh interval; read at startup\n";
     text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";
     text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    text << "#   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading "
+            "toggles it\n";
     text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
     text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
             "a position off every connected display is ignored at startup\n";
     text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
-    text << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
+    text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
+            "which hide one this system can't fill\n";
+    text << "#   [process_meters]: what a column draws behind its value: \"off\", \"bar\" or \"sparkline\" (recent history); "
+            "Columns > Show meter\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
@@ -740,7 +908,7 @@ void UserConfig::save()
     if (!text)
     {
         spdlog::error("Not saving settings: couldn't serialise them");
-        return;
+        return false;
     }
     const std::string contents = std::move(text).str();
 
@@ -799,13 +967,18 @@ void UserConfig::save()
     if (fileExists)
     {
         struct stat original = {};
-        if (::stat(destination.c_str(), &original) != 0)
+        if (saveStepFails(SaveStep::OwnerStat) || ::stat(destination.c_str(), &original) != 0)
         {
-            spdlog::error(
-                "Not saving settings: can't read the owner of {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
-            return;
+            spdlog::error("Not saving settings: can't read the owner of {}: {}",
+                          Core::pathToUtf8(m_ConfigPath),
+                          std::system_category().message(errno));
+            return false;
         }
         owner = FileOwner{.uid = original.st_uid, .gid = original.st_gid};
+    }
+    else
+    {
+        owner = newFileOwner; // A new config under another user's home, made as root, is theirs (#2121)
     }
     const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
                                          ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))
@@ -820,13 +993,13 @@ void UserConfig::save()
     // file exists, so nothing between creating and writing it can fail or throw.
     if (fileExists)
     {
-        auto acl = readAccessAcl(destination);
+        auto acl = saveStepFails(SaveStep::AclRead) ? std::optional<std::vector<char>>{} : readAccessAcl(destination);
         if (!acl.has_value())
         {
             spdlog::error("Not saving settings: can't read the access control list of {}: {}",
-                          m_ConfigPath.string(),
+                          Core::pathToUtf8(m_ConfigPath),
                           std::system_category().message(errno));
-            return;
+            return false;
         }
         accessAcl = std::move(acl);
     }
@@ -836,7 +1009,8 @@ void UserConfig::save()
     {
         tempPath = nextTempPath();
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-        fd = ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        fd = saveStepFails(SaveStep::CreateStaging) ? -1
+                                                    : ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
         if (fd < 0 && errno != EEXIST)
         {
             break;
@@ -844,11 +1018,12 @@ void UserConfig::save()
     }
     if (fd < 0)
     {
-        spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
-        return;
+        spdlog::error(
+            "Failed to create a temporary file beside {}: {}", Core::pathToUtf8(m_ConfigPath), std::system_category().message(errno));
+        return false;
     }
     stagingGuard.created(tempPath);
-    const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl);
+    const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl, [this](SaveStep step) { return saveStepFails(step); });
 #else
     std::ofstream file;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
@@ -866,8 +1041,8 @@ void UserConfig::save()
     }
     if (!file.is_open())
     {
-        spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
-        return;
+        spdlog::error("Failed to create a temporary file beside {}", Core::pathToUtf8(m_ConfigPath));
+        return false;
     }
     stagingGuard.created(tempPath);
     file << contents;
@@ -882,24 +1057,71 @@ void UserConfig::save()
 #endif
     if (!written)
     {
-        spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}", tempPath.string(), m_ConfigPath.string());
-        return;
+        spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}",
+                      Core::pathToUtf8(tempPath),
+                      Core::pathToUtf8(m_ConfigPath));
+        return false;
     }
 
-    std::filesystem::rename(tempPath, destination, ec);
+    if (saveStepFails(SaveStep::Rename))
+    {
+        ec = std::error_code(m_FailingSaveErrno, std::generic_category());
+    }
+    else
+    {
+        std::filesystem::rename(tempPath, destination, ec);
+    }
     if (ec)
     {
-        spdlog::error("Failed to replace {} with the new config: {}", m_ConfigPath.string(), ec.message());
-        return;
+        spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        return false;
     }
 
     stagingGuard.published();
-    spdlog::info("Saved config to {}", m_ConfigPath.string());
-    m_Synced = m_Settings;
+    m_Synced = settings;
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).
     m_IsLoaded = false;
+    return true;
+}
+
+void UserConfig::save()
+{
+    // A background save still in flight or queued is written first, so it can't land over the newer
+    // settings written here (#2916): the last state always wins.
+    m_Writer.flush();
+    if (writeSettings(m_Settings))
+    {
+        spdlog::info("Saved config to {}", Core::pathToUtf8(m_ConfigPath));
+    }
+}
+
+void UserConfig::saveInBackground()
+{
+    // A copy: the UI thread goes on changing m_Settings while the worker writes this one.
+    m_Writer.submit(m_Settings);
+}
+
+void UserConfig::flushPendingSave()
+{
+    m_Writer.flush();
+}
+
+bool UserConfig::writeInBackground(const UserSettings& settings)
+{
+    if (!writeSettings(settings))
+    {
+        return false;
+    }
+    spdlog::info("Saved config to {} on {}", Core::pathToUtf8(m_ConfigPath), Platform::SETTINGS_SAVE_THREAD_NAME);
+    return true;
+}
+
+void UserConfig::reportBackgroundSaveFailure() const
+{
+    // Once for a run of failures (CoalescingWriter); each one's reason is logged by writeSettings().
+    spdlog::warn("Settings weren't saved to {}; the next change tries again", Core::pathToUtf8(m_ConfigPath));
 }
 
 void UserConfig::applyToApplication() const
@@ -920,7 +1142,7 @@ void UserConfig::applyToApplication() const
 
 void UserConfig::captureFromApplication()
 {
-    auto& theme = UI::Theme::get();
+    const auto& theme = UI::Theme::get();
 
     // Capture current theme and font size
     m_Settings.themeId = theme.currentThemeId();

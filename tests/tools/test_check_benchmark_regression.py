@@ -2,6 +2,7 @@
 """Tests for tools/check-benchmark-regression.py's regression gate (#1322 noise floor, #1420 skips)."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -65,7 +66,10 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         *extra: str,
         current_extra: list[dict] | None = None,
         baseline_extra: list[dict] | None = None,
+        overrides: object = None,
     ):
+        """overrides, when given, is written as the --threshold-overrides file: a str verbatim,
+        anything else as JSON."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             current_path = write_run(tmp_path, "current.json", current)
@@ -74,6 +78,11 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
             baseline_path = write_run(tmp_path, "baseline.json", baseline)
             if baseline_extra:
                 add_records(baseline_path, baseline_extra)
+            if overrides is not None:
+                overrides_path = tmp_path / "overrides.json"
+                text = overrides if isinstance(overrides, str) else json.dumps(overrides)
+                overrides_path.write_text(text, encoding="utf-8")
+                extra = (*extra, "--threshold-overrides", str(overrides_path))
             result = subprocess.run(
                 [
                     sys.executable,
@@ -87,7 +96,8 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
                     *extra,
                 ],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                env={**os.environ, "PYTHONUTF8": "1"},
                 check=False,
             )
         return result.returncode, result.stdout + result.stderr
@@ -115,6 +125,67 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
     def test_slowdown_under_threshold_passes(self):
         code, output = self.run_gate({"BM_Big": 100.0}, {"BM_Big": 130.0})
         self.assertEqual(code, 0, output)
+
+    def test_raw_repetitions_compare_on_the_median(self):
+        # #1424: bench.sh keeps every repetition. A slow outlier repetition sharing the median's
+        # run_name must not replace the median, whichever order the rows come in.
+        def row(ns: float, aggregate: str | None = None) -> dict:
+            record = {"name": "BM_Big", "run_name": "BM_Big", "real_time": ns, "time_unit": "ns"}
+            if aggregate:
+                record.update(name=f"BM_Big_{aggregate}", run_type="aggregate", aggregate_name=aggregate)
+            else:
+                record.update(run_type="iteration")
+            return record
+
+        for rows in (
+            [row(100.0), row(1000.0), row(100.0, "mean"), row(100.0, "median")],
+            [row(100.0, "median"), row(1000.0), row(100.0, "mean")],
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                current = tmp_path / "current.json"
+                current.write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--baseline",
+                        str(write_run(tmp_path, "baseline.json", {"BM_Big": 100.0})),
+                        "--current",
+                        str(current),
+                        "--threshold",
+                        "40",
+                    ],
+                    capture_output=True,
+                    encoding="utf-8",
+                    env={**os.environ, "PYTHONUTF8": "1"},
+                    check=False,
+                )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_an_errored_repetition_is_not_hidden_by_the_median(self):
+        # #1445 review: one repetition failed (SkipWithError) while the others produced a median.
+        # The failure must win over the median in either row order, so the benchmark still
+        # counts against coverage (7 of 8 compared = 87.5%) instead of passing at 100%.
+        ok = {"name": "BM_Big", "run_name": "BM_Big", "run_type": "iteration", "real_time": 100.0, "time_unit": "ns"}
+        error = {**ok, "error_occurred": True, "error_message": "probe failed", "real_time": 0.0}
+        median = {**ok, "name": "BM_Big_median", "run_type": "aggregate", "aggregate_name": "median"}
+        baseline = {**self.OTHER_BENCHMARKS, "BM_Big": 100.0}
+        for rows in ([ok, error, median], [median, error, ok], [error, median, ok], [median, ok, error]):
+            with self.subTest(order=[row.get("aggregate_name") or ("error" if "error_occurred" in row else "ok") for row in rows]):
+                code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "90", current_extra=rows)
+                self.assertEqual(code, 1, output)
+                self.assertIn("coverage 87.5% is below the required 90.0%", output)
+
+    def test_the_median_still_beats_successful_repetitions(self):
+        # The error precedence above does not change the successful case: a slow successful
+        # repetition next to the median is still not compared.
+        ok = {"name": "BM_Big", "run_name": "BM_Big", "run_type": "iteration", "real_time": 1000.0, "time_unit": "ns"}
+        median = {**ok, "name": "BM_Big_median", "run_type": "aggregate", "aggregate_name": "median", "real_time": 100.0}
+        baseline = {**self.OTHER_BENCHMARKS, "BM_Big": 100.0}
+        for rows in ([ok, median], [median, ok]):
+            code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, current_extra=rows)
+            self.assertEqual(code, 0, output)
 
     def test_non_finite_floor_is_a_usage_error(self):
         code, output = self.run_gate({"BM_Big": 100.0}, {"BM_Big": 100.0}, "--min-abs-delta-ns", "nan")
@@ -212,6 +283,82 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn("coverage 70.0% is below the required 90.0%", output)
         self.assertNotIn("Not measured", output)
+
+    # #2336: per-benchmark thresholds for the runner-class-sensitive (allocator-bound) benchmarks.
+    @staticmethod
+    def override(threshold: object, name: str = "BM_Memory", reason: object = "allocator-bound") -> dict:
+        return {"thresholds": {name: {"threshold": threshold, "reason": reason}}}
+
+    def test_an_override_loosens_only_its_own_benchmark(self):
+        # BM_ProcessModel_GetSnapshots on run 38853886185: +40.4% with no code change.
+        baseline = {"BM_Memory": 7490.0, "BM_Compute": 100.0}
+        code, output = self.run_gate(baseline, {"BM_Memory": 10518.0, "BM_Compute": 100.0}, overrides=self.override(60))
+        self.assertEqual(code, 0, output)
+        self.assertIn("Per-benchmark thresholds (1, from", output)
+        self.assertIn("BM_Memory: 60.0%", output)
+        self.assertIn("40.0% threshold (1 with their own)", output)
+        # The other benchmarks keep --threshold.
+        code, output = self.run_gate(baseline, {"BM_Memory": 7490.0, "BM_Compute": 145.0}, overrides=self.override(60))
+        self.assertEqual(code, 1, output)
+        self.assertIn("BM_Compute", output)
+
+    def test_an_override_still_catches_a_2x_regression(self):
+        code, output = self.run_gate({"BM_Memory": 7490.0}, {"BM_Memory": 14980.0}, overrides=self.override(60))
+        self.assertEqual(code, 1, output)
+        self.assertIn("BM_Memory: 7490.0ns -> 14980.0ns  (+100.0%)  [threshold 60.0%]", output)
+        self.assertIn("regressed beyond 40.0% (or their own threshold)", output)
+
+    def test_an_override_can_be_stricter(self):
+        code, output = self.run_gate({"BM_Memory": 100.0}, {"BM_Memory": 120.0}, overrides=self.override(10))
+        self.assertEqual(code, 1, output)
+
+    def test_without_the_flag_every_benchmark_uses_the_threshold(self):
+        code, output = self.run_gate({"BM_Memory": 7490.0}, {"BM_Memory": 10518.0})
+        self.assertEqual(code, 1, output)
+        self.assertNotIn("Per-benchmark thresholds", output)
+
+    def test_an_override_for_a_benchmark_not_in_the_baseline_is_reported(self):
+        code, output = self.run_gate({"BM_Other": 100.0}, {"BM_Other": 100.0}, overrides=self.override(60))
+        self.assertEqual(code, 0, output)
+        self.assertIn("BM_Memory: 60.0%  (not in baseline, ignored)", output)
+
+    def test_an_invalid_overrides_file_is_a_usage_error(self):
+        cases = {
+            "nan threshold": self.override(float("nan")),
+            "negative threshold": self.override(-1),
+            "bool threshold": self.override(True),
+            "string threshold": self.override("60"),
+            "missing reason": {"thresholds": {"BM_Memory": {"threshold": 60}}},
+            "blank reason": self.override(60, reason="  "),
+            "bare number": {"thresholds": {"BM_Memory": 60}},
+            "no thresholds object": {"BM_Memory": {"threshold": 60, "reason": "x"}},
+            "empty name": self.override(60, name=""),
+            "not JSON": "{",
+        }
+        for label, overrides in cases.items():
+            with self.subTest(label):
+                code, output = self.run_gate({"BM_Memory": 100.0}, {"BM_Memory": 100.0}, overrides=overrides)
+                self.assertEqual(code, 2, output)
+                self.assertIn("invalid threshold overrides", output)
+
+    def test_a_missing_overrides_file_is_a_usage_error(self):
+        code, output = self.run_gate(
+            {"BM_Memory": 100.0}, {"BM_Memory": 100.0}, "--threshold-overrides", "does-not-exist.json"
+        )
+        self.assertEqual(code, 2, output)
+        self.assertIn("threshold overrides file not found", output)
+
+    def test_the_committed_ci_overrides_are_valid_and_name_baseline_benchmarks(self):
+        perf_data = SCRIPT.parents[1] / "perf-data"
+        overrides = json.loads((perf_data / "linux-ci-thresholds.json").read_text(encoding="utf-8"))["thresholds"]
+        baseline = json.loads((perf_data / "linux-ci-baseline.json").read_text(encoding="utf-8"))["benchmarks"]
+        baseline_names = {bm.get("run_name") or bm.get("name") for bm in baseline}
+        self.assertTrue(overrides)
+        for name, entry in overrides.items():
+            with self.subTest(name):
+                self.assertIn(name, baseline_names)
+                self.assertGreater(entry["threshold"], 40)
+                self.assertTrue(entry["reason"].strip())
 
 
 if __name__ == "__main__":

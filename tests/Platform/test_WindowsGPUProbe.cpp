@@ -12,7 +12,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <iostream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Platform
@@ -27,7 +29,7 @@ namespace
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
 {
     // Should not throw even if underlying probes are unavailable
-    EXPECT_NO_THROW(WindowsGPUProbe probe);
+    EXPECT_NO_THROW(const WindowsGPUProbe probe);
 }
 
 TEST(WindowsGPUProbeTest, BasicOperationsDoNotThrow)
@@ -144,6 +146,67 @@ TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
     }
 }
 
+// Per-process samples are this machine's listed GPUs' only (#1826): PDH also has instances for an
+// NPU (an MCDM adapter DXGI never lists) and the Basic Render Driver, which must not be counted as
+// GPU work or reach ProcessModel as an unknown "GPU_0x..." device.
+TEST(WindowsGPUProbeTest, ProcessCountersAreOnlyForListedGPUs)
+{
+    WindowsGPUProbe probe;
+    std::unordered_set<std::string> listedLuids;
+    for (const auto& gpu : probe.enumerateGPUs())
+    {
+        listedLuids.insert(gpu.luidId);
+    }
+    static_cast<void>(probe.readProcessGPUCounters()); // PDH's first collect only warms up its rates
+    for (const auto& counter : probe.readProcessGPUCounters())
+    {
+        EXPECT_TRUE(listedLuids.contains(counter.gpuId)) << "pid " << counter.pid << " on " << counter.gpuId;
+    }
+    // Those adapters' samples are kept apart instead (#1826)
+    for (const auto& usage : probe.otherAdapterUsage())
+    {
+        EXPECT_FALSE(listedLuids.contains(usage.adapterLuid)) << "pid " << usage.pid << " on " << usage.adapterLuid;
+    }
+}
+
+// #1799: this machine's NPUs and compute accelerators (DXCore) are listed after its GPUs with their
+// kind, each adapter once, and a per-process sample is tagged with its adapter's kind. Each adapter
+// is printed (kind, name, id, LUID, driver version) for a look at the real hardware: on a Core
+// Ultra 7 255H, "Intel(R) AI Boost" as an NPU with its PnP driver version.
+TEST(WindowsGPUProbeTest, AcceleratorsAreListedAfterTheGPUsWithTheirKind)
+{
+    WindowsGPUProbe probe;
+    const auto adapters = probe.enumerateGPUs();
+    std::unordered_map<std::string, DeviceKind> kinds;
+    bool seenAccelerator = false;
+    for (const auto& adapter : adapters)
+    {
+        const char* kind = "ComputeAccelerator";
+        if (adapter.kind == DeviceKind::Gpu)
+        {
+            kind = "Gpu";
+        }
+        else if (adapter.kind == DeviceKind::Npu)
+        {
+            kind = "Npu";
+        }
+        std::cout << "[ adapter  ] " << kind << " | " << adapter.name << " | " << adapter.id << " | " << adapter.luidId << " | driver "
+                  << adapter.driverVersion << '\n';
+        EXPECT_FALSE(seenAccelerator && adapter.kind == DeviceKind::Gpu) << adapter.name << ": a GPU after an accelerator";
+        seenAccelerator = seenAccelerator || adapter.kind != DeviceKind::Gpu;
+        EXPECT_FALSE(adapter.luidId.empty()) << adapter.name;
+        EXPECT_TRUE(kinds.emplace(adapter.luidId, adapter.kind).second) << adapter.name << " listed twice";
+        EXPECT_FALSE(adapter.driverVersion.empty()) << adapter.name;
+    }
+    static_cast<void>(probe.readProcessGPUCounters()); // PDH's first collect only warms up its rates
+    for (const auto& counter : probe.readProcessGPUCounters())
+    {
+        const auto kind = kinds.find(counter.gpuId);
+        ASSERT_NE(kind, kinds.end()) << counter.gpuId;
+        EXPECT_EQ(counter.kind, kind->second) << "pid " << counter.pid << " on " << counter.gpuId;
+    }
+}
+
 // ==========================================================================
 // State Consistency Tests
 // ==========================================================================
@@ -169,7 +232,7 @@ TEST(WindowsGPUProbeTest, ProbeStatePersistsBetweenCalls)
 
 TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
 {
-    WindowsGPUProbe probe;
+    const WindowsGPUProbe probe;
     auto caps = probe.capabilities();
 
     // The public contract only guarantees stable self-consistency and the

@@ -2,9 +2,9 @@
 
 // Font files read into memory once and shared by every font built from them (#1170).
 //
-// UILayer::loadAllFonts() adds each face once per Font Size preset and size, so the same few TTF
+// UI::loadAllFonts() (FontLoading.cpp) adds each face once per Font Size preset and size, so the same few TTF
 // files back about thirty ImFontConfig sources. AddFontFromFileTTF() read the whole file again for
-// each of them -- Inter twelve times, Font Awesome thirteen, the monospace face six -- at startup and
+// each of them -- Inter twelve times, Font Awesome thirteen -- at startup and
 // again on every display-scale change. The fonts are now added from memory with
 // FontDataOwnedByAtlas = false, all pointing at one buffer per file kept here.
 //

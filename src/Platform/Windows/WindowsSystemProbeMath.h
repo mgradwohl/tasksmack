@@ -6,11 +6,14 @@
 #include "Platform/SystemTypes.h"
 
 #include <algorithm>
+#include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -93,6 +96,25 @@ struct SwapBytes
     return {
         .totalBytes = totals.totalPages * pageSizeBytes,
         .freeBytes = (totals.totalPages - inUse) * pageSizeBytes,
+    };
+}
+
+/// Commit charge in bytes from PERFORMANCE_INFORMATION's CommitTotal, CommitLimit and CommitPeak,
+/// which are in pages (#1627).
+struct CommitBytes
+{
+    std::uint64_t chargeBytes = 0;
+    std::uint64_t limitBytes = 0;
+    std::uint64_t peakBytes = 0;
+};
+
+[[nodiscard]] constexpr CommitBytes
+commitFromPerformanceInfo(std::uint64_t totalPages, std::uint64_t limitPages, std::uint64_t peakPages, std::uint64_t pageSizeBytes) noexcept
+{
+    return {
+        .chargeBytes = totalPages * pageSizeBytes,
+        .limitBytes = limitPages * pageSizeBytes,
+        .peakBytes = peakPages * pageSizeBytes,
     };
 }
 
@@ -287,6 +309,27 @@ enum class DevicePresence : std::uint8_t
     return operStatus == IF_OPER_STATUS_NOT_PRESENT || presence == DevicePresence::Absent;
 }
 
+/// One interface GetIfTable2 listed, as the probe tells one pass's table from the last one's (#2731).
+struct NetworkInterfaceKey
+{
+    std::uint64_t luid = 0;       ///< MIB_IF_ROW2::InterfaceLuid.Value
+    std::uint32_t operStatus = 0; ///< MIB_IF_ROW2::OperStatus
+    [[nodiscard]] constexpr auto operator<=>(const NetworkInterfaceKey&) const noexcept = default;
+};
+
+/// Whether this pass's interface table lists a different set of interfaces, or a different status for
+/// one, than the last pass's (#2731): a PnP or link event, after which a down interface's device may be
+/// gone or back, so the probe drops every cached device presence. @p current, this pass's keys in any
+/// order, is sorted and becomes @p previous; @p previous's storage becomes @p current's, so once grown
+/// neither allocates. The first pass, against no previous table, counts as a change.
+[[nodiscard]] inline bool networkInterfacesChanged(std::vector<NetworkInterfaceKey>& current, std::vector<NetworkInterfaceKey>& previous)
+{
+    std::ranges::sort(current);
+    const bool changed = current != previous;
+    std::swap(current, previous);
+    return changed;
+}
+
 /// Whether a counted GetIfTable2 row is a hardware link of its own rather than software whose traffic
 /// also crosses a hardware adapter (#1257, #1284).
 ///
@@ -302,6 +345,54 @@ enum class DevicePresence : std::uint8_t
 [[nodiscard]] constexpr bool isHardwareNetworkRow(bool hardwareInterface, std::uint32_t ifType, std::uint32_t physicalMediumType) noexcept
 {
     return hardwareInterface || (ifType == IF_TYPE_ETHERNET && physicalMediumType == NDIS_PHYSICAL_MEDIUM_BLUETOOTH);
+}
+
+/// More NDIS_PHYSICAL_MEDIUM values, for networkRowKind() (#2568).
+inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN = 1;  // NdisPhysicalMediumWirelessLan
+inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN = 8;  // NdisPhysicalMediumWirelessWan
+inline constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9; // NdisPhysicalMediumNative802_11
+
+/// What kind of link a GetIfTable2 row is, for the Interface Status table's Type icon (#2568).
+///
+/// The physical medium decides where it names a radio: a Bluetooth PAN adapter reports
+/// IF_TYPE_ETHERNET_CSMACD with the Bluetooth medium, and some Wi-Fi and WWAN drivers report an
+/// Ethernet ifType over their radio's medium. Otherwise the ifType decides. Whether the row is
+/// virtual is isHardwareNetworkRow()'s question, not this one's: a Hyper-V vEthernet adapter is an
+/// Ethernet row that is virtual.
+///
+/// @param ifType              MIB_IF_ROW2::Type.
+/// @param physicalMediumType  MIB_IF_ROW2::PhysicalMediumType.
+[[nodiscard]] constexpr NetInterfaceKind networkRowKind(std::uint32_t ifType, std::uint32_t physicalMediumType) noexcept
+{
+    switch (physicalMediumType)
+    {
+    case NDIS_PHYSICAL_MEDIUM_BLUETOOTH:
+        return NetInterfaceKind::Bluetooth;
+    case NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN:
+    case NDIS_PHYSICAL_MEDIUM_NATIVE_802_11:
+        return NetInterfaceKind::WiFi;
+    case NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN:
+        return NetInterfaceKind::Cellular;
+    default:
+        break;
+    }
+    switch (ifType)
+    {
+    case IF_TYPE_ETHERNET:
+        return NetInterfaceKind::Ethernet;
+    case IF_TYPE_WIFI:
+        return NetInterfaceKind::WiFi;
+    case IF_TYPE_WWAN_GSM:
+    case IF_TYPE_WWAN_CDMA:
+        return NetInterfaceKind::Cellular;
+    case IF_TYPE_LOOPBACK:
+        return NetInterfaceKind::Loopback;
+    case IF_TYPE_TUNNEL_LINK:
+    case IF_TYPE_PPP_LINK:
+        return NetInterfaceKind::Tunnel;
+    default:
+        return NetInterfaceKind::Other; // IF_TYPE_PROP_VIRTUAL and the rest
+    }
 }
 
 /// Cumulative bytes over the interfaces the network Total counts (#1257).
@@ -334,6 +425,106 @@ struct NetworkTotals
         }
     }
     return totals;
+}
+
+/// Highest "% Processor Performance" taken as a reading. Turbo runs a CPU above its base clock, so
+/// readings over 100 are normal (a 2 GHz part boosting to 5.5 GHz reads 275); anything past this is
+/// a garbage counter value, not a clock.
+inline constexpr double MAX_PROCESSOR_PERFORMANCE_PERCENT = 1000.0;
+
+/// The nominal (rated base) clock in MHz that "% Processor Performance" is a percentage of (#1530):
+/// the highest PROCESSOR_POWER_INFORMATION::MaxMhz across the logical processors, as
+/// CallNtPowerInformation(ProcessorInformation) reports them -- the figure Win32_Processor.MaxClockSpeed
+/// and Task Manager's "Base speed" show. On a hybrid part each efficiency class has its own MaxMhz
+/// (a Core Ultra 7 255H reports 2000 for its P-cores, 1500 for its E-cores and 700 for its LP E-cores);
+/// the highest is the P-cores' rated base. The registry's ~MHz is not that figure on such parts (3686
+/// on the 255H), so it stands in only when there is no MaxMhz to take.
+/// @param processorMaxMHz Each logical processor's MaxMhz; empty when CallNtPowerInformation failed.
+/// @param registryMHz     The ~MHz value under HARDWARE\DESCRIPTION\System\CentralProcessor\0; 0 = unknown.
+/// @return The highest non-zero MaxMhz; registryMHz when there is none.
+[[nodiscard]] inline std::uint64_t nominalCpuBaseMHz(std::span<const std::uint32_t> processorMaxMHz, std::uint64_t registryMHz) noexcept
+{
+    const std::uint32_t highest = processorMaxMHz.empty() ? 0U : std::ranges::max(processorMaxMHz);
+    return (highest != 0U) ? highest : registryMHz;
+}
+
+/// The CPU's current clock in MHz, derived as Task Manager derives its "Speed" (#1184): the nominal
+/// base clock (nominalCpuBaseMHz) scaled by PDH's "\Processor Information(_Total)\% Processor
+/// Performance", the processors' average speed as a percentage of base. The base on its own is not
+/// what Linux's cpufreq reports (the current clock) under the same hasCpuFreq.
+/// @param baseMHz                     The nominal base clock from nominalCpuBaseMHz; 0 = unknown.
+/// @param processorPerformancePercent The PDH reading, or nullopt when there is none yet (PDH needs two
+///                                    samples for a rate) or the counter is unavailable.
+/// @return The current clock; the base clock when there is no usable reading; 0 when the base is unknown.
+[[nodiscard]] inline std::uint64_t currentCpuFrequencyMHz(std::uint64_t baseMHz, std::optional<double> processorPerformancePercent) noexcept
+{
+    if (baseMHz == 0 || !processorPerformancePercent.has_value())
+    {
+        return baseMHz;
+    }
+    const double percent = *processorPerformancePercent;
+    if (!std::isfinite(percent) || percent <= 0.0 || percent > MAX_PROCESSOR_PERFORMANCE_PERCENT)
+    {
+        return baseMHz;
+    }
+    return static_cast<std::uint64_t>(std::llround((static_cast<double>(baseMHz) * percent) / 100.0));
+}
+
+/// SystemIsolatedUserModeInformation's first flags byte: bit 0 is SecureKernelRunning, set while
+/// virtualization-based security's secure kernel runs (#809).
+[[nodiscard]] constexpr bool secureKernelRunning(std::uint8_t isolatedUserModeFlags) noexcept
+{
+    return (isolatedUserModeFlags & 0x01U) != 0;
+}
+
+/// CODEINTEGRITY_OPTION_HVCI_KMCI_ENABLED in SYSTEM_CODEINTEGRITY_INFORMATION::CodeIntegrityOptions:
+/// memory integrity (hypervisor-enforced kernel-mode code integrity) is on (#809).
+inline constexpr std::uint32_t CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED = 0x400U;
+
+[[nodiscard]] constexpr bool hvciEnabled(std::uint32_t codeIntegrityOptions) noexcept
+{
+    return (codeIntegrityOptions & CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED) != 0;
+}
+
+/// CPUID leaf 1's ECX bit 31, which a hypervisor sets for the code it runs (#809).
+[[nodiscard]] constexpr bool hypervisorPresentBit(std::uint32_t cpuidLeaf1Ecx) noexcept
+{
+    return (cpuidLeaf1Ecx & 0x8000'0000U) != 0;
+}
+
+/// SYSTEM_HYPERVISOR_QUERY_INFORMATION, what SystemHypervisorInformation fills (#2377): the BOOLEANs
+/// HypervisorConnected, HypervisorDebuggingEnabled and HypervisorPresent, five spare bytes, then the
+/// ULONGLONG EnabledEnlightenments.
+inline constexpr std::size_t HYPERVISOR_QUERY_INFORMATION_SIZE = 16;
+
+/// Whether SystemHypervisorInformation says Windows runs on a hypervisor: present, or connected to one
+/// (Hyper-V, or one that offers its interface).
+[[nodiscard]] constexpr bool hypervisorQueryPresent(std::span<const std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information) noexcept
+{
+    constexpr std::size_t CONNECTED = 0;
+    constexpr std::size_t PRESENT = 2;
+    return information[CONNECTED] != 0 || information[PRESENT] != 0;
+}
+
+/// A running hypervisor without CPUID's bit (ARM64, #2377), from what Windows and the firmware say:
+/// @p kernelReports is SystemHypervisorInformation's answer (hypervisorQueryPresent()), @p vbsRunning
+/// the secure kernel's state, which needs Hyper-V under it, and @p smbiosVirtualMachine whether the
+/// SMBIOS table describes a virtual machine (Smbios::virtualMachineHint()), which catches a hypervisor
+/// that offers no Hyper-V interface (QEMU, Parallels, VMware). Any yes is a yes. A no needs the kernel's
+/// own answer: the table alone says nothing of Hyper-V running under this Windows on bare metal.
+[[nodiscard]] constexpr std::optional<bool> hypervisorPresentWithoutCpuid(std::optional<bool> kernelReports,
+                                                                          std::optional<bool> vbsRunning,
+                                                                          std::optional<bool> smbiosVirtualMachine) noexcept
+{
+    if (kernelReports.value_or(false) || vbsRunning.value_or(false) || smbiosVirtualMachine.value_or(false))
+    {
+        return true;
+    }
+    if (kernelReports.has_value())
+    {
+        return false;
+    }
+    return std::nullopt;
 }
 
 } // namespace Platform

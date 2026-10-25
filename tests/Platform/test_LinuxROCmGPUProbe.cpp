@@ -1,5 +1,6 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "Platform/GPUTypes.h"
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/AmdApu.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
@@ -8,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +18,7 @@
 #include <ios>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <dlfcn.h>
@@ -268,7 +271,43 @@ TEST(LinuxROCmGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_FALSE(failed[0].temperatureAvailable);
     EXPECT_FALSE(failed[0].powerAvailable);
     EXPECT_FALSE(failed[0].gpuClockAvailable);
-    EXPECT_EQ(failed[0].memoryClockMHz, good[0].memoryClockMHz); // reads that still succeed are unaffected
+    EXPECT_GT(good[0].fanSpeedMaxRaw, 0U);
+    EXPECT_EQ(failed[0].fanSpeedRaw, good[0].fanSpeedRaw); // reads that still succeed are unaffected
+}
+
+// #2464: a card that reports no average power (amdgpu's power1_input only) still shows its power, from the
+// current socket power.
+TEST(LinuxROCmGPUProbeTest, WithoutAveragePowerTheCurrentSocketPowerIsShown)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    void* library = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    ASSERT_NE(library, nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- dlsym returns void* by POSIX definition
+    const auto averageUnsupported = reinterpret_cast<void (*)(int)>(dlsym(library, "tasksmackRocmMockAveragePowerUnsupported"));
+    ASSERT_NE(averageUnsupported, nullptr);
+
+    averageUnsupported(1);
+    std::vector<GPUCounters> counters;
+    bool hasPower = false;
+    {
+        ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+        if (probe.isAvailable())
+        {
+            counters = probe.readGPUCounters();
+            hasPower = probe.capabilities().hasPowerMetrics;
+        }
+    }
+    averageUnsupported(0);
+    dlclose(library);
+
+    EXPECT_TRUE(hasPower);
+    ASSERT_FALSE(counters.empty());
+    EXPECT_TRUE(counters[0].powerAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 151.0); // the socket power, not the 150 W average
 }
 
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
@@ -294,7 +333,6 @@ TEST(LinuxROCmGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasTemperature);
-    EXPECT_FALSE(caps.hasHotspotTemp);
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
@@ -321,11 +359,9 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
     const auto caps = probe.capabilities();
     EXPECT_TRUE(caps.hasTemperature);
-    EXPECT_TRUE(caps.hasHotspotTemp);
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_FALSE(caps.hasEngineUtilization);
     EXPECT_FALSE(caps.hasPerProcessMetrics);
     EXPECT_FALSE(caps.hasEncoderDecoder);
@@ -380,20 +416,16 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_EQ(counters[0].memoryUsedBytes, 3ULL * 1024ULL * 1024ULL * 1024ULL);
     EXPECT_EQ(counters[0].memoryTotalBytes, 12ULL * 1024ULL * 1024ULL * 1024ULL);
     EXPECT_EQ(counters[0].temperatureC, 65);
-    EXPECT_EQ(counters[0].hotspotTempC, 72);
     EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 150.0);
     EXPECT_DOUBLE_EQ(counters[0].powerLimitWatts, 220.0);
     EXPECT_EQ(counters[0].gpuClockMHz, 1500U);
-    EXPECT_EQ(counters[0].memoryClockMHz, 2000U);
     // ROCmMock reports a raw fan value of 170 and a mocked RSMI_MAX_FAN_SPEED of 255; ROCmGPUProbe
     // stores both unconverted (Domain normalizes them to a percentage -- see #734).
     EXPECT_EQ(counters[0].fanSpeedRaw, 170U);
     EXPECT_EQ(counters[0].fanSpeedMaxRaw, 255U);
 
     EXPECT_EQ(counters[1].gpuId, "9001");
-    EXPECT_EQ(counters[1].hotspotTempC, -1);
     EXPECT_EQ(counters[1].gpuClockMHz, 0U);
-    EXPECT_EQ(counters[1].memoryClockMHz, 0U);
     EXPECT_EQ(counters[1].fanSpeedRaw, 0U); // hasFanSpeed=false in the mock
     EXPECT_EQ(counters[1].fanSpeedMaxRaw, 0U);
 
@@ -403,9 +435,6 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     // (regression coverage for a "fanSpeed > 0" guard that used to misclassify this as missing).
     EXPECT_EQ(counters[2].fanSpeedRaw, 0U);
     EXPECT_EQ(counters[2].fanSpeedMaxRaw, 255U);
-    EXPECT_EQ(counters[2].pcieTxBytes, 0U);
-    EXPECT_EQ(counters[2].pcieRxBytes, 0U);
-    EXPECT_DOUBLE_EQ(counters[2].computeUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].encoderUtilPercent, 0.0);
     EXPECT_DOUBLE_EQ(counters[2].decoderUtilPercent, 0.0);
 }
@@ -610,8 +639,8 @@ TEST(LinuxROCmGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
     EXPECT_TRUE(full.hasPowerMetrics);
     EXPECT_TRUE(full.hasClockSpeeds);
     const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
-    // The junction read isn't failed by the mock, so its definitive NOT_FOUND still means unsupported.
-    EXPECT_FALSE(partial.hasHotspotTemp);
+    // The fan read isn't failed by the mock, so its definitive NOT_FOUND still means unsupported.
+    EXPECT_FALSE(partial.hasFanSpeed);
 
     ASSERT_FALSE(counters.empty());
     EXPECT_TRUE(counters[0].temperatureAvailable);
@@ -639,7 +668,7 @@ TEST(LinuxROCmGPUProbeTest, AnUndecodableClockAtEnumerationKeepsTheClock)
 }
 
 // #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
-// junction sensor, no fan and an undecodable GPU clock sample; device 0 has all of them.
+// fan and an undecodable GPU clock sample; device 0 has both.
 TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -656,7 +685,6 @@ TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
     ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
     const auto full = gpus[0].sensorCapabilities.value_or(GPUCapabilities{});
     EXPECT_TRUE(full.hasTemperature);
-    EXPECT_TRUE(full.hasHotspotTemp);
     EXPECT_TRUE(full.hasPowerMetrics);
     EXPECT_TRUE(full.hasClockSpeeds);
     EXPECT_TRUE(full.hasFanSpeed);
@@ -664,7 +692,6 @@ TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
     ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
     const auto partial = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
     EXPECT_TRUE(partial.hasTemperature);
-    EXPECT_FALSE(partial.hasHotspotTemp);
     EXPECT_TRUE(partial.hasPowerMetrics);
     // Its clock query succeeds but the sample can't be decoded (current index out of range). That
     // isn't "unsupported": the clock is kept and its readings are unavailable until one decodes.
@@ -674,6 +701,28 @@ TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
 
 // #1117: a runtime-suspended AMD GPU (mock device 1, PCI id 9001 = 0000:23:05.1) is left alone:
 // its readings are unavailable and it is marked asleep, while the others are read as usual.
+// #2589: the DRM probe that reads the amdgpu cards' clients labels their processes with these, so each
+// is a device's PCI address and the id enumerateGPUs() gives that device.
+TEST(LinuxROCmGPUProbeTest, EachGpuIdIsPairedWithItsPciAddress)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_rocm_pci_ids");
+    ROCmGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    const auto ids = probe.gpuIdsByPciAddress();
+    ASSERT_FALSE(ids.empty());
+    for (const auto& [pciAddress, gpuId] : ids)
+    {
+        EXPECT_EQ(pciAddress.size(), std::string_view("0000:03:00.0").size()) << pciAddress;
+        EXPECT_NE(std::ranges::find(gpus, gpuId, &GPUInfo::id), gpus.end()) << gpuId << " isn't a listed GPU";
+    }
+}
+
 TEST(LinuxROCmGPUProbeTest, RuntimeSuspendedGpuIsNotRead)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -803,6 +852,28 @@ void makeAmdPciDevice(const std::filesystem::path& root,
     std::filesystem::create_symlink("/nonexistent/drivers/" + driver, dir / "driver");
 }
 
+// #1395: ROCm SMI that starts but reports no GPUs leaves the probe unavailable, and an unavailable probe
+// reads nothing: no counters and no capabilities.
+TEST(LinuxROCmGPUProbeTest, RocmSmiWithNoGpusIsUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const RocmMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.setDeviceCount(0);
+
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+    const GPUCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasTemperature);
+    EXPECT_FALSE(caps.hasPowerMetrics);
+}
+
 // #1116: an AMD GPU hot-plugged after startup gets ROCm SMI re-initialised at the next full rescan;
 // the GPUs already there keep their ids.
 TEST(LinuxROCmGPUProbeTest, AHotPluggedGpuIsFoundOnTheNextFullRescan)
@@ -902,8 +973,7 @@ TEST(LinuxROCmGPUProbeTest, AnInitErrorReinitialisesOnTheNextFullRescan)
 }
 
 // #1289: an AMD GPU asleep at enumeration (mock device 1, at 0000:23:05.1) gets its own sensor set on
-// its first awake sample: a quick rescan asks for a re-enumeration, which finds it has no junction
-// sensor or fan.
+// its first awake sample: a quick rescan asks for a re-enumeration, which finds it has no fan.
 TEST(LinuxROCmGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -928,14 +998,13 @@ TEST(LinuxROCmGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
     ASSERT_TRUE(awake[1].sensorCapabilities.has_value());
     const auto sensors = awake[1].sensorCapabilities.value_or(GPUCapabilities{});
     EXPECT_TRUE(sensors.hasTemperature);
-    EXPECT_FALSE(sensors.hasHotspotTemp);
     EXPECT_FALSE(sensors.hasFanSpeed);
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // found: no more re-enumerations
 }
 
 // #1295 review: a GPU asleep through a ROCm SMI restart -- here one triggered by another AMD GPU
 // being hot-plugged -- keeps the sensor set found while it was awake (mock device 1, at
-// 0000:23:05.1: no junction sensor or fan), and its VRAM total. It isn't woken to find them again,
+// 0000:23:05.1: no fan), and its VRAM total. It isn't woken to find them again,
 // so forgetting them would republish the probe-wide capabilities for it until it woke.
 TEST(LinuxROCmGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
 {
@@ -968,7 +1037,6 @@ TEST(LinuxROCmGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
     ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
     const auto sensors = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
     EXPECT_TRUE(sensors.hasTemperature);
-    EXPECT_FALSE(sensors.hasHotspotTemp);
     EXPECT_FALSE(sensors.hasFanSpeed);
     EXPECT_TRUE(gpus[2].sensorCapabilities.has_value()); // the new GPU is awake: found now
     const auto counters = probe.readGPUCounters();

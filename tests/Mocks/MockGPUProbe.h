@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -37,7 +40,7 @@ makeGPUInfo(const std::string& id, const std::string& name, const std::string& v
 /// Create a GPUCounters struct with common test values.
 inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
                                              double utilization = 50.0,
-                                             std::uint64_t memoryUsed = 1024 * 1024 * 1024,
+                                             std::uint64_t memoryUsed = 1024ULL * 1024 * 1024,
                                              std::uint64_t memoryTotal = 4ULL * 1024 * 1024 * 1024)
 {
     Platform::GPUCounters c;
@@ -47,16 +50,11 @@ inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
     c.memoryUsedBytes = memoryUsed;
     c.memoryTotalBytes = memoryTotal;
     c.temperatureC = 60;
-    c.hotspotTempC = 65;
     c.powerDrawWatts = 150.0;
     c.powerLimitWatts = 250.0;
     c.gpuClockMHz = 1500;
-    c.memoryClockMHz = 7000;
     c.fanSpeedRaw = 55;
     c.fanSpeedMaxRaw = 100;
-    c.pcieTxBytes = 0;
-    c.pcieRxBytes = 0;
-    c.computeUtilPercent = 0.0;
     c.encoderUtilPercent = 0.0;
     c.decoderUtilPercent = 0.0;
     return c;
@@ -64,7 +62,7 @@ inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
 
 /// Create a ProcessGPUCounters struct with common test values.
 inline Platform::ProcessGPUCounters
-makeProcessGPUCounters(std::int32_t pid, const std::string& gpuId, std::uint64_t memoryBytes = 512 * 1024 * 1024)
+makeProcessGPUCounters(std::int32_t pid, const std::string& gpuId, std::uint64_t memoryBytes = 512ULL * 1024 * 1024)
 {
     Platform::ProcessGPUCounters c;
     c.pid = pid;
@@ -91,6 +89,19 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Also identifies GPU @p id by @p luid (Windows: PDH names adapters by LUID, "GPU_0x..._0x...").
+    MockGPUProbe& withLuid(const std::string& id, const std::string& luid)
+    {
+        for (auto& info : m_GPUInfo)
+        {
+            if (info.id == id)
+            {
+                info.luidId = luid;
+            }
+        }
+        return *this;
+    }
+
     /// An integrated GPU whose memory figures count its shared segment, as on Windows (#1164).
     MockGPUProbe& withSharedMemoryGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test")
     {
@@ -98,6 +109,25 @@ class MockGPUProbe : public Platform::IGPUProbe
         info.memoryIsShared = true;
         m_GPUInfo.push_back(std::move(info));
         m_Counters.push_back(makeGPUCounters(id));
+        return *this;
+    }
+
+    /// An NPU or other compute accelerator (#1799): listed with its kind and LUID, its memory figures
+    /// counting its shared segment, as an Intel AI Boost's do on Windows.
+    MockGPUProbe& withAccelerator(const std::string& id,
+                                  const std::string& name,
+                                  const std::string& luidId,
+                                  Platform::DeviceKind kind = Platform::DeviceKind::Npu)
+    {
+        auto info = makeGPUInfo(id, name, "Intel");
+        info.kind = kind;
+        info.luidId = luidId;
+        info.memoryIsShared = true;
+        info.sensorCapabilities = Platform::GPUCapabilities{};
+        m_GPUInfo.push_back(std::move(info));
+        auto counters = makeGPUCounters(id);
+        counters.kind = kind;
+        m_Counters.push_back(std::move(counters));
         return *this;
     }
 
@@ -129,6 +159,21 @@ class MockGPUProbe : public Platform::IGPUProbe
             if (counter.gpuId == gpuId)
             {
                 counter.utilizationPercent = util;
+                return *this;
+            }
+        }
+        return *this;
+    }
+
+    /// Memory in use with no total, as a Linux NPU reports it (#1827); memoryAvailable goes false.
+    MockGPUProbe& withMemoryInUse(const std::string& gpuId, std::uint64_t inUse)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.gpuId == gpuId)
+            {
+                counter.memoryAvailable = false;
+                counter.memoryInUseBytes = inUse;
                 return *this;
             }
         }
@@ -226,6 +271,28 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes readGPUCounters() (the system read) throw on every call.
+    MockGPUProbe& withCountersThrowing()
+    {
+        m_ThrowOnReadCounters = true;
+        return *this;
+    }
+
+    /// Makes every readProcessGPUCounters() call take at least @p delay, simulating a slow driver
+    /// query (#1417). Set before the probe is shared with another thread.
+    MockGPUProbe& withProcessReadDelay(std::chrono::milliseconds delay)
+    {
+        m_ProcessReadDelay = delay;
+        return *this;
+    }
+
+    /// The threads readProcessGPUCounters() has been called on (#1417).
+    [[nodiscard]] std::set<std::thread::id> processReadThreads() const
+    {
+        const std::scoped_lock lock(m_ThreadMutex);
+        return m_ProcessReadThreads;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
@@ -240,6 +307,10 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::GPUCounters> readGPUCounters() override
     {
         ++m_ReadCountersCount;
+        if (m_ThrowOnReadCounters)
+        {
+            throw std::runtime_error("MockGPUProbe: simulated readGPUCounters() failure");
+        }
         if (m_BlockReadCounters.load(std::memory_order_acquire))
         {
             m_EnteredBlockedReadCounters.store(true, std::memory_order_release);
@@ -252,6 +323,14 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() override
     {
         ++m_ReadProcessCountersCount;
+        {
+            const std::scoped_lock lock(m_ThreadMutex);
+            m_ProcessReadThreads.insert(std::this_thread::get_id());
+        }
+        if (m_ProcessReadDelay.count() > 0)
+        {
+            std::this_thread::sleep_for(m_ProcessReadDelay);
+        }
         if (m_ThrowOnReadProcessCounters)
         {
             throw std::runtime_error("MockGPUProbe: simulated readProcessGPUCounters() failure");
@@ -358,6 +437,10 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::uint32_t m_QuickRescanCount = 0;
     std::uint32_t m_FullRescanCount = 0;
     bool m_ThrowOnReadProcessCounters = false;
+    bool m_ThrowOnReadCounters = false;
+    std::chrono::milliseconds m_ProcessReadDelay{0};
+    mutable std::mutex m_ThreadMutex;
+    std::set<std::thread::id> m_ProcessReadThreads; // guarded by m_ThreadMutex
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};

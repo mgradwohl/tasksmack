@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -7,6 +9,22 @@
 
 namespace Platform
 {
+
+/// What kind of link a network interface is, as the platform reports it (#2568): Windows from the
+/// interface's IANA ifType and NDIS physical medium, Linux from its sysfs ARPHRD type, uevent DEVTYPE
+/// and wireless directory. Whether it is virtual is a separate question (InterfaceCounters::isVirtual):
+/// a Hyper-V vEthernet adapter is an Ethernet link that is virtual.
+enum class NetInterfaceKind : std::uint8_t
+{
+    Unknown,   ///< The platform couldn't tell (no sysfs entry, a synthetic interface): the UI goes by its name.
+    Ethernet,  ///< Wired Ethernet, or anything that presents itself as Ethernet (vEthernet, TAP, veth).
+    WiFi,      ///< 802.11 Wi-Fi.
+    Bluetooth, ///< A Bluetooth PAN link (Windows' Bluetooth medium, Linux's bnep).
+    Cellular,  ///< Mobile broadband (WWAN): Windows' WWAN ifTypes, Linux's wwan DEVTYPE or raw-IP modems.
+    Loopback,  ///< The loopback interface.
+    Tunnel,    ///< A tunnel or point-to-point link: VPN, PPP, GRE, SIT, IP-in-IP, tun, WireGuard.
+    Other,     ///< Classified, but none of the above (InfiniBand, FireWire, CAN, ...).
+};
 
 /// Raw CPU counters from OS (cumulative ticks/jiffies).
 /// Probes populate this; domain computes deltas and percentages.
@@ -68,6 +86,14 @@ struct MemoryCounters
 
     uint64_t swapTotalBytes = 0;
     uint64_t swapFreeBytes = 0;
+
+    // Commit charge (#1627): the virtual memory the system has promised (Windows CommitTotal, Linux
+    // Committed_AS) and the most it may promise (CommitLimit), in bytes. hasCommitCharge is set once
+    // both were read this sample. commitPeakBytes is 0 where the platform keeps no peak (Linux).
+    bool hasCommitCharge = false;
+    uint64_t commitChargeBytes = 0;
+    uint64_t commitLimitBytes = 0;
+    uint64_t commitPeakBytes = 0;
 };
 
 /// Combined system counters snapshot.
@@ -85,7 +111,8 @@ struct SystemCounters
     double loadAvg5 = 0.0;
     double loadAvg15 = 0.0;
 
-    // CPU frequency in MHz (current, may vary per-core)
+    // The current CPU clock in MHz (#1184). Linux: cpu0's cpufreq reading. Windows: the base clock (~MHz)
+    // scaled by "% Processor Performance", the processors' average, as Task Manager's "Speed".
     uint64_t cpuFreqMHz = 0;
 
     // Network counters (cumulative bytes across the interfaces counted in the Total; see
@@ -111,6 +138,8 @@ struct SystemCounters
         // couldn't, e.g. no sysfs entry, and isVirtual is false by default). The UI falls back to a
         // name heuristic only then (#1260).
         bool isVirtualKnown = false;
+        // The link's kind, for the Interface Status table's Type icon (#2568).
+        NetInterfaceKind kind = NetInterfaceKind::Unknown;
     };
     std::vector<InterfaceCounters> networkInterfaces;
 
@@ -118,6 +147,9 @@ struct SystemCounters
     std::string hostname;
     std::string cpuModel;
     std::size_t cpuCoreCount = 0;
+    // Topology, base clock, caches and virtualization status (#809): cached by the probe, which
+    // re-reads them when the set of active processors changes (CpuDetails.h)
+    CpuDetails cpuDetails;
 };
 
 /// Reports what this platform's system probe supports.
@@ -126,12 +158,20 @@ struct SystemCapabilities
     bool hasPerCoreCpu = false;
     bool hasMemoryAvailable = false; // Some older kernels lack MemAvailable
     bool hasSwap = false;
+    bool hasCommitCharge = false; // MemoryCounters' commit charge and limit (#1627)
     bool hasUptime = false;
     bool hasIoWait = false;
     bool hasSteal = false;
     bool hasLoadAvg = false;
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
+    // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,
+    // and Linux since #2592). Elsewhere the CPU Details block leaves those rows out rather than
+    // showing them as unknown (#809).
+    bool hasVirtualizationInfo = false;
+    // CpuDetails' virtualization-based security and memory integrity fields mean something here
+    // (Windows only, #809); without it those two rows are left out (#2592).
+    bool hasVirtualizationSecurityInfo = false;
 };
 
 } // namespace Platform

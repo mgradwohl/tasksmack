@@ -61,6 +61,7 @@ struct FrameCache
     /// cells (#1375).
     struct StatusRowText
     {
+        NetInterfaceUtils::InterfaceType type = NetInterfaceUtils::InterfaceType::Other; ///< The Type column's icon (#2568)
         std::string speed;
         NetInterfaceUtils::RateCell sent;
         NetInterfaceUtils::RateCell received;
@@ -83,7 +84,6 @@ struct RenderContext
 
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation
@@ -122,7 +122,7 @@ struct RenderContext
 
 /// Render the Disk I/O section with history chart.
 /// @param ctx Render context containing models and smoothed values
-void renderDiskIOSection(RenderContext& ctx);
+void renderDiskIOSection(const RenderContext& ctx);
 
 /// Render the Network section with interface selector and throughput charts.
 /// @param ctx Render context containing models and smoothed values

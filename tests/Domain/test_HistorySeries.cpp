@@ -76,7 +76,7 @@ TEST(SystemModelSeriesTest, AppliesEverySampleWithOnePublish)
         });
 
     // The first reading is the delta baseline; every later one is a history sample.
-    EXPECT_EQ(model.timestamps().size(), READINGS - 1);
+    EXPECT_EQ(model.publication()->timestamps.size(), READINGS - 1);
     EXPECT_EQ(model.publicationVersion(), 1U);
     const auto publication = model.publication();
     ASSERT_EQ(publication->cpuHistory.size(), READINGS - 1);
@@ -84,7 +84,7 @@ TEST(SystemModelSeriesTest, AppliesEverySampleWithOnePublish)
 
     // Live samples continue the series.
     model.updateFromCounters(systemCountersAt(READINGS), START_SECONDS + (static_cast<double>(READINGS) * STEP_SECONDS));
-    EXPECT_EQ(model.timestamps().size(), READINGS);
+    EXPECT_EQ(model.publication()->timestamps.size(), READINGS);
     EXPECT_EQ(model.publicationVersion(), 2U);
 }
 
@@ -93,7 +93,7 @@ TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanTheNewest)
     Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
     model.updateFromCounters(systemCountersAt(10), START_SECONDS);
     model.updateFromCounters(systemCountersAt(11), START_SECONDS + STEP_SECONDS);
-    ASSERT_EQ(model.timestamps().size(), 1U);
+    ASSERT_EQ(model.publication()->timestamps.size(), 1U);
 
     const std::vector<double> times = {START_SECONDS - 1.0, START_SECONDS + STEP_SECONDS, START_SECONDS + (2.0 * STEP_SECONDS)};
     std::size_t index = 0;
@@ -108,7 +108,7 @@ TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanTheNewest)
             nowSeconds = times[index++];
             return true;
         });
-    const auto timestamps = model.timestamps();
+    const auto timestamps = model.publication()->timestamps;
     ASSERT_EQ(timestamps.size(), 2U);
     EXPECT_DOUBLE_EQ(timestamps.back(), START_SECONDS + (2.0 * STEP_SECONDS));
 }
@@ -118,7 +118,7 @@ TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanALoneSeedReading)
     // One seed reading: a previous reading exists but the history is still empty.
     Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
     model.updateFromCounters(systemCountersAt(10), START_SECONDS);
-    ASSERT_TRUE(model.timestamps().empty());
+    ASSERT_TRUE(model.publication()->timestamps.empty());
 
     const std::vector<double> times = {START_SECONDS - 1.0, START_SECONDS, START_SECONDS + STEP_SECONDS};
     std::size_t index = 0;
@@ -133,7 +133,7 @@ TEST(SystemModelSeriesTest, SkipsSamplesNotLaterThanALoneSeedReading)
             nowSeconds = times[index++];
             return true;
         });
-    const auto timestamps = model.timestamps();
+    const auto timestamps = model.publication()->timestamps;
     ASSERT_EQ(timestamps.size(), 1U);
     EXPECT_DOUBLE_EQ(timestamps.front(), START_SECONDS + STEP_SECONDS);
     const auto publication = model.publication();
@@ -147,7 +147,7 @@ TEST(SystemModelSeriesTest, EmptySeriesPublishesNothing)
     Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
     model.updateFromCounterSeries([](Platform::SystemCounters& /*counters*/, double& /*nowSeconds*/) { return false; });
     EXPECT_EQ(model.publicationVersion(), 0U);
-    EXPECT_TRUE(model.timestamps().empty());
+    EXPECT_TRUE(model.publication()->timestamps.empty());
 }
 
 TEST(StorageModelSeriesTest, AppliesEverySampleWithOnePublish)
@@ -174,7 +174,7 @@ TEST(StorageModelSeriesTest, AppliesEverySampleWithOnePublish)
         });
 
     // Every reading is a timestamp; the first has no rates yet (a gap).
-    EXPECT_EQ(model.historyTimestamps().size(), READINGS);
+    EXPECT_EQ(model.publication()->timestamps.size(), READINGS);
     EXPECT_EQ(model.publicationVersion(), 1U);
     const auto publication = model.publication();
     ASSERT_EQ(publication->perDiskHistory.size(), 1U);
@@ -195,7 +195,7 @@ TEST(StorageModelSeriesTest, AppliesEverySampleWithOnePublish)
             now = start;
             return true;
         });
-    EXPECT_EQ(model.historyTimestamps().size(), READINGS);
+    EXPECT_EQ(model.publication()->timestamps.size(), READINGS);
     EXPECT_EQ(model.publicationVersion(), 1U);
 }
 
@@ -214,8 +214,6 @@ TEST(ProcessModelSeriesTest, AppendsSystemHistoryAndAdvancesItsGenerationOnce)
                 return false;
             }
             sample = Domain::ProcessSystemHistorySample{.timeSeconds = START_SECONDS + (static_cast<double>(index) * STEP_SECONDS),
-                                                        .netSentBytesPerSec = 1.0,
-                                                        .netReceivedBytesPerSec = 2.0,
                                                         .pageFaultsPerSec = 3.0,
                                                         .threadCount = 400.0 + static_cast<double>(index),
                                                         .handleCount = 5.0,
@@ -231,7 +229,6 @@ TEST(ProcessModelSeriesTest, AppendsSystemHistoryAndAdvancesItsGenerationOnce)
     ASSERT_EQ(histories.threadCount.size(), SAMPLES);
     EXPECT_DOUBLE_EQ(histories.threadCount.back(), 400.0 + static_cast<double>(SAMPLES - 1));
     EXPECT_DOUBLE_EQ(histories.power.front(), 6.0);
-    EXPECT_EQ(model.systemNetRecvHistory().size(), SAMPLES);
 
     // Out-of-order samples are skipped, and nothing appended leaves the generation alone.
     model.appendSystemHistory(
@@ -246,5 +243,7 @@ TEST(ProcessModelSeriesTest, AppendsSystemHistoryAndAdvancesItsGenerationOnce)
             return true;
         });
     EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(histories.version, histories));
-    EXPECT_EQ(model.historyTimestamps().size(), SAMPLES);
+    Domain::ProcessSystemHistories latest;
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, latest));
+    EXPECT_EQ(latest.timestamps.size(), SAMPLES);
 }

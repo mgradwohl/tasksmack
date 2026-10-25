@@ -16,6 +16,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - Linux UAPI headers
@@ -95,6 +96,18 @@ inline void appendMessage(Datagram& datagram,
     return datagram;
 }
 
+/// A datagram holding one SOCK_DIAG_BY_FAMILY message per inet_diag_msg, with no attributes: what a
+/// dump without extensions returns (dumpInetSockets(), #799).
+[[nodiscard]] inline Datagram diagMessagesDatagram(std::span<const inet_diag_msg> messages, std::uint32_t sequence, std::uint32_t portId)
+{
+    Datagram datagram;
+    for (const auto& message : messages)
+    {
+        appendMessage(datagram, SOCK_DIAG_BY_FAMILY, sequence, portId, std::as_bytes(std::span{&message, 1}));
+    }
+    return datagram;
+}
+
 /// A datagram holding the dump's NLMSG_DONE.
 /// `status` is the dump's result (negative errno on failure); `flags` may add NLM_F_DUMP_INTR.
 [[nodiscard]] inline Datagram
@@ -116,7 +129,8 @@ doneDatagram(std::uint32_t sequence, std::uint32_t portId, std::int32_t status =
 }
 
 /// Plays the kernel: each request sent is answered with whatever `onRequest` returns, queued for
-/// receive(). A std::nullopt entry is a receive timeout (EAGAIN) at that point in the stream.
+/// receive(). A std::nullopt entry is a receive timeout (EAGAIN) at that point in the stream, and an
+/// empty datagram an orderly shutdown (a 0-byte read).
 class ScriptedNetlinkTransport final : public INetlinkTransport
 {
   public:
@@ -133,6 +147,9 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
     std::function<Reply(const Request&)> onRequest;
     std::vector<Request> requests;
     std::deque<std::optional<Datagram>> queued;
+    int sendError = 0;           ///< send() fails with this errno, when set
+    int interruptedDrains = 0;   ///< Non-blocking receive()s (the drain before a request) interrupted (EINTR) first
+    int interruptedReceives = 0; ///< Blocking receive()s after each request interrupted (EINTR) first
 
     [[nodiscard]] NetlinkIoResult send(std::span<const std::byte> request) override
     {
@@ -146,6 +163,11 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
         std::memcpy(&body, request.subspan(sizeof(header)).data(), sizeof(body));
         const Request parsed{.family = body.sdiag_family, .protocol = body.sdiag_protocol, .sequence = header.nlmsg_seq};
         requests.push_back(parsed);
+        if (sendError != 0)
+        {
+            return {.bytes = -1, .error = sendError};
+        }
+        m_PendingInterrupts = interruptedReceives;
         if (onRequest)
         {
             for (auto& datagram : onRequest(parsed))
@@ -156,8 +178,14 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
         return {.bytes = static_cast<std::int64_t>(request.size()), .error = 0};
     }
 
-    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool /*nonBlocking*/) override
+    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool nonBlocking) override
     {
+        int& interrupts = nonBlocking ? interruptedDrains : m_PendingInterrupts;
+        if (interrupts > 0)
+        {
+            --interrupts;
+            return {.bytes = -1, .error = EINTR};
+        }
         if (queued.empty())
         {
             return {.bytes = -1, .error = EAGAIN};
@@ -169,7 +197,10 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
             return {.bytes = -1, .error = EAGAIN}; // the scripted timeout
         }
         const std::size_t length = std::min(buffer.size(), next->size());
-        std::memcpy(buffer.data(), next->data(), length);
+        if (length > 0) // An empty datagram's data() may be null: memcpy from null is undefined even for 0 bytes
+        {
+            std::memcpy(buffer.data(), next->data(), length);
+        }
         return {.bytes = static_cast<std::int64_t>(length), .error = 0};
     }
 
@@ -177,6 +208,9 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
     {
         return PORT_ID;
     }
+
+  private:
+    int m_PendingInterrupts = 0; // interruptedReceives, re-armed by each request
 };
 
 /// A reply carrying `sockets` and the NLMSG_DONE for `request`, to this socket.

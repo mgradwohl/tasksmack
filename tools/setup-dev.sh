@@ -22,7 +22,7 @@ DRY_RUN=false
 MINIMAL=false
 # Single source of truth for the LLVM major version this repo's presets/CI currently
 # validate against -- Renovate's LLVM customManager (.github/renovate.json5) bumps this
-# literal, and the --llvm guard below reads it back rather than hardcoding "22" a second
+# literal, and the --llvm guard below reads it back rather than hardcoding "23" a second
 # time, so a Renovate-proposed bump can't silently desync the guard from the default it's
 # supposed to be checking.
 readonly LLVM_SUPPORTED_VERSION=23
@@ -46,7 +46,7 @@ Options:
   --llvm VER   LLVM major version to install (currently must be $LLVM_SUPPORTED_VERSION)
   -h, --help   Show this help
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help) usage ;;
-        *) echo "Unknown argument: $1" >&2; usage ;;
+        *) echo "Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
@@ -87,10 +87,49 @@ run_cmd() {
     fi
 }
 
+# The project-local Python environment. Linux venvs keep the interpreter in bin/; the Windows ones
+# setup-dev.ps1 creates keep it in Scripts/. Both read the same pyvenv.cfg, so `python -m venv` over
+# a Windows venv in a checkout shared with WSL rewrites its home/executable to Linux paths and
+# breaks Scripts/python.exe (#2351).
+PYTHON_ENV="${REPO_ROOT}/.venv"
+
+# Stop, before anything is installed, when $1 is a Windows venv (Scripts/python.exe, no
+# bin/python): setup-dev.ps1's check for a Linux venv (#2252), reversed. Under --dry-run, only warn.
+check_venv() {
+    local env_dir="$1"
+    if [[ -f "$env_dir/Scripts/python.exe" && ! -e "$env_dir/bin/python" && ! -L "$env_dir/bin/python" ]]; then
+        # Recreating it in place would break it for Windows, so leave the choice to the developer.
+        if $DRY_RUN; then
+            echo "WARNING: $env_dir exists but has no bin/python (a Windows venv from setup-dev.ps1?); a real run would stop here." >&2
+            return 0
+        fi
+        echo "Error: $env_dir exists but has no bin/python (a Windows venv from setup-dev.ps1?). Remove or rename it, then rerun this script." >&2
+        exit 1
+    fi
+}
+
+# Create $1 with Python $PYTHON_VERSION, or refresh the Linux venv already there.
+create_venv() {
+    local env_dir="$1"
+    check_venv "$env_dir"
+    if [[ -e "$env_dir/bin/python" || -L "$env_dir/bin/python" ]]; then
+        echo "  Using existing virtual environment: $env_dir"
+    fi
+    run_cmd "python${PYTHON_VERSION}" -m venv "$env_dir"
+}
+
+# Sourced (tests/tools/test_setup_dev_sh.py): define the functions only
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 echo "=== TaskSmack Dev Setup ==="
 echo "LLVM version: $LLVM_VERSION"
 if $DRY_RUN; then echo "(dry-run mode — nothing will be installed)"; fi
 echo ""
+
+# Before the apt steps, so a Windows .venv stops the run before anything is installed
+check_venv "$PYTHON_ENV"
 
 # ── Step 1: Signed package repositories ───────────────────────────────────────
 echo "==> Configuring signed package repositories..."
@@ -193,10 +232,9 @@ fi
 
 # ── Step 2: Base build tools ──────────────────────────────────────────────────
 echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
-run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libfreetype6-dev
+run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libsystemd-dev pkg-config
 
-PYTHON_ENV="${REPO_ROOT}/.venv"
-run_cmd "python${PYTHON_VERSION}" -m venv "$PYTHON_ENV"
+create_venv "$PYTHON_ENV"
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.txt"
 
@@ -210,19 +248,24 @@ run_apt \
     "lld-$LLVM_VERSION" \
     "llvm-$LLVM_VERSION" \
     "libc++-$LLVM_VERSION-dev" \
-    "libc++abi-$LLVM_VERSION-dev"
+    "libc++abi-$LLVM_VERSION-dev" \
+    "libclang-rt-$LLVM_VERSION-dev"
+# libclang-rt is only a Recommends of clang-N, so --no-install-recommends setups miss it; the
+# coverage, PGO and sanitizer presets link its runtimes.
 
-# Register update-alternatives so unversioned names (clang++, clang-tidy, etc.) point to the
-# installed LLVM version.  Idempotent: re-running updates to a higher priority.
-if ! $DRY_RUN; then
-    sudo update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-$LLVM_VERSION" 100
-    sudo update-alternatives --install /usr/bin/clang   clang   "/usr/bin/clang-$LLVM_VERSION"   100
-    sudo update-alternatives --install /usr/bin/lld     lld     "/usr/bin/lld-$LLVM_VERSION"     100
-else
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$LLVM_VERSION 100"
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-$LLVM_VERSION   100"
-    echo "[dry-run] sudo update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-$LLVM_VERSION     100"
-fi
+# Point an unversioned tool name at the installed LLVM version's binary.
+# Idempotent: re-running updates to a higher priority.
+register_alternative() {
+    local name="$1"
+    run_cmd sudo update-alternatives --install "/usr/bin/$name" "$name" "/usr/bin/$name-$LLVM_VERSION" 100
+}
+
+# Unversioned names for everything check-prereqs.sh and the tools/ scripts look up on PATH.
+# ld.lld is the name check-prereqs.sh reads the version from; `lld` alone is the generic driver,
+# which prints no version.
+for tool in clang++ clang lld ld.lld clang-tidy clang-format; do
+    register_alternative "$tool"
+done
 
 # ── Step 4: Build-time GUI prerequisites ─────────────────────────────────────
 echo ""
@@ -243,13 +286,10 @@ if ! $MINIMAL; then
     echo ""
     echo "==> Installing coverage and profiling tools..."
     run_apt "clangd-$LLVM_VERSION"
-    if ! $DRY_RUN; then
-        sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata "/usr/bin/llvm-profdata-$LLVM_VERSION" 100
-        sudo update-alternatives --install /usr/bin/llvm-cov      llvm-cov      "/usr/bin/llvm-cov-$LLVM_VERSION"      100
-    else
-        echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-profdata ..."
-        echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-cov ..."
-    fi
+    # check-prereqs.sh requires an unversioned clangd on PATH (VS Code's clangd settings use it)
+    for tool in clangd llvm-profdata llvm-cov; do
+        register_alternative "$tool"
+    done
 
     # heaptrack (tools/profile-heap.sh) and the FlameGraph scripts (analyze-perf.sh) are
     # zero-risk to install here: heaptrack is a plain apt package, FlameGraph is just a

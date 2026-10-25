@@ -368,3 +368,27 @@ function Get-EtwOverhead {
         TopEtwPathFunctions  = @(if ($status -in 'Measured', 'Bounded') { $topRows })
     }
 }
+
+function Get-DefaultSymbolDirectory {
+    # The symbol directory analyze-etw.ps1 uses without -SymbolPath (#2254): build\<Preset>\bin for
+    # the preset recorded in the <trace>.manifest.json that profile-etw.ps1 writes next to the trace
+    # (win-release for an app capture and win-benchmark for a bench capture, by default), so the
+    # binary checked for symbol identity is the build the trace captured. Without a readable
+    # manifest, or with a preset that is not a plain name, win-profile, the symbol-rich build.
+    # Returns the directory and where it came from.
+    param([Parameter(Mandatory = $true)][string]$TraceFile, [Parameter(Mandatory = $true)][string]$RepoRoot)
+    $manifestPath = Join-Path (Split-Path -Parent $TraceFile) ([IO.Path]::GetFileNameWithoutExtension($TraceFile) + '.manifest.json')
+    $preset = $null
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $property = if ($manifest -is [pscustomobject]) { $manifest.PSObject.Properties['Preset'] } else { $null }
+            if ($null -ne $property -and $property.Value -is [string] -and $property.Value -match '\A[A-Za-z0-9][A-Za-z0-9._-]*\z') { $preset = $property.Value }
+        }
+        catch { $preset = $null }
+    }
+    if ($preset) {
+        return [pscustomobject]@{ Directory = (Join-Path $RepoRoot "build\$preset\bin"); Source = "preset $preset, from $manifestPath" }
+    }
+    return [pscustomobject]@{ Directory = (Join-Path $RepoRoot 'build\win-profile\bin'); Source = 'win-profile (no capture manifest with a preset next to the trace)' }
+}

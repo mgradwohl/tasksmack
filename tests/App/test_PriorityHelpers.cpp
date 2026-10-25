@@ -7,10 +7,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::Detail
@@ -53,7 +57,6 @@ TEST(PriorityHelpersTest, SliderMetricsReproduceOriginalPixelsAtReferenceEm)
     EXPECT_FLOAT_EQ(m.thumbOutlineThickness, 2.0F);
     EXPECT_FLOAT_EQ(m.labelPadding, 8.0F);
     EXPECT_FLOAT_EQ(m.thumbRadius, 12.0F * 0.6F);
-    EXPECT_FLOAT_EQ(PRIORITY_APPLY_BUTTON_MIN_EM * App::REFERENCE_EM_PX, 120.0F);
 }
 
 TEST(PriorityHelpersTest, SliderMetricsScaleLinearlyWithEm)
@@ -117,6 +120,29 @@ TEST(PriorityHelpersTest, BadgeCenterFollowsThumbWithinTrack)
     EXPECT_FLOAT_EQ(computeBadgeCenterX(300.0F, 100.0F, 400.0F, 20.0F), 300.0F);
     EXPECT_FLOAT_EQ(computeBadgeCenterX(100.0F, 100.0F, 400.0F, 20.0F), 120.0F);
     EXPECT_FLOAT_EQ(computeBadgeCenterX(500.0F, 100.0F, 400.0F, 20.0F), 480.0F);
+}
+
+TEST(PriorityHelpersTest, BadgeArrowBaseIsCentredUnderTheThumbAndHeldToTheBadge)
+{
+    // Badge from x=280 to x=320, arrow half-base 6.
+    const BadgeArrowBase centred = computeBadgeArrowBase(300.0F, 6.0F, 280.0F, 320.0F);
+    EXPECT_FLOAT_EQ(centred.left, 294.0F);
+    EXPECT_FLOAT_EQ(centred.right, 306.0F);
+
+    // Thumb at the track's left end: the badge is clamped to x=100..140 but the tip stays at x=100, so
+    // the base starts at the badge's left edge instead of hanging off it.
+    const BadgeArrowBase atStart = computeBadgeArrowBase(100.0F, 6.0F, 100.0F, 140.0F);
+    EXPECT_FLOAT_EQ(atStart.left, 100.0F);
+    EXPECT_FLOAT_EQ(atStart.right, 106.0F);
+
+    const BadgeArrowBase atEnd = computeBadgeArrowBase(500.0F, 6.0F, 460.0F, 500.0F);
+    EXPECT_FLOAT_EQ(atEnd.left, 494.0F);
+    EXPECT_FLOAT_EQ(atEnd.right, 500.0F);
+
+    // A badge narrower than the arrow: the base is the whole badge.
+    const BadgeArrowBase narrow = computeBadgeArrowBase(300.0F, 6.0F, 298.0F, 302.0F);
+    EXPECT_FLOAT_EQ(narrow.left, 298.0F);
+    EXPECT_FLOAT_EQ(narrow.right, 302.0F);
 }
 
 // A track narrower than the badge leaves no valid clamp range; the badge is centred on the track
@@ -242,9 +268,9 @@ TEST(PriorityHelpersTest, GetNiceFromPositionRoundTrip)
 }
 
 // Default test colors matching the legacy hardcoded values
-static const ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
-static const ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
-static const ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
+constexpr ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
+constexpr ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
+constexpr ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
 
 // =============================================================================
 // getNiceColor Tests
@@ -534,6 +560,228 @@ TEST(WindowsPriorityClassTest, OverviewTextHasNoNiceWordingWithWindowsClasses)
     // Elsewhere the nice value stays.
     EXPECT_EQ(priorityDisplayText(0, false), "Normal (nice: 0)");
     EXPECT_EQ(priorityDisplayText(-20, false), "High (nice: -20)");
+}
+
+// =============================================================================
+// Discrete-stop slider (#1538)
+// =============================================================================
+
+TEST(DiscreteSliderTest, WindowsStopsRoundTripClassToStopToNice)
+{
+    // High at the left, where nice -20 is on the nice slider; Idle at the right.
+    ASSERT_EQ(WINDOWS_PRIORITY_STOPS.size(), SETTABLE_WINDOWS_PRIORITY_CLASSES.size());
+    EXPECT_EQ(windowsPriorityClassAtStop(0), WindowsPriorityClass::High);
+    EXPECT_EQ(windowsPriorityClassAtStop(4), WindowsPriorityClass::Idle);
+    for (const WindowsPriorityClass priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
+    {
+        SCOPED_TRACE(std::string(windowsPriorityClassName(priorityClass)));
+        const int32_t stop = windowsPriorityStopIndex(priorityClass);
+        ASSERT_GE(stop, 0);
+        ASSERT_LT(stop, 5);
+        EXPECT_EQ(windowsPriorityClassAtStop(stop), priorityClass);
+        const PrioritySliderStop& entry = WINDOWS_PRIORITY_STOPS.at(static_cast<std::size_t>(stop));
+        EXPECT_EQ(entry.name, windowsPriorityClassName(priorityClass));
+        EXPECT_EQ(entry.colorNice, windowsPriorityClassNice(priorityClass));
+        EXPECT_TRUE(std::string_view{entry.itemLabel}.contains(entry.name));
+        EXPECT_TRUE(std::string_view{entry.itemLabel}.ends_with(WINDOWS_PRIORITY_SLIDER_ID));
+        // The stop's nice value maps back to its class, and another stop's pick writes that class's value.
+        EXPECT_EQ(windowsPriorityClassFromNice(entry.colorNice), priorityClass);
+        EXPECT_EQ(windowsPriorityNiceForStop(stop, Domain::Priority::NORMAL_NICE),
+                  priorityClass == WindowsPriorityClass::Normal ? Domain::Priority::NORMAL_NICE : windowsPriorityClassNice(priorityClass));
+    }
+    // Higher priority toward the left: the stops' nice values rise left to right.
+    for (std::size_t i = 1; i < WINDOWS_PRIORITY_STOPS.size(); ++i)
+    {
+        EXPECT_LT(WINDOWS_PRIORITY_STOPS.at(i - 1).colorNice, WINDOWS_PRIORITY_STOPS.at(i).colorNice);
+    }
+}
+
+TEST(DiscreteSliderTest, RealtimeIsReportOnly)
+{
+    EXPECT_EQ(windowsPriorityStopIndex(WindowsPriorityClass::Realtime), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(windowsPriorityClassAtStop(PRIORITY_STOP_BEYOND_START), WindowsPriorityClass::Realtime);
+    EXPECT_EQ(WINDOWS_PRIORITY_SLIDER.beyondStart, &WINDOWS_REALTIME_STOP);
+    EXPECT_EQ(WINDOWS_REALTIME_STOP.name, "Realtime");
+    // Left as shown, a Realtime process keeps its own value: no edit.
+    const int32_t realtimeNice = windowsPriorityClassNice(WindowsPriorityClass::Realtime);
+    EXPECT_EQ(windowsPriorityNiceForStop(PRIORITY_STOP_BEYOND_START, realtimeNice), realtimeNice);
+    // No settable stop is Realtime.
+    for (const PrioritySliderStop& stop : WINDOWS_PRIORITY_STOPS)
+    {
+        EXPECT_NE(windowsPriorityClassFromNice(stop.colorNice), WindowsPriorityClass::Realtime);
+    }
+    // The same class as shown is no edit: the reported value is kept, not the class's representative.
+    EXPECT_EQ(windowsPriorityNiceForStop(windowsPriorityStopIndex(WindowsPriorityClass::BelowNormal), 12), 12);
+}
+
+TEST(DiscreteSliderTest, PositionsAreEvenAndADragSnapsToTheNearestStop)
+{
+    EXPECT_FLOAT_EQ(discreteStopPosition(0, 5), 0.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(2, 5), 0.5F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(4, 5), 1.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(9, 5), 1.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(0, 1), 0.0F);
+
+    EXPECT_EQ(discreteStopFromPosition(0.0F, 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.12F, 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.13F, 5), 1);
+    EXPECT_EQ(discreteStopFromPosition(0.49F, 5), 2);
+    EXPECT_EQ(discreteStopFromPosition(0.70F, 5), 3);
+    EXPECT_EQ(discreteStopFromPosition(0.90F, 5), 4);
+    EXPECT_EQ(discreteStopFromPosition(-3.0F, 5), 0); // Past either end: held there
+    EXPECT_EQ(discreteStopFromPosition(7.0F, 5), 4);
+    EXPECT_EQ(discreteStopFromPosition(std::numeric_limits<float>::quiet_NaN(), 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.8F, 1), 0);
+}
+
+TEST(DiscreteSliderTest, KeysStepAndAreHeldToTheStops)
+{
+    EXPECT_EQ(stepDiscreteStop(2, -1, 5), 1);
+    EXPECT_EQ(stepDiscreteStop(2, 1, 5), 3);
+    EXPECT_EQ(stepDiscreteStop(0, -1, 5), 0); // Held at the high end
+    EXPECT_EQ(stepDiscreteStop(4, 1, 5), 4);  // And at the low end
+    EXPECT_EQ(stepDiscreteStop(2, -5, 5), 0); // Home
+    EXPECT_EQ(stepDiscreteStop(2, 5, 5), 4);  // End
+    // From beyond the start (Realtime): toward the high end stays; toward the low end lands on a stop.
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, -1, 5), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, -5, 5), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, 1, 5), 0);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, 5, 5), 4);
+    EXPECT_EQ(stepDiscreteStop(3, 1, 0), 3); // No stops: nothing moves
+}
+
+TEST(DiscreteSliderTest, TheTrackRunsThroughTheStopsColours)
+{
+    for (std::size_t i = 0; i < WINDOWS_PRIORITY_STOPS.size(); ++i)
+    {
+        const float position = discreteStopPosition(static_cast<int32_t>(i), 5);
+        EXPECT_EQ(discreteTrackColorNice(position, WINDOWS_PRIORITY_STOPS), WINDOWS_PRIORITY_STOPS.at(i).colorNice);
+    }
+    // Halfway between Normal (0) and Below Normal (10).
+    EXPECT_EQ(discreteTrackColorNice(0.625F, WINDOWS_PRIORITY_STOPS), 5);
+    EXPECT_EQ(discreteTrackColorNice(0.5F, {}), Domain::Priority::NORMAL_NICE);
+}
+
+TEST(DiscreteSliderTest, ScaleLabelsStayInsideTheTrackAndApart)
+{
+    EXPECT_FLOAT_EQ(discreteStopLabelX(100.0F, 40.0F, 0, 5), 100.0F); // First: starts at its stop
+    EXPECT_FLOAT_EQ(discreteStopLabelX(300.0F, 40.0F, 4, 5), 260.0F); // Last: ends at its stop
+    EXPECT_FLOAT_EQ(discreteStopLabelX(200.0F, 40.0F, 2, 5), 180.0F); // Others: centred
+
+    // Five labels 40 wide, 10 apart: the end pairs need 40 + 20 + 10 = 70 per gap, the middle 50.
+    const std::array<float, 5> widths{40.0F, 40.0F, 40.0F, 40.0F, 40.0F};
+    const auto widthOf = [&widths](std::size_t i)
+    {
+        return widths.at(i);
+    };
+    const float minWidth = discreteStopLabelsMinWidth(widths.size(), widthOf, 10.0F);
+    EXPECT_FLOAT_EQ(minWidth, 280.0F);
+    // At that width no neighbours overlap.
+    for (std::size_t i = 0; i + 1 < widths.size(); ++i)
+    {
+        const auto index = static_cast<int32_t>(i);
+        const float rightEdge = discreteStopLabelX(discreteStopPosition(index, 5) * minWidth, widths.at(i), index, 5) + widths.at(i);
+        const float nextLeft = discreteStopLabelX(discreteStopPosition(index + 1, 5) * minWidth, widths.at(i + 1), index + 1, 5);
+        EXPECT_LE(rightEdge + 10.0F, nextLeft + 0.001F);
+    }
+    EXPECT_FLOAT_EQ(discreteStopLabelsMinWidth(0, widthOf, 10.0F), 0.0F);
+}
+
+// The discrete slider's track and its scale labels (#1984). The labels' widths do not scale exactly
+// with the em -- the font rounds glyphs to whole pixels at each size -- so measured against the
+// authored track (37.5 em) they come out a little under it at some display scales and a little over
+// at others. Modelled here on the Windows class slider at the Medium font: under at 100/150/175 %,
+// a few pixels over at 200 %, where every label used to be dropped although the card had room.
+struct ScaleCase
+{
+    float scale;
+    float labelsMinPx; // discreteStopLabelsMinWidth() at that scale
+};
+constexpr std::array<ScaleCase, 4> SCALE_CASES{
+    ScaleCase{.scale = 1.0F, .labelsMinPx = 396.25F},
+    ScaleCase{.scale = 1.5F, .labelsMinPx = 597.5F},
+    ScaleCase{.scale = 1.75F, .labelsMinPx = 698.375F},
+    ScaleCase{.scale = 2.0F, .labelsMinPx = 803.625F}, // Authored: 800
+};
+
+TEST(DiscreteSliderTest, WithRoomTheLabelsShowAtEveryDisplayScale)
+{
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        const float authored = PRIORITY_SLIDER_WIDTH_EM * em;
+        // Unconstrained, and in a card with room to spare (1900 px wide at that scale).
+        for (const float available : {0.0F, 1900.0F})
+        {
+            const DiscreteTrackFit fit = fitDiscreteTrack(em, c.labelsMinPx, available);
+            EXPECT_TRUE(fit.showLabels);
+            // The authored width where the labels fit in it; their own width where they need more.
+            EXPECT_FLOAT_EQ(fit.trackWidth, std::max(authored, c.labelsMinPx));
+            EXPECT_GE(fit.trackWidth, c.labelsMinPx);
+        }
+    }
+}
+
+TEST(DiscreteSliderTest, At200PercentTheTrackWidensPastItsAuthoredWidthForTheLabels)
+{
+    // The issue: 800 px authored, labels needing 803.625 px, in a card that has them.
+    const float em = App::REFERENCE_EM_PX * 2.0F;
+    const DiscreteTrackFit fit = fitDiscreteTrack(em, 803.625F, 804.0F);
+    EXPECT_TRUE(fit.showLabels);
+    EXPECT_FLOAT_EQ(fit.trackWidth, 803.625F);
+    EXPECT_GT(fit.trackWidth, PRIORITY_SLIDER_WIDTH_EM * em);
+}
+
+TEST(DiscreteSliderTest, AContainerSizedInWholePixelsUpFromTheLabelsShowsThem)
+{
+    // Containers are sized std::ceil()'d from the labels' width (ImGui truncates a window's size); at
+    // a fractional scale that leaves the track exactly the labels' width or a fraction more, never less.
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        const DiscreteTrackFit atCeil = fitDiscreteTrack(em, c.labelsMinPx, std::ceil(c.labelsMinPx));
+        EXPECT_TRUE(atCeil.showLabels);
+        EXPECT_GE(atCeil.trackWidth, c.labelsMinPx);
+        // Float noise in the sums, a fraction of a pixel short, still fits.
+        EXPECT_TRUE(fitDiscreteTrack(em, c.labelsMinPx, c.labelsMinPx - 0.25F).showLabels);
+    }
+}
+
+TEST(DiscreteSliderTest, OnlyATrackReallyTooNarrowDropsTheLabels)
+{
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        // A pixel short: the labels would touch, so they go; the track still fills the space, never clipped.
+        const float tooNarrow = std::floor(c.labelsMinPx) - 1.0F;
+        const DiscreteTrackFit fit = fitDiscreteTrack(em, c.labelsMinPx, tooNarrow);
+        EXPECT_FALSE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, tooNarrow);
+    }
+    // Far too narrow: a short track, still on screen.
+    const DiscreteTrackFit tiny = fitDiscreteTrack(App::REFERENCE_EM_PX, 396.25F, 120.0F);
+    EXPECT_FALSE(tiny.showLabels);
+    EXPECT_FLOAT_EQ(tiny.trackWidth, 120.0F);
+}
+
+TEST(DiscreteSliderTest, FitTreatsInvalidInputsAsNoLabelsAndNoLimit)
+{
+    const float authored = PRIORITY_SLIDER_WIDTH_EM * App::REFERENCE_EM_PX;
+    for (const float labels : {0.0F, -5.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        const DiscreteTrackFit fit = fitDiscreteTrack(App::REFERENCE_EM_PX, labels, 0.0F);
+        EXPECT_TRUE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, authored);
+    }
+    for (const float available : {-1.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        const DiscreteTrackFit fit = fitDiscreteTrack(App::REFERENCE_EM_PX, 420.0F, available);
+        EXPECT_TRUE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, 420.0F);
+    }
 }
 
 } // namespace

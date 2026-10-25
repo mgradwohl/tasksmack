@@ -4,6 +4,7 @@
 /// fitting the limit, and the name actually reaching the OS (Linux: the kernel's thread name;
 /// Windows: the thread description).
 
+#include "NonAsciiTestNames.h"
 #include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
@@ -25,6 +26,9 @@
 #include <processthreadsapi.h>
 // clang-format on
 #else
+#include <format>
+#include <utility>
+
 #include <pthread.h>
 #endif
 
@@ -56,14 +60,39 @@ TEST(ThreadNameTest, CutNeverSplitsUtf8Sequence)
 
 TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
 {
-    constexpr std::array NAMES{Platform::UI_THREAD_NAME,
-                               Platform::SAMPLER_THREAD_NAME,
-                               Platform::PROCESS_SAMPLER_THREAD_NAME,
-                               Platform::SYSTEM_SAMPLER_THREAD_NAME};
+    constexpr std::array NAMES{
+        Platform::UI_THREAD_NAME,
+        Platform::SAMPLER_THREAD_NAME,
+        Platform::PROCESS_SAMPLER_THREAD_NAME,
+        Platform::SYSTEM_SAMPLER_THREAD_NAME,
+        Platform::STORAGE_SAMPLER_THREAD_NAME,
+        Platform::GPU_SAMPLER_THREAD_NAME,
+        Platform::CONNECTIONS_READ_THREAD_NAME,
+        Platform::MODULES_READ_THREAD_NAME,
+        Platform::OPEN_FILES_READ_THREAD_NAME,
+        Platform::SECURITY_READ_THREAD_NAME,
+        Platform::OPEN_FILES_NAMER_THREAD_NAME,
+        Platform::SYSTEM_INFO_READ_THREAD_NAME,
+        Platform::CRASH_HISTORY_READ_THREAD_NAME,
+        Platform::BATTERY_READ_THREAD_NAME,
+        Platform::UDP_TRACE_THREAD_NAME,
+        Platform::PROCESS_ACTION_THREAD_NAME,
+        Platform::HELPER_LAUNCH_THREAD_NAME,
+        Platform::SETTINGS_SAVE_THREAD_NAME,
+    };
     for (const std::string_view name : NAMES)
     {
         EXPECT_LE(name.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH) << name;
     }
+}
+
+// #2768: the Windows helper's launch thread, which sits behind a UAC prompt for minutes, has a name of
+// its own that fits the limit, so it is attributable wherever the others are.
+TEST(ThreadNameTest, TheHelperLaunchThreadHasItsOwnShortName)
+{
+    EXPECT_EQ(Platform::HELPER_LAUNCH_THREAD_NAME, "ts-uac-launch");
+    EXPECT_LE(Platform::HELPER_LAUNCH_THREAD_NAME.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH);
+    EXPECT_EQ(Platform::truncateThreadName(Platform::HELPER_LAUNCH_THREAD_NAME), "ts-uac-launch") << "nothing is cut";
 }
 
 #if !defined(_WIN32)
@@ -91,6 +120,31 @@ TEST(ThreadNameTest, SetCurrentThreadNameReachesKernelTruncated)
     worker.join();
     EXPECT_TRUE(named);
     EXPECT_EQ(observed, "ts-a-very-long-");
+}
+
+TEST(ThreadNameTest, NonAsciiNameReachesKernelCutOnACodePointBoundary)
+{
+    // The kernel takes the name as bytes. "任务管理器" is exactly 15 bytes, so the emoji after it is
+    // dropped whole rather than split; the shorter names fit as they are.
+    const std::string longName = std::format("{}{}", TestSupport::CJK_NAME, TestSupport::EMOJI_NAME);
+    for (const auto& [name, expected] : std::array<std::pair<std::string, std::string>, 3>{{
+             {longName, std::string(TestSupport::CJK_NAME)},
+             {std::string(TestSupport::LATIN_NAME), std::string(TestSupport::LATIN_NAME)},
+             {std::string(TestSupport::RTL_NAME), std::string(TestSupport::RTL_NAME)},
+         }})
+    {
+        bool named = false;
+        std::string observed;
+        std::thread worker(
+            [&]
+            {
+                named = Platform::setCurrentThreadName(name);
+                observed = currentThreadName();
+            });
+        worker.join();
+        EXPECT_TRUE(named) << name;
+        EXPECT_EQ(observed, expected);
+    }
 }
 
 TEST(ThreadNameTest, MainThreadNameLeavesProcessNameAlone)
@@ -125,6 +179,22 @@ TEST(ThreadNameTest, SetCurrentThreadNameSetsWindowsDescriptionUntruncated)
     EXPECT_TRUE(named);
     // Windows has no 15-byte limit, so the whole name is kept.
     EXPECT_EQ(observed, L"ts-a-very-long-thread-name");
+}
+
+TEST(ThreadNameTest, NonAsciiNameReachesWindowsDescriptionIntact)
+{
+    // The description is UTF-16: every script, the emoji's surrogate pair included, comes back whole.
+    bool named = false;
+    std::wstring observed;
+    std::thread worker(
+        [&]
+        {
+            named = Platform::setCurrentThreadName(TestSupport::allNonAsciiNames());
+            observed = currentThreadDescription();
+        });
+    worker.join();
+    EXPECT_TRUE(named);
+    EXPECT_EQ(observed, L"任务管理器🔥Ünïcödéمدير");
 }
 
 TEST(ThreadNameTest, MainThreadNameSetsWindowsDescription)

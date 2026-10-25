@@ -2,7 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstddef>
 #include <limits>
+#include <vector>
 
 namespace UI::DialogMetrics
 {
@@ -176,6 +179,55 @@ TEST(DialogMetricsTest, DialogMaxExtentIsUnboundedForAnUnusableViewport)
     EXPECT_EQ(computeDialogMaxExtent(nan), std::numeric_limits<float>::max());
 }
 
+// ---- A header row that stacks when it doesn't fit (#1490 review) ----
+
+TEST(DialogMetricsTest, SideBySideFitsWhenTheRowHasRoom)
+{
+    EXPECT_TRUE(fitsSideBySide(300.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(208.0F, 64.0F, 16.0F, 128.0F)); // Exactly
+}
+
+TEST(DialogMetricsTest, SideBySideStacksWhenTheRowIsTooNarrow)
+{
+    EXPECT_FALSE(fitsSideBySide(207.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_FALSE(fitsSideBySide(0.0F, 64.0F, 16.0F, 128.0F));
+}
+
+TEST(DialogMetricsTest, SideBySideIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(fitsSideBySide(nan, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(144.0F, 64.0F, -16.0F, nan));
+}
+
+// ---- A compact dialog's own, smaller cap (#1490) ----
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentIsItsOwnFraction)
+{
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 0.7F), 630.0F);
+    EXPECT_LT(computeCompactDialogMaxExtent(900.0F, 0.7F), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentNeverExceedsTheSharedCap)
+{
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 1.5F), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentFallsBackToTheSharedCapForAnUnusableFraction)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 0.0F), computeDialogMaxExtent(900.0F));
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, -0.5F), computeDialogMaxExtent(900.0F));
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, nan), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentIsUnboundedForAnUnusableViewport)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(computeCompactDialogMaxExtent(0.0F, 0.7F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeCompactDialogMaxExtent(nan, 0.7F), std::numeric_limits<float>::max());
+}
+
 // The issue's scenario: a 400px-tall window. The dialog may take 360px; with 120px of title bar,
 // padding and button row reserved, the body scrolls past 240px and the buttons stay inside.
 TEST(DialogMetricsTest, ScrollableBodyLeavesRoomForThePinnedRows)
@@ -206,27 +258,92 @@ TEST(DialogMetricsTest, ScrollableBodySurvivesDegenerateReservations)
     EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, -50.0F, 40.0F), 360.0F);
     EXPECT_FLOAT_EQ(computeScrollableBodyMaxHeight(360.0F, 400.0F, nan), 0.0F);
 }
-TEST(DialogMetricsTest, ActionButtonsKeepTheirWidthWhenThePairFits)
+// ---- Orphan-free wrap width (#1986) ----
+
+// Words 10px wide with 2px spaces: n words on a line take 12n - 2 px.
+constexpr float WORD = 10.0F;
+constexpr float SPACE = 2.0F;
+
+[[nodiscard]] std::vector<float> words(std::size_t count)
 {
-    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 400.0F), 150.0F);
+    std::vector<float> widths(count, WORD); // Not braced: that would be the two-element list {count, WORD}
+    return widths;
 }
 
-TEST(DialogMetricsTest, ActionButtonsShrinkSoThePairFitsANarrowRow)
+TEST(DialogMetricsTest, WrapLayoutPacksWordsGreedily)
 {
-    // #1253 review: at a large font preset the capped dialog is narrower than the Cancel/Apply pair;
-    // both shrink equally so the pair (plus the gap) exactly fills the row.
-    const float width = fitActionButtonPairWidth(300.0F, 8.0F, 400.0F);
-    EXPECT_FLOAT_EQ(width, 196.0F);
-    EXPECT_FLOAT_EQ((width * 2.0F) + 8.0F, 400.0F);
+    const std::vector<float> five = words(5); // 58px unwrapped
+    EXPECT_EQ(layoutWrappedParagraph(five, SPACE, 58.0F).lines, 1);
+    const WrapLayout atFour = layoutWrappedParagraph(five, SPACE, 46.0F); // Four fit exactly
+    EXPECT_EQ(atFour.lines, 2);
+    EXPECT_EQ(atFour.lastLineWords, 1U);
+    EXPECT_TRUE(endsInOrphan(atFour));
+    const WrapLayout atThree = layoutWrappedParagraph(five, SPACE, 45.0F);
+    EXPECT_EQ(atThree.lines, 2);
+    EXPECT_EQ(atThree.lastLineWords, 2U);
+    EXPECT_FALSE(endsInOrphan(atThree));
+    EXPECT_EQ(layoutWrappedParagraph({}, SPACE, 45.0F).lines, 0);
+    EXPECT_FALSE(endsInOrphan(layoutWrappedParagraph(words(1), SPACE, 45.0F))); // One word alone is no orphan
 }
 
-TEST(DialogMetricsTest, ActionButtonsSurviveDegenerateInputs)
+TEST(DialogMetricsTest, OrphanFreeWrapKeepsAWidthThatLeavesNoOrphan)
 {
+    const std::vector<std::vector<float>> text{words(5), words(2)};
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 100.0F, 20.0F, 400.0F), 100.0F); // All on one line
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 40.0F, 20.0F, 400.0F), 40.0F);   // 3 + 2: fine
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapGrowsToPullTheLastWordBack)
+{
+    // #1986: the sentence is a whisker wider than the cap, so its last word wrapped alone. Growing
+    // to the sentence's own width keeps it on one line.
+    const std::vector<std::vector<float>> text{words(5), words(2)};
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 55.0F, 20.0F, 400.0F), 59.0F);
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapLeavesTheDialogAWholePixelWide)
+{
+    // ImGui truncates a window's width: the wrap width plus the padding comes out whole, so the
+    // dialog the caller sizes to it wraps where it was decided.
+    const std::vector<std::vector<float>> text{words(5)};
+    const float width = computeOrphanFreeWrapWidth(text, SPACE, 55.0F, 20.0F, 400.0F, 7.5F);
+    EXPECT_FLOAT_EQ(width, 58.5F);
+    EXPECT_FLOAT_EQ(width + 7.5F, std::floor(width + 7.5F));
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapNarrowsWhenItCannotGrow)
+{
+    const std::vector<std::vector<float>> text{words(5)};
+    // No room to grow: wrap a word earlier, 3 + 2.
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 55.0F, 20.0F, 55.0F), 35.0F);
+    // Growing by one word is enough for a longer paragraph too: 9 words at 4 a line leave 4 + 4 + 1,
+    // at 5 a line 5 + 4.
+    const std::vector<std::vector<float>> nine{words(9)};
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(nine, SPACE, 47.0F, 20.0F, 400.0F), 59.0F);
+}
+
+TEST(DialogMetricsTest, OrphanFreeWrapKeepsThePreferredWidthWhenNothingHelps)
+{
+    const std::vector<std::vector<float>> text{words(5)};
+    // Neither growing (capped) nor narrowing (floored) is allowed.
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, SPACE, 55.0F, 55.0F, 55.0F), 55.0F);
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, nan), 150.0F);
-    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 0.0F), 150.0F);
-    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(150.0F, 8.0F, 4.0F), 0.0F);
-    EXPECT_FLOAT_EQ(fitActionButtonPairWidth(nan, 8.0F, 400.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth(text, nan, 100.0F, nan, nan), 100.0F);
+    EXPECT_FLOAT_EQ(computeOrphanFreeWrapWidth({}, SPACE, 55.0F, 20.0F, 400.0F), 55.0F);
 }
+
+TEST(DialogMetricsTest, OrphanFreeWrapChecksEveryParagraph)
+{
+    // Growing for the first paragraph must not orphan the second: at 4 words a line 5 words end 4 + 1;
+    // at 5 a line, 6 words would end 5 + 1. So it narrows to 3 a line: 3 + 2 and 3 + 3.
+    const std::vector<std::vector<float>> text{words(5), words(6)};
+    const float width = computeOrphanFreeWrapWidth(text, SPACE, 47.0F, 20.0F, 400.0F);
+    EXPECT_FLOAT_EQ(width, 35.0F);
+    for (const std::vector<float>& paragraph : text)
+    {
+        EXPECT_FALSE(endsInOrphan(layoutWrappedParagraph(paragraph, SPACE, width))) << width;
+    }
+}
+
 } // namespace
 } // namespace UI::DialogMetrics

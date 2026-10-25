@@ -4,7 +4,7 @@
 // directly instead of only indirectly through a live SDL/OpenGL application instance. Each
 // function takes every input explicitly rather than reading Application member state -- see
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
-// App/TitleBarGeometry.h, App/Panels/AdaptiveIntervalUtils.h).
+// App/TitleBarGeometry.h).
 
 #include <algorithm>
 #include <cmath>
@@ -79,7 +79,10 @@ template<typename PollAndDispatch, typename ElapsedMs>
 
 /// Whether the current frame counts as an interactive (move/resize) frame: either this
 /// frame's event drain produced a resize, a prior resize/move is still within its redraw
-/// grace period, or any resize event was seen this drain.
+/// grace period, or any resize event was seen this drain. Ordinary input (a wheel, a button, a key,
+/// text) is not a move/resize interaction: it is paced through computeInputRedrawUntil() and
+/// computeFrameRateCap() instead, and never toggles vsync (computeVsyncTransition()), whose
+/// disable/restore exists for the compositor stalls of a live resize (#843).
 [[nodiscard]] inline auto computeIsInteracting(bool needsResizeRedraw, bool forceInteractionRedraw, std::uint32_t resizeEventCount) -> bool
 {
     return needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0);
@@ -91,6 +94,20 @@ template<typename PollAndDispatch, typename ElapsedMs>
 [[nodiscard]] inline auto isWithinInteractionGrace(double nowSeconds, double interactionRedrawUntilSeconds) -> bool
 {
     return nowSeconds < interactionRedrawUntilSeconds;
+}
+
+/// When the input redraw grace ends (#843), after a drain that handled @p inputEventCount input events
+/// (WindowEventRouting::isInputEvent): @p graceSeconds after @p nowSeconds if it handled any, otherwise
+/// the deadline as it was, @p inputRedrawUntilSeconds. While isWithinInteractionGrace(now, deadline)
+/// holds, computeFrameRateCap() paces the regular frame as an input frame, so the frames in which Dear
+/// ImGui finishes reacting to the input (a popup drawn the frame after it is opened, a tab's content
+/// the frame after the click, a hover delay elapsing) come at the full rate rather than the idle one.
+/// The grace is a deadline, not a frame count: frames are never counted to time anything.
+[[nodiscard]] constexpr auto
+computeInputRedrawUntil(double nowSeconds, std::uint32_t inputEventCount, double inputRedrawUntilSeconds, double graceSeconds) noexcept
+    -> double
+{
+    return (inputEventCount > 0) ? nowSeconds + graceSeconds : inputRedrawUntilSeconds;
 }
 
 /// P1: adaptive-vsync transition to apply given the previous and current interaction state.
@@ -247,8 +264,9 @@ computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResiz
 ///
 /// - Hidden (minimized or occluded): 0. Nothing on screen to animate, so the hidden idle sleep
 ///   applies (#1125: a covered window used to keep animating at 60 fps).
-/// - Input arrived this drain: @p inputFps. Input-driven frames used to be uncapped -- the display
-///   rate with vsync, unbounded without (#1153) -- now they share the full animation rate.
+/// - Input arrived this drain, or an input event's grace is still running (@p hadInput, see
+///   computeInputRedrawUntil(), #843): @p inputFps. Input-driven frames used to be uncapped -- the
+///   display rate with vsync, unbounded without (#1153) -- now they share the full animation rate.
 /// - Otherwise @p animationFps (computeAnimationRate()): charts animate at a steady rate whatever the
 ///   input (#1037), but only as fast as their on-screen motion needs (#1125).
 [[nodiscard]] inline auto computeFrameRateCap(double animationFps, bool hadInput, bool isHidden, double inputFps) noexcept -> double
@@ -294,6 +312,33 @@ computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResiz
     const auto periodMs = static_cast<double>(computeIdleSleepMs(isHidden, idleFrameSleepMs, minimizedFrameSleepMs));
     const double elapsedMs = std::max(0.0, secondsSinceFrameStart) * 1000.0;
     return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
+}
+
+/// How waitForIdleEvent() ended.
+enum class IdleWaitOutcome : std::uint8_t
+{
+    TimedOut,           // no event: the wait ran to its timeout and the queue was empty after it
+    Woke,               // an event woke the wait
+    PolledAfterTimeout, // the wait timed out, but an event was already queued (#1450)
+};
+
+/// The idle wait (#1409, #1450): wait for an event with @p wait (SDL_WaitEventTimeout), and when it
+/// times out, take one more look with @p poll (SDL_PollEvent). Both take an event off the queue into
+/// @p event; any outcome but TimedOut leaves one there, which the loop treats as a wake: it skips the
+/// render and dispatches the event first in the next drain.
+///
+/// The poll is for a wake that never arrives. An event pushed from another thread wakes the wait
+/// through the display server on X11 and Wayland (SDL_SendWakeupEvent), and under load that can land
+/// after the timeout, with the event already queued. Without the poll that frame rendered without
+/// the event, which was handled one frame later. An empty poll costs about 2 us once per idle frame.
+template<typename Event, typename Wait, typename Poll>
+[[nodiscard]] auto waitForIdleEvent(Event& event, Wait wait, Poll poll) -> IdleWaitOutcome
+{
+    if (wait(event))
+    {
+        return IdleWaitOutcome::Woke;
+    }
+    return poll(event) ? IdleWaitOutcome::PolledAfterTimeout : IdleWaitOutcome::TimedOut;
 }
 
 } // namespace Core::FramePacing

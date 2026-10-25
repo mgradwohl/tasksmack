@@ -1,5 +1,6 @@
 #include "Platform/NVMLTypes.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -31,6 +32,10 @@ struct MockDevice
     // NVML_ERROR_NOT_SUPPORTED, so per-device sensor capabilities can be tested (#1112).
     bool hasPower;
     bool hasFan;
+    // A GPU without NVENC/NVDEC answers the video-engine queries NVML_ERROR_NOT_SUPPORTED (#1477).
+    bool hasVideoEngines;
+    unsigned int encoderPercent;
+    unsigned int decoderPercent;
     const char* busId; // nvmlPciInfo_t::busId, eight-digit domain as NVML prints it (#1117)
     unsigned int pciBus;
 };
@@ -53,6 +58,9 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .pcieRxKilobytes = 64,
      .hasPower = true,
      .hasFan = true,
+     .hasVideoEngines = true,
+     .encoderPercent = 30,
+     .decoderPercent = 12,
      .busId = "00000000:01:00.0",
      .pciBus = 0x01},
     {.name = "Mock NVIDIA GPU 1",
@@ -72,6 +80,9 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .pcieRxKilobytes = 16,
      .hasPower = false,
      .hasFan = false,
+     .hasVideoEngines = false,
+     .encoderPercent = 0,
+     .decoderPercent = 0,
      .busId = "00000000:41:00.0",
      .pciBus = 0x41},
 }};
@@ -204,7 +215,7 @@ constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::ma
 unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
 int g_UuidCallsBeforeFailure = -1; // -1: never fail
 unsigned int g_UuidCalls = 0;
-bool g_FailSensorReads = false; // utilization, memory, temperature, power and graphics clock time out (#1111)
+bool g_FailSensorReads = false; // utilization, memory, temperature, power, graphics clock, encoder and decoder time out (#1111)
 // #1116: how many devices NVML reports (the first N of MOCK_DEVICES), so a test can hot-plug or remove
 // one; which device's sensor reads return NVML_ERROR_GPU_IS_LOST; and how often NVML was initialised.
 unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
@@ -221,6 +232,10 @@ constexpr const char* PREVIOUS_OCCUPANT_UUID = "mock-nvml-previous-uuid";
 // #1353: which mock device's nvmlDeviceGetPciInfo_v3 fails (NO_FAILING_HANDLE: none). Set through
 // tasksmackNvmlMockSetFailingPciInfoDevice().
 unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+// #1395: nvmlDeviceGetCount_v2 fails, and nvmlDeviceGetIndex fails. Set through tasksmackNvmlMockFailDeviceCount()
+// and tasksmackNvmlMockFailGetIndex().
+bool g_FailDeviceCount = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+bool g_FailGetIndex = false;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
 
 /// Whether `dev` currently presents as the previous occupant of device 0's slot.
 [[nodiscard]] bool isPreviousOccupant(const MockDevice* dev)
@@ -232,6 +247,34 @@ unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguideli
 [[nodiscard]] bool isLost(const MockDevice* dev)
 {
     return g_LostDeviceIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_LostDeviceIndex];
+}
+
+// The video engines' utilization (#1477), as real NVML reports it: the percentage and the period
+// it was averaged over.
+NVML::nvmlReturn_t
+videoEngineUtilization(NVML::nvmlDevice_t device, bool encoder, unsigned int* utilization, unsigned int* samplingPeriodUs)
+{
+    const auto* dev = safeDevice(device);
+    if (dev == nullptr)
+    {
+        return NVML::NVML_ERROR_INVALID_ARGUMENT;
+    }
+    if (isLost(dev))
+    {
+        return NVML::NVML_ERROR_GPU_IS_LOST;
+    }
+    if (!dev->hasVideoEngines)
+    {
+        return NVML::NVML_ERROR_NOT_SUPPORTED;
+    }
+    if (g_FailSensorReads)
+    {
+        return NVML::NVML_ERROR_TIMEOUT;
+    }
+    constexpr unsigned int SAMPLING_PERIOD_US = 167'000;
+    *utilization = encoder ? dev->encoderPercent : dev->decoderPercent;
+    *samplingPeriodUs = SAMPLING_PERIOD_US;
+    return NVML::NVML_SUCCESS;
 }
 
 } // namespace
@@ -257,6 +300,10 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int* count)
     {
+        if (g_FailDeviceCount)
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         *count = g_DeviceCount;
         return NVML::NVML_SUCCESS;
     }
@@ -308,6 +355,10 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetIndex(NVML::nvmlDevice_t device, unsigned int* index)
     {
+        if (g_FailGetIndex)
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         const auto idx = deviceIndex(device);
         if (idx == INVALID_DEVICE_INDEX)
         {
@@ -503,6 +554,16 @@ extern "C"
         return NVML::NVML_SUCCESS;
     }
 
+    NVML::nvmlReturn_t nvmlDeviceGetEncoderUtilization(NVML::nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
+    {
+        return videoEngineUtilization(device, true, utilization, samplingPeriodUs);
+    }
+
+    NVML::nvmlReturn_t nvmlDeviceGetDecoderUtilization(NVML::nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
+    {
+        return videoEngineUtilization(device, false, utilization, samplingPeriodUs);
+    }
+
     NVML::nvmlReturn_t nvmlDeviceGetPcieThroughput(NVML::nvmlDevice_t device, NVML::nvmlPcieUtilCounter_t counter, unsigned int* throughput)
     {
         const auto* dev = safeDevice(device);
@@ -511,6 +572,36 @@ extern "C"
             return NVML::NVML_ERROR_INVALID_ARGUMENT;
         }
         *throughput = (counter == NVML::NVML_PCIE_UTIL_TX_BYTES) ? dev->pcieTxKilobytes : dev->pcieRxKilobytes;
+        return NVML::NVML_SUCCESS;
+    }
+
+    // Per-process utilization (#2589): two samples for pid 123 (the newer one counts) and one for 456, all
+    // at or before timestamp 2000; asked for samples after 2000 or later, there are none.
+    NVML::nvmlReturn_t nvmlDeviceGetProcessUtilization(NVML::nvmlDevice_t device,
+                                                       NVML::nvmlProcessUtilizationSample_t* samples,
+                                                       unsigned int* count,
+                                                       unsigned long long lastSeenTimeStamp)
+    {
+        if (safeDevice(device) == nullptr || count == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        constexpr std::array<NVML::nvmlProcessUtilizationSample_t, 3> SAMPLES{{
+            {.pid = 123U, .timeStamp = 1000ULL, .smUtil = 10U, .memUtil = 1U, .encUtil = 0U, .decUtil = 0U},
+            {.pid = 123U, .timeStamp = 2000ULL, .smUtil = 37U, .memUtil = 5U, .encUtil = 4U, .decUtil = 6U},
+            {.pid = 456U, .timeStamp = 1500ULL, .smUtil = 12U, .memUtil = 2U, .encUtil = 0U, .decUtil = 0U},
+        }};
+        if (lastSeenTimeStamp >= 2000ULL)
+        {
+            return NVML::NVML_ERROR_NOT_FOUND;
+        }
+        if (samples == nullptr || *count < SAMPLES.size())
+        {
+            *count = static_cast<unsigned int>(SAMPLES.size());
+            return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+        }
+        std::ranges::copy(SAMPLES, samples);
+        *count = static_cast<unsigned int>(SAMPLES.size());
         return NVML::NVML_SUCCESS;
     }
 
@@ -548,7 +639,7 @@ extern "C"
         g_UuidCalls = 0;
     }
 
-    // Test control: make the utilization, memory, temperature, power and graphics-clock reads fail with
+    // Test control: make the utilization, memory, temperature, power, graphics-clock, encoder and decoder reads fail with
     // NVML_ERROR_TIMEOUT, as a busy or resetting GPU does (#1111).
     void tasksmackNvmlMockFailSensorReads(int fail)
     {
@@ -608,6 +699,17 @@ extern "C"
     void tasksmackNvmlMockSetFailingPciInfoDevice(unsigned int index)
     {
         g_FailingPciInfoIndex = index;
+    }
+
+    // Test controls (#1395): nvmlDeviceGetCount_v2, and nvmlDeviceGetIndex, fail while set.
+    void tasksmackNvmlMockFailDeviceCount(int fail)
+    {
+        g_FailDeviceCount = (fail != 0);
+    }
+
+    void tasksmackNvmlMockFailGetIndex(int fail)
+    {
+        g_FailGetIndex = (fail != 0);
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

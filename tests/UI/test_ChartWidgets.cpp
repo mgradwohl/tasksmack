@@ -1,8 +1,11 @@
+#include "Domain/SamplingConfig.h"
+#include "TestLocales.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
+#include <implot.h>
 
 #include <algorithm>
 #include <array>
@@ -11,11 +14,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -230,6 +235,25 @@ TEST(ChartWidgetsTest, HoldLastValuesToNowLeavesAnAxisAlreadyAtNowAlone)
 
 // ========== Stacked User/System CPU bands (#1180) ==========
 
+/// The whole stack for @p points, as the stacked charts build it: its x (gatherReducedTimes(), every
+/// frame) and its band edges (buildUserSystemStackValues(), once per choice of points, #843).
+template<typename T>
+void buildUserSystemStack(std::span<const ReducedPoint> points,
+                          std::span<const double> time,
+                          std::span<const T> user,
+                          std::span<const T> system,
+                          UserSystemStack& out)
+{
+    gatherReducedTimes(points, time, out.x);
+    buildUserSystemStackValues<T>(points, user, system, out);
+}
+
+/// Whether @p a and @p b are the same value, two NaNs (two gaps) included.
+[[nodiscard]] bool sameValue(double a, double b)
+{
+    return (std::isnan(a) && std::isnan(b)) || a == b; // Exact: both are copies of one sample
+}
+
 TEST(ChartWidgetsStackTest, GatherReducedValuesCopiesKeptSamplesAndGapsAsNaN)
 {
     const std::vector<float> values{1.5F, 2.5F, 3.5F, 4.5F};
@@ -338,6 +362,163 @@ TEST(ChartWidgetsStackTest, UserSystemStackReusesItsBuffersAcrossCalls)
     ASSERT_EQ(stack.base.size(), 1U);
     EXPECT_DOUBLE_EQ(stack.base[0], 0.0);
     EXPECT_DOUBLE_EQ(stack.systemTop[0], 4.0);
+}
+
+TEST(ChartWidgetsStackTest, GatherReducedTimesTakesEachKeptPointsTime)
+{
+    const std::vector<double> time{-4.0, -3.0, -2.0, -1.0};
+    const std::vector<ReducedPoint> points{{.index = 0, .gap = false}, {.index = 2, .gap = true}, {.index = 3, .gap = false}};
+    std::vector<double> x{9.0, 9.0, 9.0, 9.0, 9.0}; // Reused buffer, longer than needed
+    gatherReducedTimes(points, time, x);
+    ASSERT_EQ(x.size(), 3U);
+    EXPECT_DOUBLE_EQ(x[0], -4.0);
+    EXPECT_DOUBLE_EQ(x[1], -2.0); // A gap keeps its time
+    EXPECT_DOUBLE_EQ(x[2], -1.0);
+}
+
+// ========== Values kept across frames, x rebuilt each frame (#843) ==========
+
+TEST(ChartWidgetsStackTest, HeldValuesAndAHeldTimeDrawWhatHoldLastValuesToNowDoes)
+{
+    // The stacked charts keep their band edges across frames with the held value already appended
+    // (appendHeldValues(), once per choice of points) and rebuild only x each frame (holdTimeToNow()).
+    // Drawing x.size() points of each must draw exactly what holdLastValuesToNow() on fresh copies
+    // did: the held point when the last sample is recent, none when it is too old or already at now.
+    constexpr double MAX_HOLD_SECONDS = 4.0;
+    for (const double lastX : {-1.5, -5.0, 0.0})
+    {
+        const std::vector<double> time{-6.0, lastX};
+        const std::vector<double> bandValues{10.0, 20.0};
+        const std::vector<double> lineValues{1.0, std::numeric_limits<double>::quiet_NaN()};
+
+        std::vector<double> xBefore = time;
+        std::vector<double> bandBefore = bandValues;
+        std::vector<double> lineBefore = lineValues;
+        holdLastValuesToNow(xBefore, {&bandBefore, &lineBefore}, MAX_HOLD_SECONDS);
+
+        std::vector<double> band = bandValues;
+        std::vector<double> line = lineValues;
+        appendHeldValues({&band, &line});
+        std::vector<double> x = time;
+        holdTimeToNow(x, MAX_HOLD_SECONDS);
+
+        ASSERT_EQ(x.size(), xBefore.size()) << "last sample at " << lastX;
+        ASSERT_GE(band.size(), x.size());
+        ASSERT_GE(line.size(), x.size());
+        for (std::size_t k = 0; k < x.size(); ++k)
+        {
+            EXPECT_TRUE(sameValue(x[k], xBefore[k])) << "x[" << k << "], last sample at " << lastX;
+            EXPECT_TRUE(sameValue(band[k], bandBefore[k])) << "band[" << k << "], last sample at " << lastX;
+            EXPECT_TRUE(sameValue(line[k], lineBefore[k])) << "line[" << k << "], last sample at " << lastX;
+        }
+    }
+}
+
+TEST(ChartWidgetsStackTest, AppendHeldValuesLeavesAnEmptySeriesEmpty)
+{
+    std::vector<double> empty;
+    std::vector<double> one{3.0};
+    appendHeldValues({&empty, &one});
+    EXPECT_TRUE(empty.empty());
+    ASSERT_EQ(one.size(), 2U);
+    EXPECT_DOUBLE_EQ(one[1], 3.0);
+
+    std::vector<double> noTimes;
+    holdTimeToNow(noTimes, 4.0);
+    EXPECT_TRUE(noTimes.empty());
+}
+
+TEST(ReducedValuesStampTest, ValuesAreGatheredAgainOnlyWhenThePointsAreRebuilt)
+{
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.assign({ReducedPoint{.index = 0, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 0, .count = 100, .maxOut = 720};
+
+    std::ignore = cache.points(key, rebuild);
+    EXPECT_TRUE(stamp.stale(cache)); // nothing gathered yet
+    stamp.markGathered(cache);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // The next frame, between samples: the same points, so the gathered values stand.
+    std::ignore = cache.points(key, rebuild);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // A new publication: new points, gathered again.
+    auto next = key;
+    next.generation = 8;
+    std::ignore = cache.points(next, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
+    stamp.markGathered(cache);
+    EXPECT_EQ(stamp.gatherCount(), 2U);
+
+    // A resize that changes the budget rebuilds the points, so the values too.
+    auto narrower = next;
+    narrower.maxOut = 360;
+    std::ignore = cache.points(narrower, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
+}
+
+TEST(ReducedValuesStampTest, ACacheResetBetweenFramesIsNeverTakenForTheOneTheValuesCameFrom)
+{
+    // A reset (or replaced, or pruned and re-made) cache counts its rebuilds from 0 again, so after as
+    // many rebuilds as before its count matches the recorded one. Its points are other points, maybe
+    // of another length: the values must be gathered again, or x and its series would disagree in
+    // length and drawing would read past the end of a series (#843 review).
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.assign({ReducedPoint{.index = 0, .gap = false}});
+    };
+    const ReducedPointsCache::Key key{.generation = 7, .dataId = 0, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(key, rebuild);
+    stamp.markGathered(cache);
+    const std::uint64_t rebuildsBefore = cache.rebuildCount();
+
+    cache = ReducedPointsCache{};
+    EXPECT_TRUE(stamp.stale(cache)); // no points at all yet
+    std::ignore = cache.points(key, rebuild);
+    ASSERT_EQ(cache.rebuildCount(), rebuildsBefore); // the count the stamp recorded...
+    EXPECT_TRUE(stamp.stale(cache));                 // ...but other points
+    stamp.markGathered(cache);
+    EXPECT_FALSE(stamp.stale(cache));
+
+    // Two caches never name their points alike either.
+    ReducedPointsCache other;
+    std::ignore = other.points(key, rebuild);
+    EXPECT_NE(other.pointsId(), cache.pointsId());
+    EXPECT_TRUE(stamp.stale(other));
+}
+
+TEST(ChartWidgetsStackTest, DrawablePointCountNeverPassesTheShortestSeries)
+{
+    const std::vector<double> x{-3.0, -2.0, -1.0, 0.0};
+    const std::vector<double> held{1.0, 2.0, 3.0, 4.0, 4.0}; // gathered values with their held value
+    const std::vector<double> stale{1.0, 2.0};               // values gathered for other points
+    EXPECT_EQ(drawablePointCount(x, {&held}), 4);
+    EXPECT_EQ(drawablePointCount(x, {&held, &stale}), 2);
+    EXPECT_EQ(drawablePointCount(x, {}), 4);
+    EXPECT_EQ(drawablePointCount({}, {&held}), 0);
+}
+
+TEST(ReducedValuesStampTest, AnUncachedGenerationIsStaleEveryFrame)
+{
+    // A chart that names no data generation rebuilds its points on every call, so its values too.
+    ReducedPointsCache cache;
+    ReducedValuesStamp stamp;
+    const auto rebuild = [](std::vector<ReducedPoint>& out)
+    {
+        out.clear();
+    };
+    const ReducedPointsCache::Key uncached{.generation = 0, .dataId = 0, .count = 100, .maxOut = 720};
+    std::ignore = cache.points(uncached, rebuild);
+    stamp.markGathered(cache);
+    std::ignore = cache.points(uncached, rebuild);
+    EXPECT_TRUE(stamp.stale(cache));
 }
 
 // ========== NowBar ==========
@@ -748,6 +929,176 @@ TEST(ChartWidgetsReduceTest, MinMaxReductionKeepsASingleSamplePeak)
     EXPECT_DOUBLE_EQ(peak, 99.0);
     // The newest sample is never dropped.
     EXPECT_DOUBLE_EQ(outX[static_cast<std::size_t>(written) - 1], 0.0);
+}
+
+// ========== Width-sized reduction keeps every spike and dip (#843) ==========
+
+namespace
+{
+/// The longest history a chart draws: HISTORY_SECONDS_MAX at the fastest refresh interval (18,000
+/// samples at 100 ms), the size at which the old stride reduction lost real samples.
+constexpr int FULL_HISTORY_COUNT = (Domain::Sampling::HISTORY_SECONDS_MAX * 1000) / Domain::Sampling::REFRESH_INTERVAL_MIN_MS;
+
+/// The "now" the reductions below anchor their buckets at (a history chart adds it back to x).
+constexpr double ANCHOR_NOW = 1000.0;
+
+struct FullHistoryFixture
+{
+    std::vector<double> x = std::vector<double>(static_cast<std::size_t>(FULL_HISTORY_COUNT));
+    std::vector<double> y = std::vector<double>(static_cast<std::size_t>(FULL_HISTORY_COUNT), 10.0);
+    FullHistoryFixture()
+    {
+        for (int i = 0; i < FULL_HISTORY_COUNT; ++i)
+        {
+            x[static_cast<std::size_t>(i)] = (static_cast<double>(i) - (FULL_HISTORY_COUNT - 1)) * 0.1;
+        }
+    }
+};
+
+/// Whether the drawn x positions `drawn` are real samples in strictly ascending time order, starting at
+/// the oldest sample and ending at the newest.
+void expectDrawnFromOldestToNewest(std::span<const double> drawn, std::span<const double> x)
+{
+    ASSERT_GE(drawn.size(), 2U);
+    EXPECT_DOUBLE_EQ(drawn.front(), x.front());
+    EXPECT_DOUBLE_EQ(drawn.back(), x.back());
+    EXPECT_EQ(std::ranges::adjacent_find(drawn, std::ranges::greater_equal{}), drawn.end()) << "drawn x is not strictly ascending";
+    for (const double value : drawn)
+    {
+        EXPECT_TRUE(std::ranges::binary_search(x, value)) << value << " is not a sample's time";
+    }
+}
+} // namespace
+
+TEST(ChartWidgetsReduceTest, AWidthSizedReductionKeepsASpikeAtTheSecondSampleOfTheLongestHistory)
+{
+    // #843: reducing 18,000 samples to 720 by a plain stride kept indices 0, 25, 50, ..., so a
+    // one-sample spike at index 1 vanished from the line though the tooltip's raw lookup still found
+    // it. Under a full-width plot's budget the min/max reduction keeps it, and a one-sample dip too,
+    // each drawn at its own time.
+    FullHistoryFixture f;
+    f.y[1] = 99.0;
+    f.y[12'345] = -5.0;
+    const int budget = plotPointBudget(1920.0F, 1.0F);
+    ASSERT_EQ(budget, LINE_PLOT_MAX_POINTS_DENSE);
+    std::vector<double> outX(static_cast<std::size_t>(budget));
+    std::vector<double> outY(static_cast<std::size_t>(budget));
+    const int written = reduceSeriesMinMax(f.x.data(), f.y.data(), FULL_HISTORY_COUNT, budget, ANCHOR_NOW, outX.data(), outY.data());
+    ASSERT_GT(written, 2);
+    ASSERT_LE(written, budget);
+    const std::span<const double> keptX = std::span(outX).first(static_cast<std::size_t>(written));
+    const std::span<const double> keptY = std::span(outY).first(static_cast<std::size_t>(written));
+    EXPECT_DOUBLE_EQ(std::ranges::max(keptY), 99.0);
+    EXPECT_DOUBLE_EQ(std::ranges::min(keptY), -5.0);
+    EXPECT_NE(std::ranges::find(keptX, f.x[1]), keptX.end()) << "the spike is not drawn at its own time";
+    EXPECT_NE(std::ranges::find(keptX, f.x[12'345]), keptX.end()) << "the dip is not drawn at its own time";
+    expectDrawnFromOldestToNewest(keptX, f.x);
+}
+
+TEST(ChartWidgetsReduceTest, MinMaxReductionOfMonotoneDataKeepsEachBucketsEndSamples)
+{
+    // Rising data has no interior extremes: a bucket's lowest sample is its first and its highest its
+    // last, so the reduced line is exactly the bucket boundaries, two points per bucket (one for a
+    // bucket holding a single sample), and nothing is drawn from inside a bucket.
+    FullHistoryFixture f;
+    for (int i = 0; i < FULL_HISTORY_COUNT; ++i)
+    {
+        f.y[static_cast<std::size_t>(i)] = static_cast<double>(i) * 0.001;
+    }
+    const int budget = plotPointBudget(1920.0F, 1.0F);
+    std::vector<ReducedPoint> points;
+    reduceSeriesMinMaxPoints(f.x.data(), f.y.data(), FULL_HISTORY_COUNT, budget, ANCHOR_NOW, points);
+    ASSERT_GT(points.size(), 2U);
+    ASSERT_LE(points.size(), static_cast<std::size_t>(budget));
+
+    // The bucket layout the reduction used (see forEachMinMaxReducedPoint()).
+    const int bucketCount = ((budget - 2) / 3) - 1;
+    const double width = minMaxBucketWidth(f.x.back() - f.x.front(), bucketCount);
+    ASSERT_GT(width, 0.0);
+    const auto bucketOf = [&](int index)
+    {
+        return minMaxBucketIndex(f.x[static_cast<std::size_t>(index)] + ANCHOR_NOW, width);
+    };
+    std::size_t expectedPoints = 0;
+    for (int start = 0; start < FULL_HISTORY_COUNT;)
+    {
+        int next = start + 1;
+        while (next < FULL_HISTORY_COUNT && bucketOf(next) == bucketOf(start))
+        {
+            ++next;
+        }
+        expectedPoints += (next - start > 1) ? 2U : 1U;
+        start = next;
+    }
+    EXPECT_EQ(points.size(), expectedPoints);
+
+    int previous = -1;
+    for (const ReducedPoint& point : points)
+    {
+        EXPECT_FALSE(point.gap);
+        EXPECT_GT(point.index, previous);
+        previous = point.index;
+        const int i = point.index;
+        const bool firstInBucket = (i == 0) || (bucketOf(i) != bucketOf(i - 1));
+        const bool lastInBucket = (i == FULL_HISTORY_COUNT - 1) || (bucketOf(i) != bucketOf(i + 1));
+        EXPECT_TRUE(firstInBucket || lastInBucket) << "sample " << i << " is drawn from inside its bucket";
+    }
+}
+
+TEST(ChartWidgetsReduceTest, AlignedReductionFollowsThePlotWidthAndKeepsEveryLayersExtremes)
+{
+    // The stacked CPU plots reduce their layers with one bucket layout under the plot's own width
+    // budget, as plotLineWithFill() does (#843): a narrow pane draws fewer points than a full-width
+    // chart, every layer is drawn at the same x positions, and each layer's one-sample spike and dip
+    // survive at either width.
+    const FullHistoryFixture f;
+    const auto count = static_cast<std::size_t>(FULL_HISTORY_COUNT);
+    std::vector<double> user(count, 30.0);
+    std::vector<double> system(count, 10.0);
+    std::vector<double> total(count, 45.0);
+    user[1] = 90.0;
+    user[9'003] = 0.0;
+    system[7'001] = 0.5;
+    total[15'002] = 100.0;
+
+    const auto reduceFor = [&](float plotWidth)
+    {
+        const int budget = plotPointBudget(plotWidth, 1.0F);
+        std::vector<ReducedPoint> points;
+        reduceAlignedPoints<double>(f.x,
+                                    {std::span<const double>(user), std::span<const double>(system), std::span<const double>(total)},
+                                    budget,
+                                    ANCHOR_NOW,
+                                    points);
+        EXPECT_LE(points.size(), static_cast<std::size_t>(budget)) << plotWidth << " px";
+        return points;
+    };
+    const std::vector<ReducedPoint> wide = reduceFor(1920.0F);
+    const std::vector<ReducedPoint> narrow = reduceFor(150.0F);
+    EXPECT_LT(narrow.size(), wide.size());
+    EXPECT_LT(narrow.size(), count);
+
+    for (const std::vector<ReducedPoint>* points : {&wide, &narrow})
+    {
+        SCOPED_TRACE(points == &wide ? "wide" : "narrow");
+        // One shared list of points: every layer has a value at every kept x, all real samples.
+        std::vector<double> drawnX;
+        std::vector<double> userDrawn;
+        std::vector<double> systemDrawn;
+        std::vector<double> totalDrawn;
+        gatherReducedValues<double>(*points, f.x, drawnX);
+        gatherReducedValues<double>(*points, user, userDrawn);
+        gatherReducedValues<double>(*points, system, systemDrawn);
+        gatherReducedValues<double>(*points, total, totalDrawn);
+        ASSERT_EQ(userDrawn.size(), points->size());
+        ASSERT_EQ(systemDrawn.size(), points->size());
+        ASSERT_EQ(totalDrawn.size(), points->size());
+        expectDrawnFromOldestToNewest(drawnX, f.x);
+        EXPECT_DOUBLE_EQ(std::ranges::max(userDrawn), 90.0);
+        EXPECT_DOUBLE_EQ(std::ranges::min(userDrawn), 0.0);
+        EXPECT_DOUBLE_EQ(std::ranges::min(systemDrawn), 0.5);
+        EXPECT_DOUBLE_EQ(std::ranges::max(totalDrawn), 100.0);
+    }
 }
 
 // ========== plotPointBudget (#1411) ==========
@@ -1378,7 +1729,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesSuffixes)
 
     len = formatAxisLocalized(2'000'000.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0M");
+    EXPECT_EQ(std::string(buf), "2M");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedReturnsZeroWhenBufferTooSmall)
@@ -1393,7 +1744,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedClampsTinyValueToZero)
     char buf[32]{};
     const int len = formatAxisLocalized(0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0");
+    EXPECT_EQ(std::string(buf), "0");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
@@ -1427,6 +1778,142 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix
     len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
     EXPECT_EQ(std::string(buf), "0.0 B");
+}
+
+namespace
+{
+/// One axis label from @p formatter, as ImPlot asks for it.
+[[nodiscard]] std::string axisLabel(ImPlotFormatter formatter, double value)
+{
+    std::array<char, 64> buf{};
+    const int len = formatter(value, buf.data(), static_cast<int>(buf.size()), nullptr);
+    return {buf.data(), static_cast<std::size_t>(std::max(len, 0))};
+}
+
+/// The labels of a count axis drawn from 0 to @p upper, as setupNiceAxisTicks() places its ticks.
+[[nodiscard]] std::vector<std::string> countAxisLabels(double upper, int maxTicks)
+{
+    const double step = niceAxisStep(upper, maxTicks);
+    const AxisTickRange ticks = axisTickRange(upper, step);
+    std::vector<std::string> labels;
+    labels.reserve(static_cast<std::size_t>(std::max(ticks.count, 0)));
+    for (int i = 0; i < ticks.count; ++i)
+    {
+        labels.push_back(axisLabel(formatAxisLocalized, static_cast<double>(i) * step));
+    }
+    return labels;
+}
+} // namespace
+
+// #1928: a count axis writes its ticks as integers ("integers for counts", #1202), and after a K/M/G
+// suffix only the decimal the step needs.
+TEST(ChartWidgetsFormattersTest, CountAxisWritesPlainTicksAsIntegers)
+{
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 0.0), "0");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -0.0), "0");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2.0), "2");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 50.0), "50");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 200.0), "200");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 999.0), "999");
+    // A process's threads and handles (0-200 by 50) and its page faults/s (0-10 by 2).
+    EXPECT_EQ(countAxisLabels(200.0, 5), (std::vector<std::string>{"0", "50", "100", "150", "200"}));
+    EXPECT_EQ(countAxisLabels(10.0, 6), (std::vector<std::string>{"0", "2", "4", "6", "8", "10"}));
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisGivesASuffixedTickADecimalOnlyWhereItNeedsOne)
+{
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 500'000.0), "500K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'000.0), "1K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'000'000.0), "2M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'500'000.0), "1.5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'200.0), "1.2K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 3'000'000'000.0), "3G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'500'000'000.0), "2.5G");
+    // The system's handles (0-2.5M by 500K) and page faults/s (0-400K by 100K).
+    EXPECT_EQ(countAxisLabels(2'500'000.0, 6), (std::vector<std::string>{"0", "500K", "1M", "1.5M", "2M", "2.5M"}));
+    EXPECT_EQ(countAxisLabels(400'000.0, 5), (std::vector<std::string>{"0", "100K", "200K", "300K", "400K"}));
+    // A step of 200 across 1K: whole thousands drop the decimal, the ticks between keep it.
+    EXPECT_EQ(countAxisLabels(1'400.0, 8), (std::vector<std::string>{"0", "200", "400", "600", "800", "1K", "1.2K", "1.4K"}));
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisDecimalFollowsTheRoundedDigits)
+{
+    // Whether a tick keeps its decimal is read from the digits it would print, rounding included,
+    // so a value that rounds to a whole unit drops it rather than printing "2.0M".
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'960'000.0), "2M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'940'000.0), "1.9M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -1'500'000.0), "-1.5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -2'000'000.0), "-2M");
+    // The tenths go only when they are 0 after the locale's decimal mark.
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2.0", 3, '.'), 1U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("1.5", 3, '.'), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2,0", 3, ','), 1U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2.0", 3, ','), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("200", 3, '.'), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("0", 1, '.'), 1U);
+
+    // "2K" fits a 3-byte buffer although "2.0", written first, does not.
+    std::array<char, 3> small{};
+    EXPECT_EQ(formatAxisLocalized(2'000.0, small.data(), static_cast<int>(small.size()), nullptr), 2);
+    EXPECT_EQ(std::string(small.data()), "2K");
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisLabelsLargeValuesWithTheirGroupingAndNoDecimal)
+{
+    const UI::Format::ScopedDisplayPunctuation enUs({.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), "1,500G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.25e12), "1,250G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.0e15), "1,000,000G");
+
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'500'000.0), "1,5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'000'000.0), "2M");
+}
+
+// The count axis's integers are its own: a byte axis keeps its one decimal on every tick.
+TEST(ChartWidgetsFormattersTest, CountAxisChangeLeavesByteAndOtherAxesAlone)
+{
+    const UI::Format::ScopedDisplayPunctuation enUs({.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisBytes, 2.0 * 1024.0 * 1024.0), "2.0 MiB");
+    EXPECT_EQ(axisLabel(formatAxisBytes, 0.0), "0.0 B");
+    EXPECT_EQ(axisLabel(formatAxisBytesPerSec, 2048.0), "2.0 KiB/s");
+    EXPECT_EQ(axisLabel(formatAxisWatts, 45.0), "45.0 W");
+    EXPECT_EQ(axisLabel(formatAxisPercent, 40.0), "40%");
+}
+
+// #1648, slice E: chart axis labels take the user's decimal mark and digit grouping, and keep their
+// units and SI/IEC prefixes. The real locales' punctuation, skipped where the machine lacks one.
+TEST(ChartWidgetsFormattersTest, AxisLabelsFollowTheDisplayLocale)
+{
+    struct Case
+    {
+        const char* language;
+        const char* region;
+        const char* thousands; // "%" stands for the locale's own separator (fr-FR's no-break space)
+        const char* decimal;
+    };
+    for (const Case& c : {Case{.language = "en", .region = "US", .thousands = ",", .decimal = "."},
+                          Case{.language = "de", .region = "DE", .thousands = ".", .decimal = ","},
+                          Case{.language = "fr", .region = "FR", .thousands = "%", .decimal = ","}})
+    {
+        const auto punctuation = TestLocales::punctuation(c.language, c.region);
+        if (!punctuation)
+        {
+            continue; // Not installed here
+        }
+        SCOPED_TRACE(TestLocales::osName(c.language, c.region));
+        const UI::Format::ScopedDisplayPunctuation scope(*punctuation);
+        const std::string sep = std::string_view{c.thousands} == "%" ? punctuation->thousandsSep : std::string{c.thousands};
+        const std::string dp = c.decimal;
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 1500.0), "1" + dp + "5K");
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 2'500'000.0), "2" + dp + "5M");
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), std::format("1{}500G", sep));
+        EXPECT_EQ(axisLabel(formatAxisBytes, 1.5 * 1024.0 * 1024.0 * 1024.0), "1" + dp + "5 GiB");
+        EXPECT_EQ(axisLabel(formatAxisBytesPerSec, 2048.0), "2" + dp + "0 KiB/s");
+        EXPECT_EQ(axisLabel(formatAxisPercent, 2.5), "2" + dp + "5%");
+        EXPECT_EQ(axisLabel(formatAxisWatts, 45.0), "45" + dp + "0 W");
+        EXPECT_EQ(formatAgeSeconds(2.5), "Age: 2" + dp + "5s");
+    }
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
@@ -1512,20 +1999,26 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedMatchesItsStdFormatDefinitio
         {
             value = 0.0;
         }
+        // A suffixed tick keeps its one decimal unless it is 0 (#1928): "1.5M", "2M".
+        const auto suffixed = [](double scaled, std::string_view suffix)
+        {
+            const std::string withDecimal = std::format("{:.1Lf}", scaled);
+            return (withDecimal.ends_with('0') ? std::format("{:.0Lf}", scaled) : withDecimal) + std::string{suffix};
+        };
         const double absValue = std::abs(value);
         if (absValue >= 1'000'000'000.0)
         {
-            return std::format("{:.1Lf}G", value / 1'000'000'000.0);
+            return suffixed(value / 1'000'000'000.0, "G");
         }
         if (absValue >= 1'000'000.0)
         {
-            return std::format("{:.1Lf}M", value / 1'000'000.0);
+            return suffixed(value / 1'000'000.0, "M");
         }
         if (absValue >= 1'000.0)
         {
-            return std::format("{:.1Lf}K", value / 1'000.0);
+            return suffixed(value / 1'000.0, "K");
         }
-        return std::format("{:.1Lf}", value);
+        return std::format("{:.0Lf}", value); // Counts are integers (#1202)
     };
     std::array<char, 32> buf{};
     for (const double value : {0.0,
@@ -1937,37 +2430,11 @@ TEST(ChartWidgetsTest, NormalizeToUnitIntervalClampsBelowZero)
 
 // ========== Time-axis helpers ==========
 
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsOffset)
+TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigIsTheWindowEndingAtNow)
 {
-    const std::vector<double> timestamps{10.0, 20.0, 30.0, 40.0};
-    const auto cfg = makeTimeAxisConfig(timestamps, 5.0, 100.0);
+    const auto cfg = makeTimeAxisConfig(12.0);
 
-    EXPECT_DOUBLE_EQ(cfg.span, 30.0);
-    EXPECT_DOUBLE_EQ(cfg.maxOffset, 25.0);
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 25.0);
-    EXPECT_DOUBLE_EQ(cfg.xMin, -30.0);
-    EXPECT_DOUBLE_EQ(cfg.xMax, -25.0);
-}
-
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigWithEmptyTimestampsUsesDefaultWindow)
-{
-    const std::vector<double> timestamps{};
-    const auto cfg = makeTimeAxisConfig(timestamps, 12.0, 4.0);
-
-    EXPECT_DOUBLE_EQ(cfg.span, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.maxOffset, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
     EXPECT_DOUBLE_EQ(cfg.xMin, -12.0);
-    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
-}
-
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsNegativeOffsetToZero)
-{
-    const std::vector<double> timestamps{5.0, 15.0};
-    const auto cfg = makeTimeAxisConfig(timestamps, 6.0, -3.0);
-
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.xMin, -6.0);
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
 }
 
@@ -2016,9 +2483,6 @@ TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesRespectsDesiredCount)
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
-    const auto resD_out_lo = hoveredIndexFromPlotX(axisD, -99.0);
-    ASSERT_TRUE(resD_out_lo.has_value());
-    EXPECT_EQ(resD_out_lo.value(), 0U);
     const auto resD_hi = hoveredIndexFromPlotX(axisD, 99.0);
     ASSERT_TRUE(resD_hi.has_value());
     EXPECT_EQ(resD_hi.value(), 2U);
@@ -2036,6 +2500,37 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
     const auto resDTie = hoveredIndexFromPlotX(axisD, -7.5);
     ASSERT_TRUE(resDTie.has_value());
     EXPECT_EQ(resDTie.value(), 0U);
+}
+
+// A short history fills only the right end of the window: left of its first sample there is no
+// data, so no sample answers there -- not the oldest one, as if it had been measured then (#1931).
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXIsEmptyLeftOfTheFirstSample)
+{
+    const std::vector<double> shortHistory{-3.0, -2.0, -1.0, 0.0}; // 4 s of a 300 s window
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -180.0).has_value());
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -300.0).has_value());
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -3.6).has_value()); // more than half an interval out
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, std::numeric_limits<double>::quiet_NaN()).has_value());
+
+    // Within half an interval of the first sample, it is still the nearest one.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.5), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.2), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.0), std::optional<size_t>{0U});
+    // Inside the sampled range: the nearest sample.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -2.9), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -2.2), std::optional<size_t>{1U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -0.4), std::optional<size_t>{3U});
+    // Right of the newest sample, the newest one.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, 0.5), std::optional<size_t>{3U});
+}
+
+// One sample has no interval to give it slack: only the sample itself and the right of it answer.
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXWithOneSampleIsEmptyToItsLeft)
+{
+    const std::vector<double> oneSample{-1.0};
+    EXPECT_FALSE(hoveredIndexFromPlotX(oneSample, -1.5).has_value());
+    EXPECT_EQ(hoveredIndexFromPlotX(oneSample, -1.0), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(oneSample, 0.0), std::optional<size_t>{0U});
 }
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
@@ -2117,6 +2612,22 @@ TEST(HistoryChartMotionTest, EaseFramesAreRequestedOnlyForAVisibleChartThisFrame
     EXPECT_FALSE(shouldRequestEaseFrames(42, 42, false)); // clipped chart
     EXPECT_FALSE(shouldRequestEaseFrames(41, 42, true));  // from an earlier frame
     EXPECT_FALSE(shouldRequestEaseFrames(-1, 42, true));  // nothing pending
+}
+
+TEST(HistoryChartMotionTest, AxisEaseSpeedIsTheBoundsStepOverItsSizePerSecond)
+{
+    // #2626: a bound stepping 100 -> 110 in a 50 ms frame moves the top of the data by 10/110 of the
+    // plot's height: about 1.8 heights a second.
+    EXPECT_NEAR(axisEaseHeightsPerSecond(100.0, 110.0, 0.05), 10.0 / 110.0 / 0.05, 1e-12);
+    // Falling counts the same as rising, relative to the bound drawn.
+    EXPECT_NEAR(axisEaseHeightsPerSecond(110.0, 100.0, 0.05), 10.0 / 100.0 / 0.05, 1e-12);
+    // No step, no speed: a second read of the bound in the same frame adds nothing.
+    EXPECT_DOUBLE_EQ(axisEaseHeightsPerSecond(100.0, 100.0, 0.05), 0.0);
+    // Nothing to go on: the full rate, as every ease asked for before.
+    const double infinity = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(axisEaseHeightsPerSecond(100.0, 110.0, 0.0), infinity);
+    EXPECT_EQ(axisEaseHeightsPerSecond(100.0, 0.0, 0.05), infinity);
+    EXPECT_EQ(axisEaseHeightsPerSecond(std::numeric_limits<double>::quiet_NaN(), 110.0, 0.05), infinity);
 }
 
 TEST(HistoryChartMotionTest, ScrollSpeedIsPlotWidthOverWindowSeconds)

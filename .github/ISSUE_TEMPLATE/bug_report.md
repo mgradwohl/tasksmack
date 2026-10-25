@@ -26,10 +26,17 @@ assignees: ''
 
 ## Environment
 
-- **OS:** <!-- e.g., Ubuntu 24.04, Windows 11 -->
-- **Compiler:** <!-- e.g., clang 22.0.0 -->
-- **CMake Version:** <!-- e.g., 3.28.0 -->
-- **Build Type:** <!-- e.g., debug, release -->
+- **TaskSmack version:** <!-- shown in the About dialog, e.g., 0.9.0 -->
+- **Package:** <!-- .deb, .tar.gz, .zip, or built from source -->
+- **Architecture:** <!-- x64 or ARM64 -->
+- **OS:** <!-- e.g., Ubuntu 24.04, Windows 11 24H2 -->
+- **Linux desktop session:** <!-- e.g., GNOME on Wayland, KDE on X11 -->
+
+Built from source only:
+
+- **Compiler:** <!-- e.g., clang 23.1.3 -->
+- **CMake version:** <!-- e.g., 3.31.6 (3.29 or later is required) -->
+- **Preset:** <!-- e.g., debug, win-release -->
 
 ## Additional Context
 

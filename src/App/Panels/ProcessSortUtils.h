@@ -4,7 +4,12 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 
+#include <algorithm>
+#include <cctype>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace App::ProcessSortUtils
 {
@@ -17,12 +22,45 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     return available ? std::optional<T>(value) : std::nullopt;
 }
 
+/// An engine list as the GPU Engine and NPU Engine columns sort it: by the number of engines, then by
+/// the first engine's name. Equal lists, and two empty ones, compare false both ways.
+[[nodiscard]] inline bool compareEngines(const std::vector<std::string>& a, const std::vector<std::string>& b, bool ascending)
+{
+    if (a.size() != b.size())
+    {
+        return ascending ? (a.size() < b.size()) : (b.size() < a.size());
+    }
+    if (!a.empty() && !b.empty())
+    {
+        return ascending ? (a[0] < b[0]) : (b[0] < a[0]);
+    }
+    return false;
+}
+
+/// The Services column's text as it sorts (#1880): A to Z ignoring case (Windows names services in
+/// mixed case: "Appinfo", "BFE", "bits"), Z to A descending; a process hosting none sorts after every
+/// one hosting some in either direction, so the hosts stay together at the top. Equal texts, and two
+/// empty ones, compare false both ways.
+[[nodiscard]] inline bool compareServicesText(std::string_view a, std::string_view b, bool ascending)
+{
+    if (a.empty() != b.empty())
+    {
+        return !a.empty();
+    }
+    const auto lessIgnoringCase = [](std::string_view lhs, std::string_view rhs)
+    {
+        return std::ranges::lexicographical_compare(
+            lhs, rhs, [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+    };
+    return ascending ? lessIgnoringCase(a, b) : lessIgnoringCase(b, a);
+}
+
 /// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.
 /// @return true if `a`'s key for `column` sorts before `b`'s in the given direction.
 [[nodiscard]] inline bool
 compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, ProcessColumn column, bool ascending)
 {
-    auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
+    const auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
     {
         return ascending ? (lhs < rhs) : (rhs < lhs);
     };
@@ -45,6 +83,10 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.peakMemoryBytes, b.peakMemoryBytes);
     case ProcessColumn::Shared:
         return compare(a.sharedBytes, b.sharedBytes);
+    case ProcessColumn::Private:
+        return compare(a.privateBytes, b.privateBytes);
+    case ProcessColumn::Swap:
+        return compare(a.swapBytes, b.swapBytes);
     case ProcessColumn::CpuTime:
         return compare(a.cpuTimeSeconds, b.cpuTimeSeconds);
     case ProcessColumn::StartTime:
@@ -87,24 +129,25 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::GpuMemory:
         return compare(a.gpuMemoryBytes, b.gpuMemoryBytes);
     case ProcessColumn::GpuEngine:
-    {
-        // Sort by number of engines, then by first engine name
-        if (a.gpuEngines.size() != b.gpuEngines.size())
-        {
-            return compare(a.gpuEngines.size(), b.gpuEngines.size());
-        }
-        if (!a.gpuEngines.empty() && !b.gpuEngines.empty())
-        {
-            return compare(a.gpuEngines[0], b.gpuEngines[0]);
-        }
-        return false;
-    }
+        return compareEngines(a.gpuEngines, b.gpuEngines, ascending);
     case ProcessColumn::GpuDevice:
         return compare(a.gpuDevices, b.gpuDevices);
+    case ProcessColumn::NpuPercent:
+        return compare(a.npuUtilPercent, b.npuUtilPercent);
+    case ProcessColumn::NpuMemory:
+        return compare(a.npuMemoryBytes, b.npuMemoryBytes);
+    case ProcessColumn::NpuEngine:
+        return compareEngines(a.npuEngines, b.npuEngines, ascending);
     case ProcessColumn::Publisher:
         return compare(a.publisher, b.publisher);
+    case ProcessColumn::Container:
+        return compare(a.container, b.container);
+    case ProcessColumn::Services:
+        return compareServicesText(a.services, b.services, ascending);
     case ProcessColumn::Type:
         return compare(a.processType, b.processType);
+    case ProcessColumn::Architecture:
+        return compare(a.architecture, b.architecture);
     case ProcessColumn::GdiObjects:
         return compare(a.gdiObjectCount, b.gdiObjectCount);
     default:

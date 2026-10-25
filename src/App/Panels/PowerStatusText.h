@@ -1,17 +1,32 @@
 #pragma once
 
-// The Power section header's battery status text, extracted from SystemMetricsPanel so the
-// state-to-text mapping is unit-testable without a live ImGui context.
+// The Power section header's battery status text and the Power chart's Battery bar, extracted from
+// SystemMetricsPanel so the state-to-text mapping is unit-testable without a live ImGui context.
 
 #include "Domain/SystemSnapshot.h"
+#include "UI/ChartWidgets.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+
+#include <imgui.h>
 
 #include <cstdint>
 #include <format>
 #include <string>
+#include <string_view>
 
 namespace App::Detail
 {
+
+/// Shown in place of a charge the battery didn't report (chargePercent < 0), never "-1%" (#2408)
+/// Written as escaped bytes (U+2014 EM DASH), not a literal, so an editor can't re-encode it (#2529)
+inline constexpr std::string_view NO_CHARGE_TEXT = "\xE2\x80\x94";
+
+/// The charge as "NN%", or a dash when the battery didn't report one.
+[[nodiscard]] inline std::string formatChargePercent(int chargePercent)
+{
+    return chargePercent < 0 ? std::string(NO_CHARGE_TEXT) : std::format("{}%", chargePercent);
+}
 
 /// The battery icon for a charge level.
 [[nodiscard]] inline const char* batteryIcon(int chargePercent)
@@ -54,11 +69,12 @@ namespace App::Detail
 [[nodiscard]] inline std::string batteryHeaderStatus(const Domain::PowerStatus& power)
 {
     const int charge = power.chargePercent;
+    const std::string percent = formatChargePercent(charge);
     const std::string plug = power.isOnAc ? std::string(ICON_FA_PLUG) + " " : std::string();
 
     if (power.isCharging)
     {
-        return std::format("{} {} {}%{}", ICON_FA_BOLT, batteryIcon(charge), charge, formatBatteryDuration(power.timeToFullSec, "to full"));
+        return std::format("{} {} {}{}", ICON_FA_BOLT, batteryIcon(charge), percent, formatBatteryDuration(power.timeToFullSec, "to full"));
     }
     if (power.isFull)
     {
@@ -67,13 +83,31 @@ namespace App::Detail
     if (power.isNotCharging)
     {
         // Plugged in but held below full, often by a charge threshold: its real charge, not "100%" (#1158).
-        return std::format("{}{} {}% (not charging)", plug, batteryIcon(charge), charge);
+        return std::format("{}{} {} (not charging)", plug, batteryIcon(charge), percent);
     }
     if (power.isDischarging && !power.isOnAc)
     {
-        return std::format("{} {}%{}", batteryIcon(charge), charge, formatBatteryDuration(power.timeToEmptySec, "left"));
+        return std::format("{} {}{}", batteryIcon(charge), percent, formatBatteryDuration(power.timeToEmptySec, "left"));
     }
-    return std::format("{}{} {}%", plug, batteryIcon(charge), charge);
+    return std::format("{}{} {}", plug, batteryIcon(charge), percent);
+}
+
+/// The Battery bar of the Power chart's "now" column. While the battery reports no charge
+/// (chargePercent < 0) its text is a dash and the bar is drawn hatched, not at the smoothed charge,
+/// which is still easing toward the last reading and would show a stale level (#2408, #2529).
+[[nodiscard]] inline UI::Widgets::NowBar
+batteryNowBar(const Domain::PowerStatus& power, double smoothedChargePercent, std::string_view label, const ImVec4& color)
+{
+    const bool available = power.chargePercent >= 0;
+    return {.valueText = available ? UI::Format::formatPercent(smoothedChargePercent) : std::string(NO_CHARGE_TEXT),
+            .label = label,
+            .tooltipText = UI::Widgets::tooltipRowText(label, batteryHeaderStatus(power)),
+            // Scaled to the battery axis's top, headroom included, so the bar meets the line.
+            .value01 = available
+                         ? UI::Widgets::normalizeToUnitInterval(smoothedChargePercent, UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM)
+                         : 0.0,
+            .color = color,
+            .available = available};
 }
 
 } // namespace App::Detail

@@ -25,7 +25,6 @@ struct RenderContext
     // Cached timestamps from model (for efficiency)
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation
@@ -42,6 +41,6 @@ void renderCpuCoresSection(RenderContext& ctx);
 /// Update smoothed values for all CPU cores.
 /// @param snap Current system snapshot
 /// @param ctx Render context (uses refreshInterval and lastDeltaSeconds)
-void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ctx);
+void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, const RenderContext& ctx);
 
 } // namespace App::CpuCoresSection

@@ -1,24 +1,15 @@
 #include "UI/IconLoader.h"
 
+#include "Core/Utf8Path.h"
+
 #include <glad/gl.h>
 #include <spdlog/spdlog.h>
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wsign-conversion"
-#pragma clang diagnostic ignored "-Wcast-align"
-#pragma clang diagnostic ignored "-Wdouble-promotion"
-#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
-#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
-#endif
-
-#define STB_IMAGE_IMPLEMENTATION
+// The declarations only: the implementation is compiled once, in Platform/StbImage.cpp (#1800). It is
+// built with STBI_WINDOWS_UTF8, so stbi_load() takes a UTF-8 file name and opens it with _wfopen,
+// never through the code page (#1648).
 // NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h macros generate scanner errors
 #include <stb_image.h>
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
 
 #include <filesystem>
 #include <utility>
@@ -36,6 +27,15 @@ namespace
     const auto previous = static_cast<GLuint>(temp);
     glBindTexture(GL_TEXTURE_2D, textureId);
     return previous;
+}
+
+/// glGenerateMipmap() for the bound 2D texture, and nothing else. A frame of its own, never inlined, so
+/// the LeakSanitizer suppression for the allocations Mesa's software driver keeps from building
+/// mipmaps (tests/sanitizer-suppressions/lsan.supp) can name it: a suppression on loadTexture() would
+/// also hide a leak of loadTexture()'s own, such as its decoded pixels (#2166).
+[[gnu::noinline]] void generateBoundTextureMipmaps()
+{
+    glGenerateMipmap(GL_TEXTURE_2D);
 }
 } // namespace
 
@@ -81,10 +81,13 @@ auto loadTexture(const std::filesystem::path& path) -> Texture
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* pixels = stbi_load(path.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    // UTF-8, not path.string(): with STBI_WINDOWS_UTF8 (above) stb_image converts the name from
+    // UTF-8 and opens it with _wfopen. A narrowed name went through the active code page, so an
+    // install under a non-ASCII directory failed in every binary without the UTF-8 manifest (#1648).
+    stbi_uc* pixels = stbi_load(Core::pathToUtf8(path).c_str(), &width, &height, &channels, STBI_rgb_alpha);
     if (pixels == nullptr)
     {
-        spdlog::warn("Failed to load icon: {}", stbi_failure_reason());
+        spdlog::warn("Failed to load icon {}: {}", Core::pathToUtf8(path), stbi_failure_reason());
         return {};
     }
 
@@ -108,7 +111,7 @@ auto loadTexture(const std::filesystem::path& path) -> Texture
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glGenerateMipmap(GL_TEXTURE_2D);
+    generateBoundTextureMipmaps();
 
     glBindTexture(GL_TEXTURE_2D, previousBinding);
     stbi_image_free(pixels);

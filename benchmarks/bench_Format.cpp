@@ -71,22 +71,6 @@ static void BM_Format_FormatBytesPerSec(benchmark::State& state)
 }
 BENCHMARK(BM_Format_FormatBytesPerSec);
 
-// Benchmark percentCompact() - called for CPU% column
-static void BM_Format_PercentCompact(benchmark::State& state)
-{
-    const auto pool = makePool<std::mt19937>(std::uniform_real_distribution<double>(0.0, 100.0));
-
-    std::size_t idx = 0;
-    for (auto _ : state)
-    {
-        auto result = UI::Format::percentCompact(pool[idx & kPoolMask]);
-        benchmark::DoNotOptimize(result.data());
-        ++idx;
-    }
-    state.SetItemsProcessed(state.iterations());
-}
-BENCHMARK(BM_Format_PercentCompact);
-
 // Benchmark formatDuration() - called for the CPU Time column (the benchmark
 // keeps its old name so it still matches its entry in
 // perf-data/linux-ci-baseline.json; formatCpuTimeCompact() became
@@ -224,8 +208,8 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
 
         // Format all columns as done in ProcessesPanel
         auto pidStr = UI::Format::formatId(pid);
-        auto cpuStr = UI::Format::percentCompact(cpuPercent);
-        auto memStr = UI::Format::percentCompact(memPercent);
+        auto cpuStr = UI::Format::formatPercent(cpuPercent);
+        auto memStr = UI::Format::formatPercent(memPercent);
         auto rssStr = UI::Format::formatBytes(static_cast<double>(rssBytes));
         auto virtStr = UI::Format::formatBytes(static_cast<double>(virtBytes));
         auto shrStr = UI::Format::formatBytes(static_cast<double>(sharedBytes));
@@ -252,7 +236,7 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
 BENCHMARK(BM_Format_FullProcessRow);
 
 // Benchmark with different numbers of processes to simulate table rendering.
-// NOTE: This benchmark uses the std::string-returning functions (percentCompact,
+// NOTE: This benchmark uses the std::string-returning functions (formatPercent,
 // formatBytes).  ProcessesPanel does NOT use these for the CPU%/bytes columns at
 // render time — it uses the zero-allocation splitPercentForAlignment /
 // splitBytesForAlignmentFast fast paths instead.  See BM_Format_ProcessTable_FastPath
@@ -279,7 +263,7 @@ static void BM_Format_ProcessTable(benchmark::State& state)
     {
         for (size_t i = 0; i < processCount; ++i)
         {
-            auto cpuStr = UI::Format::percentCompact(cpuValues[i]);
+            auto cpuStr = UI::Format::formatPercent(cpuValues[i]);
             auto memStr = UI::Format::formatBytes(static_cast<double>(memValues[i]));
             benchmark::DoNotOptimize(cpuStr.data());
             benchmark::DoNotOptimize(memStr.data());
@@ -388,5 +372,101 @@ static void BM_Format_FullProcessRow_FastPath(benchmark::State& state)
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FullProcessRow_FastPath);
+
+// ============================================================================
+// Under a grouping, comma-decimal display locale (#1648, slice E): the separators every
+// formatter above inserts in de-DE ("1.234,5 MiB"). The benchmarks above run with the classic
+// punctuation, which groups nothing.
+// ============================================================================
+
+/// Formats with de-DE's display punctuation for one benchmark, and restores the previous after it.
+class GroupedPunctuation
+{
+  public:
+    GroupedPunctuation() : m_Scope({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"})
+    {}
+
+  private:
+    UI::Format::ScopedDisplayPunctuation m_Scope;
+};
+
+static void BM_Format_Grouped_FormatIntLocalized(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937>(std::uniform_int_distribution<int64_t>(0, 10000000));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatIntLocalized(pool[idx & kPoolMask]);
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatIntLocalized);
+
+static void BM_Format_Grouped_FormatBytes(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40)));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatBytes(static_cast<double>(pool[idx & kPoolMask]));
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatBytes);
+
+static void BM_Format_Grouped_SplitBytesForAlignmentFast(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40)));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        const auto bytes = static_cast<double>(pool[idx & kPoolMask]);
+        const auto parts = UI::Format::splitBytesForAlignmentFast(bytes, UI::Format::BYTE_UNIT_KB);
+        benchmark::DoNotOptimize(parts.wholePart().data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_SplitBytesForAlignmentFast);
+
+/// A chart axis tick: formatFixedLocalizedTo() into a stack buffer, as formatAxisLocalized() does.
+static void BM_Format_Grouped_AxisTick(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_real_distribution<double>(0.0, 5'000'000.0));
+    std::array<char, 32> buffer{};
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        const std::size_t length = UI::Format::formatFixedLocalizedTo(buffer.data(), buffer.size(), pool[idx & kPoolMask], 1);
+        benchmark::DoNotOptimize(length);
+        benchmark::DoNotOptimize(buffer.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_AxisTick);
+
+static void BM_Format_Grouped_FormatPercent(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_real_distribution<double>(0.0, 100.0));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatPercent(pool[idx & kPoolMask]);
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatPercent);
 
 } // namespace

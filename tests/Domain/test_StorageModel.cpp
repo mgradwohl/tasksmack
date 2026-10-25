@@ -13,13 +13,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace Domain
 {
@@ -41,7 +44,7 @@ TEST(StorageModelTest, InitialSnapshotIsEmpty)
     auto probe = std::make_unique<Mocks::MockDiskProbe>();
     StorageModel model(std::move(probe));
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
     EXPECT_EQ(snap.totalReadBytesPerSec, 0.0);
     EXPECT_EQ(snap.totalWriteBytesPerSec, 0.0);
@@ -84,7 +87,7 @@ TEST(StorageModelTest, SampleUpdatesSnapshot)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
     EXPECT_EQ(snap.disks[0].deviceName, "sda");
 }
@@ -135,7 +138,7 @@ TEST(StorageModelTest, SecondSampleComputesRates)
     model.sample();
 
     // First sample should have no rates yet (need two samples to compute delta)
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
 }
 
@@ -173,7 +176,7 @@ TEST(StorageModelTest, RateUsesInjectedSampleTimeNotWallClockElapsedDuringTest)
     const auto sample2Time = sample1Time + std::chrono::seconds(2);
     model.sampleAt(sample2Time);
 
-    const auto snap = model.latestSnapshot();
+    const auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // 2000 sectors * 512 bytes / 2 seconds = 512,000 bytes/sec, exactly -- not approximately.
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 512000.0);
@@ -203,8 +206,7 @@ TEST(StorageModelTest, HistoryGrowsWithSamples)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    auto history = model.history();
-    EXPECT_EQ(history.size(), 5ULL);
+    EXPECT_EQ(model.publication()->timestamps.size(), 5ULL);
 }
 
 TEST(StorageModelTest, MaxHistorySecondsLimitsHistory)
@@ -232,7 +234,7 @@ TEST(StorageModelTest, MaxHistorySecondsLimitsHistory)
         model.sampleAt(start + std::chrono::seconds(i));
     }
 
-    const auto history = model.history();
+    const auto history = model.publication()->timestamps;
     // The window's samples, plus the one kept just before its cutoff (#1016).
     EXPECT_EQ(history.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
 }
@@ -260,7 +262,7 @@ TEST(StorageModelTest, MaxHistorySecondsIsClampedToTheSupportedRange)
 
     // A 0.5 s window would keep the newest sample and its anchor; the clamped one keeps
     // HISTORY_SECONDS_MIN seconds of them plus the anchor.
-    EXPECT_EQ(model.historyTimestamps().size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+    EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
 }
 
 // #1145: the trimmed history is published at once, not at the next sample, which can be seconds away.
@@ -310,7 +312,7 @@ TEST(StorageModelTest, HandlesEmptyDiskList)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
 }
 
@@ -335,7 +337,7 @@ TEST(StorageModelTest, HandlesMultipleDisks)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 3ULL);
     EXPECT_EQ(snap.disks[0].deviceName, "sda");
     EXPECT_EQ(snap.disks[1].deviceName, "sdb");
@@ -365,8 +367,8 @@ TEST(StorageModelTest, TotalReadHistoryReturnsRates)
     model.sample();
     model.sample();
 
-    auto readHistory = model.totalReadHistory();
-    auto writeHistory = model.totalWriteHistory();
+    auto readHistory = model.publication()->totalReadHistory;
+    auto writeHistory = model.publication()->totalWriteHistory;
 
     EXPECT_EQ(readHistory.size(), 2ULL);
     EXPECT_EQ(writeHistory.size(), 2ULL);
@@ -390,7 +392,7 @@ TEST(StorageModelTest, HistoryTimestampsReturnsTimestamps)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    auto timestamps = model.historyTimestamps();
+    auto timestamps = model.publication()->timestamps;
     EXPECT_EQ(timestamps.size(), 2ULL);
     // Second timestamp should be greater than first
     EXPECT_GT(timestamps[1], timestamps[0]);
@@ -434,7 +436,7 @@ TEST(StorageModelTest, SecondSampleWithSameCountersComputesZeroRates)
     std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Need time between samples
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 1ULL);
     // Since counters don't change, rates should be 0
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
@@ -462,7 +464,7 @@ TEST(StorageModelTest, TotalsAreAggregatedFromAllDisks)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks.size(), 2ULL);
     // On first sample, rates are 0, but totals should be aggregated
     EXPECT_DOUBLE_EQ(snap.totalReadBytesPerSec, 0.0);
@@ -487,7 +489,7 @@ TEST(StorageModelTest, DiskSnapshotContainsTotalBytes)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_EQ(snap.disks[0].totalReadBytes, 1000ULL * 512ULL);
     EXPECT_EQ(snap.disks[0].totalWriteBytes, 500ULL * 512ULL);
     EXPECT_EQ(snap.disks[0].totalReadOps, 100ULL);
@@ -511,7 +513,7 @@ TEST(StorageModelTest, DiskSnapshotContainsPhysicalDeviceFlag)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks[0].isPhysicalDevice);
 }
 
@@ -530,7 +532,7 @@ TEST(StorageModelTest, SnapshotReflectsProbeCapabilities)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.hasDiskStats);
     EXPECT_FALSE(snap.hasReadWriteBytes);
     EXPECT_TRUE(snap.hasIoTime);
@@ -545,7 +547,7 @@ TEST(StorageModelTest, PerDiskHistoryEmptyBeforeSample)
     auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
     StorageModel model(std::move(mockProbe));
 
-    EXPECT_TRUE(model.perDiskHistory().empty());
+    EXPECT_TRUE(model.publication()->perDiskHistory.empty());
 }
 
 TEST(StorageModelTest, PerDiskHistoryTracksAllDisks)
@@ -572,7 +574,7 @@ TEST(StorageModelTest, PerDiskHistoryTracksAllDisks)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 2U);
     EXPECT_EQ(history[0].deviceName, "sda");
     EXPECT_EQ(history[1].deviceName, "nvme0n1");
@@ -620,8 +622,8 @@ TEST(StorageModelTest, PerDiskHistoryAlignedToTimestamps)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    const auto timestamps = model.historyTimestamps();
-    const auto history = model.perDiskHistory();
+    const auto timestamps = model.publication()->timestamps;
+    const auto history = model.publication()->perDiskHistory;
 
     ASSERT_EQ(history.size(), 2U);
     for (const auto& entry : history)
@@ -661,7 +663,7 @@ TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 1U);
     // Each rate is either a gap (no measured rate yet: the seed sample and a too-short seed
     // transition, #1102) or a real, non-negative rate -- never negative.
@@ -695,7 +697,7 @@ TEST(StorageModelTest, PerDiskHistoryPreservesInsertionOrder)
     StorageModel model(std::move(mockProbe));
     model.sample();
 
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 2U);
     // Order must match probe insertion order
     EXPECT_EQ(history[0].deviceName, "sdb");
@@ -735,8 +737,8 @@ TEST(StorageModelTest, PerDiskHistoryDiskDisappearsPreservesAlignment)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    const auto timestamps = model.historyTimestamps();
-    const auto history = model.perDiskHistory();
+    const auto timestamps = model.publication()->timestamps;
+    const auto history = model.publication()->perDiskHistory;
 
     ASSERT_EQ(history.size(), 2U);
     for (const auto& entry : history)
@@ -792,7 +794,7 @@ TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
 
     // sdb has just been seen, so it should have a real entry.
     {
-        const auto history = model.perDiskHistory();
+        const auto history = model.publication()->perDiskHistory;
         const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
         EXPECT_NE(it, history.end());
     }
@@ -807,7 +809,7 @@ TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
 
     // sdb's entry must be fully pruned, so the maps don't retain one entry per device name
     // forever; sda, present every sample, must be unaffected.
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     const auto sdbIt = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
     EXPECT_EQ(sdbIt, history.end());
     const auto sdaIt = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sda"; });
@@ -847,8 +849,8 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    const auto timestamps = model.historyTimestamps();
-    const auto history = model.perDiskHistory();
+    const auto timestamps = model.publication()->timestamps;
+    const auto history = model.publication()->perDiskHistory;
 
     ASSERT_EQ(history.size(), 2U);
     // Every per-disk series is index-aligned with the shared timestamp axis:
@@ -894,14 +896,14 @@ TEST(StorageModelTest, SeedSampleIsAGapNotAFalseZero)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::milliseconds(1005)); // a real second
 
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 1U);
     ASSERT_EQ(history[0].readBytesPerSec.size(), 3U);
     EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[0]));
     EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1]));
     EXPECT_DOUBLE_EQ(history[0].readBytesPerSec[2], 2000.0 * 512.0);
 
-    const auto totals = model.totalReadHistory();
+    const auto totals = model.publication()->totalReadHistory;
     ASSERT_EQ(totals.size(), 3U);
     EXPECT_TRUE(std::isnan(totals[0]));
     EXPECT_TRUE(std::isnan(totals[1]));
@@ -933,7 +935,7 @@ TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(1));
 
-    const auto glitched = model.latestSnapshot();
+    const auto glitched = model.publication()->snapshot;
     ASSERT_EQ(glitched.disks.size(), 1U);
     EXPECT_FALSE(glitched.disks[0].hasRates);
     EXPECT_DOUBLE_EQ(glitched.disks[0].writeBytesPerSec, 0.0);
@@ -944,13 +946,13 @@ TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(2));
 
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 1U);
     ASSERT_EQ(history[0].writeBytesPerSec.size(), 3U);
     EXPECT_TRUE(std::isnan(history[0].writeBytesPerSec[1])) << "the glitch is a gap";
     EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1])) << "the whole sample is unmeasured";
     EXPECT_DOUBLE_EQ(history[0].writeBytesPerSec[2], 400.0 * 512.0) << "the next interval measures normally";
-    const auto totals = model.totalWriteHistory();
+    const auto totals = model.publication()->totalWriteHistory;
     ASSERT_EQ(totals.size(), 3U);
     EXPECT_TRUE(std::isnan(totals[1]));
     EXPECT_DOUBLE_EQ(totals[2], 400.0 * 512.0);
@@ -987,11 +989,11 @@ TEST(StorageModelTest, AGlitchOnOneOfSeveralDisksMakesTheTotalAGap)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(2));
 
-    const auto totals = model.totalWriteHistory();
+    const auto totals = model.publication()->totalWriteHistory;
     ASSERT_EQ(totals.size(), 3U);
     EXPECT_TRUE(std::isnan(totals[1])) << "a glitched disk in the sample gaps the Total";
     EXPECT_DOUBLE_EQ(totals[2], 400.0 * 512.0);
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 2U);
     EXPECT_DOUBLE_EQ(history[1].writeBytesPerSec[1], 200.0 * 512.0) << "the healthy disk keeps its own rate";
 }
@@ -1021,7 +1023,7 @@ TEST(StorageModelTest, ANewDiskDoesNotGapTheTotal)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(1));
 
-    const auto totals = model.totalWriteHistory();
+    const auto totals = model.publication()->totalWriteHistory;
     ASSERT_EQ(totals.size(), 2U);
     EXPECT_DOUBLE_EQ(totals[1], 100.0 * 512.0);
 }
@@ -1050,11 +1052,11 @@ TEST(StorageModelTest, AJumpThatWouldWrapInBytesIsStillOverTheCeiling)
     mockProbe->setNextCounters(counters);
     model.sampleAt(start + std::chrono::seconds(1));
 
-    const auto glitched = model.latestSnapshot();
+    const auto glitched = model.publication()->snapshot;
     ASSERT_EQ(glitched.disks.size(), 1U);
     EXPECT_FALSE(glitched.disks[0].hasRates);
     EXPECT_DOUBLE_EQ(glitched.disks[0].readBytesPerSec, 0.0);
-    const auto history = model.perDiskHistory();
+    const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 1U);
     ASSERT_EQ(history[0].readBytesPerSec.size(), 2U);
     EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[1])) << "the glitch is a gap, not 512000 B/s";
@@ -1071,7 +1073,7 @@ TEST(StorageModelTest, SampleWithNullProbe_DoesNotCrash)
     EXPECT_NO_THROW({ model.sample(); });
 
     // Snapshot should remain empty
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     EXPECT_TRUE(snap.disks.empty());
 }
 
@@ -1122,7 +1124,7 @@ TEST(StorageModelTest, CounterWrapProducesZeroRate)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // Wrapped counters should be clamped to zero — no negative rates
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
@@ -1173,7 +1175,7 @@ TEST(StorageModelTest, AverageIoTimesCalculatedFromDeltas)
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
 
     // avgReadTimeMs = deltaReadTime / deltaReadOps = 200 / 100 = 2.0 ms
@@ -1214,7 +1216,7 @@ TEST(StorageModelTest, AverageIoTimesZeroWhenNoOps)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // No new ops → avgReadTimeMs and avgWriteTimeMs stay at their default 0.0
     EXPECT_DOUBLE_EQ(snap.disks[0].avgReadTimeMs, 0.0);
@@ -1266,7 +1268,7 @@ TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
-    auto snap = model.latestSnapshot();
+    auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 2ULL);
 
     // Total rates should be the sum of individual disk rates
@@ -1436,6 +1438,371 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
 
     EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
     EXPECT_EQ(model.publication()->version, model.publicationVersion());
+}
+
+// =============================================================================
+// Shared history (#1412)
+// =============================================================================
+
+/// Counters for sample @p step: sda always, sdb from step 20 on, and nvme0n1 on even steps only, so
+/// the history has a disk that appears part way and one that comes and goes (NaN gaps).
+[[nodiscard]] Platform::SystemDiskCounters churningDisks(std::uint64_t step)
+{
+    Platform::SystemDiskCounters counters;
+    const auto add = [&counters, step](const char* name, std::uint64_t salt)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = name;
+        disk.sectorSize = 512;
+        disk.readsCompleted = step * (2 + salt);
+        disk.readSectors = step * (16 + salt);
+        disk.writesCompleted = step;
+        disk.writeSectors = step * (8 + salt);
+        counters.disks.push_back(disk);
+    };
+    add("sda", 0);
+    if (step >= 20)
+    {
+        add("sdb", 1);
+    }
+    if (step % 2 == 0)
+    {
+        add("nvme0n1", 2);
+    }
+    return counters;
+}
+
+/// The time of sample @p step at @p stepSeconds apart, on the steady_clock base StorageModel uses.
+[[nodiscard]] std::chrono::steady_clock::time_point sampleTime(std::uint64_t step, double stepSeconds = 1.0)
+{
+    return std::chrono::steady_clock::time_point{} + std::chrono::hours(1) +
+           std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+               std::chrono::duration<double>(static_cast<double>(step) * stepSeconds));
+}
+
+/// Every series of a publication copied out as bit patterns -- NaN gaps compare equal to themselves
+/// -- so a later comparison sees whether any sample changed.
+struct PublishedValues
+{
+    std::vector<std::vector<std::uint64_t>> series;
+    std::vector<std::string> disks;
+
+    explicit PublishedValues(const StoragePublication& publication)
+    {
+        const auto add = [this](std::span<const double> values)
+        {
+            auto& bits = series.emplace_back();
+            bits.reserve(values.size());
+            for (const double value : values)
+            {
+                bits.push_back(std::bit_cast<std::uint64_t>(value));
+            }
+        };
+        add(publication.timestamps);
+        add(publication.totalReadHistory);
+        add(publication.totalWriteHistory);
+        for (const auto& disk : publication.perDiskHistory)
+        {
+            disks.push_back(disk.deviceName);
+            add(disk.readBytesPerSec);
+            add(disk.writeBytesPerSec);
+        }
+    }
+
+    bool operator==(const PublishedValues&) const = default;
+};
+
+// A publication shares its samples with the model rather than copying them, so it must stay exactly
+// as published while the model appends, adds and drops disks, trims (by time and by a window change),
+// and moves its samples to new blocks.
+TEST(StorageModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(60.0);
+    std::uint64_t step = 0;
+    for (; step < 100; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+    }
+    const auto old = model.publication();
+    const PublishedValues expected(*old);
+    ASSERT_GT(old->timestamps.size(), 50U);
+    ASSERT_EQ(old->perDiskHistory.size(), 3U);
+    ASSERT_TRUE(isAligned(*old));
+
+    for (; step < 1000; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+        if (step == 500)
+        {
+            model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+        }
+    }
+    EXPECT_EQ(PublishedValues(*old), expected);
+    // The window, plus the sample kept just before its left edge (#1016).
+    EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MIN) + 2U);
+    EXPECT_TRUE(isAligned(*model.publication()));
+}
+
+// Consecutive publications share their history (an O(series) publish, not O(history x series)), and
+// every series stays aligned with the timestamps.
+TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(120.0);
+    std::uint64_t step = 0;
+    for (; step < 300; ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+    }
+
+    constexpr int GENERATIONS = 200;
+    int shared = 0;
+    auto previous = model.publication();
+    for (int i = 0; i < GENERATIONS; ++i, ++step)
+    {
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step));
+        const auto next = model.publication();
+        ASSERT_TRUE(isAligned(*next));
+        ASSERT_EQ(next->perDiskHistory.size(), 3U);
+        const auto sharesWithPrevious = [&](const auto member)
+        {
+            return (next.get()->*member).sharesStorageWith(previous.get()->*member);
+        };
+        if (sharesWithPrevious(&StoragePublication::timestamps) && sharesWithPrevious(&StoragePublication::totalReadHistory) &&
+            next->perDiskHistory[0].readBytesPerSec.sharesStorageWith(previous->perDiskHistory[0].readBytesPerSec))
+        {
+            ++shared;
+            // The same samples in place: the newer view starts one sample later in the same memory.
+            EXPECT_EQ(next->timestamps.data(), previous->timestamps.data() + 1);
+            EXPECT_EQ(next->perDiskHistory[2].writeBytesPerSec.data(), previous->perDiskHistory[2].writeBytesPerSec.data() + 1);
+        }
+        previous = next;
+    }
+    // Only a compaction into a new block -- about once per window's worth of samples -- copies.
+    EXPECT_GE(shared, GENERATIONS - 4);
+}
+
+// A sample that lists one device name twice appends one point to that disk's series -- the first
+// entry's -- so every series stays aligned with the timestamps, and the next sample's rate is measured
+// from that first entry too (#1412). The snapshot lists the disk once, from that entry, and the totals
+// add it once (#1467).
+TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    const auto disk = [](std::uint64_t readSectors, std::uint64_t writeSectors)
+    {
+        Platform::DiskCounters counters;
+        counters.deviceName = "sda";
+        counters.sectorSize = 512;
+        counters.readSectors = readSectors;
+        counters.writeSectors = writeSectors;
+        counters.readsCompleted = readSectors / 10;
+        counters.writesCompleted = writeSectors / 10;
+        return counters;
+    };
+
+    Platform::SystemDiskCounters counters;
+    counters.disks = {disk(1000, 500)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(0));
+    // The second sample lists sda twice: the first entry measures 1000 read / 300 write sectors over
+    // the second, the duplicate something else entirely.
+    counters.disks = {disk(2000, 800), disk(90000, 70000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(1));
+    const StorageSnapshot repeated = model.publication()->snapshot;
+    counters.disks = {disk(3000, 1000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(2));
+
+    const auto publication = model.publication();
+    ASSERT_TRUE(isAligned(*publication));
+    ASSERT_EQ(publication->timestamps.size(), 3U);
+    ASSERT_EQ(publication->perDiskHistory.size(), 1U);
+    const auto& sda = publication->perDiskHistory.front();
+    EXPECT_EQ(sda.deviceName, "sda");
+    ASSERT_EQ(sda.readBytesPerSec.size(), 3U);
+    ASSERT_EQ(sda.writeBytesPerSec.size(), 3U);
+    EXPECT_TRUE(std::isnan(sda.readBytesPerSec[0])); // the seed read
+    EXPECT_DOUBLE_EQ(sda.readBytesPerSec[1], 1000.0 * 512.0) << "the first entry's rate, not the duplicate's";
+    EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[1], 300.0 * 512.0) << "the first entry's rate, not the duplicate's";
+    // The third sample is measured from the first entry's counters (2000 / 800), not the duplicate's
+    // (90000 / 70000), which would have clamped to a false 0 B/s.
+    EXPECT_DOUBLE_EQ(sda.readBytesPerSec[2], 1000.0 * 512.0) << "measured from the first entry's baseline";
+    EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[2], 200.0 * 512.0) << "measured from the first entry's baseline";
+    EXPECT_DOUBLE_EQ(publication->totalReadHistory[2], 1000.0 * 512.0);
+
+    // The sample with the duplicate: the snapshot lists sda once, with the first entry's rates, and
+    // the totals and total series are that entry's alone, not the sum of both entries (#1467).
+    ASSERT_EQ(repeated.disks.size(), 1U) << "a repeated device name is listed once";
+    const DiskSnapshot& first = repeated.disks.front();
+    EXPECT_EQ(first.deviceName, "sda");
+    EXPECT_DOUBLE_EQ(first.readBytesPerSec, 1000.0 * 512.0);
+    EXPECT_DOUBLE_EQ(first.writeBytesPerSec, 300.0 * 512.0);
+    EXPECT_DOUBLE_EQ(first.readOpsPerSec, 100.0);
+    EXPECT_DOUBLE_EQ(first.writeOpsPerSec, 30.0);
+    EXPECT_TRUE(repeated.totalsMeasured);
+    EXPECT_DOUBLE_EQ(repeated.totalReadBytesPerSec, first.readBytesPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalWriteBytesPerSec, first.writeBytesPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalReadOpsPerSec, first.readOpsPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalWriteOpsPerSec, first.writeOpsPerSec);
+    EXPECT_DOUBLE_EQ(publication->totalReadHistory[1], sda.readBytesPerSec[1]) << "the total agrees with the per-disk series";
+    EXPECT_DOUBLE_EQ(publication->totalWriteHistory[1], sda.writeBytesPerSec[1]) << "the total agrees with the per-disk series";
+}
+
+// A repeated device name whose later entry would be a counter glitch doesn't turn the sample's total
+// into a gap: only the first entry counts, and it was measured (#1467, #1291).
+TEST(StorageModelTest, ARepeatedDeviceNamesGlitchDoesNotRejectTheTotals)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    const auto disk = [](std::uint64_t readSectors)
+    {
+        Platform::DiskCounters counters;
+        counters.deviceName = "sda";
+        counters.sectorSize = 512;
+        counters.readSectors = readSectors;
+        return counters;
+    };
+    // Over the ceiling within one second, were it measured: 2x MAX_SANE_DISK_RATE_BPS worth of sectors.
+    constexpr auto JUMP_SECTORS = static_cast<std::uint64_t>(2.0 * Sampling::MAX_SANE_DISK_RATE_BPS / 512.0);
+
+    Platform::SystemDiskCounters counters;
+    counters.disks = {disk(1000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(0));
+    counters.disks = {disk(2000), disk(JUMP_SECTORS)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(1));
+
+    const StorageSnapshot latest = model.publication()->snapshot;
+    ASSERT_EQ(latest.disks.size(), 1U);
+    EXPECT_FALSE(latest.disks.front().ratesRejected);
+    EXPECT_TRUE(latest.totalsMeasured);
+    EXPECT_DOUBLE_EQ(latest.totalReadBytesPerSec, 1000.0 * 512.0);
+    const auto totals = model.publication()->totalReadHistory;
+    ASSERT_EQ(totals.size(), 2U);
+    EXPECT_DOUBLE_EQ(totals[1], 1000.0 * 512.0) << "a measured total, not a gap";
+}
+
+// A disk that appears once the history is full and trimming is a new series backfilled to the full
+// length; one absent past the window is pruned. Every publication stays aligned throughout (#1015,
+// #777).
+TEST(StorageModelTest, SharedSeriesStayAlignedAsDisksAppearAndArePruned)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+    std::uint64_t step = 0;
+    for (; step < 200; ++step)
+    {
+        // usb0 appears at step 50 and is gone from 120 on: pruned once absent for longer than the window.
+        auto counters = churningDisks(step);
+        if (step >= 50 && step < 120)
+        {
+            Platform::DiskCounters usb;
+            usb.deviceName = "usb0";
+            usb.readsCompleted = step;
+            usb.readSectors = step * 4;
+            counters.disks.push_back(usb);
+        }
+        rawProbe->setNextCounters(counters);
+        model.sampleAt(sampleTime(step));
+
+        const auto publication = model.publication();
+        ASSERT_TRUE(isAligned(*publication)) << "step " << step;
+        const bool hasUsb =
+            std::ranges::any_of(publication->perDiskHistory, [](const PerDiskHistory& disk) { return disk.deviceName == "usb0"; });
+        EXPECT_EQ(hasUsb, step >= 50 && step < 120 + static_cast<std::uint64_t>(Sampling::HISTORY_SECONDS_MIN)) << "step " << step;
+    }
+}
+
+// A UI-style reader walks every sample of the latest publication while the sampler appends, trims and
+// compacts the shared history underneath it. Under TSan this shows the reader never reads a slot the
+// writer writes: published samples are never written again (#1412). The sampler is paced on the reader
+// (TestPublication::ReadPacer): it starts only once the reader has completed a traversal, and waits for a
+// new one every PACE_EVERY samples, so the reads really overlap the sampling however the threads are
+// scheduled.
+TEST(StorageModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
+{
+    constexpr int SAMPLES = 2000;
+    constexpr int PACE_EVERY = 10;
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(Sampling::HISTORY_SECONDS_MIN);
+    rawProbe->setNextCounters(churningDisks(0));
+    model.sampleAt(sampleTime(0));
+
+    TestPublication::ReadPacer pacer;
+    std::atomic<bool> done{false};
+    std::atomic<std::size_t> misaligned{0};
+    std::thread reader(
+        [&]
+        {
+            while (!done.load(std::memory_order_acquire))
+            {
+                const auto publication = model.publication();
+                const PublishedValues values(*publication); // reads every sample of every series
+                const auto& timestamps = publication->timestamps;
+                for (std::size_t i = 1; i < timestamps.size(); ++i)
+                {
+                    if (timestamps[i] <= timestamps[i - 1])
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                for (const auto& series : values.series)
+                {
+                    if (series.size() != timestamps.size())
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                pacer.readDone(); // one full traversal of a publication
+            }
+        });
+
+    // Start sampling only once the reader is running, then count the traversals made while sampling.
+    std::size_t readsSeen = 0;
+    const bool readerStarted = pacer.awaitReadSince(readsSeen);
+    const std::size_t readsBeforeSampling = readsSeen;
+    int paced = 0;
+    for (int i = 0; readerStarted && i < SAMPLES; ++i)
+    {
+        if (i % PACE_EVERY == 0)
+        {
+            if (!pacer.awaitReadSince(readsSeen))
+            {
+                break;
+            }
+            ++paced;
+        }
+        const auto step = static_cast<std::uint64_t>(i) + 1;
+        rawProbe->setNextCounters(churningDisks(step));
+        model.sampleAt(sampleTime(step, 0.25));
+    }
+    done.store(true, std::memory_order_release);
+    reader.join();
+    ASSERT_TRUE(readerStarted) << "the reader never completed a traversal";
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped making progress while sampling";
+    // Every paced wait saw a traversal completed after the previous one, while sampling was under way.
+    EXPECT_EQ(paced, SAMPLES / PACE_EVERY);
+    EXPECT_GE(readsSeen - readsBeforeSampling, static_cast<std::size_t>(SAMPLES / PACE_EVERY));
+    EXPECT_EQ(misaligned.load(), 0U);
 }
 
 } // namespace

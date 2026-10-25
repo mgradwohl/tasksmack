@@ -1,9 +1,16 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <format>
+#include <optional>
+#include <stop_token>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -13,14 +20,27 @@ struct ProcessActionResult
 {
     bool success = false;
     std::string errorMessage;
+    /// On success, how the action was carried out when that differs from what its name promises, as a
+    /// phrase the result line appends: Windows affinity across processor groups is only a preference
+    /// (#2173). Empty for a plain success and on failure.
+    std::string successNote;
+    /// On failure, whether the OS refused it for want of permission over the process (Linux: EPERM or
+    /// EACCES), which acting as an administrator could cure: BrokeredProcessActions retries such a
+    /// failure through the privileged helper (#2308). False for every other failure.
+    bool permissionDenied = false;
 
-    static ProcessActionResult ok()
+    static ProcessActionResult ok(std::string note = {})
     {
-        return {.success = true, .errorMessage = {}};
+        return {.success = true, .errorMessage = {}, .successNote = std::move(note), .permissionDenied = false};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {.success = false, .errorMessage = std::move(msg)};
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = false};
+    }
+    /// A failure for want of permission over the process (permissionDenied).
+    static ProcessActionResult denied(std::string msg)
+    {
+        return {.success = false, .errorMessage = std::move(msg), .successNote = {}, .permissionDenied = true};
     }
 };
 
@@ -37,6 +57,10 @@ struct ProcessTarget
 {
     std::int32_t pid = 0;
     std::uint64_t startTimeTicks = 0; ///< 0 means unknown; an action on an unknown identity is refused.
+
+    /// The same process: the same PID and the same start time. The Processes table's selection is
+    /// keyed on this exact identity, never on a hash of it (#1503).
+    [[nodiscard]] friend constexpr bool operator==(const ProcessTarget&, const ProcessTarget&) noexcept = default;
 };
 
 /// Whether the process found at a target's PID is the process the target names.
@@ -62,14 +86,162 @@ struct ProcessTarget
     return ProcessActionResult::ok();
 }
 
+/// A Linux I/O scheduling class (ioprio_set(2)), with the kernel's own numbering (IOPRIO_CLASS_*).
+enum class IoPriorityClass : std::uint8_t
+{
+    None = 0,       ///< Never set: the kernel derives a best-effort level from the nice value.
+    Realtime = 1,   ///< Served before every other class; setting it needs CAP_SYS_NICE (or CAP_SYS_ADMIN).
+    BestEffort = 2, ///< The normal class, with levels 0 (highest) to 7 (lowest).
+    Idle = 3,       ///< Served only when no other process wants the disk.
+};
+
+/// A process's I/O priority: its class, and its level within Realtime or BestEffort (0 is highest,
+/// 7 lowest). The level means nothing for None and Idle, and is 0 there.
+struct IoPriority
+{
+    IoPriorityClass ioClass = IoPriorityClass::None;
+    std::int32_t level = 0;
+
+    [[nodiscard]] constexpr bool operator==(const IoPriority&) const noexcept = default;
+};
+
+/// The I/O priority read for a process, or the message saying why it could not be read.
+using IoPriorityReadResult = std::expected<IoPriority, std::string>;
+/// Whether IProcessActions::launchSyscallTrace() can open a system call tracer on this machine (#182).
+enum class SyscallTraceAvailability : std::uint8_t
+{
+    Unsupported, ///< No such action here (Windows, or the synthetic scenario): the UI hides it.
+    Available,   ///< A tracer and a terminal to show it in were found.
+    NoTracer,    ///< The platform supports it, but no tracer (strace) was found on PATH.
+    NoTerminal,  ///< The platform supports it, but no terminal emulator was found to run it in.
+};
+
+/// Why the trace action cannot run, for the tooltip of its disabled button; empty when it can.
+[[nodiscard]] constexpr const char* syscallTraceUnavailableReason(SyscallTraceAvailability availability) noexcept
+{
+    switch (availability)
+    {
+    case SyscallTraceAvailability::Unsupported:
+        // Windows, and the synthetic scenario on any platform.
+        return "Tracing system calls is not available here";
+    case SyscallTraceAvailability::NoTracer:
+        return "strace is not installed (or not on PATH). Install it (e.g. sudo apt install strace) and restart TaskSmack.";
+    case SyscallTraceAvailability::NoTerminal:
+        return "No terminal emulator was found to run strace in. Set $TERMINAL to one (a program name or absolute path), or "
+               "install one such as gnome-terminal, konsole or xterm, and restart TaskSmack.";
+    case SyscallTraceAvailability::Available:
+        break;
+    }
+    return "";
+}
+
+/// How the machine's logical processors are grouped, for the Set affinity dialog (#1881): read on
+/// demand, when the dialog opens, never per frame. Each part may be empty, meaning unknown; the dialog
+/// then offers CPUs 0 to N-1 in one plain grid.
+struct CpuAffinityLayout
+{
+    /// Windows processor groups' sizes (their maximum processor counts), in CPU order: group 0's CPUs
+    /// come first, numbered as CpuAffinity numbers them. Empty (Linux) or one entry: no groups to show.
+    std::vector<std::uint32_t> groupSizes;
+    /// The CPUs that exist now, numbered as CpuAffinity numbers them; empty when unknown.
+    CpuAffinity online;
+    /// Each CPU's efficiency class on a hybrid CPU (higher is more performant), as
+    /// CpuDetails::efficiencyClassByCoreId has it; empty on a CPU with one kind of core.
+    std::vector<std::uint8_t> efficiencyClassByCpu;
+    /// setAffinity() sets the choice as the process's default CPU sets rather than a hard affinity:
+    /// Windows with more than one processor group, where one affinity mask can't span groups.
+    bool appliedAsCpuSets = false;
+};
+
+/// A dump file IProcessActions::createDump() wrote (#807).
+struct ProcessDump
+{
+    std::filesystem::path file;  ///< The file written.
+    std::uint64_t sizeBytes = 0; ///< Its size on disk.
+    std::string note;            ///< Something worth knowing about the dump (a 32-bit process's); empty when nothing.
+    /// Written from a snapshot of the process (Windows: PssCaptureSnapshot's clone, #2001), so the
+    /// process paused only while the snapshot was taken, not for the whole write.
+    bool fromSnapshot = false;
+    /// Why it was written from the running process instead, or, where the platform never takes a
+    /// snapshot (ProcessActionCapabilities::dumpsFromSnapshot false), how; empty when fromSnapshot.
+    std::string liveReason;
+};
+
+/// The dump file written, or the message saying why there is none.
+using ProcessDumpResult = std::expected<ProcessDump, std::string>;
+
+/// What createDump() says where the platform cannot write a dump.
+inline constexpr const char* DUMP_UNSUPPORTED_MESSAGE = "Creating a dump file isn't available on this system";
+
+/// What a dump's free-space check is made from (#2001): raw readings, each empty when it couldn't be
+/// read. The estimate and the warning are the UI's (App::DumpDetail).
+struct DumpSpace
+{
+    /// Bytes free to TaskSmack's user on the volume holding the folder.
+    std::optional<std::uint64_t> freeBytes;
+    /// The process's private bytes (its commit charge): a full dump holds at least that much.
+    std::optional<std::uint64_t> processBytes;
+};
+
+/// The folder chosen in IProcessActions::chooseDumpFolder(), nullopt when the dialog was cancelled, or
+/// the message saying why it couldn't be shown.
+using FolderChoice = std::expected<std::optional<std::filesystem::path>, std::string>;
+
+/// What chooseDumpFolder() says where the platform has no folder dialog.
+inline constexpr const char* FOLDER_CHOICE_UNSUPPORTED_MESSAGE = "Choosing a folder isn't available on this system";
+
+/// An action to retry as an administrator (IProcessActions::runAuthorized(), #2308): which one, its
+/// target, and its argument where it has one.
+struct AuthorizedAction
+{
+    enum class Kind : std::uint8_t
+    {
+        Terminate,
+        Kill,
+        Stop,
+        Resume,
+        SetPriority,   ///< nice
+        SetIoPriority, ///< ioClass and level
+        SetAffinity,   ///< cpus
+    };
+    Kind kind = Kind::Terminate;
+    ProcessTarget target;
+    std::int32_t nice = 0;
+    IoPriorityClass ioClass = IoPriorityClass::BestEffort;
+    std::int32_t level = 4;
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    CpuAffinity cpus{};
+};
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
-    bool canTerminate = false;   // SIGTERM
-    bool canKill = false;        // SIGKILL
-    bool canStop = false;        // SIGSTOP
-    bool canContinue = false;    // SIGCONT
-    bool canSetPriority = false; // setpriority/SetPriorityClass
+    bool canTerminate = false;     // SIGTERM
+    bool canKill = false;          // SIGKILL
+    bool canStop = false;          // SIGSTOP
+    bool canContinue = false;      // SIGCONT
+    bool canSetPriority = false;   // setpriority/SetPriorityClass
+    bool canSetIoPriority = false; // ioprio_set (Linux only)
+    /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
+    /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
+    bool canSetRealtimeIoPriority = false;
+    /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
+    /// #1881 Windows).
+    bool canSetAffinity = false;
+    /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
+    SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
+    /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
+    bool canCreateDump = false;
+    /// chooseDumpFolder(): a folder dialog for where dumps go (#2001; Windows: IFileOpenDialog).
+    bool canChooseDumpFolder = false;
+    /// createDump() first tries a snapshot of the process, so it pauses only while that is taken, and
+    /// writes from the running process only when none can be (Windows: PssCaptureSnapshot, #2001).
+    /// False: every dump is written from the running process, stopped for the whole write (Linux:
+    /// gdb's gcore), and that is the normal case, not a fallback (#2241).
+    bool dumpsFromSnapshot = false;
+    /// runAuthorized() can retry a permissionDenied failure as an administrator, after a password
+    /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
+    bool canAuthorizeInteractively = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -106,6 +278,104 @@ class IProcessActions
     /// @param target Process to change
     /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
+
+    /// Set the process's I/O priority (ioprio_set on Linux, for every thread). Refused where
+    /// actionCapabilities().canSetIoPriority is false.
+    /// @param target  Process to change
+    /// @param ioClass Scheduling class
+    /// @param level   Level within Realtime or BestEffort (0 highest to 7 lowest); ignored otherwise
+    [[nodiscard]] virtual ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) = 0;
+
+    /// Read the process's current I/O priority (ioprio_get on Linux), on demand for one process: it
+    /// is not part of the sampled counters. Refused, as the actions are, unless the process at the
+    /// target's PID is the target.
+    [[nodiscard]] virtual IoPriorityReadResult getIoPriority(const ProcessTarget& target) = 0;
+    /// Open a terminal window running a system call tracer (strace) attached to the target (#182).
+    ///
+    /// Returns once the terminal has been started, never waiting for it or the tracer to finish; the
+    /// trace itself is shown and ended in that window. Like every action it refuses a target whose
+    /// identity cannot be confirmed. Only LinuxProcessActions implements it. The default refuses it as
+    /// unsupported, matching ProcessActionCapabilities' default syscallTrace (Unsupported), which an
+    /// implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult launchSyscallTrace(const ProcessTarget& target)
+    {
+        static_cast<void>(target);
+        return ProcessActionResult::error(syscallTraceUnavailableReason(SyscallTraceAvailability::Unsupported));
+    }
+
+    /// Lets the target run only on @p cpus (#1887), numbered as CpuAffinity and the per-core figures
+    /// number them; refused when @p cpus is empty. Refused, as every action is, unless the process at
+    /// the target's PID is the target. Where the choice is applied as a preference rather than a hard
+    /// affinity (Windows CPU sets, #2173), the success carries a ProcessActionResult::successNote that
+    /// says so. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canSetAffinity's default (false), which an implementation that does
+    /// not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
+    {
+        static_cast<void>(target);
+        static_cast<void>(cpus);
+        return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
+    }
+
+    /// Writes a full-memory dump of the target into @p directory (#807), as Task Manager's "Create dump
+    /// file" does, and returns the file written: from a snapshot of the process where the platform can
+    /// take one (ProcessDump::fromSnapshot), else from the running process. Blocking, for seconds or minutes with a large process,
+    /// so it is called on a worker thread, never the UI thread; it may run there while the UI thread
+    /// calls the other actions, so an implementation keeps no state that this changes. Once
+    /// @p stopToken is requested it stops at its next chance and deletes the partial file. Refused, as
+    /// every action is, unless the process at the target's PID is the target. The default refuses it
+    /// as unsupported, matching ProcessActionCapabilities::canCreateDump's default (false), which an
+    /// implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessDumpResult
+    createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+    {
+        static_cast<void>(target);
+        static_cast<void>(directory);
+        static_cast<void>(stopToken);
+        return std::unexpected(std::string(DUMP_UNSUPPORTED_MESSAGE));
+    }
+
+    /// The free space on @p directory's volume and the target's private bytes, for the dump's confirm
+    /// to warn when the dump may not fit (#2001). Reads the system each call: call it when the confirm
+    /// opens or its folder changes, not per frame. The default knows neither.
+    [[nodiscard]] virtual DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+    {
+        static_cast<void>(target);
+        static_cast<void>(directory);
+        return {};
+    }
+
+    /// Shows the platform's folder dialog, starting in @p initial, for where dump files go (#2001), and
+    /// returns the folder chosen (nullopt: cancelled). Blocks until the user answers, so it is called
+    /// on a worker thread, never the UI thread. @p ownerWindow is the native window the dialog is
+    /// modal to (an HWND on Windows), or null. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canChooseDumpFolder's default (false).
+    [[nodiscard]] virtual FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+    {
+        static_cast<void>(initial);
+        static_cast<void>(ownerWindow);
+        return std::unexpected(std::string(FOLDER_CHOICE_UNSUPPORTED_MESSAGE));
+    }
+
+    /// Retries @p request (a signal, priority, I/O priority or affinity change) as an administrator,
+    /// asking for the password first if need be (#2308): what "Authenticate and retry" does after a
+    /// permissionDenied failure. Blocks for as long as the prompt is up, so it runs on a worker, never
+    /// the UI thread. The default refuses it, matching ProcessActionCapabilities'
+    /// canAuthorizeInteractively default (false).
+    [[nodiscard]] virtual ProcessActionResult runAuthorized(const AuthorizedAction& action, const std::stop_token& stopToken)
+    {
+        static_cast<void>(action);
+        static_cast<void>(stopToken);
+        return ProcessActionResult::error("Acting as an administrator isn't available");
+    }
+
+    /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).
+    /// Reads the system each call, so call it when the dialog opens, not per frame. The default
+    /// knows nothing (every part empty).
+    [[nodiscard]] virtual CpuAffinityLayout affinityLayout() const
+    {
+        return {};
+    }
 };
 
 } // namespace Platform

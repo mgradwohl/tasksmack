@@ -1,0 +1,8 @@
+55d0c1a00000-55d0c1a02000 r--p 00000000 08:01 1311 /usr/bin/cat
+55d0c1a02000-55d0c1a07000 r-xp 00002000 08:01 1311 /usr/bin/cat
+55d0c2b00000-55d0c2b21000 rw-p 00000000 00:00 0                          [heap]
+7f3a1c028000-7f3a1c1bd000 r-xp 00028000 08:01 1835                       /usr/lib/x86_64-linux-gnu/libc.so.6
+7f3a1c215000-7f3a1c219000 rw-p 00000000 00:00 0
+7f3a1e000000-7f3a1e010000 r-xp 00000000 08:01 3003 /opt/app/libold.so (deleted)
+7f3a1e100000-7f3a1e104000 r-xp 00000000 08:01 3004 /opt/My App/lib plugin.so
+7ffd5a3fb000-7ffd5a3fd000 r-xp 00000000 00:00 0                          [vdso]

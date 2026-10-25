@@ -315,7 +315,7 @@ TEST(DisplayDevicePowerTest, QueryingRealAdaptersDoesNotFail)
 
 TEST(DXGIGPUProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ DXGIGPUProbe probe; });
+    EXPECT_NO_THROW({ const DXGIGPUProbe probe; });
 }
 
 TEST(DXGIGPUProbeTest, EnumerateGPUsReturnsWellFormedData)
@@ -356,7 +356,7 @@ TEST(DXGIGPUProbeTest, ReadProcessGPUCountersIsAlwaysEmpty)
 
 TEST(DXGIGPUProbeTest, CapabilitiesReflectDXGILimitations)
 {
-    DXGIGPUProbe probe;
+    const DXGIGPUProbe probe;
     const auto caps = probe.capabilities();
 
     // DXGI never provides these, regardless of whether the factory initialized.

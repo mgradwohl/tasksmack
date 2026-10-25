@@ -7,7 +7,6 @@
 #include <gtest/gtest.h>
 
 #include <memory>
-#include <string>
 
 namespace Core
 {
@@ -92,12 +91,6 @@ TEST(EventTest, GetNameReturnsExpectedString)
 {
     WindowCloseEvent ev;
     EXPECT_STREQ(ev.getName(), "WindowClose");
-}
-
-TEST(EventTest, ToStringReturnsGetName)
-{
-    WindowCloseEvent ev;
-    EXPECT_EQ(ev.toString(), std::string("WindowClose"));
 }
 
 TEST(EventTest, DifferentEventTypesAreDistinct)

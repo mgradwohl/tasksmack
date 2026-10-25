@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+TryExec=code
+Exec=env "FOO=a b" "/opt/My App/app" --flag=\"x\" %F
+Icon=/opt/My App/icon.png
+Hidden=false

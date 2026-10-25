@@ -20,10 +20,13 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/Linux/ElfArchitecture.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcFdScan.h"
 #include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ScopedTempDir.h"
 
@@ -39,18 +42,23 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <initializer_list>
+#include <iostream>
 #include <iterator>
+#include <latch>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -59,7 +67,12 @@
 #include <thread>
 #include <utility>
 
+#include <linux/prctl.h>
 #include <sched.h>
+// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <signal.h>
+#include <sys/prctl.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -110,16 +123,116 @@ TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuidAndEffectiveCapabilities
     const LinuxProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // Not reduced with CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE) effective -- root with
-    // its normal capabilities, or setcap; with CapEff unreadable, only as root.
+    // Reading other users' data needs CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH (or CAP_DAC_OVERRIDE); acting
+    // on them CAP_KILL and CAP_SYS_NICE (#2303). Root with its normal capabilities has them all.
     std::ifstream statusFile("/proc/self/status");
     const std::string status{std::istreambuf_iterator<char>(statusFile), std::istreambuf_iterator<char>()};
-    const bool expectedReducedPrivileges = ProcPrivileges::hasReducedPrivileges(geteuid() == 0, ProcPrivileges::parseCapEff(status));
-    EXPECT_EQ(caps.hasReducedPrivileges, expectedReducedPrivileges);
+    const std::optional<std::uint64_t> capEff = ProcPrivileges::parseCapEff(status);
+    const std::uint8_t readAndAct = caps.missingPrivileges & static_cast<std::uint8_t>(~MissingPrivilege::PROCESSES_HIDDEN);
+    EXPECT_EQ(readAndAct, ProcPrivileges::missingPrivileges(geteuid() == 0, capEff, std::nullopt, false));
+    EXPECT_EQ(caps.hasReducedPrivileges, caps.missingPrivileges != 0);
+}
+
+// #2303: the /proc mount's hidepid= and gid= from mountinfo, its words and numbers; the last /proc wins.
+TEST(ProcPrivilegesTest, ParsesTheProcMountsHidepidAndGid)
+{
+    constexpr std::string_view PLAIN = "22 28 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw\n";
+    ASSERT_TRUE(ProcPrivileges::parseProcMount(PLAIN).has_value());
+    EXPECT_EQ(ProcPrivileges::parseProcMount(PLAIN)->hidepid, 0);
+    EXPECT_FALSE(ProcPrivileges::parseProcMount(PLAIN)->gid.has_value());
+
+    constexpr std::string_view HIDDEN = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                                        "22 28 0:21 / /proc rw,relatime shared:12 - proc proc rw,hidepid=invisible,gid=1001\n";
+    const auto hidden = ProcPrivileges::parseProcMount(HIDDEN);
+    ASSERT_TRUE(hidden.has_value());
+    EXPECT_EQ(hidden->hidepid, 2);
+    EXPECT_EQ(hidden->gid, std::optional<std::uint32_t>{1001});
+
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=2\n")->hidepid, 2);
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=ptraceable\n")->hidepid, 4);
+    EXPECT_EQ(ProcPrivileges::parseProcMount("5 1 0:5 / /proc rw - proc proc rw,hidepid=noaccess\n")->hidepid, 1);
+    // A later mount of /proc hides the earlier one.
+    EXPECT_EQ(ProcPrivileges::parseProcMount(std::string(PLAIN) + "9 1 0:9 / /proc rw - proc proc rw,hidepid=2\n")->hidepid, 2);
+    // Not /proc, or not a proc filesystem there: no answer.
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n").has_value());
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("3 1 0:3 / /proc rw - tmpfs tmpfs rw\n").has_value());
+    EXPECT_FALSE(ProcPrivileges::parseProcMount("").has_value());
+}
+
+// #2303: each missing permission is its own bit.
+TEST(ProcPrivilegesTest, MissingPrivilegesHasABitForEachPermission)
+{
+    constexpr std::uint64_t DAC_READ_SEARCH = std::uint64_t{1} << ProcPrivileges::CAP_DAC_READ_SEARCH_BIT;
+    constexpr std::uint64_t SYS_PTRACE = std::uint64_t{1} << ProcPrivileges::CAP_SYS_PTRACE_BIT;
+    constexpr std::uint64_t KILL = std::uint64_t{1} << ProcPrivileges::CAP_KILL_BIT;
+    constexpr std::uint64_t SYS_NICE = std::uint64_t{1} << ProcPrivileges::CAP_SYS_NICE_BIT;
+    namespace Missing = MissingPrivilege;
+    const auto missing = [](bool root, std::optional<std::uint64_t> capEff)
+    {
+        return ProcPrivileges::missingPrivileges(root, capEff, std::nullopt, false);
+    };
+
+    EXPECT_EQ(missing(true, 0x1ffffffffffULL), 0); // root with its normal capabilities
+    EXPECT_EQ(missing(false, DAC_READ_SEARCH | SYS_PTRACE | KILL | SYS_NICE), 0);
+    // The FAQ's old setcap line (read access only) can't act on other users' processes.
+    EXPECT_EQ(missing(false, DAC_READ_SEARCH | SYS_PTRACE), Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY);
+    EXPECT_EQ(missing(false, KILL | SYS_NICE), Missing::READ_OTHERS);
+    EXPECT_EQ(missing(true, 0), Missing::READ_OTHERS | Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY); // dropped
+    // Unknown capabilities: root has them all, anyone else none.
+    EXPECT_EQ(missing(true, std::nullopt), 0);
+    EXPECT_EQ(missing(false, std::nullopt), Missing::READ_OTHERS | Missing::SIGNAL_OTHERS | Missing::RAISE_PRIORITY);
+
+    // hidepid=invisible hides other users' processes, except from its gid= group and CAP_SYS_PTRACE.
+    const ProcPrivileges::ProcMount invisible{.hidepid = 2, .gid = 1001};
+    constexpr std::uint64_t ALL = DAC_READ_SEARCH | SYS_PTRACE | KILL | SYS_NICE;
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, invisible, false) & Missing::PROCESSES_HIDDEN,
+              Missing::PROCESSES_HIDDEN);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, invisible, true) & Missing::PROCESSES_HIDDEN, 0);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, ALL, invisible, false), 0);
+    // hidepid=noaccess lists them but refuses opening their directories, so they can't be shown either
+    // (#2399): hidden too, except from its gid= group and CAP_SYS_PTRACE.
+    const ProcPrivileges::ProcMount noaccess{.hidepid = 1, .gid = std::nullopt};
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, false), Missing::READ_OTHERS | Missing::PROCESSES_HIDDEN);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, KILL | SYS_NICE, noaccess, true) & Missing::PROCESSES_HIDDEN, 0);
+    EXPECT_EQ(ProcPrivileges::missingPrivileges(false, ALL, noaccess, false), 0);
 }
 
 // #1327 review: the privilege notice fired for every non-root process, including one granted the
 // capabilities docs/guide/faq.md recommends. CapEff (hex) in /proc/self/status decides instead.
+// #2400 (#2479): a user in more groups than a fixed buffer holds (more than 256, common under LDAP/SSSD)
+// still has every group read: the list is sized by asking first.
+TEST(ProcPrivilegesTest, EverySupplementaryGroupIsReadHoweverMany)
+{
+    constexpr int GROUPS = 300;
+    const auto fakeGetgroups = [](int size, gid_t* list) -> int
+    {
+        if (size == 0)
+        {
+            return GROUPS;
+        }
+        if (size < GROUPS)
+        {
+            errno = EINVAL;
+            return -1;
+        }
+        for (int i = 0; i < GROUPS; ++i)
+        {
+            list[i] = static_cast<gid_t>(1000 + i); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - getgroups' C array
+        }
+        return GROUPS;
+    };
+    const std::vector<gid_t> groups = ProcPrivileges::supplementaryGroups(fakeGetgroups);
+    ASSERT_EQ(groups.size(), static_cast<std::size_t>(GROUPS));
+    EXPECT_NE(std::ranges::find(groups, static_cast<gid_t>(1299)), groups.end()) << "the last group, past any fixed buffer";
+
+    const auto unreadable = [](int /*size*/, gid_t* /*list*/) -> int
+    {
+        errno = EPERM;
+        return -1;
+    };
+    EXPECT_TRUE(ProcPrivileges::supplementaryGroups(unreadable).empty());
+}
+
 TEST(ProcPrivilegesTest, ParsesCapEffFromStatus)
 {
     constexpr std::string_view STATUS = "Name:\tTaskSmack\nCapInh:\t0000000000000000\nCapPrm:\t0000000000080004\n"
@@ -222,6 +335,127 @@ TEST(LinuxProcessProbeTest, EnumerateReturnsProcesses)
 
     // Should find at least a few processes (init, kernel threads, this test, etc.)
     EXPECT_GT(processes.size(), 0ULL);
+}
+
+/// A child process for one test, killed and reaped when it goes out of scope.
+class ChildProcess
+{
+  public:
+    explicit ChildProcess(pid_t pid) : m_Pid(pid)
+    {}
+    ~ChildProcess()
+    {
+        if (m_Pid > 0)
+        {
+            ::kill(m_Pid, SIGKILL);
+            int status = 0;
+            ::waitpid(m_Pid, &status, 0);
+        }
+    }
+    ChildProcess(const ChildProcess&) = delete;
+    ChildProcess& operator=(const ChildProcess&) = delete;
+    ChildProcess(ChildProcess&&) = delete;
+    ChildProcess& operator=(ChildProcess&&) = delete;
+
+    [[nodiscard]] pid_t pid() const noexcept
+    {
+        return m_Pid;
+    }
+
+  private:
+    pid_t m_Pid = -1;
+};
+
+/// Not UTF-8: a lead byte without its continuation, a stray continuation and 0xFF (#1648). NUL-terminated
+/// for prctl(), and as a view for the comparisons.
+constexpr const char* NOT_UTF8_CSTR = "bad\xC3(\x80\xFFname";
+constexpr std::string_view NOT_UTF8 = NOT_UTF8_CSTR;
+
+[[nodiscard]] std::optional<ProcessCounters> countersFor(LinuxProcessProbe& probe, pid_t pid)
+{
+    for (ProcessCounters& counters : probe.enumerate())
+    {
+        if (counters.pid == static_cast<std::int32_t>(pid))
+        {
+            return std::move(counters);
+        }
+    }
+    return std::nullopt;
+}
+
+// #1648: a real process whose /proc/<pid>/comm isn't UTF-8 -- it renamed itself with prctl(PR_SET_NAME) --
+// reaches the snapshot byte for byte, as the mocks in test_NonAsciiRoundTrips.cpp assume.
+TEST(LinuxProcessProbeTest, ARealProcessNameThatIsntUtf8ArrivesByteForByte)
+{
+    std::array<int, 2> ready{};
+    ASSERT_EQ(::pipe(ready.data()), 0);
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0)
+    {
+        // The child: async-signal-safe calls only (the test binary has other threads).
+        ::prctl(PR_SET_NAME, NOT_UTF8_CSTR, 0, 0, 0); // NOLINT(cppcoreguidelines-pro-type-vararg) - prctl is variadic
+        const char byte = 1;
+        static_cast<void>(::write(ready[1], &byte, 1));
+        while (true)
+        {
+            ::pause();
+        }
+    }
+    const ChildProcess child(pid);
+    ::close(ready[1]);
+    char byte = 0;
+    ASSERT_EQ(::read(ready[0], &byte, 1), 1); // renamed
+    ::close(ready[0]);
+
+    LinuxProcessProbe probe;
+    const std::optional<ProcessCounters> counters = countersFor(probe, child.pid());
+    ASSERT_TRUE(counters.has_value());
+    EXPECT_EQ(counters.value_or(ProcessCounters{}).name, NOT_UTF8);
+}
+
+// #1648: a real process whose command line isn't UTF-8 (argv[0]) reaches the snapshot byte for byte.
+TEST(LinuxProcessProbeTest, ARealCommandLineThatIsntUtf8ArrivesByteForByte)
+{
+    constexpr const char* SLEEP = "/bin/sleep";
+    if (::access(SLEEP, X_OK) != 0)
+    {
+        GTEST_SKIP() << SLEEP << " isn't here";
+    }
+    std::string argv0(NOT_UTF8);
+    std::string seconds = "30";
+    std::array<char*, 3> argv{argv0.data(), seconds.data(), nullptr};
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0)
+    {
+        ::execv(SLEEP, argv.data());
+        ::_exit(127);
+    }
+    const ChildProcess child(pid);
+
+    // Wait for the exec: until then /proc/<pid>/cmdline is the test binary's, or empty mid-exec (the
+    // probe then shows "[sleep]"). On a loaded machine that can take seconds (#2052), so wait on a
+    // deadline and say so if the exec never shows, rather than compare against the pre-exec reading.
+    constexpr auto EXEC_DEADLINE = std::chrono::seconds(15);
+    LinuxProcessProbe probe;
+    std::optional<ProcessCounters> counters;
+    bool execSeen = false;
+    const auto giveUpAt = std::chrono::steady_clock::now() + EXEC_DEADLINE;
+    while (std::chrono::steady_clock::now() < giveUpAt)
+    {
+        counters = countersFor(probe, child.pid());
+        if (counters.has_value() && counters.value_or(ProcessCounters{}).command.starts_with(NOT_UTF8))
+        {
+            execSeen = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(execSeen) << "the child's exec of " << SLEEP << " wasn't seen within " << EXEC_DEADLINE.count() << " s";
+    const ProcessCounters found = counters.value_or(ProcessCounters{});
+    EXPECT_EQ(found.command, std::string(NOT_UTF8) + " 30");
+    EXPECT_FALSE(found.name.empty()); // "sleep" from comm, or the command line's -- either way, not lost
 }
 
 TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
@@ -480,51 +714,118 @@ TEST(LinuxProcessProbeTest, HandlesRapidEnumeration)
 // Multithreading Tests
 // =============================================================================
 
+namespace
+{
+/// Four threads enumerating through @p probe at once (its documented contract, LinuxProcessProbe.h): none
+/// may throw, crash or come back empty, and every one must finish its work. Each does a fixed number
+/// of enumerations, checked after joining, so a slow or oversubscribed runner only makes the test take
+/// longer; it has no sleep to outlast (#2283, as the Windows twin's #2259). A real hang is caught by
+/// the suite's ctest TIMEOUT. Under the tsan preset, a race on the probe's shared caches fails it (#2412).
+void expectConcurrentEnumerationWorks(LinuxProcessProbe& probe)
+{
+    constexpr std::size_t THREAD_COUNT = 4;
+    constexpr int ITERATIONS_PER_THREAD = 2;
+
+    std::array<int, THREAD_COUNT> successes{};
+    std::array<int, THREAD_COUNT> exceptions{};
+
+    // The threads all start enumerating together, so the enumerations overlap rather than running one
+    // after another as the threads happen to start.
+    std::latch startTogether{static_cast<std::ptrdiff_t>(THREAD_COUNT)};
+
+    {
+        std::vector<std::jthread> threads;
+        threads.reserve(THREAD_COUNT);
+        for (std::size_t i = 0; i < THREAD_COUNT; ++i)
+        {
+            // Each thread writes only its own slot; join() publishes the writes to this thread.
+            threads.emplace_back(
+                [&probe, &startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
+                {
+                    startTogether.arrive_and_wait();
+                    for (int iteration = 0; iteration < ITERATIONS_PER_THREAD; ++iteration)
+                    {
+                        try
+                        {
+                            if (!probe.enumerate().empty())
+                            {
+                                ++success;
+                            }
+                        }
+                        catch (...)
+                        {
+                            ++thrown;
+                        }
+                    }
+                });
+        }
+    } // jthreads join here
+
+    for (std::size_t i = 0; i < THREAD_COUNT; ++i)
+    {
+        EXPECT_EQ(exceptions.at(i), 0) << "thread " << i << ": enumerate() threw";
+        EXPECT_EQ(successes.at(i), ITERATIONS_PER_THREAD) << "thread " << i << ": not every enumeration returned processes";
+    }
+}
+} // namespace
+
+// #2412: one probe shared by every thread, as the sampler and Process Details share it. Separate probes
+// share no state, so they would test no concurrency at all.
 TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
 {
     LinuxProcessProbe probe;
+    expectConcurrentEnumerationWorks(probe);
+}
 
-    std::atomic<int> successCount{0};
-    std::atomic<bool> running{true};
+// #2412: as above, with the inode-to-PID map and the command-line cache expiring at once, so every
+// enumeration rebuilds them and the threads race on the claim-under-lock rebuild, not just on reads.
+TEST(LinuxProcessProbeTest, ConcurrentEnumerationRebuildingItsCaches)
+{
+    LinuxProcessProbe probe;
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    probe.setInodeMapTtlForTesting(std::chrono::milliseconds(0));
+#endif
+    probe.setCmdlineCacheTtlForTesting(std::chrono::milliseconds(0));
+    expectConcurrentEnumerationWorks(probe);
+}
 
-    auto enumerateTask = [&]()
-    {
-        while (running)
+// #2633: exit() runs static destructors while the sampler thread is still enumerating (Xlib calls it
+// from the render loop when the X connection drops). The child exits under four enumerating threads;
+// a destroyed username cache made the next getUsername() die of SIGSEGV at a null bucket array. The
+// probe is leaked, as the app's survives exit(): only static storage is destroyed.
+TEST(LinuxProcessProbeDeathTest, ExitWhileOtherThreadsEnumerate)
+{
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__) ||                                                                       \
+    (defined(__has_feature) && (__has_feature(thread_sanitizer) || __has_feature(address_sanitizer)))
+    // exit() also destroys spdlog's registry under the threads' log calls: a race TSan reports and a
+    // heap-use-after-free ASan reports (#2657)
+    GTEST_SKIP() << "exit() under running threads also frees spdlog's registry under them (#2657)";
+#endif
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(
         {
-            try
+            constexpr int THREAD_COUNT = 4;
+            auto* const probe = new LinuxProcessProbe(); // NOLINT(cppcoreguidelines-owning-memory) - outlives exit(), as the app's does
+            std::latch enumerated{THREAD_COUNT};
+            for (int i = 0; i < THREAD_COUNT; ++i)
             {
-                auto processes = probe.enumerate();
-                if (!processes.empty())
-                {
-                    ++successCount;
-                }
+                std::thread(
+                    [probe, &enumerated]()
+                    {
+                        static_cast<void>(probe->enumerate());
+                        enumerated.count_down();
+                        while (true)
+                        {
+                            static_cast<void>(probe->enumerate());
+                        }
+                    })
+                    .detach();
             }
-            catch (...)
-            {
-                // Enumeration should not throw
-                FAIL() << "Enumeration threw an exception";
-            }
-        }
-    };
-
-    // Start multiple threads enumerating concurrently
-    std::vector<std::thread> threads;
-    for (int i = 0; i < 4; ++i)
-    {
-        threads.emplace_back(enumerateTask);
-    }
-
-    // Let them run for a bit
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    running = false;
-
-    for (auto& t : threads)
-    {
-        t.join();
-    }
-
-    // All enumerations should have succeeded
-    EXPECT_GT(successCount.load(), 0);
+            enumerated.wait();
+            std::exit(0); // NOLINT(concurrency-mt-unsafe) - exiting under the other threads is the test
+        },
+        ::testing::ExitedWithCode(0),
+        "");
 }
 
 // =============================================================================
@@ -875,6 +1176,207 @@ TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
     EXPECT_EQ(peakOf(4444), 100U * page);
 }
 
+TEST(LinuxProcessProbeTest, UserIsTheEffectiveUid)
+{
+    // #2401: a setuid-root program run by another user runs as root, as ps and top show it -- the second
+    // field of Uid:, not the first (the real UID).
+    ScopedTempDir proc("ts_test_proc_effective_uid");
+    const auto writeProcess = [&proc](int pid, std::string_view status)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+    };
+    writeProcess(4242, "Name:\tpasswd\nUid:\t65534\t0\t0\t0\n");
+    // A line cut short after the real UID still names that user.
+    writeProcess(4343, "Name:\tapp\nUid:\t0\n");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto userOf = [&processes](std::int32_t pid) -> std::string
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string{"<missing>"} : it->user;
+    };
+    EXPECT_EQ(userOf(4242), "root");
+    EXPECT_EQ(userOf(4343), "root");
+
+    // #2475: who started it, when that isn't who it runs as; nobody otherwise.
+    const auto realUserOf = [&processes](std::int32_t pid) -> std::string
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string{"<missing>"} : it->realUser;
+    };
+    EXPECT_FALSE(realUserOf(4242).empty());
+    EXPECT_NE(realUserOf(4242), "root");
+    EXPECT_EQ(realUserOf(4343), "");
+}
+
+TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)
+{
+    // #1885: the Private and Swap columns, from the status file enumerate() already reads.
+    ScopedTempDir proc("ts_test_proc_private_swap");
+    const auto writeProcess = [&proc](int pid, std::string_view status)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+        writeFile(dir / "statm", "500 100 10 1 0 50 0\n");
+    };
+    // Lines in the kernel's order: RssAnon in the Rss* block after VmRSS, VmSwap after the page tables.
+    writeProcess(4242,
+                 "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\nRssAnon:\t    3000 kB\n"
+                 "RssFile:\t    1000 kB\nRssShmem:\t      96 kB\nVmPTE:\t      48 kB\nVmSwap:\t     512 kB\n"
+                 "Cpus_allowed_list:\t0-3\n");
+    // A kernel thread has no Vm* or Rss* lines: none of either.
+    writeProcess(4343, "Name:\tkworker/0:1\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3\n");
+    // A file cut off inside VmSwap's line (no newline): its number may be cut too, so it is not used.
+    writeProcess(4444, "Name:\tapp\nUid:\t0\t0\t0\t0\nRssAnon:\t      12 kB\nVmSwap:\t     12");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto find = [&processes](std::int32_t pid) -> const ProcessCounters*
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? nullptr : &*it;
+    };
+    const ProcessCounters* app = find(4242);
+    const ProcessCounters* kernel = find(4343);
+    const ProcessCounters* cut = find(4444);
+    ASSERT_NE(app, nullptr);
+    ASSERT_NE(kernel, nullptr);
+    ASSERT_NE(cut, nullptr);
+    EXPECT_EQ(app->privateBytes, 3000U * 1024U);
+    EXPECT_EQ(app->swapBytes, 512U * 1024U);
+    EXPECT_EQ(kernel->privateBytes, 0U);
+    EXPECT_EQ(kernel->swapBytes, 0U);
+    EXPECT_EQ(cut->privateBytes, 12U * 1024U);
+    EXPECT_EQ(cut->swapBytes, 0U);
+
+    const ProcessCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasPrivateBytes);
+    EXPECT_TRUE(caps.hasSwapBytes);
+}
+
+TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
+{
+    // #1885: smaps_rollup, read on demand for one process; its presence under self says the kernel has it.
+    ScopedTempDir proc("ts_test_proc_smaps_rollup");
+    const LinuxProcessProbe without(proc.path);
+    EXPECT_FALSE(without.capabilities().hasMemoryRollup); // No self/smaps_rollup: a kernel before 4.14
+    EXPECT_FALSE(without.readMemoryRollup(4242, 12345).has_value());
+
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    // Started at tick 12345 (stat field 22).
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4242" / "smaps_rollup",
+              "00400000-7ffd0000 ---p 00000000 00:00 0  [rollup]\nRss: 4096 kB\nPss: 2500 kB\nPrivate_Clean: 100 kB\n"
+              "Private_Dirty: 1900 kB\nSwapPss: 64 kB\n");
+    const LinuxProcessProbe probe(proc.path);
+    EXPECT_TRUE(probe.capabilities().hasMemoryRollup);
+    const MemoryRollupRead rollup = probe.readMemoryRollup(4242, 12345);
+    ASSERT_TRUE(rollup.has_value());
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).pssBytes, 2500U * 1024U);
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).ussBytes, 2000U * 1024U);
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).swapPssBytes, 64U * 1024U);
+    // The PID now names a process started at another time (reused): not that process's figures.
+    EXPECT_FALSE(probe.readMemoryRollup(4242, 999).has_value());
+    EXPECT_FALSE(probe.readMemoryRollup(4343, 12345).has_value()); // Gone, or never there
+    EXPECT_FALSE(probe.readMemoryRollup(0, 0).has_value());
+}
+
+// #2417: an smaps_rollup that isn't a rollup (or was cut short) gives no figures rather than wrong ones.
+TEST(LinuxProcessProbeTest, AnSmapsRollupThatDoesntParseIsUnavailable)
+{
+    ScopedTempDir proc("ts_test_proc_smaps_garbled");
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4242" / "smaps_rollup", "Rss: 4096 kB\nPss: 2500 kB\n"); // no Private lines
+    const LinuxProcessProbe probe(proc.path);
+    const MemoryRollupRead garbled = probe.readMemoryRollup(4242, 12345);
+    ASSERT_FALSE(garbled.has_value());
+    EXPECT_EQ(garbled.error(), MemoryRollupFailure::Unavailable);
+}
+
+// #2309: an smaps_rollup the kernel won't open for this user (another user's process) is a refusal,
+// told apart from one that is just absent.
+TEST(LinuxProcessProbeTest, ARefusedSmapsRollupIsPermissionDenied)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root opens a file of mode 000 anyway";
+    }
+    ScopedTempDir proc("ts_test_proc_smaps_refused");
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    writeFile(proc.path / "4242" / "smaps_rollup", "Pss: 2500 kB\nPrivate_Clean: 100 kB\nPrivate_Dirty: 1900 kB\n");
+    std::filesystem::permissions(proc.path / "4242" / "smaps_rollup", std::filesystem::perms::none);
+    const LinuxProcessProbe probe(proc.path);
+    const MemoryRollupRead refused = probe.readMemoryRollup(4242, 12345);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), MemoryRollupFailure::PermissionDenied);
+    const MemoryRollupRead gone = probe.readMemoryRollup(4343, 12345);
+    ASSERT_FALSE(gone.has_value());
+    EXPECT_EQ(gone.error(), MemoryRollupFailure::Unavailable);
+}
+
+TEST(LinuxProcessProbeTest, ThisProcessOwnPssAndUssReadFromTheRealProc)
+{
+    LinuxProcessProbe probe;
+    if (!probe.capabilities().hasMemoryRollup)
+    {
+        GTEST_SKIP() << "This kernel has no smaps_rollup";
+    }
+    const auto self = static_cast<std::int32_t>(::getpid());
+    const auto processes = probe.enumerate();
+    const auto me = std::ranges::find_if(processes, [self](const ProcessCounters& p) { return p.pid == self; });
+    ASSERT_NE(me, processes.end());
+    const MemoryRollupRead rollup = probe.readMemoryRollup(self, me->startTimeTicks);
+    ASSERT_TRUE(rollup.has_value());
+    EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
+    EXPECT_GT(rollup.value_or(MemoryRollup{}).ussBytes, 0U);
+    EXPECT_LE(rollup.value_or(MemoryRollup{}).ussBytes, rollup.value_or(MemoryRollup{}).pssBytes); // USS is within PSS
+}
+
+// #1891: a process whose cmdline reads empty is a kernel thread, shown as "[name]" -- the fixture's own,
+// so this holds wherever the suite runs (the real-proc test above skips where none is visible).
+TEST(LinuxProcessProbeTest, AnEmptyCmdlineIsAKernelThreadShownInBrackets)
+{
+    ScopedTempDir proc("ts_test_proc_kthread");
+    const auto writeProcess = [&proc](int pid, std::string_view name, std::string_view cmdline)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (" + std::string(name) +
+                      ") S 2 0 0 0 -1 69238880 0 0 0 0 0 1 0 0 20 0 1 0 50 0 0 "
+                      "18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", "Name:\t" + std::string(name) + "\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3\n");
+        writeFile(dir / "statm", "0 0 0 0 0 0 0\n");
+        writeFile(dir / "cmdline", std::string(cmdline));
+    };
+    writeProcess(5151, "kworker/0:1", "");
+    writeProcess(5252, "app", std::string("/usr/bin/app\0--flag\0", 20));
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto commandOf = [&processes](std::int32_t pid)
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string("<missing>") : it->command;
+    };
+    EXPECT_EQ(commandOf(5151), "[kworker/0:1]");
+    EXPECT_EQ(commandOf(5252), "/usr/bin/app --flag");
+}
+
 void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
 {
     const auto dir = procRoot / "4242";
@@ -990,6 +1492,46 @@ TEST(LinuxProcessProbeTest, ReadableRaplCounterEnablesPowerUsage)
     EXPECT_EQ(*reading->busyCpuTicks, 150U);
 }
 
+// #2444: a multi-socket machine's other packages are read with the first, since the busy ticks are every
+// package's CPUs'; psys (the whole platform) and a package's subzones are not, as they'd count twice.
+TEST(LinuxProcessProbeTest, EveryCpuPackagesCounterIsRead)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_sockets");
+    ScopedTempDir powercap("ts_test_powercap_sockets");
+    const std::filesystem::path zones = powercap.path / "intel-rapl";
+    writeFile(zones / "intel-rapl:0" / "name", "package-0\n");
+    writeFile(zones / "intel-rapl:0" / "energy_uj", "1000\n");
+    writeFile(zones / "intel-rapl:0" / "max_energy_range_uj", "262143328850\n");
+    writeFile(zones / "intel-rapl:0" / "intel-rapl:0:0" / "name", "core\n");
+    writeFile(zones / "intel-rapl:0" / "intel-rapl:0:0" / "energy_uj", "500\n");
+    writeFile(zones / "intel-rapl:2" / "name", "package-2\n"); // listed in zone order, whatever the directory's
+    writeFile(zones / "intel-rapl:2" / "energy_uj", "3000\n");
+    writeFile(zones / "intel-rapl:1" / "name", "package-1\n");
+    writeFile(zones / "intel-rapl:1" / "energy_uj", "2000\n");
+    writeFile(zones / "intel-rapl:1" / "max_energy_range_uj", "65532610987\n");
+    writeFile(zones / "intel-rapl:3" / "name", "psys\n");
+    writeFile(zones / "intel-rapl:3" / "energy_uj", "9000\n");
+    writeFile(zones / "intel-rapl:0:1" / "name", "uncore\n");
+    writeFile(zones / "intel-rapl:0:1" / "energy_uj", "700\n");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\n");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    ASSERT_TRUE(probe.capabilities().hasPowerUsage);
+    const PackageEnergyReading reading = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_EQ(reading.energyUj, 1000U);
+    ASSERT_EQ(reading.otherPackages.size(), 2U);
+    EXPECT_EQ(reading.otherPackages[0].energyUj, 2000U);
+    EXPECT_EQ(reading.otherPackages[0].maxRangeUj, 65532610987U);
+    EXPECT_EQ(reading.otherPackages[1].energyUj, 3000U);
+    EXPECT_EQ(reading.otherPackages[1].maxRangeUj, 0U);
+
+    // One package unread: the sample is unread, not one package's energy shared out over all of them.
+    writeFile(zones / "intel-rapl:2" / "energy_uj", "");
+    const PackageEnergyReading partial = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_FALSE(partial.energyUj.has_value());
+    EXPECT_TRUE(partial.otherPackages.empty());
+}
+
 TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
 {
     if (::geteuid() == 0)
@@ -1006,12 +1548,208 @@ TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
     EXPECT_FALSE(probe.capabilities().hasPowerUsage);
 }
 
+// #1395: what the system-wide reads give when their files are not what they should be.
+
+TEST(LinuxProcessProbeTest, AMalformedProcStatGivesNoCpuTime)
+{
+    ScopedTempDir notCpu("ts_test_proc_stat_not_cpu");
+    writeFile(notCpu.path / "stat", "intr 12345\nbtime 1700000000\n"); // no "cpu " line first
+    EXPECT_EQ(LinuxProcessProbe(notCpu.path).totalCpuTime(), 0U);
+
+    ScopedTempDir tooShort("ts_test_proc_stat_short");
+    writeFile(tooShort.path / "stat", "cpu  100 20 30\n"); // fewer than the eight fields read
+    EXPECT_EQ(LinuxProcessProbe(tooShort.path).totalCpuTime(), 0U);
+}
+
+TEST(LinuxProcessProbeTest, AGarbledBootTimeLeavesStartTimesUnknown)
+{
+    ScopedTempDir proc("ts_test_proc_btime_garbled");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\nbtime soon\n");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].startTimeEpoch, 0U);
+}
+
+TEST(LinuxProcessProbeTest, MeminfoWithoutMemTotalIsNoTotal)
+{
+    ScopedTempDir proc("ts_test_proc_meminfo_no_total");
+    writeFile(proc.path / "meminfo", "MemFree:        1024 kB\nMemAvailable:   2048 kB\nMemTotal:       lots\n");
+    EXPECT_EQ(LinuxProcessProbe(proc.path).systemTotalMemory(), 0U);
+}
+
+TEST(LinuxProcessProbeTest, AnUnreadableRaplRangeIsZeroAndAnUnreadableCounterIsNoReading)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_garbled");
+    ScopedTempDir powercap("ts_test_powercap_garbled");
+    const auto energyFile = powercap.path / "intel-rapl:0" / "energy_uj";
+    writeFile(energyFile, "123456\n");
+    writeFile(powercap.path / "intel-rapl:0" / "max_energy_range_uj", "unknown\n");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\n");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    ASSERT_TRUE(probe.capabilities().hasPowerUsage);
+    const PackageEnergyReading reading = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_EQ(reading.energyUj, 123456U);
+    EXPECT_EQ(reading.maxRangeUj, 0U); // no wrap range: none is assumed
+
+    writeFile(energyFile, "");
+    EXPECT_FALSE(probe.readPackageEnergy().value_or(PackageEnergyReading{}).energyUj.has_value());
+    writeFile(energyFile, "n/a\n");
+    EXPECT_FALSE(probe.readPackageEnergy().value_or(PackageEnergyReading{}).energyUj.has_value());
+}
+
+TEST(LinuxProcessProbeTest, ACgroupFileLongerThanTheStackReadIsReadWhole)
+{
+    // Many v1 hierarchies with long paths put the v2 line naming the container past the 1 KiB read.
+    ScopedTempDir proc("ts_test_proc_long_cgroup");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    const std::string id = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b";
+    std::string cgroup;
+    for (int hierarchy = 12; hierarchy > 0; --hierarchy)
+    {
+        cgroup += std::to_string(hierarchy) + ":controller" + std::to_string(hierarchy) + ":/" + std::string(100, 'x') + "\n";
+    }
+    ASSERT_GT(cgroup.size(), 1024U);
+    cgroup += "0::/system.slice/docker-" + id + ".scope\n";
+    writeFile(proc.path / "4242" / "cgroup", cgroup);
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].container, "docker:1a2b3c4d5e6f");
+}
+
+TEST(LinuxProcessProbeTest, ServicesAreTheSystemdServiceFromTheCgroup)
+{
+    // #1886: from the same /proc/[pid]/cgroup read as the container.
+    ScopedTempDir proc("ts_test_proc_service");
+    writeVmHwmProcess(proc.path, "Name:\tsshd\nUid:\t0\t0\t0\t0\n");
+    writeFile(proc.path / "4242" / "cgroup", "0::/system.slice/ssh.service\n");
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].services, "ssh.service");
+    EXPECT_TRUE(probe.capabilities().hasServices);
+}
+
+/// The first bytes of an ELF header (#2394): the magic, @p elfClass (1: 32-bit, 2: 64-bit), little-endian,
+/// and e_machine @p machine (an EM_* value). The probe reads no more than these.
+[[nodiscard]] std::string elfHeader(std::uint16_t machine, char elfClass = 2)
+{
+    std::string header(Platform::ElfArchitecture::ELF_HEADER_PREFIX_BYTES, '\0');
+    header[0] = '\x7F';
+    header[1] = 'E';
+    header[2] = 'L';
+    header[3] = 'F';
+    header[4] = elfClass;
+    header[5] = 1; // ELFDATA2LSB
+    header[18] = static_cast<char>(machine & 0xFFU);
+    header[19] = static_cast<char>(machine >> 8U);
+    return header;
+}
+
+TEST(LinuxProcessProbeTest, TheArchitectureIsTheExecutablesElfMachineReadOncePerProcess)
+{
+    ScopedTempDir proc("ts_test_proc_architecture");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    // A plain file, not the kernel's link: read for its header, with no path to name an emulator.
+    writeFile(proc.path / "4242" / "exe", elfHeader(62)); // EM_X86_64
+    LinuxProcessProbe probe(proc.path);
+    probe.setHostMachineForTesting(ProcessArchitecture::Machine::Arm64);
+    EXPECT_TRUE(probe.capabilities().hasArchitecture);
+    const auto architecture = [&probe]
+    {
+        const auto processes = probe.enumerate();
+        EXPECT_EQ(processes.size(), 1U);
+        return processes.empty() ? std::string("<missing>") : processes[0].architecture;
+    };
+    EXPECT_EQ(architecture(), "x64 (emulated)");
+
+    // The same process (start time and comm): not read again.
+    writeFile(proc.path / "4242" / "exe", elfHeader(183)); // EM_AARCH64
+    EXPECT_EQ(architecture(), "x64 (emulated)");
+
+    // A new process with the PID (another start time) is read.
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 99999 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+    EXPECT_EQ(architecture(), "ARM64");
+}
+
+TEST(LinuxProcessProbeTest, AThirtyTwoBitOrUnreadableExecutable)
+{
+    const auto architectureOf = [](std::string_view name, const std::optional<std::string>& exe)
+    {
+        ScopedTempDir proc(std::string("ts_test_proc_arch_") + std::string(name));
+        writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+        if (exe.has_value())
+        {
+            writeFile(proc.path / "4242" / "exe", *exe);
+        }
+        LinuxProcessProbe probe(proc.path);
+        probe.setHostMachineForTesting(ProcessArchitecture::Machine::X64);
+        const auto processes = probe.enumerate();
+        return processes.empty() ? std::string("<missing>") : processes[0].architecture;
+    };
+    EXPECT_EQ(architectureOf("x86", elfHeader(3, 1)), "x86 (32-bit)"); // EM_386, ELFCLASS32
+    EXPECT_EQ(architectureOf("x64", elfHeader(62)), "x64");
+    EXPECT_TRUE(architectureOf("none", std::nullopt).empty());                 // A kernel thread has no exe
+    EXPECT_TRUE(architectureOf("script", std::string("#!/bin/sh\n")).empty()); // Not ELF
+    EXPECT_TRUE(architectureOf("short",
+                               std::string("\x7F"
+                                           "ELF"))
+                    .empty()); // Cut short
+}
+
+TEST(LinuxProcessProbeTest, OurProcessRunsAsTheArchitectureItWasBuiltFor)
+{
+    LinuxProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ours = std::ranges::find(processes, static_cast<std::int32_t>(::getpid()), &ProcessCounters::pid);
+    ASSERT_NE(ours, processes.end());
+#if defined(__x86_64__)
+    EXPECT_EQ(ours->architecture, "x64");
+#elif defined(__aarch64__)
+    EXPECT_EQ(ours->architecture, "ARM64");
+#endif
+    // What this machine's processes show, for the log and the XML report.
+    std::map<std::string, int> counts;
+    for (const ProcessCounters& process : processes)
+    {
+        ++counts[process.architecture.empty() ? std::string("(unread)") : process.architecture];
+    }
+    std::string summary;
+    for (const auto& [architecture, count] : counts)
+    {
+        summary += (summary.empty() ? "" : ", ") + architecture + ": " + std::to_string(count);
+    }
+    std::cout << "This process: " << ours->architecture << "\nEvery process: " << summary << '\n';
+    ::testing::Test::RecordProperty("own_architecture", ours->architecture);
+    ::testing::Test::RecordProperty("architectures", summary);
+}
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
     // A readable CapEff decides for root too, so these hold whatever the test runs as.
+    // CAP_DAC_READ_SEARCH (bit 2), CAP_KILL (5), CAP_SYS_PTRACE (19) and CAP_SYS_NICE (23): nothing missing.
     ScopedTempDir withCaps("ts_test_proc_capeff_full");
-    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    writeFile(withCaps.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000880024\n");
     EXPECT_FALSE(LinuxProcessProbe(withCaps.path).capabilities().hasReducedPrivileges);
+    EXPECT_EQ(LinuxProcessProbe(withCaps.path).capabilities().missingPrivileges, 0);
+
+    // Read access alone (the FAQ's old setcap line) still can't act on other users' processes (#2303).
+    ScopedTempDir readOnly("ts_test_proc_capeff_read");
+    writeFile(readOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000080004\n");
+    EXPECT_TRUE(LinuxProcessProbe(readOnly.path).capabilities().hasReducedPrivileges);
+    EXPECT_EQ(LinuxProcessProbe(readOnly.path).capabilities().missingPrivileges,
+              MissingPrivilege::SIGNAL_OTHERS | MissingPrivilege::RAISE_PRIORITY);
+
+    // hidepid=invisible under the proc root, outside its group: hidden too.
+    ScopedTempDir hidden("ts_test_proc_capeff_hidepid");
+    writeFile(hidden.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000800024\n"); // no CAP_SYS_PTRACE
+    writeFile(hidden.path / "self" / "mountinfo", "22 28 0:21 / /proc rw - proc proc rw,hidepid=invisible,gid=4294967290\n");
+    EXPECT_NE(LinuxProcessProbe(hidden.path).capabilities().missingPrivileges & MissingPrivilege::PROCESSES_HIDDEN, 0);
 
     ScopedTempDir dacOnly("ts_test_proc_capeff_dac");
     writeFile(dacOnly.path / "self" / "status", "Name:\tTaskSmack\nCapEff:\t0000000000000004\n");
@@ -1418,6 +2156,40 @@ TEST(LinuxProcessProbeTest, ListableFdsWhoseLinksCantBeReadReportNetworkUnavaila
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+// #2398: the socket dump sees only this process's network namespace, so a process in another one (a
+// container's) has unknown network traffic, not a confident 0.
+TEST(LinuxProcessProbeTest, AProcessInAnotherNetworkNamespaceHasNoNetworkCounters)
+{
+    ScopedTempDir proc("ts_test_proc_netns");
+    for (const char* pid : {"4242", "4243"})
+    {
+        writeFile(proc.path / pid / "stat",
+                  std::string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                     "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        std::filesystem::create_directories(proc.path / pid / "fd");
+        std::filesystem::create_directories(proc.path / pid / "ns");
+    }
+    writeFile(proc.path / "stat", "cpu  100 0 100 800 0 0 0 0 0 0\n");
+    std::filesystem::create_directories(proc.path / "self" / "ns");
+    std::filesystem::create_symlink("net:[4026531840]", proc.path / "self" / "ns" / "net");
+    std::filesystem::create_symlink("net:[4026532999]", proc.path / "4242" / "ns" / "net"); // a container's
+    std::filesystem::create_symlink("net:[4026531840]", proc.path / "4243" / "ns" / "net"); // ours
+    std::filesystem::create_symlink("socket:[11]", proc.path / "4242" / "fd" / "3");
+    std::filesystem::create_symlink("socket:[12]", proc.path / "4243" / "fd" / "3");
+
+    LinuxProcessProbe probe(proc.path);
+    if (!probe.capabilities().hasNetworkCounters)
+    {
+        GTEST_SKIP() << "no netlink socket stats here";
+    }
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 2U);
+    for (const auto& process : processes)
+    {
+        EXPECT_EQ(process.networkCountersAvailable, process.pid == 4243) << process.pid;
+    }
+}
+
 TEST(LinuxProcessProbeTest, ReadSocketTrafficReportsRawAttributedSocketCounters)
 {
     // #1099: the probe reports each socket's own cumulative counters, attributed through the
@@ -1929,6 +2701,37 @@ TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
 
     writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"app"}));
     EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
+}
+
+TEST(LinuxProcessProbeTest, ACommandLineTooLongToCacheIsReadEverySample)
+{
+    // #1891: a command line over the cache's 64 KiB cap is not kept, so a change to it is seen at once
+    // even within the TTL.
+    ScopedTempDir proc("ts_test_proc_cmdline_long");
+    const std::string longArg(std::size_t{70} * 1024, 'x');
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--first"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --first"));
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--second"}));
+    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --second")) << "too long to cache: read again";
+}
+
+TEST(LinuxProcessProbeTest, ACommandLineThatFailsToReadIsNotAKernelThread)
+{
+    // #1891: a cmdline that opens but fails to read (here a directory: EISDIR) is treated like one that
+    // can't be opened -- the command stays empty and the process isn't shown as a [kernel thread].
+    ScopedTempDir proc("ts_test_proc_cmdline_read_error");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, std::nullopt);
+    std::filesystem::create_directory(proc.path / "4242" / "cmdline");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto process = enumerateOne(probe, 4242);
+    EXPECT_EQ(process.pid, 4242);
+    EXPECT_EQ(process.name, "app");
+    EXPECT_EQ(process.command, "");
 }
 
 TEST(ProcFdScanTest, OnlyASocketLinkNamesASocketInode)

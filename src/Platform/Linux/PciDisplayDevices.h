@@ -22,6 +22,23 @@ namespace Platform::PciDisplayDevices
 
 inline constexpr std::uint32_t PCI_VENDOR_NVIDIA = 0x10DEU;
 inline constexpr std::uint32_t PCI_VENDOR_AMD = 0x1002U;
+inline constexpr std::uint32_t PCI_VENDOR_INTEL = 0x8086U;
+
+/// The GPU vendor a PCI vendor ID names, or empty for one TaskSmack doesn't know (#2504: the one copy).
+[[nodiscard]] constexpr std::string_view vendorName(std::uint32_t vendorId) noexcept
+{
+    switch (vendorId)
+    {
+    case PCI_VENDOR_NVIDIA:
+        return "NVIDIA";
+    case PCI_VENDOR_AMD:
+        return "AMD";
+    case PCI_VENDOR_INTEL:
+        return "Intel";
+    default:
+        return {};
+    }
+}
 
 /// The kernel drivers NVML and ROCm SMI talk through: a vendor GPU bound to another driver (nouveau,
 /// radeon, vfio-pci) is invisible to that library however often it is initialised.

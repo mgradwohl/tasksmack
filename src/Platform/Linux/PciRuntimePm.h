@@ -16,9 +16,6 @@
 namespace Platform::PciRuntimePm
 {
 
-/// Where Linux lists PCI devices by address (each entry a symlink to the device's sysfs directory).
-inline constexpr std::string_view PCI_DEVICES_ROOT = "/sys/bus/pci/devices";
-
 /// The sysfs name of a PCI device ("0000:01:00.0"): domain, bus, device and function in hex, as the
 /// kernel prints them (the domain at least four digits).
 [[nodiscard]] inline std::string pciAddress(std::uint32_t domain, std::uint32_t bus, std::uint32_t device, std::uint32_t function)

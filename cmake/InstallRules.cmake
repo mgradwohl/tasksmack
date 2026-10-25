@@ -1,5 +1,5 @@
-# Install rules for the TaskSmack binary, third-party static libs, runtime assets,
-# and the FreeType runtime copy for portable layouts.
+# Install rules for the TaskSmack binary, runtime assets, licences, and the FreeType runtime
+# copy for portable layouts.
 # Include AFTER the TaskSmack target is defined and PROJECT_NAME_LOWER is set.
 
 include(GNUInstallDirs)
@@ -66,12 +66,50 @@ install(TARGETS TaskSmack
     ARCHIVE DESTINATION .
 )
 
-# Install static libs alongside the binary for local/portable layout
-install(TARGETS imgui_lib implot_lib glad_gl_core_33
-    RUNTIME DESTINATION .
-    LIBRARY DESTINATION .
-    ARCHIVE DESTINATION .
-)
+# imgui_lib, implot_lib, glad_gl_core_33 and the FetchContent dependencies are linked statically
+# into TaskSmack, so none of their libraries or headers are installed (#1398).
+
+# Licences: TaskSmack's own, plus those of the third-party code compiled into the executable (the
+# fonts' notices ship with assets/fonts). Linux follows the Debian layout, the copyright file in
+# share/doc/<package>; Windows puts LICENSE.txt beside TaskSmack.exe and the rest in
+# third_party_licenses/.
+if(UNIX AND NOT APPLE)
+    set(_ts_license_dir ${CMAKE_INSTALL_DATADIR}/doc/${PROJECT_NAME_LOWER})
+    install(FILES ${CMAKE_SOURCE_DIR}/LICENSE DESTINATION ${_ts_license_dir} RENAME copyright)
+    set(_ts_license_dir ${_ts_license_dir}/third_party)
+else()
+    install(FILES ${CMAKE_SOURCE_DIR}/LICENSE DESTINATION . RENAME LICENSE.txt)
+    set(_ts_license_dir third_party_licenses)
+endif()
+foreach(_ts_dep_license IN ITEMS
+        "SDL3|${sdl3_SOURCE_DIR}/LICENSE.txt"
+        "FreeType|${freetype_SOURCE_DIR}/LICENSE.TXT"
+        "FreeType|${freetype_SOURCE_DIR}/docs/FTL.TXT"
+        "imgui|${imgui_SOURCE_DIR}/LICENSE.txt"
+        "implot|${implot_SOURCE_DIR}/LICENSE"
+        "spdlog|${spdlog_SOURCE_DIR}/LICENSE"
+        "tomlplusplus|${tomlplusplus_SOURCE_DIR}/LICENSE"
+        "stb|${stb_SOURCE_DIR}/LICENSE"
+        "glad|${glad_SOURCE_DIR}/LICENSE")
+    string(REPLACE "|" ";" _ts_dep_license "${_ts_dep_license}")
+    list(GET _ts_dep_license 0 _ts_dep_name)
+    list(GET _ts_dep_license 1 _ts_dep_file)
+    if(NOT EXISTS "${_ts_dep_file}")
+        message(FATAL_ERROR "Third-party licence file not found: ${_ts_dep_file}")
+    endif()
+    install(FILES "${_ts_dep_file}" DESTINATION ${_ts_license_dir}/${_ts_dep_name})
+endforeach()
+# What each of those is, at its pinned version, and the patch TaskSmack applies to toml++ (#2490;
+# its path is Dependencies.cmake's TASKSMACK_TOMLPLUSPLUS_PATCH, checked to exist there, #2779).
+include(${CMAKE_CURRENT_LIST_DIR}/ThirdPartyNotices.cmake)
+ts_write_third_party_notices("${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt")
+install(FILES "${CMAKE_BINARY_DIR}/THIRD_PARTY_NOTICES.txt"
+              "${TASKSMACK_TOMLPLUSPLUS_PATCH}"
+        DESTINATION ${_ts_license_dir})
+unset(_ts_license_dir)
+unset(_ts_dep_license)
+unset(_ts_dep_name)
+unset(_ts_dep_file)
 
 # Install runtime assets (fonts/themes/icons) using GNUInstallDirs for FHS compliance.
 # On Linux this resolves to share/<project_name_lower>/assets/; on Windows the prefix root is typically
@@ -107,5 +145,33 @@ if(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
         RENAME app.tasksmack.TaskSmack.svg
+    )
+endif()
+
+# Windows' elevated helper (#2550; #2517), beside TaskSmack.exe, where TaskSmack starts it from: the
+# "windows_helper" component, which the .zip and the NSIS installer carry only when
+# TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build (cmake/Packaging.cmake). It
+# serves only an install TaskSmack's user can't change (BrokerHelper::checkUnchangeableBy), such as
+# the NSIS installer's Program Files folder; from a portable or per-user copy it refuses, and TaskSmack
+# doesn't offer it.
+if(WIN32 AND TARGET TaskSmackHelper)
+    install(TARGETS TaskSmackHelper
+        RUNTIME DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
+        COMPONENT windows_helper
+    )
+endif()
+
+# The privileged helper (#2307; #2181) and its polkit action, in the "helper" component, which
+# cmake/Packaging.cmake adds to the .deb and .rpm only: polkit needs the policy in the system's
+# share/polkit-1/actions and the helper at the path its exec.path names, which only a system package
+# provides. The portable .tar.gz has neither, and TaskSmack then acts without it, as before.
+if(UNIX AND NOT APPLE AND TARGET tasksmack-helper)
+    install(TARGETS tasksmack-helper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/${PROJECT_NAME_LOWER}
+        COMPONENT helper
+    )
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.helper.policy
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/polkit-1/actions
+        COMPONENT helper
     )
 endif()

@@ -23,6 +23,14 @@ namespace App::Detail
     return available ? value : std::numeric_limits<double>::quiet_NaN();
 }
 
+/// Whether @p snapshot's thread count is a reading (#1935): a running process has at least one thread,
+/// so a count of 0 is one the probe did not read -- or a probe without thread counts at all -- as the
+/// Processes table's Threads column judges it.
+[[nodiscard]] constexpr bool threadCountIsReading(const Domain::ProcessSnapshot& snapshot) noexcept
+{
+    return snapshot.threadCount > 0;
+}
+
 /// Whether a sample's rate is a reading: the probe can supply it on this system at all
 /// (ProcessCapabilities::hasIoCounters / hasNetworkCounters) and read it for this process this sample
 /// (ProcessSnapshot::ioAvailable / networkAvailable). A snapshot from a probe without the counters
@@ -42,6 +50,9 @@ struct SampleRateReadings
     /// The GPU probe supports per-process data at all, whether or not this sample's read succeeded:
     /// a failed read is a gap in one sample, not a lack of support (#1210).
     bool gpuSupported = false;
+    bool npuPerProcess = false;  ///< As gpuPerProcess, for the NPU's per-process data (#1827)
+    bool npuUtilization = false; ///< ...and per-process NPU utilization among it
+    bool npuSupported = false;   ///< As gpuSupported, for the NPU
 };
 
 /// A sample's I/O and network rates, and its GPU figures, as readings or not, each judged by the
@@ -56,13 +67,19 @@ struct SampleRateReadings
         return {};
     }
     // A generation whose GPU read failed has no GPU readings, but keeps the probe's support.
-    // Nor does a process the last GPU read did not see, while those reads are throttled.
-    const bool gpuRead = sample.gpuPerProcessSupported && !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
+    // Nor does a process started since the GPU sampler's last read (#1417).
+    // The NPU's figures come from the same read, under their own support (#1827).
+    const bool read = !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
+    const bool gpuRead = sample.gpuPerProcessSupported && read;
+    const bool npuRead = sample.npuPerProcessSupported && read;
     return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
             .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
             .gpuPerProcess = gpuRead,
             .gpuUtilization = gpuRead && sample.gpuUtilizationSupported,
-            .gpuSupported = sample.gpuPerProcessSupported};
+            .gpuSupported = sample.gpuPerProcessSupported,
+            .npuPerProcess = npuRead,
+            .npuUtilization = npuRead && sample.npuUtilizationSupported,
+            .npuSupported = sample.npuPerProcessSupported};
 }
 
 /// Whether a history holds any actual reading rather than only gaps (NaN).
@@ -90,7 +107,8 @@ struct SampleIntake
 };
 
 /// Takes @p samples (oldest first) into @p intake for the process selected as @p selectedPid /
-/// @p selectedKey, adopting the key from its first sample when it was selected by PID alone.
+/// @p selectedStartTicks: its exact identity, so neither a reused PID nor a colliding uniqueKey hash is
+/// taken for it (#927, #1503).
 ///
 /// Calls `record(sample, gapBefore)` once for each sample of the selected process -- one history point
 /// per published generation, stamped with the generation's own sample time -- where the pane used to
@@ -105,7 +123,7 @@ struct SampleIntake
 template<typename Record>
 inline void takeSamples(std::span<const Domain::ProcessSample> samples,
                         std::int32_t selectedPid,
-                        std::uint64_t& selectedKey,
+                        std::uint64_t selectedStartTicks,
                         SampleIntake& intake,
                         Record&& record) // NOLINT(cppcoreguidelines-missing-std-forward) - called once per sample, as an lvalue
 {
@@ -119,15 +137,11 @@ inline void takeSamples(std::span<const Domain::ProcessSample> samples,
         intake.lastVersion = sample.version;
 
         const Domain::ProcessSnapshot* snapshot = sample.snapshot.get();
-        intake.present = (snapshot != nullptr) &&
-                         ProcessDetailsLayout::snapshotIsSelectedProcess(selectedPid, selectedKey, snapshot->pid, snapshot->uniqueKey);
+        intake.present = (snapshot != nullptr) && ProcessDetailsLayout::snapshotIsSelectedProcess(
+                                                      selectedPid, selectedStartTicks, snapshot->pid, snapshot->startTimeTicks);
         if (!intake.present)
         {
             continue;
-        }
-        if (selectedKey == 0)
-        {
-            selectedKey = snapshot->uniqueKey;
         }
         record(sample, gapBefore);
     }

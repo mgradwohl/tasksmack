@@ -1,7 +1,9 @@
 #include "CpuCoresSection.h"
 
 #include "App/Panels/CpuCoreGridIds.h"
+#include "App/Panels/CpuCoreKinds.h"
 #include "App/Panels/CpuSummaryText.h"
+#include "Domain/SharedHistory.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
@@ -19,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -67,6 +70,41 @@ using UI::Widgets::tailAlignedSpan;
 /// reference configuration. Below this the X-axis labels run into each other.
 constexpr float MIN_CELL_WIDTH_EM = 22.5F;
 
+/// The glyph in front of a core's name on a hybrid CPU (#1536): a bolt for a P-core, a leaf for an
+/// E-core, and the leaf with "LP" for a low-power E-core, so it differs from an E-core by more than
+/// its dimmer colour. Font Awesome glyphs merged into the body font, not emoji.
+[[nodiscard]] constexpr const char* coreKindMarker(const CoreKind kind) noexcept
+{
+    switch (kind)
+    {
+    case CoreKind::Performance:
+        return ICON_FA_BOLT;
+    case CoreKind::Efficiency:
+        return ICON_FA_LEAF;
+    case CoreKind::LowPower:
+        return ICON_FA_LEAF "LP";
+    case CoreKind::None:
+        break;
+    }
+    return "";
+}
+
+/// The marker's theme colour (UI::ColorScheme::corePerformance and its siblings).
+[[nodiscard]] ImVec4 coreKindColor(const CoreKind kind, const UI::ColorScheme& scheme) noexcept
+{
+    switch (kind)
+    {
+    case CoreKind::Performance:
+        return scheme.corePerformance;
+    case CoreKind::Efficiency:
+        return scheme.coreEfficiency;
+    case CoreKind::LowPower:
+    case CoreKind::None:
+        break;
+    }
+    return scheme.coreLowPower;
+}
+
 } // namespace
 
 void renderCpuCoresSection(RenderContext& ctx)
@@ -83,8 +121,8 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The same summary as the Overview header (Detail::cpuCoreSummary(), #1180), formatted when its
-    // inputs change rather than every frame (#1171). UI thread only.
+    // Detail::cpuCoreSummary() (#1180; the Overview lists these facts in its CPU Details block, #809),
+    // formatted when its inputs change rather than every frame (#1171). UI thread only.
     static Detail::CpuCoreSummaryCache coreSummary;
     const std::string& coreInfo = coreSummary.get(snap.coreCount, snap.cpuFreqMHz);
     ImGui::TextUnformatted(snap.cpuModel.c_str());
@@ -104,7 +142,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     // Get timestamps from cache or model
     const auto& timestamps = ctx.publication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-    const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // The snapshot knows the cores before there is any per-core history (CPU deltas need a previous
     // sample), so the slots are whichever is larger: every core gets its chart, with the collecting
@@ -120,7 +158,7 @@ void renderCpuCoresSection(RenderContext& ctx)
         UI::Widgets::renderEmptyState(UI::Widgets::HISTORY_COLLECTING_TEXT, "Per-core charts appear once the first samples arrive.");
         return;
     }
-    static const std::vector<float> noSamples;
+    static const Domain::HistoryView<float> noSamples;
 
     // Every core's samples share these timestamps, so one time axis serves them all: each core takes
     // the tail of it its samples cover, rather than rebuilding an identical axis per core per frame --
@@ -140,6 +178,17 @@ void renderCpuCoresSection(RenderContext& ctx)
             coreNames.push_back(std::format("Core {}", coreId));
         }
         namedCoreIds = gridCoreIds;
+    }
+
+    // Each core's P/E marker on a hybrid CPU (#1536), indexed by core id, re-derived only when the
+    // probe's efficiency classes change (cached facts, re-read on hotplug), not every frame. Empty on
+    // a CPU with one kind of core: no marker anywhere. UI thread only.
+    static std::vector<CoreKind> coreKinds;
+    static std::vector<std::uint8_t> kindsFromClasses;
+    if (kindsFromClasses != snap.cpuDetails.efficiencyClassByCoreId)
+    {
+        kindsFromClasses = snap.cpuDetails.efficiencyClassByCoreId;
+        classifyCoreKinds(kindsFromClasses, coreKinds);
     }
 
     // Grid layout: fills the full available panel space (width and height), choosing a
@@ -224,6 +273,8 @@ void renderCpuCoresSection(RenderContext& ctx)
                     .value01 = UI::Format::percent01(smoothed),
                     // The core line's colour (#1192), muted when the core has no current sample (#1146)
                     .color = std::isnan(smoothed) ? theme.scheme().textMuted : theme.scheme().chartCpu,
+                    .marker = ImPlotMarker_None,
+                    .available = !std::isnan(smoothed), // hatched, not a zero bar (#1935)
                 };
 
                 NowBarList bars;
@@ -236,10 +287,29 @@ void renderCpuCoresSection(RenderContext& ctx)
                 const std::string& coreLabel = coreName;
                 const float availableWidth = ImGui::GetContentRegionAvail().x;
                 const float valueGap = ImGui::GetStyle().ItemSpacing.x;
-                const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x + valueGap + ImGui::CalcTextSize(bar.valueText.c_str()).x;
+                const CoreKind kind = coreKindFor(coreKinds, coreIdx);
+                const char* const marker = coreKindMarker(kind);
+                const float markerWidth = (kind == CoreKind::None) ? 0.0F : ImGui::CalcTextSize(marker).x + valueGap;
+                const float labelWidth =
+                    markerWidth + ImGui::CalcTextSize(coreLabel.c_str()).x + valueGap + ImGui::CalcTextSize(bar.valueText.c_str()).x;
                 const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
-                ImGui::TextUnformatted(coreLabel.c_str());
+                if (kind != CoreKind::None)
+                {
+                    // The marker's words, on the marker and on the core's name (#1536).
+                    const char* const description = coreKindDescription(kind);
+                    ImGui::PushStyleColor(ImGuiCol_Text, coreKindColor(kind, theme.scheme()));
+                    ImGui::TextUnformatted(marker);
+                    ImGui::PopStyleColor();
+                    ImGui::SetItemTooltip("%s", description);
+                    ImGui::SameLine(0.0F, valueGap);
+                    ImGui::TextUnformatted(coreLabel.c_str());
+                    ImGui::SetItemTooltip("%s", description);
+                }
+                else
+                {
+                    ImGui::TextUnformatted(coreLabel.c_str());
+                }
                 ImGui::SameLine(0.0F, valueGap);
                 ImGui::TextUnformatted(bar.valueText.c_str());
                 ImGui::Spacing();
@@ -328,7 +398,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                 // from collapsing all cores into one (#823 review).
                 // Not compactSpacing: the bar keeps the same gap from its chart as on every
                 // other tab, rather than touching the plot's edge.
-                renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, false, NowBarValues::None);
+                renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, {.values = NowBarValues::None});
             },
             // Each cell's ImGui id is its core's name, not its position: a core id first
             // reported mid-session can land between charted ones and shift the later cells,
@@ -337,7 +407,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     }
 }
 
-void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ctx)
+void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, const RenderContext& ctx)
 {
     if (ctx.smoothedPerCore == nullptr)
     {

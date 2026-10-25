@@ -7,7 +7,7 @@
 .PARAMETER ShowDetails
     Show per-file progress
 .PARAMETER ChangedOnly
-    Only format files that have been modified according to git
+    Only format C++ files changed on this branch (vs. its merge-base with main, plus untracked)
 .EXAMPLE
     .\clang-format.ps1
 .EXAMPLE
@@ -23,6 +23,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# git writes UTF-8 paths; decode its output as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -36,32 +40,26 @@ if (-not $ClangFormat) {
     Write-Error "clang-format not found. Set LLVM_ROOT or add clang-format to PATH."
     exit 1
 }
+Write-LlvmVersionSkewWarning -ToolPath $ClangFormat -Name 'clang-format'
 
 # Find source files
 if ($ChangedOnly) {
-    # Get changed files from git
+    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
-    $gitOutput = & git diff --name-only HEAD 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to get changed files from git. Falling back to all files."
-        $ChangedOnly = $false
-    } else {
-        $files = $gitOutput |
-            Where-Object { $_ -match '\.(cpp|h)$' } |
-            ForEach-Object { Get-Item (Join-Path $ProjectRoot $_) -ErrorAction SilentlyContinue } |
-            Where-Object { $null -ne $_ }
-        if ($files.Count -eq 0) {
-            Write-Host "No changed C++ files found."
-            exit 0
-        }
+    $files = @(Get-ChangedFileList -Root $ProjectRoot |
+        Where-Object { $_ -match '\.(cpp|h)$' } |
+        ForEach-Object { Get-Item -LiteralPath (Join-Path $ProjectRoot $_) -ErrorAction SilentlyContinue } |
+        Where-Object { $null -ne $_ })
+    if ($files.Count -eq 0) {
+        Write-Host "No changed C++ files found."
+        exit 0
     }
-}
-
-if (-not $ChangedOnly) {
+} else {
     # Find all source files
-    $files = Get-ChildItem -Path (Join-Path $ProjectRoot "src"), (Join-Path $ProjectRoot "tests") -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
+    $searchDirs = Get-FormatSourceDir -Root $ProjectRoot
+    $files = Get-ChildItem -Path $searchDirs -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
              Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
 }
 

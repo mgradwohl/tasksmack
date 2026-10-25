@@ -2,9 +2,11 @@
 
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
+#include "UI/Card.h"
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
@@ -163,7 +165,8 @@ void renderDiskCell(const std::string& deviceName,
                           .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
                           .color = theme.scheme().textMuted,
-                          .marker = marker};
+                          .marker = marker,
+                          .available = false}; // hatched, not a zero bar (#1935)
         }
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,
@@ -178,12 +181,16 @@ void renderDiskCell(const std::string& deviceName,
     };
 
     const float cellContentTop = ImGui::GetCursorPosY();
+    // The disk's name centred at the top of its card, as CPU Cores centres each core's (#1588).
+    const float nameWidth = ImGui::CalcTextSize(deviceName.data(), deviceName.data() + deviceName.size()).x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::floor(std::max(0.0F, ImGui::GetContentRegionAvail().x - nameWidth) * 0.5F));
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
-    // The disk's current rates, readable without hovering (#1193), on their own line under its name.
-    // Compact: exactly one line of "Read: 1.2 MiB/s" / "Read: N/A", never wrapped -- the overhead below
-    // is measured once and the grid budgets one strip line per cell, and the longer "not reported
-    // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
-    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
+    // The disk's current rates, readable without hovering (#1193), on their own line under its name
+    // and centred under it. Compact: exactly one line of "Read: 1.2 MiB/s" / "Read: N/A", never
+    // wrapped -- the overhead below is measured once and the grid budgets one strip line per cell, and
+    // the longer "not reported this sample" tooltip text would not fit a minimum-width cell. Hovering
+    // a bar still shows it. The cell is its own child window, so the layout id is the disk's own.
+    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::CompactCentered, "##DiskValueStrip");
     float measuredOverhead = 0.0F;
     if (const auto cached = overheadCache.get(styleMetrics))
     {
@@ -200,7 +207,7 @@ void renderDiskCell(const std::string& deviceName,
     }
     const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
-    auto diskPlotFn = [&]()
+    const auto diskPlotFn = [&]
     {
         // deviceName.c_str() (not a constant "##DiskPlot"), so RenderMetrics records a distinct
         // entry per disk instead of collapsing every disk's plot into one: HistoryChart reads
@@ -263,7 +270,7 @@ void renderDiskCell(const std::string& deviceName,
     // keeps per-disk RenderMetrics entries from collapsing into one (#823 review), without
     // reintroducing the per-frame heap allocation a formatted id had.
     renderHistoryWithNowBars(
-        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, false, STORAGE_NOW_BAR_COLUMNS, false, NowBarValues::None);
+        deviceName.c_str(), plotHeight, diskPlotFn, diskBars, {.minBarColumns = STORAGE_NOW_BAR_COLUMNS, .values = NowBarValues::None});
 }
 
 } // namespace
@@ -279,7 +286,7 @@ float diskGridMinimumHeight(const Domain::StoragePublication* publication, float
            UI::Widgets::computeChartGridMinimumHeight(diskGridConfig(availableWidth, 0.0F, publication->perDiskHistory.size()));
 }
 
-void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
+void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, const RenderContext& ctx)
 {
     if (ctx.smoothedReadBytesPerSec == nullptr || ctx.smoothedWriteBytesPerSec == nullptr || ctx.smoothedInitialized == nullptr)
     {
@@ -301,8 +308,20 @@ void renderStorageSection(RenderContext& ctx)
 
     if (ctx.publication == nullptr)
     {
-        UI::Widgets::renderEmptyState(ICON_FA_HARD_DRIVE "  Disk data unavailable",
-                                      "The storage model is not available, so there is no disk activity to show.");
+        constexpr const char* HEADING = ICON_FA_HARD_DRIVE "  Disk data unavailable";
+        constexpr const char* DETAIL = "The storage model is not available, so there is no disk activity to show.";
+        if (ctx.fill != nullptr)
+        {
+            // Inside the Network tab's fill layout, below its chart: a band of fixed height. Centred in
+            // whatever height was left, its height followed the chart's, the fill layout counted part
+            // of every change as non-chart height, and the chart crept to its height over several
+            // frames instead of settling in one (#1620).
+            UI::Widgets::renderEmptyStateBand(HEADING, DETAIL);
+        }
+        else
+        {
+            UI::Widgets::renderEmptyState(HEADING, DETAIL);
+        }
         return;
     }
 
@@ -310,8 +329,7 @@ void renderStorageSection(RenderContext& ctx)
     const auto& diskTimestamps = ctx.publication->timestamps;
     const size_t historySize = diskTimestamps.size();
 
-    const auto diskAxis = historySize > 0 ? makeTimeAxisConfig(diskTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
-                                          : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto diskAxis = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // Build shared time axis (float, relative)
     std::span<const double> diskTimes;
@@ -332,8 +350,12 @@ void renderStorageSection(RenderContext& ctx)
     if (usesDiskGrid(ctx.publication))
     {
         // ── Multi-disk: one chart cell per disk, grid fills the available panel space ──
-        ImGui::TextColored(
-            theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
+        // The disk count stays on the heading, quieter than the title; the sample count is its tooltip.
+        std::array<char, 32> diskCountText{};
+        const auto diskCountEnd =
+            std::format_to_n(diskCountText.data(), diskCountText.size() - 1, "{} {}", diskCount, (diskCount == 1) ? "disk" : "disks");
+        (void) UI::Widgets::sectionHeader(
+            ICON_FA_HARD_DRIVE, "Disk I/O by Device", std::string_view(diskCountText.data(), diskCountEnd.out), historySize);
 
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
@@ -427,11 +449,14 @@ void renderStorageSection(RenderContext& ctx)
             // not clamped. A per-disk series holds NaN for samples where the disk was absent, and the
             // current values are NaN when it is absent from the latest sample (#1015): both are skipped.
             // Keyed by device name, like the cell, so a disk keeps its easing when another is unplugged.
+            // The window's maximum is kept between frames, per disk (UI::Widgets::windowSeriesMax(), #843).
             ImGui::PushID(disk.deviceName.data(), disk.deviceName.data() + disk.deviceName.size());
             diskUpperBounds.push_back(UI::Widgets::easedRateAxisUpperBound(
                 "##DiskAxis",
-                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(frame.times, diskAxis.xMin, frame.readData, frame.writeData),
-                                               {frame.currentRead, frame.currentWrite}),
+                UI::Widgets::withCurrentValues(
+                    UI::Widgets::windowSeriesMax(
+                        "##DiskAxis", ctx.chartDataGeneration, frame.times, diskAxis.xMin, frame.readData, frame.writeData),
+                    {frame.currentRead, frame.currentWrite}),
                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
             ImGui::PopID();
             diskFrames.push_back(frame);
@@ -479,11 +504,14 @@ void renderStorageSection(RenderContext& ctx)
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
         // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window
-        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it.
+        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it. The
+        // window's maximum is kept between frames (UI::Widgets::windowSeriesMax(), #843).
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##SystemDiskHistory",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
-                                           {smoothedRead, smoothedWrite}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::windowSeriesMax(
+                    "##SystemDiskHistory", ctx.chartDataGeneration, aggregateTimes, diskAxis.xMin, readData, writeData),
+                {smoothedRead, smoothedWrite}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
@@ -499,7 +527,7 @@ void renderStorageSection(RenderContext& ctx)
 
         // Shares the tab's height with the network chart above it (#959).
         const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
-        auto diskPlot = [&]()
+        const auto diskPlot = [&]
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
@@ -548,11 +576,17 @@ void renderStorageSection(RenderContext& ctx)
             }
         };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
-        renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        // A card like the Network Throughput card above it (#1587, #1937): the same inset, heading and
+        // NowBar column, so the two charts' plots and bars line up. Its contents are submitted whether
+        // or not it is visible; ImGui skips them when it isn't.
+        (void) UI::Widgets::beginChartCard("##DiskIoHistoryCard", plotHeight);
+        (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "Disk I/O History", {}, alignedDisk);
+        renderHistoryWithNowBars(
+            "SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, {.minBarColumns = STORAGE_NOW_BAR_COLUMNS});
+        UI::Widgets::endChartCard("##DiskIoHistoryCard", plotHeight);
         if (ctx.fill != nullptr)
         {
-            ctx.fill->addPlot();
+            ctx.fill->addPlot(); // After the card: the fill layout counts its chrome as non-chart height
         }
     }
 }

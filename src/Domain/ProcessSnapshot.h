@@ -3,14 +3,63 @@
 #include "Platform/CpuAffinity.h"
 #include "PriorityConfig.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Domain
 {
+
+/// An immutable list of names that copies of a snapshot share (#2043). ProcessModel hands out its
+/// snapshots by value every frame, and a std::vector<std::string> member made every copy allocate --
+/// on Linux nearly every process has a systemd unit, so nearly every snapshot carried one -- which made
+/// those copies ~50% slower. Copying this copies a pointer. Reads like a const vector.
+class SharedNames
+{
+  public:
+    SharedNames() = default;
+    // Implicit on purpose: `snapshot.serviceNames = names;` and `= {"Dhcp"}` read as for the vector it replaces.
+    SharedNames(std::vector<std::string> names) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
+        : m_Names(names.empty() ? nullptr : std::make_shared<const std::vector<std::string>>(std::move(names)))
+    {}
+    SharedNames(std::initializer_list<std::string> names) // NOLINT(cppcoreguidelines-explicit-constructor,misc-explicit-constructor)
+        : SharedNames(std::vector<std::string>(names))
+    {}
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_Names == nullptr;
+    }
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Names == nullptr ? 0 : m_Names->size();
+    }
+    [[nodiscard]] const std::string& operator[](std::size_t index) const
+    {
+        return (*m_Names)[index];
+    }
+    [[nodiscard]] std::span<const std::string> span() const noexcept
+    {
+        return m_Names == nullptr ? std::span<const std::string>{} : std::span<const std::string>(*m_Names);
+    }
+    [[nodiscard]] auto begin() const noexcept
+    {
+        return span().begin();
+    }
+    [[nodiscard]] auto end() const noexcept
+    {
+        return span().end();
+    }
+
+  private:
+    std::shared_ptr<const std::vector<std::string>> m_Names; // null: none
+};
 
 /// Immutable, UI-ready process data.
 /// Computed from raw counter deltas by ProcessModel.
@@ -35,7 +84,7 @@ struct ProcessSnapshot
     std::uint64_t virtualBytes = 0;
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
     std::uint64_t startTimeTicks = 0; // Raw platform start time; with pid, what process actions verify (#973)
-    std::uint64_t uniqueKey = 0;      // Stable identity across samples (hash(pid, startTime))
+    std::uint64_t uniqueKey = 0;      // Stable across samples: a 64-bit mix of (pid, startTimeTicks), not collision-free (#2115)
 
     // Less frequently accessed metrics
     double cpuUserPercent = 0.0;         // Computed from deltas (user mode)
@@ -49,6 +98,15 @@ struct ProcessSnapshot
 
     std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t sharedBytes = 0;     // Shared memory
+    std::uint64_t privateBytes = 0;    // Private memory (Linux: RssAnon, #1885)
+    std::uint64_t swapBytes = 0;       // Swapped out (Linux: VmSwap, #1885)
+    // PSS, USS and swap PSS (Linux: smaps_rollup, #1885): costly, so read only for ProcessModel's
+    // watched process, in its watched sample (memoryRollupRead); zero everywhere else.
+    std::uint64_t pssBytes = 0;
+    std::uint64_t ussBytes = 0;
+    std::uint64_t swapPssBytes = 0;
+    bool memoryRollupRead = false;
+    bool memoryRollupDenied = false;   // The OS refused it (another user's process, #2309): "not readable", not just absent
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 
@@ -66,14 +124,23 @@ struct ProcessSnapshot
     double gpuEncoderUtil = 0.0;               // Busiest GPU's encoder utilization
     double gpuDecoderUtil = 0.0;               // Busiest GPU's decoder utilization
 
+    // NPU usage (#1799): the process's use of the NPUs and other compute accelerators (Windows MCDM
+    // adapters), on the same terms as its GPU usage above but never counted in it. Read with the GPU
+    // fields (gpuFieldsRead); shown in the NPU columns and Process Details' NPU Usage card.
+    double npuUtilPercent = 0.0;               // Busiest accelerator's utilization by this process, 0-100
+    std::uint64_t npuMemoryBytes = 0;          // As each accelerator's "used" figure counts it, summed
+    std::uint64_t npuDedicatedMemoryBytes = 0; // Dedicated memory across all accelerators
+    std::uint64_t npuSharedMemoryBytes = 0;    // Shared (system) memory across all accelerators
+
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
 
-    // Whether this snapshot's GPU fields were read by a per-process GPU merge (#1210). False for a
-    // process that started between merges while they are throttled: its GPU fields are defaults,
-    // never read, and must not be shown as measured zeros.
+    // Whether this snapshot's GPU fields were read by a per-process GPU read (#1210). False for a
+    // process first listed since the GPU sampler's last read, which therefore could not have seen it
+    // (#1417), and for every process before the first read: its GPU fields are defaults, never read,
+    // and must not be shown as measured zeros.
     bool gpuFieldsRead = true;
 
     // Whether a value was read for this process (#1110). False: the probe could not read it --
@@ -88,17 +155,32 @@ struct ProcessSnapshot
     std::string name;
     std::string command;      // Full command line
     std::string user;         // Username (owner) of the process
+    std::string realUser;     // Who started it, when not `user` (a setuid program's caller, #2475); else empty
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
     std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
+    std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
+    std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
+    std::string architecture; // Architecture it runs as: "x64", "ARM64", "x64 (emulated)", "x86 (WOW64)" (#2394; empty if unread)
+
+    // The services the process runs, by name (#1880): Windows, those the service list gives its PID (in
+    // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on
+    // Windows while no current service list is attached (ProcessServices::mergeInto()). `services` above is
+    // them joined with ", ", as the Services column shows and sorts them.
+    SharedNames serviceNames;
 
     // Tree hierarchy (computed once per snapshot)
     std::vector<std::size_t> childrenIndices; // Indices of children within the same snapshot vector
 
     // GPU engines (union of active engines across all GPUs)
     std::vector<std::string> gpuEngines; // ["3D", "Compute"]
+
+    // NPU engines (union of active engines across the NPUs and compute accelerators, #1799) and their
+    // names, comma-separated, as gpuEngines and gpuDevices are for the GPUs
+    std::vector<std::string> npuEngines; // ["Compute"]
+    std::string npuDevices;              // "Intel(R) AI Boost"
 
     // Per-GPU breakdown (for tooltip/details view)
     struct PerGPUUsage
@@ -125,7 +207,7 @@ struct ProcessSample
     /// is watched gets a sample, so consecutive samples have consecutive versions.
     std::uint64_t version = 0;
     /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
-    /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
+    /// timebase of ProcessSystemHistories::timestamps -- not when a reader happened to see it.
     double sampleTimeSeconds = 0.0;
     /// Whether the probe could supply per-process I/O and network counters at all when that generation
     /// was published (Platform::ProcessCapabilities::hasIoCounters / hasNetworkCounters, as published
@@ -138,6 +220,9 @@ struct ProcessSample
     /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
     bool gpuPerProcessSupported = true;
     bool gpuUtilizationSupported = true;
+    /// The same for per-process NPU / compute-accelerator data, apart from the GPU's (#1827).
+    bool npuPerProcessSupported = true;
+    bool npuUtilizationSupported = true;
     /// The GPU probe supported per-process data, but reading it failed for that generation: its GPU
     /// fields are a gap, not a measurement (#1210).
     bool gpuReadFailed = false;

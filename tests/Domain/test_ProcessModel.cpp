@@ -16,6 +16,7 @@
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -27,12 +28,16 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <future>
+#include <latch>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -79,6 +84,14 @@ Platform::ProcessCounters makeCounter(int32_t pid,
                                       int32_t parentPid = 1)
 {
     return makeProcessCounters(pid, name, state, userTime, systemTime, startTime, rssBytes, parentPid);
+}
+
+/// The model's published aggregated system histories: all empty before the first generation.
+Domain::ProcessSystemHistories systemHistories(const Domain::ProcessModel& model)
+{
+    Domain::ProcessSystemHistories histories;
+    static_cast<void>(model.tryCopySystemHistoriesIfNewer(0, histories));
+    return histories;
 }
 
 } // namespace
@@ -136,6 +149,58 @@ TEST(ProcessModelTest, ProbeSuppliedControlCharactersNeverReachASnapshot)
     EXPECT_EQ(snapshots[0].name, "na me");
     EXPECT_EQ(snapshots[0].command.find('\n'), std::string::npos);
     EXPECT_EQ(snapshots[0].name.find('\n'), std::string::npos);
+}
+
+TEST(ProcessModelTest, ASingleLineFormFollowsItsProcessAcrossRefreshes)
+{
+    // The single-line form is kept per process and re-derived only when the raw string changes
+    // (#1624): a process that renames itself, or rewrites its argv, must still show the new text,
+    // sanitized, and an unchanged one its old sanitized form.
+    Domain::ProcessModel model(nullptr);
+    auto counter = makeCounter(100, "na\nme", 'R', 1000, 500);
+    counter.command = "plain command";
+    auto other = makeCounter(200, "steady", 'R', 1000, 500);
+    other.command = "steady\tcommand";
+
+    std::uint64_t totalCpuTime = 100000;
+    const auto refresh = [&]
+    {
+        model.updateFromCounters({counter, other}, totalCpuTime);
+        totalCpuTime += 1000;
+        return model.snapshots();
+    };
+    const auto find = [](const std::vector<Domain::ProcessSnapshot>& snapshots, std::int32_t pid)
+    {
+        return *std::ranges::find_if(snapshots, [pid](const auto& snapshot) { return snapshot.pid == pid; });
+    };
+
+    auto snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "plain command");
+
+    snapshots = refresh(); // Unchanged: the kept forms.
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "plain command");
+    EXPECT_EQ(find(snapshots, 200).command, "steady command");
+
+    counter.name = "renamed";
+    counter.command = "now\r\nmulti-line";
+    snapshots = refresh(); // Both changed: derived again, the dirty one sanitized and the clean one as is.
+    EXPECT_EQ(find(snapshots, 100).name, "renamed");
+    EXPECT_EQ(find(snapshots, 100).command, "now  multi-line");
+    EXPECT_EQ(find(snapshots, 200).name, "steady");
+    EXPECT_EQ(find(snapshots, 200).command, "steady command");
+
+    counter.name = "na\nme"; // Back to the first name, which the memo no longer holds.
+    snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "now  multi-line");
+
+    // The same PID with another start time is another process: nothing carries over.
+    counter = makeCounter(100, "fresh\x7F", 'R', 1000, 500, 2000);
+    snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "fresh ");
+    EXPECT_EQ(find(snapshots, 100).command, "");
 }
 
 TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
@@ -515,6 +580,58 @@ TEST(ProcessModelTest, UniqueKeyDiffersForPidReuse)
     EXPECT_NE(snaps1[0].uniqueKey, snaps2[0].uniqueKey);
 }
 
+TEST(ProcessModelTest, UniqueKeyDiffersForPairsTheOldHashCollidedOn)
+{
+    // Pairs the boost-style combine (with the identity std::hash of libstdc++ and libc++) mapped to one
+    // key (#2115, #2158): adjacent PIDs forked in the same tick, and two found by search.
+    struct Identity
+    {
+        std::int32_t pid;
+        std::uint64_t startTime;
+    };
+    const std::vector<std::pair<Identity, Identity>> pairs = {
+        {{.pid = 895, .startTime = 7}, {.pid = 896, .startTime = 7}},
+        {{.pid = 16095, .startTime = 2152828}, {.pid = 16389, .startTime = 2152828}},
+        {{.pid = 1000, .startTime = 50000}, {.pid = 1001, .startTime = 49935}},
+    };
+    for (const auto& [a, b] : pairs)
+    {
+        auto probe = std::make_unique<MockProcessProbe>();
+        probe->setCounters({makeCounter(a.pid, "a", 'R', 0, 0, a.startTime), makeCounter(b.pid, "b", 'R', 0, 0, b.startTime)});
+        probe->setTotalCpuTime(100000);
+        Domain::ProcessModel model(std::move(probe));
+        model.refresh();
+
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 2U);
+        EXPECT_NE(snaps[0].uniqueKey, snaps[1].uniqueKey) << a.pid << "@" << a.startTime << " vs " << b.pid << "@" << b.startTime;
+    }
+}
+
+TEST(ProcessModelTest, UniqueKeysOfAForkBurstAreDistinct)
+{
+    // A fork burst: 2000 consecutive PIDs, a handful of processes started per clock tick (#2115).
+    auto probe = std::make_unique<MockProcessProbe>();
+    constexpr std::int32_t COUNT = 2000;
+    std::vector<Platform::ProcessCounters> counters;
+    counters.reserve(static_cast<std::size_t>(COUNT));
+    for (std::int32_t i = 0; i < COUNT; ++i)
+    {
+        counters.push_back(makeCounter(1000 + i, "burst", 'R', 0, 0, 5000 + static_cast<std::uint64_t>(i / 4)));
+    }
+    probe->setCounters(counters);
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::unordered_set<std::uint64_t> keys;
+    for (const auto& snap : model.snapshots())
+    {
+        keys.insert(snap.uniqueKey);
+    }
+    EXPECT_EQ(keys.size(), static_cast<std::size_t>(COUNT));
+}
+
 TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
 {
     auto probe = std::make_unique<MockProcessProbe>();
@@ -627,265 +744,6 @@ TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVe
     const auto after = model.findSnapshot(100);
     ASSERT_TRUE(after.has_value());
     EXPECT_GT(after->cpuPercent, 0.0);
-}
-
-TEST(ProcessModelTest, FindSnapshotWithVersionReturnsSnapshotAndCurrentVersionTogether)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    const auto found = model.findSnapshotWithVersion(100);
-    ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->snapshot.pid, 100);
-    EXPECT_EQ(found->version, model.snapshotVersion());
-}
-
-TEST(ProcessModelTest, FindSnapshotWithVersionReturnsNulloptForUnknownPid)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    EXPECT_FALSE(model.findSnapshotWithVersion(999).has_value());
-}
-
-TEST(ProcessModelTest, DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe)
-{
-    // Illustrative only -- deliberately NOT a regression test for findSnapshotWithVersion()
-    // itself (an earlier version of this test incorrectly claimed to be one; a review
-    // caught the error). A single-threaded test can never make a refresh() land "during" a
-    // call, atomic or not: calls in one thread execute strictly in sequence, so there is no
-    // sequence of calls here that would look any different if findSnapshotWithVersion() were
-    // reverted to two separate calls -- that regression can only be caught by genuine
-    // concurrency. FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother
-    // below, which races two real threads, is the only test that actually guards it.
-    //
-    // What this test shows instead, deterministically and without any race: calling
-    // findSnapshot() and a separate, later snapshotVersion() -- generically, the same
-    // "split read" shape as ShellLayer's old bug -- really can pair a snapshot from one
-    // generation with the version of a different one, just by having an ordinary refresh()
-    // happen between the two calls. This is a simplified illustration of the hazard class,
-    // not a literal replay of ShellLayer's exact former call sequence: ShellLayer actually
-    // paired ProcessModel::findSnapshot()'s always-fresh result with
-    // ProcessesPanel::cachedSnapshotVersion() (a separate render-cache value that could lag
-    // behind, only refreshed while the Processes tab was active) -- see
-    // src/App/ShellLayer.cpp's history around the #855 fix -- so the real bug's typical
-    // failure direction was a FRESH snapshot paired with a STALE version, the opposite of
-    // the OLD-snapshot/NEW-version pairing demonstrated below. Both directions are instances
-    // of the same underlying "two separate non-atomic reads" hazard that
-    // findSnapshotWithVersion() closes; this test just uses ProcessModel's own two accessors
-    // for a self-contained, dependency-free demonstration.
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-    rawProbe->setCounters({makeCounter(100, "gen0", 'R', 1000, 0, 5000)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh(); // publishes generation 0
-    const auto versionAfterGen0 = model.snapshotVersion();
-
-    // Two separate calls -- findSnapshot() then, later, an independent snapshotVersion() --
-    // illustrating the split-read shape generically (see the class-level comment above for
-    // how this differs from ShellLayer's exact former call sequence).
-    const auto separateSnapshot = model.findSnapshot(100);
-    ASSERT_TRUE(separateSnapshot.has_value());
-    EXPECT_EQ(separateSnapshot->name, "gen0");
-
-    // The gap: an ordinary refresh() lands between the two separate calls.
-    rawProbe->setCounters({makeCounter(100, "gen1", 'R', 2000, 0, 5000)});
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh(); // publishes generation 1
-
-    const auto separateVersion = model.snapshotVersion();
-
-    // The mismatch, made concrete: separateSnapshot still holds generation 0's content (read
-    // before the refresh), but separateVersion has advanced past versionAfterGen0 -- it now
-    // reflects generation 1, published after separateSnapshot was captured. A caller pairing
-    // (separateSnapshot, separateVersion) this way would see generation 1's version attached
-    // to generation 0's content -- the same category of mismatch findSnapshotWithVersion()
-    // exists to make impossible, even though it doesn't literally replay ShellLayer's exact
-    // old values.
-    EXPECT_EQ(separateSnapshot->name, "gen0");
-    EXPECT_GT(separateVersion, versionAfterGen0) << "expected the version to have advanced to reflect generation 1, "
-                                                    "while separateSnapshot still holds generation 0's content";
-}
-
-TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
-{
-    // Sanity check only: confirms the version advances and the snapshot content moves
-    // together across two sequential refresh() calls. This does NOT exercise the race
-    // findSnapshotWithVersion() exists to close -- see
-    // FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother below
-    // for the test that actually reproduces the old split-read bug (via genuine
-    // concurrency; a single-threaded test cannot force a refresh() to land "during" any
-    // call, so no sequential test can regression-test this method's atomicity), or
-    // DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe above for a
-    // deterministic (but illustrative-only) look at the failure mode being closed.
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    const auto before = model.findSnapshotWithVersion(100);
-    ASSERT_TRUE(before.has_value());
-    EXPECT_DOUBLE_EQ(before->snapshot.cpuPercent, 0.0);
-
-    rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    const auto after = model.findSnapshotWithVersion(100);
-    ASSERT_TRUE(after.has_value());
-    EXPECT_GT(after->snapshot.cpuPercent, 0.0);
-    EXPECT_GT(after->version, before->version);
-}
-
-TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother)
-{
-    // Reproduces the ShellLayer race under concurrency: a background writer thread
-    // continuously republishes new generations while a reader thread concurrently calls
-    // findSnapshotWithVersion(). Each generation's process name encodes which generation
-    // produced it (name is copied verbatim into the snapshot -- see
-    // ProcessModel.cpp:computeSnapshot() `snapshot.name = current.name;`), and the writer
-    // records which published version corresponds to which generation. If snapshot and
-    // version were ever read as two separate, non-atomic steps (the actual bug: ShellLayer
-    // called findSnapshot() then a separate cachedSnapshotVersion()), a reader could observe
-    // a name from one generation paired with the version published for a different
-    // generation. This test would fail if findSnapshotWithVersion() were reimplemented as
-    // two separate locked calls instead of one, unlike the sequential test above.
-    //
-    // Note on rigor: the checkpoint handshake below guarantees a minimum number of reader
-    // observations, but each guaranteed observation happens once the writer is already
-    // paused waiting for it -- so, in principle, an adversarial scheduler could satisfy the
-    // checkpoints without ever running the reader concurrently with an in-flight write.
-    // DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe above does NOT close
-    // that gap (an earlier version of this comment incorrectly claimed it did; a review
-    // caught the error): it's a single-threaded test, and a single thread can never make a
-    // refresh() land "during" any call, atomic or not, so it cannot regression-test
-    // findSnapshotWithVersion()'s atomicity -- it only illustrates why the old two-call
-    // pattern is unsafe. This test, exercising two real racing threads, remains the sole
-    // regression detector for findSnapshotWithVersion() itself; the adversarial-scheduler
-    // caveat above is a real, currently-unclosed limitation of that detector, not one this
-    // suite has a production-code-test-seam-free way to eliminate (see the PR discussion on
-    // #864 for why one wasn't added).
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-
-    constexpr std::int32_t kPid = 100;
-    constexpr int kIterations = 2000;
-    // The writer pauses for the reader every kCheckpointInterval generations (see below):
-    // deterministic pacing, not a probability tuned against past CI flakiness.
-    constexpr int kCheckpointInterval = 10;
-    constexpr auto kCheckpointTimeout = std::chrono::seconds(5);
-
-    std::mutex registryMutex;
-    std::unordered_map<std::uint64_t, std::string> versionToName;
-
-    std::mutex checkpointMutex;
-    std::condition_variable checkpointCv;
-    int readerObservationCount = 0; // guarded by checkpointMutex
-    std::atomic<bool> checkpointTimedOut{false};
-
-    std::atomic<bool> writerDone{false};
-
-    std::thread writer(
-        [&]
-        {
-            for (int i = 0; i < kIterations; ++i)
-            {
-                std::string name = "gen_" + std::to_string(i);
-                rawProbe->setCounters({makeCounter(kPid, name, 'R', static_cast<uint64_t>(i) * 1000, 0, 5000)});
-                model.refresh();
-                const auto version = model.snapshotVersion();
-                {
-                    const std::scoped_lock lock(registryMutex);
-                    versionToName.emplace(version, std::move(name));
-                }
-
-                // Deterministic pacing, not incidental OS scheduling luck: block until the
-                // reader records at least one more successful observation than it had at the
-                // start of this batch. C++ gives no fairness guarantee between these two
-                // threads, so without an explicit handshake like this, the writer could in
-                // principle finish all kIterations generations before the reader ever gets a
-                // time slice -- making any fixed-ratio liveness threshold still flaky in
-                // principle, however unlikely in practice (as raised in review on #864).
-                if ((i + 1) % kCheckpointInterval == 0)
-                {
-                    std::unique_lock checkpointLock(checkpointMutex);
-                    const int target = readerObservationCount + 1;
-                    const bool reachedTarget =
-                        checkpointCv.wait_for(checkpointLock, kCheckpointTimeout, [&] { return readerObservationCount >= target; });
-                    if (!reachedTarget)
-                    {
-                        // Don't hang the test process indefinitely if the reader is stuck
-                        // (e.g. findSnapshotWithVersion() never finds the pid due to some
-                        // unrelated regression) -- stop publishing and let the assertion below
-                        // fail with a clear message instead.
-                        checkpointTimedOut.store(true);
-                        break;
-                    }
-                }
-            }
-            writerDone.store(true);
-        });
-
-    std::vector<std::pair<std::uint64_t, std::string>> observed;
-    while (!writerDone.load())
-    {
-        if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
-        {
-            observed.emplace_back(found->version, found->snapshot.name);
-            const std::scoped_lock checkpointLock(checkpointMutex);
-            ++readerObservationCount;
-            checkpointCv.notify_all();
-        }
-    }
-    // One final read after the writer stops, to also cover the last published generation.
-    if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
-    {
-        observed.emplace_back(found->version, found->snapshot.name);
-    }
-
-    writer.join();
-
-    ASSERT_FALSE(checkpointTimedOut.load()) << "the reader never caught up to a writer checkpoint within the deadline -- "
-                                            << "findSnapshotWithVersion() may be broken (e.g. never finding the pid)";
-
-    // Deterministic liveness guarantee (not a probabilistic threshold): the checkpoint
-    // handshake above guarantees the reader at least one successful observation every
-    // kCheckpointInterval generations, so it must have recorded at least kIterations /
-    // kCheckpointInterval observations by the time the writer finishes -- regardless of how
-    // the OS happens to schedule these two threads.
-    EXPECT_GE(observed.size(), static_cast<std::size_t>(kIterations / kCheckpointInterval))
-        << "reader only recorded " << observed.size() << " observations; the writer's checkpoint pacing should have "
-        << "guaranteed at least " << (kIterations / kCheckpointInterval);
-
-    ASSERT_FALSE(observed.empty());
-    const std::scoped_lock lock(registryMutex);
-    for (const auto& [version, name] : observed)
-    {
-        const auto entry = versionToName.find(version);
-        ASSERT_TRUE(entry != versionToName.end()) << "version " << version << " was never recorded by the writer";
-        EXPECT_EQ(entry->second, name) << "version " << version << " observed with a mismatched process name";
-    }
 }
 
 // =============================================================================
@@ -1222,6 +1080,21 @@ TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 500.0);
 }
 
+TEST(ProcessModelTest, NetworkRatesZeroWhenTheReadStampGoesBackwards)
+{
+    // #1395: a probe whose read stamp went back (a clock reset under it) gives no interval to measure
+    // over: that refresh reads 0, not a rate over a negative or wrapped time.
+    NetworkRateFixture fixture;
+    constexpr std::uint64_t SECOND_NS = 1'000'000'000;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000, 10 * SECOND_NS);
+    auto snap = fixture.sample(std::chrono::seconds{1}, 3000, 6000, 11 * SECOND_NS);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 2000.0);
+
+    snap = fixture.sample(std::chrono::seconds{1}, 5000, 10000, 5 * SECOND_NS);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+}
+
 TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
 {
     // An interval under half the minimum refresh interval (the seed refresh followed at once by
@@ -1478,7 +1351,8 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
     rawProbe->withProcess(2, "idle_daemon").withCpuTime(2, 1'000'000, 0); // lots of lifetime CPU
     rawProbe->setTotalCpuTime(10'000);
-    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
 
     Domain::ProcessModel::Clock::time_point now{};
     Domain::ProcessModel model(std::move(probe), [&now] { return now; });
@@ -1488,7 +1362,8 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     now += std::chrono::seconds(1);
     rawProbe->withCpuTime(1, 200, 0);
     rawProbe->setTotalCpuTime(10'100);
-    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{.energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt});
+    rawProbe->setPackageEnergy(
+        Platform::PackageEnergyReading{.energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {}});
     model.refresh();
 
     const auto snaps = model.snapshots();
@@ -1498,6 +1373,34 @@ TEST(ProcessModelTest, PackageEnergyIsSharedByIntervalCpuTime)
     ASSERT_NE(idle, snaps.end());
     EXPECT_DOUBLE_EQ(busy->powerWatts, 2.0);
     EXPECT_DOUBLE_EQ(idle->powerWatts, 0.0);
+}
+
+// #2444 (#2479): a multi-socket machine's other packages reach the attribution: package 0 used 2 J and
+// package 1 3 J, so the busy process draws 5 W, not package 0's 2 W.
+TEST(ProcessModelTest, EveryPackagesEnergyIsSharedOut)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(1, "busy").withCpuTime(1, 100, 0);
+    rawProbe->setTotalCpuTime(10'000);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{
+        .energyUj = 5'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {{.energyUj = 1'000'000, .maxRangeUj = 0}}});
+
+    Domain::ProcessModel::Clock::time_point now{};
+    Domain::ProcessModel model(std::move(probe), [&now] { return now; });
+    model.refresh();
+
+    now += std::chrono::seconds(1);
+    rawProbe->withCpuTime(1, 200, 0);
+    rawProbe->setTotalCpuTime(10'100);
+    rawProbe->setPackageEnergy(Platform::PackageEnergyReading{
+        .energyUj = 7'000'000, .maxRangeUj = 0, .busyCpuTicks = std::nullopt, .otherPackages = {{.energyUj = 4'000'000, .maxRangeUj = 0}}});
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    const auto busy = std::ranges::find_if(snaps, [](const Domain::ProcessSnapshot& s) { return s.pid == 1; });
+    ASSERT_NE(busy, snaps.end());
+    EXPECT_DOUBLE_EQ(busy->powerWatts, 5.0);
 }
 
 TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
@@ -2087,49 +1990,17 @@ TEST(ProcessModelTest, StartTimeTicksArePassedThrough)
 // System-Level History Tests (for untested functions)
 // =============================================================================
 
-TEST(ProcessModelTest, SystemNetSentHistoryIsEmptyInitially)
+TEST(ProcessModelTest, SystemHistoriesAreEmptyInitially)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::ProcessModel model(std::move(probe));
 
-    auto history = model.systemNetSentHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemNetRecvHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemNetRecvHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemPageFaultsHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemPageFaultsHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemThreadCountHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemThreadCountHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemHandleCountHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemHandleCountHistory();
-    EXPECT_TRUE(history.empty());
+    const auto histories = systemHistories(model);
+    EXPECT_TRUE(histories.timestamps.empty());
+    EXPECT_TRUE(histories.pageFaults.empty());
+    EXPECT_TRUE(histories.threadCount.empty());
+    EXPECT_TRUE(histories.handleCount.empty());
+    EXPECT_TRUE(histories.power.empty());
 }
 
 TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
@@ -2156,7 +2027,7 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     rawProbe->setCounters({c1, c2});
     model.refresh();
 
-    const auto history = model.systemHandleCountHistory();
+    const auto history = systemHistories(model).handleCount;
     ASSERT_FALSE(history.empty());
     // Aggregated handle count should be the sum: 10 + 25 = 35
     EXPECT_DOUBLE_EQ(history.back(), 35.0);
@@ -2182,27 +2053,8 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAlignedWithTimestamps)
     rawProbe->setCounters({counter});
     model.refresh();
 
-    const auto timestamps = model.historyTimestamps();
-    const auto handleHistory = model.systemHandleCountHistory();
-    EXPECT_EQ(timestamps.size(), handleHistory.size());
-}
-
-TEST(ProcessModelTest, SystemPowerHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemPowerHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto timestamps = model.historyTimestamps();
-    EXPECT_TRUE(timestamps.empty());
+    const auto histories = systemHistories(model);
+    EXPECT_EQ(histories.timestamps.size(), histories.handleCount.size());
 }
 
 TEST(ProcessModelTest, HistoryRetentionBelowTheMinimumIsClamped)
@@ -2223,14 +2075,14 @@ TEST(ProcessModelTest, HistoryRetentionBelowTheMinimumIsClamped)
         totalCpu += 100000;
         model.updateFromCounters({counter}, totalCpu);
     }
-    ASSERT_EQ(model.historyTimestamps().size(), 5U);
+    ASSERT_EQ(systemHistories(model).timestamps.size(), 5U);
 
     // Clamped to HISTORY_SECONDS_MIN like every other model (#1145), where it used to keep a
     // zero-second window and with it only the current sample: t = 15, 20, 25, plus t = 10 kept just
     // before the cutoff (#1016).
     static_assert(Domain::Sampling::HISTORY_SECONDS_MIN == 10, "the expected count below assumes a 10 s minimum");
     model.setMaxHistorySeconds(0.0);
-    EXPECT_EQ(model.historyTimestamps().size(), 4U);
+    EXPECT_EQ(systemHistories(model).timestamps.size(), 4U);
 }
 
 // #1145: a window change trims the aggregated system histories at once and hands them out as a new
@@ -2270,6 +2122,105 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
     EXPECT_EQ(histories.threadCount.size(), 4U);
     EXPECT_EQ(model.snapshotVersion(), snapshotVersion);
     EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(histories.version, histories));
+}
+
+// #2156: each generation of the aggregated system histories shares the previous one's storage
+// instead of deep-copying the whole window, and a generation a reader holds never changes after it.
+TEST(ProcessModelTest, ConsecutiveSystemHistoryGenerationsShareStorageInsteadOfCopying)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
+    auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
+    counter.threadCount = 3;
+
+    std::uint64_t totalCpu = 100000;
+    const auto sampleOnce = [&]
+    {
+        currentTime += std::chrono::seconds(1);
+        totalCpu += 100000;
+        ++counter.threadCount;
+        model.updateFromCounters({counter}, totalCpu);
+    };
+    sampleOnce(); // seeds the deltas: no history sample yet
+    sampleOnce();
+
+    Domain::ProcessSystemHistories previous;
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, previous));
+    ASSERT_EQ(previous.timestamps.size(), 1U);
+
+    // Fewer samples than a shared block's smallest size, so no compaction moves them in between.
+    constexpr int GENERATIONS = 20;
+    for (int generation = 0; generation < GENERATIONS; ++generation)
+    {
+        SCOPED_TRACE("generation " + std::to_string(generation));
+        const std::vector<double> previousThreads(previous.threadCount.begin(), previous.threadCount.end());
+        const std::vector<double> previousTimestamps(previous.timestamps.begin(), previous.timestamps.end());
+
+        sampleOnce();
+        Domain::ProcessSystemHistories next;
+        ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(previous.version, next));
+        ASSERT_EQ(next.timestamps.size(), previous.timestamps.size() + 1);
+
+        // The same storage, not a copy of it, for every series.
+        EXPECT_TRUE(next.timestamps.sharesStorageWith(previous.timestamps));
+        EXPECT_TRUE(next.power.sharesStorageWith(previous.power));
+        EXPECT_TRUE(next.pageFaults.sharesStorageWith(previous.pageFaults));
+        EXPECT_TRUE(next.threadCount.sharesStorageWith(previous.threadCount));
+        EXPECT_TRUE(next.handleCount.sharesStorageWith(previous.handleCount));
+        // The new generation starts at the same samples, so nothing was rebuilt for it ...
+        EXPECT_EQ(next.timestamps.data(), previous.timestamps.data());
+        EXPECT_EQ(next.threadCount.data(), previous.threadCount.data());
+        // ... and the generation held from before is unchanged by the append.
+        EXPECT_EQ(std::vector<double>(previous.threadCount.begin(), previous.threadCount.end()), previousThreads);
+        EXPECT_EQ(std::vector<double>(previous.timestamps.begin(), previous.timestamps.end()), previousTimestamps);
+        EXPECT_DOUBLE_EQ(next.threadCount.back(), static_cast<double>(counter.threadCount));
+
+        previous = std::move(next);
+    }
+}
+
+// =============================================================================
+// Memory Breakdown (Private and Swap columns, #1879, #1885)
+// =============================================================================
+
+TEST(ProcessModelTest, PrivateAndSwapBytesReachTheSnapshotAndFollowEachSample)
+{
+    // Each sample's figures are the probe's, copied as they are (Linux's RssAnon and VmSwap, #1885): a
+    // process with no swap reads 0. Neither is a delta or kept as a peak.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+    probe->withProcess(100, "unswapped_app")
+        .withMemoryBreakdown(100, 96ULL * 1024 * 1024, 0)
+        .withProcess(200, "swapped_app")
+        .withMemoryBreakdown(200, 40ULL * 1024 * 1024, 8ULL * 1024 * 1024);
+    auto* rawProbe = probe.get();
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+
+    // A process's {privateBytes, swapBytes}, or both the maximum if it is missing.
+    using Breakdown = std::pair<std::uint64_t, std::uint64_t>;
+    const auto breakdown = [&model](std::int32_t pid) -> Breakdown
+    {
+        for (const auto& snap : model.snapshots())
+        {
+            if (snap.pid == pid)
+            {
+                return {snap.privateBytes, snap.swapBytes};
+            }
+        }
+        constexpr std::uint64_t MISSING = std::numeric_limits<std::uint64_t>::max();
+        return {MISSING, MISSING};
+    };
+    EXPECT_EQ(breakdown(100), Breakdown(96ULL * 1024 * 1024, 0));
+    EXPECT_EQ(breakdown(200), Breakdown(40ULL * 1024 * 1024, 8ULL * 1024 * 1024));
+
+    // A later sample replaces them, down as well as up.
+    clock.advance(std::chrono::milliseconds(10));
+    rawProbe->withMemoryBreakdown(100, 64ULL * 1024 * 1024, 0).withMemoryBreakdown(200, 48ULL * 1024 * 1024, 2ULL * 1024 * 1024);
+    model.refresh();
+    EXPECT_EQ(breakdown(100), Breakdown(64ULL * 1024 * 1024, 0));
+    EXPECT_EQ(breakdown(200), Breakdown(48ULL * 1024 * 1024, 2ULL * 1024 * 1024));
 }
 
 // =============================================================================
@@ -2447,6 +2398,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesProcessSnapshots)
     processModel.setGPUModel(gpuModel);
 
     // GPUModel needs to be refreshed first to have process counters available
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
 
     // ProcessModel refresh will automatically merge GPU data
@@ -2475,6 +2427,7 @@ TEST(ProcessModelTest, MergeGPUDataMultipleProcesses)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2511,6 +2464,7 @@ TEST(ProcessModelTest, MergeGPUDataAggregatesMultiGPU)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2550,6 +2504,7 @@ std::vector<Domain::ProcessSnapshot> mergeOnce(std::unique_ptr<MockGPUProbe> gpu
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
     return processModel.snapshots();
@@ -2684,6 +2639,136 @@ TEST(ProcessModelTest, MergeGPUDataDedicatedSegmentIntegratedGpuIgnoresSharedRea
     EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, 512U);
 }
 
+// #1799: a process's samples on the NPU (the probe tags them with its kind, PDH naming the NPU by
+// its LUID) are its NPU figures, never counted in its GPU ones: a process that only uses the NPU
+// has no GPU figures and no GPU device, and one using both has the iGPU's GPU figures alone.
+TEST(ProcessModelTest, MergeGPUDataRoutesNpuSamplesToTheNpuFields)
+{
+    constexpr std::uint64_t MIB = 1024ULL * 1024ULL;
+    const std::string npuLuid = "GPU_0x00000000_0x00018103";
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "npu_only", 'R', 1000, 500), makeCounter(200, "gpu_and_npu", 'R', 2000, 1000)});
+    processProbe->setTotalCpuTime(100000);
+
+    const auto onNpu = [&npuLuid](std::int32_t pid, double util, std::uint64_t sharedBytes)
+    {
+        auto counters = makeProcessGpuUsage(pid, npuLuid, util, 0, sharedBytes);
+        counters.kind = Platform::DeviceKind::Npu;
+        counters.activeEngines = {"Compute"};
+        return counters;
+    };
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withSharedMemoryGPU("iGPU", "Intel(R) Arc(TM) 140T GPU", "Intel")
+        .withAccelerator("NPU", "Intel(R) AI Boost", npuLuid)
+        .withProcessGPUCounters(onNpu(100, 60.0, 8 * MIB))
+        .withProcessGPUCounters(makeProcessGpuUsage(200, "iGPU", 20.0, 0, 300 * MIB))
+        .withProcessGPUCounters(onNpu(200, 80.0, 16 * MIB));
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
+    gpuModel->refresh();
+    processModel.refresh();
+
+    const auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 2U);
+    const auto byPid = [&snaps](std::int32_t pid) -> const Domain::ProcessSnapshot&
+    {
+        return *std::ranges::find(snaps, pid, &Domain::ProcessSnapshot::pid);
+    };
+
+    const Domain::ProcessSnapshot& npuOnly = byPid(100);
+    EXPECT_TRUE(npuOnly.gpuFieldsRead);
+    EXPECT_DOUBLE_EQ(npuOnly.gpuUtilPercent, 0.0) << "The NPU's 60% isn't GPU work";
+    EXPECT_EQ(npuOnly.gpuMemoryBytes, 0U);
+    EXPECT_EQ(npuOnly.gpuSharedMemoryBytes, 0U);
+    EXPECT_TRUE(npuOnly.gpuDevices.empty()) << "No GPU device, let alone a raw GPU_0x... id";
+    EXPECT_TRUE(npuOnly.perGpuUsage.empty());
+    EXPECT_TRUE(npuOnly.gpuEngines.empty());
+    EXPECT_DOUBLE_EQ(npuOnly.npuUtilPercent, 60.0);
+    EXPECT_EQ(npuOnly.npuMemoryBytes, 8 * MIB) << "The NPU's figures count its shared segment";
+    EXPECT_EQ(npuOnly.npuSharedMemoryBytes, 8 * MIB);
+    EXPECT_EQ(npuOnly.npuDedicatedMemoryBytes, 0U);
+    EXPECT_EQ(npuOnly.npuEngines, std::vector<std::string>{"Compute"});
+    EXPECT_EQ(npuOnly.npuDevices, "Intel(R) AI Boost");
+
+    const Domain::ProcessSnapshot& both = byPid(200);
+    EXPECT_DOUBLE_EQ(both.gpuUtilPercent, 20.0) << "The iGPU's own figure, not the NPU's 80%";
+    EXPECT_EQ(both.gpuMemoryBytes, 300 * MIB);
+    EXPECT_EQ(both.gpuDevices, "Intel(R) Arc(TM) 140T GPU");
+    EXPECT_EQ(both.gpuEngines, std::vector<std::string>{"3D"});
+    ASSERT_EQ(both.perGpuUsage.size(), 1U);
+    EXPECT_DOUBLE_EQ(both.npuUtilPercent, 80.0);
+    EXPECT_EQ(both.npuMemoryBytes, 16 * MIB);
+    EXPECT_EQ(both.npuDevices, "Intel(R) AI Boost");
+}
+
+// #1869: the watched process's samples, which Process Details' history is built from, carry its NPU
+// figures with every generation, as they do its GPU figures.
+TEST(ProcessModelTest, WatchedSamplesCarryTheNpuFigures)
+{
+    const std::string npuLuid = "GPU_0x00000000_0x00018103";
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "npu_user", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto counters = makeProcessGpuUsage(100, npuLuid, 35.0, 2048, 4096);
+    counters.kind = Platform::DeviceKind::Npu;
+    counters.activeEngines = {"Compute"};
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withAccelerator("NPU", "Intel(R) AI Boost", npuLuid).withProcessGPUCounters(counters);
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    processModel.refresh(); // Listed before the GPU read, as in the app (#1417): its GPU fields unread
+    gpuModel->refresh();
+    processModel.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    ASSERT_NE(samples[0].snapshot, nullptr);
+    EXPECT_FALSE(samples[0].snapshot->gpuFieldsRead);
+    EXPECT_DOUBLE_EQ(samples[0].snapshot->npuUtilPercent, 0.0);
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    const Domain::ProcessSnapshot& watched = *samples[1].snapshot;
+    EXPECT_TRUE(watched.gpuFieldsRead);
+    EXPECT_TRUE(samples[1].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[1].gpuUtilizationSupported);
+    EXPECT_DOUBLE_EQ(watched.npuUtilPercent, 35.0);
+    EXPECT_EQ(watched.npuDedicatedMemoryBytes, 2048U);
+    EXPECT_EQ(watched.npuSharedMemoryBytes, 4096U);
+    EXPECT_EQ(watched.npuEngines, std::vector<std::string>{"Compute"});
+    EXPECT_EQ(watched.npuDevices, "Intel(R) AI Boost");
+    EXPECT_DOUBLE_EQ(watched.gpuUtilPercent, 0.0) << "Never counted as GPU use";
+}
+
+// #1799: a sample on an adapter enumerated as an NPU is routed by the adapter's kind too, even
+// untagged, so a probe that doesn't tag its samples still never counts NPU work as GPU work.
+TEST(ProcessModelTest, MergeGPUDataRoutesAnUntaggedSampleOnAnEnumeratedNpuToTheNpuFields)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU_0x00000000_0x00018103", 45.0, 0, 4096));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuUtilPercent, 0.0);
+    EXPECT_TRUE(snaps[0].gpuDevices.empty());
+    EXPECT_DOUBLE_EQ(snaps[0].npuUtilPercent, 45.0);
+    EXPECT_EQ(snaps[0].npuMemoryBytes, 4096U);
+}
+
 TEST(ProcessModelTest, MergeGPUDataWithNoGPUModel)
 {
     auto processProbe = std::make_unique<MockProcessProbe>();
@@ -2716,6 +2801,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2723,104 +2809,6 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     ASSERT_EQ(snaps.size(), 1);
     // gpuDevices should contain the GPU name
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
-}
-
-TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
-{
-    auto currentTime = Domain::ProcessModel::Clock::time_point{};
-    auto processProbe = std::make_unique<MockProcessProbe>();
-    auto* rawProcessProbe = processProbe.get();
-    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
-    rawProcessProbe->setTotalCpuTime(100000);
-
-    auto gpuProbe = std::make_unique<MockGPUProbe>();
-    auto* rawGpuProbe = gpuProbe.get();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = true;
-    gpuProbe->withCapabilities(caps);
-    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
-    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
-
-    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
-    processModel.setGPUModel(gpuModel);
-    gpuModel->refresh();
-    processModel.refresh();
-    const auto initialProcessGpuQueryCount = rawGpuProbe->readProcessCountersCallCount();
-    ASSERT_EQ(initialProcessGpuQueryCount, 1);
-
-    processModel.setInteractionActive(true);
-    currentTime += std::chrono::seconds(1);
-    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
-    rawProcessProbe->setTotalCpuTime(200000);
-    processModel.refresh();
-
-    const auto snapshots = processModel.snapshots();
-    ASSERT_EQ(snapshots.size(), 1);
-    EXPECT_EQ(snapshots[0].gpuMemoryBytes, 512ULL * 1024 * 1024);
-    EXPECT_EQ(snapshots[0].gpuDevices, "Test GPU");
-    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount);
-
-    currentTime += std::chrono::milliseconds(500);
-    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1200, 500)});
-    rawProcessProbe->setTotalCpuTime(300000);
-    processModel.refresh();
-
-    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount + 1);
-}
-// #1210: a generation that reuses the previous one's GPU fields (the throttled interaction path) is
-// stamped with the support those fields were read under, not the GPU model's current flags.
-TEST(ProcessModelTest, CachedGpuDataKeepsTheSupportItWasReadWith)
-{
-    auto currentTime = Domain::ProcessModel::Clock::time_point{};
-    auto processProbe = std::make_unique<MockProcessProbe>();
-    auto* rawProcessProbe = processProbe.get();
-    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
-    rawProcessProbe->setTotalCpuTime(100000);
-
-    auto gpuProbe = std::make_unique<MockGPUProbe>();
-    auto* rawGpuProbe = gpuProbe.get();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = true;
-    caps.hasPerProcessUtilization = true;
-    gpuProbe->withCapabilities(caps);
-    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
-    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
-
-    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
-    processModel.setGPUModel(gpuModel);
-    processModel.watchProcess(100);
-    gpuModel->refresh();
-    processModel.refresh(); // Merged: supported
-
-    // The GPU model loses per-process utilization; the next generation reuses the cached fields.
-    Platform::GPUCapabilities withoutUtilization = caps;
-    withoutUtilization.hasPerProcessUtilization = false;
-    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
-    gpuModel->refresh();
-    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
-
-    processModel.setInteractionActive(true);
-    currentTime += std::chrono::milliseconds(500);
-    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
-    rawProcessProbe->setTotalCpuTime(200000);
-    processModel.refresh(); // Throttled: cached GPU fields, not read again
-
-    std::vector<Domain::ProcessSample> samples;
-    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
-    ASSERT_EQ(samples.size(), 2U);
-    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
-    EXPECT_TRUE(samples[1].gpuUtilizationSupported); // Read under the earlier support
-    ASSERT_NE(samples[1].snapshot, nullptr);
-    EXPECT_EQ(samples[1].snapshot->gpuMemoryBytes, 512ULL * 1024 * 1024);
-
-    // The Processes table reads the same support with the generation it draws, not the GPU model's
-    // current (lost) utilization.
-    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
-    std::uint64_t version = 0;
-    Domain::ProcessModel::GpuSupport support;
-    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
-    EXPECT_TRUE(support.perProcess);
-    EXPECT_TRUE(support.utilization);
 }
 
 // #1210: tryCopySnapshotsIfNewer() hands out the GPU support published with the generation.
@@ -2849,60 +2837,460 @@ TEST(ProcessModelTest, CopiedSnapshotsComeWithTheirGenerationsGpuSupport)
     EXPECT_FALSE(support.utilization);
 }
 
-// #1210: a process that starts while GPU merges are throttled has GPU fields no merge has read; they
-// must not pass for measured zeros. Processes the last merge did see keep theirs, zeros included.
-TEST(ProcessModelTest, AProcessStartedBetweenThrottledGpuMergesHasUnreadGpuFields)
+// =============================================================================
+// One GPU-acquisition owner (#1417): the GPU sampler reads the per-process GPU
+// counters and publishes them; the process sampler merges the newest
+// publication and never calls the probe.
+// =============================================================================
+
+namespace
 {
-    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+
+constexpr std::uint64_t GPU_PROCESS_MEMORY = 512ULL * 1024 * 1024;
+
+/// A GPU probe reporting pid 100 on GPU0, with per-process metrics and
+/// utilization supported.
+std::unique_ptr<MockGPUProbe> makePerProcessGpuProbe()
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", GPU_PROCESS_MEMORY);
+    return gpuProbe;
+}
+
+/// A process probe listing pid 100.
+std::unique_ptr<MockProcessProbe> makeGpuProcessProbe()
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    return processProbe;
+}
+
+/// The snapshot of @p pid in @p snapshots; fails the test when it is missing.
+const Domain::ProcessSnapshot* findPid(const std::vector<Domain::ProcessSnapshot>& snapshots, std::int32_t pid)
+{
+    const auto it = std::ranges::find(snapshots, pid, &Domain::ProcessSnapshot::pid);
+    EXPECT_NE(it, snapshots.end()) << "pid " << pid;
+    return it != snapshots.end() ? &*it : nullptr;
+}
+
+/// The GPU support published with @p model's latest generation.
+Domain::ProcessModel::GpuSupport latestGpuSupport(const Domain::ProcessModel& model)
+{
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    EXPECT_TRUE(model.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    return support;
+}
+
+} // namespace
+
+// The process sampler merges the GPU sampler's publication: the probe's
+// per-process read runs only on the thread that refreshes the GPU model, once
+// per GPU refresh, however often processes refresh.
+TEST(ProcessModelTest, ProcessRefreshNeverCallsTheGpuProbe)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    auto gpuProbe = makePerProcessGpuProbe();
+    auto* rawGpuProbe = gpuProbe.get();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(makeGpuProcessProbe(), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read, as in the app
+
+    std::thread gpuSampler([&gpuModel, currentTime] { gpuModel->refreshAt(currentTime); });
+    const auto gpuSamplerId = gpuSampler.get_id();
+    gpuSampler.join();
+    ASSERT_EQ(rawGpuProbe->readProcessCountersCallCount(), 1U);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        currentTime += std::chrono::milliseconds(500);
+        processModel.refresh();
+    }
+
+    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), 1U) << "a process refresh ran the GPU probe";
+    const auto threads = rawGpuProbe->processReadThreads();
+    ASSERT_EQ(threads.size(), 1U);
+    EXPECT_EQ(*threads.begin(), gpuSamplerId);
+    EXPECT_FALSE(threads.contains(std::this_thread::get_id()));
+
+    // Per-process values still flow into the process snapshots.
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_TRUE(snapshots[0].gpuFieldsRead);
+    EXPECT_EQ(snapshots[0].gpuMemoryBytes, GPU_PROCESS_MEMORY);
+    EXPECT_DOUBLE_EQ(snapshots[0].gpuUtilPercent, 25.0);
+    EXPECT_EQ(snapshots[0].gpuDevices, "Test GPU");
+    ASSERT_EQ(snapshots[0].perGpuUsage.size(), 1U);
+    EXPECT_EQ(snapshots[0].perGpuUsage[0].gpuName, "Test GPU");
+}
+
+// A GPU read holding the probe lock (a slow or hung driver query) used to block
+// the process sampler, which took the same lock for its own per-process read.
+// It no longer waits.
+TEST(ProcessModelTest, ProcessRefreshDoesNotWaitForABlockedGpuProbe)
+{
+    auto gpuProbe = makePerProcessGpuProbe();
+    auto* rawGpuProbe = gpuProbe.get();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(makeGpuProcessProbe());
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read
+    gpuModel->refresh();
+
+    rawGpuProbe->armBlockingReadGPUCounters();
+    std::thread gpuSampler([&gpuModel] { gpuModel->refresh(); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!rawGpuProbe->hasEnteredBlockedReadGPUCounters() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(rawGpuProbe->hasEnteredBlockedReadGPUCounters()) << "the GPU refresh never reached the probe";
+
+    auto processSample = std::async(std::launch::async, [&processModel] { processModel.refresh(); });
+    const auto status = processSample.wait_for(std::chrono::seconds(5));
+    EXPECT_EQ(status, std::future_status::ready) << "the process refresh waited for the GPU probe";
+
+    rawGpuProbe->releaseBlockedReadGPUCounters();
+    gpuSampler.join();
+    processSample.wait();
+
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_EQ(snapshots[0].gpuMemoryBytes, GPU_PROCESS_MEMORY) << "merged from the publication made before the block";
+}
+
+// Evidence for #1417 (not a gate): with a deliberately slow per-process GPU read (a slow driver)
+// and the GPU sampler reading in the background, per-process values still flow, and the slowest
+// process refresh is recorded as a test property. Before, every process refresh made that read
+// itself, so each took at least SLOW_READ.
+TEST(ProcessModelTest, ProcessSamplingDoesNotWaitForASlowGpuProbe)
+{
+    constexpr auto SLOW_READ = std::chrono::milliseconds(400);
+    auto gpuProbe = makePerProcessGpuProbe();
+    gpuProbe->withProcessReadDelay(SLOW_READ);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(makeGpuProcessProbe());
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read
+    gpuModel->refresh();    // One slow read, so there is a publication to merge
+
+    std::atomic<bool> stop{false};
+    std::thread gpuSampler(
+        [&gpuModel, &stop]
+        {
+            while (!stop.load(std::memory_order_acquire))
+            {
+                gpuModel->refresh();
+            }
+        });
+
+    auto slowest = std::chrono::steady_clock::duration::zero();
+    for (int i = 0; i < 5; ++i)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        processModel.refresh();
+        slowest = std::max(slowest, std::chrono::steady_clock::now() - start);
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    }
+    stop.store(true, std::memory_order_release);
+    gpuSampler.join();
+
+    const auto slowestUs = std::chrono::duration_cast<std::chrono::microseconds>(slowest).count();
+    RecordProperty("slowest_process_refresh_us", std::to_string(slowestUs));
+    RecordProperty("slow_gpu_read_us", std::to_string(std::chrono::microseconds(SLOW_READ).count()));
+    // Recorded, not asserted: a wall-clock bound measures scheduling, and a preempted CI worker
+    // would fail it although the process sampler never waits. The ownership boundary itself is
+    // proven deterministically by ProcessRefreshDoesNotWaitForABlockedGpuProbe.
+
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_EQ(snapshots[0].gpuMemoryBytes, GPU_PROCESS_MEMORY);
+}
+
+// #1210: a generation is stamped with the support its GPU fields were read
+// under, which comes with the publication they came from; the watched samples
+// keep each generation's own.
+TEST(ProcessModelTest, GpuSupportComesWithThePublicationItWasReadUnder)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    auto gpuProbe = makePerProcessGpuProbe();
+    auto* rawGpuProbe = gpuProbe.get();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(makeGpuProcessProbe(), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+
+    gpuModel->refreshAt(currentTime);
+    processModel.refresh(); // Read with utilization supported
+
+    // The probe loses per-process utilization; the next GPU refresh publishes
+    // under that.
+    Platform::GPUCapabilities withoutUtilization;
+    withoutUtilization.hasPerProcessMetrics = true;
+    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
+    currentTime += std::chrono::milliseconds(500);
+    gpuModel->refreshAt(currentTime);
+    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
+    currentTime += std::chrono::milliseconds(500);
+    processModel.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_FALSE(samples[1].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[1].gpuPerProcessSupported);
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    EXPECT_EQ(samples[1].snapshot->gpuMemoryBytes, GPU_PROCESS_MEMORY);
+
+    const auto support = latestGpuSupport(processModel);
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_FALSE(support.utilization);
+    EXPECT_FALSE(support.readFailed);
+}
+
+// #1210, #1417: a process first listed after the GPU sampler's last read has GPU
+// fields that read could not have seen: unread, not measured zeros, even if the
+// read has an entry for its pid. A process listed before the read keeps its
+// figures, or is a measured zero if the read has none for it. Before the first
+// read, nothing is read.
+TEST(ProcessModelTest, AProcessFirstListedSinceTheGpuReadHasUnreadGpuFields)
+{
+    const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    auto currentTime = start;
     auto processProbe = std::make_unique<MockProcessProbe>();
     auto* rawProcessProbe = processProbe.get();
     rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500), makeCounter(150, "idle_process", 'S', 10, 5, 6000)});
     rawProcessProbe->setTotalCpuTime(100000);
-
-    auto gpuProbe = std::make_unique<MockGPUProbe>();
-    Platform::GPUCapabilities caps;
-    caps.hasPerProcessMetrics = true;
-    gpuProbe->withCapabilities(caps);
-    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuProbe = makePerProcessGpuProbe();
+    gpuProbe->withProcessGPU(300, "GPU0", 1024); // Uses the GPU, but listed only after the read
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
-
     Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
     processModel.setGPUModel(gpuModel);
-    gpuModel->refresh();
-    processModel.refresh(); // Merged: 100 and 150 read
 
-    processModel.setInteractionActive(true);
-    currentTime += std::chrono::milliseconds(500);
+    processModel.refresh(); // No GPU read yet
+    for (const auto& snap : processModel.snapshots())
+    {
+        EXPECT_FALSE(snap.gpuFieldsRead) << "pid " << snap.pid << ": nothing read before the first GPU refresh";
+    }
+    EXPECT_TRUE(latestGpuSupport(processModel).perProcess);
+
+    gpuModel->refreshAt(start + std::chrono::seconds(1));
+    currentTime = start + std::chrono::milliseconds(1500);
     rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500),
                                   makeCounter(150, "idle_process", 'S', 10, 5, 6000),
-                                  makeCounter(200, "new_process", 'R', 10, 5, 7000)});
+                                  makeCounter(200, "new_process", 'R', 10, 5, 7000),
+                                  makeCounter(300, "new_gpu_process", 'R', 10, 5, 7100)});
     rawProcessProbe->setTotalCpuTime(200000);
-    processModel.refresh(); // Throttled: cached GPU fields, no new read
+    processModel.refresh();
 
-    const auto snapshots = processModel.snapshots();
-    ASSERT_EQ(snapshots.size(), 3U);
-    for (const auto& snap : snapshots)
+    auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 4U);
+    if (const auto* gpuUser = findPid(snapshots, 100); gpuUser != nullptr)
     {
-        if (snap.pid == 200)
-        {
-            EXPECT_FALSE(snap.gpuFieldsRead) << "started since the last GPU merge";
-        }
-        else
-        {
-            EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
-        }
+        EXPECT_TRUE(gpuUser->gpuFieldsRead);
+        EXPECT_EQ(gpuUser->gpuMemoryBytes, GPU_PROCESS_MEMORY);
+    }
+    if (const auto* idle = findPid(snapshots, 150); idle != nullptr)
+    {
+        EXPECT_TRUE(idle->gpuFieldsRead) << "listed before the read: a measured zero";
+        EXPECT_EQ(idle->gpuMemoryBytes, 0U);
+    }
+    if (const auto* newcomer = findPid(snapshots, 200); newcomer != nullptr)
+    {
+        EXPECT_FALSE(newcomer->gpuFieldsRead) << "first listed since the GPU read";
+    }
+    if (const auto* newGpuUser = findPid(snapshots, 300); newGpuUser != nullptr)
+    {
+        // The read's entry for pid 300 can't be this process's: it was not yet listed.
+        EXPECT_FALSE(newGpuUser->gpuFieldsRead) << "first listed since the GPU read";
+        EXPECT_EQ(newGpuUser->gpuMemoryBytes, 0U);
     }
 
-    // The next merge reads everyone again.
-    currentTime += std::chrono::seconds(2);
-    processModel.setInteractionActive(false);
+    // The next GPU read covers everyone.
+    gpuModel->refreshAt(start + std::chrono::seconds(2));
+    currentTime = start + std::chrono::milliseconds(2500);
     processModel.refresh();
     for (const auto& snap : processModel.snapshots())
     {
         EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
     }
+    snapshots = processModel.snapshots();
+    if (const auto* gpuUser = findPid(snapshots, 300); gpuUser != nullptr)
+    {
+        EXPECT_EQ(gpuUser->gpuMemoryBytes, 1024U) << "listed before this read, so its entry merges";
+    }
 }
 
+// #1417: a GPU read taken while an earlier process held a pid publishes that process's usage under
+// the pid. A process that reuses the pid and is first listed after the read must not inherit it:
+// its GPU fields are unread and empty. The synchronous read this replaced could not mix them up.
+TEST(ProcessModelTest, APidReusedSinceTheGpuReadDoesNotInheritTheExitedProcessGpuUsage)
+{
+    const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    auto currentTime = start;
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(42, "old_owner", 'R', 1000, 500, 5000)});
+    rawProcessProbe->setTotalCpuTime(100000);
+    auto gpuProbe = makePerProcessGpuProbe();
+    gpuProbe->withProcessGPU(42, "GPU0", 4096);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+
+    // Pid 42 (first owner) is listed before the read at T: its usage merges.
+    processModel.refresh();
+    const auto captureTime = start + std::chrono::seconds(1);
+    gpuModel->refreshAt(captureTime);
+    currentTime = start + std::chrono::milliseconds(1500);
+    processModel.refresh();
+    {
+        const auto snapshots = processModel.snapshots();
+        ASSERT_EQ(snapshots.size(), 1U);
+        EXPECT_TRUE(snapshots[0].gpuFieldsRead);
+        EXPECT_EQ(snapshots[0].gpuMemoryBytes, 4096U);
+    }
+
+    // The first owner exits and a new process takes pid 42 (a different start time), first listed
+    // after T. The publication still holds the old owner's entry for pid 42.
+    currentTime = start + std::chrono::seconds(2);
+    rawProcessProbe->setCounters({makeCounter(42, "new_owner", 'R', 10, 5, 9000)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh();
+    {
+        const auto snapshots = processModel.snapshots();
+        ASSERT_EQ(snapshots.size(), 1U);
+        EXPECT_EQ(snapshots[0].name, "new_owner");
+        EXPECT_FALSE(snapshots[0].gpuFieldsRead);
+        EXPECT_EQ(snapshots[0].gpuMemoryBytes, 0U);
+        EXPECT_DOUBLE_EQ(snapshots[0].gpuUtilPercent, 0.0);
+        EXPECT_TRUE(snapshots[0].perGpuUsage.empty());
+        EXPECT_TRUE(snapshots[0].gpuDevices.empty());
+    }
+}
+
+// #1417: the process sampler merges the newest publication up to
+// PROCESS_GPU_DATA_MAX_AGE_MS old. An older one means the GPU sampler has
+// stalled: the generation has no GPU fields and is marked a failed read, rather
+// than showing long-gone figures as current. A fresh publication restores them.
+TEST(ProcessModelTest, StalePerProcessGpuDataIsAGapNotAReading)
+{
+    const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    const auto maxAge = std::chrono::milliseconds(Domain::Sampling::PROCESS_GPU_DATA_MAX_AGE_MS);
+    auto currentTime = start;
+    auto gpuModel = std::make_shared<Domain::GPUModel>(makePerProcessGpuProbe());
+    Domain::ProcessModel processModel(makeGpuProcessProbe(), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+
+    processModel.refresh(); // Seed at start: listed before the GPU read
+    gpuModel->refreshAt(start);
+    currentTime = start + maxAge; // As old as it may be: still merged
+    processModel.refresh();
+    {
+        const auto support = latestGpuSupport(processModel);
+        EXPECT_FALSE(support.readFailed);
+        EXPECT_EQ(processModel.snapshots().at(0).gpuMemoryBytes, GPU_PROCESS_MEMORY);
+    }
+
+    currentTime = start + maxAge + std::chrono::milliseconds(1); // Too old
+    processModel.refresh();
+    {
+        const auto support = latestGpuSupport(processModel);
+        EXPECT_TRUE(support.perProcess) << "stale is not unsupported";
+        EXPECT_TRUE(support.readFailed);
+        EXPECT_EQ(processModel.snapshots().at(0).gpuMemoryBytes, 0U);
+        std::vector<Domain::ProcessSample> samples;
+        ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+        ASSERT_FALSE(samples.empty());
+        EXPECT_TRUE(samples.back().gpuReadFailed) << "Process Details shows a gap";
+    }
+
+    // The GPU sampler catches up.
+    gpuModel->refreshAt(currentTime);
+    currentTime += std::chrono::milliseconds(500);
+    processModel.refresh();
+    EXPECT_FALSE(latestGpuSupport(processModel).readFailed);
+    EXPECT_EQ(processModel.snapshots().at(0).gpuMemoryBytes, GPU_PROCESS_MEMORY);
+}
+
+// #1142, #1210: a per-process read that throws is published by the GPU sampler
+// as a failed read, so the process generations are stamped with the support it
+// ran under and marked failed.
+TEST(ProcessModelTest, AFailedGpuReadIsPublishedAsAFailedRead)
+{
+    auto gpuProbe = makePerProcessGpuProbe();
+    gpuProbe->withProcessCountersThrowing();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+    Domain::ProcessModel processModel(makeGpuProcessProbe());
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh();
+
+    const auto support = latestGpuSupport(processModel);
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_TRUE(support.utilization);
+    EXPECT_TRUE(support.readFailed);
+    EXPECT_EQ(processModel.snapshots().at(0).gpuMemoryBytes, 0U);
+}
+
+// For TSan (#1417): the GPU sampler publishing, the process sampler merging and
+// the UI reading, all at once, with no lock shared between the two samplers.
+TEST(ProcessModelTest, GpuAndProcessSamplersRunConcurrentlyWithoutRaces)
+{
+    auto gpuModel = std::make_shared<Domain::GPUModel>(makePerProcessGpuProbe());
+    Domain::ProcessModel processModel(makeGpuProcessProbe());
+    processModel.setGPUModel(gpuModel);
+
+    constexpr int ITERATIONS = 200;
+    std::atomic<bool> done{false};
+    std::thread gpuSampler(
+        [&gpuModel]
+        {
+            for (int i = 0; i < ITERATIONS; ++i)
+            {
+                gpuModel->refresh();
+            }
+        });
+    std::thread processSampler(
+        [&processModel]
+        {
+            for (int i = 0; i < ITERATIONS; ++i)
+            {
+                processModel.refresh();
+            }
+        });
+    std::thread reader(
+        [&processModel, &gpuModel, &done]
+        {
+            std::uint64_t seen = 0;
+            std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+            Domain::ProcessModel::GpuSupport support;
+            while (!done.load(std::memory_order_acquire))
+            {
+                static_cast<void>(processModel.tryCopySnapshotsIfNewer(seen, snapshots, seen, nullptr, &support));
+                const auto publication = gpuModel->processGPUPublication();
+                EXPECT_LE(publication->counters.size(), 1U);
+            }
+        });
+    gpuSampler.join();
+    processSampler.join();
+    done.store(true, std::memory_order_release);
+    reader.join();
+
+    EXPECT_EQ(gpuModel->processGPUPublication()->version, static_cast<std::uint64_t>(ITERATIONS));
+    gpuModel->refresh();
+    processModel.refresh();
+    EXPECT_EQ(processModel.snapshots().at(0).gpuMemoryBytes, GPU_PROCESS_MEMORY);
+}
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
 {
@@ -2947,6 +3335,7 @@ TEST(ProcessModelTest, MergeGPUDataWithUnknownGPUId)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2977,6 +3366,7 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2986,6 +3376,35 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     EXPECT_EQ(snaps[0].gpuMemoryBytes, 768ULL * 1024 * 1024); // 512 + 256 MB
     // Should include both GPU names
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}
+
+// #1395: per-process GPU usage reported under an adapter's LUID-based ID (as PDH names adapters on
+// Windows) is matched to the adapter all the same: its name and integrated flag.
+TEST(ProcessModelTest, MergeGPUDataMatchesAnAdapterByItsLuid)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Integrated GPU", "Vendor", /*isIntegrated=*/true).withLuid("GPU0", "GPU_0x00000000_0x0000F78E");
+    gpuProbe->withProcessGPU(100, "GPU_0x00000000_0x0000F78E", 64ULL * 1024 * 1024);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh();
+    gpuModel->refresh();
+    processModel.refresh();
+
+    const auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 1U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].gpuName, "Integrated GPU");
+    EXPECT_TRUE(snaps[0].perGpuUsage[0].isIntegrated);
 }
 
 // The per-GPU breakdown carries each adapter's integrated flag, not just its name. It used to be
@@ -3011,6 +3430,7 @@ TEST(ProcessModelTest, MergeGPUDataCarriesIntegratedFlagPerGpu)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -3202,6 +3622,23 @@ TEST(ProcessModelTest, WhenProbeReturnsProcessType_ThenSnapshotContainsProcessTy
     const auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].processType, "App");
+}
+
+TEST(ProcessModelTest, TheArchitectureIsPassedThroughToTheSnapshot)
+{
+    // #2394: the probe words it; Domain carries it to the snapshot as it is.
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.architecture = "x86 (WOW64)";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].architecture, "x86 (WOW64)");
 }
 
 TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
@@ -3413,6 +3850,90 @@ TEST(ProcessModelTest, ConcurrentRefreshAndReadDoesNotCrash)
     reader.join();
 }
 
+// #2156: a reader holds the system histories' views and reads every sample with no lock while the
+// sampler keeps appending, compacting into new blocks and evicting the oldest samples. A view's
+// samples never change after it was taken (a race here is what TSan builds would report), and the
+// five series of a generation are always aligned.
+//
+// No deadline or sleeps (#2397, as #2207 and #1797): the refreshes start once the reader has read, and
+// each one waits until the reader has seen the generation it published, so the reader sees every
+// generation however a loaded machine schedules the two threads. Between generations the reader keeps
+// re-reading the one it holds while the next refresh appends.
+TEST(ProcessModelTest, SystemHistoryViewsStayUnchangedWhileTheSamplerAppends)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "proc1", 'R', 100, 100, 1000, 1024, 0)});
+    probe->setTotalCpuTime(100000);
+    ManualClock clock; // advanced only by this thread, the one calling refresh()
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    // The smallest window, so the histories reach their capacity and evict while the test runs.
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    // Three windows' worth of samples at the fastest cadence: the histories fill, compact into new
+    // blocks and evict their oldest samples.
+    constexpr auto REFRESH_INTERVAL = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    constexpr int REFRESHES = 3 * Domain::Sampling::HISTORY_SECONDS_MIN * (1000 / Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+
+    std::atomic<std::uint64_t> seenVersion{0};
+    std::latch firstRead{1};
+    Domain::ProcessSystemHistories held; // kept across generations, re-read on every pass
+    int generations = 0;
+
+    auto reader = std::jthread(
+        [&](const std::stop_token& st)
+        {
+            std::vector<double> heldTimestamps;
+            bool firstReadDone = false;
+            while (!st.stop_requested())
+            {
+                Domain::ProcessSystemHistories latest;
+                const bool newer = model.tryCopySystemHistoriesIfNewer(seenVersion.load(), latest);
+                if (!firstReadDone)
+                {
+                    firstReadDone = true;
+                    firstRead.count_down();
+                }
+
+                // The generation held from before still reads exactly as it did when it was taken.
+                EXPECT_TRUE(std::ranges::equal(held.timestamps, heldTimestamps));
+                if (!newer)
+                {
+                    continue;
+                }
+
+                ++generations;
+                EXPECT_EQ(latest.power.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.pageFaults.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.threadCount.size(), latest.timestamps.size());
+                EXPECT_EQ(latest.handleCount.size(), latest.timestamps.size());
+                EXPECT_TRUE(std::ranges::is_sorted(latest.timestamps));
+
+                held = std::move(latest);
+                heldTimestamps.assign(held.timestamps.begin(), held.timestamps.end());
+                seenVersion.store(held.version);
+                seenVersion.notify_all();
+            }
+        });
+
+    firstRead.wait();
+    for (int i = 0; i < REFRESHES; ++i)
+    {
+        // The reader has seen the latest generation, so this changes once it has seen the next one.
+        const std::uint64_t before = seenVersion.load();
+        model.refresh();
+        clock.advance(REFRESH_INTERVAL);
+        seenVersion.wait(before);
+    }
+
+    reader.request_stop();
+    reader.join();
+
+    EXPECT_EQ(generations, REFRESHES);
+    // The window evicted: the last generation holds about one window of samples, not every refresh's.
+    EXPECT_LT(held.timestamps.size(), static_cast<std::size_t>(REFRESHES / 2));
+    EXPECT_FALSE(held.timestamps.empty());
+}
+
 // =============================================================================
 // Watched-process samples (#1098, #1172)
 // =============================================================================
@@ -3458,7 +3979,7 @@ TEST(ProcessModelTest, WatchedSamplesCarryEachGenerationsOwnSampleTime)
     EXPECT_EQ(samples[1].snapshot->pid, 100);
 
     // The same timebase as the model's own history timestamps.
-    const auto timestamps = model.historyTimestamps();
+    const auto timestamps = systemHistories(model).timestamps;
     ASSERT_FALSE(timestamps.empty());
     EXPECT_DOUBLE_EQ(timestamps.back(), secondTime);
 }
@@ -3878,7 +4399,7 @@ TEST(ProcessModelTest, UnreadableHandleCountIsUnavailableAndLeftOutOfTheTotal)
     EXPECT_FALSE(theirs->handleCountAvailable);
     EXPECT_EQ(theirs->handleCount, 0);
 
-    const auto handleTotals = model.systemHandleCountHistory();
+    const auto handleTotals = systemHistories(model).handleCount;
     ASSERT_FALSE(handleTotals.empty());
     EXPECT_DOUBLE_EQ(handleTotals.back(), 10.0);
 }
@@ -3945,11 +4466,11 @@ TEST(ProcessModelTest, NetworkCountersTurnedOffDuringTheSampleAreUnavailableInTh
     EXPECT_DOUBLE_EQ(model.snapshots().at(0).netSentBytesPerSec, 0.0);
 }
 
-TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTheTotal)
+TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailable)
 {
     // #1110: a process whose connections can't be attributed to it (another
     // user's, without root, on Linux) showed 0 B/s. Its network rates are now
-    // unavailable and left out of the totals.
+    // unavailable.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     auto mine = makeCounter(100, "mine", 'R', 1000, 0, 5000);
@@ -3976,8 +4497,81 @@ TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTh
     ASSERT_NE(mineSnap, snaps.end());
     EXPECT_TRUE(mineSnap->networkAvailable);
     EXPECT_DOUBLE_EQ(mineSnap->netSentBytesPerSec, 2000.0);
+}
 
-    const auto sentTotals = model.systemNetSentHistory();
-    ASSERT_FALSE(sentTotals.empty());
-    EXPECT_DOUBLE_EQ(sentTotals.back(), 2000.0);
+// #1885: PSS and USS cost the kernel a walk of every mapping, so ProcessModel reads them for its
+// watched process only (the one Process Details shows), into that process's watched sample.
+TEST(ProcessModelTest, OnlyTheWatchedProcessHasItsPssAndUssRead)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500), makeCounter(200, "other", 'S', 100, 50)});
+    probe->setTotalCpuTime(100000);
+    probe->setMemoryRollup(100, Platform::MemoryRollup{.pssBytes = 6000, .ussBytes = 4000, .swapPssBytes = 50});
+    probe->setMemoryRollup(200, Platform::MemoryRollup{.pssBytes = 9000, .ussBytes = 8000, .swapPssBytes = 0});
+    MockProcessProbe* rawProbe = probe.get();
+    Domain::ProcessModel model(std::move(probe));
+
+    model.refresh(); // Nothing watched: nothing read
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 0);
+
+    model.watchProcess(100);
+    model.refresh();
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 1); // The watched process alone
+    // Asked for the process the snapshot is of, by its start time, so a reused PID reads nothing.
+    const auto rows = model.snapshots();
+    const auto watchedRow = std::ranges::find(rows, 100, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(watchedRow, rows.end());
+    EXPECT_EQ(rawProbe->lastMemoryRollupStartTime(), watchedRow->startTimeTicks);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_FALSE(samples.empty());
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    const Domain::ProcessSnapshot& watched = *samples.back().snapshot;
+    EXPECT_TRUE(watched.memoryRollupRead);
+    EXPECT_EQ(watched.pssBytes, 6000U);
+    EXPECT_EQ(watched.ussBytes, 4000U);
+    EXPECT_EQ(watched.swapPssBytes, 50U);
+
+    // The table's rows don't carry them, the watched process's included.
+    const auto snaps = model.snapshots();
+    for (const Domain::ProcessSnapshot& snap : snaps)
+    {
+        EXPECT_FALSE(snap.memoryRollupRead) << snap.pid;
+        EXPECT_EQ(snap.pssBytes, 0U) << snap.pid;
+    }
+}
+
+TEST(ProcessModelTest, WithoutMemoryRollupSupportNothingIsRead)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+    MockProcessProbe* rawProbe = probe.get(); // Capabilities: no hasMemoryRollup
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 0);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
+}
+
+// #2309: a refused read (another user's process) is said, so Process Details shows "not readable"
+// rather than leaving the figures out.
+TEST(ProcessModelTest, ARefusedMemoryRollupIsMarkedNotReadable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+    probe->setMemoryRollupDenied(100);
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_FALSE(samples.empty());
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
+    EXPECT_TRUE(samples.back().snapshot->memoryRollupDenied);
 }

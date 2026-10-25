@@ -13,7 +13,11 @@
 .PARAMETER Files
     Specific files to analyze (default: all source files)
 .PARAMETER ChangedOnly
-    Only analyze files that have been modified according to git
+    Only analyze C++ files changed on this branch (vs. its merge-base with main, plus untracked).
+    Ignored when -Files is given.
+.PARAMETER CacheDir
+    Skip files that passed before with identical inputs, and record clean results in this
+    directory (tools/tidy-cache.py; needs python and clang-scan-deps)
 .EXAMPLE
     .\clang-tidy.ps1
 .EXAMPLE
@@ -35,10 +39,16 @@ param(
 
     [string[]]$Files = @(),
 
-    [switch]$ChangedOnly
+    [switch]$ChangedOnly,
+
+    [string]$CacheDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+# clang-tidy, git and cmake write UTF-8 (paths, diagnostics); decode their output as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -68,6 +78,8 @@ if (-not $ClangTidy) {
     Write-Error "clang-tidy not found. Please install LLVM or set LLVM_ROOT." -ErrorAction Continue
     exit 1
 }
+
+Write-LlvmVersionSkewWarning -ToolPath $ClangTidy -Name 'clang-tidy'
 
 if ($ShowDetails) {
     Write-Host "Using clang-tidy: $ClangTidy"
@@ -104,38 +116,51 @@ if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
 }
 if (-not (Test-Path $CompileCommandsTidy)) {
     $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
-    $content = Get-Content $CompileCommandsJson -Raw
+    $content = Get-Content $CompileCommandsJson -Raw -Encoding utf8
     $content = $content -replace '@[^ ]*\.modmap', ''
     $content = $content -replace '-fmodule-output=[^ ]*', ''
     $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
     $content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
     $content = $content -replace '-Xclang -fno-pch-timestamp', ''
-    Set-Content $CompileCommandsTidy -Value $content -NoNewline
+    Set-Content $CompileCommandsTidy -Value $content -NoNewline -Encoding utf8
 }
 
-# Determine files to analyze
-if ($ChangedOnly) {
-    # Get changed files from git
+# Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
+# clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
+# Not fatal: without it every file is still analyzed, just once per target that compiles it.
+# "python" first: on Windows a bare "python3" is often the Microsoft Store stub.
+$Python = @("python", "python3") | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+if (-not $Python) {
+    Write-Warning "python not found; compile database not de-duplicated (files may be analyzed more than once)."
+} else {
+    $dedupeOutput = & $Python.Source -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
+    } elseif ($ShowDetails) {
+        Write-Host $dedupeOutput
+    }
+}
+
+# Determine files to analyze. Explicit -Files win over -ChangedOnly, as in clang-tidy.sh.
+if ($ChangedOnly -and $Files.Count -eq 0) {
+    # Files this branch changes (committed, staged, unstaged, untracked); see Get-ChangedFileList
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
-    $gitOutput = & git diff --name-only HEAD 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to get changed files from git. Falling back to all files."
-        $ChangedOnly = $false
-    } else {
-        $SourceFiles = $gitOutput |
-            Where-Object { $_ -match '\.(cpp|h)$' } |
-            Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
-            ForEach-Object { Join-Path $ProjectRoot $_ }
-        if ($SourceFiles.Count -eq 0) {
-            Write-Host "No changed C++ files found."
-            exit 0
-        }
+    $SourceFiles = @(Get-ChangedFileList -Root $ProjectRoot |
+        Where-Object { $_ -match '\.(cpp|h)$' } |
+        Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
+        ForEach-Object { Join-Path $ProjectRoot $_ })
+    if ($SourceFiles.Count -eq 0) {
+        Write-Host "No changed C++ files found."
+        exit 0
     }
-}
-
-if (-not $ChangedOnly) {
+    if ($ShowDetails) {
+        Write-Host "Analyzing $($SourceFiles.Count) changed files..."
+    }
+} else {
+    $ChangedOnly = $false
     if ($Files.Count -eq 0) {
         # Get all source files from project, excluding other-platform files
         $SourceFiles = @()
@@ -166,12 +191,6 @@ if ($Jobs -le 0) {
     $Jobs = [Environment]::ProcessorCount
 }
 
-if ($ShowDetails) {
-    Write-Host "Running clang-tidy on $($SourceFiles.Count) files with $Jobs parallel jobs..."
-    Write-Host ""
-}
-
-# Run clang-tidy in parallel using PowerShell jobs
 $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
 
 # Windows-only check exclusions, appended to .clang-tidy's Checks (which Linux keeps in full).
@@ -181,9 +200,56 @@ $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
 #   a NOLINT (or [[clang::suppress]]) in our code can't silence it. Reached via App/UserConfig.cpp.
 $WindowsCheckExclusions = "-clang-analyzer-optin.core.EnumCastOutOfRange"
 
+# Each task carries the file's result-cache key ("-" when its result isn't cached).
+$Tasks = @($SourceFiles | ForEach-Object { [PSCustomObject]@{ Key = '-'; File = [string]$_ } })
+if ($CacheDir) {
+    $CacheDir = [System.IO.Path]::GetFullPath($CacheDir)
+    $fileList = New-TemporaryFile
+    $selected = $null
+    $cacheOk = $false
+    try {
+        Set-Content -LiteralPath $fileList -Value $SourceFiles -Encoding utf8
+        if ($Python) {
+            # A whole-tree run prunes markers no current file has, so a saved cache holds only live keys.
+            # The flags below must match the clang-tidy call's: they are part of every cache key.
+            $cacheArgs = @(
+                '-I', '-X', 'utf8', (Join-Path $ScriptDir "tidy-cache.py"), 'select',
+                '--cache-dir', $CacheDir, '--compdb', $CompileCommandsTidy, '--clang-tidy', $ClangTidy,
+                '--repo-root', $ProjectRoot, '--salt-file', $ConfigFile, '--salt-file', $PSCommandPath,
+                # --salt=VALUE, not --salt VALUE: a value starting with "-" would read as an option.
+                "--salt=$HeaderFilterRegex", "--salt=$ExcludeHeaderFilterRegex", "--salt=$WindowsCheckExclusions",
+                '--extra-arg=-std=c++23', '--extra-arg=-Wno-unknown-warning-option', '--files-from', $fileList)
+            if ($Files.Count -eq 0 -and -not $ChangedOnly) { $cacheArgs += '--prune' }
+            $selected = & $Python.Source @cacheArgs
+            $cacheOk = ($LASTEXITCODE -eq 0)
+        }
+    } finally {
+        Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $cacheOk) {
+        Write-Warning "clang-tidy result cache unavailable; analyzing every file."
+        $CacheDir = ""
+    } else {
+        $Tasks = @($selected | Where-Object { $_ } | ForEach-Object {
+            $key, $file = $_ -split "`t", 2
+            [PSCustomObject]@{ Key = $key; File = $file }
+        })
+        if ($Tasks.Count -eq 0) {
+            Write-Host "clang-tidy completed successfully (every file unchanged since a clean run)." -ForegroundColor Green
+            exit 0
+        }
+    }
+}
+
+if ($ShowDetails) {
+    Write-Host "Running clang-tidy on $($Tasks.Count) files with $Jobs parallel jobs..."
+    Write-Host ""
+}
+
 # Process files in batches for parallel execution
-$results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-    $file = $_
+$results = $Tasks | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+    $file = $_.File
+    $key = $_.Key
     $clangTidy = $using:ClangTidy
     $configFile = $using:ConfigFile
     $buildDir = $using:TidyCompdbDir
@@ -214,6 +280,7 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     [PSCustomObject]@{
         File = $relativePath
+        Key = $key
         ExitCode = $exitCode
         Output = $output
     }
@@ -222,6 +289,10 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 # Collect results
 $hasErrors = $false
 foreach ($result in $results) {
+    # Record only a clean result (#1785); a file with findings is analyzed again next time.
+    if ($CacheDir -and $result.Key -ne '-' -and $result.ExitCode -eq 0 -and -not ($result.Output -match "warning:|error:")) {
+        Set-Content -LiteralPath (Join-Path $CacheDir $result.Key) -Value $result.File -Encoding utf8 -ErrorAction SilentlyContinue
+    }
     if ($result.ExitCode -ne 0 -or ($result.Output -match "warning:|error:")) {
         if ($result.Output) {
             Write-Host $result.Output

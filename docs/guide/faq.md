@@ -16,6 +16,28 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 
 ---
 
+## How do I check that a download is genuine?
+
+Every release file (the `.deb`, `.tar.gz` and `.zip` for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases after v0.9.0 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
+
+```bash
+gh attestation verify <asset> --repo mgradwohl/tasksmack
+```
+
+Every release also has a Sigstore `<asset>.bundle` beside each file. Download it too, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
+
+```bash
+cosign verify-blob \
+  --bundle <asset>.bundle \
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  <asset>
+```
+
+If either check fails, don't use the file. See the user guide's [Verifying a Release](user-guide.md#verifying-a-release) for what each check proves and what to do next.
+
+---
+
 ## "Process I/O, FDs or network show N/A" on Linux
 
 **Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
@@ -26,10 +48,12 @@ cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
 sudo ./TaskSmack
 ```
 
+Run this way, links, **Open folder**, and Settings' **Edit Config File** and **Open Themes Folder** still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
+
 **Fix (option 2 — grant capabilities):**
 
 ```bash
-sudo setcap cap_dac_read_search,cap_sys_ptrace+ep /path/to/TaskSmack
+sudo setcap cap_dac_read_search,cap_sys_ptrace,cap_kill,cap_sys_nice+ep /path/to/TaskSmack
 ```
 
 Each value needs a different kernel check, so one capability alone doesn't restore all of them:
@@ -39,22 +63,79 @@ Each value needs a different kernel check, so one capability alone doesn't resto
 | FD count | Listing `/proc/[pid]/fd` (a directory only its owner can read) | `CAP_DAC_READ_SEARCH` |
 | I/O | Opening `/proc/[pid]/io` (owner-only) **and** ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
 | Network | Reading the `/proc/[pid]/fd/*` links, which needs ptrace read access to the process | `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` |
+| End, suspend or resume another user's process | Sending it a signal | `CAP_KILL` |
+| Raise a priority (nice below 0, the Realtime I/O class); another user's priority or CPU affinity | `setpriority`, `ioprio_set`, `sched_setaffinity` | `CAP_SYS_NICE` |
 
-With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, so grant it only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow those two there. Re-apply the capabilities after each update.
+With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only matter for acting on processes: without them those actions are refused, and the startup notice's **What does Administrator add?** table lists them. `CAP_SYS_PTRACE` lets TaskSmack inspect any process on the system, and `CAP_KILL` lets it end any process, so grant them only if you are comfortable with that; running as root (with its normal capabilities) is the alternative, but root alone isn't enough in a container or hardened service that drops capabilities — allow them there. Re-apply the capabilities after each update.
+
+**Standard or Administrator:** TaskSmack always starts as Standard, running as you. While it isn't root, the startup notice says so and offers **Authenticate for this session...**: one administrator password, after which the helper below reads and acts for TaskSmack until TaskSmack closes, so no further prompts come. The window itself stays yours. **Continue as Standard** (or Escape) keeps today's behaviour, and a dismissed or refused password leaves TaskSmack Standard, with a note saying so. Without the helper (the `.tar.gz`, or a source build without the packages), the option is disabled and says to install the `.deb` or `.rpm`. **What does Administrator add?** lists what each session gets. **Don't show this again** hides the notice; TaskSmack still starts as Standard.
+
+**Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
+
+For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). `pkexec` starts it as root, but once it has checked its caller it stops being root: it runs as `nobody` (UID and GID 65534, with no supplementary groups) and keeps only the capabilities its requests need (`CAP_KILL`, `CAP_SYS_NICE`, `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, with `no_new_privs` set) under a seccomp filter that refuses writing files, running programs, loading code, tracing processes and opening sockets, serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running). After **Authenticate for this session**, it runs until TaskSmack closes instead.
+
+On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
+
+If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptraceable`), other users' processes aren't listed: `noaccess` still shows their PIDs to `ls /proc` but refuses everything else about them. The notice says so. Membership of the mount's `gid=` group, or `CAP_SYS_PTRACE`, shows them.
 
 > On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
 
 ---
 
+## Acting as an administrator on Windows
+
+TaskSmack itself never runs elevated for this. An action Windows refuses for want of rights, such as
+ending, suspending, re-prioritizing or re-pinning an elevated or another account's process, offers **Retry as
+administrator** beside its error. If your account is an administrator, Process Details' **Modules**,
+**Open files** and **Connections** sections also offer **Read as administrator** when such a process
+refuses to be read. Either button starts `TaskSmackHelper.exe`, TaskSmack's administrator helper,
+through Windows' own UAC prompt, in front of TaskSmack's window:
+
+- **If your account is an administrator,** the prompt asks you to approve. For a few minutes afterwards,
+  refused actions and reads are retried through the helper without asking again. The helper exits when
+  TaskSmack does, or after 5 minutes without an action. An I/O priority change, which Windows doesn't
+  support, doesn't keep it running.
+- **If your account is a standard user,** only **Retry as administrator** is offered. The prompt asks for
+  an administrator's name and password, and the helper then runs as that administrator. It does that one
+  action and exits, so the next one asks again. It wouldn't read another account's process for you,
+  which is why no **Read as administrator** is offered.
+- **With Windows 11's Administrator Protection on,** every elevation runs as a separate,
+  system-managed administrator account, never as you. So even an administrator gets the standard user's
+  session: one action per prompt, and reads of your own processes only. TaskSmack can't tell this
+  before the first prompt (the same happens when an administrator's prompt is answered with another
+  administrator's account), so **Read as administrator** is offered once: the first read then says "The
+  administrator account that approved the prompt isn't yours, so the administrator helper can't read
+  other users' processes for you", and the button isn't offered again until TaskSmack is restarted.
+
+The prompt is waited for two minutes. If it isn't answered by then, the action fails with "the
+administrator's consent wasn't given in time", and consent given after that isn't acted on: the helper it
+starts exits at once, and the action has to be chosen again. Windows doesn't let TaskSmack take the
+prompt down, so until it is answered a retry says the prompt is still up.
+
+Nothing else runs with elevated rights. The helper never ends a critical system process (one whose end
+would stop Windows), and it acts only on the process you chose, checked by its start time as well as
+its PID.
+
+**Where TaskSmack must be installed.** The helper works only for a TaskSmack installed where only an
+administrator can change it, such as `C:\Program Files\TaskSmack`. That covers `TaskSmack.exe`,
+`TaskSmackHelper.exe`, their folder, and every folder above it. If your account could replace either
+file or move the folder, any program you run could put itself in TaskSmack's place, and the helper's
+signed UAC prompt would then hand it administrator rights. So a portable copy unpacked from the `.zip`
+into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
+the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
+
+The helper ships only in the Authenticode-signed x64 `.zip`
+([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
+publisher. Signing is still being set up, so until it is in place no release `.zip` carries the helper.
+The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers neither
+button. If TaskSmack is already running as
+administrator, it needs no helper and offers neither.
+
+---
+
 ## GPU section doesn't appear
 
-**Cause:** No available backend discovered a usable GPU. TaskSmack combines operating-system APIs with optional vendor libraries and hides GPU sections when none can provide data.
-
-| Vendor | Backend |
-|--------|---------|
-| NVIDIA | NVML from the installed NVIDIA driver; Windows can also expose fallback data through DXGI/PDH |
-| AMD | ROCm SMI on Linux; DXGI/PDH capability-dependent data on Windows |
-| Intel/generic | DRM/sysfs on Linux; DXGI/PDH on Windows |
+**Cause:** No available backend discovered a usable GPU. TaskSmack combines operating-system APIs with optional vendor libraries (see the user guide's [GPU Monitoring](user-guide.md#gpu-monitoring) table) and hides GPU sections when none can provide data.
 
 **Checklist:**
 
@@ -74,23 +155,14 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. `CAP_SYS_PTRACE` let
 
 They are counted the way the GPU tab counts each GPU, so the two can be compared:
 
-- **GPU %** is the process's utilisation of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
+- **GPU %** is the process's utilization of the busiest GPU it uses, from 0 to 100 %. It is not summed across GPUs, so it never goes past 100 %.
 - **GPU Mem** counts, on each GPU, the memory the GPU tab reports as used there: dedicated memory (VRAM) on a discrete GPU, shared system memory on an integrated GPU on Windows, even while the process uses none of it. It is added up across the GPUs the process uses, so it is never more than those GPUs show in use. Process Details also lists the dedicated and shared amounts separately when the process has shared GPU memory, which Windows reports and Linux does not.
 
 ---
 
 ## Where do I put custom themes?
 
-Drop `.toml` theme files in the platform-specific user themes directory:
-
-| Platform | Path |
-|----------|------|
-| Windows | `%APPDATA%\TaskSmack\themes\` |
-| Linux | `~/.config/tasksmack/themes/` |
-
-Create the folder if it does not exist, then restart TaskSmack. Your theme will appear in the theme selector in the settings menu.
-
-See the built-in theme files (shipped alongside the application) for the expected key structure.
+In the `themes` folder of TaskSmack's config directory: `%APPDATA%\TaskSmack\themes\` on Windows, `$XDG_CONFIG_HOME/tasksmack/themes/` (usually `~/.config/tasksmack/themes/`) on Linux. Settings' (F2) **Open Themes Folder** opens it. Restart TaskSmack and the theme appears in the **Theme** list in Settings. See the user guide's [Themes and Configuration](user-guide.md#themes-and-configuration) for the steps, and the [theme reference](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md) for every key.
 
 ---
 
@@ -100,7 +172,7 @@ Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes tra
 
 On Linux the counters come from a socket statistics cache that is refreshed every `socket_stats_cache_ttl_ms` (500 ms by default), which can span several refreshes. Refreshes that reuse a cached reading keep showing the last rate, so a rate can take up to one cache lifetime to change after a transfer starts or stops. On Windows the counters are read every refresh.
 
-Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. System-wide and per-interface rates come from the interface counters and include all traffic.
+By default only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. On Windows, turning on **Count UDP traffic per process** in Settings and running TaskSmack as administrator adds UDP, counted from the kernel's network events (see the user guide's "Counting UDP on Windows"). System-wide and per-interface rates come from the interface counters and include all traffic.
 
 Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
 
@@ -121,7 +193,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 Per-process network rates read N/A when the platform cannot attribute traffic.
 
-- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support.
+- **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support. A process in another network namespace than TaskSmack's (inside a container, say) reads N/A, since TaskSmack sees only its own namespace's sockets.
 - **Windows:** TCP EStats collection requires administrator privileges.
 
 System-wide and per-interface throughput should still appear.
@@ -130,10 +202,10 @@ System-wide and per-interface throughput should still appear.
 
 ## Why does the FPS in the status bar change?
 
-TaskSmack only draws as many frames as the screen needs. The FPS readout in the bottom-right corner shows the rate it is drawing at, averaged over half a second:
+TaskSmack only draws as many frames as the screen needs. The FPS readout, in the bottom-right corner of the status bar while the Render Metrics overlay is on (**Ctrl+Shift+M**), shows the rate it is drawing at, averaged over half a second:
 
-- **Idle, about 20 FPS or less:** nothing on screen moves faster than half a pixel per frame at that rate. With the default 300-second history, the charts scroll only a few pixels a second.
-- **Brief bursts, up to about 60 FPS:** a new sample has arrived and the now-bars or a chart's scale are easing to it, or a chart with a short history window scrolls quickly.
+- **Idle, about 20 FPS or less:** nothing on screen moves faster than that rate draws smoothly. With the default 300-second history, the charts scroll only a few pixels a second, and the small moves of the now-bars and chart scales on an idle machine ease at this rate too.
+- **Brief bursts, up to about 60 FPS:** a new sample changed a value a lot, so a now-bar or a chart's scale moves quickly while it eases to it, or a chart with a short history window scrolls quickly.
 - **Moving the mouse or typing:** frames are capped at about 60 FPS. The cap is a whole number of display refreshes, never slower than 60 on a display refreshing at 60 Hz or faster, for example 60 at 60 or 120 Hz, 75 at 75 Hz, 72 at 144 Hz and 82.5 at 165 Hz, so motion stays even with vsync. A slower display caps at its own refresh rate (30 FPS on a 30 Hz display).
 - **Minimized:** about 5 FPS. A window fully covered by other windows drops to the same rate only where the desktop reports it: on Wayland. X11 and Windows don't report an ordinarily covered window, so there it keeps its normal rate.
 
@@ -143,4 +215,4 @@ The readout shows the real frame time, so a stalled machine that draws 6 frames 
 
 ## Developer setup and `clangd` problems
 
-Developer troubleshooting is maintained in the canonical [contributor guide](../../CONTRIBUTING.md), including prerequisite checks, LLVM setup, CMake presets, and `compile_commands.json`.
+Developer troubleshooting is maintained in the canonical [contributor guide](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md), including prerequisite checks, LLVM setup, CMake presets, and `compile_commands.json`.

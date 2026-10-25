@@ -48,5 +48,21 @@ TEST(ApplicationEventsTest, ShowProcessDetailsHasItsOwnEventType)
     EXPECT_TRUE(handled);
 }
 
+// Each event names itself for diagnostics (getName(); the unused toString() went in #2164).
+TEST(ApplicationEventsTest, EachEventNamesItself)
+{
+    EXPECT_STREQ(ProcessSelectedEvent(4242, 777).getName(), "ProcessSelected");
+    EXPECT_STREQ(ShowProcessDetailsEvent().getName(), "ShowProcessDetails");
+    EXPECT_STREQ(ShowServiceEvent("Spooler").getName(), "ShowService");
+    EXPECT_STREQ(RefreshRateChangedEvent(500).getName(), "RefreshRateChanged");
+    EXPECT_STREQ(HistoryDurationChangedEvent(600).getName(), "HistoryDurationChanged");
+    EXPECT_STREQ(UdpEventTraceChangedEvent(true).getName(), "UdpEventTraceChanged");
+    EXPECT_STREQ(ActiveTabChangedEvent("Processes").getName(), "ActiveTabChanged");
+    EXPECT_STREQ(OpenSettingsEvent().getName(), "OpenSettings");
+    EXPECT_STREQ(OpenAboutEvent().getName(), "OpenAbout");
+    EXPECT_STREQ(OpenHelpEvent().getName(), "OpenHelp");
+    EXPECT_STREQ(OpenElevationNoticeEvent().getName(), "OpenElevationNotice");
+}
+
 } // namespace
 } // namespace Core

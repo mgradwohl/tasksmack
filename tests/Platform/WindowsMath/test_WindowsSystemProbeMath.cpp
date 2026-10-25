@@ -1,6 +1,6 @@
 /// @file test_WindowsSystemProbeMath.cpp
 /// @brief Unit tests for WindowsSystemProbeMath.h's pure page-file, CPU-time and network-total math,
-/// and its network-interface classification (#1284)
+/// its network-interface classification (#1284) and the current CPU clock and its rated base (#1184, #1530)
 ///
 /// WindowsSystemProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -86,6 +87,25 @@ TEST(WindowsSystemProbeMathTest, InUseAboveSizeIsCappedSoFreeCannotWrap)
     const SwapBytes swap = swapFromPageFiles({.totalPages = 100, .inUsePages = 150}, 4096);
     EXPECT_EQ(swap.totalBytes, 409'600ULL);
     EXPECT_EQ(swap.freeBytes, 0ULL);
+}
+
+TEST(WindowsSystemProbeMathTest, CommitChargeLimitAndPeakArePagesTimesPageSize)
+{
+    // PERFORMANCE_INFORMATION reports CommitTotal, CommitLimit and CommitPeak in pages (#1627):
+    // 35 GiB committed of a 73.5 GiB limit, peak 40 GiB, at 4 KiB pages.
+    constexpr std::uint64_t PAGE = 4096;
+    constexpr std::uint64_t GIB_PAGES = (1ULL << 30U) / PAGE;
+    const CommitBytes commit = commitFromPerformanceInfo(35 * GIB_PAGES, (147 * GIB_PAGES) / 2, 40 * GIB_PAGES, PAGE);
+    EXPECT_EQ(commit.chargeBytes, 35ULL << 30U);
+    EXPECT_EQ(commit.limitBytes, (147ULL << 30U) / 2);
+    EXPECT_EQ(commit.peakBytes, 40ULL << 30U);
+
+    // Large pages scale the same way, and an all-zero reading stays zero.
+    EXPECT_EQ(commitFromPerformanceInfo(3, 5, 4, 2ULL << 20U).limitBytes, 10ULL << 20U);
+    const CommitBytes none = commitFromPerformanceInfo(0, 0, 0, PAGE);
+    EXPECT_EQ(none.chargeBytes, 0ULL);
+    EXPECT_EQ(none.limitBytes, 0ULL);
+    EXPECT_EQ(none.peakBytes, 0ULL);
 }
 
 TEST(WindowsSystemProbeMathTest, ProcessorTimesTakeInterruptAndDpcOutOfKernel)
@@ -268,8 +288,8 @@ TEST(MultiGroupTotalTest, FirstReadFailureThenRecoveryDoesNotSpike)
     ASSERT_TRUE(last.has_value());
 
     // The model's busy share over the recovery interval: the since-boot average, not a spike.
-    const double busy = static_cast<double>(recovered.active() - failed.active());
-    const double span = static_cast<double>(recovered.total() - failed.total());
+    const auto busy = static_cast<double>(recovered.active() - failed.active());
+    const auto span = static_cast<double>(recovered.total() - failed.total());
     EXPECT_DOUBLE_EQ(100.0 * busy / span, 25.0);
 }
 
@@ -413,6 +433,38 @@ TEST(WindowsSystemProbeMathTest, OnlyRowsThatAreNeitherUpNorNotPresentAreLookedU
     EXPECT_TRUE(needsDevicePresence(IF_OPER_STATUS_DORMANT));
 }
 
+// #2731: the device-presence cache is dropped when the interface table changes
+
+TEST(WindowsSystemProbeMathTest, InterfaceTableChangeIsAnInterfaceOrAStatusNotTheOrder)
+{
+    std::vector<NetworkInterfaceKey> previous;
+    std::vector<NetworkInterfaceKey> current{{.luid = 2, .operStatus = IF_OPER_STATUS_DOWN}, {.luid = 1, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "the first table, against none";
+    EXPECT_EQ(previous.size(), 2U);
+    EXPECT_EQ(previous[0].luid, 1U) << "kept sorted";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 2, .operStatus = IF_OPER_STATUS_DOWN}};
+    EXPECT_FALSE(networkInterfacesChanged(current, previous)) << "the same interfaces in another order";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 2, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "a status changed";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP},
+               {.luid = 2, .operStatus = IF_OPER_STATUS_UP},
+               {.luid = 3, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "an interface added";
+
+    current = {{.luid = 1, .operStatus = IF_OPER_STATUS_UP}, {.luid = 3, .operStatus = IF_OPER_STATUS_UP}};
+    EXPECT_TRUE(networkInterfacesChanged(current, previous)) << "an interface gone";
+    current = previous;
+    EXPECT_FALSE(networkInterfacesChanged(current, previous));
+
+    current.clear();
+    EXPECT_TRUE(networkInterfacesChanged(current, previous));
+    current.clear();
+    EXPECT_FALSE(networkInterfacesChanged(current, previous)) << "no interfaces, twice";
+}
+
 TEST(WindowsSystemProbeMathTest, BluetoothPanIsAHardwareLink)
 {
     // Windows reports the Bluetooth PAN adapter as Ethernet without HardwareInterface; a phone
@@ -424,7 +476,6 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
 {
     constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
     constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
-    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED)); // vEthernet, WAN Miniport
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3));       // Kernel Debug adapter
     EXPECT_FALSE(isHardwareNetworkRow(false, IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_BLUETOOTH));
@@ -432,11 +483,39 @@ TEST(WindowsSystemProbeMathTest, TheHardwareFlagDecidesForEverythingElse)
     EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
 }
 
+// #2568: the link kind behind the Interface Status table's Type icon.
+TEST(WindowsSystemProbeMathTest, ARowsKindComesFromItsIfType)
+{
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_UNSPECIFIED = 0;
+    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_802_3 = 14;
+    constexpr std::uint32_t IF_TYPE_IEEE1394 = 144;
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_802_3), NetInterfaceKind::Ethernet);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Ethernet); // vEthernet
+    EXPECT_EQ(networkRowKind(IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WWAN_GSM, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WWAN_CDMA, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_LOOPBACK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Loopback);
+    EXPECT_EQ(networkRowKind(IF_TYPE_TUNNEL_LINK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Tunnel); // Teredo, IP-HTTPS
+    EXPECT_EQ(networkRowKind(IF_TYPE_PPP_LINK, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Tunnel);    // WAN Miniport (PPPOE)
+    EXPECT_EQ(networkRowKind(IF_TYPE_VIRTUAL, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Other);
+    EXPECT_EQ(networkRowKind(IF_TYPE_IEEE1394, NDIS_PHYSICAL_MEDIUM_UNSPECIFIED), NetInterfaceKind::Other);
+}
+
+TEST(WindowsSystemProbeMathTest, ARadioMediumDecidesARowsKindOverItsIfType)
+{
+    // A Bluetooth PAN adapter is an Ethernet row over the Bluetooth medium; some Wi-Fi and mobile
+    // broadband drivers report an Ethernet row over their radio's medium.
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_BLUETOOTH), NetInterfaceKind::Bluetooth);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN), NetInterfaceKind::WiFi);
+    EXPECT_EQ(networkRowKind(IF_TYPE_ETHERNET, NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN), NetInterfaceKind::Cellular);
+    EXPECT_EQ(networkRowKind(IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11), NetInterfaceKind::WiFi);
+}
+
 TEST(WindowsSystemProbeMathTest, AWifiAdaptersExtraPortsAreHardwareLinks)
 {
     // "Wi-Fi 2" to "Wi-Fi 5" (Wi-Fi Direct, hotspot, multi-link ports of the same adapter) report
     // HardwareInterface: they are counted, so their radio traffic is in the Total (#1284).
-    constexpr std::uint32_t NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 = 9;
     EXPECT_TRUE(isHardwareNetworkRow(true, IF_TYPE_WIFI, NDIS_PHYSICAL_MEDIUM_NATIVE_802_11));
 }
 
@@ -461,6 +540,164 @@ TEST(WindowsSystemProbeMathTest, TotalOfNoInterfacesIsZero)
     const auto totals = sumCountedInterfaces({});
     EXPECT_EQ(totals.rxBytes, 0U);
     EXPECT_EQ(totals.txBytes, 0U);
+}
+
+// =============================================================================
+// currentCpuFrequencyMHz: the current clock, as Task Manager's "Speed" (#1184)
+// =============================================================================
+
+TEST(CurrentCpuFrequencyTest, ScalesTheBaseClockByProcessorPerformance)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(3000, 50.0), 1500U);  // Power saving
+    EXPECT_EQ(currentCpuFrequencyMHz(3000, 100.0), 3000U); // At base
+}
+
+TEST(CurrentCpuFrequencyTest, TurboReadsAboveTheBaseClock)
+{
+    // A 2 GHz part boosting to 5.5 GHz reads 275 %; the old registry-only figure stayed at 2000.
+    EXPECT_EQ(currentCpuFrequencyMHz(2000, 275.0), 5500U);
+}
+
+TEST(CurrentCpuFrequencyTest, RoundsToTheNearestMHz)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(2995, 112.34), 3365U); // 3364.583
+    EXPECT_EQ(currentCpuFrequencyMHz(1000, 0.04), 0U);      // 0.4 MHz
+}
+
+TEST(CurrentCpuFrequencyTest, NoReadingYetGivesTheBaseClock)
+{
+    // PDH needs two collections for a rate; until then (or without PDH) the base clock stands in.
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::nullopt), 3600U);
+}
+
+TEST(CurrentCpuFrequencyTest, UnusableReadingsGiveTheBaseClock)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, 0.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, -5.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::numeric_limits<double>::quiet_NaN()), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::numeric_limits<double>::infinity()), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, MAX_PROCESSOR_PERFORMANCE_PERCENT + 1.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(1000, MAX_PROCESSOR_PERFORMANCE_PERCENT), 10000U);
+}
+
+TEST(CurrentCpuFrequencyTest, UnknownBaseClockStaysUnknown)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(0, 150.0), 0U);
+    EXPECT_EQ(currentCpuFrequencyMHz(0, std::nullopt), 0U);
+}
+
+// =============================================================================
+// nominalCpuBaseMHz: the rated base "% Processor Performance" is relative to (#1530)
+// =============================================================================
+
+namespace
+{
+
+/// The registry's ~MHz on a Core Ultra 7 255H: well above its 2000 MHz rated base.
+constexpr std::uint64_t CORE_ULTRA_255H_REGISTRY_MHZ = 3686;
+
+/// CallNtPowerInformation's MaxMhz per logical processor on a Core Ultra 7 255H, in its order:
+/// P-cores at 2000, E-cores at 1500, LP E-cores at 700.
+constexpr std::array<std::uint32_t, 16> CORE_ULTRA_255H_MAX_MHZ{
+    2000, 2000, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 2000, 2000, 2000, 2000, 700, 700};
+
+} // namespace
+
+TEST(NominalCpuBaseTest, HybridPartsUseTheHighestRatedBase)
+{
+    // Task Manager's "Base speed" and Win32_Processor.MaxClockSpeed both read 2000 on this part
+    EXPECT_EQ(nominalCpuBaseMHz(CORE_ULTRA_255H_MAX_MHZ, CORE_ULTRA_255H_REGISTRY_MHZ), 2000U);
+}
+
+TEST(NominalCpuBaseTest, SpeedOnACoreUltra255HStaysUnderItsTurboClock)
+{
+    // Measured: "% Processor Performance" about 149 at light load. The rated base gives about
+    // 2.98 GHz; the registry's ~MHz gave 5.49 GHz there and 8.21 GHz under load, past the 5.1 GHz turbo.
+    const std::uint64_t base = nominalCpuBaseMHz(CORE_ULTRA_255H_MAX_MHZ, CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(currentCpuFrequencyMHz(base, 149.0), 2980U);
+}
+
+TEST(NominalCpuBaseTest, UniformPartsUseTheirRatedBase)
+{
+    const std::array<std::uint32_t, 4> maxMHz{3600, 3600, 3600, 3600};
+    EXPECT_EQ(nominalCpuBaseMHz(maxMHz, 3593), 3600U);
+}
+
+TEST(NominalCpuBaseTest, FailedCallFallsBackToTheRegistry)
+{
+    EXPECT_EQ(nominalCpuBaseMHz({}, CORE_ULTRA_255H_REGISTRY_MHZ), CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(nominalCpuBaseMHz({}, 0), 0U);
+}
+
+TEST(NominalCpuBaseTest, ZeroRatedBaseFallsBackToTheRegistry)
+{
+    const std::array<std::uint32_t, 3> zeros{0, 0, 0};
+    EXPECT_EQ(nominalCpuBaseMHz(zeros, CORE_ULTRA_255H_REGISTRY_MHZ), CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(nominalCpuBaseMHz(zeros, 0), 0U);
+}
+
+TEST(NominalCpuBaseTest, UnwrittenEntriesAreIgnored)
+{
+    // The probe sizes its buffer for every possible processor; entries Windows didn't fill stay 0
+    const std::array<std::uint32_t, 4> partlyFilled{2400, 2400, 0, 0};
+    EXPECT_EQ(nominalCpuBaseMHz(partlyFilled, 3686), 2400U);
+}
+
+// =============================================================================
+// Virtualization status decoding (#809)
+// =============================================================================
+
+TEST(VirtualizationStatusTest, SecureKernelRunningIsTheFirstFlagBit)
+{
+    EXPECT_TRUE(secureKernelRunning(0x01));
+    EXPECT_TRUE(secureKernelRunning(0x03)); // HvciEnabled (bit 1) beside it
+    EXPECT_FALSE(secureKernelRunning(0x00));
+    EXPECT_FALSE(secureKernelRunning(0x02)); // Only HvciEnabled: the secure kernel is not running
+}
+
+TEST(VirtualizationStatusTest, HvciIsTheKernelModeCodeIntegrityOption)
+{
+    EXPECT_TRUE(hvciEnabled(CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED));
+    EXPECT_TRUE(hvciEnabled(0x401U)); // With CODEINTEGRITY_OPTION_ENABLED
+    EXPECT_FALSE(hvciEnabled(0x001U));
+    EXPECT_FALSE(hvciEnabled(0U));
+}
+
+TEST(VirtualizationStatusTest, HypervisorPresentIsCpuidLeafOneEcxBit31)
+{
+    EXPECT_TRUE(hypervisorPresentBit(0x8000'0000U));
+    EXPECT_TRUE(hypervisorPresentBit(0xFFFF'FFFFU));
+    EXPECT_FALSE(hypervisorPresentBit(0x7FFF'FFFFU));
+}
+
+// SYSTEM_HYPERVISOR_QUERY_INFORMATION as an x64 Windows 11 with Hyper-V answers it, and variations (#2377)
+TEST(VirtualizationStatusTest, HypervisorQueryPresentReadsConnectedOrPresent)
+{
+    using Information = std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE>;
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x01, 0x00, 0x01, 0x04, 0, 0, 0, 0, 0x84, 0xDF, 0x17, 0x74, 0, 0, 0, 0}));
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x00, 0x00, 0x01})); // present, not connected
+    EXPECT_TRUE(hypervisorQueryPresent(Information{0x01}));             // connected
+    EXPECT_FALSE(hypervisorQueryPresent(Information{}));
+    // Debugging enabled, the spare bytes and the enlightenments alone say nothing
+    EXPECT_FALSE(hypervisorQueryPresent(
+        Information{0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}));
+}
+
+TEST(VirtualizationStatusTest, HypervisorWithoutCpuidCombinesWindowsAndTheFirmware)
+{
+    constexpr std::optional<bool> UNKNOWN;
+    // Any yes is a yes: Hyper-V as Windows reports it, the secure kernel (which needs it), or a VM's table
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(true, false, false), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, true, false), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, false, true), true) << "QEMU, Parallels or VMware: no Hyper-V interface";
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, UNKNOWN, true), true);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, true, UNKNOWN), true);
+    // A no is Windows' own: bare metal, without Hyper-V
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, false, false), false);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(false, UNKNOWN, UNKNOWN), false);
+    // Without it, a bare-metal table can't rule out Hyper-V running under this Windows
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, false, false), UNKNOWN);
+    EXPECT_EQ(hypervisorPresentWithoutCpuid(UNKNOWN, UNKNOWN, UNKNOWN), UNKNOWN);
 }
 
 } // namespace Platform

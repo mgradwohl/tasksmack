@@ -10,7 +10,9 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
+#include <string_view>
 
 namespace Platform
 {
@@ -55,6 +57,54 @@ TEST(HasBatteryFromFlagTest, UnknownFlagReportsTrueNotFalse)
     // otherwise hasBattery == false alongside a non-NotPresent state would violate the
     // power-probe contract.
     EXPECT_TRUE(hasBatteryFromFlag(UNKNOWN_FLAG));
+}
+
+// =============================================================================
+// powerCapabilitiesFrom: recomputed on every read (#2413)
+// =============================================================================
+
+constexpr BatteryDetailsReported FULL_DETAILS{
+    .found = true, .designWh = 52.6, .fullChargeWh = 47.34, .healthPercent = 90, .cycleCount = 123, .hasTechnology = true};
+
+TEST(PowerCapabilitiesFromTest, ABatteryWithItsDetailsOffersEachOne)
+{
+    const PowerCapabilities caps = powerCapabilitiesFrom(DISCHARGING_FLAG, 80, 3'600, FULL_DETAILS);
+    EXPECT_TRUE(caps.hasBattery);
+    EXPECT_TRUE(caps.hasChargePercent);
+    EXPECT_TRUE(caps.hasTimeEstimates);
+    EXPECT_TRUE(caps.hasDesignCapacity);
+    EXPECT_TRUE(caps.hasHealthPercent);
+    EXPECT_TRUE(caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
+    // GetSystemPowerStatus has no live capacity, rate or voltage
+    EXPECT_FALSE(caps.hasChargeCapacity || caps.hasPowerRate || caps.hasVoltage);
+}
+
+TEST(PowerCapabilitiesFromTest, NoBatteryOffersNothingWhateverTheDeviceLastSaid)
+{
+    // NotPresent is no battery (#2408), even with details left from a battery since removed
+    const PowerCapabilities caps = powerCapabilitiesFrom(NO_BATTERY_FLAG, 255, UNKNOWN_LIFE_TIME, FULL_DETAILS);
+    EXPECT_FALSE(caps.hasBattery);
+    EXPECT_FALSE(caps.hasChargePercent || caps.hasTimeEstimates);
+    EXPECT_FALSE(caps.hasDesignCapacity || caps.hasHealthPercent || caps.hasCycleCount || caps.hasTechnology);
+}
+
+TEST(PowerCapabilitiesFromTest, DetailsTheDeviceDidNotGiveAreNotOffered)
+{
+    const PowerCapabilities unanswered = powerCapabilitiesFrom(CHARGING_FLAG, 255, UNKNOWN_LIFE_TIME, BatteryDetailsReported{});
+    EXPECT_TRUE(unanswered.hasBattery);
+    EXPECT_FALSE(unanswered.hasChargePercent || unanswered.hasTimeEstimates);
+    EXPECT_FALSE(unanswered.hasDesignCapacity || unanswered.hasHealthPercent || unanswered.hasCycleCount || unanswered.hasTechnology);
+
+    BatteryDetailsReported relative = FULL_DETAILS; // Relative units, no cycle counter
+    relative.designWh = 0.0;
+    relative.fullChargeWh = 0.0;
+    relative.healthPercent = -1;
+    relative.cycleCount = 0;
+    const PowerCapabilities caps = powerCapabilitiesFrom(UNKNOWN_FLAG, 50, UNKNOWN_LIFE_TIME, relative);
+    EXPECT_TRUE(caps.hasBattery); // BATTERY_FLAG_UNKNOWN is not "no battery"
+    EXPECT_FALSE(caps.hasDesignCapacity || caps.hasHealthPercent || caps.hasCycleCount);
+    EXPECT_TRUE(caps.hasTechnology);
 }
 
 TEST(ParsePowerStatusTest, NoBatteryReportsNotPresentAndOnAc)
@@ -134,6 +184,129 @@ TEST(ParsePowerStatusTest, KnownTimeRemainingIsIgnoredWhenNotDischarging)
     EXPECT_EQ(counters.state, BatteryState::Charging);
     EXPECT_EQ(counters.timeToEmptySec, 0U);
     EXPECT_EQ(counters.timeToFullSec, 0U);
+}
+
+// ---- Battery details (#1523) ----
+
+TEST(BatteryChemistryTest, KnownCodesReadAsLinuxTechnologyNames)
+{
+    EXPECT_EQ(chemistryText("LION"), "Li-ion");
+    EXPECT_EQ(chemistryText("LiOn"), "Li-ion"); // Case-insensitive: drivers vary
+    EXPECT_EQ(chemistryText("Li-I"), "Li-ion");
+    EXPECT_EQ(chemistryText(std::string_view("LiP\0", 4)), "Li-poly"); // A three-letter code, NUL-padded
+    EXPECT_EQ(chemistryText("PbAc"), "Lead-acid");
+    EXPECT_EQ(chemistryText("NiCd"), "NiCd");
+    EXPECT_EQ(chemistryText("NiMH"), "NiMH");
+    EXPECT_EQ(chemistryText("NiZn"), "NiZn");
+    EXPECT_EQ(chemistryText("RAM "), "Alkaline-manganese"); // Space-padded
+}
+
+TEST(BatteryChemistryTest, UnlistedCodeIsShownAsReportedAndGarbageIsUnknown)
+{
+    EXPECT_EQ(chemistryText("LiFe"), "LiFe");
+    EXPECT_EQ(chemistryText(std::string_view("\0\0\0\0", 4)), "");
+    EXPECT_EQ(chemistryText("    "), "");
+    EXPECT_EQ(chemistryText("\x01\x02"), "");
+}
+
+TEST(BatteryCapacityTest, MilliwattHoursAreWattHoursUnlessUnknownOrRelative)
+{
+    EXPECT_DOUBLE_EQ(capacityWh(52'600U, 0U), 52.6);
+    EXPECT_DOUBLE_EQ(capacityWh(0U, 0U), 0.0);
+    EXPECT_DOUBLE_EQ(capacityWh(BATTERY_CAPACITY_UNKNOWN_VALUE, 0U), 0.0);
+    EXPECT_DOUBLE_EQ(capacityWh(100U, BATTERY_CAPACITY_RELATIVE_BIT), 0.0);
+}
+
+TEST(BatteryCapacityTest, OnePacksHealthIsFullOverDesignRoundedAndCapped)
+{
+    const auto health = [](std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities)
+    {
+        const std::array<BatteryCapacityReading, 1> pack{
+            {{.designed = designed, .fullCharged = fullCharged, .capabilities = capabilities, .cycleCount = 0U}}};
+        return combineBatteryCapacities(pack).healthPercent;
+    };
+    EXPECT_EQ(health(50'000U, 45'000U, 0U), 90);
+    EXPECT_EQ(health(4'500U, 4'000U, 0U), 89);    // 88.9, rounded as on Linux (#2409)
+    EXPECT_EQ(health(50'000U, 52'000U, 0U), 100); // Above design: capped
+    EXPECT_EQ(health(0U, 45'000U, 0U), -1);       // No design: unknown, no division
+    EXPECT_EQ(health(50'000U, 0U, 0U), -1);
+    EXPECT_EQ(health(100U, 90U, BATTERY_CAPACITY_RELATIVE_BIT), -1); // Relative units
+}
+
+TEST(BatteryCapacityTest, TwoBatteriesAreSummedAndHealthComesFromTheSums)
+{
+    // #2151: a 24 Wh internal pack at 95% and a 72 Wh external pack at 60%
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = 24'000U, .fullCharged = 22'800U, .capabilities = 0U, .cycleCount = 40U},
+        {.designed = 72'000U, .fullCharged = 43'200U, .capabilities = 0U, .cycleCount = 310U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_FALSE(totals.relativeCapacity);
+    EXPECT_DOUBLE_EQ(totals.designWh, 96.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 66.0);
+    EXPECT_EQ(totals.healthPercent, 69); // 66 / 96 = 68.75%, not the first pack's 95%
+    EXPECT_EQ(totals.cycleCount, 310U);  // The most-cycled pack
+}
+
+TEST(BatteryCapacityTest, RelativeAndUnknownCapacitiesAreLeftOutOfTheTotals)
+{
+    const std::array<BatteryCapacityReading, 3> packs{{
+        {.designed = 50'000U, .fullCharged = 45'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 100U, .fullCharged = 80U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 12U},
+        {.designed = 30'000U, .fullCharged = BATTERY_CAPACITY_UNKNOWN_VALUE, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_FALSE(totals.relativeCapacity);
+    // Design, full charge and health all describe the one pack that reports both (#2409), not
+    // Design 80 Wh and Wear 43.8% next to Health 90%
+    EXPECT_DOUBLE_EQ(totals.designWh, 50.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 45.0);
+    EXPECT_EQ(totals.healthPercent, 90);
+    EXPECT_EQ(totals.cycleCount, 12U);
+}
+
+TEST(BatteryCapacityTest, APackWithoutADesignCapacityIsLeftOutOfEveryRow)
+{
+    // #2409: the second pack's full charge would otherwise be weighed against the first's design
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = 50'000U, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_DOUBLE_EQ(totals.designWh, 50.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 40.0);
+    EXPECT_EQ(totals.healthPercent, 80);
+}
+
+TEST(BatteryCapacityTest, WithoutAnyDesignCapacityOnlyTheFullChargeIsReported)
+{
+    const std::array<BatteryCapacityReading, 2> packs{{
+        {.designed = BATTERY_CAPACITY_UNKNOWN_VALUE, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
+    EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 70.0);
+    EXPECT_EQ(totals.healthPercent, -1);
+}
+
+TEST(BatteryCapacityTest, NoBatteriesOrOnlyRelativeOnesReportNoCapacity)
+{
+    const BatteryCapacityTotals none = combineBatteryCapacities({});
+    EXPECT_FALSE(none.relativeCapacity);
+    EXPECT_DOUBLE_EQ(none.designWh, 0.0);
+    EXPECT_EQ(none.healthPercent, -1);
+
+    const std::array<BatteryCapacityReading, 2> relative{{
+        {.designed = 100U, .fullCharged = 92U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 5U},
+        {.designed = 100U, .fullCharged = 70U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 9U},
+    }};
+    const BatteryCapacityTotals totals = combineBatteryCapacities(relative);
+    EXPECT_TRUE(totals.relativeCapacity);
+    EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
+    EXPECT_DOUBLE_EQ(totals.fullChargeWh, 0.0);
+    EXPECT_EQ(totals.healthPercent, -1);
+    EXPECT_EQ(totals.cycleCount, 9U);
 }
 
 } // namespace

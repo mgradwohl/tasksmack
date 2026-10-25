@@ -1,29 +1,44 @@
 #include "ProcessesPanel.h"
 
+#include "App/KeyboardInput.h"
 #include "App/Panel.h"
-#include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/PanelPlatforms.h"
+#include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/Panels/ProcessActionsView.h"
+#include "App/Panels/ProcessAffinityDialog.h"
+#include "App/Panels/ProcessBatchAction.h"
+#include "App/Panels/ProcessBatchRun.h"
 #include "App/Panels/ProcessColumnAvailability.h"
-#include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessRowMeterView.h"
+#include "App/Panels/ProcessRowSelection.h"
+#include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTableSettings.h"
+#include "App/Panels/ProcessTreeBadge.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
+#include "AuthorizeWording.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/DeferredProbe.h"
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
@@ -31,35 +46,44 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
+#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ThreadName.h"
+#include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 // clang-format off
 #include <imgui.h>
-#include <imgui_internal.h> // ImGuiTable: the laid-out column widths have no public accessor
+#include <imgui_internal.h> // ImGuiTable: the laid-out column widths, and the table background channel, have no public accessor
 #include <misc/cpp/imgui_stdlib.h>
 #include <spdlog/spdlog.h>
 // clang-format on
 
 #include <algorithm>
 #include <array>
-#include <cctype>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -78,8 +102,6 @@ namespace
 // way first, because depth is also conveyed by the expander column alignment and the PPID column,
 // whereas a truncated name has no other source (#906, #913).
 
-constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
-
 // The units the mixed-unit columns can show, exactly as their cells print them. Each column's unit
 // slot is as wide as the widest of its units, measured in the current font (#1201).
 constexpr std::array<std::string_view, 3> POWER_UNITS = {" W", " mW", " µW"};
@@ -91,7 +113,12 @@ constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
-constexpr const char* FILTER_HINT = "Filter by name...";
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
+// Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
+constexpr const char* EXPAND_ALL_BUTTON = ICON_FA_ANGLES_DOWN "##ExpandAll";
+constexpr const char* COLLAPSE_ALL_BUTTON = ICON_FA_ANGLES_UP "##CollapseAll";
+// How opaque a filtered tree draws an ancestor that is there only to place a match (#838).
+constexpr float CONTEXT_ROW_ALPHA = 0.5F;
 // Shown beside the process count while a held Ctrl freezes the pane (#928).
 constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
 // The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
@@ -116,7 +143,7 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
     return false;
 }
 
-// How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
+// How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
@@ -143,11 +170,20 @@ bool viewModeSegment(std::string_view label, bool selected, float width)
     return pressed && !selected;
 }
 
-[[nodiscard]] auto lowerAscii(char ch) -> int
+/// Marks the row just submitted -- a Selectable spanning all columns -- as a multi-selection's primary
+/// row (#1926): a bar at its left edge and an outline, in @p color, over its selection fill. Drawn in
+/// the table's background channel, where the Selectable drew that fill, so the cells' text stays on
+/// top, and held to the part of the row in view (ProcessRowSelection::markerFor()).
+void drawPrimaryRowMarker(const ImVec4& color)
 {
-    // Safe/necessary: std::tolower is undefined for negative signed char values (except EOF).
-    // Cast to unsigned char to avoid UB when char is signed.
-    return std::tolower(static_cast<unsigned char>(ch));
+    ImGui::TablePushBackgroundChannel();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ProcessRowSelection::Marker marker = ProcessRowSelection::markerFor(
+        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), drawList->GetClipRectMin().x, drawList->GetClipRectMax().x, ImGui::GetFontSize());
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
+    drawList->AddRect(marker.outlineMin, marker.outlineMax, col, 0.0F, ImDrawFlags_None, marker.outlineThickness);
+    drawList->AddRectFilled(marker.barMin, marker.barMax, col);
+    ImGui::TablePopBackgroundChannel();
 }
 
 [[nodiscard]] constexpr auto toImGuiId(ProcessColumn col) noexcept -> ImGuiID
@@ -170,67 +206,44 @@ bool viewModeSegment(std::string_view label, bool selected, float width)
     return std::nullopt;
 }
 
-/// Tooltips for clipped cells wrap at this many ems, so a long command line reads as a paragraph
-/// instead of one line running off the screen.
-constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
+using UI::Widgets::CLIPPED_CELL_TOOLTIP_WRAP_EM;
 
 /// Column header tooltips wrap at this many ems.
 constexpr float HEADER_TOOLTIP_WRAP_EM = 32.0F;
 
 /// Draws `text` in the current table cell, left- or right-aligned, using an already-measured
-/// `textWidth`. When the text does not fit it is drawn with an ellipsis and gets a tooltip carrying
-/// the full value (#914): a hard-clipped value is indistinguishable from one that is genuinely that
-/// short, which is the wrong failure mode for a table whose rows Terminate and Kill act on.
+/// `textWidth`: ellipsized with the full value as its tooltip when it does not fit (#914), through
+/// the cell helper every table shares (UI::Widgets::cellText(), #1920). The text is measured once --
+/// ImFontCalcTextSizeEx showed up as a real cost in interactive-frame profiling -- and a clipped cell
+/// takes only its own width in the layout, as it always has here.
 ///
-/// This submits the item itself rather than calling ImGui::TextUnformatted(), which would measure
-/// the text a second time -- ImFontCalcTextSizeEx showed up as a real cost in interactive-frame
-/// profiling. The steps mirror ImGui::TextEx()'s common path: same position, same item size, so a
-/// cell that fits is laid out exactly as before.
-void renderCellText(std::string_view text, float textWidth, bool rightAligned)
+/// @param clippedTooltip  Whether a clipped cell gets the full text as its tooltip; false for a cell
+///                        that draws its own tooltip (the Services column's list, #1880).
+void renderCellText(std::string_view text, float textWidth, bool rightAligned, bool clippedTooltip = true)
 {
-    const ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (window->SkipItems)
+    static_cast<void>(
+        UI::Widgets::cellText(text, textWidth, {.rightAligned = rightAligned, .clippedTooltip = clippedTooltip, .layoutFullText = false}));
+}
+
+/// The depth guide lines of a tree row at `depth` (#838), drawn from the start of its Name cell, where
+/// the cursor is: one subtle vertical line per ancestor level, through the middle of that ancestor's
+/// expander, from the row's top to its bottom, so the lines of consecutive rows join. In the theme's
+/// tree-line colour (ImGuiCol_TreeLines, held to a contrast floor on the rows) and ImGui's tree-line
+/// thickness, scaled with the style.
+void drawTreeGuideLines(int depth, float indentPerLevel, float expanderWidth)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 cellStart = ImGui::GetCursorScreenPos();
+    const float top = cellStart.y - style.CellPadding.y;
+    const float bottom = cellStart.y + ImGui::GetTextLineHeight() + style.CellPadding.y;
+    const ImU32 color = ImGui::GetColorU32(UI::Theme::get().scheme().treeLines);
+    const float thickness = std::max(1.0F, std::round(style.TreeLinesSize));
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    for (int level = 0; level < depth; ++level)
     {
-        return;
-    }
-
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const bool clipped = ProcessTableLayout::isCellTextClipped(textWidth, availWidth);
-
-    // A clipped cell fills the space it has and starts at its left edge in either alignment: the
-    // leading characters are the ones that identify the value.
-    const float itemWidth = clipped ? std::max(availWidth, 0.0F) : textWidth;
-    const float offsetX = (rightAligned && !clipped) ? std::max(0.0F, availWidth - textWidth) : 0.0F;
-
-    const char* textBegin = text.data();
-    const char* textEnd = text.data() + text.size();
-    const ImVec2 textPos(window->DC.CursorPos.x + offsetX, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
-    const ImVec2 itemSize(itemWidth, ImGui::GetFontSize());
-    const ImRect bounds(textPos, ImVec2(textPos.x + itemSize.x, textPos.y + itemSize.y));
-
-    // Advance the layout cursor past the alignment offset as well as the text, as SetCursorPosX()
-    // followed by a text item did.
-    ImGui::ItemSize(ImVec2(offsetX + itemSize.x, itemSize.y), 0.0F);
-    if (!ImGui::ItemAdd(bounds, 0))
-    {
-        return;
-    }
-
-    if (!clipped)
-    {
-        ImGui::RenderText(textPos, textBegin, textEnd, false);
-        return;
-    }
-
-    const ImVec2 measuredSize(textWidth, itemSize.y);
-    ImGui::RenderTextEllipsis(window->DrawList, bounds.Min, bounds.Max, bounds.Max.x, textBegin, textEnd, &measuredSize);
-
-    if (ImGui::BeginItemTooltip())
-    {
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * CLIPPED_CELL_TOOLTIP_WRAP_EM);
-        ImGui::TextUnformatted(textBegin, textEnd);
-        ImGui::PopTextWrapPos();
-        ImGui::EndTooltip();
+        // On a pixel centre, so a 1px line is crisp rather than smeared over two columns.
+        const float x = std::floor(cellStart.x + ProcessTreeIndent::guideLineX(level, indentPerLevel, expanderWidth)) + 0.5F;
+        drawList->AddLine(ImVec2(x, top), ImVec2(x, bottom), color, thickness);
     }
 }
 
@@ -495,8 +508,9 @@ void leftAlignedCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& 
 /// Free text from the snapshot, left-aligned; blank when the process has none, and the unavailable
 /// dash when this system cannot fill the column at all (`Supported`, ProcessColumnAvailability::
 /// textCell(), #1210). Blank, not a dash, for an empty value: no status is a process in neither
-/// state the column names, no GPU device is one using none, and an empty publisher is either an
-/// executable without one or one that could not be read -- the probe cannot tell which.
+/// state the column names, no GPU device is one using none, no container is a process in none, and an
+/// empty publisher is either an executable without one or one that could not be read -- the probe
+/// cannot tell which.
 template<std::string Domain::ProcessSnapshot::* Text,
          ProcessRowFormat::LazyTextWidth RowFormatCache::* Width,
          bool RowFormatCache::* Supported>
@@ -506,29 +520,63 @@ void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormat
         ProcessColumnAvailability::textCell(fmt.*Supported, !(proc.*Text).empty()), proc.*Text, fmt.*Width, widths.unavailableText);
 }
 
-/// A GPU text cell (engines, devices): blank for none, the "not available on this system" dash where
-/// per-process GPU usage cannot be observed, and the unreadable dash where it can but this
-/// generation's read failed or the process started since the last read (#1210).
-void renderGpuTextCell(std::string_view text, const ProcessRowFormat::LazyTextWidth& width, const RowFormatCache& fmt, float dashWidth)
+/// The services the process hosts (#1880): their names comma-joined, left-aligned; blank for none, and
+/// the unavailable dash where this system cannot tell. Hovering the names lists them one per line,
+/// whether or not the cell had room for them all.
+void servicesCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
-    if (fmt.gpuSupported && (fmt.gpuUnreadReason != nullptr))
+    const ProcessColumnAvailability::TextCell content =
+        ProcessColumnAvailability::textCell(fmt.servicesSupported, !proc.serviceNames.empty());
+    if (content != ProcessColumnAvailability::TextCell::Text)
+    {
+        renderTextCell(content, proc.services, fmt.servicesWidth, widths.unavailableText);
+        return;
+    }
+    renderCellText(proc.services, cachedTextWidth(proc.services, fmt.servicesWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
+    if (ImGui::BeginItemTooltip())
+    {
+        const std::string heading = ProcessRowFormat::servicesTooltipHeading(proc.serviceNames.size());
+        ImGui::TextColored(UI::Theme::get().scheme().textMuted, "%s", heading.c_str());
+        std::size_t index = 0;
+        while (index < proc.serviceNames.size())
+        {
+            ImGui::TextUnformatted(proc.serviceNames[index].c_str());
+            ++index;
+        }
+        ImGui::EndTooltip();
+    }
+}
+
+/// A GPU or NPU text cell (engines, devices): blank for none, the "not available on this system" dash
+/// where per-process usage cannot be observed (@p supported false), and the unreadable dash where it
+/// can but this generation's read failed or the process started since the last read (#1210).
+void renderGpuTextCell(
+    std::string_view text, const ProcessRowFormat::LazyTextWidth& width, const RowFormatCache& fmt, bool supported, float dashWidth)
+{
+    if (supported && (fmt.gpuUnreadReason != nullptr))
     {
         renderUnavailableTextCell(fmt.gpuUnreadReason, dashWidth);
         return;
     }
-    renderTextCell(ProcessColumnAvailability::textCell(fmt.gpuSupported, !text.empty()), text, width, dashWidth);
+    renderTextCell(ProcessColumnAvailability::textCell(supported, !text.empty()), text, width, dashWidth);
 }
 
 /// The GPU engines in use: RowFormatCache's comma-joined list, left-aligned (renderGpuTextCell()).
 void gpuEngineCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
-    renderGpuTextCell(fmt.gpuEngines, fmt.gpuEnginesWidth, fmt, widths.unavailableText);
+    renderGpuTextCell(fmt.gpuEngines, fmt.gpuEnginesWidth, fmt, fmt.gpuSupported, widths.unavailableText);
 }
 
 /// The GPUs the process uses, left-aligned (renderGpuTextCell()).
 void gpuDeviceCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
-    renderGpuTextCell(proc.gpuDevices, fmt.gpuDevicesWidth, fmt, widths.unavailableText);
+    renderGpuTextCell(proc.gpuDevices, fmt.gpuDevicesWidth, fmt, fmt.gpuSupported, widths.unavailableText);
+}
+
+/// The NPU engines in use (#1799), as gpuEngineCell() draws the GPU's.
+void npuEngineCell(const Domain::ProcessSnapshot& /*proc*/, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    renderGpuTextCell(fmt.npuEngines, fmt.npuEnginesWidth, fmt, fmt.npuSupported, widths.unavailableText);
 }
 
 /// The kernel-style state code, centred, in its state colour.
@@ -599,6 +647,24 @@ void typeCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, co
     }
 }
 
+/// The architecture the process runs as (#2394), left-aligned; the unavailable dash where this system
+/// cannot read architectures, or could not read this process's (another user's process, a kernel thread).
+void architectureCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    if (!fmt.architectureSupported)
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNSUPPORTED_CELL_REASON, widths.unavailableText);
+    }
+    else if (!proc.architecture.empty())
+    {
+        renderLeftAlignedText(proc.architecture, fmt.architectureWidth);
+    }
+    else
+    {
+        renderUnavailableTextCell(ProcessRowFormat::UNREADABLE_CELL_REASON, widths.unavailableText);
+    }
+}
+
 /// One CELL_RENDERERS entry: the column it draws (checked against its index
 /// below) and its renderer, or nullptr for a column renderProcessRow() draws.
 struct ProcessCellEntry
@@ -620,11 +686,17 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::publisher,
                                        &RowFormatCache::publisherWidth,
                                        &RowFormatCache::publisherSupported>},
+    {.column = ProcessColumn::Container,
+     .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
+                                       &RowFormatCache::containerWidth,
+                                       &RowFormatCache::containerSupported>},
+    {.column = ProcessColumn::Services, .render = &servicesCell},
     // State
     {.column = ProcessColumn::State, .render = &stateCell},
     {.column = ProcessColumn::Status,
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::status, &RowFormatCache::statusWidth, &RowFormatCache::statusSupported>},
     {.column = ProcessColumn::Type, .render = &typeCell},
+    {.column = ProcessColumn::Architecture, .render = &architectureCell},
     // Resources
     {.column = ProcessColumn::CpuPercent, .render = &rightAlignedCell<&RowFormatCache::cpuPercent>},
     {.column = ProcessColumn::MemPercent, .render = &rightAlignedCell<&RowFormatCache::memPercent>},
@@ -632,6 +704,8 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Private, .render = &unitAlignedCell<&RowFormatCache::privateMem, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
     // Scheduling
     {.column = ProcessColumn::Priority, .render = &priorityCell},
     {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
@@ -658,6 +732,10 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::GpuMemory, .render = &unitAlignedCell<&RowFormatCache::gpuMemory, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::GpuEngine, .render = &gpuEngineCell},
     {.column = ProcessColumn::GpuDevice, .render = &gpuDeviceCell},
+    // NPU (#1799)
+    {.column = ProcessColumn::NpuPercent, .render = &rightAlignedCell<&RowFormatCache::npuPercent>},
+    {.column = ProcessColumn::NpuMemory, .render = &unitAlignedCell<&RowFormatCache::npuMemory, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::NpuEngine, .render = &npuEngineCell},
     // Command
     {.column = ProcessColumn::Command, .render = &commandCell},
 }};
@@ -784,6 +862,7 @@ void ProcessesPanel::TextSizeCache::populate()
     columnsLabelWidth = measureTextWidth(COLUMNS_LABEL);
     caretRightWidth = measureTextWidth(ICON_FA_CARET_RIGHT);
     caretDownWidth = measureTextWidth(ICON_FA_CARET_DOWN);
+    foldIconWidth = std::max(measureTextWidth(ICON_FA_ANGLES_DOWN), measureTextWidth(ICON_FA_ANGLES_UP));
     cells.unavailableText = measureTextWidth(ProcessRowFormat::UNAVAILABLE_CELL_TEXT);
 
     // Cache Domain::Priority::getProcessPriorityLabel()'s fixed label widths
@@ -812,11 +891,15 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     // The Columns button and the two view-mode segments, which sit flush against each other (#1209).
     const float columnsButton = measureTextWidth(COLUMNS_LABEL) + (style.FramePadding.x * 2.0F);
     const float viewModeControl = measureTextWidth(LIST_VIEW_LABEL) + measureTextWidth(TREE_VIEW_LABEL) + (style.FramePadding.x * 4.0F);
+    // Tree view's Expand all and Collapse all after it (#838), reserved in both views so the minimum
+    // stays put when the view changes.
+    const float foldButtons =
+        (std::max(measureTextWidth(ICON_FA_ANGLES_DOWN), measureTextWidth(ICON_FA_ANGLES_UP)) + (style.FramePadding.x * 2.0F)) * 2.0F;
     // While Ctrl freezes the pane the paused indicator joins the row (#928). Only its icon-only form
     // is reserved: the full label shows when the real count leaves room, which the worst-case count
     // above nearly always does (ProcessTableLayout::choosePausedLabelForm()).
     const float pausedIcon = ImGui::CalcTextSize(FROZEN_ICON).x;
-    const float rest = (style.ItemSpacing.x * 5.0F) + clearButton + pausedIcon + count + columnsButton + viewModeControl;
+    const float rest = (style.ItemSpacing.x * 7.0F) + clearButton + pausedIcon + count + columnsButton + viewModeControl + foldButtons;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -835,22 +918,35 @@ void ProcessesPanel::ensureTextSizeCacheValid()
 ProcessesPanel::ProcessesPanel() : Panel("Processes")
 {}
 
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform)
+    : Panel("Processes"), m_MakePlatform(std::move(makePlatform))
+{}
+
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent)
+    : Panel("Processes"), m_MakePlatform(std::move(makePlatform)), m_RaiseEvent(std::move(raiseEvent))
+{}
+
+void ProcessesPanel::raiseEvent(Core::Event& event)
+{
+    if (m_RaiseEvent)
+    {
+        m_RaiseEvent(event);
+        return;
+    }
+    Core::Application::get().raiseEvent(event);
+}
+
 ProcessesPanel::~ProcessesPanel()
 {
     // Order doesn't matter for safety here: BackgroundSampler observes m_ProcessModel via a
     // weak_ptr, so it's never left holding a dangling pointer regardless of which is destroyed
     // first. Stopping the sampler first is still done so no sample() call races the rest of this
-    // destructor's cleanup (setInteractionActive below).
+    // destructor's cleanup.
     if (m_Sampler)
     {
         m_Sampler->stop();
         m_Sampler.reset();
     }
-    if (m_ProcessModel)
-    {
-        m_ProcessModel->setInteractionActive(false);
-    }
-    this->m_InteractionHoldSeconds = 0.0F;
     m_ProcessModel.reset();
 }
 
@@ -859,68 +955,171 @@ void ProcessesPanel::onAttach()
     // Load column settings from user config
     m_ColumnSettings = UserConfig::get().settings().processColumns;
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
+    m_MeterSettings = UserConfig::get().settings().processMeters;
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
-    m_AppliedSamplerInterval = m_RefreshInterval;
-    this->m_InteractionHoldSeconds = 0.0F;
     m_ForceRefresh = false;
 
-    // Create probe and transfer it to the ProcessModel. The model itself is then
-    // passed to BackgroundSampler so enumeration runs off the main thread.
-    // The synthetic scenario's probe when TASKSMACK_SYNTHETIC selects one (#1413), else the platform's.
-    const Synthetic::Scenario* scenario = Synthetic::activeScenario();
-    auto processProbe = Synthetic::makeProcessProbe(scenario);
-
-    const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
-    processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
-
-    m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
-
-    // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
-    m_ProcessActions = Synthetic::makeProcessActions(scenario);
-    m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+    // The model exists from here, so the shell can wire it (ShellPanels::connectModels()), but without
+    // its probe (#2731): the sampler thread builds the platform in its start hook below and seeds the
+    // model there, so this thread never enumerates processes or waits for the first read. Until the seed
+    // is adopted (onUpdate()) the table has no rows and the capabilities are the defaults.
+    // The synthetic scenario's platform when TASKSMACK_SYNTHETIC selects one (#1413), else the
+    // platform's. An injected factory (tests, #1546) replaces both, with no scenario.
+    const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
+    m_ProcessModel = std::make_shared<Domain::ProcessModel>(Domain::DEFERRED_PROBE);
+    m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
-
-    // The synthetic scenario starts with its whole history window filled (#1413), before the seed
-    // read below continues it. Nothing happens without a scenario.
+    // The sparklines' histories (#1612), kept only for the columns that show one.
+    m_ProcessModel->setRowHistoryMetrics(m_MeterSettings.sparklineMetrics());
+    // The synthetic scenario starts with its whole history window filled (#1413) by the hook below.
     if (scenario != nullptr)
     {
         m_ProcessModel->setMaxHistorySeconds(Synthetic::startupHistorySeconds(scenario, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
-        Synthetic::preloadProcessHistory(scenario, *m_ProcessModel, std::chrono::steady_clock::now());
     }
 
-    // Seed with one synchronous read so the first background callback produces valid CPU
-    // deltas instead of all-zero percentages (first call establishes the prev-sample
-    // baseline; second call - coming from the background thread - computes the delta).
-    m_ProcessModel->refresh();
+    // What the hook needs from the config, read here: UserConfig belongs to this thread.
+    const std::chrono::milliseconds socketStatsCacheTtl(UserConfig::get().settings().socketStatsCacheTtlMs);
+    const bool udpEventTrace = UserConfig::get().settings().udpEventTrace;
+    m_Handoff = std::make_shared<PlatformHandoff>();
 
-    // Wire sampler: polls the ProcessModel on each interval tick.
-    // Seeded synchronously above, so the first background sample waits a full interval (#1102).
-    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval,
-                                           .firstSampleAfterInterval = true,
-                                           .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
+    // Wire sampler: polls the ProcessModel on each interval tick. Seeded by the start hook, so the
+    // first background sample waits a full interval after it (#1102).
+    Domain::SamplerConfig samplerCfg;
+    samplerCfg.interval = m_RefreshInterval;
+    samplerCfg.firstSampleAfterInterval = true;
+    samplerCfg.threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME);
+    samplerCfg.multiThreadedApartment = true; // what the probe creates lives with the sampler, not the UI's STA (#2731)
+    // The start hook: on the sampler thread, before its first pass. Everything it touches is captured
+    // by value or shared: the model outlives the sampler (onDetach() stops it first), the handoff is
+    // shared with this panel, and the scenario is the process's. The factory is still the composition
+    // root's (PanelPlatforms) or the test's.
+    samplerCfg.onThreadStart =
+        [makePlatform = m_MakePlatform, scenario, model = m_ProcessModel, handoff = m_Handoff, socketStatsCacheTtl, udpEventTrace]
+    {
+        ProcessesPanelPlatform platform = makePlatform ? makePlatform() : makeProcessesPanelPlatform(scenario);
+        if (platform.probe)
+        {
+            platform.probe->setSocketStatsCacheTtl(socketStatsCacheTtl);
+            // The opt-in UDP event trace (#1492): the probe reads it; the panel owns its on/off from here on.
+            if (platform.udpCollector)
+            {
+                platform.probe->setUdpTrafficCollector(platform.udpCollector);
+                if (udpEventTrace)
+                {
+                    // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
+                    (void) platform.udpCollector->start();
+                }
+            }
+        }
+        model->setProbe(std::move(platform.probe));
+
+        // The synthetic scenario's whole history window first (#1413), then the seed continues it.
+        if (scenario != nullptr)
+        {
+            Synthetic::preloadProcessHistory(scenario, *model, std::chrono::steady_clock::now());
+        }
+
+        // Seed with one read so the first background sample produces valid CPU deltas instead of
+        // all-zero percentages (this call establishes the prev-sample baseline; the next, one interval
+        // on, computes the delta).
+        model->refresh();
+
+        // The rest of the platform is the UI thread's: the row menu's actions, the icons (GL textures)
+        // and the UDP toggle. Handed over here; the panel adopts them on its next frame.
+        // Asked here, on this thread, before the actions move: the initializers run in order.
+        const Platform::ProcessActionCapabilities actionCapabilities =
+            platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        PlatformHandoff::Contents contents{.actions = std::move(platform.actions),
+                                           .actionCapabilities = actionCapabilities,
+                                           .udpCollector = std::move(platform.udpCollector),
+                                           .icons = std::move(platform.icons)};
+        {
+            const std::scoped_lock lock(handoff->mutex);
+            handoff->contents = std::move(contents);
+        }
+        handoff->seeded.store(true, std::memory_order_release);
+        spdlog::info("ProcessesPanel: process probe built and model seeded on the sampler thread");
+    };
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel, "processes");
     m_Sampler->start();
 
-    // Ensure the initial seed snapshots are loaded into the render cache so the UI
-    // isn't empty before the first background sample arrives.
-    adoptNewerSnapshots();
-
-    // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210).
-    // Before the table is first drawn, since its default visibility is set from these settings.
-    m_ColumnDefaultsCapabilities = processCapabilities();
-    m_GpuSupport = gpuSupport();
-    m_ColumnDefaultsGpuSupport = m_GpuSupport;
-    ProcessColumnAvailability::applyCapabilityDefaults(m_ColumnSettings, m_ColumnDefaultsCapabilities, m_GpuSupport);
-    // Handed to the table on its first frame, as a Columns menu request is: ShellLayer restores the
-    // saved ImGui layout after this, and its visibility would otherwise win over DefaultHide.
+    // The saved columns, handed to the table on its first frame as a Columns menu request is: ShellLayer
+    // restores the saved ImGui layout after this, and its visibility would otherwise win over
+    // DefaultHide. A column this system cannot fill is hidden by default, unless its visibility was
+    // chosen (#1210): that waits for the first generation, which brings the probe's capabilities
+    // (applyStartupColumnDefaults()), so the table never shows a set computed without them.
+    m_ColumnDefaultsApplied = false;
     m_RequestedColumns = m_ColumnSettings;
     m_TableShowsColumnSettings = false;
 
-    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_AppliedSamplerInterval.count());
+    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_RefreshInterval.count());
+}
+
+bool ProcessesPanel::waitForFirstSample(std::chrono::milliseconds timeout)
+{
+    if (!m_Handoff)
+    {
+        return false; // not attached
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!m_Handoff->seeded.load(std::memory_order_acquire))
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    adoptPlatform();
+    adoptNewerSnapshots();
+    return true;
+}
+
+std::optional<ProcessesPanel::PlatformHandoff::Contents> ProcessesPanel::takePlatformHandoff()
+{
+    if (!m_Handoff)
+    {
+        return std::nullopt;
+    }
+    const std::scoped_lock lock(m_Handoff->mutex);
+    return std::exchange(m_Handoff->contents, std::nullopt);
+}
+
+void ProcessesPanel::adoptPlatform()
+{
+    std::optional<PlatformHandoff::Contents> contents = takePlatformHandoff();
+    if (!contents.has_value())
+    {
+        return;
+    }
+    // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
+    m_ProcessActions = std::move(contents->actions);
+    m_ActionCapabilities = contents->actionCapabilities;
+    // The UDP event trace's collector (#1492), started by the hook if Settings had it on; the toggle
+    // and detach go through this panel from here.
+    m_UdpCollector = std::move(contents->udpCollector);
+    // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
+    m_IconView.attach(std::move(contents->icons));
+}
+
+void ProcessesPanel::applyStartupColumnDefaults()
+{
+    // A column this system cannot fill is hidden by default, unless its visibility was chosen (#1210),
+    // from the capabilities the first generation published. Later changes go through renderContent()'s
+    // check against m_ColumnDefaultsCapabilities (#1254).
+    m_ColumnDefaultsCapabilities = processCapabilities();
+    m_GpuSupport = gpuSupport();
+    m_ColumnDefaultsGpuSupport = m_GpuSupport;
+    // Through the request path, as a Columns menu change is: the table may have drawn the saved
+    // columns already, and the request is what it takes its next layout from.
+    ProcessColumnSettings columns = m_RequestedColumns.value_or(m_ColumnSettings);
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, m_ColumnDefaultsCapabilities, m_GpuSupport);
+    m_RequestedColumns = columns; // trivially copyable
+    m_ColumnDefaultsApplied = true;
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, bool forceSample)
@@ -930,12 +1129,16 @@ void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval, boo
         return;
     }
     m_RefreshInterval = interval;
-    m_AppliedSamplerInterval = interval;
     if (m_Sampler)
     {
-        m_Sampler->setInterval(m_AppliedSamplerInterval);
+        m_Sampler->setInterval(interval);
     }
     m_ForceRefresh = m_ForceRefresh || forceSample;
+}
+
+std::chrono::milliseconds ProcessesPanel::samplingInterval() const
+{
+    return m_Sampler ? m_Sampler->interval() : m_RefreshInterval;
 }
 
 void ProcessesPanel::requestRefresh()
@@ -947,17 +1150,56 @@ void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
+    UserConfig::get().settings().processMeters = m_MeterSettings;
     // Order doesn't matter for safety here, same as the destructor above: BackgroundSampler
     // observes m_ProcessModel via a weak_ptr, so it's never left holding a dangling pointer
     // regardless of which is reset first. Stopping the sampler first still avoids a sample()
-    // call racing the rest of this teardown.
+    // call racing the rest of this teardown, and waits for its start hook if that is still building
+    // the platform (#2731).
     if (m_Sampler)
     {
         m_Sampler->stop();
         m_Sampler.reset();
     }
-    this->m_InteractionHoldSeconds = 0.0F;
+    // A platform the hook handed over that no frame adopted (detached straight after attach): its
+    // collector is stopped and its actions released below like adopted ones; its icons are dropped
+    // unattached rather than attached to a view about to be detached.
+    if (std::optional<PlatformHandoff::Contents> contents = takePlatformHandoff(); contents.has_value())
+    {
+        m_ProcessActions = std::move(contents->actions);
+        m_UdpCollector = std::move(contents->udpCollector);
+    }
+    m_Handoff.reset();
+    // While the GL context is current: deletes the icons' textures, and stops their loader (#1800).
+    m_IconView.detach();
+    // A dump still being written is cancelled and waited for, while its actions are still here (#807).
+    m_DumpView.shutdown();
+    // So is a batch still running (#2142): stopped before its next process.
+    m_BatchRun.shutdown();
+    // And a single-process action (#2305): one platform call, waited for while its actions are here --
+    // asked to stop first, so a password prompt still up is given up on, not waited out (#2388).
+    m_RowActionRun.requestStop();
+    m_RowActionRun.update(/*wait=*/true);
+    // The UDP event trace's session is stopped here, not left to whichever of the model and this
+    // panel lets the collector go last (#1492).
+    applyUdpEventTrace(false);
+    m_UdpCollector.reset();
     m_ProcessModel.reset();
+}
+
+void ProcessesPanel::applyUdpEventTrace(bool enabled)
+{
+    if (!m_UdpCollector)
+    {
+        return;
+    }
+    if (!enabled)
+    {
+        m_UdpCollector->stop();
+        return;
+    }
+    // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
+    (void) m_UdpCollector->start();
 }
 
 void ProcessesPanel::onEvent(Core::Event& event)
@@ -966,18 +1208,11 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            const bool wasShown = m_ProcessDataShown;
+            // Only the drawing follows the tab: the sampler runs at the refresh setting whichever tab
+            // is shown (#2731), so there is no relaxed cadence to catch up from on coming back.
             m_IsActiveTab = (e.tabName() == "Processes");
-            m_ProcessDataShown = AdaptiveIntervalUtils::showsProcessData(e.tabName());
             // A freeze belongs to the pane being looked at; leaving it must not leave it frozen (#928).
             m_DisplayFreeze.reset();
-            if (!wasShown && m_ProcessDataShown)
-            {
-                // Catch up straight away when coming back from a tab that showed no process data,
-                // where the sampler was relaxed. Between tabs that all show it the sampler ran at
-                // the full rate, and an extra sample would land just after the last one (#1102).
-                m_ForceRefresh = true;
-            }
             return false;
         });
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
@@ -985,6 +1220,13 @@ void ProcessesPanel::onEvent(Core::Event& event)
         {
             // The startup value (#1079) is applied without forcing a sample right after the seed (#1102).
             setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
+            return false;
+        });
+    // The Settings toggle for the UDP event trace (#1492).
+    dispatcher.dispatch<Core::UdpEventTraceChangedEvent>(
+        [this](Core::UdpEventTraceChangedEvent& e)
+        {
+            applyUdpEventTrace(e.isEnabled());
             return false;
         });
     // This panel owns the process model, so it sets the model's history length (#1078).
@@ -1008,32 +1250,23 @@ void ProcessesPanel::onUpdate(float deltaTime)
     {
         m_RowActionResultSeconds = std::max(0.0F, m_RowActionResultSeconds - std::max(0.0F, deltaTime));
     }
+    // A batch confirmed on an earlier frame has finished on its worker (#2142): its one line replaces
+    // the progress line.
+    if (std::optional<ProcessBatch::BatchRunOutcome> outcome = m_BatchRun.poll(); outcome.has_value())
+    {
+        showBatchOutcome(std::move(*outcome));
+    }
+    // So has a single-process action (#2305): its result line replaces "Killing PID 123...".
+    m_RowActionRun.update();
 
     if (!m_ProcessModel || !m_Sampler)
     {
         return;
     }
 
-    const bool interactionRedrawActive = Core::Application::get().isInteractionRedrawActive();
-    if (interactionRedrawActive)
-    {
-        this->m_InteractionHoldSeconds = INTERACTION_INTERVAL_HOLD_SECONDS;
-    }
-    else if (this->m_InteractionHoldSeconds > 0.0F)
-    {
-        const float clampedDeltaTime = std::max(0.0F, deltaTime);
-        this->m_InteractionHoldSeconds = std::max(0.0F, this->m_InteractionHoldSeconds - clampedDeltaTime);
-    }
-
-    const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
-    m_ProcessModel->setInteractionActive(throttleForInteraction);
-    const auto desiredInterval =
-        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_ProcessDataShown, throttleForInteraction);
-    if (desiredInterval != m_AppliedSamplerInterval)
-    {
-        m_AppliedSamplerInterval = desiredInterval;
-        m_Sampler->setInterval(m_AppliedSamplerInterval);
-    }
+    // The sampler's interval is not touched here: it is the refresh setting, set by setSamplingInterval()
+    // alone, whatever the frame rate and whether the window is being resized, moved or minimized (#2731).
+    // Sampling and drawing are separate.
 
     // Force-refresh: ask the background sampler to run an extra enumeration immediately.
     if (m_ForceRefresh)
@@ -1042,7 +1275,52 @@ void ProcessesPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
+    adoptPlatform(); // the actions, icons and UDP collector the sampler thread built (#2731), once
     adoptNewerSnapshots();
+    // The test hook's startup selection (#1559), and a demo script's (#2827): one flag test per frame
+    // each until it fires or gives up.
+    if (m_StartupSelection.pending())
+    {
+        applyPendingSelection(m_StartupSelection, m_StartupSelectionShowsDetails, "startup selection");
+    }
+    if (m_RequestedSelection.pending())
+    {
+        applyPendingSelection(m_RequestedSelection, false, "requested selection");
+    }
+}
+
+void ProcessesPanel::requestStartupSelection(std::optional<SelectOverride::Target> target, const bool showDetails)
+{
+    m_StartupSelectionShowsDetails = showDetails;
+    m_StartupSelection = SelectOverride::Pending(std::move(target));
+}
+
+void ProcessesPanel::requestSelection(SelectOverride::Target target)
+{
+    m_RequestedSelection = SelectOverride::Pending(std::move(target));
+}
+
+void ProcessesPanel::applyPendingSelection(SelectOverride::Pending& pending, const bool showDetails, const std::string_view what)
+{
+    const std::vector<Domain::ProcessSnapshot>& snapshots = *m_CachedRenderSnapshots;
+    const SelectOverride::Pending::Step step = pending.onSnapshot(m_CachedSnapshotVersion, snapshots);
+    if (step.match.has_value())
+    {
+        // As a plain click on the row, then (showDetails) the row menu's Details (#1209).
+        const ProcessSelection::Identity id = ProcessSelection::identityOf(snapshots[*step.match]);
+        spdlog::info("ProcessesPanel: {} found PID {} ({})", what, id.pid, snapshots[*step.match].name);
+        m_Selection.selectOnly(id);
+        selectProcess(id);
+        if (showDetails)
+        {
+            Core::ShowProcessDetailsEvent event;
+            raiseEvent(event);
+        }
+    }
+    else if (step.gaveUp)
+    {
+        spdlog::warn("ProcessesPanel: {}: no process matched after {} snapshots; nothing selected", what, SelectOverride::MAX_SNAPSHOTS);
+    }
 }
 
 void ProcessesPanel::adoptNewerSnapshots()
@@ -1057,9 +1335,17 @@ void ProcessesPanel::adoptNewerSnapshots()
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(
-            m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport))
+            m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport, &m_CachedRowHistory))
     {
         m_CachedSnapshotVersion = newVersion;
+        // Selected processes that have exited drop out of the selection (#804): once per generation,
+        // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
+        (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
+        // The first generation brings the probe's capabilities, which the column defaults wait for (#2731).
+        if (!m_ColumnDefaultsApplied)
+        {
+            applyStartupColumnDefaults();
+        }
     }
 }
 
@@ -1082,34 +1368,11 @@ void ProcessesPanel::updateDisplayFreeze()
     }
 }
 
-int ProcessesPanel::visibleColumnCount() const
-{
-    int count = 0;
-    for (const ProcessColumn col : allProcessColumns())
-    {
-        if (m_ColumnSettings.isVisible(col))
-        {
-            ++count;
-        }
-    }
-    return count;
-}
-
-void ProcessesPanel::render(bool* open)
-{
-    if (!ImGui::Begin(ICON_FA_LIST " Processes", open))
-    {
-        ImGui::End();
-        return;
-    }
-
-    renderContent();
-
-    ImGui::End();
-}
-
 void ProcessesPanel::renderContent()
 {
+    // An F9 asked for on a frame the table is not drawn is dropped, never kept for a later one (#170).
+    const bool killRequested = m_KillShortcut.take();
+
     if (!m_ProcessModel)
     {
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process list unavailable",
@@ -1129,19 +1392,33 @@ void ProcessesPanel::renderContent()
     // Decide the Ctrl freeze before adopting, so a frozen frame keeps the generation it shows (#928).
     updateDisplayFreeze();
 
+    // Keyboard navigation (#160), read here in the panel's window: while it is hovered or focused and
+    // nothing is typed or open, the navigation keys are taken from ImGui's own keyboard navigation and
+    // move the selection instead. Applied inside the table, once the visible order is known.
+    auto navCommand = ProcessTableNavigation::NavCommand::None;
+    bool selectAllRequested = false;
+    if (KeyboardInput::tableNavigationArmed())
+    {
+        KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
+        navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
+        selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
+    }
+
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
     // onUpdate() adopts too, but onUpdate() is skipped without a sampler and a generation can be
     // published between the two; with nothing new this is one atomic load. Everything below is keyed
     // on m_CachedSnapshotVersion, the generation adopted with the vector, not on a version read
     // before adopting (#1394).
+    adoptPlatform();
     adoptNewerSnapshots();
     const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
     // follow them, through the same request path as the Columns menu (#1210).
-    // Per-process GPU support comes from the GPU probe, known only once it has started (#1210).
+    // Per-process GPU support comes from the GPU probe, known only once it has started (#1210), as is
+    // whether an accelerator is listed, which shows NPU % by default unless the user chose it (#1870).
     m_GpuSupport = gpuSupport();
     if (const Platform::ProcessCapabilities caps = processCapabilities();
         caps != m_ColumnDefaultsCapabilities || m_GpuSupport != m_ColumnDefaultsGpuSupport)
@@ -1173,6 +1450,13 @@ void ProcessesPanel::renderContent()
             liveKeys.insert(proc.uniqueKey);
         }
         std::erase_if(m_RowFormatCache, [&liveKeys](const auto& entry) { return !liveKeys.contains(entry.first); });
+        // And the tree's collapsed nodes that have exited (#838). A uniqueKey is never reused, so one
+        // gone from the snapshot can never be drawn again.
+        const bool prunedCollapsed = ProcessTreeFlatten::pruneCollapsedKeys(m_CollapsedKeys, liveKeys);
+        if (ProcessTreeFlatten::pruneCollapsedKeys(m_FilterCollapsedKeys, liveKeys) || prunedCollapsed)
+        {
+            ++m_CollapseGeneration;
+        }
         m_RowFormatCachePrunedVersion = m_CachedSnapshotVersion;
     }
 
@@ -1181,9 +1465,13 @@ void ProcessesPanel::renderContent()
     // Sized from the font and the hint it has to show, not a fixed 200px (#965).
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
-    ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
+    // The hint in the muted text colour: the running-process green read as a status (#1196).
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().textMuted);
 
-    ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
+    }
     ImGui::PopStyleColor();
 
     // Clear button
@@ -1210,42 +1498,17 @@ void ProcessesPanel::renderContent()
         m_CachedFilteredIndices.clear();
         m_CachedFilteredIndices.reserve(currentSnapshots.size());
 
+        // Case-insensitive, in the name or the command line, as the user guide says (#838)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (searchTerm.empty())
+            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm))
             {
                 m_CachedFilteredIndices.push_back(i);
             }
-            else
-            {
-                // Case-insensitive search in process name
-                const auto& name = currentSnapshots[i].name;
-                bool found = false;
-                if (name.size() >= searchTerm.size())
-                {
-                    for (size_t j = 0; j <= name.size() - searchTerm.size(); ++j)
-                    {
-                        bool match = true;
-                        for (size_t k = 0; k < searchTerm.size(); ++k)
-                        {
-                            if (lowerAscii(name[j + k]) != lowerAscii(searchTerm[k]))
-                            {
-                                match = false;
-                                break;
-                            }
-                        }
-                        if (match)
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (found)
-                {
-                    m_CachedFilteredIndices.push_back(i);
-                }
-            }
+        }
+        if (searchTerm.empty())
+        {
+            m_FilterCollapsedKeys.clear(); // The next filter opens fully expanded (#838)
         }
 
         m_CachedRunningCount = 0;
@@ -1259,25 +1522,24 @@ void ProcessesPanel::renderContent()
 
         if (searchTerm.empty())
         {
-            m_CachedSummaryStr = std::format("{:L} processes, {:L} running",
-                                             static_cast<long long>(currentSnapshots.size()),
-                                             static_cast<long long>(m_CachedRunningCount));
+            m_CachedSummaryStr = std::format("{} processes, {} running",
+                                             UI::Format::formatIntLocalized(currentSnapshots.size()),
+                                             UI::Format::formatIntLocalized(m_CachedRunningCount));
         }
         else
         {
-            m_CachedSummaryStr = std::format("{:L} / {:L} processes",
-                                             static_cast<long long>(m_CachedFilteredIndices.size()),
-                                             static_cast<long long>(currentSnapshots.size()));
+            m_CachedSummaryStr = std::format("{} / {} processes",
+                                             UI::Format::formatIntLocalized(m_CachedFilteredIndices.size()),
+                                             UI::Format::formatIntLocalized(currentSnapshots.size()));
         }
 
         m_CachedFilterVersion = adoptedVersion;
         m_CachedSearchTerm = std::string(searchTerm);
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
-        // Reset sorted indices to natural order so the next list-view sort starts from scratch.
-        // This keeps m_CachedFilteredIndices always in natural order for tree view.
+        // Reset sorted indices to natural order; the sort below sorts them again this frame (#1174).
         m_CachedSortedIndices = m_CachedFilteredIndices;
-        m_SortPending = true; // In tree view the sort below is skipped; leaving it must still sort (#1174)
+        m_SortPending = true;
     }
 
     // Process count with state summary (filtered/total), or for a few seconds the result of an action
@@ -1289,15 +1551,34 @@ void ProcessesPanel::renderContent()
     const float columnsButtonWidth = m_TextSizeCache.columnsLabelWidth + (style.FramePadding.x * 2.0F);
     const float listSegmentWidth = m_TextSizeCache.listViewLabelWidth + (style.FramePadding.x * 2.0F);
     const float treeSegmentWidth = m_TextSizeCache.treeViewLabelWidth + (style.FramePadding.x * 2.0F);
-    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth;
+    // In tree view, Expand all and Collapse all follow the List | Tree control (#838).
+    const float foldButtonWidth = m_TextSizeCache.foldIconWidth + (style.FramePadding.x * 2.0F);
+    const float foldButtonsWidth = m_TreeViewEnabled ? (style.ItemSpacing.x + foldButtonWidth) * 2.0F : 0.0F;
+    // "Authenticate and retry" beside a refused action's line (#2308) takes its room from the status.
+    const bool offerRetry = offersAuthenticateAndRetry();
+    const float retryButtonWidth = offerRetry ? ImGui::CalcTextSize(AuthorizeWording::RETRY_LABEL).x + (style.FramePadding.x * 2.0F) : 0.0F;
+    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth +
+                                (offerRetry ? retryButtonWidth + style.ItemSpacing.x : 0.0F);
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
-    const bool showActionResult = (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
-    const std::string& statusText = showActionResult ? m_RowActionResult.text : m_CachedSummaryStr;
+    // While a batch runs (#2142), its progress stands there instead, uncoloured.
+    const bool batchRunning = rowActionRunning();
+    const bool showActionResult = !batchRunning && (m_RowActionResultSeconds > 0.0F) && !m_RowActionResult.empty();
+    const std::string* statusSource = &m_CachedSummaryStr;
+    if (batchRunning)
+    {
+        statusSource = m_BatchRun.busy() ? &m_BatchRun.statusText() : &m_RowActionRun.pendingText();
+    }
+    else if (showActionResult)
+    {
+        statusSource = &m_RowActionResult.text;
+    }
+    const std::string& statusText = *statusSource;
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float summaryW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str(), m_CachedSummaryStr.c_str() + m_CachedSummaryStr.size()).x;
-    const float textW = showActionResult ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
+    const float textW =
+        (batchRunning || showActionResult) ? ImGui::CalcTextSize(statusText.c_str(), statusText.c_str() + statusText.size()).x : summaryW;
     const float statusMinX = ImGui::GetCursorPosX();
     const ProcessTableLayout::ToolbarStatusLayout statusLayout =
         ProcessTableLayout::layoutToolbarStatus(statusMinX, rightEdgeX, controlsWidth, style.ItemSpacing.x, textW, summaryW);
@@ -1343,6 +1624,15 @@ void ProcessesPanel::renderContent()
             ImGui::PopStyleColor();
         }
     }
+    if (offerRetry)
+    {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
+        {
+            retryRowActionAuthorized();
+        }
+        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
+    }
 
     // Column chooser, beside ImGui's own header right-click menu (#1209)
     ImGui::SameLine();
@@ -1367,16 +1657,28 @@ void ProcessesPanel::renderContent()
     {
         setTreeView(false);
     }
-    ImGui::SetItemTooltip("List view: every process, sortable by any column");
+    ImGui::SetItemTooltip("List view (F5): every process, sorted by the column you click");
     ImGui::SameLine(0.0F, 0.0F);
     if (viewModeSegment(TREE_VIEW_LABEL, m_TreeViewEnabled, treeSegmentWidth))
     {
         setTreeView(true);
     }
-    ImGui::SetItemTooltip("Tree view: processes under their parents");
+    ImGui::SetItemTooltip("Tree view (F5): processes under their parents, siblings sorted by the column you click");
+    if (m_TreeViewEnabled)
+    {
+        renderTreeFoldButtons(currentSnapshots, foldButtonWidth);
+    }
 
-    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
+    // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
+    renderBatchPriorityDialog();
+    // The row menu's Set affinity... (#1887), applied on its own Apply.
+    renderAffinityDialog();
+
+    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
+    // batch priority change (#1484)
     renderRowActionConfirm();
+    // The row menu's Create dump file... (#807): its confirm, then its progress and result.
+    m_DumpView.render(m_ProcessActions.get());
 
     // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
     // than one per row, opened by ID from the row (m_RowMenuPopupId, this same ID stack).
@@ -1402,8 +1704,6 @@ void ProcessesPanel::renderContent()
     // This adapts to whichever parent layout is active instead of assuming a fixed child height contract.
     const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
 
-    // Sortable only in list view -- tree view ignores sort specs entirely, so offering sortable
-    // headers there would accept the click and do nothing (#926).
     // Command absorbs whatever width the other columns leave, but never shrinks below its default;
     // past that point the table scrolls instead. See ProcessTableLayout.h for why this takes an
     // explicit inner width rather than just a stretch column (#924).
@@ -1415,8 +1715,7 @@ void ProcessesPanel::renderContent()
         m_ColumnSettings.isVisible(ProcessColumn::Command) ? scaledDefaultWidth(getColumnInfo(ProcessColumn::Command), emPx) : 0.0F;
     const float tableInnerWidth = ProcessTableLayout::computeInnerWidth(m_OtherColumnsWidth, commandMinWidth, m_TableVisibleWidth);
 
-    if (ImGui::BeginTable(
-            "ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(m_TreeViewEnabled), tableOuterSize, tableInnerWidth))
+    if (ImGui::BeginTable("ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(), tableOuterSize, tableInnerWidth))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -1504,8 +1803,8 @@ void ProcessesPanel::renderContent()
             }
 
             const auto info = getColumnInfo(col);
-            // ImGui draws the sort arrow at the sorted header's right edge; tree view is not sortable.
-            const bool showsSortArrow = !m_TreeViewEnabled && (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
+            // ImGui draws the sort arrow at the sorted header's right edge, in either view (#838).
+            const bool showsSortArrow = (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
             // The header item keeps the whole cell as its sort and right-click target: it is submitted
             // at the cell's start with a hidden label, and the name is drawn at its aligned position
             // over it. Moving the cursor before TableHeader() moved the item's start too, so an
@@ -1577,49 +1876,53 @@ void ProcessesPanel::renderContent()
             m_TableVisibleWidth = table->InnerClipRect.GetWidth();
         }
 
-        // Handle sorting: Disable in tree view mode to maintain parent-child hierarchy
-        if (!m_TreeViewEnabled)
+        // Sorting, in both views: the list shows the sorted indices as they are, and the tree view
+        // walks them, so each parent's children come out in this order under it (#838). Only re-sort
+        // when the sort spec changed (SpecsDirty) or when the filtered data changed (filterDirty).
+        // Clearing SpecsDirty prevents a redundant O(n log n) sort on every frame when neither the
+        // data nor the sort column has changed. m_SortPending covers rows reset to natural order with
+        // no sort spec change (#1174).
+        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs();
+            sortSpecs != nullptr && sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
         {
-            if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
+            const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+            const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+
+            // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+            const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
+            if (!sortColOpt.has_value())
             {
-                // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
-                // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
-                // on every frame when neither the data nor the sort column has changed.
-                // m_SortPending covers rows reset to natural order while in tree view (#1174).
-                if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
-                {
-                    const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
-                    const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-
-                    // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
-                    const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
-                    if (!sortColOpt.has_value())
-                    {
-                        sortSpecs->SpecsDirty = true;
-                        ImGui::EndTable();
-                        return;
-                    }
-
-                    const ProcessColumn sortCol = *sortColOpt;
-
-                    // Sort m_CachedSortedIndices (a copy of natural order) so that
-                    // m_CachedFilteredIndices remains in PID/natural order for tree view.
-                    m_CachedSortedIndices = m_CachedFilteredIndices;
-                    std::ranges::sort(
-                        m_CachedSortedIndices,
-                        [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                        { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
-                    sortSpecs->SpecsDirty = false;
-                    m_SortPending = false;
-                }
+                sortSpecs->SpecsDirty = true;
+                ImGui::EndTable();
+                return;
             }
-        } // End of sorting (disabled in tree view mode)
+
+            const ProcessColumn sortCol = *sortColOpt;
+
+            // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
+            // in natural order for the next sort to start from.
+            m_CachedSortedIndices = m_CachedFilteredIndices;
+            std::ranges::sort(m_CachedSortedIndices,
+                              [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
+                              { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+            sortSpecs->SpecsDirty = false;
+            m_SortPending = false;
+            ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
+        }
+
+        // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
+        applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
+
+        prepareRowMeters(currentSnapshots); // Inline meters (#1528)
+        // The Settings toggle, read each frame so a change shows at once; and the icons' size (#1800).
+        m_IconView.setEnabled(UserConfig::get().settings().showProcessIcons);
+        m_IconView.beginFrame();
 
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
         {
             // Render tree view (tree is rebuilt in onUpdate on refresh timer)
-            renderTreeView(currentSnapshots, m_CachedFilteredIndices);
+            renderTreeView(currentSnapshots, m_CachedSortedIndices);
         }
         else
         {
@@ -1627,6 +1930,10 @@ void ProcessesPanel::renderContent()
             // ImGuiListClipper only renders visible rows, skipping off-screen rows
             ImGuiListClipper clipper;
             clipper.Begin(static_cast<int>(m_CachedSortedIndices.size()));
+            if (m_ScrollSelectedIntoView && m_ScrollTargetRow < m_CachedSortedIndices.size())
+            {
+                clipper.IncludeItemByIndex(static_cast<int>(m_ScrollTargetRow)); // Drawn, so it can be scrolled to
+            }
             while (clipper.Step())
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
@@ -1638,10 +1945,15 @@ void ProcessesPanel::renderContent()
                     {
                         continue;
                     }
-                    renderProcessRow(currentSnapshots[procIdx], 0, false, false);
+                    renderProcessRow(currentSnapshots[procIdx],
+                                     {.procIdx = procIdx, .depth = 0, .hasChildren = false, .isExpanded = false, .isContext = false});
                 }
             }
         }
+        m_ScrollSelectedIntoView = false; // Done by the selected row if it was drawn; never carried over
+        // A row clicked this frame (#804): applied now the rows are drawn, so a Shift+click's range can
+        // read the visible order without rebuilding the tree rows under the loop above.
+        applyPendingClick(currentSnapshots);
 
         // Sync column visibility from ImGui back to our settings
         // This captures changes made via the right-click context menu. Not on a frame the Columns
@@ -1687,14 +1999,29 @@ void ProcessesPanel::setGpuModel(const std::shared_ptr<const Domain::GPUModel>& 
 ProcessColumnAvailability::GpuSupport ProcessesPanel::gpuSupport() const
 {
     const std::shared_ptr<const Domain::GPUModel> gpuModel = m_GpuModel.lock();
-    return ProcessColumnAvailability::gpuSupport(gpuModel != nullptr,
-                                                 gpuModel != nullptr && gpuModel->perProcessMetricsKnownUnsupported(),
-                                                 gpuModel != nullptr && gpuModel->perProcessUtilizationKnownUnsupported());
+    // An NPU or compute accelerator listed (#1799). Before the model's first publication that is
+    // unknown, which counts as listed for the NPU columns' support, as unknown per-process support
+    // counts as supported -- but not for NPU %'s default, which waits until one is known (#1870).
+    const std::shared_ptr<const Domain::GPUPublication> publication = (gpuModel != nullptr) ? gpuModel->publication() : nullptr;
+    // Known to be listed: the machine view's NPU tab's condition, which Process Details' NPU tab follows
+    // too (hasAccelerator(), #1869). False while there is no publication yet.
+    const bool acceleratorListed = GpuSection::showAcceleratorTab(publication.get());
+    const ProcessColumnAvailability::KnownUnsupported known =
+        (gpuModel == nullptr) ? ProcessColumnAvailability::KnownUnsupported{}
+                              : ProcessColumnAvailability::KnownUnsupported{
+                                    .perProcess = gpuModel->perProcessMetricsKnownUnsupported(),
+                                    .utilization = gpuModel->perProcessUtilizationKnownUnsupported(),
+                                    .npuPerProcess = gpuModel->perProcessNpuMetricsKnownUnsupported(),
+                                    .npuUtilization = gpuModel->perProcessNpuUtilizationKnownUnsupported(),
+                                };
+    return ProcessColumnAvailability::gpuSupport(
+        gpuModel != nullptr, known, (publication == nullptr) || acceleratorListed, acceleratorListed);
 }
 
-bool ProcessesPanel::hasPerProcessGpuMetrics() const
+bool ProcessesPanel::hasAccelerator() const
 {
-    return gpuSupport().perProcess;
+    // One condition with the NPU % column's default (#1870) and the machine view's NPU tab (#1799).
+    return gpuSupport().acceleratorListed;
 }
 
 Platform::ProcessCapabilities ProcessesPanel::processCapabilities() const
@@ -1741,8 +2068,9 @@ bool ProcessesPanel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vec
     return m_ProcessModel && m_ProcessModel->watchedSamplesSince(lastSeenVersion, outSamples);
 }
 
-void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)
+void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const ProcessTreeFlatten::ProcessTreeRow& row)
 {
+    const std::size_t procIdx = row.procIdx;
     ImGui::TableNextRow();
 
     // Get-or-build the pre-formatted strings for this row. Built lazily here --
@@ -1766,10 +2094,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         proc,
         m_CachedSnapshotVersion,
         m_TextSizeCache.stamp,
-        ProcessColumnAvailability::rowFormatOptions(caps,
-                                                    ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport.perProcess,
-                                                                                                      m_CachedGpuSupport.utilization,
-                                                                                                      m_CachedGpuSupport.readFailed)));
+        ProcessColumnAvailability::rowFormatOptions(
+            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator)));
 
     // Render all columns
     int colIdx = 0;
@@ -1802,11 +2128,40 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         // column (#1382).
         if (col == ProcessColumn::Name)
         {
-            renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
+            renderNameCell(proc, fmt, row);
             continue;
+        }
+        // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
+        // most one rectangle or one line (#1612).
+        if (m_MetersShown)
+        {
+            ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
+            ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
+}
+
+void ProcessesPanel::prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    m_MetersShown = m_MeterSettings.anyOn();
+    if (m_MeterSettings.sparklineMetrics() == 0)
+    {
+        m_CachedRowHistory.reset(); // No sparkline: hold no rings (the model publishes none from its next generation)
+    }
+    if (!m_MetersShown)
+    {
+        return;
+    }
+    // The absolute columns are scaled against their largest value in the adopted generation, worked
+    // out once when it is adopted, not per frame.
+    if (m_MeterMaximaVersion != m_CachedSnapshotVersion)
+    {
+        m_MeterMaxima.rebuild(snapshots);
+        m_MeterMaximaVersion = m_CachedSnapshotVersion;
+    }
+    const auto& scheme = UI::Theme::get().scheme();
+    m_MeterColors = {.low = scheme.processMeterLow, .high = scheme.processMeterHigh};
 }
 
 void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible)
@@ -1815,9 +2170,14 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     // The tree indent and expand/collapse control deliberately do NOT live here
     // -- see the comment below and #906.
 
-    // By identity, not PID alone: after the selected process exits, a new process
-    // given its PID is a different row and must not inherit the highlight.
-    const bool isSelected = ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey);
+    // By identity -- PID and start time, exactly (#1503) -- not PID alone: after
+    // the selected process exits, a new process given its PID is a different row
+    // and must not inherit the highlight. Every selected row is highlighted
+    // (#804), an O(1) lookup.
+    const ProcessSelection::Identity id = ProcessSelection::identityOf(proc);
+    const bool isSelected = m_Selection.contains(id);
+    // The primary row of a multi-selection -- the one Process Details shows -- is marked (#1926).
+    const ProcessRowSelection::RowState rowState = ProcessRowSelection::rowState(isSelected, id == primaryIdentity(), m_Selection.size());
 
     // The tree indent and expand/collapse button live in the Name column, not
     // here. This column is a fixed 60px, so indenting it pushed the PID text past
@@ -1834,8 +2194,11 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     *labelResult.ptr = '\0';
     const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
 
-    std::array<char, 40> selectableIdBuf{};
-    auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}", proc.uniqueKey);
+    // The ImGui ID from the full identity too, so two rows can never share one (#1503):
+    // "##pid_select_" + an int32 + '_' + a uint64 fits in 64.
+    std::array<char, 64> selectableIdBuf{};
+    const auto selRes =
+        std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}_{}", proc.pid, proc.startTimeTicks);
     *selRes.out = '\0';
     // ImGui fills a hovered row with HeaderHovered even when it is selected, so
     // the row just clicked would show the weaker hover tint until the pointer
@@ -1850,15 +2213,32 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     {
         ImGui::PopStyleColor();
     }
+    if (rowState == ProcessRowSelection::RowState::Primary && ImGui::IsItemVisible())
+    {
+        drawPrimaryRowMarker(UI::Theme::get().scheme().selectionPrimary);
+    }
     if (clicked)
     {
-        selectProcess(proc);
+        // Plain, Ctrl or Shift click (#804), applied once the rows are drawn (applyPendingClick()).
+        const ImGuiIO& io = ImGui::GetIO();
+        m_PendingClick = PendingClick{.id = id, .kind = ProcessSelection::clickKindFor(io.KeyCtrl, io.KeyShift)};
+    }
+    // A keyboard move selected this row (#160): bring it into view below the frozen header.
+    if (m_ScrollSelectedIntoView && id == primaryIdentity())
+    {
+        KeyboardInput::scrollLastItemIntoView();
+        m_ScrollSelectedIntoView = false;
     }
     // A right-press selects the row and opens its menu for that same process, in the same
     // frame. ImGui's context-item popup opens on the release instead, by which time the
-    // table may have re-sorted and put another process under the pointer (#1365).
+    // table may have re-sorted and put another process under the pointer (#1365). On a row
+    // of a multi-selection the selection is kept, so the menu can act on all of it (#804).
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
     {
+        if (!isSelected || m_Selection.size() < 2)
+        {
+            m_Selection.selectOnly(id);
+        }
         selectProcess(proc);
         m_RowMenuTarget = proc;
         ImGui::OpenPopup(m_RowMenuPopupId);
@@ -1873,9 +2253,13 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
 }
 
-void ProcessesPanel::renderNameCell(
-    const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded)
+void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
+                                    const RowFormatCache& fmt,
+                                    const ProcessTreeFlatten::ProcessTreeRow& row)
 {
+    const int depth = row.depth;
+    const bool hasChildren = row.hasChildren;
+    const bool isExpanded = row.isExpanded;
     // Tree depth is expressed here rather than in the PID column, which is a
     // fixed 60px and truncated PIDs once the indent was inside it (#906).
     //
@@ -1886,25 +2270,31 @@ void ProcessesPanel::renderNameCell(
     // on !column_is_resizable), so passing a depth-dependent width on later
     // frames is silently ignored.
     //
-    // So the indent yields instead: it is clamped against the cell's actual
-    // width, always reserving the expander slot plus MIN_NAME_WIDTH_EM of name.
-    // Deep rows therefore show less indentation than their depth would suggest
-    // rather than losing the name or, worse, the expander -- a parent whose
-    // expander is pushed out of the cell cannot be collapsed back to a usable
-    // width, which is a dead end rather than a cosmetic clip. Restoring full
-    // indent fidelity needs a wider default Name column, tracked in #913. The
-    // expander slot is the control itself plus the ItemSpacing.x that SameLine()
-    // adds after it -- both the button and the leaf Dummy are followed by
-    // SameLine(), so the spacing is always paid and must be reserved or the name
-    // keeps less room than promised.
-    const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+    // So the indent yields instead: every level's step shrinks alike until the
+    // deepest row in the tree keeps the expander slot plus MIN_NAME_WIDTH_EM of
+    // name (#838), and the result is clamped against the cell's actual width
+    // as well. Deep trees therefore show a smaller step than usual rather than
+    // losing the name or, worse, the expander -- a parent whose expander is
+    // pushed out of the cell cannot be collapsed back to a usable width, which
+    // is a dead end rather than a cosmetic clip. The step is the same at every
+    // level, so a child is always one step right of its parent. The expander
+    // slot is the control itself plus the ItemSpacing.x that SameLine() adds
+    // after it -- both the button and the leaf Dummy are followed by
+    // SameLine(), so the spacing is always paid and must be reserved or the
+    // name keeps less room than promised.
+    const float expanderWidth = ImGui::GetFrameHeight();
+    const float expanderSlotWidth = expanderWidth + ImGui::GetStyle().ItemSpacing.x;
     const float treeEmPx = ImGui::GetFontSize();
     const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
+    const float cellWidth = ImGui::GetContentRegionAvail().x;
+    const float indentPerLevel = ProcessTreeIndent::uniformIndentPerLevel(
+        ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, m_TreeRowsCache.maxDepth(), cellWidth, reservedForControls);
     const float indentWidth =
-        m_TreeViewEnabled
-            ? ProcessTreeIndent::clampedIndent(
-                  depth, ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, ImGui::GetContentRegionAvail().x, reservedForControls)
-            : 0.0F;
+        m_TreeViewEnabled ? ProcessTreeIndent::clampedIndent(depth, indentPerLevel, cellWidth, reservedForControls) : 0.0F;
+    if (m_TreeViewEnabled && depth > 0)
+    {
+        drawTreeGuideLines(depth, indentPerLevel, expanderWidth);
+    }
     const bool indented = indentWidth > 0.0F;
     if (indented)
     {
@@ -1917,7 +2307,7 @@ void ProcessesPanel::renderNameCell(
         // same slot a leaf's spacer takes, as tall as the text so the row keeps its height.
         // Stack-allocated button ID: avoids heap allocation per visible row per frame
         std::array<char, 40> buttonIdBuf{};
-        auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
+        const auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "##tree_btn_{}", proc.uniqueKey);
         *btnRes.out = '\0';
         const ImVec2 slotPos = ImGui::GetCursorScreenPos();
         const float slotWidth = ImGui::GetFrameHeight();
@@ -1925,19 +2315,19 @@ void ProcessesPanel::renderNameCell(
         const auto& scheme = UI::Theme::get().scheme();
         const float caretWidth = isExpanded ? m_TextSizeCache.caretDownWidth : m_TextSizeCache.caretRightWidth;
         ImGui::GetWindowDrawList()->AddText(ImVec2(slotPos.x + std::floor((slotWidth - caretWidth) * 0.5F), slotPos.y),
-                                            ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
+                                            ImGui::GetColorU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
                                             isExpanded ? ICON_FA_CARET_DOWN : ICON_FA_CARET_RIGHT);
         ImGui::SetItemTooltip(isExpanded ? "Collapse" : "Expand");
         if (toggled)
         {
-            // Toggle collapsed state using uniqueKey
+            // Toggle collapsed state using uniqueKey, in the filter's own set while one is on (#838)
             if (isExpanded)
             {
-                m_CollapsedKeys.insert(proc.uniqueKey);
+                activeCollapsedKeys().insert(proc.uniqueKey);
             }
             else
             {
-                m_CollapsedKeys.erase(proc.uniqueKey);
+                activeCollapsedKeys().erase(proc.uniqueKey);
             }
             ++m_CollapseGeneration; // The tree's rows are rebuilt next frame (#1138)
         }
@@ -1950,40 +2340,103 @@ void ProcessesPanel::renderNameCell(
         ImGui::SameLine();
     }
 
-    renderLeftAlignedText(proc.name, fmt.nameWidth);
+    // The program's icon, or the generic one, before its name (#1800).
+    m_IconView.drawInline(proc);
+    // A collapsed parent's child count follows its name (#838), muted. The name keeps room for it, so a
+    // long name is cut short with an ellipsis before the badge rather than pushing it out of the cell.
+    ProcessTreeBadge::BadgeBuffer badgeBuffer{};
+    const std::string_view badge =
+        (m_TreeViewEnabled && hasChildren && !isExpanded) ? ProcessTreeBadge::badgeText(row.childCount, badgeBuffer) : std::string_view{};
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float badgeWidth = badge.empty() ? 0.0F : ImGui::CalcTextSize(badge.data(), badge.data() + badge.size()).x;
+    static_cast<void>(UI::Widgets::cellText(proc.name,
+                                            cachedTextWidth(proc.name, fmt.nameWidth),
+                                            {.rightAligned = false,
+                                             .clippedTooltip = true,
+                                             .layoutFullText = false,
+                                             .trailingReservePx = badge.empty() ? 0.0F : style.ItemSpacing.x + badgeWidth}));
+    if (!badge.empty())
+    {
+        ImGui::SameLine(0.0F, style.ItemSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+        ImGui::TextUnformatted(badge.data(), badge.data() + badge.size());
+        ImGui::PopStyleColor();
+        if (ImGui::BeginItemTooltip())
+        {
+            const std::string tooltip = ProcessTreeBadge::badgeTooltip(row.childCount, !m_CachedSearchTerm.empty());
+            ImGui::TextUnformatted(tooltip.data(), tooltip.data() + tooltip.size());
+            ImGui::EndTooltip();
+        }
+    }
 
     if (indented)
     {
         ImGui::Unindent(indentWidth);
     }
 }
-void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
+ProcessTreeFlatten::ProcessTreeRowsKey ProcessesPanel::treeRowsKey() const noexcept
 {
-    // The expanded, filtered tree flattened into render order (roots in the order of filteredIndices,
-    // to respect PID/natural order), so ImGuiListClipper below can bound the expensive part --
-    // renderProcessRow(), which measures/renders every column -- to visible rows only. The rows are
-    // rebuilt only when a new snapshot is adopted, the filter result is rebuilt, or a node is
-    // collapsed or expanded, not every frame (#1138); see ProcessTreeFlatten::ProcessTreeRowsCache.
+    return {
+        .snapshotVersion = m_CachedSnapshotVersion,
+        .filterGeneration = m_FilterGeneration,
+        .sortGeneration = m_SortGeneration,
+        .collapseGeneration = m_CollapseGeneration,
+        // A filtered tree shows each match's ancestors, dimmed, rather than making it a root (#838).
+        .context =
+            m_CachedSearchTerm.empty() ? ProcessTreeFlatten::FilterContext::MatchesOnly : ProcessTreeFlatten::FilterContext::WithAncestors,
+    };
+}
+
+void ProcessesPanel::renderTreeFoldButtons(const std::vector<Domain::ProcessSnapshot>& snapshots, float buttonWidth)
+{
+    ImGui::SameLine();
+    if (ImGui::Button(EXPAND_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)))
+    {
+        activeCollapsedKeys().clear();
+        ++m_CollapseGeneration;
+    }
+    ImGui::SetItemTooltip("Expand all");
+    ImGui::SameLine();
+    if (ImGui::Button(COLLAPSE_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)) && ProcessTreeFlatten::collapseAll(snapshots, activeCollapsedKeys()))
+    {
+        ++m_CollapseGeneration;
+    }
+    ImGui::SetItemTooltip("Collapse all: only the top-level processes stay in view");
+}
+
+void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& sortedIndices)
+{
+    // The expanded, filtered tree flattened into render order -- the roots, and each parent's
+    // children, in the table's sort order (#838) -- so ImGuiListClipper below can bound the expensive
+    // part, renderProcessRow(), which measures/renders every column, to visible rows only. The rows
+    // are rebuilt only when a new snapshot is adopted, the filter result is rebuilt or sorted, or a
+    // node is collapsed or expanded, not every frame (#1138); see ProcessTreeFlatten::ProcessTreeRowsCache.
     // Held by reference while rendering: an expander toggled below only advances
     // m_CollapseGeneration, so the rows are rebuilt next frame, never during this loop.
-    const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows = m_TreeRowsCache.rows(
-        {
-            .snapshotVersion = m_CachedSnapshotVersion,
-            .filterGeneration = m_FilterGeneration,
-            .collapseGeneration = m_CollapseGeneration,
-        },
-        snapshots,
-        filteredIndices,
-        m_CollapsedKeys);
+    const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows =
+        m_TreeRowsCache.rows(treeRowsKey(), snapshots, sortedIndices, activeCollapsedKeys());
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
+    if (m_ScrollSelectedIntoView && m_ScrollTargetRow < rows.size())
+    {
+        clipper.IncludeItemByIndex(static_cast<int>(m_ScrollTargetRow)); // Drawn, so it can be scrolled to
+    }
     while (clipper.Step())
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
             const ProcessTreeFlatten::ProcessTreeRow& row = rows[static_cast<std::size_t>(i)];
-            renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded);
+            // An ancestor shown only to place a match below it is drawn dimmed (#838).
+            if (row.isContext)
+            {
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * CONTEXT_ROW_ALPHA);
+            }
+            renderProcessRow(snapshots[row.procIdx], row);
+            if (row.isContext)
+            {
+                ImGui::PopStyleVar();
+            }
         }
     }
 }
@@ -2022,6 +2475,7 @@ void ProcessesPanel::renderColumnsMenu()
     ImGui::PopItemFlag();
 
     ImGui::Separator();
+    renderMeterMenu();
     const bool canReset = !ProcessColumnAvailability::hasDefaultColumns(shown, caps, m_GpuSupport) || !m_TableHasDefaultOrder;
     if (ImGui::MenuItem(ICON_FA_ROTATE_LEFT " Reset columns", nullptr, false, canReset))
     {
@@ -2030,6 +2484,60 @@ void ProcessesPanel::renderColumnsMenu()
         m_ResetColumnOrderRequested = true;
     }
     ImGui::SetItemTooltip("Show the default columns, in their default order");
+}
+
+void ProcessesPanel::renderMeterMenu()
+{
+    if (!ImGui::BeginMenu(ICON_FA_CHART_BAR " Show meter"))
+    {
+        ImGui::SetItemTooltip("Draw a bar or a sparkline of recent values behind a column's value");
+        return;
+    }
+    ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+    // A row per meter column, a radio button per style: every column's choice in view, one click to change.
+    constexpr auto STYLES = std::to_array<std::pair<ProcessRowMeter::Style, const char*>>({
+        {ProcessRowMeter::Style::Off, "Off"},
+        {ProcessRowMeter::Style::Bar, "Bar"},
+        {ProcessRowMeter::Style::Sparkline, "Sparkline"},
+    });
+    if (ImGui::BeginTable("##meter_styles", static_cast<int>(STYLES.size()) + 1, ImGuiTableFlags_SizingFixedFit))
+    {
+        for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+        {
+            const auto info = getColumnInfo(col);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(info.menuName.data(), info.menuName.data() + info.menuName.size());
+            if (ProcessRowMeter::scaleOf(col) == ProcessRowMeter::Scale::Absolute)
+            {
+                ImGui::SetItemTooltip("Scaled against the largest value in the list (a sparkline: in its own history)");
+            }
+            ImGui::PushID(static_cast<int>(toIndex(col)));
+            for (const auto& [style, label] : STYLES)
+            {
+                ImGui::TableNextColumn();
+                bool chosen = false;
+                {
+                    const UI::Widgets::FrameOutlineScope frameOutline;
+                    chosen = ImGui::RadioButton(label, m_MeterSettings.style(col) == style);
+                }
+                if (chosen)
+                {
+                    m_MeterSettings.setStyle(col, style);
+                    UserConfig::get().settings().processMeters = m_MeterSettings;
+                    if (m_ProcessModel)
+                    {
+                        m_ProcessModel->setRowHistoryMetrics(m_MeterSettings.sparklineMetrics());
+                    }
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PopItemFlag();
+    ImGui::EndMenu();
 }
 
 bool ProcessesPanel::applyColumnRequests()
@@ -2047,6 +2555,14 @@ bool ProcessesPanel::applyColumnRequests()
     if (!m_RequestedColumns.has_value())
     {
         return false;
+    }
+    // Not on a frame ImGui initializes the table (created, or its saved layout loaded): it sets every
+    // column's visibility from its flags or that layout when the layout locks, after this, and the
+    // request would be lost -- the next frame would then take the difference for the user's own toggle
+    // and mark the column chosen (#2736). Kept for the next frame, and still no sync on this one.
+    if (const ImGuiTable* table = ImGui::GetCurrentTable(); table != nullptr && (table->IsInitializing || table->IsSettingsRequestLoad))
+    {
+        return true;
     }
     // TableSetColumnEnabled(false) ignores a column's NoHide flag, so PID and Name are kept shown
     // here whatever the request says (#1209).
@@ -2069,12 +2585,14 @@ void ProcessesPanel::syncNameWidthForViewMode()
     {
         return;
     }
-    m_NameWidthSyncPending = false;
     const ImGuiTable* table = ImGui::GetCurrentTable();
-    if (table == nullptr)
+    // A table on its first frame isn't laid out yet: ImGui sets MinColumnWidth in its first layout
+    // pass, after this, and TableSetColumnWidth asserts against a zero minimum (#1656). Wait a frame.
+    if (table == nullptr || table->MinColumnWidth <= 0.0F)
     {
         return;
     }
+    m_NameWidthSyncPending = false;
     const auto nameIdx = static_cast<int>(toIndex(ProcessColumn::Name));
     const float currentWidth = table->Columns[nameIdx].WidthGiven;
     if (m_TreeViewEnabled)
@@ -2105,11 +2623,9 @@ void ProcessesPanel::setTreeView(bool enabled)
     m_NameWidthSyncPending = true;
     if (m_TreeViewEnabled)
     {
-        // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
-        // it is not. Keep the layout as it stands now, in list view, so a layout saved later
-        // can still carry the user's sort (#952). Kept after returning to list view too: a
-        // resize made in tree view leaves ImGui's stored settings without a sort, and merely
-        // becoming sortable again does not rewrite them, so the gap outlasts tree view itself.
+        // Keep the layout as it stands now, in list view, so a layout saved later still carries the
+        // user's sort if a capture has lost it (#952). Tree view used to drop the sort from ImGui's
+        // settings by not being sortable; it sorts too now (#838), so this is only a safety net.
         m_SortBackupLayout = captureTableLayout();
         spdlog::debug("ProcessesPanel: Switched to tree view");
     }
@@ -2121,19 +2637,244 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
 }
 
+void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                        std::vector<std::size_t>& visible,
+                                        std::vector<ProcessTableNavigation::TreeRowShape>* shapes)
+{
+    // The sorted list, or the flattened tree (from the same cache renderTreeView() draws, so this costs
+    // no rebuild).
+    visible.clear();
+    if (shapes != nullptr)
+    {
+        shapes->clear();
+    }
+    if (m_TreeViewEnabled)
+    {
+        const auto& rows = m_TreeRowsCache.rows(treeRowsKey(), snapshots, m_CachedSortedIndices, activeCollapsedKeys());
+        visible.reserve(rows.size());
+        if (shapes != nullptr)
+        {
+            shapes->reserve(rows.size());
+        }
+        for (const ProcessTreeFlatten::ProcessTreeRow& row : rows)
+        {
+            visible.push_back(row.procIdx);
+            if (shapes != nullptr)
+            {
+                shapes->push_back({.depth = row.depth, .hasChildren = row.hasChildren, .isExpanded = row.isExpanded});
+            }
+        }
+    }
+    else
+    {
+        visible = m_CachedSortedIndices;
+    }
+    // The indices fit the adopted generation; checked anyway, as the row loops do (#1394). A dropped
+    // index would misalign the tree shapes, so Left/Right are then left to do nothing.
+    std::erase_if(visible, [&snapshots](std::size_t idx) { return idx >= snapshots.size(); });
+    if (shapes != nullptr && visible.size() != shapes->size())
+    {
+        shapes->clear();
+    }
+}
+
+std::vector<ProcessSelection::Identity> ProcessesPanel::visibleIdentities(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    std::vector<std::size_t> visible;
+    collectVisibleRows(snapshots, visible, nullptr);
+    std::vector<ProcessSelection::Identity> ids;
+    ids.reserve(visible.size());
+    for (const std::size_t idx : visible)
+    {
+        ids.push_back(ProcessSelection::identityOf(snapshots[idx]));
+    }
+    return ids;
+}
+
+void ProcessesPanel::applyPendingClick(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    if (!m_PendingClick.has_value())
+    {
+        return;
+    }
+    const PendingClick click = *m_PendingClick;
+    m_PendingClick.reset();
+
+    using ProcessSelection::ClickKind;
+    const bool isRange = (click.kind == ClickKind::Range || click.kind == ClickKind::AddRange);
+    // Only a range reads the visible order: an O(rows) pass on a Shift+click, never on a plain one.
+    const std::vector<ProcessSelection::Identity> ids = isRange ? visibleIdentities(snapshots) : std::vector<ProcessSelection::Identity>{};
+    m_Selection.click(click.kind, click.id, ids);
+    // The clicked row becomes the primary process, unless a Ctrl+click just removed it from the
+    // selection: Process Details then keeps showing what it showed.
+    if (m_Selection.contains(click.id))
+    {
+        selectProcess(click.id);
+    }
+    else if (m_Selection.size() == 1 && !m_Selection.contains(primaryIdentity()))
+    {
+        // Ctrl+click removed the primary row and left one: that row is the selection now, so it
+        // becomes the primary too, or F9 (which acts on the primary) would refuse (#804 review).
+        const ProcessSelection::Identity remaining = *m_Selection.selected().begin();
+        if (std::ranges::any_of(snapshots,
+                                [&remaining](const Domain::ProcessSnapshot& s) { return ProcessSelection::identityOf(s) == remaining; }))
+        {
+            selectProcess(remaining);
+        }
+    }
+}
+
+void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                        ProcessTableNavigation::NavCommand command,
+                                        bool killRequested,
+                                        bool selectAllRequested)
+{
+    namespace Nav = ProcessTableNavigation;
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested)
+    {
+        return; // The common frame: no key, so the visible order is not even looked at
+    }
+
+    // The visible rows in drawn order, as indices into snapshots.
+    std::vector<std::size_t> visible;
+    std::vector<Nav::TreeRowShape> shapes;
+    collectVisibleRows(snapshots, visible, &shapes);
+
+    // Their identities, PID and start time (#1503), parallel to visible.
+    std::vector<ProcessSelection::Identity> ids;
+    ids.reserve(visible.size());
+    for (const std::size_t idx : visible)
+    {
+        ids.push_back(ProcessSelection::identityOf(snapshots[idx]));
+    }
+
+    // Ctrl+A (#804): every row shown -- filtered, and in tree view without collapsed branches.
+    if (selectAllRequested)
+    {
+        m_Selection.selectAll(ids);
+    }
+
+    const std::optional<std::size_t> current =
+        (m_SelectedPid == -1) ? std::nullopt : Nav::indexOfKey<ProcessSelection::Identity>(ids, primaryIdentity());
+
+    // F9: the row menu's Kill, confirmed in its dialog for the target captured here. Only for a
+    // selected row the user can see, only when the platform can kill, and never over a row action
+    // already requested or open: a menu action's dialog opens on the next frame, before ImGui knows
+    // of it, so the popup stack alone would let F9 replace its action and target (#170).
+    // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
+    // the one highlighted row, when it is visible.
+    // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
+    // So is a dump's confirm, progress or result (#807), and a batch still running on its worker (#2142).
+    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
+                                  m_AffinityDialog.isPending() || m_DumpView.active() || rowActionRunning();
+    if (killRequested && m_Selection.size() > 1)
+    {
+        // Only while at least one selected row is visible: with every selected row filtered out, F9
+        // must not open a kill for rows the user cannot see (#804 review).
+        if (Detail::isActionAvailable(m_ActionCapabilities, Detail::ProcessAction::Kill) && !rowActionPending &&
+            m_Selection.anyVisible(ids))
+        {
+            requestSelectionAction(Detail::ProcessAction::Kill);
+        }
+    }
+    else if (killRequested && m_Selection.size() == 1)
+    {
+        // The one highlighted row, found by its identity rather than taken to be the primary: an
+        // exited primary is kept while the selection moves on, and Ctrl+A over a filter can select one
+        // row without making it primary, yet F9 must act on what is highlighted (#804 review). The
+        // identity is PID and start time, compared exactly, so only that process's row can match
+        // (#1503).
+        const ProcessSelection::Identity selectedId = *m_Selection.selected().begin();
+        if (const std::optional<std::size_t> row = Nav::indexOfKey<ProcessSelection::Identity>(ids, selectedId); row.has_value())
+        {
+            const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
+            if (Detail::killShortcutAllowed(m_ActionCapabilities, selectedId, rowActionPending))
+            {
+                requestRowAction(Detail::ProcessAction::Kill, proc);
+            }
+        }
+    }
+    // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
+    // leaves the table exactly as it was.
+    if (command == Nav::NavCommand::None)
+    {
+        return;
+    }
+
+    const auto selectRow = [&](std::size_t row)
+    {
+        // A move selects that row alone, also out of a multi-selection (#804), and anchors a later
+        // Shift+click there.
+        m_Selection.selectOnly(ids[row]);
+        if (row != current)
+        {
+            selectProcess(snapshots[visible[row]]);
+        }
+        m_ScrollSelectedIntoView = true;
+        m_ScrollTargetRow = row;
+    };
+
+    if (command == Nav::NavCommand::Left || command == Nav::NavCommand::Right)
+    {
+        // With no visible selection this selects the first row, like every other move.
+        const Nav::TreeStep step = Nav::treeStepFrom(shapes, current, command);
+        switch (step.kind)
+        {
+        case Nav::TreeStepKind::Collapse:
+            // Tree collapse state stays keyed by uniqueKey: it only decides what is drawn, never
+            // which process is selected or acted on.
+            activeCollapsedKeys().insert(snapshots[visible[step.index]].uniqueKey);
+            ++m_CollapseGeneration; // renderTreeView() rebuilds the rows from it this frame (#1138)
+            break;
+        case Nav::TreeStepKind::Expand:
+            activeCollapsedKeys().erase(snapshots[visible[step.index]].uniqueKey);
+            ++m_CollapseGeneration;
+            break;
+        case Nav::TreeStepKind::Select:
+            selectRow(step.index);
+            break;
+        case Nav::TreeStepKind::None:
+            break;
+        }
+        return;
+    }
+
+    // A row is a line of text plus the cell padding above and below it.
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    const std::size_t page = Nav::pageStep(KeyboardInput::tableScrollViewHeight(), rowHeight);
+    if (const std::optional<std::size_t> next = Nav::stepSelection(current, command, visible.size(), page); next.has_value())
+    {
+        selectRow(*next);
+    }
+}
+
 void ProcessesPanel::selectProcess(const Domain::ProcessSnapshot& proc)
 {
-    m_SelectedPid = proc.pid;
-    m_SelectedUniqueKey = proc.uniqueKey;
+    selectProcess(ProcessSelection::identityOf(proc));
+}
 
-    // Emit process selection event for other panels to react
-    Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
-    Core::Application::get().raiseEvent(event);
+void ProcessesPanel::selectProcess(const ProcessSelection::Identity& id)
+{
+    m_SelectedPid = id.pid;
+    m_SelectedStartTicks = id.startTimeTicks;
+
+    // Emit process selection event for other panels to react, with the exact identity (#1503)
+    Core::ProcessSelectedEvent event(id.pid, id.startTimeTicks);
+    raiseEvent(event);
 }
 
 void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 {
+    // Opened on a row of a multi-selection (#804): its actions are for every selected process; Details
+    // and Copy stay with the row it was opened on.
+    const std::size_t batchCount =
+        (m_Selection.size() > 1 && m_Selection.contains(ProcessSelection::identityOf(proc))) ? m_Selection.size() : 0;
+
     // Only while the menu is open, so formatting here costs nothing on an ordinary frame.
+    if (batchCount > 0)
+    {
+        ImGui::TextDisabled("%zu processes selected", batchCount);
+    }
     ImGui::TextDisabled("%s (PID %d)", proc.name.c_str(), proc.pid);
     ImGui::Separator();
 
@@ -2141,7 +2882,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     {
         selectProcess(proc);
         Core::ShowProcessDetailsEvent event;
-        Core::Application::get().raiseEvent(event);
+        raiseEvent(event);
     }
 
     ImGui::Separator();
@@ -2161,33 +2902,98 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         ImGui::SetClipboardText(proc.command.c_str());
     }
 
-    // Only what this platform can do (ProcessActionCapabilities), as in the Actions tab.
+    // No other process action while one runs on its worker (#2142, #2305): its result is still to come.
+    const bool actionsIdle = !rowActionRunning();
+    // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
+    // ID the same whichever it says.
+    const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
+    {
+        const std::string label =
+            (batchCount > 0)
+                ? std::format("{} {} {} processes...###{}", icon, Detail::actionLabel(action), batchCount, Detail::actionLabel(action))
+                : std::format("{} {}...###{}", icon, Detail::actionLabel(action), Detail::actionLabel(action));
+        return ImGui::MenuItem(label.c_str(), shortcut, false, actionsIdle);
+    };
+    const auto request = [this, &proc, batchCount](Detail::ProcessAction action)
+    {
+        if (batchCount > 0)
+        {
+            requestSelectionAction(action);
+        }
+        else
+        {
+            requestRowAction(action, proc);
+        }
+    };
+
+    // Only what this platform can do (ProcessActionCapabilities), as in the Actions block.
     const Platform::ProcessActionCapabilities& can = m_ActionCapabilities;
     if (can.canStop || can.canContinue)
     {
         ImGui::Separator();
-        if (can.canStop && ImGui::MenuItem(ICON_FA_PAUSE " Suspend..."))
+        if (can.canStop && actionItem(Detail::ProcessAction::Stop, ICON_FA_PAUSE, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Stop, proc);
+            request(Detail::ProcessAction::Stop);
         }
-        if (can.canContinue && ImGui::MenuItem(ICON_FA_PLAY " Resume..."))
+        if (can.canContinue && actionItem(Detail::ProcessAction::Resume, ICON_FA_PLAY, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Resume, proc);
+            request(Detail::ProcessAction::Resume);
         }
+    }
+    // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
+    // A single process's priority stays in Process Details' Actions block.
+    if (ProcessBatch::offersBatchPriority(can, batchCount))
+    {
+        ImGui::Separator();
+        const std::string label = std::format("{} Set priority for {} processes...###SetPriority", ICON_FA_GAUGE_HIGH, batchCount);
+        if (ImGui::MenuItem(label.c_str(), nullptr, false, actionsIdle))
+        {
+            requestSelectionPriority();
+        }
+    }
+    // One process's CPUs (#1887), in its own dialog: a selection's processes rarely want the same set.
+    if (can.canSetAffinity && batchCount == 0)
+    {
+        ImGui::Separator();
+        if (ImGui::MenuItem(ICON_FA_MICROCHIP " Set affinity...###SetAffinity", nullptr, false, actionsIdle))
+        {
+            m_AffinityDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                  proc.name,
+                                  proc.cpuAffinity,
+                                  static_cast<std::size_t>(std::thread::hardware_concurrency()),
+                                  // Read once, on the click: the groups and core kinds to arrange the boxes by (#1881)
+                                  m_ProcessActions ? m_ProcessActions->affinityLayout() : Platform::CpuAffinityLayout{});
+        }
+    }
+    // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.
+    if (DumpDetail::offersCreateDump(can, batchCount))
+    {
+        if (!can.canSetAffinity || batchCount != 0) // else it shares Set affinity...'s group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL, nullptr, false, actionsIdle))
+        {
+            m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                               proc.name,
+                               DumpDetail::rememberedDumpDirectory(),
+                               m_ProcessActions.get());
+        }
+        ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
     }
     if (can.canTerminate || can.canKill)
     {
         // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
-        // danger-coloured button, as in the Actions tab (#1273).
+        // danger-coloured button, as in the Actions block (#1273).
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textError);
-        if (can.canTerminate && ImGui::MenuItem(ICON_FA_XMARK " Terminate..."))
+        if (can.canTerminate && actionItem(Detail::ProcessAction::Terminate, ICON_FA_XMARK, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Terminate, proc);
+            request(Detail::ProcessAction::Terminate);
         }
-        if (can.canKill && ImGui::MenuItem(ICON_FA_SKULL " Kill..."))
+        if (can.canKill && actionItem(Detail::ProcessAction::Kill, ICON_FA_SKULL, "F9"))
         {
-            requestRowAction(Detail::ProcessAction::Kill, proc);
+            request(Detail::ProcessAction::Kill);
         }
         ImGui::PopStyleColor();
     }
@@ -2197,27 +3003,204 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
 {
     m_RowAction.action = action;
     // This row's identity: the platform refuses the action if the PID has since been reused (#973).
-    m_RowAction.target = Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
-    m_RowAction.processName = proc.name;
+    m_RowAction.targets.assign(
+        1,
+        ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name, .priority = {}});
+    m_RowAction.title = Detail::confirmTitle(action, proc.name, proc.pid);
+    m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid);
     m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
+{
+    // The selected processes still listed, each by PID and start time (#973): one that has exited since
+    // it was selected is not among them, and one whose PID is reused is refused by the platform.
+    std::vector<ProcessBatch::BatchTarget> targets = ProcessBatch::resolveTargets(
+        *m_CachedRenderSnapshots, [this](const Platform::ProcessTarget& target) { return m_Selection.contains(target); });
+    if (targets.empty())
+    {
+        return;
+    }
+    if (targets.size() == 1)
+    {
+        const ProcessBatch::BatchTarget& only = targets.front();
+        m_RowAction.title = Detail::confirmTitle(action, only.name, only.target.pid);
+        m_RowAction.question = Detail::confirmBody(action, only.name, only.target.pid);
+    }
+    else
+    {
+        m_RowAction.title = ProcessBatch::confirmTitle(action, targets.size());
+        m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
+    }
+    m_RowAction.action = action;
+    m_RowAction.targets = std::move(targets);
+    m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::requestSelectionPriority()
+{
+    // As requestSelectionAction(): the selected processes still listed, each by PID and start time, so
+    // one that has exited is not among them and a reused PID is refused when the priority is set.
+    std::vector<ProcessBatch::BatchTarget> targets = ProcessBatch::resolveTargets(
+        *m_CachedRenderSnapshots, [this](const Platform::ProcessTarget& target) { return m_Selection.contains(target); });
+    if (targets.empty())
+    {
+        return;
+    }
+    m_BatchPriorityDialog.open(std::move(targets), m_OwnPid);
+}
+
+void ProcessesPanel::renderBatchPriorityDialog()
+{
+    const std::optional<std::int32_t> nice = m_BatchPriorityDialog.render();
+    if (!nice.has_value())
+    {
+        return;
+    }
+    // Apply: the dialog listed these processes, so it was the confirmation (#1539). Every one in turn,
+    // by identity, TaskSmack itself last, on the batch's worker (#2142); one summary line naming the
+    // priority applied (#1484) when it finishes.
+    if (!m_ProcessActions)
+    {
+        showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
+        return;
+    }
+    const std::span<const ProcessBatch::BatchTarget> targets = m_BatchPriorityDialog.targets();
+    if (std::optional<ProcessBatch::BatchRunOutcome> failed = m_BatchRun.startPriority(
+            *m_ProcessActions, std::vector<ProcessBatch::BatchTarget>(targets.begin(), targets.end()), *nice, m_OwnPid);
+        failed.has_value())
+    {
+        showBatchOutcome(std::move(*failed));
+    }
+}
+
+void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
+{
+    m_RowRetry.reset();
+    m_RowActionResult = std::move(outcome.message);
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (outcome.anySucceeded)
+    {
+        requestRefresh(); // Show the processes acted on without waiting for the next sample
+    }
+}
+
+void ProcessesPanel::renderAffinityDialog()
+{
+    const std::optional<Platform::CpuAffinity> cpus = m_AffinityDialog.render();
+    if (!cpus.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget target = m_AffinityDialog.target();
+    runRowAction(
+        std::format("Setting the CPU affinity of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
+        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
+        { return affinityResultMessage(name, pid, cpus, result); },
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
+}
+
+template<typename Work>
+void ProcessesPanel::runRowAction(std::string pending, Work work, RowResultFormat format, std::optional<Platform::AuthorizedAction> retry)
+{
+    if (!m_ProcessActions)
+    {
+        showRowActionResult(format(Platform::ProcessActionResult::error("Process actions unavailable")), false);
+        return;
+    }
+    if (rowActionRunning())
+    {
+        showRowActionResult(format(Platform::ProcessActionResult::error("Another action is still running")), false);
+        return;
+    }
+    static_cast<void>(m_RowActionRun.start(
+        std::move(pending),
+        std::move(work),
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - the std::function moved into the finish is owned by it, not leaked
+        [this, format = std::move(format), retry = std::move(retry)](const Platform::ProcessActionResult& result)
+        {
+            showRowActionResult(format(result), result.success);
+            if (result.permissionDenied && retry.has_value() && m_ProcessActions &&
+                m_ProcessActions->actionCapabilities().canAuthorizeInteractively)
+            {
+                m_RowRetry = RowRetry{.action = *retry, .format = format};
+                m_RowActionResultSeconds = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
+            }
+        }));
+}
+
+void ProcessesPanel::retryRowActionAuthorized()
+{
+    if (!m_RowRetry.has_value() || !offersAuthenticateAndRetry())
+    {
+        return;
+    }
+    RowRetry retry = std::move(*m_RowRetry);
+    m_RowRetry.reset();
+    runRowAction(
+        std::format("Waiting for authorization to act on PID {}...", retry.action.target.pid),
+        [actions = m_ProcessActions.get(), action = retry.action](const std::stop_token& stopToken)
+        { return actions->runAuthorized(action, stopToken); },
+        std::move(retry.format),
+        std::nullopt); // a refusal to the administrator isn't offered again
+}
+
+void ProcessesPanel::showRowActionResult(Detail::ActionResultMessage message, bool succeeded)
+{
+    m_RowRetry.reset();
+    m_RowActionResult = std::move(message);
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (succeeded)
+    {
+        requestRefresh(); // Show the process changed or gone without waiting for the next sample
+    }
 }
 
 void ProcessesPanel::renderRowActionConfirm()
 {
-    if (ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid) !=
-        ProcessActionConfirm::Outcome::Confirmed)
+    const ProcessActionConfirm::Outcome outcome =
+        ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
+    if (outcome == ProcessActionConfirm::Outcome::Cancelled)
+    {
+        m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
+        return;
+    }
+    if (outcome != ProcessActionConfirm::Outcome::Confirmed || m_RowAction.targets.empty())
     {
         return;
     }
-    const Platform::ProcessActionResult result =
-        m_ProcessActions ? Detail::dispatchProcessAction(*m_ProcessActions, m_RowAction.action, m_RowAction.target)
-                         : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, m_RowAction.target.pid, result);
-    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
-    if (result.success)
+    if (m_RowAction.targets.size() > 1 && m_ProcessActions)
     {
-        requestRefresh(); // Show the process suspended, resumed or gone without waiting for the next sample
+        // Every selected process in turn, each checked by the platform as a single action is, then one
+        // summary line rather than a message per process (#804). On the batch's worker (#2142): the
+        // line comes on a later frame, and the toolbar shows the progress until then.
+        std::optional<ProcessBatch::BatchRunOutcome> failed =
+            m_BatchRun.startAction(*m_ProcessActions, m_RowAction.action, std::move(m_RowAction.targets), m_OwnPid);
+        m_RowAction = {}; // Handed to the worker; nothing is pending any more
+        if (failed.has_value())
+        {
+            showBatchOutcome(std::move(*failed));
+        }
+        return;
     }
+    if (m_RowAction.targets.size() != 1)
+    {
+        showRowActionResult({.ok = false, .text = "Process actions unavailable"}, false);
+        m_RowAction = {};
+        return;
+    }
+    // One process, on the row action worker (#2305): "Killing PID 123..." in the toolbar until its
+    // result comes on a later frame.
+    const Detail::ProcessAction action = m_RowAction.action;
+    const Platform::ProcessTarget target = m_RowAction.targets.front().target;
+    m_RowAction = {}; // Acted on once; nothing is pending any more
+    runRowAction(
+        std::format("{} PID {}...", Detail::actionProgressLabel(action), target.pid),
+        [actions = m_ProcessActions.get(), action, target] { return Detail::dispatchProcessAction(*actions, action, target); },
+        [action, pid = target.pid](const Platform::ProcessActionResult& result)
+        { return Detail::formatActionResultMessage(action, pid, result); },
+        Detail::authorizedActionFor(action, target));
 }
 
 } // namespace App

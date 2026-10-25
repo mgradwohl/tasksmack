@@ -3,6 +3,8 @@
 
 #if defined(__linux__)
 
+#include "Platform/IProcessConnections.h"
+#include "Platform/Linux/InetSocketTable.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
 #include "Platform/NetlinkTestUtils.h"
 #include "Platform/ScopedTempDir.h"
@@ -21,12 +23,14 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - Linux UAPI headers; include-cleaner lacks the mappings
+#include <arpa/inet.h> // htons
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -35,6 +39,7 @@
 #include <netinet/in.h> // IPPROTO_TCP
 // NOLINTEND(misc-include-cleaner)
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Platform
@@ -115,12 +120,23 @@ TEST(NetlinkSocketStatsTest, SocketStatsHaveValidInodes)
 
 // ========== buildInodeToPidMap Tests ==========
 
-TEST(BuildInodeToPidMapTest, ReturnsNonEmptyMapOnRunningSystem)
+TEST(BuildInodeToPidMapTest, MapsThisProcesssOwnSocketToItsPid)
 {
-    auto inodeToPid = buildInodeToPidMap();
-    // A running system should have at least some sockets
-    // The test process itself might have open sockets; reaching here is success
-    SUCCEED() << "buildInodeToPidMap completed with " << inodeToPid.size() << " mappings";
+    // A socket of this test's own: its inode must map to this process. The test only reached the end
+    // before (#2165), so a regression returning an empty map everywhere would still have passed.
+    std::array<int, 2> sockets{-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0) << std::strerror(errno);
+    struct stat info{};
+    const bool statted = ::fstat(sockets[0], &info) == 0;
+    const auto inodeToPid = buildInodeToPidMap();
+    ::close(sockets[0]);
+    ::close(sockets[1]);
+    ASSERT_TRUE(statted);
+
+    const auto it = inodeToPid.find(static_cast<std::uint64_t>(info.st_ino));
+    ASSERT_NE(it, inodeToPid.end()) << "inode " << info.st_ino << " of this process's socket isn't in the map";
+    EXPECT_EQ(it->second.pid, static_cast<std::int32_t>(::getpid()));
+    EXPECT_NE(it->second.startTimeTicks, 0U) << "this process's start time is readable";
 }
 
 TEST(BuildInodeToPidMapTest, MapsSocketsToValidPids)
@@ -590,6 +606,23 @@ TEST(NetlinkSocketStatsScriptedTest, AnInterruptedDumpIsAFailedReading)
         {doneDatagram(0, ScriptedNetlinkTransport::PORT_ID, 0, static_cast<std::uint16_t>(NLM_F_MULTI | NLM_F_DUMP_INTR))});
 }
 
+// #1891: a failed reading is empty through queryAllSocketsUncached() as well as the cached query.
+TEST(NetlinkSocketStatsScriptedTest, AFailedReadingIsEmptyOnTheUncachedPathToo)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array ipv4{FakeSocket{.inode = 11, .bytesSent = 5}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        if (request.family == AF_INET6)
+        {
+            return ScriptedNetlinkTransport::Reply{errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -EBUSY)};
+        }
+        return completeDump(request, ipv4);
+    };
+    EXPECT_TRUE(scripted.stats->queryAllSocketsUncached().empty()) << "half a reading is no reading";
+}
+
 TEST(NetlinkSocketStatsScriptedTest, AnAckIsNotTheEndOfTheDump)
 {
     // A zero-error NLMSG_ERROR is an ACK: the dump continues to NLMSG_DONE, and the sockets after it
@@ -679,6 +712,41 @@ TEST(NetlinkSocketStatsScriptedTest, NullTransportIsUnavailable)
     NetlinkSocketStats stats(nullptr, 0ms);
     EXPECT_FALSE(stats.isAvailable());
     EXPECT_TRUE(stats.queryAllSockets().empty());
+    EXPECT_TRUE(stats.queryAllSocketsUncached().empty()); // #1891: the uncached path too
+}
+
+/// A transport whose send throws, as an allocation failure while collecting results would (#773).
+template<bool StandardException> class ThrowingNetlinkTransport final : public INetlinkTransport
+{
+  public:
+    [[nodiscard]] NetlinkIoResult send(std::span<const std::byte> /*request*/) override
+    {
+        if constexpr (StandardException)
+        {
+            throw std::runtime_error("no memory");
+        }
+        else
+        {
+            // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally not a std::exception
+            throw 42;
+        }
+    }
+    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> /*buffer*/, bool /*nonBlocking*/) override
+    {
+        return {};
+    }
+    [[nodiscard]] std::uint32_t portId() const noexcept override
+    {
+        return 1;
+    }
+};
+
+// #1891 (#773): a warm-up query that throws, a std::exception or anything else, never escapes the constructor.
+TEST(NetlinkSocketStatsScriptedTest, AThrowingWarmUpQueryNeverEscapesTheConstructor)
+{
+    using namespace std::chrono_literals;
+    EXPECT_NO_THROW({ const NetlinkSocketStats stats(std::make_unique<ThrowingNetlinkTransport<true>>(), 0ms); });
+    EXPECT_NO_THROW({ const NetlinkSocketStats stats(std::make_unique<ThrowingNetlinkTransport<false>>(), 0ms); });
 }
 
 // ========== buildInodeToPidMap over a synthetic /proc (#1099) ==========
@@ -744,6 +812,225 @@ TEST(BuildInodeToPidMapTest, EachOwnerComesWithItsStartTime)
     EXPECT_EQ(inodeToPid.at(88).startTimeTicks, 9999U);
     EXPECT_EQ(inodeToPid.at(99).pid, 300);
     EXPECT_EQ(inodeToPid.at(99).startTimeTicks, 0U) << "no stat: unknown";
+}
+
+// ========== dumpInetSockets(): endpoints and states for the Connections section (#799) ==========
+
+/// An inet_diag_msg as the kernel sends it: addresses in network order, ports __be16.
+[[nodiscard]] inet_diag_msg diagMessage(std::uint8_t family,
+                                        std::uint8_t state,
+                                        std::uint32_t inode,
+                                        std::span<const std::uint8_t> src,
+                                        std::uint16_t sport,
+                                        std::span<const std::uint8_t> dst,
+                                        std::uint16_t dport)
+{
+    inet_diag_msg message{};
+    message.idiag_family = family;
+    message.idiag_state = state;
+    message.idiag_inode = inode;
+    // An empty span's data() may be null, and memcpy with a null source is undefined even for 0
+    // bytes (UBSan nonnull-attribute, #1541), so empty addresses are skipped, not copied.
+    if (!src.empty())
+    {
+        std::memcpy(static_cast<void*>(message.id.idiag_src), src.data(), std::min(src.size(), sizeof(message.id.idiag_src)));
+    }
+    if (!dst.empty())
+    {
+        std::memcpy(static_cast<void*>(message.id.idiag_dst), dst.data(), std::min(dst.size(), sizeof(message.id.idiag_dst)));
+    }
+    message.id.idiag_sport = htons(sport);
+    message.id.idiag_dport = htons(dport);
+    return message;
+}
+
+TEST(DumpInetSocketsTest, ReadsEndpointsStateAndInodeOfEachSocketWithoutExtensions)
+{
+    ScriptedNetlinkTransport transport;
+    constexpr std::array<std::uint8_t, 4> LOCAL4{10, 0, 2, 15};
+    constexpr std::array<std::uint8_t, 4> REMOTE4{93, 184, 216, 34};
+    const std::array<inet_diag_msg, 2> messages{diagMessage(AF_INET, 1, 501, LOCAL4, 55026, REMOTE4, 443),
+                                                diagMessage(AF_INET, 10, 502, std::array<std::uint8_t, 4>{127, 0, 0, 1}, 631, {}, 0)};
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply;
+        reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 7, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(transport.requests.size(), 1U);
+    EXPECT_EQ(transport.requests[0].protocol, IPPROTO_TCP);
+    EXPECT_EQ(transport.requests[0].family, AF_INET);
+    EXPECT_EQ(transport.requests[0].sequence, 7U);
+
+    ASSERT_EQ(sockets.size(), 2U);
+    EXPECT_EQ(sockets[0].inode, 501U);
+    EXPECT_EQ(sockets[0].protocol, ConnectionProtocol::Tcp);
+    EXPECT_EQ(sockets[0].family, ConnectionFamily::IPv4);
+    EXPECT_EQ(sockets[0].state, 1);
+    EXPECT_TRUE(std::equal(LOCAL4.begin(), LOCAL4.end(), sockets[0].local.address.begin()));
+    EXPECT_TRUE(std::equal(REMOTE4.begin(), REMOTE4.end(), sockets[0].remote.address.begin()));
+    EXPECT_EQ(sockets[0].local.address[4], 0) << "an IPv4 address fills only the first four bytes";
+    EXPECT_EQ(sockets[0].local.port, 55026);
+    EXPECT_EQ(sockets[0].remote.port, 443);
+    EXPECT_EQ(InetSockets::toConnection(sockets[1]).state, ConnectionState::Listen);
+    EXPECT_EQ(sockets[1].remote.port, 0);
+}
+
+TEST(DumpInetSocketsTest, ReadsIPv6UdpSockets)
+{
+    ScriptedNetlinkTransport transport;
+    std::array<std::uint8_t, 16> loopback6{};
+    loopback6[15] = 1;
+    const std::array<inet_diag_msg, 1> messages{diagMessage(AF_INET6, 7, 900, loopback6, 5353, {}, 0)};
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply;
+        reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_UDP, AF_INET6, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(transport.requests.size(), 1U);
+    EXPECT_EQ(transport.requests[0].protocol, IPPROTO_UDP);
+    ASSERT_EQ(sockets.size(), 1U);
+    EXPECT_EQ(sockets[0].protocol, ConnectionProtocol::Udp);
+    EXPECT_EQ(sockets[0].family, ConnectionFamily::IPv6);
+    EXPECT_EQ(sockets[0].local.address, loopback6);
+    EXPECT_EQ(sockets[0].local.port, 5353);
+    EXPECT_EQ(InetSockets::toConnection(sockets[0]).state, ConnectionState::Closed);
+}
+
+TEST(DumpInetSocketsTest, AnAbsentDiagModuleIsUnsupportedAndAnyOtherErrorFailed)
+{
+    ScriptedNetlinkTransport transport;
+    int error = -ENOENT;
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        return ScriptedNetlinkTransport::Reply{errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, error)};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_UDP, AF_INET, sockets), InetDumpOutcome::Unsupported);
+    error = -EBUSY;
+    EXPECT_EQ(dumpInetSockets(transport, 2, IPPROTO_UDP, AF_INET, sockets), InetDumpOutcome::Failed);
+    EXPECT_TRUE(sockets.empty());
+}
+
+TEST(DumpInetSocketsTest, ATimeoutIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& /*request*/)
+    {
+        return ScriptedNetlinkTransport::Reply{std::nullopt};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
+// #1395: the dump's I/O failure paths, scripted.
+
+/// A reply with one socket inode `inode` and the request's NLMSG_DONE, as dumpInetSockets() reads it.
+[[nodiscard]] ScriptedNetlinkTransport::Reply oneSocketReply(const ScriptedNetlinkTransport::Request& request, std::uint32_t inode)
+{
+    const std::array<inet_diag_msg, 1> messages{diagMessage(AF_INET, 1, inode, std::array<std::uint8_t, 4>{127, 0, 0, 1}, 80, {}, 0)};
+    ScriptedNetlinkTransport::Reply reply;
+    reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+    reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+    return reply;
+}
+
+TEST(DumpInetSocketsTest, ARequestThatCantBeSentIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.sendError = ENOBUFS;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        return oneSocketReply(request, 7);
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+    EXPECT_TRUE(sockets.empty());
+}
+
+TEST(DumpInetSocketsTest, InterruptedReadsAreRetried)
+{
+    // EINTR, while draining an earlier dump's tail and while reading this one, is not a failure.
+    ScriptedNetlinkTransport transport;
+    transport.interruptedDrains = 2;
+    transport.interruptedReceives = 3;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        return oneSocketReply(request, 7);
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(sockets.size(), 1U);
+    EXPECT_EQ(sockets[0].inode, 7U);
+    EXPECT_EQ(transport.interruptedDrains, 0);
+}
+
+TEST(DumpInetSocketsTest, AnOrderlyShutdownBeforeDoneIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply = oneSocketReply(request, 7);
+        reply.back() = TestSupport::Datagram{}; // a 0-byte read where NLMSG_DONE would be
+        return reply;
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
+TEST(DumpInetSocketsTest, AMessageTooShortForASocketIsSkipped)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply = oneSocketReply(request, 7);
+        TestSupport::Datagram truncated;
+        const std::array<std::byte, 4> stub{};
+        TestSupport::appendMessage(truncated, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, stub);
+        reply.insert(reply.begin(), std::move(truncated));
+        return reply;
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(sockets.size(), 1U); // the stub added nothing
+    EXPECT_EQ(sockets[0].inode, 7U);
+}
+
+TEST(NetlinkSocketStatsScriptedTest, AMessageTooShortForASocketAddsNoCounters)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array ipv4{FakeSocket{.inode = 11, .bytesSent = 5}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply =
+            completeDump(request, request.family == AF_INET ? std::span<const FakeSocket>(ipv4) : std::span<const FakeSocket>{});
+        TestSupport::Datagram truncated;
+        const std::array<std::byte, 4> stub{};
+        TestSupport::appendMessage(truncated, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, stub);
+        reply.insert(reply.begin(), std::move(truncated));
+        return reply;
+    };
+    EXPECT_EQ(inodesOf(scripted.stats->queryAllSockets()), (std::vector<std::uint64_t>{11}));
+}
+
+TEST(NetlinkSocketStatsScriptedTest, ARequestThatCantBeSentIsAFailedReading)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    scripted.transport->sendError = EPERM;
+    std::chrono::steady_clock::time_point sampledAt;
+    EXPECT_TRUE(scripted.stats->queryAllSockets(&sampledAt).empty());
+    EXPECT_EQ(sampledAt, std::chrono::steady_clock::time_point{});
 }
 
 } // namespace

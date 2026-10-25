@@ -14,6 +14,8 @@ JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 FILES=()
 FIX=false
 REPORT_ONLY=false
+# IWYU must be built against this Clang major (the project LLVM CI pins); see the version check below
+MIN_IWYU_CLANG_MAJOR=23
 
 usage() {
     cat <<EOF
@@ -23,7 +25,9 @@ Run include-what-you-use (IWYU) analysis on source files.
 IWYU analyzes #include directives and suggests additions/removals.
 
 Prerequisites:
-  - IWYU must be installed (apt install iwyu or brew install include-what-you-use)
+  - IWYU built against Clang 23, the project's LLVM. CI builds it from source (the clang_23 branch
+    of https://github.com/include-what-you-use/include-what-you-use); distro packages
+    (apt install iwyu) are usually built against an older Clang and are reported below.
   - Python 3.6+ available as 'python3' on PATH (for embedded helper scripts)
   - Project must be configured and built at least once:
     cmake --preset debug && cmake --build build/debug
@@ -51,7 +55,7 @@ Examples:
 Note: IWYU suggestions are advisory. Review before applying fixes.
       Some suggestions may not be appropriate for this codebase.
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 # Parse arguments
@@ -75,12 +79,15 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
-COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+LIVE_COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+# The sanitized copy IWYU reads (see the sed pass below)
+IWYU_COMPDB_DIR="${BUILD_DIR}/iwyu-compdb"
+COMPILE_COMMANDS="${IWYU_COMPDB_DIR}/compile_commands.json"
 
 # Find iwyu_tool.py (the wrapper script that processes compile_commands.json)
 IWYU_TOOL=""
@@ -116,9 +123,10 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     echo "Error: include-what-you-use not found in PATH" >&2
     echo "" >&2
     echo "Install IWYU:" >&2
-    echo "  Ubuntu/Debian: sudo apt install iwyu" >&2
+    echo "  From source (matches CI): the clang_${MIN_IWYU_CLANG_MAJOR} branch of" >&2
+    echo "                 https://github.com/include-what-you-use/include-what-you-use" >&2
+    echo "  Ubuntu/Debian: sudo apt install iwyu (usually built against an older Clang)" >&2
     echo "  macOS:         brew install include-what-you-use" >&2
-    echo "  From source:   https://github.com/include-what-you-use/include-what-you-use" >&2
     exit 1
 fi
 
@@ -141,7 +149,6 @@ fi
 # Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 23+)
 # cause assertion failures in iwyu_include_picker.
 # Check the Clang base version from the 'based on ... clang version X' line.
-MIN_IWYU_CLANG_MAJOR=23
 # Use the already-selected binary so the version check matches what the script will actually run.
 IWYU_VERSION_BIN=""
 if [[ -n "${IWYU}" ]]; then
@@ -186,6 +193,9 @@ fi
 if $VERBOSE; then
     echo "Python 3 found."
 fi
+# The embedded helpers read compile_commands.json as UTF-8 whatever the locale (#1648); an explicit
+# PYTHONUTF8 wins.
+export PYTHONUTF8="${PYTHONUTF8:-1}"
 
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
@@ -243,7 +253,7 @@ if $VERBOSE; then
 fi
 
 # Check for build prerequisites
-if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$COMPILE_COMMANDS" ]]; then
+if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$LIVE_COMPILE_COMMANDS" ]]; then
     echo "Error: Build directory or compile_commands.json not found" >&2
     echo "" >&2
     echo "IWYU requires the project to be configured and built at least once." >&2
@@ -266,12 +276,15 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     exit 1
 fi
 
-# Strip C++20 module and PCH flags from compile_commands.json (IWYU supports neither;
-# a single "-include-pch" flag makes IWYU abort every translation unit).
+# Strip C++20 module and PCH flags from a private copy of compile_commands.json (IWYU supports
+# neither; a single "-include-pch" flag makes IWYU abort every translation unit). The live database
+# clangd watches is left alone, as clang-tidy.sh leaves it alone.
 # These are the same patterns cmake/StaticAnalysis.cmake strips for the clang-tidy compile database.
 if $VERBOSE; then
-    echo "Stripping module and PCH flags from compile_commands.json..."
+    echo "Stripping module and PCH flags into ${IWYU_COMPDB_DIR#"${PROJECT_ROOT}"/}/compile_commands.json..."
 fi
+mkdir -p "$IWYU_COMPDB_DIR"
+cp "$LIVE_COMPILE_COMMANDS" "$COMPILE_COMMANDS"
 SED_EXPRS=(
     -e 's/@[^ ]*\.modmap//g'
     -e 's/-fmodule-output=[^ ]*//g'
@@ -354,7 +367,7 @@ if [[ -n "$IWYU_TOOL" ]]; then
     # Use iwyu_tool.py for better integration with compile_commands.json
     # IWYU-specific args go after -- separator
     IWYU_TOOL_ARGS=(
-        -p "$BUILD_DIR"
+        -p "$IWYU_COMPDB_DIR"
         -j "$JOBS"
     )
     IWYU_ARGS=(
@@ -404,7 +417,7 @@ compile_commands_path = sys.argv[1]
 target_file = sys.argv[2]
 
 try:
-    with open(compile_commands_path) as f:
+    with open(compile_commands_path, encoding='utf-8') as f:
         commands = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError) as e:
     sys.stderr.write(f'Error reading compile_commands.json: {e}\n')
@@ -623,6 +636,39 @@ if grep -q "should add these lines:" "$IWYU_OUTPUT" || \
     HAS_ISSUES=1
 fi
 
+# Every translation unit asked for must have a result: IWYU that crashes or fails on one (an
+# assertion, a compile error) prints no suggestions for it, and its exit status is ignored above, so
+# without this check the TU would count as clean (#2666). A result is IWYU's "has correct" line or
+# its "full include-list" line. Headers aren't database entries, so they're analyzed through the TUs
+# that include them and aren't expected here.
+if ! UNANALYZED_OUTPUT=$(python3 -c "
+import json, os, re, sys
+compdb, output, root, *sources = sys.argv[1:]
+with open(compdb, encoding='utf-8') as f:
+    in_db = {os.path.realpath(os.path.join(e.get('directory', ''), e['file'])) for e in json.load(f)}
+result = re.compile(r'^(?:\((.+) has correct #includes/fwd-decls\)|The full include-list for (.+):)\$')
+analyzed = set()
+with open(output, encoding='utf-8', errors='replace') as f:
+    for line in f:
+        match = result.match(line.rstrip('\r\n'))
+        if match:
+            analyzed.add(os.path.realpath(match.group(1) or match.group(2)))
+missing = []
+for source in sources:
+    path = os.path.realpath(source)
+    if path in in_db and path not in analyzed and path not in missing:
+        missing.append(path)
+for path in missing:
+    print(os.path.relpath(path, os.path.realpath(root)))
+" "$COMPILE_COMMANDS" "$IWYU_OUTPUT" "$PROJECT_ROOT" "${SOURCE_FILES[@]}"); then
+    echo "Error: could not check which translation units IWYU analyzed." >&2
+    exit 1
+fi
+UNANALYZED=()
+if [[ -n "$UNANALYZED_OUTPUT" ]]; then
+    mapfile -t UNANALYZED <<< "$UNANALYZED_OUTPUT"
+fi
+
 # Apply fixes if requested
 if $FIX && [[ $HAS_ISSUES -ne 0 ]]; then
     echo ""
@@ -656,12 +702,28 @@ if [[ $HAS_ISSUES -ne 0 ]]; then
     if ! $FIX; then
         echo "Run with --fix to apply suggested changes."
     fi
-    if $REPORT_ONLY; then
-        echo "(Report-only mode: not failing)"
-        exit 0
+fi
+if [[ ${#UNANALYZED[@]} -gt 0 ]]; then
+    echo "IWYU did not analyze ${#UNANALYZED[@]} translation unit(s); it crashed or failed on them (see its output above):"
+    printf '  %s\n' "${UNANALYZED[@]}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        {
+            echo "### IWYU did not analyze ${#UNANALYZED[@]} translation unit(s)"
+            echo ""
+            echo "It crashed or failed on these, so they have no results below:"
+            echo ""
+            # shellcheck disable=SC2016 # literal Markdown backticks, not a command substitution
+            printf -- '- `%s`\n' "${UNANALYZED[@]}"
+            echo ""
+        } >> "$GITHUB_STEP_SUMMARY"
     fi
-    exit 1
-else
+fi
+if [[ $HAS_ISSUES -eq 0 ]] && [[ ${#UNANALYZED[@]} -eq 0 ]]; then
     echo "IWYU completed successfully - no issues found."
     exit 0
 fi
+if $REPORT_ONLY; then
+    echo "(Report-only mode: not failing)"
+    exit 0
+fi
+exit 1

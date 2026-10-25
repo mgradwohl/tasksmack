@@ -14,6 +14,7 @@
 ///       path. That degenerate case is not tested here because the application
 ///       cannot function at all in that environment.
 
+#include "Core/ConfigDirOverride.h"
 #include "Core/PathService.h"
 #include "Core/PathServiceMath.h"
 #include "Platform/IPathProvider.h"
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <type_traits>
 
@@ -311,6 +313,38 @@ TEST(PathServiceTest, InjectionConstructorWithNullProviderThrows)
 {
     // Passing nullptr must throw std::invalid_argument rather than crashing.
     EXPECT_THROW(Core::PathService(nullptr), std::invalid_argument);
+}
+
+// =============================================================================
+// TASKSMACK_CONFIG_DIR (#1596)
+// =============================================================================
+
+TEST(PathServiceTest, ConfigDirOverrideReplacesTheProviderConfigDir)
+{
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path execDir = base / "tasksmack_test_exec";
+    const std::filesystem::path overrideDir = base / "tasksmack_test_override";
+
+    const auto utf8 = overrideDir.u8string();
+    const std::string value(utf8.begin(), utf8.end()); // the environment's encoding, as SDL_getenv() gives it
+
+    const Core::PathService svc(std::make_unique<FakePathProvider>(execDir, base / "tasksmack_test_config"),
+                                ConfigDirOverride::parse(value.c_str()));
+
+    EXPECT_EQ(svc.userConfigDir(), overrideDir.lexically_normal());
+    EXPECT_EQ(svc.executableDir(), execDir.lexically_normal()); // only the config directory moves
+}
+
+TEST(PathServiceTest, UnsetOrBlankConfigDirOverrideKeepsTheProviderConfigDir)
+{
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path configDir = base / "tasksmack_test_config";
+
+    for (const char* value : {static_cast<const char*>(nullptr), "", "  \t "})
+    {
+        const Core::PathService svc(std::make_unique<FakePathProvider>(base, configDir), ConfigDirOverride::parse(value));
+        EXPECT_EQ(svc.userConfigDir(), configDir.lexically_normal()) << (value != nullptr ? value : "(unset)");
+    }
 }
 
 } // namespace

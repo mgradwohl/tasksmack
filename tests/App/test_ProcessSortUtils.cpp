@@ -53,6 +53,8 @@ using Domain::ProcessSnapshot;
 
     snap.peakMemoryBytes = u;
     snap.sharedBytes = u;
+    snap.privateBytes = u;
+    snap.swapBytes = u;
     snap.pageFaults = u;
     snap.cpuAffinity = Platform::CpuAffinity::fromMask(u);
 
@@ -68,12 +70,19 @@ using Domain::ProcessSnapshot;
     snap.status = s;
     snap.gpuDevices = s;
     snap.publisher = s;
+    snap.container = s;
     snap.processType = s;
+    snap.architecture = s; // #2394
 
     // Same size (1) for both, so the generic per-column loop below exercises the
     // "compare first engine name" branch, not the "compare engine count" branch -
     // that one gets its own dedicated test.
     snap.gpuEngines = {s};
+
+    // The NPU columns' (#1799), likewise
+    snap.npuUtilPercent = d;
+    snap.npuMemoryBytes = u;
+    snap.npuEngines = {s};
 
     return snap;
 }
@@ -127,6 +136,34 @@ TEST(ProcessSortUtilsTest, EqualSnapshotsNeverCompareLessForAnyColumn)
 // Column-specific edge cases not covered by the generic low/high pair
 // =============================================================================
 
+// #1880: the Services column sorts its text A to Z ignoring case, and keeps the processes hosting none
+// after those hosting some in both directions.
+TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
+{
+    using ProcessSortUtils::compareServicesText;
+    EXPECT_TRUE(compareServicesText("Appinfo", "bits", true)); // not "B" < "a" by byte value
+    EXPECT_FALSE(compareServicesText("bits", "Appinfo", true));
+    EXPECT_TRUE(compareServicesText("bits", "Appinfo", false));
+    EXPECT_TRUE(compareServicesText("Dhcp, EventLog", "Dhcp, EventLog, nsi", true));
+    // None sorts last, ascending and descending.
+    EXPECT_TRUE(compareServicesText("Zeta", "", true));
+    EXPECT_FALSE(compareServicesText("", "Zeta", true));
+    EXPECT_TRUE(compareServicesText("Alpha", "", false));
+    EXPECT_FALSE(compareServicesText("", "Alpha", false));
+    // Equal texts, two empty ones included, compare false both ways.
+    EXPECT_FALSE(compareServicesText("", "", true));
+    EXPECT_FALSE(compareServicesText("", "", false));
+    EXPECT_FALSE(compareServicesText("BFE", "bfe", true));
+    EXPECT_FALSE(compareServicesText("bfe", "BFE", true));
+
+    ProcessSnapshot host = makeSnapshot(false);
+    host.services = "Dhcp, EventLog";
+    ProcessSnapshot none = makeSnapshot(false);
+    none.services.clear();
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, true));
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
+}
+
 TEST(ProcessSortUtilsTest, GpuEngineComparesByCountBeforeFirstName)
 {
     ProcessSnapshot fewer;
@@ -147,6 +184,40 @@ TEST(ProcessSortUtilsTest, GpuEngineWithNoEnginesIsNotLessThanItself)
 
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(none, alsoNone, ProcessColumn::GpuEngine, true));
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(none, alsoNone, ProcessColumn::GpuEngine, false));
+}
+
+// #1799: the NPU columns sort by the process's own NPU figures -- not by PID, and not by its GPU
+// figures -- and NPU Engine as GPU Engine does: by engine count, then by the first engine's name.
+TEST(ProcessSortUtilsTest, NpuColumnsSortByTheNpuFigures)
+{
+    ProcessSnapshot busyNpu;
+    busyNpu.pid = 1;
+    busyNpu.npuUtilPercent = 80.0;
+    busyNpu.npuMemoryBytes = 64;
+    busyNpu.npuEngines = {"Compute"};
+    busyNpu.gpuUtilPercent = 1.0;
+    busyNpu.gpuMemoryBytes = 1;
+
+    ProcessSnapshot idleNpu;
+    idleNpu.pid = 2;
+    idleNpu.gpuUtilPercent = 90.0;
+    idleNpu.gpuMemoryBytes = 1000;
+
+    for (const ProcessColumn column : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        SCOPED_TRACE(static_cast<int>(column));
+        EXPECT_TRUE(ProcessSortUtils::compareColumnKey(idleNpu, busyNpu, column, /*ascending=*/true));
+        EXPECT_FALSE(ProcessSortUtils::compareColumnKey(busyNpu, idleNpu, column, /*ascending=*/true));
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(busyNpu, idleNpu, column, /*ascending=*/false));
+    }
+
+    ProcessSnapshot fewer;
+    fewer.npuEngines = {"z"};
+    ProcessSnapshot more;
+    more.npuEngines = {"a", "b"};
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(fewer, more, ProcessColumn::NpuEngine, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(fewer, fewer, ProcessColumn::NpuEngine, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(ProcessSnapshot{}, ProcessSnapshot{}, ProcessColumn::NpuEngine, false));
 }
 
 TEST(ProcessSortUtilsTest, GdiObjectsUnavailableSortsBeforeAvailable)

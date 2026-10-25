@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
@@ -8,7 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
+#include <optional>
+#include <ranges>
 #include <span>
 
 namespace App
@@ -131,8 +135,12 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
     return std::round(RESIZE_BORDER_REFERENCE_PX * scale);
 }
 
-/// Width the title bar's own content needs: the icon, the wordmark, and the five buttons, with the
-/// gaps the bar draws between them.
+/// How many buttons the title bar draws at its right: About, Help and Settings, then a gap, then
+/// Minimize, Maximize and Close (#1600 gave About its own button).
+inline constexpr int TITLE_BAR_BUTTON_COUNT = 6;
+
+/// Width the title bar's own content needs: the icon, the wordmark, and the TITLE_BAR_BUTTON_COUNT
+/// buttons, with the gaps the bar draws between them.
 ///
 /// Every input is a size the bar has already computed for drawing, so the minimum window width
 /// derived from this cannot drift from what is actually on screen.
@@ -142,7 +150,7 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
 /// @param titleGapPx      Gap between the icon and the wordmark; reused between wordmark and buttons.
 /// @param wordmarkWidthPx Measured width of the "TaskSmack" wordmark; 0 before it has been drawn.
 /// @param buttonWidthPx   Width of one title-bar button.
-/// @param separatorGapPx  Gap between the two app buttons and the three window buttons.
+/// @param separatorGapPx  Gap between the three app buttons and the three window buttons.
 [[nodiscard]] inline auto computeTitleBarContentWidth(const float edgeMarginPx,
                                                       const float iconSizePx,
                                                       const float titleGapPx,
@@ -150,7 +158,7 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
                                                       const float buttonWidthPx,
                                                       const float separatorGapPx) -> float
 {
-    constexpr float BUTTON_COUNT = 5.0F; // help, settings, minimize, maximize, close
+    constexpr auto BUTTON_COUNT = static_cast<float>(TITLE_BAR_BUTTON_COUNT);
     const auto atLeastZero = [](const float value)
     {
         return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
@@ -195,6 +203,50 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     };
     const float chartRow = atLeastZero(nowBarColumnWidthPx) + (MIN_PLOT_WIDTH_EM * atLeastZero(emPx));
     return std::max(atLeastZero(processesToolbarWidthPx), chartRow) + atLeastZero(horizontalChromePx);
+}
+
+/// Style metrics the main tab bar lays its tabs out with, in pixels (#1939).
+struct MainTabBarStyle
+{
+    float framePaddingXPx; ///< FramePadding.x pushed for the bar: either side of each label.
+    float tabSpacingPx;    ///< ImGuiStyle::ItemInnerSpacing.x: the gap between two tabs.
+    float minTabWidthPx;   ///< ImGuiStyle::TabMinWidthBase: no tab is narrower.
+    float maxTabWidthPx;   ///< ImGui's widest tab, 20 ems (TabBarCalcMaxTabWidth()); 0: no cap.
+    float insetPx;         ///< The bar's inset either side, the content gutter (ShellMetrics::CONTENT_PADDING_H).
+};
+
+/// Width the main tab bar needs to show every tab whole, its insets either side included (#1939):
+/// each tab as ImGui sizes a tab with no close button (TabItemCalcSize(): the label, frame padding
+/// either side and one pixel, at most maxTabWidthPx and at least minTabWidthPx), the spacing between
+/// them, and the inset on the left and the right. Narrower than this, ImGui shrinks the tabs and cuts
+/// their labels short. Unusable widths and metrics count as 0.
+///
+/// @param labelWidthsPx  Each tab's visible label (ImGui::CalcTextSize(label, nullptr, true).x): any
+///                       range of floats, so a caller can measure the labels as it goes, without a buffer.
+/// @param style          The bar's metrics.
+/// @return 0 with no tabs.
+template<std::ranges::input_range LabelWidths>
+    requires std::convertible_to<std::ranges::range_reference_t<LabelWidths>, float>
+[[nodiscard]] auto computeMainTabBarWidth(LabelWidths labelWidthsPx, const MainTabBarStyle& style) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float maxTab = atLeastZero(style.maxTabWidthPx);
+    float width = 0.0F;
+    bool first = true;
+    for (const float labelWidth : labelWidthsPx)
+    {
+        float tab = atLeastZero(labelWidth) + (atLeastZero(style.framePaddingXPx) * 2.0F) + 1.0F;
+        if (maxTab > 0.0F)
+        {
+            tab = std::min(tab, maxTab);
+        }
+        width += std::max(tab, atLeastZero(style.minTabWidthPx)) + (first ? 0.0F : atLeastZero(style.tabSpacingPx));
+        first = false;
+    }
+    return first ? 0.0F : width + (atLeastZero(style.insetPx) * 2.0F);
 }
 
 /// The vertical pieces the window has to show at its shortest (#1278), in pixels.
@@ -372,19 +424,27 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
     return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
 }
 
-/// Whether the status bar's right-aligned FPS readout fits beside what is on its left (#1207).
-/// At narrow widths it was drawn over "Ready" and the status-bar buttons; it is left out instead.
+/// Whether a new minimum window size may grow the window (#1945), from its tab-independent part:
+/// the minimum computeMinimumWindowSize() gives with the panels' estimated content height instead of
+/// what a tab measured (computeFirstChartBudget() with no measurement), capped like the minimum.
 ///
-/// @param leftContentEndX  Where the status bar's left-hand content ends (window-local X).
-/// @param readoutStartX    Where the right-aligned readout would start (window-local X).
-/// @param spacingPx        Gap to keep between them (ImGuiStyle::ItemSpacing.x).
-[[nodiscard]] inline auto computeStatusBarReadoutFits(const float leftContentEndX, const float readoutStartX, const float spacingPx) -> bool
+/// That part moves only with the font size, the display scale, the display, or at startup, when
+/// there is no previous one: then the window grows to the minimum, so the tab strip and the title
+/// bar fit the text the user picked. When only the measured part moved -- a tab shown for the first
+/// time measured a taller block above its first chart -- the window keeps the size the user gave it
+/// (Core::WindowGeometry::minimumKeepingSize()), or every tab switch could resize it.
+///
+/// @param previous  The tab-independent minimum the window's minimum was last set with; std::nullopt
+///                  before the first.
+/// @param current   The tab-independent minimum now.
+[[nodiscard]] constexpr auto minimumSizeChangeFor(const std::optional<WindowMinimumSize>& previous,
+                                                  const WindowMinimumSize current) noexcept -> Core::WindowGeometry::MinimumSizeChange
 {
-    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
-    return std::isfinite(leftContentEndX) && std::isfinite(readoutStartX) && readoutStartX >= leftContentEndX + spacing;
+    return (!previous.has_value() || *previous != current) ? Core::WindowGeometry::MinimumSizeChange::AllowGrow
+                                                           : Core::WindowGeometry::MinimumSizeChange::KeepSize;
 }
 
-/// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
+/// Screen-space rectangle for a title-bar button's hit area (icon, about, help, settings,
 /// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
 /// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.
 struct ButtonBounds
@@ -404,6 +464,59 @@ struct ButtonBounds
         return false;
     }
     return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+/// Where the title bar's right-hand buttons are, in window coordinates: what TitleBarLayer draws them
+/// at and what its hit testing excludes from the drag area, from one computation so the two cannot
+/// drift apart. Left to right: About (i), Help (?), Settings (gear), a gap, Minimize, Maximize, Close.
+struct TitleBarButtonLayout
+{
+    ButtonBounds about;
+    ButtonBounds help;
+    ButtonBounds settings;
+    ButtonBounds minimize;
+    ButtonBounds maximize;
+    ButtonBounds close;
+};
+
+/// Lays the title bar's buttons out right to left from the window's right edge, each
+/// @p buttonWidthPx wide and the bar's full height, with @p separatorGapPx between the window
+/// controls and the app buttons (#1600).
+///
+/// @param rightEdgePx     The window's width: the right edge the Close button touches.
+/// @param buttonWidthPx   Width of one button (computeTitleBarButtonWidth()).
+/// @param titleBarHeightPx Height of the bar, and so of every button.
+/// @param separatorGapPx  Gap between Minimize and Settings.
+[[nodiscard]] inline auto
+computeTitleBarButtonLayout(const float rightEdgePx, const float buttonWidthPx, const float titleBarHeightPx, const float separatorGapPx)
+    -> TitleBarButtonLayout
+{
+    float rightPx = rightEdgePx;
+    const auto next = [&rightPx, buttonWidthPx, titleBarHeightPx]
+    {
+        const ButtonBounds bounds{.minX = rightPx - buttonWidthPx, .maxX = rightPx, .minY = 0.0F, .maxY = titleBarHeightPx};
+        rightPx = bounds.minX;
+        return bounds;
+    };
+    TitleBarButtonLayout layout;
+    layout.close = next();
+    layout.maximize = next();
+    layout.minimize = next();
+    rightPx -= separatorGapPx;
+    layout.settings = next();
+    layout.help = next();
+    layout.about = next();
+    return layout;
+}
+
+/// Whether (x, y) is on any of the title bar's right-hand buttons, as laid out. Where a press may
+/// not start a drag or a resize is computeIsPointInControlArea() below, which takes the window's
+/// top-right resize corner back out of the Close button's slot (#2882).
+[[nodiscard]] inline auto computeIsPointOnTitleBarButton(const float x, const float y, const TitleBarButtonLayout& layout) -> bool
+{
+    return computeIsPointInBounds(x, y, layout.about) || computeIsPointInBounds(x, y, layout.help) ||
+           computeIsPointInBounds(x, y, layout.settings) || computeIsPointInBounds(x, y, layout.minimize) ||
+           computeIsPointInBounds(x, y, layout.maximize) || computeIsPointInBounds(x, y, layout.close);
 }
 
 /// Pure decision for TitleBarLayer::detectResizeEdge(): which window edge/corner (x, y) is
@@ -599,26 +712,95 @@ struct WindowRect
     return startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
 }
 
+/// Pure geometry, the vertical twin of computeRestoreFromMaximizedDragX(): the top edge for a window
+/// just restored mid-drag from maximized, with the pointer now at mouseGlobalY, so the pointer sits as
+/// far below the restored window's top as the press (startMouseGlobalY) was below the maximized
+/// window's top (maximizedWindowY) -- the same spot down the title bar (#2715). Without it the
+/// restored window kept its saved restore Y, often hundreds of pixels below the pointer. A press above
+/// the maximized window's top counts as an offset of 0. The result is clamped to workAreaTop so the
+/// title bar stays reachable when the pointer has moved up from the press; a maximized window fills
+/// its monitor's work area, so the caller passes the maximized window's top.
+[[nodiscard]] constexpr auto computeRestoreFromMaximizedDragY(const int startMouseGlobalY,
+                                                              const int maximizedWindowY,
+                                                              const int mouseGlobalY,
+                                                              const int workAreaTop) noexcept -> int
+{
+    const int offsetIntoTitleBar = std::max(startMouseGlobalY - maximizedWindowY, 0);
+    return std::max(mouseGlobalY - offsetIntoTitleBar, workAreaTop);
+}
+
 /// Decision for the empty title-bar drag area specifically (once the point is known to be
 /// in the title-bar row, not a resize border, and not a button). Pure/header-only, like
 /// computeResizeGeometry above, so it's directly unit-testable without live SDL_Window or
-/// TitleBarLayer state. See #744.
-[[nodiscard]] inline auto computeTitleBarAreaHitTest(const bool isInControlArea, const bool isNativeWayland) -> SDL_HitTestResult
+/// TitleBarLayer state. @p systemDrag is whether the OS or compositor runs the drag from a
+/// DRAGGABLE answer (Core::VideoBackend::usesSystemDrag(): native Wayland, #744, and Windows,
+/// #2716); otherwise the press is delivered to the app and TitleBarLayer drags client-side.
+[[nodiscard]] inline auto computeTitleBarAreaHitTest(const bool isInControlArea, const bool systemDrag) -> SDL_HitTestResult
 {
     if (isInControlArea)
     {
         return SDL_HITTEST_NORMAL;
     }
-    return isNativeWayland ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
+    return systemDrag ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
 }
 
-/// Full non-Windows hit-test decision tree, given already-queried SDL/TitleBarLayer state.
-/// Pure/header-only, like computeResizeGeometry and computeTitleBarAreaHitTest above, so the
-/// *ordering* itself is directly unit-testable without live SDL_Window/TitleBarLayer state: a
-/// title-bar button can sit within resizeBorderThickness of a window edge (the close button's
-/// rightmost pixels reach the window's right edge; the icon's top pixels sit inside the top
-/// resize strip), so the control-area check below must run before any resize-border branch, or
-/// SDL would consume the click as a resize instead of delivering it to the app (see #750 review).
+/// The SDL hit-test answer that hands a resize on @p edge to the OS or window manager.
+[[nodiscard]] constexpr auto hitTestResultForEdge(const ResizeEdge edge) noexcept -> SDL_HitTestResult
+{
+    switch (edge)
+    {
+    case ResizeEdge::Left:
+        return SDL_HITTEST_RESIZE_LEFT;
+    case ResizeEdge::Right:
+        return SDL_HITTEST_RESIZE_RIGHT;
+    case ResizeEdge::Top:
+        return SDL_HITTEST_RESIZE_TOP;
+    case ResizeEdge::Bottom:
+        return SDL_HITTEST_RESIZE_BOTTOM;
+    case ResizeEdge::TopLeft:
+        return SDL_HITTEST_RESIZE_TOPLEFT;
+    case ResizeEdge::TopRight:
+        return SDL_HITTEST_RESIZE_TOPRIGHT;
+    case ResizeEdge::BottomLeft:
+        return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+    case ResizeEdge::BottomRight:
+        return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+    case ResizeEdge::None:
+        break;
+    }
+    return SDL_HITTEST_NORMAL;
+}
+
+/// Whether the empty title bar hands a drag to the OS or compositor right now (#2716): on a backend
+/// that runs the drag itself (Core::VideoBackend::usesSystemDrag()), unless the window is maximized
+/// on a backend that maximizes client-side (Core::VideoBackend::supportsClientSideMaximize(); Windows,
+/// #1208). To the OS such a window is a normal one the size of the work area, so its move loop would
+/// drag it around at that size instead of restoring it under the pointer; the client-side drag does
+/// that (DragTracker's threshold and rebase, #2715), so that press is kept for the app. The
+/// compositor knows a native Wayland window is maximized and handles the drag itself.
+[[nodiscard]] constexpr bool
+computeSystemDragApplies(const bool usesSystemDrag, const bool clientSideMaximize, const bool isMaximized) noexcept
+{
+    return usesSystemDrag && !(isMaximized && clientSideMaximize);
+}
+
+/// Full hit-test decision tree, given already-queried SDL/TitleBarLayer state. Pure/header-only,
+/// like computeResizeGeometry and computeTitleBarAreaHitTest above, so the *ordering* itself is
+/// directly unit-testable without live SDL_Window/TitleBarLayer state: a title-bar button can sit
+/// within resizeBorderThickness of a window edge (the close button's rightmost pixels reach the
+/// window's right edge; the icon's top pixels sit inside the top resize strip), so the control-area
+/// check below must run before any resize-border branch, or SDL would consume the click as a resize
+/// instead of delivering it to the app (see #750 review). @p isInControlArea is that decision made,
+/// with the one point where the border wins over a control already taken out of it: the top-right
+/// resize corner (computeIsPointInControlArea(), #2882).
+///
+/// The resize strips are found with computeDetectResizeEdge(), the same decision the client-side
+/// resize starts from, so the two cannot disagree about where an edge is. @p systemResize says who
+/// serves a strip: the OS or window manager (SDL_HITTEST_RESIZE_*; X11/XWayland and native Wayland)
+/// or the app (SDL_HITTEST_NORMAL, so the press is delivered to TitleBarLayer; Windows, see
+/// Core::VideoBackend::usesSystemResize()). Either way a strip is never DRAGGABLE: the top strip
+/// crosses the title bar, and a drag answer there would take the press from the client-side resize.
+/// @p systemDrag is computeSystemDragApplies() for the backend and the window's state.
 [[nodiscard]] inline auto computeWindowHitTest(const float x,
                                                const float y,
                                                const int windowWidth,
@@ -627,61 +809,89 @@ struct WindowRect
                                                const float resizeBorderThickness,
                                                const bool isMaximized,
                                                const bool isInControlArea,
-                                               const bool isNativeWayland) -> SDL_HitTestResult
+                                               const bool systemDrag,
+                                               const bool systemResize) -> SDL_HitTestResult
 {
     if (isInControlArea)
     {
         return SDL_HITTEST_NORMAL;
     }
 
-    if (!isMaximized)
+    // None while maximized: a maximized window has no resize borders, whoever would serve them.
+    if (const ResizeEdge edge = computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, resizeBorderThickness);
+        edge != ResizeEdge::None)
     {
-        if (y >= static_cast<float>(windowHeight) - resizeBorderThickness)
-        {
-            if (x < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            }
-            if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_BOTTOM;
-        }
-
-        if (x < resizeBorderThickness)
-        {
-            if (y < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_TOPLEFT;
-            }
-            return SDL_HITTEST_RESIZE_LEFT;
-        }
-        if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
-        {
-            if (y < resizeBorderThickness)
-            {
-                return SDL_HITTEST_RESIZE_TOPRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_RIGHT;
-        }
-
-        if (y < resizeBorderThickness)
-        {
-            return SDL_HITTEST_RESIZE_TOP;
-        }
+        return systemResize ? hitTestResultForEdge(edge) : SDL_HITTEST_NORMAL;
     }
 
     // titleBarHeight is an exclusive upper bound: ShellLayer::onRender() positions the
     // content window's top edge at exactly y == titleBarHeight, so that row already belongs
-    // to content, not the title bar -- treat it as such here too, or native Wayland would
+    // to content, not the title bar -- treat it as such here too, or a system drag would
     // make it DRAGGABLE and steal its clicks from the content/tab area.
     if (y >= titleBarHeight)
     {
         return SDL_HITTEST_NORMAL;
     }
 
-    return computeTitleBarAreaHitTest(/*isInControlArea=*/false, isNativeWayland);
+    return computeTitleBarAreaHitTest(/*isInControlArea=*/false, systemDrag);
+}
+
+/// Everything the window's hit test is decided from, as TitleBarLayer has it at the moment SDL asks:
+/// the window's size and state, the bar's height and resize border at the display's scale, where
+/// the buttons and the icon were last drawn (the same bounds the bar drew them at, so a point that
+/// answers NORMAL is a point the drawn control takes), and the backend's policy. Valid outside an
+/// ImGui frame, which SDL's callback needs.
+struct WindowHitTestInput
+{
+    int windowWidth = 0;
+    int windowHeight = 0;
+    float titleBarHeightPx = 0.0F;
+    float resizeBorderPx = 0.0F;    ///< computeResizeBorderThickness() at the display's scale
+    TitleBarButtonLayout buttons{}; ///< The six right-hand buttons; default-constructed before the first frame
+    ButtonBounds icon{};            ///< The app icon; default-constructed until it is drawn
+    bool isMaximized = false;
+    bool systemDrag = false;   ///< computeSystemDragApplies() for the backend and this state
+    bool systemResize = false; ///< Core::VideoBackend::usesSystemResize()
+};
+
+/// Whether a title-bar control -- the icon or one of the six buttons -- takes window-local (@p x,
+/// @p y), so that neither a drag nor a resize may start there (the controls are tested before the
+/// resize borders, #750). The one exception is the window's top-right resize corner (#2882): the
+/// Close button's slot reaches the window's top and right edges, so that corner was the only one of
+/// the four that could not start a resize, on any backend. The corner square -- the resize border's
+/// thickness on each side, the square where the other three corners show the diagonal cursor, and
+/// the same computeDetectResizeEdge() answer the resize and the cursor start from -- is the
+/// border's, as the outermost pixels of a Close button are on Windows' own frames. The rest of the
+/// Close button stays the button's, and so does every other overlap of a control with a border: the
+/// top strip over the other buttons and the icon's top pixels. A maximized window has no borders,
+/// so its Close button reaches the screen's corner, as a maximized window's does on Windows.
+[[nodiscard]] inline auto computeIsPointInControlArea(const float x, const float y, const WindowHitTestInput& input) -> bool
+{
+    if (!computeIsPointInBounds(x, y, input.icon) && !computeIsPointOnTitleBarButton(x, y, input.buttons))
+    {
+        return false;
+    }
+    return computeDetectResizeEdge(x, y, input.windowWidth, input.windowHeight, input.isMaximized, input.resizeBorderPx) !=
+           ResizeEdge::TopRight;
+}
+
+/// What the SDL hit-test callback answers for window-local (@p x, @p y): the buttons and the icon are
+/// the control area (computeIsPointInControlArea()), then computeWindowHitTest() decides. The one
+/// function the callback forwards to, so a test over a WindowHitTestInput exercises exactly what the
+/// real window answers.
+[[nodiscard]] inline auto computeWindowHitTestAt(const float x, const float y, const WindowHitTestInput& input) -> SDL_HitTestResult
+{
+    const bool isInControlArea = computeIsPointInControlArea(x, y, input);
+    return computeWindowHitTest(x,
+                                y,
+                                input.windowWidth,
+                                input.windowHeight,
+                                input.titleBarHeightPx,
+                                input.resizeBorderPx,
+                                input.isMaximized,
+                                isInControlArea,
+                                input.systemDrag,
+                                input.systemResize);
 }
 
 /// Outcome of computeResizeCursorUpdate: what TitleBarLayer::updateResizeCursor() should do

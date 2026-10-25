@@ -1,6 +1,11 @@
+#include "App/Panels/ProcessTreeBadge.h"
 #include "App/Panels/ProcessTreeIndent.h"
 
 #include <gtest/gtest.h>
+
+#include <cstddef>
+#include <limits>
+#include <string>
 
 namespace App
 {
@@ -137,6 +142,57 @@ TEST(ProcessTreeIndentTest, UserChosenNameWidthIsSavedAsItIs)
     EXPECT_FALSE(ProcessTreeIndent::nameWidthToSave(true, 0.0F, 500.0F, 500.0F).has_value());
     // List view: whatever it is, it is the list's.
     EXPECT_FALSE(ProcessTreeIndent::nameWidthToSave(false, 360.0F, 360.0F, 120.0F).has_value());
+}
+
+// #838: every level steps by the same amount, the full step while the deepest row fits, and the same
+// number of ems at every font size.
+TEST(ProcessTreeIndentTest, EveryLevelStepsAlikeAtEveryFontSize)
+{
+    using ProcessTreeIndent::INDENT_PER_LEVEL_EM;
+    using ProcessTreeIndent::uniformIndentPerLevel;
+    for (const float em : {10.0F, 13.0F, 18.67F, 32.0F})
+    {
+        const float step = INDENT_PER_LEVEL_EM * em;
+        const float cell = ProcessTreeIndent::TREE_NAME_WIDTH_EM * em;
+        const float reserved = 8.0F * em;
+        EXPECT_FLOAT_EQ(uniformIndentPerLevel(step, 3, cell, reserved), step) << em;
+        EXPECT_FLOAT_EQ(uniformIndentPerLevel(step, 3, cell, reserved) / em, INDENT_PER_LEVEL_EM) << em;
+        // Twenty levels do not fit: the step shrinks alike for all, so the deepest row just fits.
+        const float shared = uniformIndentPerLevel(step, 20, cell, reserved);
+        EXPECT_LT(shared, step) << em;
+        EXPECT_FLOAT_EQ(shared * 20.0F, cell - reserved) << em;
+        EXPECT_NEAR(clampedIndent(20, shared, cell, reserved) - clampedIndent(19, shared, cell, reserved), shared, 1e-3F) << em;
+    }
+    EXPECT_FLOAT_EQ(uniformIndentPerLevel(INDENT_PER_LEVEL, 0, ROOMY_CELL, RESERVED), INDENT_PER_LEVEL); // no depth yet
+    EXPECT_FLOAT_EQ(uniformIndentPerLevel(INDENT_PER_LEVEL, 5, 50.0F, RESERVED), 0.0F);                  // no room at all
+}
+
+TEST(ProcessTreeIndentTest, EachGuideLineRunsThroughItsAncestorsCaret)
+{
+    using ProcessTreeIndent::guideLineX;
+    constexpr float EXPANDER = 20.0F;
+    EXPECT_FLOAT_EQ(guideLineX(0, INDENT_PER_LEVEL, EXPANDER), 10.0F); // the root's caret
+    // A level's line is where that level's caret is: its indent plus half the expander.
+    EXPECT_FLOAT_EQ(guideLineX(3, INDENT_PER_LEVEL, EXPANDER), clampedIndent(3, INDENT_PER_LEVEL, ROOMY_CELL, RESERVED) + 10.0F);
+}
+
+TEST(ProcessTreeBadgeTest, TheBadgeIsTheCountInParentheses)
+{
+    ProcessTreeBadge::BadgeBuffer buffer{};
+    EXPECT_EQ(ProcessTreeBadge::badgeText(1, buffer), "(1)");
+    EXPECT_EQ(ProcessTreeBadge::badgeText(42, buffer), "(42)");
+    EXPECT_EQ(ProcessTreeBadge::badgeText(std::numeric_limits<std::size_t>::max(), buffer),
+              "(" + std::to_string(std::numeric_limits<std::size_t>::max()) + ")");
+}
+
+TEST(ProcessTreeBadgeTest, TheTooltipSaysWhatIsCounted)
+{
+    EXPECT_EQ(ProcessTreeBadge::badgeTooltip(1, false), "1 direct child process, not counting their own children; expand to show it");
+    const std::string many = ProcessTreeBadge::badgeTooltip(3, false);
+    EXPECT_TRUE(many.starts_with("3 direct child processes,")) << many;
+    EXPECT_TRUE(many.ends_with("expand to show them")) << many;
+    EXPECT_FALSE(many.contains("filter")) << many;
+    EXPECT_TRUE(ProcessTreeBadge::badgeTooltip(3, true).contains("only the children that match or lead to a match"));
 }
 
 } // namespace

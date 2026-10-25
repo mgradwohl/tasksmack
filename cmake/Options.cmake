@@ -13,12 +13,30 @@ option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
 option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(TASKSMACK_BUILD_TESTS "Build tests" ON)
 option(TASKSMACK_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+# The headless PGO UI training driver, TaskSmackUiTraining (#880). Cheap: it links the app's own
+# objects (TaskSmackApp) and compiles only its few sources; ON so its ctest smoke test runs everywhere.
+option(TASKSMACK_BUILD_UI_TRAINING "Build the headless PGO UI training driver" ON)
 option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
+# Windows clang Debug only: -gcodeview-ghash plus lld-link /DEBUG:GHASH for faster PDB links (#1875).
+option(TASKSMACK_ENABLE_GHASH "Windows clang Debug: global type hashes for faster lld-link PDB writes" OFF)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
-option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
+option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent cache directory instead of per-build _deps" ON)
 option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
-set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
+# Windows: whether the .zip and the NSIS installer carry TaskSmackHelper.exe, the elevated helper (#2550).
+# Only for Authenticode-signed builds (#2302): packaging then refuses a helper or TaskSmack.exe that
+# isn't validly signed by one signer (cmake/VerifyWindowsSignatures.cmake). Off, the packages are as
+# before and TaskSmack offers no "Retry as administrator"; `cmake --install` installs it either way.
+option(TASKSMACK_PACKAGE_WINDOWS_HELPER "Windows: package TaskSmackHelper.exe (Authenticode-signed builds only)" OFF)
+# The publisher the gate requires: the signer certificate's common name, as UAC shows it (#2302 chose
+# SignPath Foundation; docs/code-signing-policy.md).
+set(TASKSMACK_EXPECTED_SIGNER "SignPath Foundation" CACHE STRING "Windows: the common name TaskSmackHelper.exe's signer must have to be packaged")
+# A pipeline that signs the packaged .zip instead of the build's executables (#2302: release.yml hands the .zip
+# to SignPath): CPack then packages the helper unsigned in the .zip, without the gate, and the pipeline must run
+# cmake/VerifyWindowsSignatures.cmake on the signed .zip's contents before publishing it. The NSIS installer
+# can't be signed inside afterwards, so it keeps the gate either way.
+option(TASKSMACK_SIGN_AFTER_PACKAGING "Windows: the .zip is Authenticode-signed after packaging, so check its signatures then, not before" OFF)
+set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
 set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86-64-v3, x86-64-v2). Empty string means no -march flag.")
@@ -29,5 +47,16 @@ option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph 
 # Supported values: lld (default), mold (faster incremental debug links), default (system linker).
 set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
 set_property(CACHE TASKSMACK_LINKER PROPERTY STRINGS lld mold default)
+
+# Linux: link libc++/libc++abi statically into TaskSmack's executables, so a packaged build doesn't
+# depend on the distro's (older) libc++1 (#1398). ON by default for Release, the configuration every
+# packaging preset uses; see tasksmack_apply_linux_toolchain() in cmake/CompilerOptions.cmake.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_ts_static_libcxx_default ON)
+else()
+    set(_ts_static_libcxx_default OFF)
+endif()
+option(TASKSMACK_STATIC_LIBCXX "Linux: link libc++ and libc++abi statically (default ON for Release)" ${_ts_static_libcxx_default})
+unset(_ts_static_libcxx_default)
 
 set(TASKSMACK_EXTRA_WARNING_FLAGS "" CACHE STRING "Additional warning flags")

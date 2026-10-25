@@ -1,5 +1,6 @@
 #include "SystemModel.h"
 
+#include "DeferredProbe.h"
 #include "History.h"
 #include "Numeric.h"
 #include "Platform/IPowerProbe.h"
@@ -8,6 +9,7 @@
 #include "Platform/SystemTypes.h"
 #include "PublicationSlot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
 #include "SystemSnapshot.h"
 
 #include <spdlog/spdlog.h>
@@ -98,25 +100,50 @@ findInterface(const std::vector<Platform::SystemCounters::InterfaceCounters>& in
 } // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
-    : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
+    : SystemModel(DEFERRED_PROBE)
 {
-    if (m_Probe)
+    const std::scoped_lock writerLock(m_WriterMutex);
+    installProbes(std::move(probe), std::move(powerProbe));
+}
+
+SystemModel::SystemModel(DeferredProbeTag /*tag*/)
+{
+    applyHistoryCapacity();
+}
+
+void SystemModel::setProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+{
+    // Serialised with the sampling path (updateFromCountersLocked() takes the writer mutex), so a
+    // probe is never replaced under a sample in progress.
+    const std::scoped_lock writerLock(m_WriterMutex);
+    installProbes(std::move(probe), std::move(powerProbe));
+}
+
+void SystemModel::installProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+{
+    // The probes' capabilities are read before any lock a reader takes: a probe may answer slowly.
+    Platform::SystemCapabilities capabilities;
+    Platform::PowerCapabilities powerCapabilities;
+    if (probe)
     {
-        m_Capabilities = m_Probe->capabilities();
-        spdlog::debug("SystemModel: initialized with probe (perCore={}, swap={})", m_Capabilities.hasPerCoreCpu, m_Capabilities.hasSwap);
+        capabilities = probe->capabilities();
+        spdlog::debug("SystemModel: initialized with probe (perCore={}, swap={})", capabilities.hasPerCoreCpu, capabilities.hasSwap);
     }
     else
     {
         spdlog::warn("SystemModel: initialized without probe");
     }
-
-    if (m_PowerProbe)
+    if (powerProbe)
     {
-        m_PowerCapabilities = m_PowerProbe->capabilities();
-        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
+        powerCapabilities = powerProbe->capabilities();
+        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", powerCapabilities.hasBattery);
     }
 
-    applyHistoryCapacity();
+    m_Probe = std::move(probe);
+    m_PowerProbe = std::move(powerProbe);
+    m_PowerCapabilities = powerCapabilities;
+    const std::unique_lock lock(m_Mutex);
+    m_Capabilities = capabilities;
 }
 
 void SystemModel::applyHistoryCapacity()
@@ -133,7 +160,6 @@ void SystemModel::applyHistoryCapacity()
     m_MemoryHistory.setCapacity(capacity);
     m_MemoryCachedHistory.setCapacity(capacity);
     m_SwapHistory.setCapacity(capacity);
-    m_PowerHistory.setCapacity(capacity);
     m_BatteryChargeHistory.setCapacity(capacity);
     m_NetRxHistory.setCapacity(capacity);
     m_NetTxHistory.setCapacity(capacity);
@@ -151,7 +177,7 @@ void SystemModel::applyHistoryCapacity()
     }
 }
 
-void SystemModel::trimHistory(double nowSeconds)
+void SystemModel::trimHistory(double nowSeconds) noexcept
 {
     // Drop entries older than the configured time window, except the newest of them while a newer
     // sample remains: the anchor that lets a chart's line run off the window's left edge (see
@@ -168,7 +194,6 @@ void SystemModel::trimHistory(double nowSeconds)
                                                                 m_MemoryHistory,
                                                                 m_MemoryCachedHistory,
                                                                 m_SwapHistory,
-                                                                m_PowerHistory,
                                                                 m_BatteryChargeHistory,
                                                                 m_NetRxHistory,
                                                                 m_NetTxHistory);
@@ -185,6 +210,205 @@ void SystemModel::trimHistory(double nowSeconds)
     {
         coreHistory.discardFront(removeCount);
     }
+}
+
+void SystemModel::stageHistoryAppend(
+    PendingHistory& pending, const Platform::SystemCounters& counters, const SystemSnapshot& snap, std::size_t coreSlots, double nowSeconds)
+{
+    // A new series is backfilled with NaN -- no reading, drawn as a gap (#1015, #1146) -- to the
+    // length of m_Timestamps (clamped to its capacity), so it is aligned before this sample is added.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
+    const auto makeBackfilled = [capacity, backfillCount]
+    {
+        SharedHistoryBuffer<float> history(capacity);
+        history.reserve(backfillCount + 1); // room for this sample too
+        for (std::size_t j = 0; j < backfillCount; ++j)
+        {
+            history.push(std::numeric_limits<float>::quiet_NaN());
+        }
+        return history;
+    };
+
+    // Per-core slots for every core id seen (#1229).
+    if (m_PerCoreHistory.size() < coreSlots)
+    {
+        pending.newCores.reserve(coreSlots - m_PerCoreHistory.size());
+        while (m_PerCoreHistory.size() + pending.newCores.size() < coreSlots)
+        {
+            pending.newCores.push_back(makeBackfilled());
+        }
+        m_PerCoreHistory.reserve(coreSlots);
+    }
+
+    // Interfaces new this sample, the first entry of a repeated name only (as findInterface() finds).
+    for (std::size_t i = 0; i < snap.networkInterfaces.size(); ++i)
+    {
+        const std::string& name = snap.networkInterfaces[i].name;
+        if (findInterface(counters.networkInterfaces, m_InterfaceIndex, name) != &counters.networkInterfaces[i])
+        {
+            continue;
+        }
+        if (!m_PerInterfaceRxHistory.contains(name))
+        {
+            pending.newRx.emplace(name, makeBackfilled());
+            pending.newTx.emplace(name, makeBackfilled());
+        }
+        if (!m_InterfaceLastSeenSeconds.contains(name))
+        {
+            pending.newLastSeen.emplace(name, nowSeconds);
+        }
+    }
+    // Buckets for the staged entries, so moving their nodes in below cannot rehash.
+    m_PerInterfaceRxHistory.reserve(m_PerInterfaceRxHistory.size() + pending.newRx.size());
+    m_PerInterfaceTxHistory.reserve(m_PerInterfaceTxHistory.size() + pending.newTx.size());
+    m_InterfaceLastSeenSeconds.reserve(m_InterfaceLastSeenSeconds.size() + pending.newLastSeen.size());
+
+    // Room for this sample in every existing series.
+    for (auto* history : {&m_CpuHistory,
+                          &m_CpuUserHistory,
+                          &m_CpuSystemHistory,
+                          &m_CpuIowaitHistory,
+                          &m_CpuIdleHistory,
+                          &m_MemoryHistory,
+                          &m_MemoryCachedHistory,
+                          &m_SwapHistory,
+                          &m_BatteryChargeHistory,
+                          &m_NetRxHistory,
+                          &m_NetTxHistory})
+    {
+        history->reserve(1);
+    }
+    m_Timestamps.reserve(1);
+    for (auto& [name, history] : m_PerInterfaceRxHistory)
+    {
+        history.reserve(1);
+    }
+    for (auto& [name, history] : m_PerInterfaceTxHistory)
+    {
+        history.reserve(1);
+    }
+    for (auto& coreHistory : m_PerCoreHistory)
+    {
+        coreHistory.reserve(1);
+    }
+}
+
+// The calls below that could allocate in general (push, push_back, node insert) cannot here: each
+// uses capacity stageHistoryAppend() reserved, which the checker can't see.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+void SystemModel::commitHistoryAppend(PendingHistory& pending,
+                                      const Platform::SystemCounters& counters,
+                                      const SystemSnapshot& snap,
+                                      double nowSeconds) noexcept
+{
+    // Everything below uses room stageHistoryAppend() reserved: vector capacity, hash buckets, and a
+    // slot per series. Nothing allocates, so nothing throws, and every series advances together.
+    constexpr float NO_READING = std::numeric_limits<float>::quiet_NaN();
+
+    // Adopt the staged series: moved in (noexcept), map nodes spliced in without allocating.
+    for (auto& core : pending.newCores)
+    {
+        m_PerCoreHistory.push_back(std::move(core));
+    }
+    while (!pending.newRx.empty())
+    {
+        m_PerInterfaceRxHistory.insert(pending.newRx.extract(pending.newRx.begin()));
+    }
+    while (!pending.newTx.empty())
+    {
+        m_PerInterfaceTxHistory.insert(pending.newTx.extract(pending.newTx.begin()));
+    }
+    while (!pending.newLastSeen.empty())
+    {
+        m_InterfaceLastSeenSeconds.insert(pending.newLastSeen.extract(pending.newLastSeen.begin()));
+    }
+
+    m_CpuHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
+    m_CpuUserHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
+    m_CpuSystemHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
+    m_CpuIowaitHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
+    m_CpuIdleHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
+    m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
+    m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
+    m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+    // Battery charge % (0-100), or NaN -- a gap, like every other unread value -- when there is no
+    // battery or it gave no reading (the probe's -1). It used to be -1 here, which every reader had to
+    // know to convert (#2159).
+    const bool hasCharge = snap.power.hasBattery && snap.power.chargePercent >= 0;
+    m_BatteryChargeHistory.push(hasCharge ? static_cast<float>(snap.power.chargePercent) : NO_READING);
+    m_NetRxHistory.push(pending.netRx);
+    m_NetTxHistory.push(pending.netTx);
+
+    // Per-interface history: this sample's rate for each interface present (the first entry of a
+    // repeated name), and a NaN placeholder for a known interface absent from it, so every series
+    // stays index-aligned with m_Timestamps. NaN, not 0: nothing was measured (#1015).
+    // snap.networkInterfaces mirrors counters.networkInterfaces one for one, so the sorted index
+    // answers "present this sample?" in O(log n), without allocating (#1415).
+    for (std::size_t i = 0; i < snap.networkInterfaces.size(); ++i)
+    {
+        const std::string& name = snap.networkInterfaces[i].name;
+        if (findInterface(counters.networkInterfaces, m_InterfaceIndex, name) != &counters.networkInterfaces[i])
+        {
+            continue;
+        }
+        const auto rx = m_PerInterfaceRxHistory.find(name);
+        const auto tx = m_PerInterfaceTxHistory.find(name);
+        const auto seen = m_InterfaceLastSeenSeconds.find(name);
+        if (rx != m_PerInterfaceRxHistory.end() && tx != m_PerInterfaceTxHistory.end())
+        {
+            rx->second.push(pending.interfaceRx[i]);
+            tx->second.push(pending.interfaceTx[i]);
+        }
+        if (seen != m_InterfaceLastSeenSeconds.end())
+        {
+            seen->second = nowSeconds;
+        }
+    }
+    // Both maps always have the same key set (they are staged and adopted together).
+    for (auto& [name, rxBuf] : m_PerInterfaceRxHistory)
+    {
+        if (findInterface(counters.networkInterfaces, m_InterfaceIndex, name) == nullptr)
+        {
+            rxBuf.push(NO_READING);
+            if (const auto tx = m_PerInterfaceTxHistory.find(name); tx != m_PerInterfaceTxHistory.end())
+            {
+                tx->second.push(NO_READING);
+            }
+        }
+    }
+
+    // Prune interfaces absent for longer than the configured history window: by that point their
+    // buffers hold nothing but the NaN padding just pushed above, so removing the entry changes
+    // nothing observable (a fully NaN-padded buffer and a missing key both present as "no recent
+    // data"), but retaining it forever would grow these maps without bound on a machine with
+    // churning interfaces (#776). Matches trimHistory()'s own wall-clock cutoff below. Erases in
+    // place rather than collecting stale names first, which would allocate.
+    for (auto it = m_InterfaceLastSeenSeconds.begin(); it != m_InterfaceLastSeenSeconds.end();)
+    {
+        if ((nowSeconds - it->second) > m_MaxHistorySeconds)
+        {
+            m_PerInterfaceRxHistory.erase(it->first);
+            m_PerInterfaceTxHistory.erase(it->first);
+            it = m_InterfaceLastSeenSeconds.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    m_Timestamps.push(nowSeconds);
+
+    // Advance each core id's series with its own reading; NaN (a gap, not a fake 0%) for a core id
+    // with no reading this sample, such as an offlined core (#1146, #1229).
+    for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
+    {
+        const bool hasReading = i < snap.cpuPerCore.size() && !std::isnan(snap.cpuPerCore[i].totalPercent);
+        m_PerCoreHistory[i].push(hasReading ? Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent) : NO_READING);
+    }
+
+    trimHistory(nowSeconds);
 }
 
 double SystemModel::maxHistorySeconds() const
@@ -227,7 +451,7 @@ void SystemModel::refresh()
         return;
     }
 
-    auto counters = m_Probe->read();
+    const auto counters = m_Probe->read();
     // Stamped as soon as the counters are read, as StorageModel does: the power read below has
     // its own, variable latency (sysfs, WMI), which would otherwise jitter the rate interval (#1144).
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -239,7 +463,11 @@ void SystemModel::refresh()
     std::optional<PowerStatus> powerStatus;
     if (m_PowerProbe)
     {
-        powerStatus = computePowerStatus(m_PowerProbe->read());
+        const Platform::PowerCounters power = m_PowerProbe->read();
+        // A battery inserted or removed since the last read changes what the probe offers (#2380). Read
+        // and used on this thread only.
+        m_PowerCapabilities = m_PowerProbe->capabilities();
+        powerStatus = computePowerStatus(power);
     }
 
     updateFromCountersLocked(counters, nowSeconds, powerStatus);
@@ -308,11 +536,7 @@ void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& count
     const std::scoped_lock writerLock(m_WriterMutex);
     {
         const std::unique_lock lock(m_Mutex);
-        if (powerStatus.has_value())
-        {
-            m_Snapshot.power = *powerStatus;
-        }
-        computeSnapshot(counters, nowSeconds);
+        computeSnapshot(counters, nowSeconds, powerStatus);
         // computeSnapshot() indexed these counters' interfaces; counters and index become the
         // previous pair together, without throwing.
         std::swap(m_PrevCounters, nextPrevious);
@@ -342,42 +566,44 @@ std::uint64_t SystemModel::publicationVersion() const noexcept
 void SystemModel::publish()
 {
     // Build contents first, commit validity keys last: the version comes from a local candidate and
-    // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
-    // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
-    // consistent. The copies -- up to every history ring at the longest window -- run under a shared
-    // lock: snapshot() and the per-field accessors still read alongside, and publication() doesn't
-    // take m_Mutex at all, so no reader waits for them (#868). Nothing else can write this state
-    // meanwhile; the caller holds m_WriterMutex.
+    // m_PublicationVersion only advances once the generation is committed, so a throw while building
+    // (std::bad_alloc from the per-core vector or interface maps) leaves the published generation, its
+    // version and m_PublicationVersion consistent. The histories are shared, not copied (#1412): each
+    // series is one view of its append-only buffer, so this is O(series) whatever the history length.
+    // It runs under a shared lock: snapshot() still reads alongside, and
+    // publication() doesn't take m_Mutex at all (#868). Nothing else can write this state meanwhile;
+    // the caller holds m_WriterMutex.
     auto publication = std::make_shared<SystemPublication>();
     {
         const std::shared_lock stateLock(m_Mutex);
         publication->version = m_PublicationVersion + 1;
         publication->snapshot = m_Snapshot;
-        publication->timestamps = HistoryUtils::toVector(m_Timestamps);
-        publication->cpuHistory = HistoryUtils::toVector(m_CpuHistory);
-        publication->cpuUserHistory = HistoryUtils::toVector(m_CpuUserHistory);
-        publication->cpuSystemHistory = HistoryUtils::toVector(m_CpuSystemHistory);
-        publication->cpuIowaitHistory = HistoryUtils::toVector(m_CpuIowaitHistory);
-        publication->cpuIdleHistory = HistoryUtils::toVector(m_CpuIdleHistory);
-        publication->memoryHistory = HistoryUtils::toVector(m_MemoryHistory);
-        publication->memoryCachedHistory = HistoryUtils::toVector(m_MemoryCachedHistory);
-        publication->swapHistory = HistoryUtils::toVector(m_SwapHistory);
-        publication->powerHistory = HistoryUtils::toVector(m_PowerHistory);
-        publication->batteryChargeHistory = HistoryUtils::toVector(m_BatteryChargeHistory);
-        publication->netRxHistory = HistoryUtils::toVector(m_NetRxHistory);
-        publication->netTxHistory = HistoryUtils::toVector(m_NetTxHistory);
+        publication->timestamps = m_Timestamps.view();
+        publication->cpuHistory = m_CpuHistory.view();
+        publication->cpuUserHistory = m_CpuUserHistory.view();
+        publication->cpuSystemHistory = m_CpuSystemHistory.view();
+        publication->cpuIowaitHistory = m_CpuIowaitHistory.view();
+        publication->cpuIdleHistory = m_CpuIdleHistory.view();
+        publication->memoryHistory = m_MemoryHistory.view();
+        publication->memoryCachedHistory = m_MemoryCachedHistory.view();
+        publication->swapHistory = m_SwapHistory.view();
+        publication->batteryChargeHistory = m_BatteryChargeHistory.view();
+        publication->netRxHistory = m_NetRxHistory.view();
+        publication->netTxHistory = m_NetTxHistory.view();
         publication->perCoreHistory.reserve(m_PerCoreHistory.size());
         for (const auto& history : m_PerCoreHistory)
         {
-            publication->perCoreHistory.push_back(HistoryUtils::toVector(history));
+            publication->perCoreHistory.push_back(history.view());
         }
+        publication->perInterfaceRxHistory.reserve(m_PerInterfaceRxHistory.size());
         for (const auto& [name, history] : m_PerInterfaceRxHistory)
         {
-            publication->perInterfaceRxHistory.emplace(name, HistoryUtils::toVector(history));
+            publication->perInterfaceRxHistory.emplace(name, history.view());
         }
+        publication->perInterfaceTxHistory.reserve(m_PerInterfaceTxHistory.size());
         for (const auto& [name, history] : m_PerInterfaceTxHistory)
         {
-            publication->perInterfaceTxHistory.emplace(name, HistoryUtils::toVector(history));
+            publication->perInterfaceTxHistory.emplace(name, history.view());
         }
     }
     const std::uint64_t version = publication->version;
@@ -385,126 +611,17 @@ void SystemModel::publish()
     m_PublicationVersion = version;
 }
 
-const Platform::SystemCapabilities& SystemModel::capabilities() const
+Platform::SystemCapabilities SystemModel::capabilities() const
 {
+    // By value, under the shared lock: setProbes() can write it from the sampler thread while the UI
+    // reads it (#2731).
+    const std::shared_lock lock(m_Mutex);
     return m_Capabilities;
 }
 
-std::vector<float> SystemModel::cpuHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuHistory);
-}
-
-std::vector<float> SystemModel::cpuUserHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuUserHistory);
-}
-
-std::vector<float> SystemModel::cpuSystemHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuSystemHistory);
-}
-
-std::vector<float> SystemModel::cpuIowaitHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuIowaitHistory);
-}
-
-std::vector<float> SystemModel::cpuIdleHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuIdleHistory);
-}
-
-std::vector<float> SystemModel::memoryHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_MemoryHistory);
-}
-
-std::vector<float> SystemModel::powerHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_PowerHistory);
-}
-
-std::vector<float> SystemModel::batteryChargeHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_BatteryChargeHistory);
-}
-
-std::vector<float> SystemModel::netRxHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_NetRxHistory);
-}
-
-std::vector<float> SystemModel::netTxHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_NetTxHistory);
-}
-
-std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& interfaceName) const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const auto it = m_PerInterfaceRxHistory.find(interfaceName);
-    if (it != m_PerInterfaceRxHistory.end())
-    {
-        return HistoryUtils::toVector(it->second);
-    }
-    return {};
-}
-
-std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& interfaceName) const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const auto it = m_PerInterfaceTxHistory.find(interfaceName);
-    if (it != m_PerInterfaceTxHistory.end())
-    {
-        return HistoryUtils::toVector(it->second);
-    }
-    return {};
-}
-
-std::vector<float> SystemModel::memoryCachedHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_MemoryCachedHistory);
-}
-
-std::vector<float> SystemModel::swapHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SwapHistory);
-}
-
-std::vector<std::vector<float>> SystemModel::perCoreHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    std::vector<std::vector<float>> result;
-    result.reserve(m_PerCoreHistory.size());
-
-    for (const auto& coreHist : m_PerCoreHistory)
-    {
-        result.push_back(HistoryUtils::toVector(coreHist));
-    }
-
-    return result;
-}
-
-std::vector<double> SystemModel::timestamps() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_Timestamps);
-}
-
-void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds)
+void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
+                                  double nowSeconds,
+                                  const std::optional<PowerStatus>& powerStatus)
 {
     SystemSnapshot snap;
 
@@ -515,18 +632,19 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
     // The core ids seen this session: only these get a chart, not every slot up to the highest id
     // (#1262). Never pruned, so a CPU that goes offline keeps its chart, with a gap (#1229).
+    // Built in the snapshot and committed with it at the end (#1412).
+    snap.seenCoreIds = m_SeenCoreIds;
     for (const auto& core : counters.cpuPerCore)
     {
         if (core.coreId >= MAX_CORE_SLOTS)
         {
             continue;
         }
-        if (const auto at = std::ranges::lower_bound(m_SeenCoreIds, core.coreId); at == m_SeenCoreIds.end() || *at != core.coreId)
+        if (const auto at = std::ranges::lower_bound(snap.seenCoreIds, core.coreId); at == snap.seenCoreIds.end() || *at != core.coreId)
         {
-            m_SeenCoreIds.insert(at, core.coreId);
+            snap.seenCoreIds.insert(at, core.coreId);
         }
     }
-    snap.seenCoreIds = m_SeenCoreIds;
 
     // Memory (always available)
     snap.memoryTotalBytes = counters.memory.totalBytes;
@@ -575,12 +693,23 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         snap.swapUsedPercent = 100.0 * (Numeric::toDouble(snap.swapUsedBytes) / totalSwapBytes);
     }
 
+    // Commit charge (#1627): only when the probe supports it and read it this sample. A limit of 0
+    // has no percentage to show, so it reads as not available too.
+    if (m_Capabilities.hasCommitCharge && counters.memory.hasCommitCharge && counters.memory.commitLimitBytes > 0)
+    {
+        snap.hasCommitCharge = true;
+        snap.commitChargeBytes = counters.memory.commitChargeBytes;
+        snap.commitLimitBytes = counters.memory.commitLimitBytes;
+        snap.commitPeakBytes = counters.memory.commitPeakBytes;
+    }
+
     // Uptime
     snap.uptimeSeconds = counters.uptimeSeconds;
 
     // Static info
     snap.hostname = counters.hostname;
     snap.cpuModel = counters.cpuModel;
+    snap.cpuDetails = counters.cpuDetails;
 
     // Load average and CPU frequency
     snap.loadAvg1 = counters.loadAvg1;
@@ -608,7 +737,6 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         bool rx = false;
         bool tx = false;
     };
-    std::vector<RateGap> interfaceGaps(counters.networkInterfaces.size());
     RateGap totalGap;
     const auto saneRate = [maxSaneRate](double rate, bool& gap)
     {
@@ -623,10 +751,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     buildInterfaceIndex(counters.networkInterfaces, m_InterfaceIndex);
 
     snap.networkInterfaces.reserve(counters.networkInterfaces.size());
-    for (std::size_t ifaceIndex = 0; ifaceIndex < counters.networkInterfaces.size(); ++ifaceIndex)
+    for (const auto& iface : counters.networkInterfaces)
     {
-        const auto& iface = counters.networkInterfaces[ifaceIndex];
-        auto& gap = interfaceGaps[ifaceIndex];
+        RateGap gap; // set by saneRate(); the rate status below carries it on
         SystemSnapshot::InterfaceSnapshot ifaceSnap;
         ifaceSnap.name = iface.name;
         ifaceSnap.displayName = iface.displayName;
@@ -634,6 +761,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
         ifaceSnap.isVirtual = iface.isVirtual;
         ifaceSnap.isVirtualKnown = iface.isVirtualKnown;
+        ifaceSnap.kind = iface.kind;
 
         // Compute rates only if we have previous data and positive time delta. A rate that isn't
         // computed stays 0, and its status says why, so the UI can tell it from a measured 0 (#1375).
@@ -669,6 +797,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     }
 
     // CPU usage (requires previous sample for delta)
+    std::size_t coreSlots = 0;
     if (m_HasPrevious)
     {
         // Total CPU
@@ -706,23 +835,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             snap.cpuPerCore[core.coreId] = computeCpuUsage(core, *previous);
         }
 
-        // Grow per-core history to cover every core id seen. A new core's ring is backfilled with
-        // NaN -- no reading, drawn as a gap (#1146) -- so all rings stay in lockstep with m_Timestamps.
-        if (m_PerCoreHistory.size() < slotCount)
-        {
-            const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
-            const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
-            const std::size_t oldSize = m_PerCoreHistory.size();
-            m_PerCoreHistory.resize(slotCount);
-            for (std::size_t i = oldSize; i < slotCount; ++i)
-            {
-                m_PerCoreHistory[i].setCapacity(capacity);
-                for (std::size_t j = 0; j < backfillCount; ++j)
-                {
-                    m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
-                }
-            }
-        }
+        // Per-core history grows to cover every core id seen; the new slots are staged with the
+        // rest of this sample's history append below.
+        coreSlots = slotCount;
 
         // Total network rate is the sum of the per-interface rates computed above, not the change in
         // the summed lifetime counters. With the summed counters, an interface appearing (a VPN
@@ -738,158 +853,103 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         {
             const bool anyHardware =
                 std::ranges::any_of(snap.networkInterfaces, [](const auto& ifaceSnap) { return !ifaceSnap.isVirtual; });
-            for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
+            // A Total missing a counted interface's dropped sample -- a glitch above the ceiling, or a
+            // counter that went backwards -- isn't a measurement either (#1291, #2129). A counted
+            // interface new this sample doesn't make it one: it wasn't in the previous Total, so the
+            // sum of the others is still one, as StorageModel's totals are (totalsMeasured). A Total
+            // with no counted interface measured at all is no reading, not 0.
+            const auto dropped = [](InterfaceRateStatus status)
             {
-                const auto& ifaceSnap = snap.networkInterfaces[ifaceIndex];
+                return status == InterfaceRateStatus::CounterReset || status == InterfaceRateStatus::AboveCeiling;
+            };
+            bool anyMeasuredRx = false;
+            bool anyMeasuredTx = false;
+            for (const auto& ifaceSnap : snap.networkInterfaces)
+            {
                 if (anyHardware && ifaceSnap.isVirtual)
                 {
                     continue;
                 }
                 snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
                 snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
-                // A Total missing a counted interface's glitched sample isn't a measurement either.
-                totalGap.rx = totalGap.rx || interfaceGaps[ifaceIndex].rx;
-                totalGap.tx = totalGap.tx || interfaceGaps[ifaceIndex].tx;
+                totalGap.rx = totalGap.rx || dropped(ifaceSnap.rxRateStatus);
+                totalGap.tx = totalGap.tx || dropped(ifaceSnap.txRateStatus);
+                anyMeasuredRx = anyMeasuredRx || ifaceSnap.rxRateStatus == InterfaceRateStatus::Measured;
+                anyMeasuredTx = anyMeasuredTx || ifaceSnap.txRateStatus == InterfaceRateStatus::Measured;
             }
+            totalGap.rx = totalGap.rx || !anyMeasuredRx;
+            totalGap.tx = totalGap.tx || !anyMeasuredTx;
         }
         else if (timeDelta > 0.0)
         {
-            // Only compute if counters increased (handle overflow/restart)
+            // Only compute if counters increased; one that went backwards (overflow/restart) is a gap
+            // in the history, not a 0 (#2129). The next sample rates from this one's counters.
             if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
             {
                 snap.netRxBytesPerSec =
                     saneRate(Numeric::counterRate(counters.netRxBytes, m_PrevCounters.netRxBytes, timeDelta), totalGap.rx);
+            }
+            else
+            {
+                totalGap.rx = true;
             }
             if (counters.netTxBytes >= m_PrevCounters.netTxBytes)
             {
                 snap.netTxBytesPerSec =
                     saneRate(Numeric::counterRate(counters.netTxBytes, m_PrevCounters.netTxBytes, timeDelta), totalGap.tx);
             }
+            else
+            {
+                totalGap.tx = true;
+            }
+        }
+        else
+        {
+            // Too short an interval to rate (MIN_ELAPSED_FOR_RATES): nothing was measured (#2129).
+            totalGap.rx = true;
+            totalGap.tx = true;
         }
     }
 
-    // Store snapshot (preserve power status that was set separately in refresh())
-    const auto preservedPower = m_Snapshot.power;
-    m_Snapshot = snap;
-    m_Snapshot.power = preservedPower;
+    // The power status is read separately, in refresh(): this cycle's reading if there is one, else
+    // the last one.
+    snap.power = powerStatus.value_or(m_Snapshot.power);
 
-    // Update history (only after we have valid deltas)
+    // Update history (only after we have valid deltas). Staged first -- everything that allocates,
+    // so a std::bad_alloc leaves the model untouched -- then committed without throwing, so every
+    // series advances together or none does (#1412).
+    PendingHistory pending;
     if (m_HasPrevious)
     {
-        m_CpuHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
-        m_CpuUserHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
-        m_CpuSystemHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
-        m_CpuIowaitHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
-        m_CpuIdleHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
-        m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
-        m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
-        m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-        m_PowerHistory.push(static_cast<float>(preservedPower.powerWatts));
-        // Track battery charge % if available (0-100 range, use -1 as "no data")
-        const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
-        m_BatteryChargeHistory.push(chargeVal);
-        // Network history (bytes per second)
-        // A rate dropped as a glitch is a gap (NaN), not the 0 the snapshot shows (#1291).
-        constexpr float NO_READING = std::numeric_limits<float>::quiet_NaN();
+        // A rate that wasn't measured is a gap (NaN) in the history, not the 0 the snapshot shows:
+        // a glitch above the ceiling (#1291), and an interface's first sample or a counter that went
+        // backwards, whose rate status says so (#1375, #2129). Only a Measured rate is a point.
         const auto historyRate = [](double rate, bool gap)
         {
-            return gap ? NO_READING : static_cast<float>(rate);
+            return gap ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(rate);
         };
-        m_NetRxHistory.push(historyRate(snap.netRxBytesPerSec, totalGap.rx));
-        m_NetTxHistory.push(historyRate(snap.netTxBytesPerSec, totalGap.tx));
-
-        // Per-interface network history. New interfaces are backfilled (clamped to ring
-        // capacity) so they align with m_Timestamps, and known interfaces absent from this
-        // sample get a placeholder, so every series stays index-aligned. Both are NaN, not 0:
-        // nothing was measured, and a chart must show a gap there rather than a false zero (#1015).
-        // snap.networkInterfaces mirrors counters.networkInterfaces one for one, so the sorted
-        // index built above answers "present this sample?" in O(log n), without allocating (#1415).
-        auto ifacePresent = [this, &counters](const std::string& name) -> bool
+        pending.netRx = historyRate(snap.netRxBytesPerSec, totalGap.rx);
+        pending.netTx = historyRate(snap.netTxBytesPerSec, totalGap.tx);
+        pending.interfaceRx.reserve(snap.networkInterfaces.size());
+        pending.interfaceTx.reserve(snap.networkInterfaces.size());
+        for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            return findInterface(counters.networkInterfaces, m_InterfaceIndex, name) != nullptr;
-        };
-        for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
-        {
-            const auto& ifaceSnap = snap.networkInterfaces[ifaceIndex];
-            const auto& name = ifaceSnap.name;
-            auto ensureAligned = [this](auto& map, const std::string& ifName) -> auto&
-            {
-                auto [it, inserted] = map.try_emplace(ifName);
-                if (inserted)
-                {
-                    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
-                    it->second.setCapacity(capacity);
-                    const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
-                    for (std::size_t j = 0; j < backfillCount; ++j)
-                    {
-                        it->second.push(std::numeric_limits<float>::quiet_NaN());
-                    }
-                }
-                return it->second;
-            };
-            ensureAligned(m_PerInterfaceRxHistory, name).push(historyRate(ifaceSnap.rxBytesPerSec, interfaceGaps[ifaceIndex].rx));
-            ensureAligned(m_PerInterfaceTxHistory, name).push(historyRate(ifaceSnap.txBytesPerSec, interfaceGaps[ifaceIndex].tx));
-            m_InterfaceLastSeenSeconds[name] = nowSeconds;
+            pending.interfaceRx.push_back(historyRate(ifaceSnap.rxBytesPerSec, ifaceSnap.rxRateStatus != InterfaceRateStatus::Measured));
+            pending.interfaceTx.push_back(historyRate(ifaceSnap.txBytesPerSec, ifaceSnap.txRateStatus != InterfaceRateStatus::Measured));
         }
-        // Push a NaN placeholder for known interfaces absent from this sample.
-        // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
-        // (not inserting/erasing keys) does not invalidate the iterator, so no
-        // scratch vector is needed.  m_PerInterfaceTxHistory always has the same
-        // key set (both maps are always updated together), so .at() is safe.
-        for (auto& [name, rxBuf] : m_PerInterfaceRxHistory)
-        {
-            if (!ifacePresent(name))
-            {
-                rxBuf.push(std::numeric_limits<float>::quiet_NaN());
-                m_PerInterfaceTxHistory.at(name).push(std::numeric_limits<float>::quiet_NaN());
-            }
-        }
-
-        // Prune interfaces absent for longer than the configured history window: by that point
-        // their buffers hold nothing but the NaN padding just pushed above, so removing the
-        // entry changes nothing observable (a fully NaN-padded buffer and a missing key both
-        // present as "no recent data" via netRxHistoryForInterface()/netTxHistoryForInterface()),
-        // but retaining it forever would grow these maps without bound on a machine with
-        // churning interfaces (#776). Matches trimHistory()'s own wall-clock cutoff below.
-        // Erases in place while iterating m_InterfaceLastSeenSeconds rather than collecting
-        // stale names into a scratch vector first: that vector's own allocation could throw
-        // right under the memory pressure this pruning exists to relieve, silently skipping
-        // the whole pass for the one refresh cycle it matters most.
-        for (auto it = m_InterfaceLastSeenSeconds.begin(); it != m_InterfaceLastSeenSeconds.end();)
-        {
-            if ((nowSeconds - it->second) > m_MaxHistorySeconds)
-            {
-                m_PerInterfaceRxHistory.erase(it->first);
-                m_PerInterfaceTxHistory.erase(it->first);
-                it = m_InterfaceLastSeenSeconds.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-
-        m_Timestamps.push(nowSeconds);
-
-        // Advance each core id's ring with its own reading; push NaN (a gap, not a fake 0%) for a
-        // core id with no reading this sample, such as an offlined core -- interior or trailing --
-        // so every core series stays aligned with m_Timestamps (#1146, #1229).
-        for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
-        {
-            if (i < snap.cpuPerCore.size() && !std::isnan(snap.cpuPerCore[i].totalPercent))
-            {
-                m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
-            }
-            else
-            {
-                m_PerCoreHistory[i].push(std::numeric_limits<float>::quiet_NaN());
-            }
-        }
-
-        trimHistory(nowSeconds);
+        stageHistoryAppend(pending, counters, snap, coreSlots, nowSeconds);
     }
 
-    // Update previous timestamp for next iteration
+    std::vector<std::size_t> seenCoreIds = snap.seenCoreIds; // the model's copy, swapped in below
+
+    // Commit: nothing below throws.
+    if (m_HasPrevious)
+    {
+        commitHistoryAppend(pending, counters, snap, nowSeconds);
+    }
+    static_assert(std::is_nothrow_move_assignable_v<SystemSnapshot>);
+    m_SeenCoreIds.swap(seenCoreIds);
+    m_Snapshot = std::move(snap);
     m_PrevTimestamp = nowSeconds;
 }
 
@@ -912,12 +972,14 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
                                      fieldDelta(&Platform::CpuCounters::softirq) + fieldDelta(&Platform::CpuCounters::steal);
     if (totalDelta == 0)
     {
-        return usage; // Avoid division by zero
+        // No CPU time passed (a stalled or failing probe repeating its counters): no reading, a gap,
+        // not 0% busy (#2534)
+        return noCpuReading();
     }
 
     const double totalDeltaDouble = Numeric::toDouble(totalDelta);
 
-    auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
+    const auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
     {
         const std::uint64_t delta = Numeric::counterDelta(curr, prev);
         return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);
@@ -951,7 +1013,9 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
 {
     PowerStatus status;
 
-    status.hasBattery = m_PowerCapabilities.hasBattery;
+    // A probe can offer a battery whose reading says none is in: an empty bay the driver still lists,
+    // or a battery removed after start. That reads as no battery, not as one at -1% (#2408).
+    status.hasBattery = m_PowerCapabilities.hasBattery && counters.state != Platform::BatteryState::NotPresent;
     // Before the no-battery return: on a battery-less machine isOnAc is still the adapter's report
     // (#1109), which consumers need.
     status.isOnAc = counters.isOnAc;
@@ -983,6 +1047,19 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     // Battery details
     status.technology = counters.technology;
     status.model = counters.model;
+    status.manufacturer = counters.manufacturer;
+    status.reportsCapacity = m_PowerCapabilities.hasDesignCapacity;
+    status.reportsCycleCount = m_PowerCapabilities.hasCycleCount;
+    status.reportsTechnology = m_PowerCapabilities.hasTechnology;
+    if (status.reportsCapacity)
+    {
+        status.designCapacityWh = counters.chargeDesignWh;
+        status.fullChargeCapacityWh = counters.chargeFullWh;
+    }
+    if (status.reportsCycleCount)
+    {
+        status.cycleCount = counters.cycleCount;
+    }
 
     return status;
 }

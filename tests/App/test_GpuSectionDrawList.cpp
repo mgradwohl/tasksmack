@@ -5,11 +5,16 @@
 #include "App/Panels/GpuSection.h"
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -166,6 +171,96 @@ TEST(GpuSectionDrawListTest, ADuplicatedIdIsDrawnOnce)
     publication.snapshots = {snapshot("GPU0")};
 
     EXPECT_EQ(idsOf(gpuDrawList(publication)), (std::vector<std::string>{"GPU0"}));
+}
+
+// #1799: the GPU tab and the Overview's VRAM total draw from a GPU model's publication, which lists
+// an NPU apart from the GPUs, so neither shows nor counts it before the NPU tab exists.
+TEST(GpuSectionDrawListTest, AnNpuIsNeitherDrawnNorCountedAsAGpu)
+{
+    constexpr std::uint64_t GIB = 1ULL << 30U;
+    auto probe = std::make_unique<TestMocks::MockGPUProbe>();
+    probe->withGPU("dGPU", "Discrete GPU", "NVIDIA", false)
+        .withMemory("dGPU", GIB, 8 * GIB)
+        .withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
+        .withGPUCounters("NPU",
+                         []
+                         {
+                             auto counters = TestMocks::makeGPUCounters("NPU", 10.0, GIB, 16 * GIB);
+                             counters.kind = Platform::DeviceKind::Npu;
+                             return counters;
+                         }());
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+
+    EXPECT_EQ(idsOf(gpuDrawList(*publication)), (std::vector<std::string>{"dGPU"}));
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(publication->snapshots), 8 * GIB) << "Without the NPU's 16 GiB";
+    ASSERT_EQ(publication->acceleratorSnapshots.size(), 1U);
+    EXPECT_EQ(publication->acceleratorSnapshots[0].gpuId, "NPU");
+}
+
+// #1799: the NPU tab draws the publication's accelerators the way the GPU tab draws its GPUs:
+// enumeration order, a missing read keeping its slot, then any read enumeration did not list.
+TEST(GpuSectionDrawListTest, TheNpuTabDrawsTheAcceleratorsAlone)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("iGPU")};
+    publication.snapshots = {snapshot("iGPU")};
+    publication.acceleratorInfo = {info("NPU1"), info("NPU0")};
+    publication.acceleratorSnapshots = {snapshot("NPU0"), snapshot("Unlisted")};
+
+    const std::vector<GpuDrawEntry> entries = GpuSection::acceleratorDrawList(publication);
+    EXPECT_EQ(idsOf(entries), (std::vector<std::string>{"NPU1", "NPU0", "Unlisted"}));
+    ASSERT_EQ(entries.size(), 3U);
+    EXPECT_EQ(entries[0].snapshot, nullptr) << "Enumerated, but not read: keeps its slot";
+    EXPECT_EQ(entries[1].snapshot, publication.acceleratorSnapshots.data());
+    EXPECT_EQ(entries[2].info, nullptr);
+    EXPECT_EQ(idsOf(gpuDrawList(publication)), (std::vector<std::string>{"iGPU"})) << "Nor does the GPU tab draw them";
+}
+
+TEST(GpuSectionDrawListTest, TheNpuTabIsShownOnlyWithAnAccelerator)
+{
+    EXPECT_FALSE(GpuSection::showAcceleratorTab(nullptr));
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("iGPU")};
+    publication.snapshots = {snapshot("iGPU")};
+    EXPECT_FALSE(GpuSection::showAcceleratorTab(&publication)) << "A GPU alone: no NPU tab (and every Linux system, #1827)";
+    publication.acceleratorInfo = {info("NPU")};
+    EXPECT_TRUE(GpuSection::showAcceleratorTab(&publication));
+    publication.acceleratorInfo.clear();
+    publication.acceleratorSnapshots = {snapshot("NPU")};
+    EXPECT_TRUE(GpuSection::showAcceleratorTab(&publication)) << "Read, though enumeration did not list it";
+}
+
+TEST(GpuSectionDrawListTest, AnAcceleratorIsLabelledWithItsKindAndDriver)
+{
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::Npu), "NPU");
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::ComputeAccelerator), "Compute accelerator");
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::Gpu), "GPU");
+
+    EXPECT_EQ(GpuSection::acceleratorHeaderLabel("*", "Intel(R) AI Boost", Platform::DeviceKind::Npu, false),
+              "* Intel(R) AI Boost [NPU]###gpuHeader");
+    EXPECT_EQ(GpuSection::acceleratorHeaderLabel("*", "Contoso", Platform::DeviceKind::ComputeAccelerator, true),
+              "* Contoso [Compute accelerator] (Sleeping)###gpuHeader");
+
+    Platform::GPUInfo npu = info("NPU");
+    npu.kind = Platform::DeviceKind::Npu;
+    npu.vendor = "Intel";
+    npu.driverVersion = "32.0.100.4778";
+    npu.memoryIsShared = true;
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(npu), "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory: Shared");
+    // A Linux NPU's memory in use, which has no total to make a percent of (#1827): bytes on this line.
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(npu, std::uint64_t{12} * 1024U * 1024U),
+              "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory: Shared, " + UI::Format::formatBytes(12.0 * 1024.0 * 1024.0) +
+                  " in use");
+
+    Platform::GPUInfo unknown = info("ACC");
+    unknown.kind = Platform::DeviceKind::ComputeAccelerator;
+    unknown.vendor = "Unknown";
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(unknown), "Kind: Compute accelerator    Driver: Unknown    Memory: Dedicated");
 }
 
 } // namespace

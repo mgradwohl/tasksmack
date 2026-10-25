@@ -43,11 +43,6 @@ class RecordingPanel final : public Panel
         m_Calls.get().push_back(name() + ":event");
     }
 
-    void render(bool* /*open*/) override
-    {
-        m_Calls.get().push_back(name() + ":window");
-    }
-
     void renderContent() override
     {
         m_Calls.get().push_back(name() + ":content");
@@ -175,8 +170,6 @@ class ThrowingDetachPanel final : public Panel
         throw std::runtime_error("ThrowingDetachPanel::onDetach always throws");
     }
 
-    void render(bool* /*open*/) override
-    {}
     void renderContent() override
     {}
 

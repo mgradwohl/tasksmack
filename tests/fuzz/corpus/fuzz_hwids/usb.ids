@@ -1,0 +1,14 @@
+#	List of USB ID's (excerpt for the fuzz_hwids seed corpus)
+046d  Logitech, Inc.
+	c52b  Unifying Receiver
+		0000  Interface name
+05e3  Genesys Logic, Inc.
+	0610  Hub
+
+C 00  (Defined at Interface level)
+C 03  Human Interface Device
+	01  Boot Interface Subclass
+		01  Keyboard
+HID 00  Unknown
+R 00  Not Specified
+BIAS 0  Not Specified

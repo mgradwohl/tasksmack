@@ -30,8 +30,8 @@ validate_build_prereqs() {
     fi
     local clangpp_version
     clangpp_version="$(get_llvm_tool_major_version "$clangpp" 2>/dev/null || true)"
-    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 22 ]]; then
-        echo "Error: clang++ >= 22 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
+    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 23 ]]; then
+        echo "Error: clang++ >= 23 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
         return 1
     fi
     return 0
@@ -52,7 +52,7 @@ find_llvm_tool() {
     local tool="$1"
 
     # Try versioned LLVM installations first
-    for ver in 22 21 20 19 18 17; do
+    for ver in 23 22 21 20 19 18 17; do
         if [[ -x "/usr/lib/llvm-$ver/bin/$tool" ]]; then
             echo "/usr/lib/llvm-$ver/bin/$tool"
             return 0
@@ -86,13 +86,24 @@ _python_meets_min() {
 }
 
 # Find the first Python >= 3.14 interpreter in the project venv or PATH.
+# Order: the POSIX venv (.venv/bin/python), the Windows venv that setup-dev.ps1 creates
+# (.venv/Scripts/python.exe, used from Git Bash; #2276), then python3.14, python3, python on PATH.
+# The Windows venv is a candidate only on a Windows bash (Git Bash, MSYS2 or Cygwin: OSTYPE msys*
+# or cygwin*, and recent Git for Windows reports cygwin), the split
+# cmake/Dependencies.cmake makes on CMAKE_HOST_WIN32. In WSL, a checkout shared with Windows has
+# that python.exe too, and interop runs it, but it reads Linux paths as C:\mnt\... (#2411).
+# The version check also rules out the Microsoft Store python3/python stub, which is not 3.14+.
 # Prints the resolved filesystem path on success; returns 1 if no qualifying interpreter found.
 find_python() {
     local exe
     local common_dir repo_root
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "${common_dir}/.." && pwd)"
-    for exe in "${repo_root}/.venv/bin/python" python3.14 python3 python; do
+    local -a candidates=("${repo_root}/.venv/bin/python")
+    case "${OSTYPE:-}" in
+        msys* | cygwin*) candidates+=("${repo_root}/.venv/Scripts/python.exe") ;;
+    esac
+    for exe in "${candidates[@]}" python3.14 python3 python; do
         if _python_meets_min "$exe"; then
             command -v "$exe"
             return 0
@@ -101,25 +112,41 @@ find_python() {
     return 1
 }
 
-# Warn when a clang-format's major version differs from the one CI pins in .pre-commit-config.yaml
-# (mirrors-clang-format `rev:`). Different majors can format the same code differently, so a
-# failure from check-format.sh, or a rewrite by clang-format.sh, may be the toolchain rather than
-# the tree (#916). Never fails; prints to stderr only.
-# Usage: warn_clang_format_version_skew "/usr/bin/clang-format"
-warn_clang_format_version_skew() {
-    local tool_path="$1"
-    local common_dir config pinned local_version
+# Print the LLVM major version CI pins: the mirrors-clang-format `rev:` in .pre-commit-config.yaml,
+# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read.
+pinned_llvm_major() {
+    local common_dir config
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     config="${common_dir}/../.pre-commit-config.yaml"
     [[ -f "$config" ]] || return 0
-    pinned="$(grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+    grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true
+}
+
+# Warn when an LLVM tool's major version differs from the one CI pins (pinned_llvm_major).
+# Different majors can format the same code differently or report different clang-tidy findings,
+# so a failure from check-format.sh or clang-tidy.sh, or a rewrite by clang-format.sh, may be the
+# toolchain rather than the tree (#916). Never fails; prints to stderr only.
+# Usage: warn_llvm_version_skew "/usr/bin/clang-format" "clang-format"
+warn_llvm_version_skew() {
+    local tool_path="$1" name="$2"
+    local pinned local_version
+    pinned="$(pinned_llvm_major)"
     local_version="$(get_llvm_tool_major_version "$tool_path" || true)"
     if [[ -n "$pinned" && -n "$local_version" && "$pinned" != "$local_version" ]]; then
-        echo "Warning: $tool_path is clang-format $local_version, but CI pins clang-format $pinned (.pre-commit-config.yaml)." >&2
-        echo "         Results can differ from CI; 'pre-commit run clang-format --all-files' uses the pinned version." >&2
+        echo "Warning: $tool_path is $name $local_version, but CI pins LLVM $pinned (.pre-commit-config.yaml)." >&2
+        if [[ "$name" == "clang-format" ]]; then
+            echo "         Results can differ from CI; 'pre-commit run clang-format --all-files' uses the pinned version." >&2
+        else
+            echo "         Results can differ from CI; install $name-$pinned for CI-identical results." >&2
+        fi
     fi
     return 0
 }
+
+# The directories holding C++ sources that the format scripts check and format. pre-commit's
+# clang-format hook formats every C++ file in the repo, and these are the directories that have any.
+# shellcheck disable=SC2034  # used by the scripts that source this file
+FORMAT_DIRS=(src tests benchmarks)
 
 # List the files this branch changes, for the --changed-only modes of clang-format.sh and
 # clang-tidy.sh: everything that differs from the merge-base with origin/main (or local main) --
@@ -138,7 +165,8 @@ list_changed_files() {
         fi
     done
     {
-        git -C "$root" diff --name-only --diff-filter=d "$base" 2>/dev/null || true
-        git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true
+        # core.quotePath=false: non-ASCII paths come out as UTF-8 rather than quoted octal escapes.
+        git -C "$root" -c core.quotePath=false diff --name-only --diff-filter=d "$base" 2>/dev/null || true
+        git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null || true
     } | sort -u
 }

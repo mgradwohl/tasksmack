@@ -5,12 +5,17 @@
 /// (WindowsPathProviderMath.h) is tested on every platform in
 /// WindowsMath/test_WindowsPathProviderMath.cpp.
 
+#include "Core/Utf8Path.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/Windows/WindowsPathProvider.h"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
+#include <memory>
 #include <string>
 
 namespace Platform
@@ -30,9 +35,9 @@ class ScopedAppDataOverride
         char* appData = nullptr;
         if ((_dupenv_s(&appData, nullptr, "APPDATA") == 0) && (appData != nullptr))
         {
-            m_hadOriginalValue = true;
-            m_originalValue = appData;
-            std::free(appData);
+            m_HadOriginalValue = true;
+            m_OriginalValue = appData;
+            std::free(appData); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc
         }
 
         _putenv_s("APPDATA", "");
@@ -40,9 +45,9 @@ class ScopedAppDataOverride
 
     ~ScopedAppDataOverride()
     {
-        if (m_hadOriginalValue)
+        if (m_HadOriginalValue)
         {
-            _putenv_s("APPDATA", m_originalValue.c_str());
+            _putenv_s("APPDATA", m_OriginalValue.c_str());
         }
         else
         {
@@ -52,10 +57,12 @@ class ScopedAppDataOverride
 
     ScopedAppDataOverride(const ScopedAppDataOverride&) = delete;
     ScopedAppDataOverride& operator=(const ScopedAppDataOverride&) = delete;
+    ScopedAppDataOverride(ScopedAppDataOverride&&) = delete;
+    ScopedAppDataOverride& operator=(ScopedAppDataOverride&&) = delete;
 
   private:
-    std::string m_originalValue;
-    bool m_hadOriginalValue = false;
+    std::string m_OriginalValue;
+    bool m_HadOriginalValue = false;
 };
 
 // =============================================================================
@@ -64,7 +71,7 @@ class ScopedAppDataOverride
 
 TEST(WindowsPathProviderTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsPathProvider provider; });
+    EXPECT_NO_THROW({ const WindowsPathProvider provider; });
 }
 
 // =============================================================================
@@ -73,7 +80,7 @@ TEST(WindowsPathProviderTest, ConstructsSuccessfully)
 
 TEST(WindowsPathProviderTest, GetExecutableDirReturnsNonEmpty)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getExecutableDir();
 
     EXPECT_FALSE(dir.empty());
@@ -83,7 +90,7 @@ TEST(WindowsPathProviderTest, GetExecutableDirReturnsNonEmpty)
 
 TEST(WindowsPathProviderTest, GetExecutableDirIsAbsolute)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getExecutableDir();
 
     EXPECT_TRUE(dir.is_absolute());
@@ -91,7 +98,7 @@ TEST(WindowsPathProviderTest, GetExecutableDirIsAbsolute)
 
 TEST(WindowsPathProviderTest, GetExecutableDirContainsTestExecutable)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getExecutableDir();
 
     // The test executable should be in this directory
@@ -102,7 +109,7 @@ TEST(WindowsPathProviderTest, GetExecutableDirContainsTestExecutable)
 
 TEST(WindowsPathProviderTest, GetExecutableDirHasValidWindowsPath)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getExecutableDir();
 
     // Windows paths should contain backslashes or be convertible
@@ -119,7 +126,7 @@ TEST(WindowsPathProviderTest, GetExecutableDirHasValidWindowsPath)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirReturnsNonEmpty)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getUserConfigDir();
 
     EXPECT_FALSE(dir.empty());
@@ -127,7 +134,7 @@ TEST(WindowsPathProviderTest, GetUserConfigDirReturnsNonEmpty)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirIsAbsolute)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getUserConfigDir();
 
     EXPECT_TRUE(dir.is_absolute());
@@ -135,7 +142,7 @@ TEST(WindowsPathProviderTest, GetUserConfigDirIsAbsolute)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirEndsWithTaskSmack)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getUserConfigDir();
 
     // Should end with "TaskSmack" subdirectory (note capital letters)
@@ -144,21 +151,21 @@ TEST(WindowsPathProviderTest, GetUserConfigDirEndsWithTaskSmack)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirRespectsAPPDATA)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
 
     // Get APPDATA environment variable
     char* appData = nullptr;
     if (_dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
     {
-        std::string appDataPath(appData);
-        std::free(appData);
+        const std::string appDataPath(appData);
+        std::free(appData); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc
 
         if (!appDataPath.empty())
         {
             const auto dir = provider.getUserConfigDir();
 
             // Should use APPDATA path
-            EXPECT_TRUE(dir.string().find(appDataPath) != std::string::npos ||
+            EXPECT_TRUE(dir.string().contains(appDataPath) ||
                         std::filesystem::equivalent(dir.parent_path(), std::filesystem::path(appDataPath)));
             EXPECT_EQ(dir.filename().string(), "TaskSmack");
         }
@@ -167,9 +174,9 @@ TEST(WindowsPathProviderTest, GetUserConfigDirRespectsAPPDATA)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirHandlesMissingAPPDATA)
 {
-    ScopedAppDataOverride appDataGuard;
+    const ScopedAppDataOverride appDataGuard;
 
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getUserConfigDir();
     const auto cwd = std::filesystem::current_path();
 
@@ -177,9 +184,30 @@ TEST(WindowsPathProviderTest, GetUserConfigDirHandlesMissingAPPDATA)
     EXPECT_TRUE(dir.is_absolute());
 }
 
+TEST(WindowsPathProviderTest, GetUserConfigDirKeepsANonAsciiAPPDATA)
+{
+    // A user name outside the code page (#1648): this binary has no UTF-8 manifest, so a narrow
+    // read of APPDATA would lose the CJK and emoji characters. Nothing is created or written.
+    const std::filesystem::path appData =
+        std::filesystem::temp_directory_path() / Core::utf8ToPath(std::format("{}-AppData-Roaming", TestSupport::allNonAsciiNames()));
+
+    wchar_t* original = nullptr;
+    std::size_t originalLength = 0;
+    const bool hadOriginal = _wdupenv_s(&original, &originalLength, L"APPDATA") == 0 && original != nullptr;
+    const std::unique_ptr<wchar_t, decltype(&std::free)> holder(original, &std::free);
+    const std::wstring originalValue = hadOriginal ? std::wstring(original) : std::wstring();
+
+    ASSERT_EQ(_wputenv_s(L"APPDATA", appData.c_str()), 0);
+    const WindowsPathProvider provider;
+    const std::filesystem::path dir = provider.getUserConfigDir();
+    _wputenv_s(L"APPDATA", originalValue.c_str()); // restore before any assertion can return
+
+    EXPECT_EQ(dir, appData / "TaskSmack");
+}
+
 TEST(WindowsPathProviderTest, GetUserConfigDirHasValidWindowsPath)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
     const auto dir = provider.getUserConfigDir();
 
     // Windows paths should be properly formatted
@@ -194,7 +222,7 @@ TEST(WindowsPathProviderTest, GetUserConfigDirHasValidWindowsPath)
 
 TEST(WindowsPathProviderTest, PathsHandleUnicodeCorrectly)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
 
     // Get paths - they should not throw with Unicode
     EXPECT_NO_THROW({
@@ -213,7 +241,7 @@ TEST(WindowsPathProviderTest, PathsHandleUnicodeCorrectly)
 
 TEST(WindowsPathProviderTest, MultipleCallsReturnSamePaths)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
 
     const auto dir1 = provider.getExecutableDir();
     const auto dir2 = provider.getExecutableDir();
@@ -226,7 +254,7 @@ TEST(WindowsPathProviderTest, MultipleCallsReturnSamePaths)
 
 TEST(WindowsPathProviderTest, PathsAreNotRelative)
 {
-    WindowsPathProvider provider;
+    const WindowsPathProvider provider;
 
     const auto exeDir = provider.getExecutableDir();
     const auto configDir = provider.getUserConfigDir();

@@ -1,8 +1,8 @@
 #pragma once
 
-// The CPU header's logical-processor summary, " (N logical processors @ X.XX GHz)", which the
-// Overview and CPU Cores tabs both print after the CPU model. One helper, so the two headers cannot
-// drift (#1180). Pure: no ImGui calls.
+// The CPU header's logical-processor summary, " (N logical processors @ X.XX GHz)", which the CPU
+// Cores tab prints after the CPU model (#1180; the Overview's CPU Details block lists the same facts
+// as rows, #809). Pure: no ImGui calls.
 
 #include "Domain/Numeric.h"
 #include "UI/Format.h"

@@ -109,6 +109,8 @@ TEST(ProcStatFieldsTest, ReadsEveryFieldTheProbeUses)
     EXPECT_EQ(fields.comm, "my (odd) name"); // first '(' to last ')'
     EXPECT_EQ(fields.state, 'S');
     EXPECT_EQ(fields.parentPid, 1);
+    EXPECT_EQ(fields.flags, 4194560U);
+    EXPECT_EQ(fields.flags & ProcParsing::PF_KTHREAD_FLAG, 0U);
     EXPECT_EQ(fields.minorFaults, 1000U);
     EXPECT_EQ(fields.majorFaults, 0U);
     EXPECT_EQ(fields.userTime, 10U);

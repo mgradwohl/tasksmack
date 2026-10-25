@@ -1,0 +1,1359 @@
+/// @file test_SystemdBusFake.cpp
+/// @brief SystemdBus's readers (#1518) against fake services on a private bus (#1395, FakeSystemBus.h).
+/// NetworkManager: the Wi-Fi link (SSID bytes made safe, frequency, bitrate), "not connected", an adapter
+/// it doesn't know, the DHCPv4 lease from Options (skipping a non-string one), a device without DHCP, and
+/// a bus where it isn't running. systemd-resolved: an adapter's DNS servers (IPv4 and IPv6) and search
+/// domains (a routing-only one marked "~"), an unknown link, and resolved not running. systemd-networkd:
+/// the DHCPv4 lease from a link's Describe() JSON, a link without DHCP, and an unknown link. udisks2: an
+/// ATA disk's SMART status, an NVMe controller's health log (and a failed one), a block device with no
+/// drive, one udisks2 doesn't list, and udisks2 not running.
+/// And what each reader says without a system bus at all, without systemd-networkd, on an unexpected
+/// error from networkd or resolved, and for objects missing the properties it reads.
+
+#include "Platform/IServiceProbe.h"
+#include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/LinuxDiskSmart.h"
+#include "Platform/Linux/LinuxNetworkAdapters.h"
+#include "Platform/Linux/LinuxServiceProbe.h"
+#include "Platform/Linux/SystemdBus.h"
+#include "Platform/Linux/SystemdServices.h"
+
+#include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <string_view>
+
+#ifdef TASKSMACK_HAS_SDBUS
+
+#include "FakeSystemBus.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which <cstdlib> doesn't declare
+#include <unistd.h>
+
+namespace Platform
+{
+namespace
+{
+
+using TestSupport::FakeSystemBus;
+using TestSupport::MethodAnswer;
+using TestSupport::ObjectPath;
+
+constexpr const char* NM = "org.freedesktop.NetworkManager";
+constexpr const char* NM_PATH = "/org/freedesktop/NetworkManager";
+constexpr const char* WIRELESS = "org.freedesktop.NetworkManager.Device.Wireless";
+constexpr const char* DEVICE = "org.freedesktop.NetworkManager.Device";
+constexpr const char* ACCESS_POINT = "org.freedesktop.NetworkManager.AccessPoint";
+constexpr const char* DHCP4 = "org.freedesktop.NetworkManager.DHCP4Config";
+
+constexpr const char* JOINED_DEVICE = "/org/freedesktop/NetworkManager/Devices/3";
+constexpr const char* IDLE_DEVICE = "/org/freedesktop/NetworkManager/Devices/4";
+constexpr const char* ACCESS_POINT_PATH = "/org/freedesktop/NetworkManager/AccessPoint/7";
+constexpr const char* DHCP_PATH = "/org/freedesktop/NetworkManager/DHCP4Config/1";
+
+class SystemdBusFakeTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        if (!FakeSystemBus::available())
+        {
+            GTEST_SKIP() << "dbus-daemon isn't installed";
+        }
+    }
+
+    /// A NetworkManager with wlan0 joined to "Café" plus a byte that isn't UTF-8 (an SSID is up to 32
+    /// arbitrary bytes), and wlan1 up but not joined; wlan0 has a DHCPv4 lease, wlan1 none.
+    void serveNetworkManager()
+    {
+        m_Bus.addStringMethod(NM_PATH,
+                              NM,
+                              "GetDeviceByIpIface",
+                              [](const std::string& name) -> MethodAnswer
+                              {
+                                  if (name == "wlan0")
+                                  {
+                                      return {.path = ObjectPath{JOINED_DEVICE}, .errorName = {}};
+                                  }
+                                  if (name == "wlan1")
+                                  {
+                                      return {.path = ObjectPath{IDLE_DEVICE}, .errorName = {}};
+                                  }
+                                  return {.path = std::nullopt, .errorName = "org.freedesktop.NetworkManager.UnknownDevice"};
+                              });
+        auto& props = m_Bus.properties();
+        props[JOINED_DEVICE][WIRELESS]["ActiveAccessPoint"] = ObjectPath{ACCESS_POINT_PATH};
+        props[JOINED_DEVICE][WIRELESS]["Bitrate"] = std::uint32_t{866700};
+        props[JOINED_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{DHCP_PATH};
+        props[IDLE_DEVICE][WIRELESS]["ActiveAccessPoint"] = ObjectPath{"/"};
+        props[IDLE_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{"/"};
+        props[ACCESS_POINT_PATH][ACCESS_POINT]["Ssid"] = std::vector<std::uint8_t>{'C', 'a', 'f', 0xC3, 0xA9, ' ', 0xFF};
+        props[ACCESS_POINT_PATH][ACCESS_POINT]["Frequency"] = std::uint32_t{5180};
+        props[DHCP_PATH][DHCP4]["Options"] = std::map<std::string, TestSupport::DictValue>{
+            {"dhcp_server_identifier", std::string("192.168.1.1")},
+            {"dhcp_lease_time", std::string("86400")},
+            {"expiry", std::string("1760000000")},
+            {"domain_name", std::string("lan")},
+            {"odd_number", std::uint32_t{7}}, // not a string: skipped
+        };
+        ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+    }
+
+    FakeSystemBus m_Bus;
+};
+
+TEST_F(SystemdBusFakeTest, AJoinedAdapterGivesItsNetworkFrequencyAndRate)
+{
+    serveNetworkManager();
+    const LinuxNetworkAdapters::WifiLinkReader read = SystemdBus::makeWifiLinkReader();
+    const LinuxNetworkAdapters::WifiLinkRead wlan0 = read("wlan0");
+    ASSERT_TRUE(wlan0.link.has_value()) << wlan0.error;
+    const WifiLink link = wlan0.link.value_or(WifiLink{});
+    EXPECT_TRUE(link.ssid.starts_with("Caf\xC3\xA9 ")) << link.ssid; // UTF-8 kept
+    EXPECT_FALSE(link.ssid.contains('\xFF')) << link.ssid;           // the stray byte made safe to draw
+    EXPECT_EQ(link.frequencyMhz, 5180U);
+    EXPECT_EQ(link.bitrateKbps, 866700U);
+}
+
+TEST_F(SystemdBusFakeTest, AnAdapterThatHasntJoinedSaysNotConnected)
+{
+    serveNetworkManager();
+    const LinuxNetworkAdapters::WifiLinkRead wlan1 = SystemdBus::makeWifiLinkReader()("wlan1");
+    EXPECT_FALSE(wlan1.link.has_value());
+    EXPECT_EQ(wlan1.error, "Not connected");
+}
+
+TEST_F(SystemdBusFakeTest, AnAdapterNetworkManagerDoesntKnowIsSaidSoAndOthersStillRead)
+{
+    serveNetworkManager();
+    const LinuxNetworkAdapters::WifiLinkReader read = SystemdBus::makeWifiLinkReader();
+    const LinuxNetworkAdapters::WifiLinkRead eth0 = read("eth0");
+    EXPECT_FALSE(eth0.link.has_value());
+    EXPECT_EQ(eth0.error, "NetworkManager doesn't manage this adapter");
+    // That answer is about one adapter: the same reader still reads the next.
+    EXPECT_TRUE(read("wlan0").link.has_value());
+}
+
+TEST_F(SystemdBusFakeTest, TheDhcpLeaseComesFromItsOptions)
+{
+    serveNetworkManager();
+    const LinuxNetworkAdapters::DhcpLeaseRead wlan0 = SystemdBus::makeDhcpLeaseReader()("wlan0");
+    ASSERT_TRUE(wlan0.lease.has_value()) << wlan0.error;
+    const DhcpLease lease = wlan0.lease.value_or(DhcpLease{});
+    EXPECT_EQ(lease.server, "192.168.1.1");
+    EXPECT_EQ(lease.leaseSeconds, 86400U);
+    EXPECT_EQ(lease.expiresUnix, 1760000000U);
+}
+
+TEST_F(SystemdBusFakeTest, AnAdapterWithoutDhcpHasNoLease)
+{
+    serveNetworkManager();
+    const LinuxNetworkAdapters::DhcpLeaseRead wlan1 = SystemdBus::makeDhcpLeaseReader()("wlan1");
+    EXPECT_FALSE(wlan1.lease.has_value());
+    EXPECT_FALSE(wlan1.error.empty());
+}
+
+TEST_F(SystemdBusFakeTest, WithoutNetworkManagerEveryAdapterSaysSo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error(); // a bus nobody serves NetworkManager on
+    const LinuxNetworkAdapters::WifiLinkReader read = SystemdBus::makeWifiLinkReader();
+    EXPECT_EQ(read("wlan0").error, "NetworkManager isn't running");
+    // Remembered for the reader's other adapters rather than asked again.
+    EXPECT_EQ(read("wlan1").error, "NetworkManager isn't running");
+    EXPECT_FALSE(SystemdBus::makeDhcpLeaseReader()("wlan0").lease.has_value());
+}
+
+constexpr const char* RESOLVE = "org.freedesktop.resolve1";
+constexpr const char* RESOLVE_PATH = "/org/freedesktop/resolve1";
+constexpr const char* RESOLVE_MANAGER = "org.freedesktop.resolve1.Manager";
+constexpr const char* RESOLVE_LINK = "org.freedesktop.resolve1.Link";
+constexpr const char* RESOLVE_LINK_PATH = "/org/freedesktop/resolve1/link/_32";
+
+constexpr const char* NETWORKD = "org.freedesktop.network1";
+constexpr const char* NETWORKD_PATH = "/org/freedesktop/network1";
+constexpr const char* NETWORKD_MANAGER = "org.freedesktop.network1.Manager";
+constexpr const char* NETWORKD_LINK = "org.freedesktop.network1.Link";
+constexpr const char* DHCP_LINK_PATH = "/org/freedesktop/network1/link/_33";
+constexpr const char* STATIC_LINK_PATH = "/org/freedesktop/network1/link/_34";
+
+/// A trimmed systemd-networkd link description: a DHCPv4 address from 192.168.1.1, and the client's
+/// lease (as in test_NetworkdLinkJson.cpp).
+constexpr const char* DHCP_DESCRIPTION = R"({"Index": 3, "Name": "enp3s0",
+  "Addresses": [{"Family": 2, "Address": [192,168,1,20], "PrefixLength": 24, "ConfigSource": "DHCPv4",
+                 "ConfigProvider": [192,168,1,1], "ValidLifetimeUSec": 86412000000}],
+  "DHCPv4Client": {"Lease": {"LeaseTimestampUSec": 12000000}}})";
+
+TEST_F(SystemdBusFakeTest, ResolvedGivesAnAdaptersOwnServersAndDomains)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 2)
+                           {
+                               return {.path = ObjectPath{RESOLVE_LINK_PATH}, .errorName = {}};
+                           }
+                           return {.path = std::nullopt, .errorName = "org.freedesktop.resolve1.NoSuchLink"};
+                       });
+    auto& props = m_Bus.properties();
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{
+        {2, {192, 168, 1, 1}},
+        {10, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
+    };
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}, {"corp.example", true}};
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    const LinuxNetworkAdapters::LinkDnsRead link = read(2);
+    ASSERT_TRUE(link.read) << link.error;
+    EXPECT_EQ(link.servers, (std::vector<std::string>{"192.168.1.1", "2001:db8::1"}));
+    EXPECT_EQ(link.domains, (std::vector<std::string>{"lan", "~corp.example"})); // "~": only routes lookups
+
+    const LinuxNetworkAdapters::LinkDnsRead unknown = read(9);
+    EXPECT_FALSE(unknown.read);
+    EXPECT_EQ(unknown.error, "systemd-resolved doesn't know this adapter");
+    EXPECT_TRUE(read(2).read); // about one adapter only
+}
+
+TEST_F(SystemdBusFakeTest, WithoutResolvedEveryAdapterSaysSo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    EXPECT_EQ(read(2).error, "systemd-resolved isn't running");
+    EXPECT_EQ(read(3).error, "systemd-resolved isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, NetworkdGivesTheLeaseFromALinksDescription)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 3)
+                           {
+                               return {.path = ObjectPath{DHCP_LINK_PATH}, .errorName = {}, .name = "enp3s0"};
+                           }
+                           if (ifindex == 4)
+                           {
+                               return {.path = ObjectPath{STATIC_LINK_PATH}, .errorName = {}, .name = "enp4s0"};
+                           }
+                           return {.path = std::nullopt, .errorName = "org.freedesktop.network1.NoSuchLink"};
+                       });
+    m_Bus.addNoArgMethod(DHCP_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = DHCP_DESCRIPTION}; });
+    m_Bus.addNoArgMethod(STATIC_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer
+                         {
+                             return {.path = std::nullopt,
+                                     .errorName = {},
+                                     .text = R"({"Addresses": [{"Family": 2, "Address": [10,0,0,5], "ConfigSource": "static"}]})"};
+                         });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead dhcp = read(3);
+    ASSERT_TRUE(dhcp.lease.has_value()) << dhcp.error;
+    const DhcpLease lease = dhcp.lease.value_or(DhcpLease{});
+    EXPECT_EQ(lease.server, "192.168.1.1");
+    EXPECT_EQ(lease.leaseSeconds, 86'400U); // valid until 86412 s after boot, obtained at 12 s
+
+    EXPECT_EQ(read(4).error, "Not configured by DHCP");
+    EXPECT_EQ(read(9).error, "systemd-networkd doesn't manage this adapter");
+}
+
+// #1891: a link whose Describe() is refused says so for that adapter only; the others are still read.
+TEST_F(SystemdBusFakeTest, ARefusedLinkDescriptionIsSaidSoForThatAdapterOnly)
+{
+    constexpr const char* REFUSING_LINK_PATH = "/org/freedesktop/network1/link/_35";
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 3)
+                           {
+                               return {.path = ObjectPath{DHCP_LINK_PATH}, .errorName = {}, .name = "enp3s0"};
+                           }
+                           return {.path = ObjectPath{REFUSING_LINK_PATH}, .errorName = {}, .name = "enp5s0"};
+                       });
+    m_Bus.addNoArgMethod(DHCP_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = DHCP_DESCRIPTION}; });
+    m_Bus.addNoArgMethod(REFUSING_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead refused = read(5);
+    EXPECT_FALSE(refused.lease.has_value());
+    EXPECT_TRUE(refused.error.starts_with("systemd-networkd couldn't be asked: ")) << refused.error;
+    const LinuxNetworkAdapters::DhcpLeaseRead dhcp = read(3);
+    EXPECT_TRUE(dhcp.lease.has_value()) << dhcp.error;
+}
+
+constexpr const char* UDISKS = "org.freedesktop.UDisks2";
+constexpr const char* UDISKS_BLOCK = "org.freedesktop.UDisks2.Block";
+constexpr const char* UDISKS_ATA = "org.freedesktop.UDisks2.Drive.Ata";
+constexpr const char* UDISKS_NVME = "org.freedesktop.UDisks2.NVMe.Controller";
+constexpr const char* ATA_DRIVE = "/org/freedesktop/UDisks2/drives/Disk1";
+constexpr const char* NVME_DRIVE = "/org/freedesktop/UDisks2/drives/NVMe1";
+constexpr const char* FAILING_NVME_DRIVE = "/org/freedesktop/UDisks2/drives/NVMe2";
+
+class SystemdBusFakeSmartTest : public SystemdBusFakeTest
+{
+  protected:
+    /// sda: an ATA disk; nvme0n1 and nvme1n1: NVMe controllers, the second refusing its health log;
+    /// sr0: a block device with no drive (an optical drive's empty slot reads "/").
+    void serveUdisks()
+    {
+        auto& props = m_Bus.properties();
+        props[LinuxDiskSmart::blockObjectPath("sda")][UDISKS_BLOCK]["Drive"] = ObjectPath{ATA_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("nvme0n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{NVME_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("nvme1n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{FAILING_NVME_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("sr0")][UDISKS_BLOCK]["Drive"] = ObjectPath{"/"};
+
+        auto& ata = props[ATA_DRIVE][UDISKS_ATA];
+        ata["SmartSupported"] = true;
+        ata["SmartEnabled"] = true;
+        ata["SmartFailing"] = false;
+        ata["SmartUpdated"] = std::uint64_t{1'760'000'000};
+        ata["SmartTemperature"] = 308.15;
+        ata["SmartPowerOnSeconds"] = std::uint64_t{3'600'000};
+        ata["SmartNumBadSectors"] = std::int64_t{2};
+
+        for (const char* drive : {NVME_DRIVE, FAILING_NVME_DRIVE})
+        {
+            auto& nvme = props[drive][UDISKS_NVME];
+            nvme["SmartUpdated"] = std::uint64_t{1'760'000'100};
+            nvme["SmartCriticalWarning"] = std::vector<std::string>{"spare"};
+            nvme["SmartTemperature"] = std::uint16_t{310};
+        }
+        m_Bus.addNoArgMethod(NVME_DRIVE,
+                             UDISKS_NVME,
+                             "SmartGetAttributes",
+                             []() -> MethodAnswer
+                             {
+                                 return {.path = std::nullopt,
+                                         .errorName = {},
+                                         .dict = std::map<std::string, TestSupport::DictValue>{
+                                             {"percent_used", std::uint8_t{3}},
+                                             {"avail_spare", std::uint8_t{100}},
+                                             {"media_errors", std::uint64_t{0}},
+                                             {"power_on_hours", std::uint64_t{1000}}, // not read: skipped
+                                         }};
+                             });
+        m_Bus.addNoArgMethod(FAILING_NVME_DRIVE,
+                             UDISKS_NVME,
+                             "SmartGetAttributes",
+                             []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.UDisks2.Error.Failed"}; });
+        ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+    }
+};
+
+TEST_F(SystemdBusFakeSmartTest, AnAtaDisksSmartStatusIsRead)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sda");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Ata);
+    EXPECT_TRUE(smart.smartSupported);
+    EXPECT_TRUE(smart.smartEnabled);
+    EXPECT_FALSE(smart.failing);
+    EXPECT_EQ(smart.updated, 1'760'000'000U);
+    EXPECT_DOUBLE_EQ(smart.temperatureKelvin, 308.15);
+    EXPECT_EQ(smart.powerOnSeconds, 3'600'000U);
+    EXPECT_EQ(smart.badSectors, 2);
+}
+
+TEST_F(SystemdBusFakeSmartTest, AnNvmeControllersHealthLogIsRead)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme0n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_EQ(smart.updated, 1'760'000'100U);
+    EXPECT_EQ(smart.criticalWarnings, (std::vector<std::string>{"spare"}));
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 310);
+    EXPECT_TRUE(smart.attributesRead);
+    EXPECT_EQ(smart.percentUsed, 3);
+    EXPECT_EQ(smart.availableSpare, 100);
+    EXPECT_EQ(smart.mediaErrors, 0U);
+}
+
+TEST_F(SystemdBusFakeSmartTest, AHealthLogThatFailsIsSaidSoAndTheRestStays)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme1n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_FALSE(smart.attributesRead);
+    EXPECT_FALSE(smart.attributesError.empty());
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 310); // the properties still read
+}
+
+// #1891: a health log whose attribute has the wrong type (percent_used as a 64-bit value, not the byte
+// udisks2 sends) can't be read: said so, and the controller's properties still read.
+TEST_F(SystemdBusFakeTest, AHealthLogOfTheWrongShapeIsSaidSo)
+{
+    constexpr const char* ODD_NVME_DRIVE = "/org/freedesktop/UDisks2/drives/OddNvme";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("nvme2n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{ODD_NVME_DRIVE};
+    auto& nvme = props[ODD_NVME_DRIVE][UDISKS_NVME];
+    nvme["SmartUpdated"] = std::uint64_t{1'760'000'200};
+    nvme["SmartTemperature"] = std::uint16_t{305};
+    m_Bus.addNoArgMethod(ODD_NVME_DRIVE,
+                         UDISKS_NVME,
+                         "SmartGetAttributes",
+                         []() -> MethodAnswer
+                         {
+                             return {.path = std::nullopt,
+                                     .errorName = {},
+                                     .dict = std::map<std::string, TestSupport::DictValue>{{"percent_used", std::uint64_t{3}}}};
+                         });
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme2n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_FALSE(smart.attributesRead);
+    EXPECT_TRUE(smart.attributesError.starts_with("its reply couldn't be read: ")) << smart.attributesError;
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 305);
+}
+
+TEST_F(SystemdBusFakeSmartTest, ABlockDeviceWithoutADriveHasNoSmart)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sr0");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    EXPECT_EQ(read.smart.value_or(LinuxDiskSmart::DriveSmart{}).kind, LinuxDiskSmart::DriveSmart::Kind::None);
+}
+
+// #1891: a drive that is neither ATA nor NVMe (a USB stick) has no SMART to read: no SMART, not an error.
+TEST_F(SystemdBusFakeTest, ADriveWithNeitherAtaNorNvmeSmartHasNone)
+{
+    constexpr const char* USB_DRIVE = "/org/freedesktop/UDisks2/drives/UsbStick";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdc")][UDISKS_BLOCK]["Drive"] = ObjectPath{USB_DRIVE};
+    props[USB_DRIVE]["org.freedesktop.UDisks2.Drive"]["Removable"] = true;
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdc");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    EXPECT_EQ(read.smart.value_or(LinuxDiskSmart::DriveSmart{}).kind, LinuxDiskSmart::DriveSmart::Kind::None);
+    EXPECT_TRUE(read.error.empty()) << read.error;
+}
+
+TEST_F(SystemdBusFakeSmartTest, ADiskUdisksDoesntListIsSaidSo)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdz");
+    EXPECT_FALSE(read.smart.has_value());
+    EXPECT_EQ(read.error, "udisks2 doesn't list this disk");
+}
+
+// #1891: udisks2 not answering in time is said once in the user's terms, and remembered for the read's
+// other disks, which aren't asked again (each would wait out the timeout too).
+TEST_F(SystemdBusFakeTest, AUdisksThatDoesntAnswerInTimeIsRememberedForTheOtherDisks)
+{
+    constexpr const char* TIMED_OUT = "udisks2 didn't answer in time, so SMART status wasn't read";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdb")][UDISKS_BLOCK]["Drive"] = ObjectPath{"/"};
+    m_Bus.failProperty(LinuxDiskSmart::blockObjectPath("sda"), UDISKS_BLOCK, "Drive", "org.freedesktop.DBus.Error.NoReply");
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::SmartReader read = SystemdBus::makeDriveSmartReader();
+    const LinuxDiskSmart::DriveSmartRead sda = read("sda");
+    EXPECT_FALSE(sda.smart.has_value());
+    EXPECT_EQ(sda.error, TIMED_OUT);
+    const LinuxDiskSmart::DriveSmartRead sdb = read("sdb"); // would read as "no SMART" if asked
+    EXPECT_FALSE(sdb.smart.has_value());
+    EXPECT_EQ(sdb.error, TIMED_OUT);
+}
+
+// #2126: a timeout on the ATA probe is udisks2 not answering, not "this isn't an ATA drive": it reads as
+// the timeout (and the session stops asking), not as "no SMART data".
+TEST_F(SystemdBusFakeSmartTest, AnAtaProbeTimeoutIsATimeoutNotNoSmart)
+{
+    m_Bus.failProperty(ATA_DRIVE, UDISKS_ATA, "SmartSupported", "org.freedesktop.DBus.Error.Timeout");
+    serveUdisks();
+    const LinuxDiskSmart::SmartReader read = SystemdBus::makeDriveSmartReader();
+    const LinuxDiskSmart::DriveSmartRead sda = read("sda");
+    EXPECT_FALSE(sda.smart.has_value());
+    EXPECT_EQ(sda.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+    const LinuxDiskSmart::DriveSmartRead nvme = read("nvme0n1"); // not asked: the session remembers
+    EXPECT_FALSE(nvme.smart.has_value());
+    EXPECT_EQ(nvme.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+}
+
+// The same for the NVMe probe that follows a "not ATA" answer; and another error is said as itself.
+TEST_F(SystemdBusFakeSmartTest, AnNvmeProbeFailureIsSaidRatherThanNoSmart)
+{
+    m_Bus.failProperty(NVME_DRIVE, UDISKS_NVME, "SmartUpdated", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.failProperty(FAILING_NVME_DRIVE, UDISKS_NVME, "SmartUpdated", "org.freedesktop.DBus.Error.AccessDenied");
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead denied = SystemdBus::makeDriveSmartReader()("nvme1n1");
+    EXPECT_FALSE(denied.smart.has_value());
+    EXPECT_TRUE(denied.error.starts_with("udisks2 couldn't be asked: ")) << denied.error;
+    const LinuxDiskSmart::DriveSmartRead timedOut = SystemdBus::makeDriveSmartReader()("nvme0n1");
+    EXPECT_FALSE(timedOut.smart.has_value());
+    EXPECT_EQ(timedOut.error, "udisks2 didn't answer in time, so SMART status wasn't read");
+}
+
+TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sda");
+    EXPECT_FALSE(read.smart.has_value());
+    EXPECT_EQ(read.error, "udisks2 isn't running, so SMART status can't be read");
+}
+
+TEST_F(SystemdBusFakeTest, AnAtaDiskMissingASmartPropertyIsAnError)
+{
+    // sdb's drive says SMART is supported but stops short of the bad-sector count: the read fails as a whole.
+    constexpr const char* PARTIAL_ATA_DRIVE = "/org/freedesktop/UDisks2/drives/Disk2";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdb")][UDISKS_BLOCK]["Drive"] = ObjectPath{PARTIAL_ATA_DRIVE};
+    auto& ata = props[PARTIAL_ATA_DRIVE][UDISKS_ATA];
+    ata["SmartSupported"] = true;
+    ata["SmartEnabled"] = true;
+    ata["SmartFailing"] = false;
+    ata["SmartUpdated"] = std::uint64_t{1'760'000'000};
+    ata["SmartTemperature"] = 308.15;
+    ata["SmartPowerOnSeconds"] = std::uint64_t{3'600'000};
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdb");
+    EXPECT_FALSE(read.smart.has_value());
+    // An unknown property isn't one of the errors put in the user's terms, so udisks2's own is passed on.
+    EXPECT_TRUE(read.error.starts_with("udisks2 couldn't be asked: ")) << read.error;
+}
+
+// #1395: what each reader says when the bus, a service or an object isn't there as expected.
+
+TEST(SystemdBusNoBusTest, WithoutASystemBusEveryReaderSaysSo)
+{
+    // A bus address nothing listens on: every reader's first call fails to connect.
+    const char* saved = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    ASSERT_EQ(setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent/tasksmack-test-bus", 1), 0); // NOLINT(concurrency-mt-unsafe)
+
+    const std::string unreachable = "The system bus couldn't be reached";
+    EXPECT_FALSE(SystemdBus::readBootTimestamps().ok);
+    EXPECT_FALSE(SystemdBus::readBootTimestamps().error.empty());
+    const LinuxDiskSmart::DriveSmartRead smart = SystemdBus::makeDriveSmartReader()("sda");
+    EXPECT_TRUE(smart.error.starts_with(unreachable)) << smart.error;
+    const LinuxNetworkAdapters::WifiLinkRead wifi = SystemdBus::makeWifiLinkReader()("wlan0");
+    EXPECT_TRUE(wifi.error.starts_with(unreachable)) << wifi.error;
+    const LinuxNetworkAdapters::DhcpLeaseRead lease = SystemdBus::makeDhcpLeaseReader()("wlan0");
+    EXPECT_TRUE(lease.error.starts_with(unreachable)) << lease.error;
+    const LinuxNetworkAdapters::LinkDnsRead dns = SystemdBus::makeLinkDnsReader()(2);
+    EXPECT_TRUE(dns.error.starts_with(unreachable)) << dns.error;
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader networkd = SystemdBus::makeNetworkdLeaseReader();
+    EXPECT_TRUE(networkd(3).error.starts_with(unreachable)) << networkd(3).error;
+    EXPECT_TRUE(networkd(4).error.starts_with(unreachable));              // remembered for the reader's other adapters
+    const SystemdBus::ServicesRead services = SystemdBus::readServices(); // #1891: the Services list too
+    EXPECT_TRUE(services.error.starts_with(unreachable)) << services.error;
+
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SYSTEM_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+}
+
+TEST_F(SystemdBusFakeTest, BootTimestampsMissingOneAreAnError)
+{
+    auto& manager = m_Bus.properties()["/org/freedesktop/systemd1"]["org.freedesktop.systemd1.Manager"];
+    manager["FirmwareTimestampMonotonic"] = std::uint64_t{1'000'000};
+    manager["LoaderTimestampMonotonic"] = std::uint64_t{2'000'000}; // and nothing after it
+    ASSERT_TRUE(m_Bus.start("org.freedesktop.systemd1")) << m_Bus.error();
+    const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
+    EXPECT_FALSE(read.ok);
+    EXPECT_FALSE(read.error.empty());
+}
+
+// #1891: systemd not answering a boot timestamp's read in time says so, rather than passing NoReply on.
+TEST_F(SystemdBusFakeTest, BootTimestampsSystemdDoesntAnswerInTimeSaySo)
+{
+    auto& manager = m_Bus.properties()["/org/freedesktop/systemd1"]["org.freedesktop.systemd1.Manager"];
+    manager["FirmwareTimestampMonotonic"] = std::uint64_t{1'000'000};
+    m_Bus.failProperty(
+        "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "LoaderTimestampMonotonic", "org.freedesktop.DBus.Error.NoReply");
+    ASSERT_TRUE(m_Bus.start("org.freedesktop.systemd1")) << m_Bus.error();
+    const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, WithoutNetworkdEveryAdapterSaysSo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    EXPECT_EQ(read(3).error, "systemd-networkd isn't running");
+    EXPECT_EQ(read(4).error, "systemd-networkd isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromNetworkdIsPassedOn)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer
+                       { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+    const LinuxNetworkAdapters::DhcpLeaseRead lease = SystemdBus::makeNetworkdLeaseReader()(3);
+    EXPECT_TRUE(lease.error.starts_with("systemd-networkd couldn't be asked: ")) << lease.error;
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromResolvedIsPassedOn)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer
+                       { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+    const LinuxNetworkAdapters::LinkDnsRead dns = SystemdBus::makeLinkDnsReader()(2);
+    EXPECT_TRUE(dns.error.starts_with("systemd-resolved couldn't be asked: ")) << dns.error;
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromNetworkManagerIsPassedOn)
+{
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [](const std::string& /*name*/) -> MethodAnswer
+                          { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+    const LinuxNetworkAdapters::WifiLinkReader read = SystemdBus::makeWifiLinkReader();
+    const LinuxNetworkAdapters::WifiLinkRead wlan0 = read("wlan0");
+    EXPECT_FALSE(wlan0.link.has_value());
+    EXPECT_TRUE(wlan0.error.starts_with("NetworkManager couldn't be asked: ")) << wlan0.error;
+    // That answer is about one adapter: the next is still asked, not told NetworkManager stopped.
+    EXPECT_TRUE(read("wlan1").error.starts_with("NetworkManager couldn't be asked: "));
+}
+
+// A service that doesn't answer in time: sd-bus reports it as NoReply (or Timeout), and each reader says
+// so in the user's terms rather than passing the D-Bus error name on.
+constexpr const char* NO_REPLY = "org.freedesktop.DBus.Error.NoReply";
+
+TEST_F(SystemdBusFakeTest, ANetworkdThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+    EXPECT_EQ(SystemdBus::makeNetworkdLeaseReader()(3).error, "systemd-networkd didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, AResolvedThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+    EXPECT_EQ(SystemdBus::makeLinkDnsReader()(2).error, "systemd-resolved didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, ANetworkManagerThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [](const std::string& /*name*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+    const LinuxNetworkAdapters::WifiLinkRead wlan0 = SystemdBus::makeWifiLinkReader()("wlan0");
+    EXPECT_FALSE(wlan0.link.has_value());
+    EXPECT_EQ(wlan0.error, "NetworkManager didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, AResolvedLinkMissingItsServersOrDomainsIsAnError)
+{
+    constexpr const char* NO_DOMAINS = "/org/freedesktop/resolve1/link/_35";
+    constexpr const char* NO_SERVERS = "/org/freedesktop/resolve1/link/_36";
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [=](std::int32_t ifindex) -> MethodAnswer
+                       { return {.path = ObjectPath{ifindex == 5 ? NO_DOMAINS : NO_SERVERS}, .errorName = {}}; });
+    auto& props = m_Bus.properties();
+    props[NO_DOMAINS][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{{2, {192, 168, 1, 1}}};
+    props[NO_SERVERS][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}};
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    const LinuxNetworkAdapters::LinkDnsRead noDomains = read(5);
+    EXPECT_FALSE(noDomains.read);
+    EXPECT_FALSE(noDomains.error.empty());
+    const LinuxNetworkAdapters::LinkDnsRead noServers = read(6);
+    EXPECT_FALSE(noServers.read);
+    EXPECT_FALSE(noServers.error.empty());
+}
+
+TEST_F(SystemdBusFakeTest, ADeviceMissingItsWifiOrDhcpPropertiesIsAnError)
+{
+    // wlan2: a device NetworkManager knows with none of the properties asked for; wlan3: a DHCPv4
+    // config with no Options; wlan4: Options without the lease's fields.
+    constexpr const char* BARE_DEVICE = "/org/freedesktop/NetworkManager/Devices/5";
+    constexpr const char* NO_OPTIONS_DEVICE = "/org/freedesktop/NetworkManager/Devices/6";
+    constexpr const char* EMPTY_OPTIONS_DEVICE = "/org/freedesktop/NetworkManager/Devices/7";
+    constexpr const char* NO_OPTIONS_CONFIG = "/org/freedesktop/NetworkManager/DHCP4Config/2";
+    constexpr const char* EMPTY_OPTIONS_CONFIG = "/org/freedesktop/NetworkManager/DHCP4Config/3";
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [=](const std::string& name) -> MethodAnswer
+                          {
+                              if (name == "wlan2")
+                              {
+                                  return {.path = ObjectPath{BARE_DEVICE}, .errorName = {}};
+                              }
+                              return {.path = ObjectPath{name == "wlan3" ? NO_OPTIONS_DEVICE : EMPTY_OPTIONS_DEVICE}, .errorName = {}};
+                          });
+    auto& props = m_Bus.properties();
+    props[BARE_DEVICE][DEVICE]["Interface"] = std::string("wlan2"); // served, but not the properties read
+    props[NO_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{NO_OPTIONS_CONFIG};
+    props[NO_OPTIONS_CONFIG][DHCP4]["Unrelated"] = std::string("x");
+    props[EMPTY_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{EMPTY_OPTIONS_CONFIG};
+    props[EMPTY_OPTIONS_CONFIG][DHCP4]["Options"] = std::map<std::string, TestSupport::DictValue>{{"domain_name", std::string("lan")}};
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+
+    EXPECT_FALSE(SystemdBus::makeWifiLinkReader()("wlan2").error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseReader lease = SystemdBus::makeDhcpLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead bare = lease("wlan2");
+    EXPECT_FALSE(bare.lease.has_value());
+    EXPECT_FALSE(bare.error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseRead noOptions = lease("wlan3");
+    EXPECT_FALSE(noOptions.lease.has_value());
+    EXPECT_FALSE(noOptions.error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseRead emptyOptions = lease("wlan4");
+    EXPECT_FALSE(emptyOptions.lease.has_value());
+    EXPECT_EQ(emptyOptions.error, "NetworkManager reported no lease details");
+}
+
+// #2006: systemd's services, as SystemdBus::readServices() reads them: ListUnits, ListUnitFiles, then each
+// running service's MainPID.
+constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
+constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
+constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
+constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
+constexpr const char* CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice";
+constexpr const char* GETTY_PATH = "/org/freedesktop/systemd1/unit/getty_40tty1_2eservice";
+
+/// One ListUnits row.
+[[nodiscard]] TestSupport::UnitRow
+unit(const char* name, const char* description, const char* activeState, const char* subState, const char* path)
+{
+    TestSupport::UnitRow row;
+    row.name = name;
+    row.description = description;
+    row.activeState = activeState;
+    row.subState = subState;
+    row.path = path;
+    return row;
+}
+
+class SystemdBusFakeServicesTest : public SystemdBusFakeTest
+{
+  protected:
+    void serveSystemd()
+    {
+        m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                             SYSTEMD_MANAGER,
+                             "ListUnits",
+                             [this]() -> MethodAnswer
+                             {
+                                 // cron restarting changes its state, so its configuration is read again (#2590).
+                                 const bool restarting = m_CronRestarting.load();
+                                 return {.path = std::nullopt,
+                                         .errorName = {},
+                                         .units = std::vector<TestSupport::UnitRow>{
+                                             unit("cron.service",
+                                                  "Regular background program processing daemon",
+                                                  restarting ? "activating" : "active",
+                                                  restarting ? "start" : "running",
+                                                  CRON_PATH),
+                                             unit("getty@tty1.service", "Getty on tty1", "active", "running", GETTY_PATH),
+                                             unit("apt-daily.service",
+                                                  "Daily apt download activities",
+                                                  "inactive",
+                                                  "dead",
+                                                  "/org/freedesktop/systemd1/unit/apt_2ddaily_2eservice"),
+                                             unit("dbus.socket", "D-Bus Socket", "active", "running", "/s"),
+                                         }};
+                             });
+        m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                             SYSTEMD_MANAGER,
+                             "ListUnitFiles",
+                             [this]() -> MethodAnswer
+                             {
+                                 ++m_UnitFileCalls;
+                                 return {.path = std::nullopt,
+                                         .errorName = {},
+                                         .unitFiles = std::vector<std::pair<std::string, std::string>>{
+                                             {"/usr/lib/systemd/system/cron.service", "enabled"},
+                                             {"/usr/lib/systemd/system/getty@.service", "enabled"},
+                                             {"/usr/lib/systemd/system/ssh.service", "disabled"},
+                                             {"/usr/lib/systemd/system/dbus.socket", "static"},
+                                         }};
+                             });
+        // try_emplace: a test may have set its own first.
+        m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{161});
+        m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{208});
+        // The instance disabled itself under an enabled template (#2425); cron's own state is never asked.
+        m_Bus.properties()[GETTY_PATH]["org.freedesktop.systemd1.Unit"].try_emplace("UnitFileState", std::string("disabled"));
+        m_Bus.properties()[CRON_PATH]["org.freedesktop.systemd1.Unit"].try_emplace("UnitFileState", std::string("masked"));
+        ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    }
+
+    std::atomic<int> m_UnitFileCalls{0};       ///< ListUnitFiles calls answered (the bus answers on its own thread)
+    std::atomic<bool> m_CronRestarting{false}; ///< ListUnits reports cron activating rather than running
+};
+
+// #2125: ListUnitFiles makes systemd walk every unit directory, so a cached answer is reused for
+// UNIT_FILES_TTL; forgetting the cache, or the time passing, asks again.
+TEST_F(SystemdBusFakeServicesTest, UnitFilesAreAskedForOncePerCacheWindow)
+{
+    serveSystemd();
+    SystemdBus::UnitFileCache cache;
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    const SystemdBus::ServicesRead first = SystemdBus::readServices(&cache, start);
+    ASSERT_TRUE(first.ok) << first.error;
+    const SystemdBus::ServicesRead second = SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL - std::chrono::seconds(1));
+    ASSERT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(m_UnitFileCalls.load(), 1);
+    EXPECT_EQ(second.listing.unitFiles, first.listing.unitFiles);
+
+    static_cast<void>(SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL));
+    EXPECT_EQ(m_UnitFileCalls.load(), 2) << "the window passed";
+    cache.forget();
+    static_cast<void>(SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL));
+    EXPECT_EQ(m_UnitFileCalls.load(), 3) << "forgotten";
+    static_cast<void>(SystemdBus::readServices());
+    EXPECT_EQ(m_UnitFileCalls.load(), 4) << "no cache, always asked";
+}
+
+// #2125: a MainPID read that times out ends the MainPID reads: the list comes back without the rest of
+// the PIDs rather than costing a call timeout per running service.
+TEST_F(SystemdBusFakeServicesTest, AMainPidTimeoutStopsAskingForTheRest)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.Timeout");
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_TRUE(read.listing.mainPids.empty()) << "getty, after cron, wasn't asked";
+}
+
+// Another error on one service's MainPID skips only that one.
+TEST_F(SystemdBusFakeServicesTest, AnotherMainPidErrorSkipsOnlyThatService)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.UnknownProperty");
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.mainPids.size(), 1U);
+    EXPECT_EQ(read.listing.mainPids.count("getty@tty1.service"), 1U);
+}
+
+// #2125: LinuxServiceProbe's default reader caches the unit files, and forgetCachedConfig() (called
+// after a service action) makes the next enumerate() ask again, so a start type just set shows at once.
+TEST_F(SystemdBusFakeServicesTest, TheProbeForgetsItsUnitFilesAfterAnAction)
+{
+    serveSystemd();
+    // A root where systemd looks booted (run/systemd/system), named per process so parallel runs don't share it.
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("tasksmack_services_probe_root_" + std::to_string(getpid()));
+    std::filesystem::create_directories(root / "run/systemd/system");
+    {
+        LinuxServiceProbe probe({}, root, /*built=*/true);
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_EQ(m_UnitFileCalls.load(), 1);
+        probe.forgetCachedConfig();
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_EQ(m_UnitFileCalls.load(), 2);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
+TEST_F(SystemdBusFakeServicesTest, TheServicesTheirFilesAndTheRunningOnesMainPidsAreRead)
+{
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    ASSERT_EQ(read.listing.units.size(), 3U) << "the services, not the socket";
+    EXPECT_EQ(read.listing.units[0].name, "cron.service");
+    EXPECT_EQ(read.listing.units[0].description, "Regular background program processing daemon");
+    EXPECT_EQ(read.listing.units[0].activeState, "active");
+    EXPECT_EQ(read.listing.units[0].subState, "running");
+    EXPECT_EQ(read.listing.units[0].objectPath, CRON_PATH);
+    // Unit files by file name, the template kept (its instances take its enablement), the socket's not.
+    const std::vector<std::pair<std::string, std::string>> files{
+        {"cron.service", "enabled"}, {"getty@.service", "enabled"}, {"ssh.service", "disabled"}};
+    EXPECT_EQ(read.listing.unitFiles, files);
+    // Running services' main processes only: apt-daily is inactive, so it isn't asked.
+    EXPECT_EQ(read.listing.mainPids.size(), 2U);
+    EXPECT_EQ(read.listing.mainPids.at("cron.service"), 161U);
+    EXPECT_EQ(read.listing.mainPids.at("getty@tty1.service"), 208U);
+    // Only the instance is asked its own unit file state (#2425).
+    const std::map<std::string, std::string> instanceStates{{"getty@tty1.service", "disabled"}};
+    EXPECT_EQ(read.listing.instanceFileStates, instanceStates);
+}
+
+// #2590: each loaded service's User, ExecStart and Type, for the Account, Command and Type the Windows
+// list has: cron runs as root (User empty) with two ExecStart lines, getty as a named user, and
+// apt-daily (inactive, but loaded) as a DynamicUser= service without User=.
+class SystemdBusFakeServiceConfigTest : public SystemdBusFakeServicesTest
+{
+  protected:
+    void serveConfigs()
+    {
+        auto& props = m_Bus.properties();
+        props[CRON_PATH][SYSTEMD_SERVICE]["User"] = std::string{};
+        props[CRON_PATH][SYSTEMD_SERVICE]["DynamicUser"] = false;
+        props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
+        props[CRON_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+            {.path = "/usr/sbin/cron", .argv = {"/usr/sbin/cron", "-f", "-P", "-L", "15"}, .ignoreErrors = false},
+            {.path = "/usr/bin/logger", .argv = {"logger", "cron started"}, .ignoreErrors = true},
+        };
+        props[GETTY_PATH][SYSTEMD_SERVICE]["User"] = std::string("agetty");
+        props[GETTY_PATH][SYSTEMD_SERVICE]["Type"] = std::string("idle");
+        props[GETTY_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+            {.path = "/sbin/agetty", .argv = {"/sbin/agetty", "--noclear", "tty1", "linux"}, .ignoreErrors = false}};
+        props[APT_PATH][SYSTEMD_SERVICE]["User"] = std::string{};
+        props[APT_PATH][SYSTEMD_SERVICE]["DynamicUser"] = true;
+        props[APT_PATH][SYSTEMD_SERVICE]["Type"] = std::string("oneshot");
+        props[APT_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+            {.path = "/usr/lib/apt/apt.systemd.daily", .argv = {"/usr/lib/apt/apt.systemd.daily", "update"}, .ignoreErrors = false}};
+        serveSystemd();
+    }
+
+    [[nodiscard]] int userReads(const char* path) const
+    {
+        return m_Bus.propertyReads(path, SYSTEMD_SERVICE, "User");
+    }
+
+    static constexpr const char* APT_PATH = "/org/freedesktop/systemd1/unit/apt_2ddaily_2eservice";
+};
+
+// #2750: ListUnits also lists services that are referenced but not installed (not-found) and masked ones.
+// systemd still answers their Service interface, with User, Type and ExecStart empty, which would read as
+// a root service with no command. Their configuration isn't read, and the list leaves those columns empty.
+TEST_F(SystemdBusFakeServicesTest, AServiceThatIsntLoadedHasNoAccountCommandOrTypeAndIsntAsked)
+{
+    constexpr const char* GHOST_PATH = "/org/freedesktop/systemd1/unit/connman_2eservice";
+    constexpr const char* MASKED_PATH = "/org/freedesktop/systemd1/unit/console_2dgetty_2eservice";
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnits",
+        []() -> MethodAnswer
+        {
+            TestSupport::UnitRow ghost = unit("connman.service", "connman.service", "inactive", "dead", GHOST_PATH);
+            ghost.loadState = "not-found";
+            TestSupport::UnitRow masked = unit("console-getty.service", "console-getty.service", "inactive", "dead", MASKED_PATH);
+            masked.loadState = "masked";
+            return {.path = std::nullopt,
+                    .errorName = {},
+                    .units = std::vector<TestSupport::UnitRow>{
+                        unit("cron.service", "Regular background program processing daemon", "active", "running", CRON_PATH),
+                        ghost,
+                        masked,
+                    }};
+        });
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "ListUnitFiles",
+        []() -> MethodAnswer
+        { return {.path = std::nullopt, .errorName = {}, .unitFiles = std::vector<std::pair<std::string, std::string>>{}}; });
+    auto& props = m_Bus.properties();
+    for (const char* path : {CRON_PATH, GHOST_PATH, MASKED_PATH})
+    {
+        props[path][SYSTEMD_SERVICE]["User"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["DynamicUser"] = false;
+        props[path][SYSTEMD_SERVICE]["Type"] = std::string{};
+        props[path][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{};
+        props[path][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
+    }
+    props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.configs.size(), 1U) << "only the loaded service's configuration";
+    for (const char* path : {GHOST_PATH, MASKED_PATH})
+    {
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "User"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "ExecStart"), 0) << path;
+        EXPECT_EQ(m_Bus.propertyReads(path, SYSTEMD_SERVICE, "Type"), 0) << path;
+    }
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(read.listing);
+    for (const char* name : {"connman.service", "console-getty.service"})
+    {
+        const auto info = std::ranges::find(services, std::string(name), &ServiceInfo::name);
+        ASSERT_NE(info, services.end()) << name << " is still listed";
+        EXPECT_TRUE(info->account.empty()) << name;
+        EXPECT_TRUE(info->binaryPath.empty()) << name;
+        EXPECT_TRUE(info->serviceType.empty()) << name;
+    }
+    const auto cron = std::ranges::find(services, std::string("cron.service"), &ServiceInfo::name);
+    ASSERT_NE(cron, services.end());
+    EXPECT_EQ(cron->account, "root") << "a loaded service with an empty User still runs as root";
+}
+
+TEST_F(SystemdBusFakeServiceConfigTest, EachServicesUserCommandAndTypeAreRead)
+{
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    ASSERT_EQ(read.listing.configs.size(), 3U) << "every loaded service, running or not";
+
+    const SystemdServices::UnitConfig& cron = read.listing.configs.at("cron.service");
+    EXPECT_EQ(cron.user, std::optional<std::string>(""));
+    EXPECT_FALSE(cron.dynamicUser);
+    EXPECT_EQ(cron.type, "forking");
+    const std::vector<std::vector<std::string>> cronLines{{"/usr/sbin/cron", "-f", "-P", "-L", "15"}, {"logger", "cron started"}};
+    EXPECT_EQ(cron.execStart, cronLines);
+
+    const SystemdServices::UnitConfig& getty = read.listing.configs.at("getty@tty1.service");
+    EXPECT_EQ(getty.user, std::optional<std::string>("agetty"));
+    EXPECT_EQ(m_Bus.propertyReads(GETTY_PATH, SYSTEMD_SERVICE, "DynamicUser"), 0) << "asked only when User is empty";
+    EXPECT_EQ(getty.type, "idle");
+
+    // As the Services list shows them: argv joined with spaces, lines with "; ", root for an empty User.
+    const std::vector<ServiceInfo> services = SystemdServices::services(read.listing);
+    const auto cronInfo = std::ranges::find(services, std::string("cron.service"), &ServiceInfo::name);
+    ASSERT_NE(cronInfo, services.end());
+    EXPECT_EQ(cronInfo->account, "root");
+    EXPECT_EQ(cronInfo->binaryPath, "/usr/sbin/cron -f -P -L 15; logger cron started");
+    EXPECT_EQ(cronInfo->serviceType, "Forking");
+    const auto aptInfo = std::ranges::find(services, std::string("apt-daily.service"), &ServiceInfo::name);
+    ASSERT_NE(aptInfo, services.end());
+    EXPECT_EQ(aptInfo->account, "apt-daily") << "a DynamicUser= service's user is named after it";
+    EXPECT_EQ(aptInfo->binaryPath, "/usr/lib/apt/apt.systemd.daily update");
+    EXPECT_EQ(aptInfo->serviceType, "Oneshot");
+}
+
+// A property a service doesn't have (or systemd refuses) leaves only that field empty.
+TEST_F(SystemdBusFakeServiceConfigTest, AMissingPropertyLeavesOnlyThatFieldEmpty)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "User", "org.freedesktop.DBus.Error.UnknownProperty");
+    m_Bus.failProperty(GETTY_PATH, SYSTEMD_SERVICE, "ExecStart", "org.freedesktop.DBus.Error.AccessDenied");
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    const SystemdServices::UnitConfig& cron = read.listing.configs.at("cron.service");
+    EXPECT_FALSE(cron.user.has_value()) << "not read, so not taken for root";
+    EXPECT_EQ(cron.type, "forking");
+    EXPECT_EQ(cron.execStart.size(), 2U);
+    const SystemdServices::UnitConfig& getty = read.listing.configs.at("getty@tty1.service");
+    EXPECT_TRUE(getty.execStart.empty());
+    EXPECT_EQ(getty.user, std::optional<std::string>("agetty"));
+    EXPECT_EQ(getty.type, "idle");
+
+    const std::vector<ServiceInfo> services = SystemdServices::services(read.listing);
+    const auto cronInfo = std::ranges::find(services, std::string("cron.service"), &ServiceInfo::name);
+    ASSERT_NE(cronInfo, services.end());
+    EXPECT_TRUE(cronInfo->account.empty());
+}
+
+// The fixture's base serves no User, ExecStart or Type at all: every service's fields stay empty.
+TEST_F(SystemdBusFakeServicesTest, ServicesWithoutConfigPropertiesLeaveThemEmpty)
+{
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    for (const ServiceInfo& info : SystemdServices::services(read.listing))
+    {
+        EXPECT_TRUE(info.account.empty()) << info.name;
+        EXPECT_TRUE(info.binaryPath.empty()) << info.name;
+        EXPECT_TRUE(info.serviceType.empty()) << info.name;
+    }
+}
+
+// #2125, #2590: with a cache, a service's configuration is read once, then reused while its state and
+// main process are unchanged and it is younger than UNIT_CONFIG_TTL; a state change, the time passing
+// or forgetting the cache reads it again.
+TEST_F(SystemdBusFakeServiceConfigTest, ConfigsAreReadOnceUntilTheStateChangesOrTheyAge)
+{
+    serveConfigs();
+    SystemdBus::UnitFileCache cache;
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    const SystemdBus::ServicesRead first = SystemdBus::readServices(&cache, start);
+    ASSERT_TRUE(first.ok) << first.error;
+    EXPECT_EQ(userReads(CRON_PATH), 1);
+    EXPECT_EQ(userReads(GETTY_PATH), 1);
+
+    const SystemdBus::ServicesRead second = SystemdBus::readServices(&cache, start + std::chrono::seconds(2));
+    ASSERT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(userReads(CRON_PATH), 1) << "cached";
+    EXPECT_EQ(userReads(GETTY_PATH), 1) << "cached";
+    EXPECT_EQ(m_Bus.propertyReads(CRON_PATH, SYSTEMD_SERVICE, "ExecStart"), 1);
+    EXPECT_EQ(second.listing.configs, first.listing.configs) << "the cached ones are still listed";
+
+    m_CronRestarting.store(true);
+    static_cast<void>(SystemdBus::readServices(&cache, start + std::chrono::seconds(4)));
+    EXPECT_EQ(userReads(CRON_PATH), 2) << "cron's state changed";
+    EXPECT_EQ(userReads(GETTY_PATH), 1) << "getty's didn't";
+
+    static_cast<void>(SystemdBus::readServices(&cache, start + std::chrono::seconds(4) + SystemdBus::UNIT_CONFIG_TTL));
+    EXPECT_EQ(userReads(CRON_PATH), 3) << "aged";
+    EXPECT_EQ(userReads(GETTY_PATH), 2) << "aged";
+
+    cache.forget();
+    static_cast<void>(SystemdBus::readServices(&cache, start + std::chrono::seconds(4) + SystemdBus::UNIT_CONFIG_TTL));
+    EXPECT_EQ(userReads(CRON_PATH), 4) << "forgotten";
+    static_cast<void>(SystemdBus::readServices());
+    EXPECT_EQ(userReads(CRON_PATH), 5) << "no cache, always asked";
+}
+
+// The probe's default reader keeps the cache, so enumerating twice reads each service's configuration once.
+TEST_F(SystemdBusFakeServiceConfigTest, TheProbeReadsEachServicesConfigOnce)
+{
+    serveConfigs();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("tasksmack_services_config_root_" + std::to_string(getpid()));
+    std::filesystem::create_directories(root / "run/systemd/system");
+    {
+        LinuxServiceProbe probe({}, root, /*built=*/true);
+        const ServiceCapabilities caps = probe.capabilities();
+        EXPECT_TRUE(caps.hasAccount);
+        EXPECT_TRUE(caps.hasBinaryPath);
+        EXPECT_TRUE(caps.hasServiceType);
+        const ServiceEnumeration first = probe.enumerate();
+        ASSERT_TRUE(first.ok) << first.failureReason;
+        const ServiceEnumeration second = probe.enumerate();
+        ASSERT_TRUE(second.ok) << second.failureReason;
+        EXPECT_EQ(userReads(CRON_PATH), 1);
+        const auto cron = std::ranges::find(second.services, std::string("cron.service"), &ServiceInfo::name);
+        ASSERT_NE(cron, second.services.end());
+        EXPECT_EQ(cron->account, "root");
+        EXPECT_EQ(cron->serviceType, "Forking");
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
+// #2125: a configuration read that times out ends those reads: the list comes back without the rest
+// rather than costing a call timeout per service.
+TEST_F(SystemdBusFakeServiceConfigTest, AConfigTimeoutStopsAskingForTheRest)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "User", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_TRUE(read.listing.configs.empty());
+    EXPECT_EQ(userReads(GETTY_PATH), 0) << "getty, after cron, wasn't asked";
+    EXPECT_EQ(read.listing.mainPids.size(), 2U) << "the rest of the read is unaffected";
+}
+
+// #2773: a timeout ends every property read left in the call, not just that loop's: after an instance's
+// UnitFileState times out, no MainPID or configuration is asked for.
+TEST_F(SystemdBusFakeServiceConfigTest, AnInstanceStateTimeoutEndsTheCallsPropertyReads)
+{
+    m_Bus.failProperty(GETTY_PATH, "org.freedesktop.systemd1.Unit", "UnitFileState", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_EQ(m_Bus.propertyReads(CRON_PATH, SYSTEMD_SERVICE, "MainPID"), 0);
+    EXPECT_TRUE(read.listing.mainPids.empty());
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0);
+}
+
+// #2773: after a MainPID timeout no configuration is read either, even one due again: each service's is
+// the cached one, and the cache is left as it was, not re-filled with every service's main process as 0.
+TEST_F(SystemdBusFakeServiceConfigTest, AMainPidTimeoutLeavesTheCachedConfigurationsAsTheyWere)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.Timeout");
+    serveConfigs();
+    const auto now = std::chrono::steady_clock::now();
+    const auto aged = now - SystemdBus::UNIT_CONFIG_TTL - std::chrono::seconds(1);
+    SystemdBus::UnitFileCache cache;
+    for (const char* name : {"cron.service", "getty@tty1.service"})
+    {
+        cache.configs.insert_or_assign(
+            name,
+            SystemdBus::CachedUnitConfig{.config = {.user = std::string("cached"), .dynamicUser = false, .execStart = {}, .type = "simple"},
+                                         .activeState = "active",
+                                         .subState = "running",
+                                         .mainPid = 4242,
+                                         .readAt = aged});
+    }
+
+    const SystemdBus::ServicesRead read = SystemdBus::readServices(&cache, now);
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(userReads(CRON_PATH) + userReads(GETTY_PATH) + userReads(APT_PATH), 0) << "all due, none asked";
+    ASSERT_EQ(read.listing.configs.size(), 2U) << "the cached ones; apt-daily had none";
+    EXPECT_EQ(read.listing.configs.at("cron.service").user, std::optional<std::string>("cached"));
+    ASSERT_EQ(cache.configs.size(), 2U);
+    for (const auto& [name, cached] : cache.configs)
+    {
+        EXPECT_EQ(cached.mainPid, 4242U) << name;
+        EXPECT_EQ(cached.readAt, aged) << name;
+    }
+}
+
+TEST_F(SystemdBusFakeTest, WithoutSystemdOnTheBusTheServicesSaySo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromListUnitsIsPassedOn)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd couldn't be asked: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AFailedListUnitFilesFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnitFiles",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd couldn't be asked: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AListUnitsReplyThatIsntAUnitListFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = "not a unit list"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd's unit list couldn't be read: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AListUnitFilesReplyThatIsntAFileListFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnitFiles",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = "not a file list"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd's unit files couldn't be read: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeServicesTest, ARunningServiceWithoutAMainPidIsListedWithoutOne)
+{
+    // cron's MainPID isn't a number, so it can't be read; getty's is 0, no main process. Both are still listed.
+    m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE]["MainPID"] = std::string("161");
+    m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_TRUE(read.listing.mainPids.empty());
+}
+
+TEST_F(SystemdBusFakeTest, ASystemdThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnits", []() -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
+}
+
+// #1689 (#2479): the tests above have the service answer NoReply at once; this one's never answers, so
+// only the bus's own method-call timeout ends the wait. openSystemBus() sets CALL_TIMEOUT_USEC (2 s);
+// without it libsystemd waits its default 25 s, which this fails by elapsed time (and that default is
+// also what bounds the test if the timeout regresses).
+TEST_F(SystemdBusFakeTest, AReaderWhoseServiceNeverAnswersGivesUpWithinTheCallTimeout)
+{
+    m_Bus.addUnansweredMethod(SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnits");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const auto started = std::chrono::steady_clock::now();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    const auto waited = std::chrono::steady_clock::now() - started;
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
+    // It waited for the timeout (the call wasn't answered some other way), but no longer than it plus
+    // a loaded runner's margin.
+    const auto callTimeout = std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC);
+    EXPECT_GE(waited, callTimeout - std::chrono::milliseconds(100));
+    EXPECT_LT(waited, callTimeout + std::chrono::seconds(2));
+}
+
+} // namespace
+} // namespace Platform
+
+#endif // TASKSMACK_HAS_SDBUS
+
+// #2133: the fake-bus suites above (and SystemdActionsFakeTest) skip when this build has no libsystemd
+// or dbus-daemon isn't installed, which would leave the Services actions with no automated check while
+// CI stays green. CI sets TASKSMACK_REQUIRE_SDBUS=1 where both are guaranteed, and then this fails.
+TEST(SystemdBusFakeEnvironmentTest, CiRunsTheFakeBusSuitesWhenRequired)
+{
+    const char* const required = std::getenv("TASKSMACK_REQUIRE_SDBUS"); // NOLINT(concurrency-mt-unsafe) - read once, single thread
+    if (required == nullptr || std::string_view(required) != "1")
+    {
+        GTEST_SKIP() << "TASKSMACK_REQUIRE_SDBUS isn't set";
+    }
+#ifdef TASKSMACK_HAS_SDBUS
+    EXPECT_TRUE(::TestSupport::FakeSystemBus::available())
+        << "dbus-daemon isn't on PATH, so every fake-bus suite skipped; install dbus-daemon";
+#else
+    FAIL() << "built without libsystemd (pkg-config couldn't find it), so the fake-bus suites compiled out";
+#endif
+}

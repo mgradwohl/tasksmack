@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
+#include "Platform/SystemTypes.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -55,6 +58,17 @@ struct PowerStatus
     // Battery details
     std::string technology;
     std::string model;
+    std::string manufacturer;
+
+    // Battery capacity and wear (#1523). Each value is 0 when the battery did not report it; the
+    // reports* flags are the probe's capabilities, so "this system never reports it" and "the
+    // battery gave no value" read differently.
+    double designCapacityWh = 0.0;
+    double fullChargeCapacityWh = 0.0;
+    std::uint64_t cycleCount = 0;
+    bool reportsCapacity = false;   ///< Platform::PowerCapabilities::hasDesignCapacity
+    bool reportsCycleCount = false; ///< Platform::PowerCapabilities::hasCycleCount
+    bool reportsTechnology = false; ///< Platform::PowerCapabilities::hasTechnology
 };
 
 /// Immutable, UI-ready system metrics snapshot.
@@ -85,6 +99,14 @@ struct SystemSnapshot
     std::uint64_t swapTotalBytes = 0;
     std::uint64_t swapUsedBytes = 0;
 
+    // Commit charge (bytes, #1627). hasCommitCharge: the probe supports it and read it this sample;
+    // otherwise the fields are 0 and the Memory chart's value strip leaves Commit out. commitPeakBytes
+    // is 0 where the platform keeps no peak (Linux).
+    bool hasCommitCharge = false;
+    std::uint64_t commitChargeBytes = 0;
+    std::uint64_t commitLimitBytes = 0;
+    std::uint64_t commitPeakBytes = 0;
+
     // Computed percentages
     double memoryUsedPercent = 0.0;
     double memoryCachedPercent = 0.0;
@@ -95,6 +117,9 @@ struct SystemSnapshot
     int coreCount = 0;
     std::string hostname;
     std::string cpuModel;
+    // Sockets, cores, base clock, caches and (Windows) virtualization status, for the CPU Details
+    // block (#809). coreCount above counts logical processors; the physical cores are here.
+    Platform::CpuDetails cpuDetails;
 
     // Load average (1, 5, 15 minute) - Linux only
     double loadAvg1 = 0.0;
@@ -119,6 +144,7 @@ struct SystemSnapshot
         uint64_t linkSpeedMbps = 0;  // Link speed (0 if unknown)
         bool isVirtual = false;      // Software interface left out of the Total (see Platform InterfaceCounters)
         bool isVirtualKnown = false; // The platform classified it, so isVirtual is authoritative (#1260)
+        Platform::NetInterfaceKind kind = Platform::NetInterfaceKind::Unknown; // The link's kind (#2568)
         // Whether rxBytesPerSec / txBytesPerSec are readings or held at 0 for a reason (#1375)
         InterfaceRateStatus rxRateStatus = InterfaceRateStatus::Measured;
         InterfaceRateStatus txRateStatus = InterfaceRateStatus::Measured;

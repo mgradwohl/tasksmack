@@ -8,6 +8,7 @@
 #include "UI/RateAxis.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -35,16 +36,18 @@ struct SmoothedGPU
     double encoderPercent = 0.0;
     double decoderPercent = 0.0;
     double fanPercent = 0.0;
-    // Whether each value holds a reading. Utilization, temperature, power, clock and fan are left
-    // alone on a sample that could not read them (their bars show N/A) and restart from the next
-    // reading, rather than easing toward 0 (#1111). Clock and fan were drawn raw before, so they
-    // stepped while the bars beside them glided (#1012).
+    // Whether each value holds a reading. Utilization, temperature, power, clock, fan, encoder and
+    // decoder are left alone on a sample that could not read them (their bars show N/A) and restart
+    // from the next reading, rather than easing toward 0 (#1111, #1477). Clock and fan were drawn raw
+    // before, so they stepped while the bars beside them glided (#1012).
     bool utilizationInitialized = false;
     bool memoryInitialized = false;
     bool temperatureInitialized = false;
     bool powerInitialized = false;
     bool clockInitialized = false;
     bool fanInitialized = false;
+    bool encoderInitialized = false;
+    bool decoderInitialized = false;
     bool initialized = false;
 };
 
@@ -106,11 +109,9 @@ capabilitiesForGpu(Platform::GPUCapabilities caps, const std::optional<Platform:
     if (adapterSensors.has_value())
     {
         caps.hasTemperature = caps.hasTemperature && adapterSensors->hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp && adapterSensors->hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics && adapterSensors->hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds && adapterSensors->hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed && adapterSensors->hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics && adapterSensors->hasPCIeMetrics;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder && adapterSensors->hasEncoderDecoder;
     }
     return caps;
@@ -125,43 +126,64 @@ struct GpuDrawEntry
     const Domain::GPUSnapshot* snapshot = nullptr; ///< Null: no reading for this GPU this sample.
 };
 
-/// The GPUs the tab draws, in order: every enumerated GPU in enumeration order, whether or not the
-/// latest read returned it, then any snapshot for a GPU enumeration did not list (all of them, if
-/// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
-/// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
+/// Which of a publication's adapters a tab draws (#1799): the GPU tab's GPUs, or the NPU tab's NPUs and
+/// other compute accelerators. The two tabs share this section's code.
+enum class DeviceSet : std::uint8_t
+{
+    Gpus,         ///< GPUPublication::gpuInfo / snapshots
+    Accelerators, ///< GPUPublication::acceleratorInfo / acceleratorSnapshots
+};
+
+/// The devices a tab draws, in order: every enumerated device in enumeration order, whether or not the
+/// latest read returned it, then any snapshot for a device enumeration did not list (all of them, if
+/// enumeration failed), in the published order. A device missing from one read keeps its slot and its
+/// UI state instead of vanishing and shifting the devices after it, whose state used to be keyed by
 /// position (#1163).
 ///
 /// Written into @p entries, replacing what it held but keeping its capacity, so the tab can rebuild the
-/// list every frame without allocating (#1171).
-inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+/// list every frame without allocating (#1171). The entries point into @p infos and @p snapshots.
+inline void
+deviceDrawList(std::span<const Platform::GPUInfo> infos, std::span<const Domain::GPUSnapshot> snapshots, std::vector<GpuDrawEntry>& entries)
 {
     entries.clear();
-    entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
+    entries.reserve(infos.size() + snapshots.size());
     const auto listed = [&entries](std::string_view gpuId)
     {
         return std::ranges::any_of(entries, [gpuId](const GpuDrawEntry& entry) { return entry.gpuId == gpuId; });
     };
 
-    for (const auto& info : publication.gpuInfo)
+    std::size_t infoIndex = 0;
+    while (infoIndex < infos.size())
     {
+        const Platform::GPUInfo& info = infos[infoIndex];
+        ++infoIndex;
         if (listed(info.id))
         {
             continue;
         }
-        const auto snapshotIt = std::ranges::find(publication.snapshots, info.id, &Domain::GPUSnapshot::gpuId);
+        const auto snapshotIt = std::ranges::find(snapshots, info.id, &Domain::GPUSnapshot::gpuId);
         entries.push_back({
             .gpuId = info.id,
             .info = &info,
-            .snapshot = (snapshotIt != publication.snapshots.end()) ? &*snapshotIt : nullptr,
+            .snapshot = (snapshotIt != snapshots.end()) ? &*snapshotIt : nullptr,
         });
     }
-    for (const auto& snapshot : publication.snapshots)
+    std::size_t snapshotIndex = 0;
+    while (snapshotIndex < snapshots.size())
     {
+        const Domain::GPUSnapshot& snapshot = snapshots[snapshotIndex];
+        ++snapshotIndex;
         if (!listed(snapshot.gpuId))
         {
             entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
         }
     }
+}
+
+/// The GPU tab's draw list (deviceDrawList()): the publication's GPUs.
+inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+{
+    deviceDrawList(publication.gpuInfo, publication.snapshots, entries);
 }
 
 /// gpuDrawList() into a new vector.
@@ -170,6 +192,81 @@ inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<G
     std::vector<GpuDrawEntry> entries;
     gpuDrawList(publication, entries);
     return entries;
+}
+
+/// The NPU tab's draw list (deviceDrawList()): the publication's NPUs and compute accelerators (#1799).
+inline void acceleratorDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+{
+    deviceDrawList(publication.acceleratorInfo, publication.acceleratorSnapshots, entries);
+}
+
+/// acceleratorDrawList() into a new vector.
+[[nodiscard]] inline std::vector<GpuDrawEntry> acceleratorDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    acceleratorDrawList(publication, entries);
+    return entries;
+}
+
+/// Whether the machine view shows its NPU tab (#1799): only once @p publication lists an NPU or other
+/// compute accelerator, enumerated or read. Never before the first publication.
+[[nodiscard]] inline bool showAcceleratorTab(const Domain::GPUPublication* publication) noexcept
+{
+    return publication != nullptr && (!publication->acceleratorInfo.empty() || !publication->acceleratorSnapshots.empty());
+}
+
+/// What a device is called where its kind is named (#1799): "NPU", "Compute accelerator" or "GPU".
+[[nodiscard]] constexpr std::string_view deviceKindLabel(Platform::DeviceKind kind) noexcept
+{
+    switch (kind)
+    {
+    case Platform::DeviceKind::Npu:
+        return "NPU";
+    case Platform::DeviceKind::ComputeAccelerator:
+        return "Compute accelerator";
+    case Platform::DeviceKind::Gpu:
+        break;
+    }
+    return "GPU";
+}
+
+/// An NPU's or compute accelerator's collapsing-header label (#1799): its name and kind, and
+/// "Sleeping" as gpuHeaderLabel() says it. The same "###gpuHeader" id, so its collapse state survives
+/// a missed read and a label change.
+[[nodiscard]] inline std::string
+acceleratorHeaderLabel(std::string_view icon, std::string_view name, Platform::DeviceKind kind, bool suspended)
+{
+    std::string label = std::format("{} {} [{}]", icon, name, deviceKindLabel(kind));
+    if (suspended)
+    {
+        label += " (Sleeping)";
+    }
+    label += "###gpuHeader";
+    return label;
+}
+
+/// The line under an NPU's or compute accelerator's header (#1799): its kind, vendor, driver version
+/// and which memory its figures count -- "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory:
+/// Shared". A vendor the probe could not name is left out; a driver version it could not read says so.
+/// With @p memoryInUseBytes (a device that reports memory in use but no total, #1827), the memory it
+/// has in use follows: "Memory: Shared, 12.0 MiB in use".
+[[nodiscard]] inline std::string acceleratorDetailsText(const Platform::GPUInfo& info,
+                                                        std::optional<std::uint64_t> memoryInUseBytes = std::nullopt)
+{
+    constexpr std::string_view SEPARATOR = "    ";
+    std::string text = std::format("Kind: {}", deviceKindLabel(info.kind));
+    if (!info.vendor.empty() && info.vendor != "Unknown")
+    {
+        text += std::format("{}Vendor: {}", SEPARATOR, info.vendor);
+    }
+    const std::string_view driver = info.driverVersion.empty() ? std::string_view{"Unknown"} : std::string_view{info.driverVersion};
+    text += std::format("{}Driver: {}", SEPARATOR, driver);
+    text += std::format("{}Memory: {}", SEPARATOR, info.memoryIsShared ? "Shared" : "Dedicated");
+    if (memoryInUseBytes.has_value())
+    {
+        text += std::format(", {} in use", UI::Format::formatBytes(static_cast<double>(*memoryInUseBytes)));
+    }
+    return text;
 }
 
 /// The Overview header's "VRAM" figure: memory totals summed over discrete GPUs only. An integrated
@@ -229,11 +326,22 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
     return reference;
 }
 
+/// gpuClockReferenceMHz() from the window's largest clock sample, @p visibleClockMaxMHz: the
+/// maxOfSeriesSince() of the overload below, which the tab keeps between frames
+/// (UI::Widgets::windowSeriesMax(), #843).
+[[nodiscard]] inline float gpuClockReferenceMHz(double visibleClockMaxMHz, std::uint32_t currentClockMHz, double shownClockMHz) noexcept
+{
+    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
+    // it back to float is exact.
+    return static_cast<float>(UI::Widgets::withCurrentValues(
+        visibleClockMaxMHz, {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
+}
+
 /// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
 /// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
 ///
-/// The history holds the trim anchor just left of the window (#1016) and, when the chart is scrolled
-/// back, older samples too. Neither is drawn, so neither may set the 100 % mark: a boost spike that had
+/// The history holds the trim anchor just left of the window (#1016), and may hold samples older than
+/// the window. They are not drawn, so they may not set the 100 % mark: a boost spike that had
 /// just scrolled out kept the idle clock line drawn low against it (#1324), as #1145 fixed for the rate
 /// axes. The current clock still counts, and so does @p shownClockMHz, the smoothed clock the NowBar
 /// shows (UI::Widgets::currentIfAvailable(): NaN when the bar shows N/A, which is ignored). Easing down
@@ -247,11 +355,7 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
                                                 std::uint32_t currentClockMHz,
                                                 double shownClockMHz) noexcept
 {
-    // The result is one of the float samples, the floor or current clock, or a whole MHz, so narrowing
-    // it back to float is exact.
-    return static_cast<float>(
-        UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory),
-                                       {static_cast<double>(gpuClockReferenceMHz({}, currentClockMHz)), std::ceil(shownClockMHz)}));
+    return gpuClockReferenceMHz(UI::Widgets::maxOfSeriesSince(timeAxis, xMin, clockHistory), currentClockMHz, shownClockMHz);
 }
 
 /// Step the clock's 100 % mark is rounded up to (gpuClockScaleMHz()).
@@ -345,6 +449,68 @@ struct GpuScaledLabels
     }
 };
 
+/// Scale each sample to a 0–100 percentage relative to @p maxVal, into @p out (resized in place, so a
+/// reused buffer allocates only when the history grows).
+inline void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<float>& out)
+{
+    out.resize(hist.size());
+    std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
+}
+
+/// One GPU history drawn as a percentage of its scale (normalizeToPercent(): the clock's, temperature's
+/// or power's 100 % mark, #1205), kept from frame to frame (#843). Between samples every frame draws
+/// the same publication, so it is scaled again only when the history -- its data generation, address
+/// or length -- or the scale changes. A generation of 0 is never kept: percentOf() then scales on
+/// every call.
+class PercentSeriesCache
+{
+  public:
+    /// @p history as a percentage of @p scale, valid until the next call.
+    [[nodiscard]] std::span<const float> percentOf(std::uint64_t generation, std::span<const float> history, float scale)
+    {
+        const Key key{
+            .generation = generation, .data = history.data(), .size = history.size(), .scaleBits = std::bit_cast<std::uint32_t>(scale)};
+        if (!m_Valid || generation == 0 || key != m_Key)
+        {
+            normalizeToPercent(history, scale, m_Values);
+            m_Key = key;
+            m_Valid = generation != 0;
+            ++m_RebuildCount;
+        }
+        return m_Values;
+    }
+
+    /// How many times percentOf() has scaled the history rather than returned the kept values.
+    [[nodiscard]] std::uint64_t rebuildCount() const noexcept
+    {
+        return m_RebuildCount;
+    }
+
+  private:
+    struct Key
+    {
+        std::uint64_t generation = 0;
+        const float* data = nullptr;
+        std::size_t size = 0;
+        std::uint32_t scaleBits = 0; ///< The scale's bit pattern, compared exactly
+
+        [[nodiscard]] bool operator==(const Key&) const = default;
+    };
+
+    std::vector<float> m_Values;
+    Key m_Key;
+    std::uint64_t m_RebuildCount = 0;
+    bool m_Valid = false;
+};
+
+/// A GPU's lines drawn as percentages of their scales, kept per draw-list entry (FrameCache).
+struct GpuPercentSeries
+{
+    PercentSeriesCache clock;
+    PercentSeriesCache temperature;
+    PercentSeriesCache power;
+};
+
 /// What the GPU tab keeps from frame to frame, so that once warmed up drawing it allocates nothing
 /// (#1171): its scratch buffers and draw list, reused, and the strings built from a publication --
 /// header labels and chart layout IDs, one per draw-list entry -- rebuilt only when a new publication
@@ -352,12 +518,15 @@ struct GpuScaledLabels
 struct FrameCache
 {
     std::vector<GpuDrawEntry> drawList;
-    std::vector<float> clockPercent;
-    std::vector<float> temperaturePercent;
-    std::vector<float> powerPercent;
+    /// Per draw-list entry: its clock, temperature and power lines as percentages, rebuilt only for a
+    /// new publication or scale (#843).
+    std::vector<GpuPercentSeries> percentSeries;
 
     /// Per draw-list entry, built from the publication named below.
     std::vector<std::string> headerLabels;
+    /// The NPU tab's line under each header (acceleratorDetailsText(), #1799); empty for a GPU, or for an
+    /// accelerator enumeration did not list.
+    std::vector<std::string> detailTexts;
     std::vector<std::string> coreLayoutIds;
     std::vector<std::string> thermalLayoutIds;
     /// Per draw-list entry, rebuilt when the scale a label names changes (GpuScaledLabels::update()).
@@ -379,7 +548,6 @@ struct RenderContext
 
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation
@@ -395,9 +563,16 @@ struct RenderContext
     // Kept across frames by the caller so drawing allocates nothing (#1171). Null: a fresh one for the
     // frame, which draws the same but rebuilds everything.
     FrameCache* cache = nullptr;
+
+    // The GPU tab's GPUs, or the NPU tab's NPUs and compute accelerators (#1799). Each tab keeps its own
+    // smoothed values, fill state and cache.
+    DeviceSet devices = DeviceSet::Gpus;
 };
 
-/// Render the GPU section with utilization, memory, thermal, and power charts.
+/// Render the GPU section with utilization, memory, thermal, and power charts -- or, for
+/// DeviceSet::Accelerators, the NPU tab: each NPU or compute accelerator's kind, vendor and driver, and
+/// its utilization and memory chart (#1799). An accelerator has no clock, video engines or thermal
+/// sensors, so those series and the notes on their absence are left out.
 /// @param ctx Render context containing model and smoothed values
 void renderGpuSection(RenderContext& ctx);
 
@@ -405,6 +580,6 @@ void renderGpuSection(RenderContext& ctx);
 /// @param gpuId The GPU identifier
 /// @param snap Current GPU snapshot
 /// @param ctx Render context (uses refreshInterval and lastDeltaSeconds)
-void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, RenderContext& ctx);
+void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, const RenderContext& ctx);
 
 } // namespace App::GpuSection

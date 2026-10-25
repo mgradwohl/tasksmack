@@ -4,17 +4,20 @@
 /// Tests cover:
 /// - CPU affinity mask formatting
 
+#include "Core/LocaleSetup.h"
+#include "TestLocales.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
-#include <clocale>
 #include <cstdint>
+#include <ctime>
 #include <format>
 #include <limits>
 #include <locale>
 #include <random>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,51 +26,60 @@
 // CPU Affinity Mask Formatting Tests
 // =============================================================================
 
+namespace
+{
+/// formatCpuAffinity() of a 64-bit mask, bit N = processor N (test shorthand, #2164).
+[[nodiscard]] auto formatMask(std::uint64_t mask) -> std::string
+{
+    return UI::Format::formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
+}
+} // namespace
+
 TEST(FormatTest, AffinityMaskZeroShowsDash)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x0), "-");
+    EXPECT_EQ(formatMask(0x0), "-");
 }
 
 TEST(FormatTest, AffinityMaskSingleCore)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x1), "0");                    // Core 0
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x2), "1");                    // Core 1
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x4), "2");                    // Core 2
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x8), "3");                    // Core 3
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x10), "4");                   // Core 4
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x8000000000000000ULL), "63"); // Core 63
+    EXPECT_EQ(formatMask(0x1), "0");                    // Core 0
+    EXPECT_EQ(formatMask(0x2), "1");                    // Core 1
+    EXPECT_EQ(formatMask(0x4), "2");                    // Core 2
+    EXPECT_EQ(formatMask(0x8), "3");                    // Core 3
+    EXPECT_EQ(formatMask(0x10), "4");                   // Core 4
+    EXPECT_EQ(formatMask(0x8000000000000000ULL), "63"); // Core 63
 }
 
 TEST(FormatTest, AffinityMaskConsecutiveCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3), "0,1");  // Cores 0,1
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), "0-3");  // Cores 0-3
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xFF), "0-7"); // Cores 0-7
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF0), "4-7"); // Cores 4-7
+    EXPECT_EQ(formatMask(0x3), "0,1");  // Cores 0,1
+    EXPECT_EQ(formatMask(0xF), "0-3");  // Cores 0-3
+    EXPECT_EQ(formatMask(0xFF), "0-7"); // Cores 0-7
+    EXPECT_EQ(formatMask(0xF0), "4-7"); // Cores 4-7
 }
 
 TEST(FormatTest, AffinityMaskNonConsecutiveCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x5), "0,2");      // Cores 0,2
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x15), "0,2,4");   // Cores 0,2,4
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x55), "0,2,4,6"); // Cores 0,2,4,6
+    EXPECT_EQ(formatMask(0x5), "0,2");      // Cores 0,2
+    EXPECT_EQ(formatMask(0x15), "0,2,4");   // Cores 0,2,4
+    EXPECT_EQ(formatMask(0x55), "0,2,4,6"); // Cores 0,2,4,6
 }
 
 TEST(FormatTest, AffinityMaskMixedRanges)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF3), "0,1,4-7");  // Cores 0,1,4-7
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x1F5), "0,2,4-8"); // Cores 0,2,4-8
+    EXPECT_EQ(formatMask(0xF3), "0,1,4-7");  // Cores 0,1,4-7
+    EXPECT_EQ(formatMask(0x1F5), "0,2,4-8"); // Cores 0,2,4-8
 }
 
 TEST(FormatTest, AffinityMaskAllCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xFFFFFFFFFFFFFFFFULL), "0-63");
+    EXPECT_EQ(formatMask(0xFFFFFFFFFFFFFFFFULL), "0-63");
 }
 
 TEST(FormatTest, AffinityMaskHighCores)
 {
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF000000000000000ULL), "60-63");
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3000000000000000ULL), "60,61");
+    EXPECT_EQ(formatMask(0xF000000000000000ULL), "60-63");
+    EXPECT_EQ(formatMask(0x3000000000000000ULL), "60,61");
 }
 
 // #1247: affinities wider than 64 processors list exactly the processors allowed.
@@ -79,15 +91,14 @@ TEST(FormatTest, AffinityBeyond64Cpus)
         return UI::Format::formatCpuAffinity(words);
     };
     EXPECT_EQ(format(Words{}), "-");
-    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                         // taskset -c 70
-    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");                    // across the word boundary
-    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");                   // the issue's example
-    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");                     // a pair spanning two words
-    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");                 // a run spanning two words
-    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255");         // all of a 256-CPU machine
-    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");              // whole zero words skipped
-    EXPECT_EQ(format(Words{0, 0, 0}), "-");                                // no processor set
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), format(Words{0xF})); // the 64-bit form agrees
+    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                 // taskset -c 70
+    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");            // across the word boundary
+    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");           // the issue's example
+    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");             // a pair spanning two words
+    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");         // a run spanning two words
+    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255"); // all of a 256-CPU machine
+    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");      // whole zero words skipped
+    EXPECT_EQ(format(Words{0, 0, 0}), "-");                        // no processor set
 }
 // =============================================================================
 // Epoch Time Formatting Tests
@@ -144,6 +155,42 @@ TEST(FormatTest, EpochDateTimeShortOlderShowsDate)
     EXPECT_GE(result.length(), 11U);
 }
 
+TEST(FormatTest, EpochDateTimeShortYesterdayShowsYesterday)
+{
+    // Noon yesterday in local time, built by the calendar rather than by subtracting 24 hours, so a
+    // daylight-saving change can't move it to another day.
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    ASSERT_EQ(localtime_s(&local, &now), 0);
+#else
+    ASSERT_NE(localtime_r(&now, &local), nullptr);
+#endif
+    local.tm_mday -= 1;
+    local.tm_hour = 12;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    const std::time_t yesterdayNoon = std::mktime(&local);
+    ASSERT_NE(yesterdayNoon, static_cast<std::time_t>(-1));
+
+    EXPECT_EQ(UI::Format::formatEpochDateTimeShort(static_cast<std::uint64_t>(yesterdayNoon)), "Yesterday 12:00");
+}
+
+TEST(FormatTest, EpochBeyondTheLocalTimeRangeFormatsLikeNoTime)
+{
+    // Year 3237. Windows' localtime_s rejects times after the year 3000, so both formatters report no
+    // time rather than garbage (#1566); glibc's localtime_r converts it.
+    constexpr std::uint64_t YEAR_3237 = 40'000'000'000ULL;
+#ifdef _WIN32
+    EXPECT_EQ(UI::Format::formatEpochDateTime(YEAR_3237), "");
+    EXPECT_EQ(UI::Format::formatEpochDateTimeShort(YEAR_3237), "-");
+#else
+    EXPECT_TRUE(UI::Format::formatEpochDateTime(YEAR_3237).starts_with("3237-"));
+    EXPECT_NE(UI::Format::formatEpochDateTimeShort(YEAR_3237), "-");
+#endif
+}
+
 // =============================================================================
 // Date/Time Formatting Edge Case Tests
 // =============================================================================
@@ -198,51 +245,11 @@ TEST(FormatTest, EpochDateTimeHandlesDistantFuture)
 // Numeric Conversion Tests
 // =============================================================================
 
-TEST(FormatTest, ToIntSaturatedClampsToIntMax)
-{
-    // Values beyond int max should clamp
-    // Note: On Windows, long is 32-bit (same as int), so we can only test overflow
-    // on platforms where long is larger than int (e.g., Linux where long is 64-bit)
-#if LONG_MAX > INT_MAX
-    // 64-bit long: can test overflow beyond INT_MAX
-    const long largeValue = static_cast<long>(std::numeric_limits<int>::max()) + 1000L;
-    EXPECT_EQ(UI::Format::toIntSaturated(largeValue), std::numeric_limits<int>::max());
-#else
-    // 32-bit long (Windows): test with INT_MAX itself since we can't exceed it
-    EXPECT_EQ(UI::Format::toIntSaturated(static_cast<long>(std::numeric_limits<int>::max())), std::numeric_limits<int>::max());
-#endif
-}
-
-TEST(FormatTest, ToIntSaturatedPreservesNormalValues)
-{
-    EXPECT_EQ(UI::Format::toIntSaturated(42L), 42);
-    EXPECT_EQ(UI::Format::toIntSaturated(-42L), -42);
-    EXPECT_EQ(UI::Format::toIntSaturated(0L), 0);
-    EXPECT_EQ(UI::Format::toIntSaturated(100L), 100);
-}
-
-TEST(FormatTest, PercentToIntClampsNegativeToZero)
-{
-    EXPECT_EQ(UI::Format::percentToInt(-10.0), 0);
-    EXPECT_EQ(UI::Format::percentToInt(0.0), 0);
-    EXPECT_EQ(UI::Format::percentToInt(50.5), 51); // Rounds to nearest
-    EXPECT_EQ(UI::Format::percentToInt(100.0), 100);
-}
-
 TEST(FormatTest, PercentHelpersTreatNaNAsNoReading)
 {
     // NaN marks a sample with no reading; it used to print "-2,147,483,648%" and reach bar geometry (#1148).
     constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
     constexpr double INF = std::numeric_limits<double>::infinity();
-    EXPECT_EQ(UI::Format::percentToInt(NaN), 0);
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::quiet_NaN()), 0);
-    EXPECT_EQ(UI::Format::percentToInt(INF), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(-INF), 0);
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<double>::max()), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(std::numeric_limits<float>::max()), std::numeric_limits<int>::max());
-    EXPECT_EQ(UI::Format::percentToInt(3.0e9), std::numeric_limits<int>::max()); // beyond a 32-bit long
-    EXPECT_EQ(UI::Format::percentCompact(NaN), "N/A");
-    EXPECT_EQ(UI::Format::percentCompact(std::numeric_limits<float>::quiet_NaN()), "N/A");
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(NaN), 0.0);
     EXPECT_DOUBLE_EQ(UI::Format::clampPercent(INF), 100.0);
     EXPECT_DOUBLE_EQ(UI::Format::percent01(NaN), 0.0);
@@ -370,16 +377,8 @@ TEST(FormatTest, CheckedCountMaxSizeT)
 // Percentage Formatting Tests
 // =============================================================================
 
-TEST(FormatTest, PercentCompactFormatsCorrectly)
-{
-    // Just test that the function produces reasonable output
-    const auto result = UI::Format::percentCompact(50.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
-}
-
-// #1195: a process's share of the machine is usually a few percent or less, which percentCompact()
-// rounded to "0%" or "1%" while the Processes table showed one decimal.
+// #1195: a process's share of the machine is usually a few percent or less, which a whole-percent
+// format rounded to "0%" or "1%" while the Processes table showed one decimal.
 TEST(FormatTest, PercentOneDecimalKeepsTheFractionOfSmallPercents)
 {
     EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0.6%");
@@ -387,20 +386,6 @@ TEST(FormatTest, PercentOneDecimalKeepsTheFractionOfSmallPercents)
     EXPECT_EQ(UI::Format::percentOneDecimal(99.96), "100.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(0.0), "0.0%");
     EXPECT_EQ(UI::Format::percentOneDecimal(std::numeric_limits<double>::quiet_NaN()), "N/A");
-}
-
-TEST(FormatTest, PercentCompactHandlesZero)
-{
-    const auto result = UI::Format::percentCompact(0.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
-}
-
-TEST(FormatTest, PercentCompactHandles100)
-{
-    const auto result = UI::Format::percentCompact(100.0);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
 }
 
 // =============================================================================
@@ -426,21 +411,15 @@ TEST(FormatTest, FormatIntLocalizedFormatsCorrectly)
     EXPECT_FALSE(result.empty());
 }
 
-TEST(FormatTest, FormatUIntLocalizedFormatsCorrectly)
+TEST(FormatTest, FormatFixedLocalizedFormatsCorrectly)
 {
-    const auto result = UI::Format::formatUIntLocalized(12345U);
+    const auto result = UI::Format::formatFixedLocalized(123.456, 2, {});
     EXPECT_FALSE(result.empty());
 }
 
-TEST(FormatTest, FormatDoubleLocalizedFormatsCorrectly)
+TEST(FormatTest, FormatFixedLocalizedHandlesZeroDecimals)
 {
-    const auto result = UI::Format::formatDoubleLocalized(123.456, 2);
-    EXPECT_FALSE(result.empty());
-}
-
-TEST(FormatTest, FormatDoubleLocalizedHandlesZeroDecimals)
-{
-    const auto result = UI::Format::formatDoubleLocalized(123.456, 0);
+    const auto result = UI::Format::formatFixedLocalized(123.456, 0, {});
     EXPECT_FALSE(result.empty());
 }
 
@@ -484,31 +463,6 @@ TEST(FormatTest, FormatOrDashReturnsDashForZeroOrNegative)
 
     const auto resultNeg = UI::Format::formatOrDash(-5, [](int v) { return std::format("{}", v); });
     EXPECT_EQ(resultNeg, "-");
-}
-
-// =============================================================================
-// Uptime Formatting Tests
-// =============================================================================
-
-TEST(FormatTest, FormatUptimeShortFormatsCorrectly)
-{
-    // 2 days, 5 hours, 30 minutes in seconds
-    const std::uint64_t seconds = (2ULL * 24ULL * 60ULL * 60ULL) + (5ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
-    const auto result = UI::Format::formatUptimeShort(seconds);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesSmallValues)
-{
-    const auto result = UI::Format::formatUptimeShort(300); // 5 minutes
-    EXPECT_FALSE(result.empty());
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesZero)
-{
-    const auto result = UI::Format::formatUptimeShort(0);
-    EXPECT_TRUE(result.empty());
 }
 
 // =============================================================================
@@ -760,61 +714,13 @@ TEST(FormatTest, SplitBytesForAlignmentFractionalRounding)
 // splitBytesForAlignmentFast vs splitBytesForAlignment comparison tests
 // =============================================================================
 
-/// Test fixture that sets up the user's locale (like the app does)
-/// This ensures std::format("{:L}", ...) uses thousand separators
+/// Test fixture that formats with en-US's punctuation ("1,234.5"), as the app would in that locale,
+/// so the fast and slow paths are compared with digit grouping on. The display punctuation, not the
+/// global locale, is what the formatters read (#1648, slice E).
 class FormatLocaleTest : public ::testing::Test
 {
-  protected:
-    void SetUp() override
-    {
-        // Save original locale
-        m_OriginalLocale = std::locale();
-
-        // Set up locale like main.cpp does
-        try
-        {
-            const std::locale userLocale("");
-            std::locale::global(userLocale);
-        }
-        catch (const std::exception&)
-        {
-            // If user's locale fails, try common locales with grouping
-            const char* fallbackLocales[] = {"en_US.UTF-8", "en_GB.UTF-8", "C.UTF-8", nullptr};
-            bool localeSet = false;
-            for (const char** loc = fallbackLocales; *loc != nullptr; ++loc)
-            {
-                try
-                {
-                    std::locale::global(std::locale(*loc));
-                    localeSet = true;
-                    break;
-                }
-                catch (...)
-                {
-                    // Try next
-                }
-            }
-            if (!localeSet)
-            {
-                GTEST_SKIP() << "No locale with thousand separators available";
-            }
-        }
-
-        // Also set C locale for consistency
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        setlocale(LC_ALL, "");
-    }
-
-    void TearDown() override
-    {
-        // Restore original locale
-        std::locale::global(m_OriginalLocale);
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        setlocale(LC_ALL, "C");
-    }
-
   private:
-    std::locale m_OriginalLocale;
+    UI::Format::ScopedDisplayPunctuation m_EnUs{{.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"}};
 };
 
 namespace
@@ -1019,9 +925,9 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
 TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
 {
     const auto unit = UI::Format::chooseByteUnit(1024.0);
-    const auto parts = UI::Format::splitBytesPerSecForAlignment(1024.0, unit);
+    const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(1024.0, unit);
 
-    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.wholePart().empty());
     EXPECT_FALSE(parts.unitPart.empty());
     EXPECT_TRUE(parts.unitPart.contains("/s"));
 }
@@ -1216,32 +1122,6 @@ TEST(FormatTest, FormatPowerOrZeroHandlesMicrowatts)
 }
 
 // =============================================================================
-// formatUptimeShort — hours-only path (hours > 0, days == 0)
-// =============================================================================
-
-TEST(FormatTest, FormatUptimeShortHandlesHoursOnly)
-{
-    // 2 hours, 30 minutes, no days
-    const std::uint64_t seconds = (2ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
-    const auto result = UI::Format::formatUptimeShort(seconds);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-    EXPECT_TRUE(result.contains("h"));
-    EXPECT_TRUE(result.contains("m"));
-}
-
-TEST(FormatTest, FormatUptimeShortHandlesMinutesOnly)
-{
-    // Less than one hour: just minutes path
-    const auto result = UI::Format::formatUptimeShort(45 * 60); // 45 minutes
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("Up:"));
-    EXPECT_TRUE(result.contains("m"));
-    EXPECT_FALSE(result.contains("h"));
-    EXPECT_FALSE(result.contains("d"));
-}
-
-// =============================================================================
 // splitBytesPerSecForAlignmentFast — unit suffix correctness
 // =============================================================================
 
@@ -1273,12 +1153,12 @@ TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastMatchesSlowPath)
     for (const auto& unit : units)
     {
         const double bytes = 512.0 * unit.scale; // 512 in each unit
-        const auto slow = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
+        const auto slow = UI::Format::splitBytesForAlignment(bytes, unit);
         const auto fast = UI::Format::splitBytesPerSecForAlignmentFast(bytes, unit);
 
         EXPECT_EQ(slow.wholePart, fast.wholePart()) << "wholePart mismatch for " << unit.suffix;
         EXPECT_EQ(std::string(1, fast.decimalDigit), slow.decimalPart) << "decimalPart mismatch for " << unit.suffix;
-        EXPECT_EQ(slow.unitPart, fast.unitPart) << "unitPart mismatch for " << unit.suffix;
+        EXPECT_EQ(slow.unitPart + "/s", fast.unitPart) << "unitPart mismatch for " << unit.suffix;
     }
 }
 
@@ -1426,10 +1306,22 @@ TEST(FormatTest, FormatDurationShowsTheSizeOfANegativeDurationAndNAForNaN)
     EXPECT_FALSE(UI::Format::formatDuration(std::numeric_limits<double>::infinity()).empty());
 }
 
-TEST(FormatTest, FormatUptimeShortUsesTheDurationGrammar)
+TEST(FormatTest, FormatDurationOfTheLongestDurationIsWhole)
 {
-    EXPECT_EQ(UI::Format::formatUptimeShort((2ULL * 86400ULL) + (5ULL * 3600ULL) + (30ULL * 60ULL)), "Up: 2d 05h");
-    EXPECT_EQ(UI::Format::formatUptimeShort(45ULL * 60ULL), "Up: 45m 00s");
+    // The cap (1e15 s) is the longest result formatDuration() builds in its 32-byte buffer (#843).
+    EXPECT_EQ(UI::Format::formatDuration(1e15), "11574074074d 01h");
+}
+
+TEST(FormatTest, FormatShortMatchesStdFormatAndCutsAtItsBuffer)
+{
+    EXPECT_EQ(UI::Format::Detail::formatShort("{}{} {:02}{}", 1, 'm', 5, 's'), std::format("{}{} {:02}{}", 1, 'm', 5, 's'));
+    EXPECT_EQ(UI::Format::Detail::formatShort("{}", std::string(40, 'x')), std::string(32, 'x'));
+}
+
+TEST(FormatTest, FormatDurationShowsUptimeInTheDurationGrammar)
+{
+    EXPECT_EQ(UI::Format::formatDuration((2.0 * 86400.0) + (5.0 * 3600.0) + (30.0 * 60.0)), "2d 05h");
+    EXPECT_EQ(UI::Format::formatDuration(45.0 * 60.0), "45m 00s");
 }
 
 // =============================================================================
@@ -1546,7 +1438,7 @@ TEST(FormatTest, SplitBytesForAlignmentNoDecimalZero)
 }
 
 // =============================================================================
-// formatCpuAffinityMask — trailing range with prior bits (hasAny=true)
+// formatCpuAffinity of a 64-bit mask — trailing range with prior bits (hasAny=true)
 // =============================================================================
 
 TEST(FormatTest, FormatCpuAffinityMaskTrailingAdjacentPairWithPrefix)
@@ -1555,7 +1447,7 @@ TEST(FormatTest, FormatCpuAffinityMaskTrailingAdjacentPairWithPrefix)
     // adjacent pair (rangeStart+1 == rangeEnd) with hasAny=true → comma prefix
     // 0x3 = bits 0,1 | 0xC000000000000000 = bits 62,63
     const uint64_t mask = 0x3ULL | 0xC000000000000000ULL;
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,62,63");
+    EXPECT_EQ(formatMask(mask), "0,1,62,63");
 }
 
 TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
@@ -1564,7 +1456,7 @@ TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
     // range (rangeEnd - rangeStart > 1) with hasAny=true → comma + "61-63"
     // 0x3 = bits 0,1 | 0xE000000000000000 = bits 61,62,63
     const uint64_t mask = 0x3ULL | 0xE000000000000000ULL;
-    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,61-63");
+    EXPECT_EQ(formatMask(mask), "0,1,61-63");
 }
 
 // =============================================================================
@@ -1619,8 +1511,9 @@ TEST(FormatTest, FormatBytesMatchesTheByteColumns)
         const auto unit = UI::Format::chooseByteUnit(bytes);
         const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
         EXPECT_EQ(UI::Format::formatBytes(bytes), parts.wholePart + parts.decimalPart + parts.unitPart) << bytes;
-        const auto rate = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
-        EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), rate.wholePart + rate.decimalPart + rate.unitPart) << bytes;
+        const auto rate = UI::Format::splitBytesPerSecForAlignmentFast(bytes, unit);
+        EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), std::string(rate.wholePart()) + rate.decimalDigit + std::string(rate.unitPart))
+            << bytes;
     }
 }
 
@@ -1656,13 +1549,14 @@ TEST(FormatTest, FormatPercentPrintsWhatRoundsToZeroAsZero)
     EXPECT_EQ(UI::Format::formatPercent(-0.05), "-0.1%");
 }
 
-// Whole percents read the same as percentCompact(), the existing whole-percent value formatter.
-TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
+// From ten up, a percent is whole, with no decimal.
+TEST(FormatTest, FormatPercentIsWholeFromTen)
 {
-    for (const double percent : {10.0, 12.0, 42.0, 99.0, 100.0})
-    {
-        EXPECT_EQ(UI::Format::formatPercent(percent), UI::Format::percentCompact(percent)) << percent;
-    }
+    EXPECT_EQ(UI::Format::formatPercent(10.0), "10%");
+    EXPECT_EQ(UI::Format::formatPercent(12.0), "12%");
+    EXPECT_EQ(UI::Format::formatPercent(42.0), "42%");
+    EXPECT_EQ(UI::Format::formatPercent(99.0), "99%");
+    EXPECT_EQ(UI::Format::formatPercent(100.0), "100%");
 }
 
 // =============================================================================
@@ -1702,7 +1596,9 @@ class TestNumpunct : public std::numpunct<char>
     std::string m_Grouping;
 };
 
-/// Makes a locale with TestNumpunct global for one scope and restores the previous one after it.
+/// Makes a locale with TestNumpunct global for one scope, so std::format("{:L}") gives the expected
+/// text, and its punctuation the display punctuation the formatters under test read (#1648); restores
+/// both after it.
 class ScopedTestNumpunct
 {
   public:
@@ -1711,7 +1607,8 @@ class ScopedTestNumpunct
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
     ScopedTestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
         : m_Previous(
-              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping)))))
+              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping))))),
+          m_Display(Core::LocaleSetup::numberPunctuation(std::locale()))
     {}
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
     ~ScopedTestNumpunct()
@@ -1725,6 +1622,7 @@ class ScopedTestNumpunct
 
   private:
     std::locale m_Previous;
+    UI::Format::ScopedDisplayPunctuation m_Display;
 };
 
 [[nodiscard]] std::string fastFixed(double value, int decimals)
@@ -1827,9 +1725,9 @@ TEST(FormatFixedLocalizedTest, GroupingEndsAtCharMax)
     EXPECT_EQ(fastFixed(123456789.0, 0), std::format("{:.0Lf}", 123456789.0));
 }
 
-TEST(FormatFixedLocalizedTest, FollowsAGlobalLocaleChange)
+TEST(FormatFixedLocalizedTest, FollowsADisplayPunctuationChange)
 {
-    // The punctuation is cached; replacing the global locale must be noticed on the next call.
+    // A new display punctuation is used from the next call.
     {
         const ScopedTestNumpunct comma(',', '.', "\3");
         EXPECT_EQ(fastFixed(1234.5, 1), "1.234,5");
@@ -1887,7 +1785,8 @@ TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
 // #1366: splitBytesForAlignmentFast() took its thousands separator from a per-thread cache that was
 // filled on first use and never refreshed, so a thread that formatted under the "C" locale kept
 // printing "8658." after a grouping locale was made global, while the slow path printed "8,658.".
-TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
+// Both now read the display punctuation (#1648).
+TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsADisplayPunctuationChange)
 {
     const UI::Format::ByteUnit bytesUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
     constexpr double BYTES = 8658.36;
@@ -1912,4 +1811,130 @@ TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
     const ScopedTestNumpunct classic('.', ',', "");
     EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
     EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+}
+
+// =============================================================================
+// Displayed numbers in the user's locale (#1648, slice E): the real en-US, de-DE and fr-FR
+// punctuation, as TaskSmack reads it at startup, for sizes, rates, percentages, temperatures and
+// counts. Only the separators change; units and IEC prefixes stay as they are.
+// =============================================================================
+
+namespace
+{
+
+/// The texts one locale gives the same values.
+struct LocaleExpectations
+{
+    std::string size;        // formatBytesWithUnit(1234.5 MiB, MiB)
+    std::string rate;        // formatBytesPerSecWithUnit(1234.5 MiB/s, MiB)
+    std::string percent;     // formatPercent(4.25)
+    std::string count;       // formatIntLocalized(1234567)
+    std::string celsius;     // formatFixedLocalized(65.5, 1, " °C"), as System Information's sensors
+    std::string alignedCell; // a Processes cell: splitBytesForAlignmentFast(1234.5 KiB) whole part
+};
+
+void expectLocale(const UI::Format::NumericPunctuation& punctuation, const LocaleExpectations& expected)
+{
+    const UI::Format::ScopedDisplayPunctuation scope(punctuation);
+    constexpr double MIB = 1024.0 * 1024.0;
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(1234.5 * MIB, UI::Format::BYTE_UNIT_MB), expected.size);
+    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(1234.5 * MIB, UI::Format::BYTE_UNIT_MB), expected.rate);
+    EXPECT_EQ(UI::Format::formatPercent(4.25), expected.percent);
+    EXPECT_EQ(UI::Format::formatIntLocalized(1234567), expected.count);
+    EXPECT_EQ(UI::Format::formatFixedLocalized(65.5, 1, " °C"), expected.celsius);
+    EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB).wholePart(), expected.alignedCell);
+    // The table's fast path and its allocating slow path agree.
+    const auto slow = UI::Format::splitBytesForAlignment(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(slow.wholePart, expected.alignedCell);
+}
+
+} // namespace
+
+TEST(FormatDisplayLocaleTest, EnUsGroupsWithCommasAndUsesADecimalPoint)
+{
+    const auto enUs = TestLocales::punctuation("en", "US");
+    if (!enUs)
+    {
+        GTEST_SKIP() << TestLocales::osName("en", "US") << " is not available on this machine";
+    }
+    EXPECT_EQ(enUs->decimalPoint, '.');
+    EXPECT_EQ(enUs->thousandsSep, ",");
+    expectLocale(*enUs,
+                 {.size = "1,234.5 MiB",
+                  .rate = "1,234.5 MiB/s",
+                  .percent = "4.3%",
+                  .count = "1,234,567",
+                  .celsius = "65.5 °C",
+                  .alignedCell = "1,234."});
+}
+
+TEST(FormatDisplayLocaleTest, DeDeGroupsWithDotsAndUsesADecimalComma)
+{
+    const auto deDe = TestLocales::punctuation("de", "DE");
+    if (!deDe)
+    {
+        GTEST_SKIP() << TestLocales::osName("de", "DE") << " is not available on this machine";
+    }
+    EXPECT_EQ(deDe->decimalPoint, ',');
+    EXPECT_EQ(deDe->thousandsSep, ".");
+    expectLocale(*deDe,
+                 {.size = "1.234,5 MiB",
+                  .rate = "1.234,5 MiB/s",
+                  .percent = "4,3%",
+                  .count = "1.234.567",
+                  .celsius = "65,5 °C",
+                  .alignedCell = "1.234,"});
+}
+
+// fr-FR groups with a no-break space: U+202F (narrow) on Windows and current glibc, U+00A0 on older
+// glibc. The C++ library's numpunct<char> holds one byte of it, which used to reach the screen as
+// half a UTF-8 character; the display punctuation keeps the whole sequence.
+TEST(FormatDisplayLocaleTest, FrFrGroupsWithAWholeNoBreakSpace)
+{
+    const auto frFr = TestLocales::punctuation("fr", "FR");
+    if (!frFr)
+    {
+        GTEST_SKIP() << TestLocales::osName("fr", "FR") << " is not available on this machine";
+    }
+    EXPECT_EQ(frFr->decimalPoint, ',');
+#ifdef _WIN32
+    EXPECT_EQ(frFr->thousandsSep, TestLocales::NARROW_NBSP);
+#else
+    EXPECT_TRUE(frFr->thousandsSep == TestLocales::NARROW_NBSP || frFr->thousandsSep == TestLocales::NBSP)
+        << "unexpected fr_FR separator bytes";
+#endif
+    const std::string sep = frFr->thousandsSep;
+    expectLocale(*frFr,
+                 {.size = "1" + sep + "234,5 MiB",
+                  .rate = "1" + sep + "234,5 MiB/s",
+                  .percent = "4,3%",
+                  .count = "1" + sep + "234" + sep + "567",
+                  .celsius = "65,5 °C",
+                  .alignedCell = "1" + sep + "234,"});
+}
+
+// The global C++ locale keeps the classic numeric facets in TaskSmack; display formatting must not
+// read it. A comma-decimal global locale with the classic display punctuation still prints '.'.
+TEST(FormatDisplayLocaleTest, DisplayIgnoresTheGlobalLocale)
+{
+    const ScopedTestNumpunct globalGerman(',', '.', "\3");
+    const UI::Format::ScopedDisplayPunctuation classic(UI::Format::NumericPunctuation{});
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB), "1234.5 KiB");
+    EXPECT_EQ(UI::Format::formatIntLocalized(1234567), "1234567");
+    EXPECT_EQ(UI::Format::formatPercent(42.0), "42%");
+}
+
+TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
+{
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(UI::Format::formatCountPerSecond(1500.0), "1,5K/s");
+    EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 3700.0), " (16 logical processors @ 3,70 GHz)");
+    EXPECT_EQ(UI::Format::withLocaleDecimalPoint(std::format("{:g} Gbps", 2.5)), "2,5 Gbps");
+    EXPECT_EQ(UI::Format::formatFixedLocalized(1234567.891, 2, {}), "1.234.567,89");
+    EXPECT_EQ(UI::Format::formatPercent(87), "87%");
+    EXPECT_EQ(UI::Format::formatPercent(1234), "1.234%");
+    // A value too long for the stack buffer still gets the punctuation.
+    const std::string huge = UI::Format::formatFixedLocalized(1.0e70, 1, " B");
+    EXPECT_TRUE(huge.ends_with(",0 B")) << huge;
+    EXPECT_TRUE(huge.starts_with("10.000.000.")) << huge;
 }

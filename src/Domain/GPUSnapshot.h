@@ -1,6 +1,9 @@
 #pragma once
 
+#include "Platform/GPUTypes.h"
+
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +31,9 @@ struct GPUSnapshot
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;
     std::string vendor;
+    // A GPU, or an NPU or other compute accelerator (Platform::GPUInfo::kind, #1799). GPUModel's
+    // publication lists the two apart, so GPU views and totals never take an accelerator.
+    Platform::DeviceKind kind = Platform::DeviceKind::Gpu;
     bool isIntegrated = false;
     // The memory used/total figures count the shared segment rather than dedicated VRAM
     // (Platform::GPUInfo::memoryIsShared): what a process's "GPU memory" on this GPU counts (#1164).
@@ -42,6 +48,8 @@ struct GPUSnapshot
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
     bool memoryAvailable = true; // used/total bytes, and so the memory percent
+    bool encoderAvailable = true;
+    bool decoderAvailable = true;
     // The GPU was asleep (runtime-suspended) and deliberately not queried this sample, so as not to
     // wake it (#1117). Its readings are all unavailable; the UI labels it as sleeping.
     bool suspended = false;
@@ -54,19 +62,18 @@ struct GPUSnapshot
     std::uint64_t memoryUsedBytes = 0;
     std::uint64_t memoryTotalBytes = 0;
     double memoryUsedPercent = 0.0; // Computed by Domain
+    // Memory in use with no total (Platform::GPUCounters::memoryInUseBytes): a Linux NPU's (#1827).
+    std::optional<std::uint64_t> memoryInUseBytes;
 
     // Temperature
     std::int32_t temperatureC = 0;
-    std::int32_t hotspotTempC = -1;
 
     // Power
     double powerDrawWatts = 0.0;
     double powerLimitWatts = 0.0;
-    double powerUtilPercent = 0.0; // Computed by Domain
 
     // Clock speeds
     std::uint32_t gpuClockMHz = 0;
-    std::uint32_t memoryClockMHz = 0;
 
     // Fan
     std::uint32_t fanSpeedPercent = 0; // Computed by Domain from fanSpeedRaw/fanSpeedMaxRaw
@@ -77,12 +84,7 @@ struct GPUSnapshot
     // on the capability, to avoid showing a misleading "0%" for an unavailable sample.
     bool fanSpeedAvailable = false;
 
-    // PCIe bandwidth (rates computed from deltas)
-    double pcieTxBytesPerSec = 0.0;
-    double pcieRxBytesPerSec = 0.0;
-
     // Engine utilization
-    double computeUtilPercent = 0.0;
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
 };

@@ -1,0 +1,726 @@
+/// @file test_ProcessPriorityViewRender.cpp
+/// @brief The priority control's real ImGui render, headless (#1179, slice 4): it draws nothing
+/// without the capability, Apply is disabled until an edit, a click on Apply sets the edit on the
+/// selected process only, an edit made for another process is dropped before it can be applied, and
+/// the slider's keyboard shortcuts move the value as before (Linux only: the slider is the Linux control).
+/// There is no popup or modal on Linux. On Windows the same slider has a stop per priority class (#1538).
+/// On both, Apply is as wide as its label and the row repeats no "current" value (#1537), and the
+/// discrete slider's stop names show at every display scale when its card has room for them (#1984).
+
+#include "App/Panels/ProcessActionsBlock.h" // The Priority card's width rule (#1984)
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
+#include "App/Panels/ProcessOverviewCard.h"
+#include "App/Panels/ProcessPriorityView.h"
+#include "Mocks/MockProbes.h"
+#include "Platform/IProcessActions.h"
+#include "UI/IconsFontAwesome6.h"
+
+#ifdef _WIN32
+#include "Domain/PriorityConfig.h" // MIN_NICE: what the probe reports for Realtime
+#endif
+
+#include <gtest/gtest.h>
+#include <imgui.h>
+#include <imgui_internal.h> // The frame's text log, the window's draw list, SetFocusID() on the slider
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+
+namespace App
+{
+namespace
+{
+
+constexpr Platform::ProcessTarget TARGET_A{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget TARGET_B{.pid = 2002, .startTimeTicks = 6000};
+
+constexpr Platform::ProcessActionCapabilities CAN_SET_PRIORITY{.canSetPriority = true};
+constexpr Platform::ProcessActionCapabilities NO_PRIORITY{
+    .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = false};
+
+class ProcessPriorityViewRenderTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_Context = ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.LogFilename = nullptr;
+        io.DisplaySize = ImVec2(1600.0F, 1000.0F);
+        io.DeltaTime = 1.0F / 60.0F;
+        // No renderer: let ImGui build and own the font atlas itself.
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.Fonts->AddFontDefault();
+    }
+
+    void TearDown() override
+    {
+        ImGui::DestroyContext(m_Context);
+    }
+
+    /// One frame of a window like the Process Details pane, running @p body inside it.
+    static void runFrame(const std::function<void()>& body)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(1600.0F, 1000.0F));
+        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        body();
+        ImGui::End();
+        ImGui::Render();
+    }
+
+    /// Renders @p view for @p target and returns the centre of the Apply button, the last item it
+    /// draws while there is no error line.
+    static ImVec2 renderAndFindApply(ProcessPriorityView& view,
+                                     TestMocks::MockProcessActions& mock,
+                                     std::optional<std::int32_t> currentNice,
+                                     const Platform::ProcessTarget& target)
+    {
+        ImVec2 centre;
+        runFrame(
+            [&]
+            {
+                view.render(&mock, CAN_SET_PRIORITY, currentNice, target);
+                const ImVec2 min = ImGui::GetItemRectMin();
+                const ImVec2 max = ImGui::GetItemRectMax();
+                centre = ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F);
+            });
+        return centre;
+    }
+
+    /// Clicks at @p pos over three frames (move, press, release) while @p body draws.
+    static void click(ImVec2 pos, const std::function<void()>& body)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(pos.x, pos.y);
+        runFrame(body);
+        io.AddMouseButtonEvent(0, true);
+        runFrame(body);
+        io.AddMouseButtonEvent(0, false);
+        runFrame(body);
+    }
+
+    /// Presses and releases @p key over two frames while @p body draws (the slider's keys).
+    static void pressKey(ImGuiKey key, const std::function<void()>& body)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(key, true);
+        runFrame(body);
+        io.AddKeyEvent(key, false);
+        runFrame(body);
+    }
+
+  private:
+    ImGuiContext* m_Context = nullptr;
+};
+
+TEST_F(ProcessPriorityViewRenderTest, NothingIsDrawnWithoutTheCapability)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    float before = 0.0F;
+    float after = 0.0F;
+    runFrame(
+        [&]
+        {
+            before = ImGui::GetCursorPosY();
+            view.render(&mock, NO_PRIORITY, 0, TARGET_A);
+            after = ImGui::GetCursorPosY();
+        });
+    EXPECT_FLOAT_EQ(before, after);
+}
+
+TEST_F(ProcessPriorityViewRenderTest, RenderShowsTheProcessValueUntilEdited)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 7, TARGET_A); });
+    EXPECT_EQ(view.niceValue(), 7);
+    EXPECT_FALSE(view.hasPendingEdit());
+}
+
+TEST_F(ProcessPriorityViewRenderTest, ApplyIsDisabledUntilAnEdit)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    EXPECT_EQ(mock.setPriorityCount(), 0);
+}
+
+TEST_F(ProcessPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedProcessOnce)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(10, TARGET_A);
+
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    ASSERT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(mock.lastSetPriorityNice(), 10);
+
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // Disabled again
+    view.update(/*wait=*/true);                                               // the apply runs on its worker (#2305)
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+}
+
+TEST_F(ProcessPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeApply)
+{
+    // Edited for A; the pane shows B without a selection change reaching the view. The render drops
+    // the edit first, so Apply is disabled and the click reaches no platform call.
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(10, TARGET_A);
+
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_B); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    EXPECT_EQ(mock.setPriorityCount(), 0);
+    EXPECT_FALSE(view.hasPendingEdit());
+}
+
+TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(-10, TARGET_A);
+
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    EXPECT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(view.error(), "Permission denied");
+    EXPECT_EQ(view.niceValue(), 0);
+}
+
+// #2308, measured by #2417: a refusal an administrator could redo is drawn with its error line and an
+// "Authenticate and retry" button under it (the last item drawn), and pressing it retries as one.
+TEST_F(ProcessPriorityViewRenderTest, ARefusalShowsAuthenticateAndRetryWhichRetriesAsAnAdministrator)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
+    mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(5, TARGET_A);
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true);
+    ASSERT_EQ(view.error(), "Permission denied");
+    ASSERT_TRUE(view.offersAuthenticateAndRetry());
+
+    const ImVec2 retry = renderAndFindApply(view, mock, 0, TARGET_A); // now the retry button
+    click(retry, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true);
+    EXPECT_EQ(mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetPriority);
+    EXPECT_TRUE(view.error().empty());
+    EXPECT_FALSE(view.offersAuthenticateAndRetry());
+}
+
+// The maintainer's #1511 check: Apply was an em floor wide, wider than the class combo beside it and
+// a large muted bar while disabled. It is as wide as its label, as Terminate and Kill are (#1537).
+TEST_F(ProcessPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    float applyWidth = 0.0F;
+    float labelWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+            applyWidth = ImGui::GetItemRectSize().x; // Apply is the last item while there is no error line
+            labelWidth = ImGui::CalcTextSize(ICON_FA_CHECK "  Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
+        });
+    EXPECT_GT(applyWidth, 0.0F);
+    EXPECT_LE(applyWidth, std::ceil(labelWidth));
+}
+
+// Runtime's Priority row shows the current priority ("Normal (nice: 0)" on Linux, the class on
+// Windows), and the combo or slider opens on it, so the row does not repeat it (#1537): no
+// "current: <class>" after Apply on Windows, no "current nice: N" beside the label on Linux.
+TEST_F(ProcessPriorityViewRenderTest, TheRowRepeatsNoCurrentValue)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    std::string logged;
+    ImVec2 applyMin;
+    ImVec2 applyMax;
+    const ImDrawList* drawList = nullptr;
+    runFrame(
+        [&]
+        {
+            ImGui::LogToBuffer();
+            view.render(&mock, CAN_SET_PRIORITY, 7, TARGET_A);
+            applyMin = ImGui::GetItemRectMin();
+            applyMax = ImGui::GetItemRectMax();
+            logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
+            ImGui::LogFinish();
+            drawList = ImGui::GetWindowDrawList();
+        });
+    // Text drawn as an item is in the frame's log. The row alone has no "Priority" label: the card's
+    // header is its label (#1874).
+    EXPECT_FALSE(logged.contains("Priority")) << logged;
+    EXPECT_FALSE(logged.contains("current")) << logged;
+    // Text drawn straight into the window after Apply, as Windows' class note was, is not an item:
+    // nothing at all is drawn to the right of Apply on its row.
+    ASSERT_NE(drawList, nullptr);
+    int beyondApply = 0;
+    for (const ImDrawVert& vertex : drawList->VtxBuffer)
+    {
+        if (vertex.pos.x > applyMax.x + 1.0F && vertex.pos.y >= applyMin.y && vertex.pos.y <= applyMax.y)
+        {
+            ++beyondApply;
+        }
+    }
+    EXPECT_EQ(beyondApply, 0);
+}
+
+#ifdef _WIN32
+// Windows' control is the slider with a stop per priority class (#1538), not a combo: the keys step
+// through the classes, held at the ends, and back on the process's own class there is no edit.
+TEST_F(ProcessPriorityViewRenderTest, TheClassSliderKeysStepThroughTheClasses)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    ImGuiID sliderId = 0;
+    bool focus = true;
+    const auto body = [&]
+    {
+        sliderId = ImGui::GetID(Detail::WINDOWS_PRIORITY_SLIDER_ID);
+        if (focus)
+        {
+            ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); // Normal
+    };
+    runFrame(body);
+    runFrame(body);
+    ASSERT_EQ(ImGui::GetCurrentContext()->NavId, sliderId);
+
+    struct Step
+    {
+        ImGuiKey key;
+        std::int32_t expected;
+    };
+    const std::array<Step, 10> steps{{
+        {.key = ImGuiKey_RightArrow, .expected = 10}, // Below Normal
+        {.key = ImGuiKey_DownArrow, .expected = 19},  // Idle
+        {.key = ImGuiKey_RightArrow, .expected = 19}, // Held at the low end
+        {.key = ImGuiKey_Home, .expected = -15},      // High
+        {.key = ImGuiKey_LeftArrow, .expected = -15}, // Held at the high end: never Realtime
+        {.key = ImGuiKey_DownArrow, .expected = -7},  // Above Normal
+        {.key = ImGuiKey_UpArrow, .expected = -15},
+        {.key = ImGuiKey_End, .expected = 19},
+        {.key = ImGuiKey_LeftArrow, .expected = 10},
+        {.key = ImGuiKey_LeftArrow, .expected = 0}, // Normal: the process's own class
+    }};
+    for (const Step& step : steps)
+    {
+        SCOPED_TRACE(ImGui::GetKeyName(step.key));
+        pressKey(step.key, body);
+        EXPECT_EQ(view.niceValue(), step.expected);
+        EXPECT_EQ(view.hasPendingEdit(), step.expected != 0); // Apply only for another class
+    }
+}
+
+TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessShowsRealtimeAndCanOnlyBeLowered)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    constexpr std::int32_t REALTIME = Domain::Priority::MIN_NICE;
+    ImGuiID sliderId = 0;
+    bool focus = true;
+    const auto body = [&]
+    {
+        sliderId = ImGui::GetID(Detail::WINDOWS_PRIORITY_SLIDER_ID);
+        if (focus)
+        {
+            ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        view.render(&mock, CAN_SET_PRIORITY, REALTIME, TARGET_A);
+    };
+    runFrame(body);
+    runFrame(body);
+    EXPECT_EQ(view.niceValue(), REALTIME);
+
+    pressKey(ImGuiKey_LeftArrow, body); // Toward Realtime: nothing to pick
+    pressKey(ImGuiKey_Home, body);
+    EXPECT_EQ(view.niceValue(), REALTIME);
+    EXPECT_FALSE(view.hasPendingEdit());
+
+    pressKey(ImGuiKey_RightArrow, body); // Off Realtime onto High
+    EXPECT_EQ(view.niceValue(), -15);
+    EXPECT_TRUE(view.hasPendingEdit());
+    EXPECT_EQ(mock.setPriorityCount(), 0); // Picking applies nothing
+}
+#else
+TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    ImGuiID sliderId = 0;
+    bool focus = true;
+    const auto body = [&]
+    {
+        sliderId = ImGui::GetID("##priority_slider");
+        if (focus)
+        {
+            // Keyboard focus on the slider, as a click or Tab would give it.
+            ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+    };
+    runFrame(body);
+    runFrame(body);
+    ASSERT_EQ(ImGui::GetCurrentContext()->NavId, sliderId);
+
+    struct Step
+    {
+        ImGuiKey key;
+        std::int32_t expected;
+    };
+    const std::array<Step, 8> steps{{
+        {.key = ImGuiKey_End, .expected = 19},
+        {.key = ImGuiKey_RightArrow, .expected = 19}, // Held at the end
+        {.key = ImGuiKey_PageUp, .expected = 14},
+        {.key = ImGuiKey_Home, .expected = -20},
+        {.key = ImGuiKey_LeftArrow, .expected = -20},
+        {.key = ImGuiKey_PageDown, .expected = -15},
+        {.key = ImGuiKey_RightArrow, .expected = -14},
+        {.key = ImGuiKey_0, .expected = 0},
+    }};
+    for (const Step& step : steps)
+    {
+        SCOPED_TRACE(ImGui::GetKeyName(step.key));
+        pressKey(step.key, body);
+        EXPECT_EQ(view.niceValue(), step.expected);
+    }
+    // As before the move out of the panel, an edit back to the process's own value stays pending.
+    EXPECT_TRUE(view.hasPendingEdit());
+}
+
+// #1395: dragging the slider with the mouse sets the value from where the pointer is; past the ends it
+// gives the extremes. Hovering it shows its keyboard hints (#1854).
+TEST_F(ProcessPriorityViewRenderTest, DraggingTheSliderSetsTheValue)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    ImGuiID sliderId = 0;
+    const auto body = [&]
+    {
+        sliderId = ImGui::GetID("##priority_slider");
+        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+    };
+    runFrame(body);
+
+    // Find the slider by hovering down and across the pane.
+    ImGuiIO& io = ImGui::GetIO();
+    std::optional<ImVec2> over;
+    for (int row = 0; row < 120 && !over.has_value(); ++row)
+    {
+        for (int column = 0; column < 20 && !over.has_value(); ++column)
+        {
+            const ImVec2 pos(20.0F + (20.0F * static_cast<float>(column)), 4.0F * static_cast<float>(row));
+            io.AddMousePosEvent(pos.x, pos.y);
+            runFrame(body);
+            if (ImGui::GetCurrentContext()->HoveredId == sliderId)
+            {
+                over = pos;
+            }
+        }
+    }
+    ASSERT_TRUE(over.has_value());
+    const ImVec2 at = over.value_or(ImVec2{});
+    // Hovering the slider shows its keyboard hints (#1854: they used to follow the "Default" label).
+    runFrame(body);
+    const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+    EXPECT_TRUE(tooltip != nullptr && tooltip->Active);
+
+    // Press on it and drag past each end.
+    io.AddMouseButtonEvent(0, true);
+    runFrame(body);
+    io.AddMousePosEvent(at.x + 2000.0F, at.y);
+    runFrame(body);
+    const std::int32_t right = view.niceValue();
+    io.AddMousePosEvent(0.0F, at.y);
+    runFrame(body);
+    const std::int32_t left = view.niceValue();
+    io.AddMouseButtonEvent(0, false);
+    runFrame(body);
+
+    EXPECT_NE(right, left);
+    EXPECT_TRUE((right == 19 && left == -20) || (right == -20 && left == 19)) << right << " / " << left;
+    EXPECT_TRUE(view.hasPendingEdit());
+}
+
+// In a pane narrower than the slider's authored width (the Overview Actions block is sized to its
+// content, #1511) the track is shortened until "Low" ends flush with the content edge. A container
+// that pushes a wrap position for its own lines used to split it into "Lo" / "w" once rounding put
+// that edge a fraction short (#1560). The scale labels must ignore an inherited wrap position:
+// pushed just short of the edge, the control is exactly as tall as without one.
+TEST_F(ProcessPriorityViewRenderTest, TheScaleLabelsIgnoreAnInheritedWrapPosition)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const auto heightOf = [&](bool pushWrap)
+    {
+        float height = 0.0F;
+        const auto body = [&]
+        {
+            // Narrow enough that the track fills it and "Low" ends at the edge.
+            if (ImGui::BeginChild("Narrow", ImVec2(260.0F, 400.0F)))
+            {
+                const float top = ImGui::GetCursorPosY();
+                if (pushWrap)
+                {
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 2.0F);
+                }
+                view.render(&mock, CAN_SET_PRIORITY, std::optional<std::int32_t>{0}, TARGET_A);
+                if (pushWrap)
+                {
+                    ImGui::PopTextWrapPos();
+                }
+                height = ImGui::GetCursorPosY() - top;
+            }
+            ImGui::EndChild();
+        };
+        runFrame(body);
+        runFrame(body);
+        return height;
+    };
+
+    const float unwrapped = heightOf(false);
+    ASSERT_GT(unwrapped, 0.0F);
+    EXPECT_FLOAT_EQ(heightOf(true), unwrapped);
+}
+#endif
+
+#ifdef _WIN32
+// The Windows class slider (#1204, #1538; #1566's coverage): the class picked on it is what Apply
+// sets, and a Realtime class set outside TaskSmack is shown with a warning, never offered.
+
+TEST_F(ProcessPriorityViewRenderTest, PickingAClassOnTheSliderAndApplyingSetsThatClass)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const std::int32_t normal = Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Normal);
+    const ImVec2 apply = renderAndFindApply(view, mock, normal, TARGET_A);
+
+    bool focus = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(ImGui::GetID(Detail::WINDOWS_PRIORITY_SLIDER_ID), ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        view.render(&mock, CAN_SET_PRIORITY, normal, TARGET_A);
+    };
+    runFrame(body);
+    pressKey(ImGuiKey_Home, body); // High, the high-priority end
+    const std::int32_t high = Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::High);
+    EXPECT_EQ(view.niceValue(), high);
+    EXPECT_TRUE(view.hasPendingEdit());
+    EXPECT_EQ(mock.setPriorityCount(), 0); // Picking alone sends nothing
+
+    click(apply, body);
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    ASSERT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetPriorityNice(), high);
+    EXPECT_EQ(Detail::windowsPriorityClassFromNice(mock.lastSetPriorityNice()), Detail::WindowsPriorityClass::High);
+    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
+}
+
+TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessGetsAWarningLine)
+{
+    TestMocks::MockProcessActions mock;
+    const auto heightFor = [&](std::int32_t currentNice)
+    {
+        ProcessPriorityView view;
+        float height = 0.0F;
+        runFrame(
+            [&]
+            {
+                const float top = ImGui::GetCursorPosY();
+                view.render(&mock, CAN_SET_PRIORITY, currentNice, TARGET_A);
+                height = ImGui::GetCursorPosY() - top;
+            });
+        EXPECT_EQ(view.niceValue(), currentNice);
+        return height;
+    };
+
+    const float normal = heightFor(Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Normal));
+    const float realtime = heightFor(Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Realtime));
+    // One more line: the warning that Realtime was set elsewhere and can only be lowered here.
+    EXPECT_GT(realtime, normal);
+    EXPECT_EQ(mock.setPriorityCount(), 0);
+}
+#endif
+
+// The discrete slider's scale labels at every display scale (#1984). Its track was held to its
+// authored width (37.5 em), so where the stop names needed a few pixels more -- the Windows class
+// slider at 200 % -- every name was dropped though the Priority card had room. Stop names wider than
+// the authored track at every scale stand in for that case here (the test font's names fit in it),
+// in a card sized as the Priority card is, from discretePrioritySliderMinWidth().
+namespace LongStops
+{
+constexpr std::array<Detail::PrioritySliderStop, 5> STOPS{
+    Detail::PrioritySliderStop{.name = "Alpha stop label", .itemLabel = "Alpha###long_stop_slider", .colorNice = -15},
+    Detail::PrioritySliderStop{.name = "Bravo stop label", .itemLabel = "Bravo###long_stop_slider", .colorNice = -5},
+    Detail::PrioritySliderStop{.name = "Charlie stop lbl", .itemLabel = "Charlie###long_stop_slider", .colorNice = 0},
+    Detail::PrioritySliderStop{.name = "Delta stop label", .itemLabel = "Delta###long_stop_slider", .colorNice = 10},
+    Detail::PrioritySliderStop{.name = "Echo stop labels", .itemLabel = "Echo###long_stop_slider", .colorNice = 19},
+};
+constexpr Detail::DiscretePrioritySlider SLIDER{.stops = STOPS, .beyondStart = nullptr, .tooltip = "", .bandStarts = {}};
+} // namespace LongStops
+
+// #1891: the discrete slider's keys on every platform (the Windows class slider's test runs on Windows
+// alone): Left/Up step toward the high end, Right/Down toward the low end, held at both ends, and
+// Home/End jump to them. Its band dividers and an inherited (hollow) thumb are drawn on the way.
+TEST_F(ProcessPriorityViewRenderTest, TheDiscreteSlidersKeysStepThroughItsStops)
+{
+    static constexpr std::array<std::int32_t, 1> BANDS{2};
+    constexpr Detail::DiscretePrioritySlider BANDED{.stops = LongStops::STOPS, .beyondStart = nullptr, .tooltip = "", .bandStarts = BANDS};
+    std::int32_t shown = 2;
+    bool focus = true;
+    bool inherited = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(ImGui::GetID(LongStops::STOPS[static_cast<std::size_t>(shown)].itemLabel), ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        shown = Detail::renderDiscretePrioritySlider(BANDED, shown, inherited).index;
+    };
+    runFrame(body);
+    runFrame(body);
+    inherited = false;
+
+    struct Step
+    {
+        ImGuiKey key;
+        std::int32_t expected;
+    };
+    const std::array<Step, 9> steps{{
+        {.key = ImGuiKey_RightArrow, .expected = 3},
+        {.key = ImGuiKey_DownArrow, .expected = 4},
+        {.key = ImGuiKey_RightArrow, .expected = 4}, // Held at the low end
+        {.key = ImGuiKey_Home, .expected = 0},
+        {.key = ImGuiKey_LeftArrow, .expected = 0}, // Held at the high end
+        {.key = ImGuiKey_UpArrow, .expected = 0},
+        {.key = ImGuiKey_End, .expected = 4},
+        {.key = ImGuiKey_UpArrow, .expected = 3},
+        {.key = ImGuiKey_LeftArrow, .expected = 2},
+    }};
+    for (const Step& step : steps)
+    {
+        SCOPED_TRACE(ImGui::GetKeyName(step.key));
+        pressKey(step.key, body);
+        EXPECT_EQ(shown, step.expected);
+    }
+}
+
+TEST_F(ProcessPriorityViewRenderTest, TheStopNamesShowAtEveryDisplayScaleWhenTheCardHasRoom)
+{
+    for (const float scale : {1.0F, 1.5F, 1.75F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        float minWidth = 0.0F;
+        float authored = 0.0F;
+        const auto body = [&]
+        {
+            minWidth = Detail::discretePrioritySliderMinWidth(LongStops::SLIDER);
+            authored = Detail::PRIORITY_SLIDER_WIDTH_EM * ImGui::GetFontSize();
+            // The Priority card's width rule, from the slider's own minimum.
+            const ProcessActionsBlock::Widths widths{.priority = minWidth, .padding = ImGui::GetStyle().WindowPadding.x * 2.0F};
+            (void) ProcessOverviewCard::render("LongStopsCard",
+                                               ICON_FA_GAUGE_HIGH,
+                                               "Priority",
+                                               ImVec2(widths.priorityCard(), 0.0F),
+                                               ImGuiChildFlags_AutoResizeY,
+                                               [&] { pick = Detail::renderDiscretePrioritySlider(LongStops::SLIDER, 2); });
+        };
+        runFrame(body);
+        runFrame(body);
+        ASSERT_GT(minWidth, authored); // The case of the issue: names wider than the authored track
+        EXPECT_TRUE(pick.labelsShown);
+        EXPECT_GE(pick.rightEdge + Detail::PRIORITY_LABELS_FIT_SLACK_PX, minWidth);
+    }
+}
+
+#ifdef _WIN32
+TEST_F(ProcessPriorityViewRenderTest, TheClassNamesShowAtEveryDisplayScaleInTheMeasuredPriorityCard)
+{
+    // The Windows class slider itself, in a card as wide as ProcessActionsBlock measures the Priority
+    // card: High...Idle under the track at 100, 150, 175 and 200 %, whatever the fractions come to.
+    constexpr Platform::ProcessActionCapabilities WINDOWS_PRIORITY{.canSetPriority = true};
+    for (const float scale : {1.0F, 1.5F, 1.75F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        const auto body = [&]
+        {
+            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_PRIORITY);
+            (void) ProcessOverviewCard::render("ClassCard",
+                                               ICON_FA_GAUGE_HIGH,
+                                               "Priority",
+                                               ImVec2(widths.priorityCard(), 0.0F),
+                                               ImGuiChildFlags_AutoResizeY,
+                                               [&] { pick = Detail::renderDiscretePrioritySlider(Detail::WINDOWS_PRIORITY_SLIDER, 2); });
+        };
+        runFrame(body);
+        runFrame(body);
+        EXPECT_TRUE(pick.labelsShown);
+    }
+}
+#endif
+
+TEST_F(ProcessPriorityViewRenderTest, TheStopNamesGoOnlyWhenTheCardReallyIsTooNarrow)
+{
+    for (const float scale : {1.0F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        float minWidth = 0.0F;
+        float available = 0.0F;
+        const auto body = [&]
+        {
+            minWidth = Detail::discretePrioritySliderMinWidth(LongStops::SLIDER);
+            if (ImGui::BeginChild("TooNarrow", ImVec2(std::floor(minWidth) - 2.0F, 0.0F), ImGuiChildFlags_AutoResizeY))
+            {
+                available = ImGui::GetContentRegionAvail().x;
+                pick = Detail::renderDiscretePrioritySlider(LongStops::SLIDER, 2);
+            }
+            ImGui::EndChild();
+        };
+        runFrame(body);
+        runFrame(body);
+        EXPECT_FALSE(pick.labelsShown);
+        // The track fills what there is, and no more: nothing clipped.
+        EXPECT_LE(pick.rightEdge, available + 0.001F);
+    }
+}
+
+} // namespace
+} // namespace App

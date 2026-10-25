@@ -3,7 +3,9 @@
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Card.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -55,6 +57,9 @@ using UI::Widgets::tailAlignedSpan;
 // nothing on screen said what the axis meant for them. Those labels are built in GpuSection.h.
 constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* MEMORY_LABEL = "Memory";
+// The NPU tab's memory series, named for the memory an accelerator's figures count (#1799)
+constexpr const char* SHARED_MEMORY_LABEL = "Shared Memory";
+constexpr const char* DEDICATED_MEMORY_LABEL = "Dedicated Memory";
 constexpr const char* ENCODER_LABEL = "Encoder";
 constexpr const char* DECODER_LABEL = "Decoder";
 constexpr const char* FAN_LABEL = "Fan";
@@ -92,14 +97,6 @@ class ScopedGpuId
     ScopedGpuId(ScopedGpuId&&) = delete;
     ScopedGpuId& operator=(ScopedGpuId&&) = delete;
 };
-
-/// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
-/// Accepts a reusable buffer to avoid per-call heap allocation.
-void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<float>& out)
-{
-    out.resize(hist.size());
-    std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
-}
 
 /// The metrics a GPU does not report, named for renderUnavailableMetricsNote(). Held in place: the
 /// names are constants, and the list is built every frame (#1171).
@@ -148,25 +145,62 @@ void renderUnavailableMetricsNote(std::span<const std::string_view> unavailable,
     ImGui::TextColored(textColor, "%s", noteText.data());
 }
 
-/// Rebuilds @p cache's per-entry strings when @p publication is not the one they were built from.
-void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publication)
+/// An NPU's or compute accelerator's header label (#1799), from its enumeration entry where it has one.
+[[nodiscard]] std::string acceleratorEntryHeaderLabel(const GpuDrawEntry& entry)
 {
-    // All three per-entry vectors must be complete: an exception part-way through a rebuild (caught by
-    // the render loop) can leave them different lengths, and they are indexed per entry below.
+    const bool suspended = (entry.snapshot != nullptr) && entry.snapshot->suspended;
+    if (entry.info != nullptr)
+    {
+        return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.info->name, entry.info->kind, suspended);
+    }
+    if (entry.snapshot != nullptr)
+    {
+        return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.snapshot->name, entry.snapshot->kind, suspended);
+    }
+    // deviceDrawList() never makes an entry with neither; named by its id if one ever has
+    return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.gpuId, Platform::DeviceKind::Npu, false);
+}
+
+/// The memory series' label (#1799): the GPU tab's "Memory", or for an accelerator the memory it
+/// counts, shared or dedicated.
+[[nodiscard]] const char* memorySeriesLabel(bool accelerators, bool memoryIsShared) noexcept
+{
+    if (!accelerators)
+    {
+        return MEMORY_LABEL;
+    }
+    return memoryIsShared ? SHARED_MEMORY_LABEL : DEDICATED_MEMORY_LABEL;
+}
+
+/// Rebuilds @p cache's per-entry strings when @p publication is not the one they were built from:
+/// for the NPU tab (@p accelerators) its header labels and detail lines (#1799).
+void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publication, bool accelerators)
+{
+    // Every per-entry vector must be complete: an exception part-way through a rebuild (caught by the
+    // render loop) can leave them different lengths, and they are indexed per entry below.
     if (cache.labelsPublication == &publication && cache.labelsVersion == publication.version &&
-        cache.headerLabels.size() == cache.drawList.size() && cache.coreLayoutIds.size() == cache.drawList.size() &&
-        cache.thermalLayoutIds.size() == cache.drawList.size())
+        cache.headerLabels.size() == cache.drawList.size() && cache.detailTexts.size() == cache.drawList.size() &&
+        cache.coreLayoutIds.size() == cache.drawList.size() && cache.thermalLayoutIds.size() == cache.drawList.size())
     {
         return;
     }
     cache.labelsPublication = &publication;
     cache.labelsVersion = publication.version;
     cache.headerLabels.clear();
+    cache.detailTexts.clear();
     cache.coreLayoutIds.clear();
     cache.thermalLayoutIds.clear();
     for (const GpuDrawEntry& entry : cache.drawList)
     {
-        if (entry.snapshot == nullptr)
+        cache.detailTexts.push_back(
+            (accelerators && entry.info != nullptr)
+                ? acceleratorDetailsText(*entry.info, entry.snapshot != nullptr ? entry.snapshot->memoryInUseBytes : std::nullopt)
+                : std::string{});
+        if (accelerators)
+        {
+            cache.headerLabels.push_back(acceleratorEntryHeaderLabel(entry));
+        }
+        else if (entry.snapshot == nullptr)
         {
             // Enumerated, but this read returned nothing for it. Same ###gpuHeader id as a GPU with a
             // reading, so its collapse state survives the gap.
@@ -189,7 +223,7 @@ void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publica
 
 } // namespace
 
-void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, RenderContext& ctx)
+void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, const RenderContext& ctx)
 {
     if (ctx.smoothedGPUs == nullptr)
     {
@@ -199,7 +233,6 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     const double alpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
 
     auto& smoothed = (*ctx.smoothedGPUs)[gpuId];
-    const bool initialized = smoothed.initialized;
     // A field this sample couldn't read keeps its last value and is marked uninitialized (its bar
     // shows N/A); the next reading starts afresh rather than easing from it (#1111).
     const auto smoothReading = [alpha](double& value, bool& valueInitialized, bool available, double reading)
@@ -215,8 +248,8 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     smoothReading(
         smoothed.temperatureC, smoothed.temperatureInitialized, snap.temperatureAvailable, static_cast<double>(snap.temperatureC));
     smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
-    smoothed.encoderPercent = initializeOrSmooth(smoothed.encoderPercent, snap.encoderUtilPercent, alpha, initialized);
-    smoothed.decoderPercent = initializeOrSmooth(smoothed.decoderPercent, snap.decoderUtilPercent, alpha, initialized);
+    smoothReading(smoothed.encoderPercent, smoothed.encoderInitialized, snap.encoderAvailable, snap.encoderUtilPercent);
+    smoothReading(smoothed.decoderPercent, smoothed.decoderInitialized, snap.decoderAvailable, snap.decoderUtilPercent);
     if (snap.gpuClockAvailable && snap.gpuClockMHz > 0)
     {
         smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
@@ -241,10 +274,25 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
 void renderGpuSection(RenderContext& ctx)
 {
+    // The NPU tab draws the publication's NPUs and compute accelerators with this same code (#1799).
+    const bool accelerators = ctx.devices == DeviceSet::Accelerators;
+    std::span<const Platform::GPUInfo> deviceInfos;
+    std::span<const Domain::GPUSnapshot> deviceSnapshots;
+    if (ctx.publication != nullptr)
+    {
+        deviceInfos = accelerators ? ctx.publication->acceleratorInfo : ctx.publication->gpuInfo;
+        deviceSnapshots = accelerators ? ctx.publication->acceleratorSnapshots : ctx.publication->snapshots;
+    }
     const EmptyReason emptyReason = classifyEmptyState(ctx.publication != nullptr,
                                                        (ctx.publication != nullptr) && ctx.publication->gpuInfoKnown,
-                                                       (ctx.publication != nullptr) ? ctx.publication->gpuInfo.size() : 0,
-                                                       (ctx.publication != nullptr) ? ctx.publication->snapshots.size() : 0);
+                                                       deviceInfos.size(),
+                                                       deviceSnapshots.size());
+    if (accelerators && (emptyReason == EmptyReason::Unavailable || emptyReason == EmptyReason::NoDevices))
+    {
+        // The machine view shows the NPU tab only once there is one (showAcceleratorTab()).
+        UI::Widgets::renderEmptyState(ICON_FA_BRAIN "  No NPU detected", "No NPU or other compute accelerator was found.");
+        return;
+    }
     switch (emptyReason)
     {
     case EmptyReason::Unavailable:
@@ -263,12 +311,13 @@ void renderGpuSection(RenderContext& ctx)
         // Every known GPU missed this read. Say so, but keep drawing the list below: each GPU keeps
         // its slot and collapse state with "No reading" rather than the whole tab collapsing into an
         // empty state for one missed sample (#1163).
-        const std::size_t deviceCount = ctx.publication->gpuInfo.size();
+        const std::size_t deviceCount = deviceInfos.size();
         std::array<char, 96> detail{};
         std::format_to_n(detail.data(),
                          static_cast<std::ptrdiff_t>(detail.size() - 1),
-                         "{} GPU{} detected, but the latest reading returned no data.",
+                         "{} {}{} detected, but the latest reading returned no data.",
                          deviceCount,
+                         accelerators ? "NPU" : "GPU",
                          deviceCount == 1 ? " was" : "s were");
         ImGui::TextDisabled("%s", detail.data());
         break;
@@ -277,27 +326,36 @@ void renderGpuSection(RenderContext& ctx)
         break;
     }
 
-    const auto& gpuSnapshots = ctx.publication->snapshots;
     // Kept by the panel across frames, so the draw list, scratch buffers and labels are reused (#1171).
     FrameCache frameLocalCache;
     FrameCache& cache = (ctx.cache != nullptr) ? *ctx.cache : frameLocalCache;
     // Enumeration order, each GPU looked up by id, so a GPU missing from this read keeps its slot (#1163).
     // Rebuilt every frame, into the cache's storage: its entries point into this publication.
-    gpuDrawList(*ctx.publication, cache.drawList);
+    deviceDrawList(deviceInfos, deviceSnapshots, cache.drawList);
     const std::vector<GpuDrawEntry>& drawList = cache.drawList;
-    refreshEntryLabels(cache, *ctx.publication);
+    refreshEntryLabels(cache, *ctx.publication, accelerators);
     const auto& probeCaps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    if (accelerators)
+    {
+        ImGui::Text("NPU Monitoring (%zu device%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    }
+    else
+    {
+        ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    }
     ImGui::Spacing();
 
-    // Update smoothed values for all GPUs
-    for (const auto& snap : gpuSnapshots)
+    // Update smoothed values for all the tab's devices
+    std::size_t smoothIndex = 0;
+    while (smoothIndex < deviceSnapshots.size())
     {
+        const Domain::GPUSnapshot& snap = deviceSnapshots[smoothIndex];
         updateSmoothedGPU(snap.gpuId, snap, ctx);
+        ++smoothIndex;
     }
 
     // Every chart on the tab, across all GPUs, gets the same share of its height.
@@ -310,13 +368,10 @@ void renderGpuSection(RenderContext& ctx)
         }
     };
 
-    // Scratch buffers for normalizeToPercent, kept across GPUs and frames (resize only allocates when
-    // the count grows).
-    std::vector<float>& clockPercentBuf = cache.clockPercent;
-    std::vector<float>& tempPercentBuf = cache.temperaturePercent;
-    std::vector<float>& powerPercentBuf = cache.powerPercent;
-    // Grows or shrinks only when the GPU count does; each entry rebuilds a label only when its scale moves.
+    // Grow or shrink only when the GPU count does. Each entry rebuilds a label only when its scale
+    // moves, and its scaled lines only for a new publication or scale (#843).
     cache.scaledLabels.resize(drawList.size());
+    cache.percentSeries.resize(drawList.size());
     const char* const tempLabel = temperatureLabel().c_str();
 
     // Render each GPU
@@ -349,8 +404,15 @@ void renderGpuSection(RenderContext& ctx)
         {
             adapterSensors = entry.info->sensorCapabilities;
         }
+        if (accelerators)
+        {
+            // An NPU or compute accelerator reports none of a GPU's sensors (#1799): never the probe's.
+            adapterSensors = adapterSensors.value_or(Platform::GPUCapabilities{});
+        }
         // What this GPU reports, not what the probe can report for some GPU (#1040).
         const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, adapterSensors);
+        // An accelerator's memory series names the memory it counts, dedicated or shared (#1799).
+        const char* const memoryLabel = memorySeriesLabel(accelerators, snap.memoryIsShared);
 
         // GPU header with collapsible section; its label is built in refreshEntryLabels().
         // Scoped by the adapter's stable id (gpuIdScope above), not its position. The label's
@@ -363,6 +425,12 @@ void renderGpuSection(RenderContext& ctx)
         }
 
         ImGui::Indent();
+
+        // The NPU tab names each device's kind, vendor, driver and memory under its header (#1799).
+        if (const std::string& details = cache.detailTexts[entryIndex]; !details.empty())
+        {
+            ImGui::TextColored(theme.scheme().textMuted, "%s", details.c_str());
+        }
 
         // Get history data for this GPU
         const auto historyIt = ctx.publication->histories.find(snap.gpuId);
@@ -400,20 +468,20 @@ void renderGpuSection(RenderContext& ctx)
 
         const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
-        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits stay
-        // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
-        // entry of its own, but the GPU's history can still start later than the global one (a GPU
-        // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
-        const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+        // The x axis is the configured history window ending at now, like every other history chart.
+        // The data is placed on it by this GPU's own timestamps (timeData above): a refresh the GPU was
+        // missing from has a (gap) entry of its own, but the GPU's history can start later than
+        // another's (a GPU first seen mid-run) or be pruned on its own.
+        const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
-        // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
-        // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never
-        // exceeds the scale while it eases down from a peak that has left the window.
-        const float maxClockMHz = gpuClockReferenceMHz(timeData,
-                                                       axisConfig.xMin,
-                                                       clockData,
-                                                       snap.gpuClockMHz,
-                                                       UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
+        // Only the clocks the window shows set the scale: not the trim anchor left of it (#1324). The
+        // NowBar's smoothed clock counts too, so the bar never exceeds the scale while it eases down
+        // from a peak that has left the window.
+        // The window's largest clock is kept between frames (UI::Widgets::windowSeriesMax(), #843).
+        const float maxClockMHz = gpuClockReferenceMHz(
+            UI::Widgets::windowSeriesMax("##GPUClockReference", ctx.chartDataGeneration, timeData, axisConfig.xMin, clockData),
+            snap.gpuClockMHz,
+            UI::Widgets::currentIfAvailable(smoothed.clockInitialized, smoothed.clockMHz));
         // What 100 % means for the clock, temperature and power lines, named by their labels (#1205).
         const float clockScaleMHz = gpuClockScaleMHz(maxClockMHz);
         const GpuPowerScale powerScale = gpuPowerScale(snap.powerLimitWatts);
@@ -421,14 +489,13 @@ void renderGpuSection(RenderContext& ctx)
         scaledLabels.update(clockScaleMHz, powerScale);
         const char* const clockLabel = scaledLabels.clock.c_str();
         const char* const powerLabel = scaledLabels.power.c_str();
+        GpuPercentSeries& percentSeries = cache.percentSeries[entryIndex];
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
-
-        auto gpuCorePlot = [&]()
+        const auto gpuCorePlot = [&]
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax),
@@ -450,7 +517,7 @@ void renderGpuSection(RenderContext& ctx)
 
                 if (!memData.empty())
                 {
-                    plotSeries(MEMORY_LABEL,
+                    plotSeries(memoryLabel,
                                timeData.data(),
                                memData.data(),
                                UI::Format::checkedCount(memData.size()),
@@ -463,11 +530,12 @@ void renderGpuSection(RenderContext& ctx)
                 // every clock is below it, rounded up to a step. Its label names that scale (#1205).
                 if (caps.hasClockSpeeds && !clockData.empty())
                 {
-                    normalizeToPercent(clockData, clockScaleMHz, clockPercentBuf);
-                    const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
+                    const std::span<const float> clockPercentData =
+                        percentSeries.clock.percentOf(ctx.chartDataGeneration, clockData, clockScaleMHz);
+                    const auto clockTimeData = tailAlignedSpan(timeData, clockPercentData.size());
                     plotSeries(clockLabel,
                                clockTimeData.values.data(),
-                               clockPercentBuf.data(),
+                               clockPercentData.data(),
                                UI::Format::checkedCount(clockTimeData.values.size()),
                                theme.scheme().gpuClock,
                                theme.scheme().gpuClockFill,
@@ -523,7 +591,7 @@ void renderGpuSection(RenderContext& ctx)
                             const bool haveBytes =
                                 *idxVal < memUsedBytesData.size() && *idxVal < memTotalBytesData.size() && memTotalBytesData[*idxVal] > 0;
                             rows.push_back({
-                                .label = MEMORY_LABEL,
+                                .label = memoryLabel,
                                 .color = theme.scheme().gpuMemory,
                                 .value = haveBytes ? UI::Format::bytesUsedTotalPercentCompact(
                                                          memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
@@ -583,14 +651,16 @@ void renderGpuSection(RenderContext& ctx)
 
         // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
         // A bar for a reading this sample couldn't take: N/A in muted text, as the line has a gap,
-        // rather than a real-looking 0 (#1111).
+        // rather than a real-looking 0 (#1111), and drawn hatched rather than as a zero bar (#1935).
         const auto unavailableBar = [&theme](const char* label)
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
                           .tooltipText = UI::InlineText::format("{}: unavailable this sample", label),
                           .value01 = 0.0,
-                          .color = theme.scheme().textMuted};
+                          .color = theme.scheme().textMuted,
+                          .marker = ImPlotMarker_None,
+                          .available = false};
         };
         NowBarList gpuCoreBars;
         gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.utilizationPercent),
@@ -601,7 +671,7 @@ void renderGpuSection(RenderContext& ctx)
                                                               : unavailableBar(UTIL_LABEL));
         if (!smoothed.memoryInitialized)
         {
-            gpuCoreBars.push_back(unavailableBar(MEMORY_LABEL));
+            gpuCoreBars.push_back(unavailableBar(memoryLabel));
         }
         else if (snap.memoryTotalBytes > 0)
         {
@@ -610,9 +680,9 @@ void renderGpuSection(RenderContext& ctx)
             // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
             gpuCoreBars.push_back(
                 {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = MEMORY_LABEL,
+                 .label = memoryLabel,
                  .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
-                                                       MEMORY_LABEL,
+                                                       memoryLabel,
                                                        UI::Format::formatPercent(snap.memoryUsedPercent),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
@@ -623,8 +693,8 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuCoreBars.push_back(
                 {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = MEMORY_LABEL,
-                 .tooltipText = UI::Widgets::tooltipRowText(MEMORY_LABEL, UI::Format::formatPercent(smoothed.memoryPercent)),
+                 .label = memoryLabel,
+                 .tooltipText = UI::Widgets::tooltipRowText(memoryLabel, UI::Format::formatPercent(smoothed.memoryPercent)),
                  .value01 = UI::Format::percent01(smoothed.memoryPercent),
                  .color = theme.scheme().gpuMemory});
         }
@@ -644,16 +714,18 @@ void renderGpuSection(RenderContext& ctx)
         }
         if (caps.hasEncoderDecoder)
         {
-            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.encoderPercent),
-                                   .label = ENCODER_LABEL,
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(smoothed.encoderPercent),
-                                   .color = theme.scheme().gpuEncoder});
-            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
-                                   .label = DECODER_LABEL,
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(smoothed.decoderPercent),
-                                   .color = theme.scheme().gpuDecoder});
+            gpuCoreBars.push_back(smoothed.encoderInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.encoderPercent),
+                                                                       .label = ENCODER_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.encoderPercent),
+                                                                       .color = theme.scheme().gpuEncoder}
+                                                              : unavailableBar(ENCODER_LABEL));
+            gpuCoreBars.push_back(smoothed.decoderInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
+                                                                       .label = DECODER_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.decoderPercent),
+                                                                       .color = theme.scheme().gpuDecoder}
+                                                              : unavailableBar(DECODER_LABEL));
         }
 
         // Build thermal bars early so we can calculate max column count for alignment
@@ -697,30 +769,43 @@ void renderGpuSection(RenderContext& ctx)
                                                                      .label = FAN_LABEL,
                                                                      .tooltipText = "Fan: unavailable this sample",
                                                                      .value01 = 0.0,
-                                                                     .color = theme.scheme().textMuted});
+                                                                     .color = theme.scheme().textMuted,
+                                                                     .marker = ImPlotMarker_None,
+                                                                     .available = false}); // hatched (#1935)
         }
 
         // Use max bar count across both charts for x-axis alignment
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
-        renderHistoryWithNowBars(cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
-        countPlot();
-
-        // Show notes for unavailable core metrics
+        // Each chart is a card with its heading inside, as CPU Cores' cells are (#1595); the note on what
+        // this GPU can't report sits inside it too, so the card's measured chrome counts it.
+        if (UI::Widgets::beginChartCard("##GpuCoreCard", plotHeight))
         {
+            if (accelerators)
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_BRAIN, "Utilization & Memory", {}, alignedCount);
+            }
+            else
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
+            }
+            renderHistoryWithNowBars(
+                cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, {.minBarColumns = gpuNowBarColumns});
+
+            // Show notes for unavailable core metrics. An NPU has no clock or video engines to miss (#1799).
             UnavailableMetrics unavailableCoreNotes;
-            if (!caps.hasClockSpeeds)
+            if (!accelerators && !caps.hasClockSpeeds)
             {
                 unavailableCoreNotes.add("clock speed");
             }
-            if (!caps.hasEncoderDecoder)
+            if (!accelerators && !caps.hasEncoderDecoder)
             {
                 unavailableCoreNotes.add("encoder/decoder utilization");
             }
             renderUnavailableMetricsNote(unavailableCoreNotes.names(), theme.scheme().textMuted);
         }
-
-        ImGui::Spacing();
+        UI::Widgets::endChartCard("##GpuCoreCard", plotHeight);
+        countPlot();
 
         // ========================================
         // Chart 2: Thermal/Power (temp, power, fan)
@@ -728,15 +813,13 @@ void renderGpuSection(RenderContext& ctx)
         // ========================================
         if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
-
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
             // Note: Fan speed is already a percentage, no max needed for normalization - but
             // unlike temp/power it isn't clamped to 100 (see GPUModel::computeSnapshot), so a
             // reading above the chart's locked 0-100 range renders clipped at the top; an
             // unavailable sample is NaN (a gap in the line), not a misleading 0%.
 
-            auto gpuThermalPlot = [&]()
+            const auto gpuThermalPlot = [&]
             {
                 const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                     UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax),
@@ -748,11 +831,12 @@ void renderGpuSection(RenderContext& ctx)
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempData.empty())
                     {
-                        normalizeToPercent(tempData, maxTempC, tempPercentBuf);
-                        const auto tempTimeData = tailAlignedSpan(timeData, tempPercentBuf.size());
+                        const std::span<const float> tempPercentData =
+                            percentSeries.temperature.percentOf(ctx.chartDataGeneration, tempData, maxTempC);
+                        const auto tempTimeData = tailAlignedSpan(timeData, tempPercentData.size());
                         plotSeries(tempLabel,
                                    tempTimeData.values.data(),
-                                   tempPercentBuf.data(),
+                                   tempPercentData.data(),
                                    UI::Format::checkedCount(tempTimeData.values.size()),
                                    theme.scheme().gpuTemperature,
                                    std::nullopt,
@@ -762,11 +846,12 @@ void renderGpuSection(RenderContext& ctx)
                     // Power (normalized to the GPU's limit, or an assumed one its label says is assumed)
                     if (caps.hasPowerMetrics && !powerData.empty())
                     {
-                        normalizeToPercent(powerData, maxPowerW, powerPercentBuf);
-                        const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
+                        const std::span<const float> powerPercentData =
+                            percentSeries.power.percentOf(ctx.chartDataGeneration, powerData, maxPowerW);
+                        const auto powerTimeData = tailAlignedSpan(timeData, powerPercentData.size());
                         plotSeries(powerLabel,
                                    powerTimeData.values.data(),
-                                   powerPercentBuf.data(),
+                                   powerPercentData.data(),
                                    UI::Format::checkedCount(powerTimeData.values.size()),
                                    theme.scheme().gpuPower,
                                    std::nullopt,
@@ -851,25 +936,33 @@ void renderGpuSection(RenderContext& ctx)
             // Thermal bars were already built above for alignment calculation, one for each capability
             // that brought this chart here, so there is always at least one. Rendered with the same
             // column count as the core chart for x-axis alignment.
-            renderHistoryWithNowBars(
-                cache.thermalLayoutIds[entryIndex].c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
-            countPlot();
+            if (UI::Widgets::beginChartCard("##GpuThermalCard", plotHeight))
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_TEMPERATURE_HALF, "Thermal & Power", {}, alignedCount);
+                renderHistoryWithNowBars(cache.thermalLayoutIds[entryIndex].c_str(),
+                                         plotHeight,
+                                         gpuThermalPlot,
+                                         gpuThermalBars,
+                                         {.minBarColumns = gpuNowBarColumns});
 
-            // Show notes for unavailable metrics
-            UnavailableMetrics unavailableNotes;
-            if (!caps.hasTemperature)
-            {
-                unavailableNotes.add("temperature");
+                // Show notes for unavailable metrics
+                UnavailableMetrics unavailableNotes;
+                if (!caps.hasTemperature)
+                {
+                    unavailableNotes.add("temperature");
+                }
+                if (!caps.hasPowerMetrics)
+                {
+                    unavailableNotes.add("power draw");
+                }
+                if (!caps.hasFanSpeed)
+                {
+                    unavailableNotes.add("fan speed");
+                }
+                renderUnavailableMetricsNote(unavailableNotes.names(), theme.scheme().textMuted);
             }
-            if (!caps.hasPowerMetrics)
-            {
-                unavailableNotes.add("power draw");
-            }
-            if (!caps.hasFanSpeed)
-            {
-                unavailableNotes.add("fan speed");
-            }
-            renderUnavailableMetricsNote(unavailableNotes.names(), theme.scheme().textMuted);
+            UI::Widgets::endChartCard("##GpuThermalCard", plotHeight);
+            countPlot();
         }
 
         ImGui::Unindent();

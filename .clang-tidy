@@ -9,6 +9,7 @@ Checks: >
   portability-*,
   readability-*,
   -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-non-private-member-variables-in-classes,
   -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
@@ -24,10 +25,12 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-identifier-length,
   -readability-magic-numbers,
+  -readability-trailing-comma,
   -readability-use-concise-preprocessor-directives,
 
 # Disabled checks rationale:
 # - bugprone-easily-swappable-parameters: too noisy for constructors/adjacent same-type params.
+# - bugprone-signed-bitwise (new in LLVM 23, hicpp-signed-bitwise moved): ImGui and SDL flags are int enums ORed by design.
 # - cppcoreguidelines-avoid-magic-numbers + readability-magic-numbers: intentional UI/layout literals.
 # - cppcoreguidelines/misc non-private-member-variables: snapshot structs use public members by design.
 # - cppcoreguidelines-pro-bounds-*: required by ImGui/SDL3/OS APIs and validated hot paths.
@@ -37,6 +40,7 @@ Checks: >
 # - portability-avoid-pragma-once: project standard intentionally uses #pragma once.
 # - readability-function-cognitive-complexity + readability-identifier-length: too noisy for panel/render/math code.
 # - readability-use-concise-preprocessor-directives: project standard prefers #ifdef/#ifndef.
+# - readability-trailing-comma (new in LLVM 23): style only, and it fights clang-format's layout; adopting it is #2945.
 
 WarningsAsErrors: '*'
 SystemHeaders: false

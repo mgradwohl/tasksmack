@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace UI::ColorContrast
 {
@@ -94,6 +95,37 @@ inline constexpr float TEXT_CONTRAST_MIN = 4.5F;
 /// How finely readableTint() mixes toward the readable colour: in steps of 1 / READABLE_TINT_STEPS.
 inline constexpr int READABLE_TINT_STEPS = 20;
 
+/// @p color moved toward @p toward just far enough to reach @p minRatio on every one of
+/// @p backgrounds: unchanged when it already does, else mixed in steps of 1 / READABLE_TINT_STEPS of
+/// the way, so it keeps as much of its own hue as the floor allows. @p toward itself if no mix gets
+/// there. An empty @p backgrounds asks nothing, so @p color is kept.
+[[nodiscard]] inline ImVec4
+tintToContrast(const ImVec4& color, const ImVec4& toward, std::span<const ImVec4> backgrounds, float minRatio) noexcept
+{
+    const auto reaches = [&backgrounds, minRatio](const ImVec4& candidate)
+    {
+        return std::ranges::all_of(backgrounds,
+                                   [&candidate, minRatio](const ImVec4& bg) { return contrastRatio(candidate, bg) >= minRatio; });
+    };
+    if (reaches(color))
+    {
+        return color;
+    }
+    for (int step = 1; step < READABLE_TINT_STEPS; ++step)
+    {
+        const float t = static_cast<float>(step) / static_cast<float>(READABLE_TINT_STEPS);
+        const ImVec4 mix{color.x + ((toward.x - color.x) * t),
+                         color.y + ((toward.y - color.y) * t),
+                         color.z + ((toward.z - color.z) * t),
+                         color.w + ((toward.w - color.w) * t)};
+        if (reaches(mix))
+        {
+            return mix;
+        }
+    }
+    return toward;
+}
+
 /// @p color as text on @p background: unchanged when it already reaches @p minRatio there, else
 /// mixed toward @p readable (a colour that does, such as the theme's primary text) just far enough to
 /// -- in steps of 1 / READABLE_TINT_STEPS of the way -- so it keeps as much of its hue as the floor allows. @p readable
@@ -101,23 +133,51 @@ inline constexpr int READABLE_TINT_STEPS = 20;
 /// the text that names it, such as a second axis's tick labels drawn in its series' colour (#1206).
 [[nodiscard]] inline ImVec4 readableTint(const ImVec4& color, const ImVec4& readable, const ImVec4& background, float minRatio) noexcept
 {
-    if (contrastRatio(color, background) >= minRatio)
-    {
-        return color;
-    }
-    for (int step = 1; step < READABLE_TINT_STEPS; ++step)
-    {
-        const float t = static_cast<float>(step) / static_cast<float>(READABLE_TINT_STEPS);
-        const ImVec4 mix{color.x + ((readable.x - color.x) * t),
-                         color.y + ((readable.y - color.y) * t),
-                         color.z + ((readable.z - color.z) * t),
-                         color.w + ((readable.w - color.w) * t)};
-        if (contrastRatio(mix, background) >= minRatio)
-        {
-            return mix;
-        }
-    }
-    return readable;
+    return tintToContrast(color, readable, std::span<const ImVec4>(&background, 1), minRatio);
 }
+
+/// Contrast floor for the outline of a checkbox, text field, combo box or radio button against the
+/// surface it sits on (#1923): WCAG 2.1 SC 1.4.11's 3:1 for the visual boundary of a UI component.
+/// That criterion applies here in full, not as a guideline: an unchecked checkbox has no other
+/// visual indicator, and a text field none but its placeholder, so a fainter outline leaves the
+/// control indistinguishable from its label. The floor is not raised past 3:1 so the outline stays
+/// well below the theme's text (10:1 to 18:1 in the bundled themes) and reads as an edge, not a rule.
+inline constexpr float FRAME_BORDER_CONTRAST_MIN = 3.0F;
+
+/// Contrast floor for the marker of a multi-selection's primary row -- the one Process Details shows
+/// -- against the selection fill it is drawn on (#1926). WCAG 2.1 SC 1.4.11's 3:1 again: the marker
+/// is the only thing telling that row from the other selected ones.
+inline constexpr float SELECTION_PRIMARY_CONTRAST_MIN = 3.0F;
+
+/// Contrast floor for a button's fill against the window, card or dialog it sits on (#1976). Below
+/// it, an OK or Cancel was a bare word: Nord and Solarized Dark fill buttons with their popup colour
+/// (1.03:1 on a dialog), and five more bundled themes were under 1.2:1.
+///
+/// Not WCAG 2.1 SC 1.4.11's 3:1. That criterion asks 3:1 of the visual information *needed* to
+/// identify a control, and a text button is identified by its label, which SC 1.4.3 already holds
+/// to TEXT_CONTRAST_MIN (W3C's Understanding 1.4.11 says such a button needs no visible boundary).
+/// A fill at 3:1 would also take its own label below 4.5:1 -- the fill sits between the surface and
+/// the label, so it can be 3:1 from one and 4.5:1 from the other only when the label is 13.5:1 on
+/// the surface -- in twelve of the twenty bundled themes. 1.5:1 is a clearly
+/// visible shape (Dracula's 1.56:1 and Arctic Fire's 2.04:1 read as buttons; Windows Dark's 1.28:1
+/// was "visible but faint") that every bundled theme reaches with its label still above 5:1.
+inline constexpr float BUTTON_FILL_CONTRAST_MIN = 1.5F;
+
+/// How far a button's hovered and pressed fills stay from its resting fill (#1976), so raising the
+/// resting fill to BUTTON_FILL_CONTRAST_MIN never leaves hovering without visible feedback. The
+/// bundled themes step their resting-to-hovered fills by 1.12:1 to 1.94:1.
+inline constexpr float BUTTON_STATE_CONTRAST_MIN = 1.1F;
+
+/// Contrast floor for the hatch of a NowBar with no reading (N/A, #1935) against the surfaces it is
+/// drawn on: the bar's track (the frame fill) and the card or window around it. WCAG 2.1 SC 1.4.11's
+/// 3:1 for a graphical object: the hatch is all that tells an N/A bar from an empty track.
+inline constexpr float UNAVAILABLE_HATCH_CONTRAST_MIN = 3.0F;
+
+/// Contrast floor for the Processes tree's depth guide lines against the rows they cross (#838): the
+/// floor chart grid lines are held to (#1191), as visible and as quiet. The lines only echo what the
+/// indent and the carets already show, so they are decoration, not WCAG 1.4.11's information; but
+/// ui.table.border_light, which they start from, fell to 1.0:1 on a striped row in Nord Light and
+/// Windows Light, where they would vanish.
+inline constexpr float TREE_LINES_CONTRAST_MIN = 1.3F;
 
 } // namespace UI::ColorContrast

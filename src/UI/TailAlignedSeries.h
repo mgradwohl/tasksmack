@@ -10,8 +10,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <ranges>
 #include <span>
-#include <vector>
+#include <type_traits>
 
 namespace UI::Widgets
 {
@@ -36,9 +37,14 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(std
     return {data.subspan(offset), offset};
 }
 
-template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
+/// The same over any contiguous series -- a std::vector, or a model publication's shared history view
+/// (#1412) -- read through a span, so this header needs no knowledge of either.
+template<std::ranges::contiguous_range Series>
+    requires std::ranges::sized_range<const Series>
+[[nodiscard]] inline auto tailAlignedSpan(const Series& data, std::size_t count)
 {
-    return tailAlignedSpan(std::span<const T>(data), count);
+    using T = std::remove_cv_t<std::ranges::range_value_t<const Series>>;
+    return tailAlignedSpan(std::span<const T>(std::ranges::data(data), std::ranges::size(data)), count);
 }
 
 /// The sample of a series drawn from axis index @p offset (tailAlignedOffset()) at axis index

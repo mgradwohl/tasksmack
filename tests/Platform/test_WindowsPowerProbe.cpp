@@ -13,6 +13,8 @@
 #include "Platform/PowerTypes.h"
 #include "Platform/Windows/WindowsPowerProbe.h"
 
+#include <cstdlib>
+
 namespace Platform
 {
 namespace
@@ -24,12 +26,12 @@ namespace
 
 TEST(WindowsPowerProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsPowerProbe probe; });
+    EXPECT_NO_THROW({ const WindowsPowerProbe probe; });
 }
 
 TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsPowerProbe probe;
+    const WindowsPowerProbe probe;
     auto caps = probe.capabilities();
 
     // Windows API has limited capabilities compared to Linux.
@@ -41,9 +43,9 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_FALSE(caps.hasChargeCapacity);
     EXPECT_FALSE(caps.hasPowerRate);
     EXPECT_FALSE(caps.hasVoltage);
-    EXPECT_FALSE(caps.hasTechnology);
-    EXPECT_FALSE(caps.hasCycleCount);
-    EXPECT_FALSE(caps.hasHealthPercent);
+    // The battery device's facts (#1523) depend on the machine's battery; health needs the design
+    // capacity it is computed from (test_WindowsBatteryInfo.cpp covers each case with fakes).
+    EXPECT_FALSE(caps.hasHealthPercent && !caps.hasDesignCapacity);
 }
 
 TEST(WindowsPowerProbeTest, ReadSucceeds)
@@ -94,7 +96,7 @@ TEST(WindowsPowerProbeTest, MultipleReadsAreConsistent)
     // Charge percent shouldn't change dramatically in quick succession
     if (counters1.chargePercent >= 0 && counters2.chargePercent >= 0)
     {
-        int diff = std::abs(counters1.chargePercent - counters2.chargePercent);
+        const int diff = std::abs(counters1.chargePercent - counters2.chargePercent);
         EXPECT_LE(diff, 1) << "Charge percent changed too much between reads";
     }
 }

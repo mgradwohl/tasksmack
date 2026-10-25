@@ -6,10 +6,16 @@
 /// tests safe and non-destructive.
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WindowsAffinityMath.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessDump.h"
+#include "Platform/Windows/WindowsProcessDumpMath.h"
+#include "Platform/Windows/WindowsProcessMachine.h"
 
 #include <gtest/gtest.h>
 
@@ -23,13 +29,20 @@
 #include <windows.h>
 // clang-format on
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <ios>
 #include <limits>
+#include <stop_token>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <vector>
 
 namespace Platform
 {
@@ -120,6 +133,26 @@ TEST(PriorityClassToNiceTest, AnUnknownClassIsNormal)
 
 static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) < Domain::Priority::HIGH_THRESHOLD);
 
+// The probe's nice values and Process Details' are one table, Domain::Priority::classNice() (#2168):
+// retuning it for one side retunes it for the other.
+static_assert(priorityClassToNice(IDLE_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Idle));
+static_assert(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::BelowNormal));
+static_assert(priorityClassToNice(NORMAL_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Normal));
+static_assert(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS) ==
+              Domain::Priority::classNice(Domain::Priority::PriorityClass::AboveNormal));
+static_assert(priorityClassToNice(HIGH_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::High));
+static_assert(priorityClassToNice(REALTIME_PRIORITY_CLASS) == Domain::Priority::classNice(Domain::Priority::PriorityClass::Realtime));
+// And each value reads back as its own class, Realtime included.
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(IDLE_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Idle);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::BelowNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(NORMAL_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Normal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(ABOVE_NORMAL_PRIORITY_CLASS)) ==
+              Domain::Priority::PriorityClass::AboveNormal);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(HIGH_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::High);
+static_assert(Domain::Priority::classFromNice(priorityClassToNice(REALTIME_PRIORITY_CLASS)) == Domain::Priority::PriorityClass::Realtime);
+
 // =============================================================================
 // toPriorityClass: the class the probe reports beside nice (#1280)
 // =============================================================================
@@ -184,36 +217,39 @@ TEST(CloseRequestWindowTest, RefusedRequestsAreReportedAsRefusalsWithTheError)
 
 TEST(WindowsProcessActionsTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsProcessActions actions; });
+    EXPECT_NO_THROW({ const WindowsProcessActions actions; });
 }
 
 TEST(WindowsProcessActionsTest, CapabilitiesReportedCorrectly)
 {
-    WindowsProcessActions actions;
+    const WindowsProcessActions actions;
     const auto caps = actions.actionCapabilities();
 
     EXPECT_TRUE(caps.canTerminate);
     EXPECT_TRUE(caps.canKill);
-    EXPECT_FALSE(caps.canStop);
-    EXPECT_FALSE(caps.canContinue);
+    EXPECT_TRUE(caps.canStop);       // NtSuspendProcess (#2582)
+    EXPECT_TRUE(caps.canContinue);   // NtResumeProcess (#2582)
+    EXPECT_TRUE(caps.canCreateDump); // MiniDumpWriteDump (#807)
 }
 
-TEST(WindowsProcessActionsTest, StopNotSupported)
+TEST(WindowsProcessActionsTest, SuspendingThisProcessIsRefusedBeforeAnythingIsSent)
 {
     WindowsProcessActions actions;
 
-    const auto result = actions.stop({.pid = 1, .startTimeTicks = 1});
+    // Refused by PID, whatever the start time: a suspended TaskSmack (here, this test) would hang.
+    const auto result = actions.stop({.pid = static_cast<int32_t>(GetCurrentProcessId()), .startTimeTicks = 1});
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_FALSE(result.permissionDenied);
+    EXPECT_NE(result.errorMessage.find("TaskSmack itself"), std::string::npos) << result.errorMessage;
 }
 
-TEST(WindowsProcessActionsTest, ResumeNotSupported)
+TEST(WindowsProcessActionsTest, SuspendAndResumeOfANonExistentProcessFail)
 {
     WindowsProcessActions actions;
 
-    const auto result = actions.resume({.pid = 1, .startTimeTicks = 1});
-    EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_FALSE(actions.stop({.pid = 999999, .startTimeTicks = 1}).success);
+    EXPECT_FALSE(actions.resume({.pid = 999999, .startTimeTicks = 1}).success);
+    EXPECT_EQ(actions.stop({.pid = 0, .startTimeTicks = 1}).errorMessage, "Invalid PID");
 }
 
 TEST(WindowsProcessActionsTest, SetPriorityRejectsInvalidPid)
@@ -309,6 +345,14 @@ class SuspendedChild
     [[nodiscard]] bool exitsSoon() const
     {
         return WaitForSingleObject(m_Info.hProcess, 5000) == WAIT_OBJECT_0;
+    }
+    /// Its main thread's suspend count: 1 as created, more for each suspend not yet resumed. Read by
+    /// suspending the thread once more and resuming it, which returns the count it had.
+    [[nodiscard]] DWORD suspendCount() const
+    {
+        const DWORD previous = SuspendThread(m_Info.hThread);
+        ResumeThread(m_Info.hThread);
+        return previous;
     }
     [[nodiscard]] ProcessTarget target() const
     {
@@ -518,6 +562,728 @@ TEST(WindowsProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
 
     EXPECT_TRUE(result.success) << result.errorMessage;
     EXPECT_TRUE(child.exitsSoon());
+}
+
+// #1566, #2206: the child has exited, but the test's handle keeps its process object (and so its
+// PID and start time) alive: the identity check passes, so the exit must be noticed by the open
+// itself and reported as an exit, with nothing sent, rather than as a refused TerminateProcess.
+TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+
+    WindowsProcessActions actions;
+    ASSERT_TRUE(actions.kill(target).success);
+    ASSERT_TRUE(child.exitsSoon());
+
+    const auto again = actions.kill(target);
+    EXPECT_FALSE(again.success);
+    EXPECT_EQ(again.errorMessage, std::format("Process {} has exited; action not sent", target.pid));
+}
+
+// Suspend and Resume (#2582) on the test's own suspended child, never on any other process: Windows
+// counts suspensions per thread, so each suspend adds one to the main thread's count and each resume
+// takes one away.
+TEST(WindowsProcessActionsTest, SuspendThenResumeChangesTheChildsSuspendCount)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ASSERT_EQ(child.suspendCount(), 1U) << "created suspended";
+
+    WindowsProcessActions actions;
+    const auto suspended = actions.stop(child.target());
+    EXPECT_TRUE(suspended.success) << suspended.errorMessage;
+    EXPECT_EQ(child.suspendCount(), 2U);
+
+    const auto resumed = actions.resume(child.target());
+    EXPECT_TRUE(resumed.success) << resumed.errorMessage;
+    EXPECT_EQ(child.suspendCount(), 1U);
+    EXPECT_TRUE(child.alive());
+}
+
+TEST(WindowsProcessActionsTest, SuspendOrResumeWithADifferentStartTimeLeavesTheChildAlone)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+
+    WindowsProcessActions actions;
+    const auto suspended = actions.stop(reused);
+    EXPECT_FALSE(suspended.success);
+    EXPECT_NE(suspended.errorMessage.find("different process"), std::string::npos) << suspended.errorMessage;
+    const auto resumed = actions.resume(reused);
+    EXPECT_FALSE(resumed.success);
+    EXPECT_EQ(child.suspendCount(), 1U) << "nothing reached the child";
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityChangesTheClassOfAMatchingProcess)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority(child.target(), priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid));
+    ASSERT_NE(process, nullptr);
+    EXPECT_EQ(GetPriorityClass(process), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+    CloseHandle(process);
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityOfANonExistentProcessSaysItIsGone)
+{
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority({.pid = std::numeric_limits<int32_t>::max(), .startTimeTicks = 1}, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityOfTheSystemProcessIsRefused)
+{
+    // PID 4 is the System process. Without elevation it can't be opened to set its priority; with
+    // elevation it can, but its start time isn't 1, so the identity check refuses. Either way nothing
+    // is sent to it.
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority({.pid = 4, .startTimeTicks = 1}, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.errorMessage.empty());
+}
+
+TEST(WindowsProcessActionsTest, IoPriorityIsNotSupportedAndNothingIsSent)
+{
+    // #803: Windows has no ionice equivalent, so the capability is off and both calls refuse.
+    WindowsProcessActions actions;
+    EXPECT_FALSE(actions.actionCapabilities().canSetIoPriority);
+
+    const auto set = actions.setIoPriority({.pid = 1234, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(set.success);
+    EXPECT_NE(set.errorMessage.find("not supported on Windows"), std::string::npos) << set.errorMessage;
+    EXPECT_NE(set.errorMessage.find("1234"), std::string::npos) << set.errorMessage;
+
+    const auto get = actions.getIoPriority({.pid = 1234, .startTimeTicks = 1});
+    ASSERT_FALSE(get.has_value());
+    EXPECT_NE(get.error().find("not supported on Windows"), std::string::npos) << get.error();
+}
+
+// =============================================================================
+// setAffinity (#1881): through faked Win32 calls, then once against a real suspended child
+// =============================================================================
+
+namespace
+{
+
+/// What the faked calls do and saw. Function pointers can't capture, so the fakes share this state;
+/// each test starts from reset().
+struct FakeWin
+{
+    static inline std::uint64_t creationTicks = 0; // What GetProcessTimes reports
+    static inline DWORD openError = 0;             // OpenProcess fails with this, when not 0
+    static inline DWORD setError = 0;              // The setter fails with this, when not 0
+    static inline DWORD openedAccess = 0;
+    static inline int maskCalls = 0;
+    static inline DWORD_PTR lastMask = 0;
+    static inline int cpuSetCalls = 0;
+    static inline std::vector<ULONG> lastCpuSets;
+    static inline std::vector<std::uint32_t> groupSizes; // reset(): one group of 8
+    static inline std::vector<ProcessorCoreRecord> cores;
+    static inline std::vector<CpuSetRecord> cpuSets;
+
+    static void reset()
+    {
+        creationTicks = 1234;
+        openError = 0;
+        setError = 0;
+        openedAccess = 0;
+        maskCalls = 0;
+        lastMask = 0;
+        cpuSetCalls = 0;
+        lastCpuSets.clear();
+        groupSizes = {8};
+        cores.clear();
+        cpuSets.clear();
+    }
+
+    static HANDLE WINAPI openProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
+    {
+        openedAccess = access;
+        if (openError != 0)
+        {
+            SetLastError(openError);
+            return nullptr;
+        }
+        // A real handle (to this test process), so the action's owner can close it.
+        return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
+    }
+    static BOOL WINAPI
+    getProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+    {
+        creation->dwLowDateTime = static_cast<DWORD>(creationTicks & 0xFFFFFFFFU);
+        creation->dwHighDateTime = static_cast<DWORD>(creationTicks >> 32U);
+        return TRUE;
+    }
+    static BOOL WINAPI setProcessAffinityMask(HANDLE /*process*/, DWORD_PTR mask)
+    {
+        ++maskCalls;
+        lastMask = mask;
+        if (setError != 0)
+        {
+            SetLastError(setError);
+            return FALSE;
+        }
+        return TRUE;
+    }
+    static BOOL WINAPI setProcessDefaultCpuSets(HANDLE /*process*/, const ULONG* ids, ULONG count)
+    {
+        ++cpuSetCalls;
+        lastCpuSets.assign(ids, ids + count); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the API's array
+        if (setError != 0)
+        {
+            SetLastError(setError);
+            return FALSE;
+        }
+        return TRUE;
+    }
+    static BOOL WINAPI isProcessCritical(HANDLE /*process*/, PBOOL critical)
+    {
+        *critical = FALSE; // the guard has its own tests (test_WindowsProcessActionsSeams.cpp, #2556)
+        return TRUE;
+    }
+
+    [[nodiscard]] static WindowsProcessFunctions functions()
+    {
+        return {
+            .openProcess = &openProcess,
+            .getProcessTimes = &getProcessTimes,
+            .setProcessAffinityMask = &setProcessAffinityMask,
+            .setProcessDefaultCpuSets = &setProcessDefaultCpuSets,
+            .readGroupSizes = [] { return groupSizes; },
+            .readCores = [] { return cores; },
+            .readCpuSets = [] { return cpuSets; },
+            .pssCaptureSnapshot = nullptr,
+            .isProcessCritical = &isProcessCritical,
+            .getProcessInformation = nullptr,
+        };
+    }
+};
+
+constexpr ProcessTarget FAKE_TARGET{.pid = 4242, .startTimeTicks = 1234};
+
+class WindowsSetAffinityTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        FakeWin::reset();
+    }
+};
+
+} // namespace
+
+TEST_F(WindowsSetAffinityTest, OneGroupSetsTheMaskThroughAVerifiedHandle)
+{
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_TRUE(actions.actionCapabilities().canSetAffinity);
+
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1010U));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 1);
+    EXPECT_EQ(FakeWin::lastMask, DWORD_PTR{0b1010U});
+    EXPECT_EQ(FakeWin::cpuSetCalls, 0);
+    EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_INFORMATION, 0U);
+    EXPECT_TRUE(result.successNote.empty()) << "a hard affinity mask is what Set affinity promises: " << result.successNote;
+}
+
+TEST_F(WindowsSetAffinityTest, AReusedPidIsRefusedAndNothingIsSet)
+{
+    FakeWin::creationTicks = 9999; // The PID now belongs to a process started later
+    WindowsProcessActions actions(FakeWin::functions());
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+
+    const auto unknown = actions.setAffinity({.pid = 4242, .startTimeTicks = 0}, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(unknown.success);
+    EXPECT_NE(unknown.errorMessage.find("Cannot confirm"), std::string::npos) << unknown.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+}
+
+TEST_F(WindowsSetAffinityTest, AccessDeniedSaysTheProcessMayBeProtectedOrElevated)
+{
+    FakeWin::openError = ERROR_ACCESS_DENIED;
+    WindowsProcessActions actions(FakeWin::functions());
+    const auto opened = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(opened.success);
+    EXPECT_NE(opened.errorMessage.find("Access denied"), std::string::npos) << opened.errorMessage;
+    EXPECT_NE(opened.errorMessage.find("protected"), std::string::npos) << opened.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+
+    // Opened, but the set itself refused: the same message.
+    FakeWin::openError = 0;
+    FakeWin::setError = ERROR_ACCESS_DENIED;
+    const auto set = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(set.success);
+    EXPECT_NE(set.errorMessage.find("Access denied"), std::string::npos) << set.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, AGoneProcessAndARefusedMaskAreReported)
+{
+    FakeWin::openError = ERROR_INVALID_PARAMETER;
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_EQ(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, "Process not found - may have already exited");
+
+    FakeWin::openError = 0;
+    FakeWin::setError = ERROR_INVALID_PARAMETER;
+    const auto refused = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_NE(refused.errorMessage.find("processor group"), std::string::npos) << refused.errorMessage;
+
+    FakeWin::setError = ERROR_GEN_FAILURE;
+    const auto other = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_NE(other.errorMessage.find(std::to_string(ERROR_GEN_FAILURE)), std::string::npos) << other.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, AnEmptyChoiceOrACpuThatDoesNotExistIsRefusedBeforeOpening)
+{
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_EQ(actions.setAffinity(FAKE_TARGET, CpuAffinity{}).errorMessage, "Choose at least one CPU");
+    Platform::CpuAffinity beyond;
+    beyond.set(8); // Group 0 has CPUs 0-7
+    EXPECT_FALSE(actions.setAffinity(FAKE_TARGET, beyond).success);
+    EXPECT_EQ(actions.setAffinity({.pid = 0, .startTimeTicks = 1}, CpuAffinity::fromMask(1U)).errorMessage, "Invalid PID");
+    EXPECT_EQ(FakeWin::openedAccess, 0U) << "nothing opened";
+}
+
+TEST_F(WindowsSetAffinityTest, SeveralGroupsSetCpuSetsAndEveryCpuClearsThem)
+{
+    FakeWin::groupSizes = {2, 2}; // CPUs 0-1 in group 0, 2-3 in group 1
+    FakeWin::cores = {{.group = 0, .mask = 0b11U, .efficiencyClass = 0}, {.group = 1, .mask = 0b11U, .efficiencyClass = 0}};
+    FakeWin::cpuSets = {{.id = 256, .group = 0, .logicalProcessorIndex = 0},
+                        {.id = 257, .group = 0, .logicalProcessorIndex = 1},
+                        {.id = 258, .group = 1, .logicalProcessorIndex = 0},
+                        {.id = 259, .group = 1, .logicalProcessorIndex = 1}};
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_TRUE(actions.affinityLayout().appliedAsCpuSets);
+
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0110U)); // CPU 1 (group 0) and 2 (group 1)
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(FakeWin::lastCpuSets, (std::vector<ULONG>{257, 258}));
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+    EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_LIMITED_INFORMATION, 0U);
+
+    EXPECT_TRUE(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1111U)).success);
+    EXPECT_TRUE(FakeWin::lastCpuSets.empty()) << "every CPU clears the default CPU sets";
+
+    FakeWin::cpuSets.pop_back(); // CPU 3 went offline after the dialog opened
+    const auto missing = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1000U));
+    EXPECT_FALSE(missing.success);
+    EXPECT_NE(missing.errorMessage.find("0 of the 1"), std::string::npos) << missing.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, SeveralGroupsSaySoftCpuSetsWereSetNotAHardMask)
+{
+    // The regression (#2173): CPU sets are a preference that threads with an affinity or CPU sets of
+    // their own, and a hard affinity mask, override; success read as though a hard mask was set.
+    FakeWin::groupSizes = {2, 2};
+    FakeWin::cores = {{.group = 0, .mask = 0b11U, .efficiencyClass = 0}, {.group = 1, .mask = 0b11U, .efficiencyClass = 0}};
+    FakeWin::cpuSets = {{.id = 256, .group = 0, .logicalProcessorIndex = 0},
+                        {.id = 257, .group = 0, .logicalProcessorIndex = 1},
+                        {.id = 258, .group = 1, .logicalProcessorIndex = 0},
+                        {.id = 259, .group = 1, .logicalProcessorIndex = 1}};
+    WindowsProcessActions actions(FakeWin::functions());
+
+    const auto some = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    ASSERT_TRUE(some.success) << some.errorMessage;
+    EXPECT_NE(some.successNote.find("preferred CPUs (CPU sets)"), std::string::npos) << some.successNote;
+    EXPECT_NE(some.successNote.find("threads with their own affinity are not moved"), std::string::npos) << some.successNote;
+
+    const auto every = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1111U));
+    ASSERT_TRUE(every.success) << every.errorMessage;
+    EXPECT_NE(every.successNote.find("clearing its preferred CPUs"), std::string::npos) << every.successNote;
+    EXPECT_NE(every.successNote.find("affinity mask"), std::string::npos) << "an earlier hard mask is not undone: " << every.successNote;
+
+    FakeWin::setError = ERROR_ACCESS_DENIED;
+    const auto refused = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0011U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.successNote.empty()) << "a failure carries no success note";
+}
+
+TEST_F(WindowsSetAffinityTest, NoGroupSizesMeansNoAffinityAction)
+{
+    FakeWin::groupSizes.clear();
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_FALSE(actions.actionCapabilities().canSetAffinity);
+    EXPECT_FALSE(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(1U)).success);
+    EXPECT_EQ(FakeWin::openedAccess, 0U);
+}
+
+TEST(WindowsProcessActionsTest, SetAffinityPinsAMatchingChildAndRefusesAReusedPid)
+{
+    WindowsProcessActions actions;
+    if (actions.affinityLayout().appliedAsCpuSets)
+    {
+        GTEST_SKIP() << "several processor groups: CPU sets don't show in GetProcessAffinityMask";
+    }
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    EXPECT_FALSE(actions.setAffinity(reused, CpuAffinity::fromMask(1U)).success);
+
+    const auto result = actions.setAffinity(child.target(), CpuAffinity::fromMask(1U));
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid));
+    ASSERT_NE(process, nullptr);
+    DWORD_PTR processMask = 0;
+    DWORD_PTR systemMask = 0;
+    EXPECT_NE(GetProcessAffinityMask(process, &processMask, &systemMask), 0);
+    EXPECT_EQ(processMask, DWORD_PTR{1});
+    CloseHandle(process);
+}
+
+TEST(WindowsProcessActionsTest, AffinityLayoutListsThisMachinesCpus)
+{
+    const WindowsProcessActions actions;
+    const CpuAffinityLayout layout = actions.affinityLayout();
+    ASSERT_FALSE(layout.groupSizes.empty());
+    EXPECT_FALSE(layout.online.empty());
+    EXPECT_TRUE(layout.online.test(0));
+}
+
+// =============================================================================
+// Create dump file (#807), against a running child process this test starts (ping, waiting on
+// itself), dumped into a folder of the test's own that is deleted afterwards. Nothing else is dumped.
+// =============================================================================
+
+namespace
+{
+
+/// A running child process (ping counting to itself for a minute), terminated on scope exit.
+class RunningChild
+{
+  public:
+    RunningChild()
+    {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        std::wstring commandLine = L"ping.exe -n 60 127.0.0.1";
+        if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &m_Info) ==
+            0)
+        {
+            m_Info = {};
+            return;
+        }
+        // Past the loader's start-up, so the dump sees a settled process.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    RunningChild(const RunningChild&) = delete;
+    RunningChild& operator=(const RunningChild&) = delete;
+    RunningChild(RunningChild&&) = delete;
+    RunningChild& operator=(RunningChild&&) = delete;
+    ~RunningChild()
+    {
+        if (m_Info.hProcess != nullptr)
+        {
+            TerminateProcess(m_Info.hProcess, 0);
+            WaitForSingleObject(m_Info.hProcess, 5000);
+            CloseHandle(m_Info.hThread);
+            CloseHandle(m_Info.hProcess);
+        }
+    }
+
+    [[nodiscard]] bool started() const
+    {
+        return m_Info.hProcess != nullptr;
+    }
+    [[nodiscard]] ProcessTarget target() const
+    {
+        FILETIME creation{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        GetProcessTimes(m_Info.hProcess, &creation, &exitTime, &kernelTime, &userTime);
+        return {
+            .pid = static_cast<int32_t>(m_Info.dwProcessId),
+            .startTimeTicks = (static_cast<uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+        };
+    }
+
+  private:
+    PROCESS_INFORMATION m_Info{};
+};
+
+/// A folder of this test's own under %TEMP%, removed with everything in it on scope exit.
+class DumpFolder
+{
+  public:
+    DumpFolder()
+        : m_Path(std::filesystem::temp_directory_path() /
+                 ("tasksmack-dump-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64())))
+    {
+        std::filesystem::create_directories(m_Path);
+    }
+    DumpFolder(const DumpFolder&) = delete;
+    DumpFolder& operator=(const DumpFolder&) = delete;
+    DumpFolder(DumpFolder&&) = delete;
+    DumpFolder& operator=(DumpFolder&&) = delete;
+    ~DumpFolder()
+    {
+        try
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(m_Path, ignored);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a destructor; a folder left behind in %TEMP% is harmless
+        {}
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const
+    {
+        return m_Path;
+    }
+    [[nodiscard]] bool empty() const
+    {
+        return std::filesystem::is_empty(m_Path);
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+} // namespace
+
+TEST(WindowsProcessDumpTest, DumpsAChildIntoTheFolderWithAMinidumpHeader)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    const ProcessDumpResult result = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->file.parent_path(), folder.path());
+    EXPECT_TRUE(result->file.filename().string().contains("_" + std::to_string(child.target().pid) + "_")) << result->file;
+    EXPECT_EQ(result->file.extension(), ".dmp");
+    ASSERT_TRUE(std::filesystem::exists(result->file));
+    EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
+    EXPECT_GT(result->sizeBytes, 1024U * 1024U); // full memory: far more than a header and a thread list
+    EXPECT_TRUE(result->note.empty());           // a 64-bit ping from a 64-bit test
+    // Written from a PssCaptureSnapshot clone (#2001), not the running process.
+    EXPECT_TRUE(result->fromSnapshot) << result->liveReason;
+    EXPECT_TRUE(result->liveReason.empty()) << result->liveReason;
+
+    // A minidump starts "MDMP" (MINIDUMP_HEADER::Signature).
+    std::array<char, 4> signature{};
+    {
+        std::ifstream file(result->file, std::ios::binary);
+        file.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+        ASSERT_TRUE(file.good());
+    }
+    EXPECT_EQ(std::string(signature.data(), signature.size()), "MDMP");
+
+    // A second dump of the same process in the same second gets a name of its own.
+    const ProcessDumpResult second = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(second.has_value()) << second.error();
+    EXPECT_NE(second->file, result->file);
+}
+
+TEST(WindowsProcessDumpTest, AnInvalidOrGoneOrReusedPidWritesNothing)
+{
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    ProcessDumpResult result = actions.createDump({.pid = -1, .startTimeTicks = 1}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "Invalid PID");
+
+    result = actions.createDump({.pid = std::numeric_limits<int32_t>::max(), .startTimeTicks = 1}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_FALSE(result.error().empty());
+
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    result = actions.createDump(reused, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().contains("different process")) << result.error();
+
+    // An unknown start time is refused too, rather than dumping whatever holds the PID.
+    result = actions.createDump({.pid = child.target().pid, .startTimeTicks = 0}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(folder.empty());
+}
+
+TEST(WindowsProcessDumpTest, AMissingFolderIsNamedAndACancelLeavesNoFile)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    const std::filesystem::path missing = folder.path() / "missing";
+    ProcessDumpResult result = actions.createDump(child.target(), missing, std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().contains("doesn't exist")) << result.error();
+
+    std::stop_source stop;
+    stop.request_stop();
+    result = actions.createDump(child.target(), folder.path(), stop.get_token());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().starts_with("Cancelled")) << result.error();
+    EXPECT_TRUE(folder.empty()); // the partial file is deleted
+}
+
+namespace
+{
+/// PssCaptureSnapshot standing in for one that fails, as it does on a process Windows won't clone.
+DWORD WINAPI failingCapture(HANDLE /*process*/, PSS_CAPTURE_FLAGS /*flags*/, DWORD /*contextFlags*/, HPSS* snapshot)
+{
+    *snapshot = nullptr;
+    return ERROR_NOT_ENOUGH_MEMORY;
+}
+} // namespace
+
+TEST(WindowsProcessDumpTest, AFailedSnapshotFallsBackToALiveDumpAndSaysWhy)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessFunctions functions = realWindowsProcessFunctions();
+    functions.pssCaptureSnapshot = &failingCapture;
+    WindowsProcessActions actions(functions);
+
+    const ProcessDumpResult result = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_FALSE(result->fromSnapshot);
+    EXPECT_EQ(result->liveReason, "there wasn't enough memory to take a snapshot of it");
+    EXPECT_GT(result->sizeBytes, 1024U * 1024U); // still a full dump, read from the running process
+    std::array<char, 4> signature{};
+    {
+        std::ifstream file(result->file, std::ios::binary);
+        file.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+        ASSERT_TRUE(file.good());
+    }
+    EXPECT_EQ(std::string(signature.data(), signature.size()), "MDMP");
+
+    // Without PssCaptureSnapshot at all, the dump is live too, and says so.
+    functions.pssCaptureSnapshot = nullptr;
+    WindowsProcessActions noSnapshots(functions);
+    const ProcessDumpResult live = noSnapshots.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(live.has_value()) << live.error();
+    EXPECT_FALSE(live->fromSnapshot);
+    EXPECT_FALSE(live->liveReason.empty());
+}
+
+namespace
+{
+/// processMachine() standing in for a native ARM64 process's, as the x64 build sees one on Windows on ARM.
+std::uint16_t arm64Machine(HANDLE /*process*/)
+{
+    return DumpMath::MACHINE_ARM64;
+}
+/// processMachine() standing in for a 32-bit x86 (WOW64) process's.
+std::uint16_t x86Machine(HANDLE /*process*/)
+{
+    return DumpMath::MACHINE_I386;
+}
+} // namespace
+
+TEST(WindowsProcessDumpTest, AProcessOfAnotherArchitectureIsRefusedBeforeAnyFileIsMade)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    const std::int32_t pid = child.target().pid;
+    const Windows::UniqueHandle process(OpenProcess(Windows::DUMP_PROCESS_ACCESS, FALSE, static_cast<DWORD>(pid)));
+    ASSERT_TRUE(process);
+
+    // The real reader: this test and its ping child are the same architecture as the build.
+#if defined(_M_ARM64) || defined(__aarch64__)
+    constexpr std::uint16_t BUILT_FOR = DumpMath::MACHINE_ARM64;
+#else
+    constexpr std::uint16_t BUILT_FOR = DumpMath::MACHINE_AMD64;
+#endif
+    EXPECT_EQ(Windows::processMachine(GetCurrentProcess()), BUILT_FOR);
+    EXPECT_EQ(Windows::processMachine(process.get()), BUILT_FOR);
+    const Windows::UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
+    ASSERT_TRUE(waitOnly);
+    EXPECT_EQ(Windows::processMachine(waitOnly.get()), DumpMath::MACHINE_UNKNOWN); // no query access: unread
+
+    // A process of another architecture: refused, saying why, and nothing is written.
+    const Windows::DumpSource arm64{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = &arm64Machine};
+    const Windows::DumpSource x86{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = &x86Machine};
+    if constexpr (BUILT_FOR == DumpMath::MACHINE_AMD64)
+    {
+        const ProcessDumpResult refused = Windows::writeProcessDump(process.get(), pid, folder.path(), std::stop_token{}, arm64);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_TRUE(refused.error().contains("is an ARM64 process, and this TaskSmack is an x64 build")) << refused.error();
+        EXPECT_TRUE(folder.empty());
+    }
+
+    // A 32-bit (WOW64) process: dumped, with the note on reading it in WinDbg.
+    const ProcessDumpResult noted = Windows::writeProcessDump(process.get(), pid, folder.path(), std::stop_token{}, x86);
+    ASSERT_TRUE(noted.has_value()) << noted.error();
+    EXPECT_TRUE(noted->note.contains(".effmach x86")) << noted->note;
+}
+
+TEST(WindowsProcessDumpTest, DumpSpaceReadsTheFolderAndTheChildsPrivateBytes)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canChooseDumpFolder);
+
+    const DumpSpace space = actions.dumpSpace(child.target(), folder.path());
+    ASSERT_TRUE(space.freeBytes.has_value());
+    EXPECT_GT(space.freeBytes.value_or(0), 0U);
+    ASSERT_TRUE(space.processBytes.has_value());
+    EXPECT_GT(space.processBytes.value_or(0), 0U);
+
+    // A reused PID's private bytes are never read; a missing folder has no free space to read.
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    const DumpSpace other = actions.dumpSpace(reused, folder.path() / "missing");
+    EXPECT_FALSE(other.processBytes.has_value());
+    EXPECT_FALSE(other.freeBytes.has_value());
+}
+
+TEST(WindowsProcessDumpTest, ProtectionIsReadAndAnUnopenablePidIsNotProtected)
+{
+    EXPECT_FALSE(Windows::isProtectedProcess(GetCurrentProcessId()));
+    // No process has an odd PID (they are multiples of 4), so OpenProcess() fails.
+    EXPECT_FALSE(Windows::isProtectedProcess(0xFFFF'FFFBU));
+}
+
+TEST(WindowsProcessDumpTest, TheDumpHelpersRefuseNoFolderAndAHandleThatCannotBeRead)
+{
+    const DumpFolder folder;
+    // This process, through a handle that can only be waited on: its name, memory and private bytes
+    // are all unreadable through it.
+    const Windows::UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
+    ASSERT_TRUE(waitOnly);
+
+    EXPECT_FALSE(Windows::freeBytesInFolder({}).has_value());
+    EXPECT_FALSE(Windows::processPrivateBytes(waitOnly.get()).has_value());
+
+    const auto pid = static_cast<std::int32_t>(GetCurrentProcessId());
+    ProcessDumpResult result = Windows::writeProcessDump(waitOnly.get(), pid, {}, std::stop_token{}, {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "No folder was given to write the dump file in");
+
+    // The file is named without the image name it couldn't read, and the cancel already requested
+    // deletes it: nothing is left in the folder.
+    std::stop_source stop;
+    stop.request_stop();
+    result = Windows::writeProcessDump(waitOnly.get(), pid, folder.path(), stop.get_token(), {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().starts_with("Cancelled")) << result.error();
+    EXPECT_TRUE(folder.empty());
 }
 
 } // namespace Platform

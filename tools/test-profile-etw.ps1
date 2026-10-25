@@ -42,6 +42,35 @@ $hostExe = (Get-Process -Id $PID).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-etw-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
+    # #2254: a capture claims its names before writing anything, so it never overwrites an earlier
+    # run's artifacts. The directory name holds [ ], which a wildcard-reading path API would misread.
+    $claimDir = Join-Path $root 'claim[1]'
+    $null = New-Item -ItemType Directory -Path $claimDir
+    $first = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    $firstPaths = Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-app' -Timestamp $first
+    Assert-True ($first -eq '20261016-101010') "First claim: $first"
+    Assert-True ((Test-Path -LiteralPath $firstPaths.Manifest) -and (Get-Item -LiteralPath $firstPaths.Manifest).Length -eq 0) 'The claim must create an empty manifest'
+    # The same second again (a fresh timestamp): -2, then -3, never the earlier names.
+    $second = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    $third = Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010'
+    Assert-True ($second -eq '20261016-101010-2' -and $third -eq '20261016-101010-3') "Same-second claims: $second, $third"
+    # A run that failed before its manifest left other artifacts (a trace, a launcher log, a
+    # control directory): that name is taken too.
+    Set-Content -LiteralPath (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1').Trace -Value 'old' -Encoding ascii
+    Set-Content -LiteralPath (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-2').LauncherLog -Value 'old' -Encoding ascii
+    $null = New-Item -ItemType Directory -Path (Get-CaptureArtifactPath -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-3').Control
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1') -eq 't1-4') 'Names with leftover artifacts must be skipped'
+    # Prefixes are independent: an app run does not take a bench run's name.
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app-elevated' -Timestamp '20261016-101010') -eq '20261016-101010') 'Another prefix must not collide'
+    # An explicit -Timestamp fails rather than renaming, and leaves the earlier files alone.
+    Set-Content -LiteralPath $firstPaths.Manifest -Value '{ "Preset": "win-release" }' -Encoding utf8
+    Assert-Throws { Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp '20261016-101010' -Exact } 'already wrote'
+    Assert-True ((Get-Content -LiteralPath $firstPaths.Manifest -Raw) -like '*win-release*') 'A refused claim must not touch the earlier manifest'
+    Assert-Throws { Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-bench' -Timestamp 't1-2' -Exact } 'already wrote'
+    Assert-True ((Request-CaptureTimestamp -Directory $claimDir -Prefix 'etw-app' -Timestamp 'fresh' -Exact) -eq 'fresh') 'An unused explicit -Timestamp is claimed as given'
+    # A directory that does not exist is an error, not an endless search for a free name.
+    Assert-Throws { Request-CaptureTimestamp -Directory (Join-Path $root 'missing') -Prefix 'etw-app' -Timestamp 'x' } 'Could not find'
+
     $fakeLister = Join-Path $root 'lister.cmd'
     Set-Content -LiteralPath $fakeLister -Value "@echo BM_One`r`n@echo BM_Two`r`n@exit /b 0" -Encoding ascii
     $listed = Get-BenchmarkFilterMatches -BinaryPath $fakeLister -Filter 'BM_.*'
@@ -108,7 +137,7 @@ try {
     $controlDir = Join-Path $root 'control'
     New-Item -ItemType Directory -Path $controlDir | Out-Null
     Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq '') 'No error file means no detail'
-    Set-Content -LiteralPath (Join-Path $controlDir 'collector-error.txt') -Value 'wpr -stop failed'
+    Set-Content -LiteralPath (Join-Path $controlDir 'collector-error.txt') -Encoding utf8 -Value 'wpr -stop failed'
     Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq ' Collector error: wpr -stop failed') 'Recorded error detail'
 
     # The orchestrator fails fast when the collector exits before it starts recording.
@@ -117,11 +146,11 @@ try {
     $exited.WaitForExit()
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 30 -Collector $exited } 'exited (code 5)'
     # A collector that recorded why it failed has that reason reported.
-    Set-Content -LiteralPath (Join-Path $root 'collector-error.txt') -Value 'wpr: profile not found'
+    Set-Content -LiteralPath (Join-Path $root 'collector-error.txt') -Encoding utf8 -Value 'wpr: profile not found'
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 30 -Collector $exited } 'Collector error: wpr: profile not found'
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 1 } 'Timed out'
     $marker = Join-Path $root 'started'
-    Set-Content -LiteralPath $marker -Value '{}'
+    Set-Content -LiteralPath $marker -Encoding utf8 -Value '{}'
     Wait-CollectorMarker -Path $marker -TimeoutSeconds 1
 
     # An app still running at the end names the wait that actually ran: 30 s after a forced stop
@@ -171,54 +200,133 @@ try {
 
     # ── #1186: app lifecycle -- warm-up before the trace, and a crash fails the capture ──────
     # Stub apps (batch files, run hidden): one exits at once with a code, one exits with a code
-    # after a few seconds, one runs until it is killed. Pinging localhost is the sleep, as
-    # timeout.exe needs a console input.
+    # once the capture window has begun, one runs until it is killed. Pinging localhost is the
+    # sleep, as timeout.exe needs a console input.
+    #
+    # Nothing here may depend on how fast a process starts or exits: under a parallel ctest run
+    # a cmd.exe can take well over a second to start and exit (#1438). So the "exits later"
+    # stubs wait for a release file, written once the capture has passed its checks that the app
+    # is still running (see Invoke-StubCapture), rather than sleeping for a fixed time.
     $exitNow0 = Join-Path $root 'exit-now-0.cmd'
     Set-Content -LiteralPath $exitNow0 -Encoding ascii -Value "@exit /b 0"
     $exitNow3 = Join-Path $root 'exit-now-3.cmd'
     Set-Content -LiteralPath $exitNow3 -Encoding ascii -Value "@exit /b 3"
-    $exitLater3 = Join-Path $root 'exit-later-3.cmd'
-    Set-Content -LiteralPath $exitLater3 -Encoding ascii -Value "@ping -n 3 127.0.0.1 >nul`r`n@exit /b 3"
-    $exitLater0 = Join-Path $root 'exit-later-0.cmd'
-    Set-Content -LiteralPath $exitLater0 -Encoding ascii -Value "@ping -n 3 127.0.0.1 >nul`r`n@exit /b 0"
+    # #2250: TaskSmack turned away by another instance's lock. It records the TASKSMACK_CONFIG_DIR
+    # it was given, then exits with App::ALREADY_RUNNING_EXIT_CODE.
+    $configSeenFile = Join-Path $root 'config-dir-seen.txt'
+    $exitNow75 = Join-Path $root 'exit-now-75.cmd'
+    Set-Content -LiteralPath $exitNow75 -Encoding ascii -Value @(
+        '@echo off'
+        'echo [%TASKSMACK_CONFIG_DIR%]>"%~dp0config-dir-seen.txt"'
+        'exit /b 75'
+    )
+    # The release file sits next to the stubs, which find it through %~dp0 (their own directory),
+    # so no path has to survive the ASCII batch file.
+    $releaseFile = Join-Path $root 'release-exit-later'
+    function New-ExitLaterStub([string]$Leaf, [int]$Code) {
+        $path = Join-Path $root $Leaf
+        Set-Content -LiteralPath $path -Encoding ascii -Value @(
+            '@echo off'
+            ':wait'
+            "if exist `"%~dp0release-exit-later`" exit /b $Code"
+            'ping -n 2 127.0.0.1 >nul'
+            'goto wait'
+        )
+        return $path
+    }
+    $exitLater3 = New-ExitLaterStub -Leaf 'exit-later-3.cmd' -Code 3
+    $exitLater0 = New-ExitLaterStub -Leaf 'exit-later-0.cmd' -Code 0
     $runForever = Join-Path $root 'run-forever.cmd'
     Set-Content -LiteralPath $runForever -Encoding ascii -Value "@echo off`r`n:loop`r`nping -n 2 127.0.0.1 >nul`r`ngoto loop"
 
     # The recording is a log of events, so the order of trace start/stop against the app is checked.
     $script:events = [System.Collections.Generic.List[string]]::new()
-    $script:stubLeaf = $null
-    function Test-StubRunning([string]$Leaf) {
-        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object { $_.CommandLine -like "*$Leaf*" }).Count -gt 0
+    $script:stubPath = $null
+    function Test-StubRunning([string]$Path) {
+        # Matched by the stub's full path, which holds this run's own $root, not its file name: a
+        # cmd.exe running another copy of this script's stubs (a second ctest in another checkout or
+        # worktree, which RESOURCE_LOCK can't serialise with this one) must not count (#2054).
+        # Each match's own exit state decides, not its presence in the list: a process that has
+        # exited can still be listed for a while, and longer under load, while a handle to it is
+        # open, as Invoke-AppCapture keeps one (#1438).
+        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object {
+                $null -ne $_.CommandLine -and $_.CommandLine.IndexOf($Path, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            } | Where-Object {
+                try { -not (Get-Process -Id $_.ProcessId -ErrorAction Stop).HasExited } catch { $false }
+            }).Count -gt 0
     }
     $traceStart = { $script:events.Add('start') }
-    $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubLeaf))") }
+    $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubPath))") }
     function Invoke-StubCapture {
-        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart)
+        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart, [switch]$UseUserConfig)
         $script:events.Clear()
-        $script:stubLeaf = Split-Path -Leaf $App
+        Remove-Item -LiteralPath $releaseFile -ErrorAction SilentlyContinue
+        # The "exits later" stubs are released only once Invoke-AppCapture has entered the capture
+        # window: it announces the window ('Recording for ...' or 'Exercise the application ...')
+        # after its post-trace-start HasExited check, so a released stub can no longer exit before
+        # that check. Releasing them from the trace start raced it. Commands resolve through the
+        # caller's scopes, so this Write-Host shadows the cmdlet only inside this call.
+        function Write-Host {
+            param([Parameter(Position = 0)][object]$Object)
+            $text = "$Object"
+            if ($text -like 'Recording for *' -or $text -like 'Exercise the application*') {
+                Set-Content -LiteralPath $releaseFile -Encoding utf8 -Value 'go'
+            }
+            Microsoft.PowerShell.Utility\Write-Host $text
+        }
+        $script:stubPath = $App
         $watch = [Diagnostics.Stopwatch]::StartNew()
         # 3>$null: the no-main-window warning is expected for a hidden stub.
         $r = Invoke-AppCapture -BinaryPath $App -StartTrace $StartTrace -StopTrace $traceStop -DurationSeconds $DurationSeconds `
             -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup -MainWindowTimeoutSeconds 0 -InteractiveTimeoutSeconds 60 `
-            -WindowStyle Hidden 3>$null
+            -WindowStyle Hidden -UseUserConfig:$UseUserConfig 3>$null
         $r.Elapsed = $watch.Elapsed.TotalSeconds
+        $r.Released = Test-Path -LiteralPath $releaseFile
         return $r
     }
 
     # Exits at once with 0, or with an error code: fails during warm-up, and the trace is never
-    # started (no UAC prompt for a run that already failed).
+    # started (no UAC prompt for a run that already failed). The warm-up is a wait for the app
+    # to exit, so a long one costs nothing when the stub exits promptly; a 1 s warm-up failed
+    # this check whenever a loaded machine took longer than that to run the stub (#1438).
     foreach ($case in @(@{ App = $exitNow0; Code = 0 }, @{ App = $exitNow3; Code = 3 })) {
         foreach ($duration in @(0, 30)) {
-            $r = Invoke-StubCapture -App $case.App -DurationSeconds $duration -WarmupSeconds 1
+            $r = Invoke-StubCapture -App $case.App -DurationSeconds $duration -WarmupSeconds 30
             Assert-True ($r.Failure -like '*exited during warm-up*') "Immediate exit ($($case.Code), duration $duration) must fail in warm-up: $($r.Failure)"
             Assert-True ($r.ExitCode -eq $case.Code) "Exit code $($r.ExitCode), expected $($case.Code)"
             Assert-True ($script:events.Count -eq 0) "The trace must not start for an app that died in warm-up: $($script:events -join ', ')"
         }
     }
 
+    # #2250: by default the app gets a fresh TASKSMACK_CONFIG_DIR of its own, removed once it has
+    # exited, and this process's own value is left as it was. The "already running" exit code fails
+    # the capture with that reason, before any trace starts.
+    $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+    try {
+        $env:TASKSMACK_CONFIG_DIR = 'inherited-config'
+        Remove-Item -LiteralPath $configSeenFile -ErrorAction SilentlyContinue
+        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 30 -WarmupSeconds 30
+        $seen = (Get-Content -LiteralPath $configSeenFile -Raw).Trim()
+        Assert-True ($seen -eq "[$($r.ConfigDirectory)]" -and $seen -like '*tasksmack-profile-config-*') "The app must get the capture's own config directory: saw $seen, capture used $($r.ConfigDirectory)"
+        Assert-True (-not (Test-Path -LiteralPath $r.ConfigDirectory)) "The capture's config directory must be removed once the app exits: $($r.ConfigDirectory)"
+        Assert-True ($env:TASKSMACK_CONFIG_DIR -eq 'inherited-config') "The script's own TASKSMACK_CONFIG_DIR must be restored: '$env:TASKSMACK_CONFIG_DIR'"
+        Assert-True ($r.ExitCode -eq 75 -and $r.Failure -like '*already running*') "The 'already running' exit must fail with that reason: $($r.Failure) (exit $($r.ExitCode))"
+        Assert-True ($script:events.Count -eq 0) "The trace must not start for an 'already running' launch: $($script:events -join ', ')"
+        # -UseUserConfig: the config the app would use on its own, here the inherited value.
+        Remove-Item -LiteralPath $configSeenFile -ErrorAction SilentlyContinue
+        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 0 -WarmupSeconds 30 -UseUserConfig
+        $seen = (Get-Content -LiteralPath $configSeenFile -Raw).Trim()
+        Assert-True ($seen -eq '[inherited-config]') "-UseUserConfig must leave the app's config directory alone: saw $seen"
+        Assert-True ($r.Failure -like '*already running*') "-UseUserConfig 'already running' exit must fail: $($r.Failure)"
+    }
+    finally {
+        $env:TASKSMACK_CONFIG_DIR = $savedConfigDir
+    }
+
     # Exits with an error during a fixed window: fails, and the trace is stopped at once rather
     # than at the end of the 30 s window.
     $r = Invoke-StubCapture -App $exitLater3 -DurationSeconds 30 -WarmupSeconds 0
+    Assert-True $r.Released "The stub was never released: Invoke-AppCapture no longer announces the capture window as Invoke-StubCapture expects ($($r.EndReason))"
     Assert-True ($r.Failure -like '*capture window*' -and $r.ExitCode -eq 3) "A crash mid-window must fail: $($r.Failure) (exit $($r.ExitCode))"
     Assert-True (($script:events -join ',') -eq 'start,stop(app running: False)') "Trace events: $($script:events -join ', ')"
     Assert-True ($r.Elapsed -lt 20) "The crash must end the capture promptly, took $($r.Elapsed) s"
@@ -250,7 +358,7 @@ try {
     $failed = try { Invoke-StubCapture -App $runForever -DurationSeconds 30 -WarmupSeconds 0 -StartTrace { throw 'UAC denied' }; $null } catch { $_ }
     Assert-True ($null -ne $failed -and $failed.ToString() -like '*UAC denied*') "A failed trace start must throw: $failed"
     Assert-True ($script:events.Count -eq 0) "Nothing to stop after a failed start: $($script:events -join ', ')"
-    Assert-True (-not (Test-StubRunning 'run-forever.cmd')) 'The app launched for a failed capture was left running'
+    Assert-True (-not (Test-StubRunning $runForever)) 'The app launched for a failed capture was left running'
 
     # The elevated-run role cannot run without -ElevatedTarget, which names and labels the capture
     # as elevated. Checked before elevation, so this needs no elevated token.
@@ -264,6 +372,9 @@ try {
             -Timestamp $Name -DurationSeconds $DurationSeconds -WarmupSeconds 0 -MainWindowTimeoutSeconds 0 *>&1 | Out-String
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
     }
+    # The script's own dry-run trace start does not release the "exits later" stub, so release it
+    # up front: it then exits with 3 during the warm-up or the window, and either is a failed capture.
+    Set-Content -LiteralPath $releaseFile -Encoding utf8 -Value 'go'
     foreach ($case in @(@{ App = $exitNow0; Name = 'now0' }, @{ App = $exitNow3; Name = 'now3' }, @{ App = $exitLater3; Name = 'later3' })) {
         $run = Invoke-DryRun -App $case.App -Name $case.Name -DurationSeconds 30
         Assert-True ($run.ExitCode -ne 0) "A crashing app ($($case.Name)) must fail the script: $($run.Output)"
@@ -271,11 +382,23 @@ try {
         Assert-True ($run.Output -notmatch '(?m)^(TRACE|DRY_RUN)=') "A failed capture must not report success ($($case.Name)): $($run.Output)"
         Assert-True (Test-Path -LiteralPath (Join-Path $root "dry\etw-app-$($case.Name).manifest.json")) "The manifest must still be written ($($case.Name))"
     }
+    $run = Invoke-DryRun -App $exitNow75 -Name 'running75' -DurationSeconds 30
+    Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*Capture failed*already running*') "An 'already running' launch must fail the script (#2250): $($run.Output)"
+    Assert-True ($run.Output -notmatch '(?m)^(TRACE|DRY_RUN)=') "An 'already running' launch must not report success: $($run.Output)"
     $run = Invoke-DryRun -App $runForever -Name 'ok' -DurationSeconds 2
     Assert-True ($run.ExitCode -eq 0 -and $run.Output -match '(?m)^DRY_RUN=ok') "A running app must succeed: $($run.Output)"
     Assert-True ($run.Output -match 'Preset: win-release') "The default app preset must be win-release and logged: $($run.Output)"
-    $okManifest = Get-Content -LiteralPath (Join-Path $root 'dry\etw-app-ok.manifest.json') -Raw | ConvertFrom-Json
+    $okManifestPath = Join-Path $root 'dry\etw-app-ok.manifest.json'
+    $okManifestText = Get-Content -LiteralPath $okManifestPath -Raw
+    $okManifest = $okManifestText | ConvertFrom-Json
     Assert-True ($okManifest.Preset -eq 'win-release' -and $null -eq $okManifest.Target.Failure) "Manifest: $($okManifest | ConvertTo-Json -Compress -Depth 5)"
+
+    # #2254: the same explicit -Timestamp again fails before launching anything, and leaves the
+    # earlier run's manifest as it was.
+    $run = Invoke-DryRun -App $runForever -Name 'ok' -DurationSeconds 2
+    Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*-Timestamp ok already wrote*') "A reused -Timestamp must fail: $($run.Output)"
+    Assert-True ($run.Output -notmatch '(?m)^DRY_RUN=') "A reused -Timestamp must not report success: $($run.Output)"
+    Assert-True ((Get-Content -LiteralPath $okManifestPath -Raw) -ceq $okManifestText) 'A reused -Timestamp overwrote the earlier manifest'
 
     $unlabelled = & $hostExe -NoProfile -File $profileScript app -Role ElevatedRun -SkipBuild -OutputDirectory $root 2>&1 | Out-String
     Assert-True ($LASTEXITCODE -ne 0 -and $unlabelled -like '*requires -ElevatedTarget*') "Expected the -ElevatedTarget refusal: $unlabelled"
@@ -322,7 +445,7 @@ try {
             Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
             $normal = Start-StubCollector -Name 'normal' -TimeoutSeconds 120 -StartExit 0
             Wait-CollectorMarker -Path (Join-Path $normal.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $normal.Process
-            Set-Content -LiteralPath (Join-Path $normal.Control 'stop-requested') -Value 'now'
+            Set-Content -LiteralPath (Join-Path $normal.Control 'stop-requested') -Encoding utf8 -Value 'now'
             Assert-True ($normal.Process.WaitForExit(60000)) 'Collector did not exit after the stop request'
             Assert-True ($normal.Process.ExitCode -eq 0) "Collector exit code $($normal.Process.ExitCode)"
             Assert-True (Test-Path -LiteralPath (Join-Path $normal.Control 'collector-done.json')) 'No done marker'
@@ -363,11 +486,11 @@ try {
                 Assert-True (-not (Test-Path -LiteralPath $failFlag)) "${What}: the failing stop was never attempted"
             }
             Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
-            Set-Content -LiteralPath $failFlag -Value 'fail'
+            Set-Content -LiteralPath $failFlag -Encoding utf8 -Value 'fail'
             $env:WPR_STUB_START_EXIT = '0'
             $retried = Start-StubCollector -Name 'stopfail' -TimeoutSeconds 120 -StartExit 0
             Wait-CollectorMarker -Path (Join-Path $retried.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $retried.Process
-            Set-Content -LiteralPath (Join-Path $retried.Control 'stop-requested') -Value 'now'
+            Set-Content -LiteralPath (Join-Path $retried.Control 'stop-requested') -Encoding utf8 -Value 'now'
             Assert-True ($retried.Process.WaitForExit(60000)) 'Collector hung after a failed stop'
             Assert-True ($retried.Process.ExitCode -ne 0) 'A failed wpr -stop must fail the collector'
             Assert-StopRetried 'collector'
@@ -391,13 +514,13 @@ try {
 
             foreach ($case in @(@{ Mode = 'app'; App = $runForever }, @{ Mode = 'bench'; App = $exitNow0 })) {
                 Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
-                Set-Content -LiteralPath $failFlag -Value 'fail'
+                Set-Content -LiteralPath $failFlag -Encoding utf8 -Value 'fail'
                 $run = Invoke-ElevatedRun -Mode $case.Mode -App $case.App -Name "er-stopfail-$($case.Mode)"
                 Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*exit code 7*') "Elevated $($case.Mode) run with a failed stop must fail: $($run.Output)"
                 Assert-True ($run.Output -notmatch 'ETW_TRACE=') "Elevated $($case.Mode) run with a failed stop must not report a trace"
                 Assert-StopRetried "elevated $($case.Mode)"
             }
-            Assert-True (-not (Test-StubRunning 'run-forever.cmd')) 'The elevated run left the app running'
+            Assert-True (-not (Test-StubRunning $runForever)) 'The elevated run left the app running'
         }
         finally {
             $env:PATH = $savedPath

@@ -1,5 +1,6 @@
 #include "App/DialogGeometry.h"
 #include "App/ProcessColumnConfig.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
@@ -7,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -115,10 +117,11 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",         "name",        "user",        "ppid",        "publisher",  "state",         "status",     "type",
-        "cpu_percent", "mem_percent", "resident",    "virtual",     "shared",     "peak_resident", "nice",       "affinity",
-        "threads",     "handles",     "gdi_objects", "cpu_time",    "start_time", "io_read",       "io_write",   "page_faults",
-        "net_sent",    "net_recv",    "power",       "gpu_percent", "gpu_memory", "gpu_engine",    "gpu_device", "command",
+        "pid",           "name",       "user",         "ppid",        "publisher",   "container",  "services",   "state",
+        "status",        "type",       "architecture", "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",
+        "peak_resident", "private",    "swap",         "nice",        "affinity",    "threads",    "handles",    "gdi_objects",
+        "cpu_time",      "start_time", "io_read",      "io_write",    "page_faults", "net_sent",   "net_recv",   "power",
+        "gpu_percent",   "gpu_memory", "gpu_engine",   "gpu_device",  "npu_percent", "npu_memory", "npu_engine", "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -140,6 +143,43 @@ TEST(ProcessColumnConfigTest, HeadersUseThePlainLanguageNames)
     EXPECT_EQ(getColumnInfo(ProcessColumn::PageFaults).name, "Page Faults");
     EXPECT_EQ(getColumnInfo(ProcessColumn::NetReceived).name, "Net Received");
     EXPECT_EQ(getColumnInfo(ProcessColumn::GpuDevice).name, "GPU");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuPercent).name, "NPU %");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuMemory).name, "NPU Mem");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuEngine).name, "NPU Engine");
+}
+
+// #2240: the CPU Time description (header tooltip and F1 Help) shows the format the cells use,
+// UI::Format::formatDuration()'s two largest units, not the old "H:MM:SS".
+TEST(ProcessColumnConfigTest, CpuTimeDescriptionMatchesTheCellFormat)
+{
+    const std::string_view description = getColumnInfo(ProcessColumn::CpuTime).description;
+    EXPECT_EQ(description.find("H:MM:SS"), std::string_view::npos);
+    EXPECT_EQ(description.find("M:SS"), std::string_view::npos);
+    const auto examples = std::to_array<double>({45.0, 125.0, 3725.0, (3.0 * 86400.0) + (4.0 * 3600.0)});
+    for (const double seconds : examples)
+    {
+        const std::string example = UI::Format::formatDuration(seconds);
+        EXPECT_NE(description.find(example), std::string_view::npos) << example;
+    }
+}
+
+// #1799: the NPU columns sit after the GPU ones, before Command, and are off by default (as Task
+// Manager's are) but can be shown from the Columns menu.
+TEST(ProcessColumnConfigTest, TheNpuColumnsFollowTheGpuOnesAndAreOffByDefault)
+{
+    EXPECT_EQ(toIndex(ProcessColumn::NpuPercent), toIndex(ProcessColumn::GpuDevice) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::NpuMemory), toIndex(ProcessColumn::NpuPercent) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::NpuEngine), toIndex(ProcessColumn::NpuMemory) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::Command), toIndex(ProcessColumn::NpuEngine) + 1);
+    const ProcessColumnSettings defaults;
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        const ProcessColumnInfo info = getColumnInfo(col);
+        EXPECT_FALSE(info.defaultVisible) << info.configKey;
+        EXPECT_TRUE(info.canHide) << info.configKey;
+        EXPECT_FALSE(defaults.isVisible(col)) << info.configKey;
+        EXPECT_TRUE(info.menuName.starts_with("NPU")) << info.configKey;
+    }
 }
 
 // #1101: per-process network counts TCP only on both platforms; the column tooltips must say so
@@ -151,7 +191,10 @@ TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters
         const std::string_view note = columnCapabilityNote(col, false);
         EXPECT_TRUE(note.contains("TCP only")) << getColumnInfo(col).configKey;
         EXPECT_TRUE(note.contains("UDP")) << getColumnInfo(col).configKey;
-        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
+        // With the UDP event trace delivering (#1492), the note says both are counted.
+        const std::string_view withUdp = columnCapabilityNote(col, true);
+        EXPECT_TRUE(withUdp.contains("TCP and UDP")) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(withUdp.contains("TCP only")) << getColumnInfo(col).configKey;
     }
 }
 
@@ -164,6 +207,7 @@ TEST(ProcessColumnConfigTest, OtherColumnsHaveNoCapabilityNote)
             continue;
         }
         EXPECT_TRUE(columnCapabilityNote(col, false).empty()) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
     }
 }
 
@@ -191,9 +235,12 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     // documented order, and no accidental reorder should go undetected.
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
-    EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
-    EXPECT_EQ(toIndex(ProcessColumn::Type), 7);        // Process type — after State(5) and Status(6)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 18); // GDI count — after Handles(17)
+    EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);     // Windows publisher — after User(2) and PPID(3)
+    EXPECT_EQ(toIndex(ProcessColumn::Container), 5);     // Linux container (#805)
+    EXPECT_EQ(toIndex(ProcessColumn::Services), 6);      // Services (#1886) — last of the identity columns
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 9);          // Process type — after State(7) and Status(8)
+    EXPECT_EQ(toIndex(ProcessColumn::Architecture), 10); // Architecture (#2394) — after Type
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 23);   // GDI count — after Handles(22); Private and Swap (#1885) sit before them
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
@@ -216,7 +263,7 @@ TEST(ProcessColumnConfigTest, AllColumnsContainsUniqueColumns)
     for (const auto col : columns)
     {
         // Check not seen before
-        EXPECT_EQ(std::find(seen.begin(), seen.end(), col), seen.end()) << "Duplicate column detected";
+        EXPECT_EQ(std::ranges::find(seen, col), seen.end()) << "Duplicate column detected";
         seen.push_back(col);
     }
 }
@@ -331,14 +378,13 @@ TEST(ProcessColumnSettingsTest, AllColumnsCanBeShown)
 TEST(ProcessColumnSettingsTest, ResetRestoresTheDefaultColumns)
 {
     ProcessColumnSettings settings;
-    EXPECT_TRUE(settings.isDefault());
+    EXPECT_EQ(settings.visible, ProcessColumnSettings::defaults().visible);
 
     settings.requestVisible(ProcessColumn::Command, false);
     settings.requestVisible(ProcessColumn::Threads, true);
-    EXPECT_FALSE(settings.isDefault());
+    EXPECT_NE(settings.visible, ProcessColumnSettings::defaults().visible);
 
     settings = ProcessColumnSettings::defaults();
-    EXPECT_TRUE(settings.isDefault());
     EXPECT_EQ(settings, ProcessColumnSettings{});
     for (const ProcessColumn col : allProcessColumns())
     {
@@ -425,16 +471,30 @@ TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
 
 TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
 {
-    for (const ProcessColumn col :
-         {ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
-          ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
-          ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
-          ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
-          ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
-          ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory})
+    for (const ProcessColumn col : {
+             ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
+             ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
+             ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
+             ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
+             ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
+             ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory,  ProcessColumn::NpuPercent,
+             ProcessColumn::NpuMemory,  ProcessColumn::Private,    ProcessColumn::Swap,
+         })
     {
         EXPECT_EQ(columnAlignment(col), ColumnAlign::Right) << getColumnInfo(col).configKey;
     }
+}
+
+// #1880: the Services column is off by default (keeping it current reads the service list), and can be
+// shown and saved like any other.
+TEST(ProcessColumnConfigTest, TheServicesColumnIsHiddenByDefault)
+{
+    const ProcessColumnInfo info = getColumnInfo(ProcessColumn::Services);
+    EXPECT_EQ(info.name, "Services");
+    EXPECT_EQ(info.configKey, "services");
+    EXPECT_FALSE(info.defaultVisible);
+    EXPECT_TRUE(info.canHide);
+    EXPECT_FALSE(ProcessColumnSettings{}.isVisible(ProcessColumn::Services));
 }
 
 TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
@@ -442,10 +502,13 @@ TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
     for (const ProcessColumn col : {ProcessColumn::Name,
                                     ProcessColumn::User,
                                     ProcessColumn::Publisher,
+                                    ProcessColumn::Services,
                                     ProcessColumn::Status,
                                     ProcessColumn::Type,
+                                    ProcessColumn::Architecture,
                                     ProcessColumn::GpuEngine,
                                     ProcessColumn::GpuDevice,
+                                    ProcessColumn::NpuEngine,
                                     ProcessColumn::Command})
     {
         EXPECT_EQ(columnAlignment(col), ColumnAlign::Left) << getColumnInfo(col).configKey;

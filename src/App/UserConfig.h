@@ -1,12 +1,17 @@
 #pragma once
 
+#include "App/CoalescingWriter.h"
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 #include "UI/Theme.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +19,14 @@
 
 namespace App
 {
+
+/// The format of the config file TaskSmack writes, its top-level `config_version` key (#1376).
+///  - 1 (no key): [process_columns] lists every column, whether or not the user chose it.
+///  - 2: [process_columns] lists only the columns whose visibility the user chose; every other column
+///    follows the defaults, including the ones that depend on what this system can fill (#1210).
+/// A version 1 file is migrated when it is read (ProcessColumnSettings::isLegacyChoice()) and
+/// rewritten in the new format on the next save.
+inline constexpr std::int64_t CONFIG_FORMAT_VERSION = 2;
 
 /// User configuration settings that persist across sessions
 struct UserSettings
@@ -26,6 +39,9 @@ struct UserSettings
 
     // Process table column visibility
     ProcessColumnSettings processColumns;
+
+    // Which Processes columns draw an inline meter behind their text (#1528), [process_meters].
+    ProcessRowMeter::Settings processMeters;
 
     // Process table column widths, order and sort, as ImGui's own "[Table]" settings text (#952).
     // Opaque to TaskSmack: it is filtered by ProcessTableSettings::sanitize() and handed to ImGui.
@@ -43,6 +59,12 @@ struct UserSettings
     // Controls how long per-process network stats are cached.
     // Lower values = fresher data but more kernel queries.
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
+
+    // Count UDP per process (Windows only), [sampling] udp_event_trace. Off by default: per-process
+    // network counters are TCP only. On, and with TaskSmack running as administrator, the Processes
+    // panel starts an ETW session on the kernel's network provider to count UDP too (#1492). Settings
+    // toggles it; the change applies at once.
+    bool udpEventTrace = false;
 
     // Metrics Calculation Parameters
     // Network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A per-process or
@@ -84,6 +106,18 @@ struct UserSettings
     // Set to false permanently via "Don't show again" in the dialog.
     bool showPrivilegeNotice = true;
 
+    // Whether the Processes table, Process Details and the Services and Startup tabs show each
+    // program's icon beside its name (#1800); off, the names stand alone.
+    bool showProcessIcons = true;
+
+    // Whether the Overview's CPU Details block is expanded (#809); its heading toggles it. A config
+    // written before the block existed has no such key and loads expanded.
+    bool cpuDetailsExpanded = true;
+
+    // The folder "Create dump file..." writes to (#2001), [dumps] folder, UTF-8: the last one chosen
+    // with the confirm's "Save dump to...". Empty, or a folder that no longer exists: the temp folder.
+    std::string dumpFolder;
+
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom
     // borderless title bar. Only has an effect on native Wayland; read once at startup
@@ -110,7 +144,8 @@ class UserConfig
     UserConfig(UserConfig&&) = delete;
     auto operator=(UserConfig&&) -> UserConfig& = delete;
 
-    /// Load settings from config file (call on startup)
+    /// Load settings from config file (call on startup). A background save still being written is
+    /// finished first (flushPendingSave()), so the file is read as it leaves it.
     void load();
 
     /// Parses `tomlText` as a config file and reads every setting it holds into `settings`, the same
@@ -126,7 +161,20 @@ class UserConfig
     /// alone and nothing is saved. The read-merge-rename isn't locked against another TaskSmack:
     /// main() lets only one run per config directory (InstanceLock, #1230).
     /// Resets the loaded flag so a subsequent load() call will re-read from disk.
+    /// Synchronous, on the calling thread: for the exit path (ShellLayer::onDetach(), after which
+    /// nothing draws) and a caller that needs the file at once. A background save still in flight or
+    /// queued is written first, so the settings written here always land last (#2916).
     void save();
+
+    /// What the UI thread calls when the user changes a setting (#2916): a copy of the settings is
+    /// written by the ts-config-save worker, never on the calling thread, which never does file I/O
+    /// (#2731). Coalesced: while one write is in flight, later calls replace each other's unwritten
+    /// copy, so rapid clicks cost one more write, of the last state. A failure is logged once for a run
+    /// of failed writes. save() and flushPendingSave() wait for it.
+    void saveInBackground();
+
+    /// Waits until every saveInBackground() so far is written.
+    void flushPendingSave();
 
     /// Get current settings
     [[nodiscard]] auto settings() const -> const UserSettings&
@@ -159,11 +207,22 @@ class UserConfig
     /// Application code should never call this method.
     void resetConfigPathForTesting(const std::filesystem::path& path)
     {
+        flushPendingSave(); // a background save still writes to the previous path
         m_ConfigPath = path;
         m_Settings = UserSettings{};
         m_Synced = UserSettings{};
         m_IsLoaded = false;
         m_TempNameSource = nullptr;
+        m_FailingSaveStep = SaveStep::None;
+        m_FailingSaveErrno = 0;
+        m_EffectiveUidForTesting.reset();
+    }
+
+    /// Testing only: save() runs as if its effective user ID were @p uid (0: root, #2121); nullopt for the
+    /// real one. Reset by resetConfigPathForTesting().
+    void setEffectiveUidForTesting(std::optional<std::uint32_t> uid)
+    {
+        m_EffectiveUidForTesting = uid;
     }
 
     /// Replaces the random number that names save()'s staging file, so a test can make every
@@ -173,21 +232,68 @@ class UserConfig
         m_TempNameSource = std::move(source);
     }
 
+    /// A step of save() a test can make fail (#1395): the errors no real filesystem gives on demand.
+    enum class SaveStep : std::uint8_t
+    {
+        None,
+        OwnerStat,      ///< Reading the existing config's owner (POSIX)
+        AclRead,        ///< Reading its access ACL (Linux)
+        CreateStaging,  ///< Creating the staging file (POSIX)
+        Write,          ///< Writing the staging file (POSIX)
+        Chown,          ///< Giving it the original's owner (POSIX)
+        Acl,            ///< Giving it the original's access ACL (Linux)
+        Chmod,          ///< Giving it the original's mode (POSIX)
+        Close,          ///< Closing it (POSIX)
+        Rename,         ///< Renaming it over the config
+        ChownDirectory, ///< Giving a directory save() created to the user, running as root (POSIX, #2121)
+    };
+
+    /// Testing only: save()'s @p step fails from now on with @p errorNumber, as if its system call had
+    /// returned that error. SaveStep::None for none. Reset by resetConfigPathForTesting().
+    void failSaveStepForTesting(SaveStep step, int errorNumber)
+    {
+        m_FailingSaveStep = step;
+        m_FailingSaveErrno = errorNumber;
+    }
+
   private:
     UserConfig();
     ~UserConfig() = default;
 
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
-    bool m_IsLoaded = false;
+    std::atomic<bool> m_IsLoaded = false; // also reset by a background save, on its worker
 
     // The settings as TaskSmack last read them from, or wrote them to, the file (the merge base for
     // save(), #1122). With no readable file at startup it is the settings TaskSmack started with,
     // so a file created or repaired before the first save only gets what TaskSmack changed.
     UserSettings m_Synced;
     std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
+    SaveStep m_FailingSaveStep = SaveStep::None;     // Testing only (failSaveStepForTesting())
+    int m_FailingSaveErrno = 0;
+    std::optional<std::uint32_t> m_EffectiveUidForTesting; // Testing only (setEffectiveUidForTesting())
+
+    /// Whether @p step is the one a test made fail; sets errno to its error if so.
+    [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;
 
     static auto getConfigDirectory() -> std::filesystem::path;
+
+    /// The file write behind save() and saveInBackground(): @p settings merged into the file as it is.
+    /// Logs why when it fails. Serialised by m_WriteMutex; on success @p settings becomes m_Synced.
+    [[nodiscard]] bool writeSettings(const UserSettings& settings);
+    /// writeSettings() as the background writer's sink, on its worker.
+    [[nodiscard]] bool writeInBackground(const UserSettings& settings);
+    /// The background writer's failure report, once for a run of failed writes.
+    void reportBackgroundSaveFailure() const;
+
+    // Held for each file write and for load(): writes never overlap (a worker's and save()'s), and
+    // m_Synced, their merge base, is read and replaced under it.
+    std::mutex m_WriteMutex;
+    // Last: destroyed first, its destructor writing what is still pending while everything the sink
+    // uses is alive.
+    CoalescingWriter<UserSettings> m_Writer{Platform::SETTINGS_SAVE_THREAD_NAME,
+                                            [this](const UserSettings& settings) { return writeInBackground(settings); },
+                                            [this] { reportBackgroundSaveFailure(); }};
 };
 
 } // namespace App

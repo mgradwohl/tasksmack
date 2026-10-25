@@ -15,7 +15,7 @@ namespace App
 
 /// All available columns for the process table.
 /// Order here defines the default column order.
-/// Grouped by category: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, Command
+/// Grouped by category: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, NPU, Command
 enum class ProcessColumn : std::uint8_t
 {
     // Identity - who is this process?
@@ -24,17 +24,23 @@ enum class ProcessColumn : std::uint8_t
     User,
     PPID,
     Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
+    Container, // Container from cgroups: "docker:1a2b3c4d5e6f" (Linux-only)
+    Services,  // Services the process hosts: "Dhcp, EventLog" (#1880)
                // State - what is it doing?
     State,
     Status,
-    Type, // Process type: App / Background Process / Windows Process (Windows-only)
-          // Resource usage - how much is it consuming?
+    Type,         // Process type: App / Background Process / Windows Process (Windows-only)
+    Architecture, // The architecture it runs as: x64, ARM64, "x64 (emulated)", "x86 (WOW64)" (#2394)
+                  // Resource usage - how much is it consuming?
     CpuPercent,
     MemPercent,
     Resident,
     Virtual,
     Shared,
     PeakResident,
+    // Private and Swap: RssAnon and VmSwap on Linux (#1885); neither on Windows (#1879)
+    Private,
+    Swap,
     // Scheduling - how is it scheduled?
     Priority,
     Affinity,
@@ -58,6 +64,10 @@ enum class ProcessColumn : std::uint8_t
     GpuMemory,
     GpuEngine,
     GpuDevice,
+    // NPU: the NPUs and other compute accelerators, never counted in the GPU columns (#1799)
+    NpuPercent,
+    NpuMemory,
+    NpuEngine,
     // Command line (typically last, fixed width by default for stable horizontal scroll extent)
     Command,
     Count
@@ -65,17 +75,20 @@ enum class ProcessColumn : std::uint8_t
 
 [[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
-    // Order matches enum definition: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, Command
+    // Order matches enum definition: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, NPU, Command
     return {// Identity
             ProcessColumn::PID,
             ProcessColumn::Name,
             ProcessColumn::User,
             ProcessColumn::PPID,
             ProcessColumn::Publisher,
+            ProcessColumn::Container,
+            ProcessColumn::Services,
             // State
             ProcessColumn::State,
             ProcessColumn::Status,
             ProcessColumn::Type,
+            ProcessColumn::Architecture,
             // Resources
             ProcessColumn::CpuPercent,
             ProcessColumn::MemPercent,
@@ -83,6 +96,8 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::Virtual,
             ProcessColumn::Shared,
             ProcessColumn::PeakResident,
+            ProcessColumn::Private,
+            ProcessColumn::Swap,
             // Scheduling
             ProcessColumn::Priority,
             ProcessColumn::Affinity,
@@ -106,6 +121,10 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::GpuMemory,
             ProcessColumn::GpuEngine,
             ProcessColumn::GpuDevice,
+            // NPU
+            ProcessColumn::NpuPercent,
+            ProcessColumn::NpuMemory,
+            ProcessColumn::NpuEngine,
             // Command (last)
             ProcessColumn::Command};
 }
@@ -150,6 +169,10 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="PPID", .menuName="Parent PID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Publisher (Windows-only)
         {.name="Publisher", .menuName="Publisher", .configKey="publisher", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Software publisher or vendor name from the process executable (Windows only)"},
+        // Container (Linux-only)
+        {.name="Container", .menuName="Container", .configKey="container", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="Container the process runs in, from its cgroup: runtime and short ID (docker, podman, containerd, cri-o, k8s) or name (lxc, nspawn, machine) (Linux only)"},
+        // Services (#1880): off by default; while shown, the service list is kept current
+        {.name="Services", .menuName="Services", .configKey="services", .defaultWidth=160.0F, .defaultVisible=false, .canHide=true, .description="Services the process hosts: on Windows those the service manager runs in it (several share an svchost.exe), on Linux the systemd service its cgroup is in. Hover a cell for the full list"},
 
         // === State ===
         // State
@@ -158,6 +181,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Type (Windows-only)
         {.name="Type", .menuName="Type", .configKey="type", .defaultWidth=120.0F, .defaultVisible=false, .canHide=true, .description="Process type: App (has UI), Background Process, or Windows Process (Windows only)"},
+        // Architecture (#2394)
+        {.name="Architecture", .menuName="Architecture", .configKey="architecture", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="The architecture the process runs as: x64, x86, ARM64, ARM64EC or ARM32. (emulated) marks code translated to this machine's own as it runs (x64 on ARM64), which costs performance; (WOW64) on Windows and (32-bit) on Linux mark a 32-bit program its 64-bit OS runs natively"},
 
         // === Resources ===
         // CPU%
@@ -165,13 +190,17 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // MEM%
         {.name="Mem %", .menuName="Mem %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
         // RES
-        {.name="Memory", .menuName="Memory (Resident)", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
+        {.name="Memory", .menuName="Memory (Resident)", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Physical RAM in use: the private working set on Windows (as Task Manager's Memory column), the resident set size (the resident field of /proc/[pid]/statm, shared pages included) on Linux"},
         // VIRT
-        {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
+        {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory: the commit size on Windows (memory committed for the process, as Task Manager's Commit size), the whole address space (vsize from /proc/[pid]/stat) on Linux"},
         // SHR
-        {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
+        {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory: the shareable working set on Windows (the pages of its working set that can be shared with other processes, such as DLLs and mapped files: the working set less its private working set), the resident shared pages (the shared field of /proc/[pid]/statm) on Linux"},
         // PEAK RES
-        {.name="Peak Mem", .menuName="Peak Memory", .configKey="peak_resident", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
+        {.name="Peak Mem", .menuName="Peak Memory", .configKey="peak_resident", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum): the peak working set on Windows, shared pages included; VmHWM on Linux"},
+        // Private (#1885, #1879)
+        {.name="Private", .menuName="Private Memory", .configKey="private", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Memory no other process shares: the resident anonymous pages (RssAnon: heap, stacks, private mappings) on Linux"},
+        // Swap (#1885, #1879)
+        {.name="Swap", .menuName="Swap", .configKey="swap", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="The part of the process swapped out to disk or zram (VmSwap) on Linux"},
 
         // === Scheduling ===
         // Priority (human-readable label derived from nice value)
@@ -188,7 +217,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === Time ===
         // TIME+
-        {.name="CPU Time", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS, or M:SS under an hour)"},
+        {.name="CPU Time", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time, in its two largest units (45s, 2m 05s, 1h 02m, 3d 04h)"},
         // Start Time
         {.name="Started", .menuName="Start Time", .configKey="start_time", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Process start time"},
 
@@ -220,6 +249,14 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // GPU Device
         {.name="GPU", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
 
+        // === NPU (#1799): NPUs and other compute accelerators, kept out of the GPU columns ===
+        // NPU Percent: also shown by default once an accelerator is known (ProcessColumnAvailability::defaultVisible(), #1870)
+        {.name="NPU %", .menuName="NPU %", .configKey="npu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="NPU utilization on the busiest NPU or compute accelerator the process uses (0-100%, as the NPU tab reports it)"},
+        // NPU Memory
+        {.name="NPU Mem", .menuName="NPU Memory", .configKey="npu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="NPU memory in use, counted as the NPU tab counts it: the shared memory an NPU maps from system RAM, or its dedicated memory"},
+        // NPU Engine
+        {.name="NPU Engine", .menuName="NPU Engine", .configKey="npu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active NPU engines (Compute, etc.)"},
+
         // === Command (last, fixed-width by default) ===
         // Command
         {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=420.0F, .defaultVisible=true, .canHide=true, .description="Full command line"},
@@ -247,10 +284,14 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Name:
     case ProcessColumn::User:
     case ProcessColumn::Publisher:
+    case ProcessColumn::Container:
+    case ProcessColumn::Services:
     case ProcessColumn::Status:
     case ProcessColumn::Type:
+    case ProcessColumn::Architecture:
     case ProcessColumn::GpuEngine:
     case ProcessColumn::GpuDevice:
+    case ProcessColumn::NpuEngine:
     case ProcessColumn::Command:
         return ColumnAlign::Left;
     case ProcessColumn::State:
@@ -263,15 +304,19 @@ enum class ColumnAlign : std::uint8_t
 /// What a column's header tooltip adds to its description about what the platform leaves out, or
 /// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
 /// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
-/// 0 B/s (#1101).
+/// 0 B/s (#1101). With UDP counted (Windows' opt-in UDP event trace, #1492), they say that instead.
 /// @param hasUdpNetworkCounters  ProcessCapabilities::hasUdpNetworkCounters.
 [[nodiscard]] constexpr auto columnCapabilityNote(ProcessColumn col, bool hasUdpNetworkCounters) -> std::string_view
 {
-    if ((col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived) && !hasUdpNetworkCounters)
+    if (col != ProcessColumn::NetSent && col != ProcessColumn::NetReceived)
     {
-        return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
+        return {};
     }
-    return {};
+    if (hasUdpNetworkCounters)
+    {
+        return "TCP and UDP: UDP is counted by a Windows network event trace (Settings)";
+    }
+    return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
 }
 
 /// Default width of a column in pixels at the current font.
@@ -381,6 +426,18 @@ struct ProcessColumnSettings
         return chosen[toIndex(col)];
     }
 
+    /// Whether `col` saved as `vis` in a config written before the sparse [process_columns] format
+    /// (UserConfig's CONFIG_FORMAT_VERSION, #1376) was the user's choice. Those configs listed every
+    /// column, chosen or not, so only a value other than the column's default can be told apart as a
+    /// choice; one equal to it is taken for a column the user never touched. The default compared
+    /// against is getColumnInfo()'s, as those configs were written with, not this system's
+    /// capability-aware one (ProcessColumnAvailability::defaultColumns()). A column the user had
+    /// deliberately set back to its default is indistinguishable, and follows the defaults again.
+    [[nodiscard]] static bool isLegacyChoice(ProcessColumn col, bool vis)
+    {
+        return vis != getColumnInfo(col).defaultVisible;
+    }
+
     /// Sets the default visibility of a column whose visibility was not chosen; one that was is left alone.
     void setDefaultVisible(ProcessColumn col, bool vis)
     {
@@ -417,12 +474,6 @@ struct ProcessColumnSettings
     [[nodiscard]] static ProcessColumnSettings defaults()
     {
         return {};
-    }
-
-    /// Whether every column is shown or hidden as it is by default.
-    [[nodiscard]] bool isDefault() const
-    {
-        return visible == defaults().visible;
     }
 
     friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;

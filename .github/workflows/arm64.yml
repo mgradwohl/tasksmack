@@ -1,0 +1,67 @@
+name: ARM64
+
+# Linux aarch64 and Windows ARM64 build and test (#2214, phases 1-2): the debug preset and the full
+# ctest suite, natively on GitHub's free arm64 runners, through the same reusable-build-test.yml as
+# ci.yml's x64 jobs. ARM64 bakes in CI for a release cycle before release.yml ships it (phase 3).
+#
+# Kept out of ci.yml on purpose: it is not part of "CI Success" or any required check, and a pull
+# request runs it only with the `ci:arm64` label. Opting in needs the `labeled` event, which in
+# ci.yml would re-run (and cancel) the whole x64 CI whenever pr-labeler or anyone adds a label.
+# Without the label every job here is skipped before a runner is assigned, so a PR's cost is
+# unchanged.
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main, 'release/**']
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    # Nightly, an hour after ci.yml's nightly, so the two don't queue against each other.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+# Like ci.yml: one group per commit on main or a release/* branch (never cancelled), otherwise a
+# newer run of the same ref cancels the older one. A `labeled` event for some other label can't run
+# anything here (see the jobs' `if:`), so it gets a group of its own instead of cancelling a real
+# run in progress.
+concurrency:
+  group: >-
+    arm64-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'ci:arm64' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
+
+permissions: {}
+
+jobs:
+  # ubuntu-24.04-arm: clang-23/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
+  # Mesa's llvmpipe for the display suites, as on x64.
+  build-linux-arm64:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci:arm64') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'ci:arm64'))
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-24.04-arm
+      build_type: debug
+
+  # windows-11-arm: native ARM64 LLVM (the pinned woa64 installer, setup-windows-llvm) building
+  # plain ARM64, not ARM64EC, and mmozeiko/build-mesa's ARM64 llvmpipe for the display suites
+  # (setup-mesa-llvmpipe), test-only. The PowerShell script tests (`pwsh-script` label) get a
+  # second attempt on this runner only, where pwsh itself crashes now and then (#2832): see
+  # "Test (Windows ARM64)" in reusable-build-test.yml.
+  build-windows-arm64:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci:arm64') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'ci:arm64'))
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: windows-11-arm
+      build_type: debug

@@ -2,12 +2,17 @@
 
 #include "Platform/GPUTypes.h"
 
+#include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -39,6 +44,38 @@ namespace Platform
 [[nodiscard]] inline std::string luidToPdhFormat(uint32_t luidHighPart, uint32_t luidLowPart)
 {
     return std::format("GPU_0x{:08X}_0x{:08X}", luidHighPart, luidLowPart);
+}
+
+/// The LUID's high and low parts back out of luidToPdhFormat()'s "GPU_0x{HighPart}_0x{LowPart}"
+/// (GPUInfo::luidId), or nullopt for a string of any other shape. The Windows probe opens an
+/// adapter's kernel adapter by its LUID after enumeration, when its GPUInfo is all it has (#2586).
+[[nodiscard]] inline std::optional<std::pair<std::uint32_t, std::uint32_t>> luidFromPdhFormat(std::string_view luidId)
+{
+    constexpr std::string_view PREFIX{"GPU_0x"};
+    constexpr std::string_view SEPARATOR{"_0x"};
+    constexpr std::size_t HEX_DIGITS = 8;
+    if (luidId.size() != PREFIX.size() + HEX_DIGITS + SEPARATOR.size() + HEX_DIGITS || !luidId.starts_with(PREFIX) ||
+        luidId.substr(PREFIX.size() + HEX_DIGITS, SEPARATOR.size()) != SEPARATOR)
+    {
+        return std::nullopt;
+    }
+    const auto parseHex = [](std::string_view digits) -> std::optional<std::uint32_t>
+    {
+        std::uint32_t value = 0;
+        const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), value, 16);
+        if (error != std::errc{} || end != digits.data() + digits.size())
+        {
+            return std::nullopt;
+        }
+        return value;
+    };
+    const auto high = parseHex(luidId.substr(PREFIX.size(), HEX_DIGITS));
+    const auto low = parseHex(luidId.substr(PREFIX.size() + HEX_DIGITS + SEPARATOR.size(), HEX_DIGITS));
+    if (!high.has_value() || !low.has_value())
+    {
+        return std::nullopt;
+    }
+    return std::pair{*high, *low};
 }
 
 /// The id of an adapter at this PCI location: "PCI_{bus}:{device}.{function}_{vendor id}:{device id}",
@@ -224,6 +261,98 @@ struct AdapterTypeBits
     counter.utilizationAvailable = false;
     counter.memoryAvailable = false;
     return counter;
+}
+
+/// An adapter LUID as one 64-bit key: the high part above the low part.
+[[nodiscard]] constexpr uint64_t adapterLuidKey(uint32_t luidHighPart, uint32_t luidLowPart) noexcept
+{
+    return (static_cast<uint64_t>(luidHighPart) << 32U) | luidLowPart;
+}
+
+/// One adapter from a DXCore adapter list, as DXGIGPUProbe reads it to find the NPUs and other
+/// compute accelerators DXGI never lists (#1799). Plain values, so the selection below can be tested
+/// without DXCore.
+struct DXCoreAdapterRecord
+{
+    uint32_t luidHighPart = 0;
+    uint32_t luidLowPart = 0;
+    bool npu = false;                ///< Has DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU
+    bool computeAccelerator = false; ///< Has DXCORE_HARDWARE_TYPE_ATTRIBUTE_COMPUTE_ACCELERATOR
+    bool isHardware = true;          ///< DXCoreAdapterProperty::IsHardware
+    bool isIntegrated = false;       ///< DXCoreAdapterProperty::IsIntegrated (false when unread)
+    std::string description;         ///< DXCoreAdapterProperty::DriverDescription
+    uint32_t vendorId = 0;           ///< DXCoreAdapterProperty::HardwareID
+    uint32_t deviceId = 0;
+    uint64_t dedicatedAdapterMemory = 0;
+    uint64_t sharedSystemMemory = 0;
+};
+
+/// The kind of compute accelerator @p record is: an NPU where DXCore says so, else a compute
+/// accelerator, else nullopt -- a GPU or anything else is not one (#1799).
+[[nodiscard]] constexpr std::optional<DeviceKind> acceleratorKind(const DXCoreAdapterRecord& record) noexcept
+{
+    if (record.npu)
+    {
+        return DeviceKind::Npu;
+    }
+    if (record.computeAccelerator)
+    {
+        return DeviceKind::ComputeAccelerator;
+    }
+    return std::nullopt;
+}
+
+/// The compute accelerators DXGIGPUProbe lists beside DXGI's GPUs (#1799): every hardware adapter
+/// DXCore reports as an NPU or compute accelerator (MCDM devices, which DXGI never enumerates) whose
+/// LUID DXGI doesn't already list. An adapter DXGI lists is handled as DXGI's, whatever DXCore calls
+/// it, so nothing is listed twice; a software adapter isn't listed at all. An adapter found in more
+/// than one DXCore list (one per hardware type) is listed once, with the attributes of all of them,
+/// in the order first found.
+/// @param records Every adapter of DXCore's NPU and compute-accelerator lists
+/// @param dxgiLuids adapterLuidKey() of every adapter DXGI enumerates
+[[nodiscard]] inline std::vector<DXCoreAdapterRecord> selectAcceleratorAdapters(const std::vector<DXCoreAdapterRecord>& records,
+                                                                                const std::unordered_set<uint64_t>& dxgiLuids)
+{
+    std::vector<DXCoreAdapterRecord> selected;
+    std::size_t index = 0;
+    while (index < records.size())
+    {
+        const DXCoreAdapterRecord& record = records[index];
+        ++index;
+        const uint64_t key = adapterLuidKey(record.luidHighPart, record.luidLowPart);
+        if (!record.isHardware || !acceleratorKind(record).has_value() || dxgiLuids.contains(key))
+        {
+            continue;
+        }
+        std::size_t existing = 0;
+        while (existing < selected.size() && adapterLuidKey(selected[existing].luidHighPart, selected[existing].luidLowPart) != key)
+        {
+            ++existing;
+        }
+        if (existing < selected.size())
+        {
+            selected[existing].npu = selected[existing].npu || record.npu;
+            selected[existing].computeAccelerator = selected[existing].computeAccelerator || record.computeAccelerator;
+            continue;
+        }
+        selected.push_back(record);
+    }
+    return selected;
+}
+
+/// Whether a compute accelerator's memory figures count its shared segment: one with no dedicated
+/// memory of its own (an NPU such as Intel AI Boost, which maps system memory) counts shared, one
+/// with dedicated memory counts that, as a discrete GPU does (#1164, #1799).
+[[nodiscard]] constexpr bool acceleratorMemoryIsShared(uint64_t dedicatedAdapterMemory) noexcept
+{
+    return dedicatedAdapterMemory == 0;
+}
+
+/// A compute accelerator's memory size: its dedicated memory, or without any the shared system
+/// memory it may map (see acceleratorMemoryIsShared()).
+[[nodiscard]] constexpr uint64_t acceleratorMemoryTotalBytes(uint64_t dedicatedAdapterMemory, uint64_t sharedSystemMemory) noexcept
+{
+    return acceleratorMemoryIsShared(dedicatedAdapterMemory) ? sharedSystemMemory : dedicatedAdapterMemory;
 }
 
 } // namespace Platform

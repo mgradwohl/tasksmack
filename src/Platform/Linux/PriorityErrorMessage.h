@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/IProcessActions.h"
+
 #include <cerrno>
 #include <cstdint>
 #include <format>
@@ -30,6 +32,54 @@ namespace Platform
     case EACCES:
         return std::format(
             "Permission denied: raising priority (nice {} for process {}) needs root or CAP_SYS_NICE. Run TaskSmack as root.", nice, pid);
+    default:
+        return std::system_category().message(err);
+    }
+}
+
+/// The message shown when ioprio_set(2) fails with @p err for process @p pid, asked for class
+/// @p ioClass (#803). Free of platform calls so the mapping is unit-testable, as priorityErrorMessage().
+///
+/// ioprio_set(2) gives EPERM for both causes it has: the Realtime class without CAP_SYS_NICE or
+/// CAP_SYS_ADMIN (ioprio_check_cap() accepts either), and a process of another user without
+/// CAP_SYS_NICE. A Realtime request is told the first, since that check comes first in the kernel;
+/// anything else the second. Both name the least privilege that suffices, CAP_SYS_NICE, rather than
+/// running the whole app as root.
+[[nodiscard]] inline std::string ioPriorityErrorMessage(int err, IoPriorityClass ioClass, std::int32_t pid)
+{
+    switch (err)
+    {
+    case EPERM:
+        if (ioClass == IoPriorityClass::Realtime)
+        {
+            return std::format("Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root) to set it for process {}.", pid);
+        }
+        return std::format("Permission denied: process {} belongs to another user. Changing its I/O priority needs CAP_SYS_NICE (or root).",
+                           pid);
+    case ESRCH:
+        return "Process not found - may have already exited";
+    case EINVAL:
+        return std::format("Invalid I/O priority class or level for process {}", pid);
+    default:
+        return std::system_category().message(err);
+    }
+}
+
+/// The message shown when sched_setaffinity(2) fails with @p err for process @p pid (#1887).
+///
+/// EPERM: the process belongs to another user and TaskSmack lacks CAP_SYS_NICE. EINVAL: none of the
+/// CPUs asked for is one the thread may use -- offline, or outside the cpuset of its cgroup.
+[[nodiscard]] inline std::string affinityErrorMessage(int err, std::int32_t pid)
+{
+    switch (err)
+    {
+    case EPERM:
+        return std::format("Permission denied: process {} belongs to another user. Changing its CPU affinity needs root or CAP_SYS_NICE.",
+                           pid);
+    case EINVAL:
+        return std::format("None of those CPUs can run process {}: they are offline, or outside the CPUs its cgroup allows.", pid);
+    case ESRCH:
+        return "Process not found - may have already exited";
     default:
         return std::system_category().message(err);
     }

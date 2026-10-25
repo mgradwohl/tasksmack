@@ -1,7 +1,9 @@
 #include "DRMGPUProbe.h"
 
 #include "AmdApu.h"
+#include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
+#include "Platform/AsciiTrim.h"
 #include "Platform/GPUTypes.h"
 #include "PosixGuards.h"
 
@@ -58,10 +60,8 @@ constexpr uint32_t PCI_CLASS_VGA_COMPATIBLE = 0x030000U;     // VGA compatible c
 constexpr uint32_t PCI_CLASS_3D_CONTROLLER = 0x030200U;      // 3D controller (compute-only, no display)
 constexpr uint32_t PCI_CLASS_DISPLAY_CONTROLLER = 0x038000U; // Display controller (non-VGA)
 
-// PCI vendor IDs
-constexpr uint32_t PCI_VENDOR_INTEL = 0x8086U;
-constexpr uint32_t PCI_VENDOR_NVIDIA = 0x10DEU;
-constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
+using PciDisplayDevices::PCI_VENDOR_AMD;
+using PciDisplayDevices::PCI_VENDOR_INTEL;
 
 /// A directory's entries, in iteration order; empty (not a throw) if it can't be listed (#1165).
 [[nodiscard]] std::vector<Fs::path> listDirectory(const Fs::path& dir)
@@ -103,23 +103,11 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
     return target.filename().string();
 }
 
-/// `text` without leading and trailing spaces, tabs and CRs.
-[[nodiscard]] std::string_view trimmed(std::string_view text)
-{
-    constexpr std::string_view SPACE = " \t\r";
-    const auto first = text.find_first_not_of(SPACE);
-    if (first == std::string_view::npos)
-    {
-        return {};
-    }
-    return text.substr(first, text.find_last_not_of(SPACE) - first + 1);
-}
-
 /// The leading unsigned number of an fdinfo value (" 1234 ns" -> 1234), or nullopt if it has none or
 /// the number runs straight into other text.
 [[nodiscard]] std::optional<std::uint64_t> leadingUint64(std::string_view value)
 {
-    value = trimmed(value);
+    value = trimAscii(value);
     std::uint64_t number = 0;
     const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
     if (ec != std::errc{} || ptr == value.data() || (ptr != value.data() + value.size() && *ptr != ' ' && *ptr != '\t'))
@@ -130,7 +118,8 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
 }
 
 /// The index (GPUEngineClass) of the engine class an fdinfo key names after its prefix: i915's
-/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267).
+/// render/copy/video/video-enhance/compute or xe's rcs/bcs/vcs/vecs/ccs (#1267), or amdgpu's
+/// gfx/dma/compute and its video engines, dec, enc, enc_1 and jpeg, with vpe as video enhancement (#2589).
 [[nodiscard]] std::optional<std::size_t> engineClassIndex(std::string_view name)
 {
     struct EngineName
@@ -148,15 +137,35 @@ constexpr uint32_t PCI_VENDOR_AMD = 0x1002U;
     }};
     const auto* const match =
         std::ranges::find_if(NAMES, [name](const EngineName& entry) { return name == entry.i915 || name == entry.xe; });
-    if (match == NAMES.end())
+    if (match != NAMES.end())
+    {
+        return static_cast<std::size_t>(match->engineClass);
+    }
+    struct AmdgpuName
+    {
+        std::string_view name;
+        GPUEngineClass engineClass;
+    };
+    static constexpr std::array<AmdgpuName, 7> AMDGPU_NAMES{{
+        {.name = "gfx", .engineClass = GPUEngineClass::Render},
+        {.name = "dma", .engineClass = GPUEngineClass::Copy},
+        {.name = "dec", .engineClass = GPUEngineClass::Video},
+        {.name = "enc", .engineClass = GPUEngineClass::Video},
+        {.name = "enc_1", .engineClass = GPUEngineClass::Video},
+        {.name = "jpeg", .engineClass = GPUEngineClass::Video},
+        {.name = "vpe", .engineClass = GPUEngineClass::VideoEnhance},
+    }};
+    const auto* const amdgpu = std::ranges::find(AMDGPU_NAMES, name, &AmdgpuName::name);
+    if (amdgpu == AMDGPU_NAMES.end())
     {
         return std::nullopt;
     }
-    return static_cast<std::size_t>(match->engineClass);
+    return static_cast<std::size_t>(amdgpu->engineClass);
 }
 
 #if TASKSMACK_HAS_DRM_QUERY_UAPI
 /// An ioctl retried on EINTR/EAGAIN, as libdrm's drmIoctl() does.
+// NOLINTNEXTLINE(misc-const-correctness) - the kernel writes its answer through arg
 [[nodiscard]] int drmIoctl(int fd, unsigned long request, void* arg)
 {
     while (true)
@@ -192,8 +201,12 @@ template<typename T> [[nodiscard]] T readAt(std::span<const std::byte> bytes, st
 #endif
 } // namespace
 
-DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock)
-    : m_DrmBasePath(std::move(drmBasePath)), m_VramQuery(std::move(vramQuery)), m_ProcRoot(std::move(procRoot)), m_Clock(std::move(clock))
+DRMGPUProbe::DRMGPUProbe(std::string drmBasePath, VramQuery vramQuery, std::string procRoot, MonotonicClock clock, CardKind kind)
+    : m_DrmBasePath(std::move(drmBasePath)),
+      m_VramQuery(std::move(vramQuery)),
+      m_ProcRoot(std::move(procRoot)),
+      m_Clock(std::move(clock)),
+      m_Kind(kind)
 {
     if (!m_VramQuery)
     {
@@ -228,16 +241,17 @@ bool DRMGPUProbe::initialize()
     m_Cards = discoverIntelCards();
     for (const auto& card : m_Cards)
     {
-        spdlog::debug("DRMGPUProbe: Found Intel GPU at {}", card.cardPath);
+        spdlog::debug("DRMGPUProbe: Found {} at {}", m_Kind == CardKind::Intel ? "Intel GPU" : "amdgpu card (clients)", card.cardPath);
     }
     return !m_Cards.empty();
 }
 
 std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverIntelCards() const
 {
-    // Filter to only Intel GPUs (i915, xe drivers)
+    // The kind's cards only: Intel's (i915, xe), or amdgpu's for their clients (#2589)
     auto cards = discoverDRMCards();
-    std::erase_if(cards, [](const DRMCard& card) { return !isIntelGPU(card); });
+    const CardKind kind = m_Kind;
+    std::erase_if(cards, [kind](const DRMCard& card) { return kind == CardKind::Intel ? !isIntelGPU(card) : card.driver != "amdgpu"; });
     // directory_iterator order is unspecified; sorted, two scans of the same cards compare equal.
     std::ranges::sort(cards, {}, &DRMCard::cardPath);
     return cards;
@@ -298,7 +312,7 @@ bool DRMGPUProbe::rescanGPUs(GPURescan depth)
             card.queriedVramUsedBytes = previous->queriedVramUsedBytes;
         }
     }
-    spdlog::info("DRMGPUProbe: Intel DRM cards changed, now {}", cards.size());
+    spdlog::info("DRMGPUProbe: {} DRM cards changed, now {}", m_Kind == CardKind::Intel ? "Intel" : "amdgpu", cards.size());
     m_Cards = std::move(cards);
     m_Available = !m_Cards.empty();
     discoverDrmClients();
@@ -550,18 +564,8 @@ std::string DRMGPUProbe::clockPath(const DRMCard& card)
 
 std::string DRMGPUProbe::getVendorName(const std::string& vendorId)
 {
-    const uint32_t id = parseHexUint32(vendorId);
-    switch (id)
-    {
-    case PCI_VENDOR_INTEL:
-        return "Intel";
-    case PCI_VENDOR_NVIDIA:
-        return "NVIDIA";
-    case PCI_VENDOR_AMD:
-        return "AMD";
-    default:
-        return "Unknown";
-    }
+    const std::string_view name = PciDisplayDevices::vendorName(parseHexUint32(vendorId));
+    return name.empty() ? std::string("Unknown") : std::string(name);
 }
 
 uint32_t DRMGPUProbe::parseHexUint32(const std::string& hexStr)
@@ -783,6 +787,64 @@ void DRMGPUProbe::refreshQueriedVram(DRMCard& card)
     card.queriedVramUsedBytes = info->usedBytes;
 }
 
+namespace
+{
+
+/// A drm-usage-stats memory value ("4096 KiB", "12 MiB", "512") in bytes; nullopt in another form or too large.
+[[nodiscard]] std::optional<std::uint64_t> memoryValueBytes(std::string_view value)
+{
+    value = trimAscii(value);
+    std::uint64_t number = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (error != std::errc{} || end == value.data())
+    {
+        return std::nullopt;
+    }
+    const std::string_view unit = trimAscii(value.substr(static_cast<std::size_t>(end - value.data())));
+    std::uint64_t scale = 1;
+    if (unit == "KiB")
+    {
+        scale = std::uint64_t{1} << 10U;
+    }
+    else if (unit == "MiB")
+    {
+        scale = std::uint64_t{1} << 20U;
+    }
+    else if (unit == "GiB")
+    {
+        scale = std::uint64_t{1} << 30U;
+    }
+    else if (!unit.empty())
+    {
+        return std::nullopt;
+    }
+    if (number > std::numeric_limits<std::uint64_t>::max() / scale)
+    {
+        return std::nullopt;
+    }
+    return number * scale;
+}
+
+/// The process of an fdinfo path ("<procRoot>/<pid>/fdinfo/<fd>"), or 0.
+[[nodiscard]] std::int32_t pidFromFdinfoPath(std::string_view path)
+{
+    const std::size_t fdinfo = path.rfind("/fdinfo/");
+    if (fdinfo == std::string_view::npos)
+    {
+        return 0;
+    }
+    const std::string_view before = path.substr(0, fdinfo);
+    const std::string_view digits = before.substr(before.rfind('/') + 1);
+    std::int32_t pid = 0;
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), pid);
+    return (error == std::errc{} && end == digits.data() + digits.size() && pid > 0) ? pid : 0;
+}
+
+/// The name each engine class goes by in a process's active engines, as Windows' engine types do.
+constexpr std::array<std::string_view, GPU_ENGINE_CLASS_COUNT> ENGINE_CLASS_NAMES{"3D", "Copy", "Video", "VideoProcessing", "Compute"};
+
+} // namespace
+
 std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view text, std::uint64_t monotonicNs)
 {
     constexpr std::string_view CAPACITY_PREFIX = "drm-engine-capacity-";
@@ -792,6 +854,23 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
 
     DrmFdinfo info;
     bool haveClientId = false;
+    struct MemoryRegionRead
+    {
+        std::uint64_t resident = 0;
+        std::uint64_t legacyResident = 0; // drm-memory-<region>, used only without drm-resident-*
+        std::uint64_t total = 0;
+
+        [[nodiscard]] std::uint64_t bytes() const noexcept
+        {
+            if (resident != 0)
+            {
+                return resident;
+            }
+            return legacyResident != 0 ? legacyResident : total;
+        }
+    };
+    MemoryRegionRead dedicatedMemory;
+    MemoryRegionRead sharedMemory;
     std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> busyNs{};
     std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> cycles{};
     std::array<std::optional<std::uint64_t>, GPU_ENGINE_CLASS_COUNT> totalCycles{};
@@ -826,7 +905,27 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
         }
         else if (key == "drm-pdev")
         {
-            info.pdev = std::string(trimmed(value));
+            info.pdev = std::string(trimAscii(value));
+        }
+        else if (key.starts_with("drm-resident-") || key.starts_with("drm-memory-") ||
+                 (key.starts_with("drm-total-") && !key.starts_with(TOTAL_CYCLES_PREFIX)))
+        {
+            // drm-resident-vram0, drm-total-system0, ... (#2589): resident wins over total per region.
+            // drm-memory-<region> is the older name amdgpu still prints for resident; a kernel printing
+            // both prints the same figure, so it counts only without drm-resident-*.
+            constexpr std::array<std::string_view, 3> PREFIXES{"drm-resident-", "drm-memory-", "drm-total-"};
+            const auto* const prefix =
+                std::ranges::find_if(PREFIXES, [key](std::string_view candidate) { return key.starts_with(candidate); });
+            const std::string_view region = key.substr(prefix->size()); // one of them matched to get here
+            const std::optional<std::uint64_t> bytes = memoryValueBytes(value);
+            const bool dedicated = region.starts_with("vram") || region.starts_with("local");
+            const bool shared = region.starts_with("system") || region.starts_with("gtt");
+            if (bytes && (dedicated || shared))
+            {
+                MemoryRegionRead& read = dedicated ? dedicatedMemory : sharedMemory;
+                std::array<std::uint64_t*, 3> sums{&read.resident, &read.legacyResident, &read.total}; // PREFIXES' order
+                *sums.at(static_cast<std::size_t>(prefix - PREFIXES.begin())) += *bytes;
+            }
         }
         else if (key.starts_with(CAPACITY_PREFIX))
         {
@@ -855,7 +954,11 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
         {
             if (const auto index = perClass(key, ENGINE_PREFIX, value))
             {
-                busyNs.at(*index) = leadingUint64(value);
+                // Summed: amdgpu names several of a class (dec, enc, enc_1 and jpeg are all video).
+                if (const auto busy = leadingUint64(value))
+                {
+                    busyNs.at(*index) = busyNs.at(*index).value_or(0) + *busy;
+                }
             }
         }
     }
@@ -863,6 +966,8 @@ std::optional<DRMGPUProbe::DrmFdinfo> DRMGPUProbe::parseFdinfo(std::string_view 
     {
         return std::nullopt;
     }
+    info.client.dedicatedMemoryBytes = dedicatedMemory.bytes();
+    info.client.sharedMemoryBytes = sharedMemory.bytes();
     for (std::size_t i = 0; i < GPU_ENGINE_CLASS_COUNT; ++i)
     {
         auto& engine = info.client.engines.at(i);
@@ -1062,9 +1167,10 @@ void DRMGPUProbe::readEngineClients(DRMCard& card, GPUCounters& counter)
     kept.reserve(card.clients.size());
     // Files read as client `info`'s: joined to the client already kept under its id -- dup'd and
     // inherited fds share one DRM file, and so one client id, which counts once -- or kept as a new one.
-    const auto keep = [&](std::vector<std::string> paths, const DrmFdinfo& info)
+    const auto keep = [&](std::vector<std::string> paths, DrmFdinfo info)
     {
         anyEngineStats = anyEngineStats || info.hasEngineStats;
+        info.client.pid = paths.empty() ? 0 : pidFromFdinfoPath(paths.front()); // its process, for #2589
         const auto same = std::ranges::find(kept, std::optional<std::uint64_t>(info.client.clientId), &DrmClientFds::clientId);
         if (same != kept.end())
         {
@@ -1261,8 +1367,17 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     return info;
 }
 
+void DRMGPUProbe::setClientGpuIds(std::vector<std::pair<std::string, std::string>> idsByPciAddress)
+{
+    m_ClientGpuIds = std::move(idsByPciAddress);
+}
+
 std::vector<GPUInfo> DRMGPUProbe::enumerateGPUs()
 {
+    if (m_Kind == CardKind::AmdClients)
+    {
+        return {}; // ROCm SMI lists them (#2589)
+    }
     std::vector<GPUInfo> gpus;
     gpus.reserve(m_Cards.size());
 
@@ -1277,6 +1392,7 @@ std::vector<GPUInfo> DRMGPUProbe::enumerateGPUs()
 std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 {
     std::vector<GPUCounters> counters;
+    m_LastClients.clear(); // this sample's, card by card below (#2589)
 
     // The first read finds the cards' DRM clients; later ones are found at each full rescan (#1267).
     if (!m_ClientsDiscovered)
@@ -1286,6 +1402,11 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
 
     for (auto& card : m_Cards)
     {
+        if (m_Kind == CardKind::AmdClients)
+        {
+            readClientsOnly(card);
+            continue;
+        }
         GPUCounters counter{};
         counter.gpuId = card.gpuId;
 
@@ -1372,6 +1493,7 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         // derives it from the engine busyness of the card's DRM clients (#1267), read only while it's awake.
         counter.utilizationAvailable = false;
         readEngineClients(card, counter);
+        m_LastClients.push_back(CardClients{.gpuId = card.gpuId, .clients = counter.engineClients});
 
         counters.push_back(counter);
     }
@@ -1379,11 +1501,109 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
     return counters;
 }
 
+void DRMGPUProbe::readClientsOnly(DRMCard& card)
+{
+    // An amdgpu card's clients, under the id ROCm gave the card (#2589): no sensors, no counters of its
+    // own, and nothing for a card ROCm didn't list or one that's asleep (no clients run on it then).
+    const auto id = std::ranges::find(m_ClientGpuIds, card.gpuId, &std::pair<std::string, std::string>::first);
+    if (id == m_ClientGpuIds.end() || PciRuntimePm::isRuntimeSuspended(card.devicePath))
+    {
+        return;
+    }
+    GPUCounters counter{};
+    readEngineClients(card, counter);
+    m_LastClients.push_back(CardClients{.gpuId = id->second, .clients = std::move(counter.engineClients)});
+}
+
 std::vector<ProcessGPUCounters> DRMGPUProbe::readProcessGPUCounters()
 {
-    // The DRM clients' fdinfo is read for the card's utilization (#1267), but not yet attributed to
-    // processes: per-process GPU metrics stay unsupported here.
-    return {};
+    // Each process's share of the clients readGPUCounters() last read (#2589): its memory, the sum of
+    // its clients', and its utilization, the busiest engine class's share of the time since the
+    // previous call, its clients' shares added up (dup'd and inherited fds are one client already).
+    // A client seen for the first time has no baseline yet and counts as idle for one interval.
+    std::vector<ProcessGPUCounters> processes;
+    for (const CardClients& card : m_LastClients)
+    {
+        const auto baseline = std::ranges::find(m_ProcessBaseline, card.gpuId, &CardClients::gpuId);
+        std::vector<std::pair<std::int32_t, std::array<double, GPU_ENGINE_CLASS_COUNT>>> shares; // by pid
+        for (const GPUEngineClientCounters& client : card.clients)
+        {
+            if (client.pid <= 0)
+            {
+                continue;
+            }
+            auto process = std::ranges::find(
+                processes, std::pair(client.pid, card.gpuId), [](const ProcessGPUCounters& p) { return std::pair(p.pid, p.gpuId); });
+            if (process == processes.end())
+            {
+                ProcessGPUCounters added;
+                added.pid = client.pid;
+                added.gpuId = card.gpuId;
+                processes.push_back(std::move(added));
+                shares.emplace_back(client.pid, std::array<double, GPU_ENGINE_CLASS_COUNT>{});
+                process = std::prev(processes.end());
+            }
+            process->gpuMemoryBytes += client.dedicatedMemoryBytes;
+            process->gpuSharedMemoryBytes += client.sharedMemoryBytes;
+            if (baseline == m_ProcessBaseline.end())
+            {
+                continue;
+            }
+            const auto before = std::ranges::find(baseline->clients, client.clientId, &GPUEngineClientCounters::clientId);
+            if (before == baseline->clients.end())
+            {
+                continue;
+            }
+            auto& share = std::ranges::find(shares, client.pid, &decltype(shares)::value_type::first)->second;
+            for (std::size_t engineClass = 0; engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
+            {
+                const GPUEngineBusyCounter& now = client.engines.at(engineClass);
+                const GPUEngineBusyCounter& then = before->engines.at(engineClass);
+                // A counter that went back (the drm-usage-stats contract allows it briefly) adds nothing.
+                if (!now.available || !then.available || now.total <= then.total || now.busy < then.busy)
+                {
+                    continue;
+                }
+                share.at(engineClass) += static_cast<double>(now.busy - then.busy) / static_cast<double>(now.total - then.total) /
+                                         static_cast<double>(std::max<std::uint32_t>(now.capacity, 1));
+            }
+        }
+        for (const auto& [pid, share] : shares)
+        {
+            const auto process =
+                std::ranges::find_if(processes, [&](const ProcessGPUCounters& p) { return p.pid == pid && p.gpuId == card.gpuId; });
+            for (std::size_t engineClass = 0; engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
+            {
+                const double percent = std::clamp(share.at(engineClass) * 100.0, 0.0, 100.0);
+                process->gpuUtilPercent = std::max(process->gpuUtilPercent, percent);
+                if (share.at(engineClass) > 0.0)
+                {
+                    process->activeEngines.emplace_back(ENGINE_CLASS_NAMES.at(engineClass));
+                }
+            }
+        }
+    }
+    // The baseline keeps a client's highest counters, so one that went back doesn't count its recovery
+    // as busy time (as GPUModel does for the card, #1350).
+    for (CardClients& card : m_LastClients)
+    {
+        const auto baseline = std::ranges::find(m_ProcessBaseline, card.gpuId, &CardClients::gpuId);
+        if (baseline == m_ProcessBaseline.end())
+        {
+            continue;
+        }
+        for (GPUEngineClientCounters& client : card.clients)
+        {
+            const auto before = std::ranges::find(baseline->clients, client.clientId, &GPUEngineClientCounters::clientId);
+            for (std::size_t engineClass = 0; before != baseline->clients.end() && engineClass < GPU_ENGINE_CLASS_COUNT; ++engineClass)
+            {
+                GPUEngineBusyCounter& now = client.engines.at(engineClass);
+                now.busy = std::max(now.busy, before->engines.at(engineClass).busy);
+            }
+        }
+    }
+    m_ProcessBaseline = m_LastClients;
+    return processes;
 }
 
 GPUCapabilities DRMGPUProbe::capabilities() const
@@ -1392,6 +1612,14 @@ GPUCapabilities DRMGPUProbe::capabilities() const
 
     if (!m_Available)
     {
+        return caps;
+    }
+
+    if (m_Kind == CardKind::AmdClients)
+    {
+        // Per process only: ROCm SMI reads the cards themselves (#2589).
+        caps.hasPerProcessMetrics = true;
+        caps.hasPerProcessUtilization = true;
         return caps;
     }
 
@@ -1404,14 +1632,13 @@ GPUCapabilities DRMGPUProbe::capabilities() const
     caps.supportsMultiGPU = m_Cards.size() > 1;
 
     // Limited capabilities compared to NVML/ROCm
-    caps.hasHotspotTemp = false;
     // Power from the hwmon energy counter, where a card has one (#1269)
     caps.hasPowerMetrics = std::ranges::any_of(m_Cards, [](const DRMCard& card) { return !card.energyPath.empty(); });
     caps.hasFanSpeed = false;
-    caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = false;
-    caps.hasPerProcessMetrics = false;
-    caps.hasPerProcessUtilization = false;
+    // Per process (#2589): each DRM client's memory and engine busyness, attributed to its process.
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
     caps.hasEncoderDecoder = false;
 
     return caps;

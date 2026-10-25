@@ -20,8 +20,12 @@
 .PARAMETER ProcessId
     Optional PID to disambiguate multiple processes with the same name.
 .PARAMETER SymbolPath
-    Optional symbol directory used for function decoding. Defaults to build/win-profile/bin.
-    When analyzing traces captured from win-optimized, function decoding may be limited. The
+    Optional symbol directory used for function decoding. Defaults to build/<Preset>/bin for the
+    preset recorded in the <trace>.manifest.json that profile-etw.ps1 writes next to the trace
+    (win-release for an app capture, win-benchmark for a bench capture, unless -Preset was
+    passed), so the binary checked is the build the trace captured; build/win-profile/bin when
+    there is no such manifest. When analyzing traces captured from win-release or win-optimized,
+    function decoding may be limited (no debug info). The
     <ProcessName> binary in this directory is checked against the trace's recorded PDB signature.
 .PARAMETER Top
     Number of rows to print in each summary.
@@ -103,8 +107,9 @@ if (-not $xperf) {
     throw 'xperf not found on PATH.'
 }
 
-$resolvedTrace = Resolve-Path $TracePath
-$traceFile = $resolvedTrace.Path
+# -LiteralPath: a trace path holding [ or ] is a file name, not a wildcard pattern (#2254).
+$resolvedTrace = Resolve-Path -LiteralPath $TracePath
+$traceFile = $resolvedTrace.ProviderPath
 $baseName = [IO.Path]::GetFileNameWithoutExtension($traceFile)
 $perfDir = Split-Path -Parent $traceFile
 $moduleReport = Join-Path $perfDir "$baseName-profile-modules.txt"
@@ -121,8 +126,14 @@ try {
 $env:_NT_SYMCACHE_PATH = Join-Path $perfDir 'SymCache'
 $resolvedSymbolDir = $null
 if (-not $SkipFunctions) {
-    $symbolDir = if ($SymbolPath) { $SymbolPath } else { Join-Path $repoRoot 'build\win-profile\bin' }
-    $resolvedSymbolDir = (Resolve-Path $symbolDir -ErrorAction Stop).Path
+    if ($SymbolPath) { $symbolDir = $SymbolPath }
+    else {
+        # The build the trace captured, from its capture manifest (#2254).
+        $defaultSymbols = Get-DefaultSymbolDirectory -TraceFile $traceFile -RepoRoot $repoRoot
+        $symbolDir = $defaultSymbols.Directory
+        Write-Host "Symbol directory: $symbolDir ($($defaultSymbols.Source)); pass -SymbolPath to use another."
+    }
+    $resolvedSymbolDir = (Resolve-Path -LiteralPath $symbolDir -ErrorAction Stop).ProviderPath
     $env:_NT_SYMBOL_PATH = $resolvedSymbolDir
 }
 New-Item -ItemType Directory -Path $env:_NT_SYMCACHE_PATH -Force | Out-Null
@@ -156,19 +167,19 @@ if ($Overhead) {
 }
 
 # ── Sampled CPU reports ──────────────────────────────────────────────────────────────────────
-& xperf -i $traceFile -quiet -tle -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $moduleReport
+& xperf -i $traceFile -quiet -tle -a profile -detail @rangeArgs 2>&1 | Set-Content -LiteralPath $moduleReport -Encoding utf8
 if ($LASTEXITCODE -ne 0) {
     throw "xperf module export failed with exit code $LASTEXITCODE"
 }
 
 if (-not $SkipFunctions) {
-    & xperf -i $traceFile -quiet -tle -symbols -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $functionReport
+    & xperf -i $traceFile -quiet -tle -symbols -a profile -detail @rangeArgs 2>&1 | Set-Content -LiteralPath $functionReport -Encoding utf8
     if ($LASTEXITCODE -ne 0) {
         throw "xperf function export failed with exit code $LASTEXITCODE"
     }
 }
 
-$parseParams = @{ Lines = @(Get-Content $moduleReport); TargetProcessName = $ProcessName }
+$parseParams = @{ Lines = @(Get-Content -LiteralPath $moduleReport); TargetProcessName = $ProcessName }
 if ($PSBoundParameters.ContainsKey('ProcessId')) {
     $parseParams.TargetProcessId = $ProcessId
 }
@@ -193,8 +204,8 @@ if (-not $PSBoundParameters.ContainsKey('ProcessId')) {
 }
 
 $functionRows = @()
-if ((-not $SkipFunctions) -and (Test-Path $functionReport)) {
-    $functionRows = @(Parse-XperfRows -Lines @(Get-Content $functionReport) -TargetProcessName $ProcessName -TargetProcessId $ProcessId)
+if ((-not $SkipFunctions) -and (Test-Path -LiteralPath $functionReport)) {
+    $functionRows = @(Parse-XperfRows -Lines @(Get-Content -LiteralPath $functionReport) -TargetProcessName $ProcessName -TargetProcessId $ProcessId)
 }
 
 # Weights are sampled CPU in microseconds. ProcessSharePct is a share of this process's sampled
@@ -294,7 +305,7 @@ $analysis = [ordered]@{
 $analysis | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $analysisPath -Encoding utf8
 
 $summaryText = $summaryLines -join [Environment]::NewLine
-$summaryText | Set-Content -Path $summaryPath
+$summaryText | Set-Content -LiteralPath $summaryPath -Encoding utf8
 Write-Host $summaryText
 Write-Host ''
 Write-Host "SUMMARY=$summaryPath"

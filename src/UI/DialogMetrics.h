@@ -25,7 +25,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
+#include <ranges>
+#include <span>
+#include <vector>
 
 namespace UI::DialogMetrics
 {
@@ -59,6 +63,28 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return std::min(wanted, viewportWidthPx * MAX_VIEWPORT_FRACTION);
 }
 
+/// Width of a dialog that fits its text: as wide as its widest unwrapped line, but no narrower than
+/// a floor and no wider than its authored width (itself clamped to the viewport).
+///
+/// A fixed authored width suits only the text it was authored against. The elevation notice's
+/// Windows text is three short lines, and in the 45 em it shares with the much longer Linux text it
+/// sat in a box half empty (#1601). Fitting keeps a long text at the authored width, wrapped, and
+/// lets a short one shrink to what it needs.
+///
+/// @param contentWidthPx   Widest line plus the window's horizontal padding, unwrapped.
+/// @param emPx             One em, i.e. ImGui::GetFontSize().
+/// @param minWidthEm       Floor in ems.
+/// @param maxWidthEm       Authored (largest) width in ems.
+/// @param viewportWidthPx  Width of the viewport the dialog is centred in.
+[[nodiscard]] inline float
+computeFittedDialogWidth(float contentWidthPx, float emPx, float minWidthEm, float maxWidthEm, float viewportWidthPx) noexcept
+{
+    const float maxPx = computeDialogWidth(emPx, maxWidthEm, viewportWidthPx);
+    const float minPx = std::min(computeDialogWidth(emPx, minWidthEm, viewportWidthPx), maxPx);
+    const float contentPx = (std::isfinite(contentWidthPx) && contentWidthPx > 0.0F) ? contentWidthPx : 0.0F;
+    return std::clamp(contentPx, minPx, maxPx);
+}
+
 /// Width of a dialog's action button: wide enough for its label, and never below a floor.
 ///
 /// The floor is what keeps a short label like "OK" from collapsing to a button narrower than it is
@@ -76,26 +102,6 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
 
     const float forLabel = safeLabel + (BUTTON_LABEL_PADDING_EM * 2.0F * safeEm);
     return std::max(forLabel, safeMinEm * safeEm);
-}
-
-/// Width of each of a dialog's two side-by-side action buttons (Cancel / Apply) on a row
-/// @p availWidthPx wide: their preferred width, shrunk equally when the pair doesn't fit, so neither
-/// button is pushed off the row. A capped dialog (#1129) can be narrower than the pair at large font
-/// presets; right-aligned at their preferred width, Cancel would start left of the row's edge.
-///
-/// @param preferredWidthPx  From computeActionButtonWidth().
-/// @param spacingPx         Gap between the two buttons (ItemSpacing.x).
-/// @param availWidthPx      Width of the row.
-[[nodiscard]] inline float fitActionButtonPairWidth(float preferredWidthPx, float spacingPx, float availWidthPx) noexcept
-{
-    const float preferred = (std::isfinite(preferredWidthPx) && preferredWidthPx > 0.0F) ? preferredWidthPx : 0.0F;
-    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
-    if (!std::isfinite(availWidthPx) || availWidthPx <= 0.0F)
-    {
-        return preferred;
-    }
-    const float fitting = std::max(0.0F, (availWidthPx - spacing) / 2.0F);
-    return std::min(preferred, fitting);
 }
 
 /// Left edge of the value column in a dialog laid out as label / control rows.
@@ -207,6 +213,45 @@ computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surround
     return viewportExtentPx * MAX_VIEWPORT_FRACTION;
 }
 
+/// Whether a fixed-width leading item (an icon) and the content beside it fit on one row
+/// @p availWidthPx wide, with @p gapPx between them and the content given at least
+/// @p trailingMinPx. A row that does not fit is laid out stacked instead, so a narrow dialog at a
+/// large font clips neither half (#1490 review).
+///
+/// @return true when unknown (non-finite) width leaves nothing to fit into.
+[[nodiscard]] inline bool fitsSideBySide(float availWidthPx, float leadingPx, float gapPx, float trailingMinPx) noexcept
+{
+    const auto safe = [](float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    if (!std::isfinite(availWidthPx))
+    {
+        return true;
+    }
+    return safe(leadingPx) + safe(gapPx) + safe(trailingMinPx) <= availWidthPx;
+}
+
+/// Largest extent, on one axis, of a compact dialog that should cover only @p fraction of a
+/// viewport @p viewportExtentPx long, rather than the MAX_VIEWPORT_FRACTION every dialog may reach
+/// (#1490). The About box caps its height this way and scrolls its contents past it, so it opens as
+/// a dialog over the app instead of a second window on top of it.
+///
+/// @p fraction is clamped to (0, MAX_VIEWPORT_FRACTION]: never more than the shared cap, and a
+/// non-positive or non-finite fraction falls back to it.
+///
+/// @return The cap in pixels, or a value no real size reaches when the viewport is unknown.
+[[nodiscard]] inline float computeCompactDialogMaxExtent(float viewportExtentPx, float fraction) noexcept
+{
+    if (!std::isfinite(viewportExtentPx) || viewportExtentPx <= 0.0F)
+    {
+        return std::numeric_limits<float>::max();
+    }
+    const float safeFraction =
+        (std::isfinite(fraction) && fraction > 0.0F) ? std::min(fraction, MAX_VIEWPORT_FRACTION) : MAX_VIEWPORT_FRACTION;
+    return viewportExtentPx * safeFraction;
+}
+
 /// Tallest a dialog's scrolling body may be so that the rows pinned below it -- the action buttons
 /// -- always stay inside the dialog, and so inside the viewport (#1129).
 ///
@@ -231,6 +276,138 @@ computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surround
     }
     const float safeReserved = (std::isfinite(reservedPx) && reservedPx > 0.0F) ? reservedPx : 0.0F;
     return std::max(safeMin, dialogMaxHeightPx - safeReserved);
+}
+
+/// How greedy word wrap -- ImGui's, for text whose only break points are its spaces -- lays one
+/// paragraph out at one wrap width.
+struct WrapLayout
+{
+    int lines = 0;                 ///< Lines the paragraph takes; 0 for an empty one
+    std::size_t lastLineWords = 0; ///< Words on its last line
+};
+
+/// Lay @p wordWidthsPx out as ImGui's word wrap does: a word joins the line when the line, the space
+/// before the word and the word together fit within @p wrapWidthPx, and starts a new line otherwise.
+/// A word wider than the wrap width sits alone on its line (ImGui cuts it; for counting it is one line).
+///
+/// @param wordWidthsPx  Each word's measured width, in order.
+/// @param spaceWidthPx  Width of the space between two words.
+/// @param wrapWidthPx   Width the text wraps at.
+[[nodiscard]] inline WrapLayout layoutWrappedParagraph(std::span<const float> wordWidthsPx, float spaceWidthPx, float wrapWidthPx) noexcept
+{
+    WrapLayout layout;
+    float lineWidth = 0.0F;
+    for (const float word : wordWidthsPx)
+    {
+        const float extended = lineWidth + spaceWidthPx + word;
+        if (layout.lines > 0 && extended <= wrapWidthPx)
+        {
+            lineWidth = extended;
+            ++layout.lastLineWords;
+            continue;
+        }
+        ++layout.lines;
+        lineWidth = word;
+        layout.lastLineWords = 1;
+    }
+    return layout;
+}
+
+/// Whether a paragraph laid out as @p layout ends in an orphan: a last line holding a single word
+/// under the lines before it, which reads as a layout mistake (#1986).
+[[nodiscard]] constexpr bool endsInOrphan(const WrapLayout& layout) noexcept
+{
+    return layout.lines > 1 && layout.lastLineWords == 1;
+}
+
+/// Whether any of @p paragraphs ends in an orphan when wrapped at @p wrapWidthPx.
+[[nodiscard]] inline bool
+anyParagraphEndsInOrphan(std::span<const std::vector<float>> paragraphs, float spaceWidthPx, float wrapWidthPx) noexcept
+{
+    return std::ranges::any_of(paragraphs,
+                               [&](const std::vector<float>& words)
+                               { return endsInOrphan(layoutWrappedParagraph(words, spaceWidthPx, wrapWidthPx)); });
+}
+
+/// How far past a run of words' summed width a candidate wrap width is placed: half a pixel, below
+/// anything visible, so that float rounding between these summed word widths and ImGui's own
+/// glyph-by-glyph sum never decides whether that run fits on its line.
+inline constexpr float WRAP_ROUNDING_GUARD_PX = 0.5F;
+
+/// The wrap width for a dialog's wrapped text that leaves no paragraph ending in a lone word (#1986).
+///
+/// A text that wraps at its dialog's authored width can leave just its last word on a line of its
+/// own -- how close a paragraph comes to the width depends on the font's hinting at each size, so no
+/// authored width avoids it at every preset and scale. Wrap breaks only move when the width crosses
+/// the width of some run of consecutive words, so those runs are the only candidates:
+///
+///  1. @p preferredPx, when nothing is orphaned there.
+///  2. Otherwise the narrowest width above it, by at most one space and the widest word (pulling one
+///     word back up is all an orphan needs), within @p maxPx: the dialog grows slightly so the
+///     paragraph keeps the lines it was meant to have -- a one-line sentence stays on one line.
+///  3. Otherwise the widest width below it, down to @p minPx: the text wraps a little earlier so the
+///     last line takes a word or more with it.
+///  4. Otherwise @p preferredPx: no width in range helps.
+///
+/// @param paragraphs    Each paragraph's measured word widths.
+/// @param spaceWidthPx  Width of the space between two words.
+/// @param preferredPx   The width the text would wrap at otherwise.
+/// @param minPx         Narrowest acceptable wrap width.
+/// @param maxPx         Widest acceptable wrap width (the viewport's limit, less the dialog's padding).
+/// @param paddingPx     The dialog's horizontal padding, both sides: what its width adds to the wrap
+///                      width. ImGui truncates a window's width to a whole pixel, so a candidate is
+///                      rounded up to where wrap + padding is whole, and the dialog keeps exactly it.
+/// @return The wrap width; @p preferredPx, or a candidate plus @p paddingPx a whole number of pixels.
+[[nodiscard]] inline float computeOrphanFreeWrapWidth(
+    std::span<const std::vector<float>> paragraphs, float spaceWidthPx, float preferredPx, float minPx, float maxPx, float paddingPx = 0.0F)
+{
+    if (!std::isfinite(preferredPx) || preferredPx <= 0.0F)
+    {
+        return preferredPx;
+    }
+    const float space = (std::isfinite(spaceWidthPx) && spaceWidthPx > 0.0F) ? spaceWidthPx : 0.0F;
+    if (!anyParagraphEndsInOrphan(paragraphs, space, preferredPx))
+    {
+        return preferredPx;
+    }
+    const float floorPx = (std::isfinite(minPx) && minPx > 0.0F) ? std::min(minPx, preferredPx) : 0.0F;
+    const float padding = (std::isfinite(paddingPx) && paddingPx > 0.0F) ? paddingPx : 0.0F;
+
+    float widestWord = 0.0F;
+    std::vector<float> candidates;
+    for (const std::vector<float>& words : paragraphs)
+    {
+        for (std::size_t first = 0; first < words.size(); ++first)
+        {
+            widestWord = std::max(widestWord, words[first]);
+            float run = 0.0F;
+            for (std::size_t last = first; last < words.size(); ++last)
+            {
+                run += (last == first) ? words[last] : space + words[last];
+                candidates.push_back(std::ceil(run + WRAP_ROUNDING_GUARD_PX + padding) - padding);
+            }
+        }
+    }
+    std::ranges::sort(candidates);
+
+    // One whole pixel over the word for the rounding up above.
+    const float ceilingPx = std::min((std::isfinite(maxPx) ? maxPx : std::numeric_limits<float>::max()),
+                                     preferredPx + space + widestWord + WRAP_ROUNDING_GUARD_PX + 1.0F);
+    for (const float candidate : candidates)
+    {
+        if (candidate > preferredPx && candidate <= ceilingPx && !anyParagraphEndsInOrphan(paragraphs, space, candidate))
+        {
+            return candidate;
+        }
+    }
+    for (const float candidate : std::ranges::reverse_view(candidates))
+    {
+        if (candidate < preferredPx && candidate >= floorPx && !anyParagraphEndsInOrphan(paragraphs, space, candidate))
+        {
+            return candidate;
+        }
+    }
+    return preferredPx;
 }
 
 } // namespace UI::DialogMetrics

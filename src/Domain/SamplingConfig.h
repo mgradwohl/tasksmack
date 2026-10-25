@@ -1,9 +1,9 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 namespace Domain::Sampling
@@ -41,9 +41,6 @@ inline constexpr int REFRESH_INTERVAL_DEFAULT_MS = 1000;
 inline constexpr int REFRESH_INTERVAL_MIN_MS = 100;
 inline constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
 
-// Common refresh rate presets (milliseconds) used for UI snapping and tick marks
-inline constexpr std::array<int, 4> COMMON_REFRESH_INTERVALS_MS = {100, 250, 500, 1000};
-
 // -----------------------------------------------------------------------------
 // History Window Configuration
 // -----------------------------------------------------------------------------
@@ -63,6 +60,27 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 // Link speed rarely changes (only on cable replug or driver reload), so we
 // cache it for 60 seconds to avoid repeated sysfs reads.
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
+
+// How long WindowsSystemProbe trusts what it last learned about a down network interface's adapter
+// device (seconds) (#1284, #2731): the registry's device instance id when the read came back empty,
+// and whether the device is still in the system (CM_Locate_DevNodeW, a PnP call). The presence is
+// dropped sooner when GetIfTable2's interface set or an interface's status changes; this is the
+// backstop, so a device that comes or goes with no table change is still noticed. Hyper-V and WSL add
+// several down vEthernet rows, so without the cache that was several PnP calls per pass.
+inline constexpr int NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS = 30;
+
+// How often the battery's static facts -- design and full-charge capacity, cycle count, chemistry,
+// manufacturer and model -- are read again from the battery device (seconds) (#1523). They barely
+// change. The read (a SetupAPI enumeration and the battery IOCTLs) can stall on a slow ACPI call, so
+// WindowsPowerProbe runs it on a one-shot worker (ts-battery-read, #2731), never in the sampling pass,
+// which reads only the live state (GetSystemPowerStatus) each pass.
+inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
+
+// A system-probe sub-read -- the CPU times, memory, the PDH clock counter, the interface table -- that
+// takes this long or longer is logged by name at debug level (#2731), so an overrun names "pdh-freq"
+// or "ifTable" rather than "system". The fastest Settings interval: a sub-read that long overruns it
+// on its own.
+inline constexpr int SYSTEM_PROBE_SLOW_SUB_READ_MS = REFRESH_INTERVAL_MIN_MS;
 
 // Cache TTL for inode-to-PID mapping (milliseconds) - Linux only
 // buildInodeToPidMap() scans /proc/[pid]/fd/* for all processes to resolve socket
@@ -95,6 +113,63 @@ inline constexpr int UNATTRIBUTED_SOCKET_HOLD_MS = INODE_PID_CACHE_TTL_MS + REFR
 // the same later one.
 inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
 
+// How often Process Details re-reads the selected process's environment (milliseconds) (#179)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Environment section is open, once when it opens or the selection changes and then at this cadence.
+// An environment rarely changes after exec, so a slow re-read is enough to notice one that does.
+inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
+
+// How often Process Details re-reads the selected process's TCP/UDP connections (milliseconds) (#799)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Connections section is open, once when it opens or the selection changes and then at this cadence.
+// Each read walks the process's fd links and dumps the system's socket tables, so it is kept slower
+// than the sample rate; connections come and go faster than an environment, so faster than that.
+inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
+
+// Process Details' I/O priority control (#803) reads the shown process's I/O priority on a worker while
+// the control is drawn, once when it shows, after the selection changes or an apply, and then at this
+// cadence, so a change made outside TaskSmack (ionice) shows up. Off the UI thread: on Linux each read
+// is a pidfd open, a /proc read and ioprio_get (#2734).
+inline constexpr int PROCESS_IO_PRIORITY_REFRESH_MS = 2000;
+
+// How often Process Details re-reads the selected process's loaded modules (milliseconds) (#802)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Modules section is open, once when it opens or the selection changes and then at this cadence. A
+// process loads and unloads modules rarely after startup, so a slow re-read is enough to notice one.
+inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
+
+// How often Process Details re-reads the selected process's security context (milliseconds) (#1526)
+// On demand, like the modules: only for the selected process, only while its Security section is open.
+// Credentials change rarely (setuid(), a capability drop), so a slow re-read is enough to notice one.
+inline constexpr int PROCESS_SECURITY_REFRESH_MS = 3000;
+
+// How old Process Details lets the shared crash history get before it reads it again (milliseconds)
+// (#1675). Read on demand, never per frame or per selection change: only while the Overview's Recent
+// crashes line is drawn, once when it is first shown and then when the newest read (Process Details' own
+// or the System tab's) is this old. Each read queries the Application event log (Windows) or lists the
+// core dumps and their journal entries (Linux), and crashes are rare, so a minute is enough.
+inline constexpr int PROCESS_CRASH_HISTORY_REFRESH_MS = 60000;
+
+// How often the sensors were read before they followed the Settings interval (milliseconds) (#1522, #2737):
+// now only the pause a sensor history's line breaks at is derived from it (SENSOR_HISTORY_GAP_MIN_SECONDS).
+inline constexpr int SYSTEM_INFO_SENSOR_REFRESH_MS = 2000;
+
+// How often the Services tab re-reads the service list (milliseconds) (#800). Sampled only while the
+// tab is shown; a service changes state far less often than a process's counters do.
+inline constexpr int SERVICES_REFRESH_MS = 2000;
+
+// How old a service list may be and still say which services each process hosts (#1880): three
+// refreshes. The list is re-read at SERVICES_REFRESH_MS while the Services tab, the Processes table's
+// Services column or Process Details' Services section needs it; once none does, it stops being read,
+// and an older list is not passed off as current in the column.
+inline constexpr int SERVICES_DATA_MAX_AGE_MS = 3 * SERVICES_REFRESH_MS;
+
+// How often the Startup tab re-reads the startup entries (milliseconds) (#801). Sampled only while the
+// tab is shown; entries change only when something installs, removes or toggles one, so this is slow.
+// Within the BackgroundSampler's interval range, which clamps anything longer.
+inline constexpr int STARTUP_REFRESH_MS = 5000;
+static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
@@ -108,6 +183,16 @@ inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
 // Linux probes check sysfs, which never wakes a sleeping GPU, and only re-initialise a vendor
 // library when something changed, so this costs a directory scan per interval.
 inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
+
+// Oldest per-process GPU publication ProcessModel still merges (#1417). The GPU sampler reads the
+// per-process GPU counters and publishes them; the process sampler, on its own cadence, merges the
+// newest publication. Normally that is at most one system-sampler interval old (capped at
+// REFRESH_INTERVAL_MAX_MS, also while its tab is hidden), and a sampler pass that overruns waits at
+// most another REFRESH_INTERVAL_MAX_MS before the next (BackgroundSampler's nextSampleTime()), so
+// three of the slowest interval cover a healthy sampler with room to spare. Older than this, the GPU
+// sampler has stalled (a hung driver read, say): the process generation shows its GPU fields as a
+// failed read rather than present long-gone figures as current.
+inline constexpr int PROCESS_GPU_DATA_MAX_AGE_MS = 3 * REFRESH_INTERVAL_MAX_MS;
 
 // Socket stats cache TTL (milliseconds) - Linux only
 // Controls how long per-process network stats (via Netlink INET_DIAG) are cached.

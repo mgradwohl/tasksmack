@@ -1,8 +1,8 @@
 # TaskSmack - Copilot Instructions
 
-Cross-platform system monitor (C++23 / Clang/LLVM 23 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
+Linux and Windows system monitor (macOS is not supported) (C++23 / Clang/LLVM 23 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
 
-> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../completed-features.md) (implemented features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../docs/dev/completed-features.md) (implemented features), [AGENTS.md](../AGENTS.md) (shared rules for every agent)
 
 ## Documentation Map (Source of Truth)
 
@@ -17,10 +17,11 @@ TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
     - If you change build/test/tooling, update this file.
 - **Architecture + engineering direction (canonical):** [tasksmack.md](../tasksmack.md)
     - Layer contracts, sampling, capability behavior, platform strategy, and roadmap.
-- **Implemented features list (canonical):** [completed-features.md](../completed-features.md)
+- **Implemented features list (canonical):** [completed-features.md](../docs/dev/completed-features.md)
     - User-visible and engineering features already implemented.
-- **Agent guidance:** [copilot-instructions.md](copilot-instructions.md) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
-    - Primarily for agents, but still useful to contributors.
+- **Agent guidance:** [AGENTS.md](../AGENTS.md) (canonical shared rules for every agent: workflow, merge authority, PR/issue rules), and [copilot-instructions.md](copilot-instructions.md) (this file: Copilot's project detail)
+    - Primarily for agents, but still useful to contributors. Where this file and AGENTS.md disagree, AGENTS.md wins.
+- **Review checklist (canonical):** [skills/code-review/SKILL.md](skills/code-review/SKILL.md)
 - **Security policy:** [SECURITY.md](../SECURITY.md)
     - Responsible disclosure and reporting instructions.
 - **Changelog:** [CHANGELOG.md](../CHANGELOG.md)
@@ -31,7 +32,7 @@ Contribution process helpers:
 - PR checklist: [.github/pull_request_template.md](pull_request_template.md)
 - Issue templates: [.github/ISSUE_TEMPLATE/](ISSUE_TEMPLATE/)
 
-The `docs/dev/` pages are navigation pages, not duplicate developer references. If you need to add documentation, keep it narrowly scoped and link to the relevant canonical source.
+The `docs/dev/` pages (the developer overview, the feature inventory and the Wayland test matrix) are not duplicate developer references. If you need to add documentation, keep it narrowly scoped and link to the relevant canonical source.
 
 ## Quick Reference
 
@@ -81,7 +82,8 @@ OS APIs (Linux: /proc/*, Windows: NtQuery*)
 **Layer rules:**
 - **Platform** (`src/Platform/`): Stateless probes returning raw counters (CPU ticks, bytes). No computation.
 - **Domain** (`src/Domain/`): Computes deltas/rates from counters, maintains history, publishes immutable snapshots.
-- **UI** (`src/App/`, `src/UI/`): Renders snapshots via ImGui. Never calls Platform directly.
+- **UI** (`src/UI/`): Renders snapshots via ImGui. Never calls Platform directly.
+- **App** (`src/App/`): Panels and shell; the composition root. The panels' real-or-synthetic platform objects all come from `App/PanelPlatforms.cpp` (the only App file besides `App/SyntheticScenario.cpp` that calls `Platform::make*()`), called at attach time -- from the panel's sampler start hook, on the sampler thread (#2731) -- and wired by `App/ShellPanels`.
 - **Core** (`src/Core/`): Application lifecycle, windowing, event dispatch.
 - OpenGL calls confined to `Core/` and `UI/` only. Domain/Platform are graphics-agnostic.
 - Domain and Platform never depend on UI, Core, or graphics libraries.
@@ -95,9 +97,8 @@ Probes return **raw counters**, domain computes **deltas and rates**:
 // Platform: raw counters (stateless read from OS)
 ProcessCounters{userTime=1000, systemTime=500, startTimeTicks=12345}
 
-// Domain: compute delta from previous snapshot
-uint64_t uniqueKey = hash(pid, startTime);  // Handle PID reuse
-auto prev = m_PrevCounters[uniqueKey];
+// Domain: compute delta from the previous sample of the same process,
+// keyed by (pid, startTimeTicks) so a reused PID starts a fresh baseline
 cpuPercent = (delta_user + delta_system) / totalCpuDelta * 100;
 
 // UI: render ProcessSnapshot.cpuPercent
@@ -122,18 +123,21 @@ struct ProcessCapabilities {
 ### Data Refresh (Current Architecture)
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
 - `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
-- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations. Each builds its generation outside any lock a reader takes and swaps it in through `Domain::PublicationSlot` (a short mutex around a `shared_ptr`), so `publication()` never waits for a history copy (#868); their writers are serialised on a writer mutex so versions commit in order (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
+- `GPUModel` is the single owner of GPU acquisition (#1417) and publishes per-process GPU data as a `ProcessGPUPublication`; `ProcessModel` merges the newest one and never calls the GPU probe. See tasksmack.md "Sampling and Publication"
+- System, Storage, and GPU models build each generation outside any lock a reader takes and swap it in through `Domain::PublicationSlot`, so `publication()` never waits for a history copy (#868); writers are serialized on a writer mutex (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
+- History is held in `Domain::SharedHistoryBuffer`s whose appends are allocation-failure-safe transactions; see tasksmack.md "History Storage" before changing a model's history
 - `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
-- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
+- Every thread TaskSmack creates is named through `Platform/ThreadName.h`, whose `*_THREAD_NAME` constants are the complete list: the samplers (`ts-sampler-proc`, `ts-sampler-sys`, `ts-sampler-disk` and `ts-sampler-gpu` (one per system-metrics domain, #2731), `ts-sampler-sens`, `ts-sampler-svc` for the Services tab once it has been shown, `ts-sampler-auto` for the Startup tab), the Process Details and System Information readers (`ts-conn-read`, `ts-mod-read`, `ts-files-read`, `ts-sec-read`, `ts-env-read`, `ts-sysinfo-read`, `ts-crash-read`, ...), and the action workers (`ts-svc-action`, `ts-auto-action`, `ts-dump` (#807), `ts-folder-pick` (#2001), `ts-batch-action` (a confirmed batch action or batch priority change over the Processes selection, #2142)), the thread that starts the Windows administrator helper and waits behind its UAC prompt (`ts-uac-launch`, #2768), the one-shot worker that re-reads the Windows battery's static facts (`ts-battery-read`, #2731), and the one-shot worker that writes `config.toml` for a settings change made on the UI thread, coalescing rapid changes (`ts-config-save`, `UserConfig::saveInBackground()`, #2916). A new thread gets a new constant there, 15 bytes max for Linux, so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
+- An App view that runs one slow platform call off the UI thread (a dump, a service or startup action, a lazy read) uses `App::BackgroundTask<Result>` (`src/App/Panels/BackgroundTask.h`, #2139), never a hand-rolled `std::async` slot: it names the thread, turns work that throws into the view's Failed result on the worker (no exception object crosses threads, #1685/#1706), reports a thread that couldn't start, gives each start a new stop token, and requests a stop and waits on destruction
 
 ### Panel Lifecycle
 ```cpp
-void onAttach() override { /* create model, call refresh() to seed history */ }
-void onDetach() override { /* cleanup model */ }
-void onUpdate(float deltaTime) override { /* accumulate time, call model->refresh() on interval */ }
-void render(bool* open) override { /* ImGui::Begin/End, render version-cached snapshots */ }
+void onAttach() override { /* create the model without a probe (Domain::DEFERRED_PROBE), start its BackgroundSampler with an onThreadStart hook that, on the sampler thread, gets the platform objects from App/PanelPlatforms (or an injected factory), hands the probe to the model (setProbe()) and seeds it (#2731); return without a probe call */ }
+void onDetach() override { /* stop the sampler (which waits for its hook), release the model */ }
+void onUpdate(float deltaTime) override { /* per-frame bookkeeping (sampler interval, finished background tasks); the sampler, not onUpdate, calls refresh() */ }
+void renderContent() override { /* draw into ShellLayer's tab (no ImGui::Begin/End), render version-cached snapshots */ }
 ```
 
 ## Coding Standards
@@ -145,7 +149,7 @@ void render(bool* open) override { /* ImGui::Begin/End, render version-cached sn
 - **Static Analysis:** `.clang-tidy` - run regularly
 
 ### Naming
-- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_PascalCase` | Constants: `UPPER_SNAKE_CASE`
+- Classes: `PascalCase` | Functions: `camelCase` | Members: `m_PascalCase` | Constants: `UPPER_SNAKE_CASE` | Enumerators: `PascalCase` (`.clang-tidy` enforces all but constants; see CONTRIBUTING.md)
 
 ### Includes (order matters)
 1. Matching header (`.cpp` files only)
@@ -167,13 +171,12 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ```
 
 ### Modern C++23 Features (Prefer)
-- `std::string::contains()`, `std::string::starts_with()` over `find()`
-- `std::ranges` and `std::views` over raw loops
+Prefer these when the modern form preserves behavior and improves clarity; don't rewrite code that needs the older form (see the C++23 section of [skills/code-review/SKILL.md](skills/code-review/SKILL.md)).
+- `std::string::contains()`, `std::string::starts_with()` over `find()` used purely as a containment/prefix check (not when the position is needed)
+- `std::ranges` and `std::views` over raw loops with no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns)
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
-- prefer modern C++ 23 alternatives for legacy patterns (e.g., prefer `std::string::contains()` over `find()`, prefer `std::views` over raw loops)
-- prefer modern C++ 23 standard library features  that improves code clarity, safety, or performance (e.g., `std::format` for type-safe formatting, `std::jthread` for threads with automatic joining)
-- prefer modern C++ 23 standard library features when a third-party library function provides similar functionality to a C++23 standard library feature (e.g., prefer `std::format` over `fmt::format`)
+- prefer a C++23 standard library feature over a third-party function that does the same (e.g., `std::format` over `fmt::format`)
 - prefer modern C++ 23 types to improve code clarity, safety, or performance (e.g., `std::span` for array views, `std::optional` for optional values) over legacy types
 - prefer range-based for loops and standard algorithms from `<algorithm>` over traditional for loops for better readability and safety
 - prefer `enum class` over traditional `enum` for better type safety and scoping with a type 'enum class EnumName : std::uint8_t { ... };' to specify underlying type when size matters
@@ -251,19 +254,31 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ## Testing
 
 - Framework: Google Test in `tests/` mirroring `src/` structure
-- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`
+- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, the Process Details readers (`IProcessEnvironmentReader`, `IProcessConnectionsReader`, `IProcessModulesReader`, `IProcessSecurityReader`, `IProcessOpenFilesReader`), and the Services/Startup probes and actions
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
-- `TaskSmackTests` does not link real ImGui/ImPlot library object code (headers only, no
-  window/GL context) — a `.cpp` calling real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions
-  fails to *link* if added to its source list (e.g. `TitleBarLayer.cpp`, `ProcessesPanel.cpp`,
-  `ProcessDetailsPanel.cpp`, `UILayer.cpp`). Two ways around it, see CONTRIBUTING.md "Testing
-  App/UI code that needs a live ImGui context" for detail:
+- `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a
+  `.cpp` calling `ImGui::`/`ImPlot::` can be added to its "Source files under test" list and run
+  headless. There is no display or GL context in CI, so anything needing a real SDL window, OpenGL
+  or the `ImGui_Impl*` backends at run time (e.g. `UI/UILayer.cpp`) links but cannot run. Panels and
+  layers (`TitleBarLayer.cpp`, `ShellLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+  `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs, `UILayer.cpp`) are not in the test binary:
+  `UI/Theme.cpp` is replaced there by `tests/Mocks/ThemeStub.cpp`, so every `Theme` member a file
+  calls must be stubbed, and some create real `Platform` probes. Three ways to cover such code, see
+  CONTRIBUTING.md "Testing App/UI code that needs a live ImGui context" for detail:
   1. Extract the pure decision logic (all inputs as explicit params) into a small header, tested
      directly — `App/TitleBarGeometry.h`, `App/Panels/ProcessDetailsPanel_ActionHelpers.h`,
-     `UI/DpiScale.h`/`UI/MonospaceFontPath.h`.
-  2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), it may link
-     fine as-is — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
+     `UI/DpiScale.h`.
+  2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), link it as-is
+     — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
+  3. Render it headless: `ImGui::CreateContext()` (+ `ImPlot::CreateContext()`), set
+     `io.DisplaySize`, `io.IniFilename = nullptr`,
+     `io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures` and `io.Fonts->AddFontDefault()`,
+     then per frame `NewFrame()` / `Begin()` / code under test / `End()` / `Render()`, and assert on
+     results, ImGui state or `ImGui::GetDrawData()`. Examples:
+     `tests/App/test_ProcessActionConfirmPopup.cpp`, `tests/App/test_ProcessPriorityViewRender.cpp`,
+     `tests/UI/test_ChartGeometryBudget.cpp`. Prefer splitting a panel's drawing into a small view
+     `.cpp` (as `ProcessPriorityView.cpp`) and linking that.
 - `Platform::Windows` probes touch real hardware/OS state most CI runners don't have (battery,
   GPU, NVML). See CONTRIBUTING.md "Testing Windows platform-probe code that touches real
   hardware/OS APIs": extract pure logic into a `*Math.h` header taking primitives instead of
@@ -290,15 +305,27 @@ TEST(ProcessModelTest, CpuPercentFromDeltas) { /* ... */ }
 
 ### Coverage
 ```bash
-pwsh tools/coverage.ps1    # Generates coverage/index.html
+./tools/coverage.sh        # Linux
+pwsh tools/coverage.ps1    # Windows; both write coverage/index.html
 ```
 
 ## Adding New Features
 
-1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` (impl)
+1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` and `Platform/Windows/WindowsXxxProbe.cpp` (impls) → a `make*()` in `Platform/Factory.h` (both `Factory.cpp`s), called only from `App/PanelPlatforms.cpp`
 2. **New model**: `Domain/XxxModel.cpp` (computes deltas from probe counters)
-3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`). Implement `Panel::render()` and `renderContent()`, add the owned panel member to `ShellLayer`, and register it once in the constructor's `PanelTabs` list with its event name and label provider. Registration order drives tabs and lifecycle forwarding; detach runs in reverse. Keep panel-specific model/snapshot coordination explicit in `ShellLayer`. Registry tests live in `tests/App/test_PanelTabs.cpp`.
+3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model; a `BackgroundSampler` drives refresh, not `onUpdate()`). Implement `Panel::renderContent()`, add the owned panel member to `App/ShellPanels` (with an accessor `ShellLayer` references), and register it once in `ShellLayer`'s constructor `PanelTabs` list with its event name and label provider. Registration order drives tabs and lifecycle forwarding; detach runs in reverse. Keep panel-specific model/snapshot coordination explicit in `ShellLayer`. Registry tests live in `tests/App/test_PanelTabs.cpp`.
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
+5. **System / process parity (maintainer guideline):** a metric that gets a system-wide tab or section
+   (for example GPU, NPU, Network and I/O) should usually also get (a) a tab in Process Details for the
+   selected process, with that process's history, and (b) a column in the Processes table, off by default
+   unless the metric is common. These are three views of one data stream: plan the per-process data
+   (probe → Domain → `ProcessSnapshot` and the watched-process history) with the system view, not as an
+   afterthought. If one of the three doesn't make sense for a metric (no per-process attribution exists,
+   as for battery health), say why in the PR.
+6. **Processes table / Process Details parity (maintainer guideline):** anything the Processes table can show
+   for a process (a column, a cell's tooltip, a row-menu action) should also be on its Process Details tab.
+   A fact that is in the table but missing from Process Details is probably a bug: file it, or add it in the
+   same PR.
 
 **CMake layout:** the root `CMakeLists.txt` is declarative; build logic lives in focused modules under `cmake/` — `Options.cmake` (cache options), `CompilerOptions.cmake` (toolchain/warnings/hardening, must precede dependencies), `Dependencies.cmake` (FetchContent + third-party targets), `StaticAnalysis.cmake` (clang-tidy/format targets, included before the Windows `.rc` is appended to sources), `InstallRules.cmake`, and `Packaging.cmake` (CPack). New dependencies go in `cmake/Dependencies.cmake`; new tooling targets in `cmake/StaticAnalysis.cmake`.
 
@@ -309,38 +336,38 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ `EXPECT_EQ` on floats (use `EXPECT_DOUBLE_EQ`)
 - ❌ Mocks inside anonymous namespace with `make_unique`
 - ❌ Using `using namespace std` in headers
-- ❌ Ignoring clang-tidy warnings (the Static Analysis workflow on `main` will fail post-merge — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
+- ❌ Ignoring clang-tidy warnings (CI's Linux and Windows debug jobs run clang-tidy on the files a PR affects and fail the gate on any finding — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
 - ❌ Committing without running clang-format
-- ❌ Adding dependencies without `SYSTEM` keyword, or without a per-preset `BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build"`, in FetchContent
+- ❌ Adding dependencies without `SYSTEM` keyword, or without a per-preset `BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build"` and per-host `SUBBUILD_DIR "${TASKSMACK_DEPS_SUBBUILD_DIR}/<dep>-subbuild"`, in FetchContent
 - ❌ Violating Rule of 5 (custom destructor without handling copy/move)
 - ❌ Using raw `new`/`delete` instead of smart pointers
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
 - ❌ Missing `override` keyword on virtual function overrides
 - ❌ Calling `Platform::makePathProvider()` from UI or App — use `Core::Application::get().paths()` instead
-- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in App panel `onAttach`, not in render loops
-- ❌ Adding `#include "Platform/Factory.h"` to `UI/` or non-panel `App/` files
+- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in `App/PanelPlatforms.cpp`, called from a panel's construction/`onAttach`, not in render loops
+- ❌ Adding `#include "Platform/Factory.h"` anywhere in `UI/` or `App/` other than `App/PanelPlatforms.cpp` and `App/SyntheticScenario.cpp` (panels get their platform objects from `PanelPlatforms`)
 
 ## Engineering Workflow
 
 - When modifying project structure, scripts, clang configs, or CMake files → update `CONTRIBUTING.md` and this file
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
-- New dependencies → use CMake FetchContent with `SYSTEM` keyword and a per-preset `BINARY_DIR` (#1308), document in `CONTRIBUTING.md`
+- New dependencies → use CMake FetchContent with `SYSTEM` keyword a per-preset `BINARY_DIR` (#1308) and a per-host `SUBBUILD_DIR` (#2253), document in `CONTRIBUTING.md`
 - When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
 - **GLAD dependency:** Requires Python 3.14+ with jinja2 at build time for OpenGL loader generation
 - **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.
 
 ---
-*For comprehensive build instructions, prerequisites, tools, and project structure, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
-
-*For PR process and contribution workflow, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*For build instructions, prerequisites, tools, project structure and the PR process, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
 ---
 
 ## Code Review Instructions
 
+The canonical review checklist is [skills/code-review/SKILL.md](skills/code-review/SKILL.md); this list is a short version of it, and the SKILL wins where they differ. Report only genuine issues; skip style nits already enforced by clang-format.
+
 When performing a code review on this project:
 
-1. **C++23 Compliance**: Flag any use of deprecated patterns when modern C++23 alternatives exist (e.g., prefer `std::ranges`, `std::views`, `std::string::contains()`)
+1. **C++23 Compliance**: Suggest a modern C++23 replacement for a legacy pattern only when it preserves behavior and improves clarity (e.g., `contains()` for a containment-only `find()`, `std::ranges`/`std::views` for a loop with no early exit or iterator dependence)
 
 2. **Memory Safety**: Check for potential memory issues - prefer smart pointers, RAII, avoid raw `new`/`delete`
 
@@ -354,7 +381,7 @@ When performing a code review on this project:
    - Platform probes should return raw counters, not computed values
    - Domain should not depend on UI, Core, or graphics libraries
    - UI should not include `Platform/Factory.h` or call `Platform::make*()` directly; path resolution goes through `Core::Application::get().paths()`
-   - App panels (composition root) may call `Platform::make*Probe()` and `Platform::makeProcessActions()` at construction/`onAttach` time only — never in render loops
+   - App (composition root) calls `Platform::make*Probe()` and `Platform::makeProcessActions()` only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which panels call at construction/`onAttach` time only — never in render loops
    - `Platform::makePathProvider()` is called only inside `Core::PathService`; all other path access goes through `Core::Application::get().paths()`
    - All OpenGL calls should be in UI/Core layers only
 

@@ -1,0 +1,354 @@
+#pragma once
+
+// Process Details' collapsible Environment section (#179): the selected process's environment
+// variables in a NAME / VALUE table, sorted by name, with a filter box once there are more than a
+// screenful, and secret-looking values masked until their row's reveal button is pressed.
+//
+// The view never creates a reader. The panel owns the IProcessEnvironmentReader (the composition
+// root's Platform::makeProcessEnvironmentReader() result) and passes it to update(), which the panel
+// calls from its per-frame update path, never from render(). update() starts a read only while the
+// section was drawn open on the last frame, once when it opens or the selection changes and then every
+// Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, on a worker thread, one at a time
+// (LazyBackgroundRead.h, as the Connections and Security sections'): reading /proc/<pid>/environ takes
+// the target's mmap lock, which a process stuck on a hung mount can hold indefinitely, and that must
+// not freeze the UI (#2116). render() only draws what the last read returned.
+//
+// Everything but render() is defined here, free of ImGui, so the read cadence, the statuses and the
+// reveal state are tested against a mock reader without an ImGui context
+// (tests/App/test_ProcessEnvironmentView.cpp); render() is run headless in
+// tests/App/test_ProcessEnvironmentViewRender.cpp.
+//
+// Environment values are never logged (#179).
+
+#include "Domain/SamplingConfig.h"
+#include "LazyBackgroundRead.h"
+#include "Platform/AsciiCase.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/ThreadName.h"
+#include "ProcessEnvironmentMasking.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <span>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace App
+{
+
+namespace Detail
+{
+
+/// What a masked value is drawn as: eight bullets (U+2022), whatever the value's length.
+inline constexpr std::string_view MASKED_ENVIRONMENT_VALUE = "\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2"
+                                                             "\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2";
+
+/// The filter box appears once the environment has more variables than this.
+inline constexpr std::size_t ENVIRONMENT_FILTER_MIN_ROWS = 20;
+
+/// Rows the table shows before it scrolls inside the section, so a long environment does not push the
+/// Overview's charts out of the pane.
+inline constexpr std::size_t ENVIRONMENT_TABLE_MAX_VISIBLE_ROWS = 12;
+
+/// The line shown in place of the table for a read that did not succeed; empty for Ok.
+[[nodiscard]] constexpr std::string_view environmentStatusText(Platform::EnvironmentReadStatus status) noexcept
+{
+    switch (status)
+    {
+    case Platform::EnvironmentReadStatus::Ok:
+        return {};
+    case Platform::EnvironmentReadStatus::PermissionDenied:
+        return "Not readable (permission denied)";
+    case Platform::EnvironmentReadStatus::ProcessExited:
+        return "Process exited";
+    case Platform::EnvironmentReadStatus::Unsupported:
+        return "Not available on this platform";
+    case Platform::EnvironmentReadStatus::IdentityUnknown:
+        return "Not available yet"; // retried at the next refresh, once the start time is known
+    case Platform::EnvironmentReadStatus::Failed:
+        break;
+    }
+    return "Could not be read";
+}
+
+/// Whether a cell's text needs a tooltip to be read whole: it was cut to @p shownBytes of its
+/// @p totalBytes, or its drawn width @p textWidth exceeds the @p availableWidth left in the cell
+/// (after the cell padding and a reveal button), where the column clips it.
+[[nodiscard]] constexpr bool
+environmentCellNeedsTooltip(std::size_t shownBytes, std::size_t totalBytes, float textWidth, float availableWidth) noexcept
+{
+    return shownBytes < totalBytes || textWidth > availableWidth;
+}
+
+} // namespace Detail
+
+/// The Environment section for the process Process Details shows.
+class ProcessEnvironmentView
+{
+  public:
+    /// One variable as the table shows it.
+    struct Row
+    {
+        std::string name;
+        std::string value;
+        bool secret = false; ///< Detail::isSecretEnvironmentVariable(): drawn masked until revealed
+        /// How many earlier entries of the read had the same name. execve() allows duplicate names and
+        /// /proc/[pid]/environ keeps every entry, so (name, occurrence) -- not the name alone -- is the
+        /// row's identity for its reveal state, and stays the same across re-reads of the same environment.
+        std::size_t occurrence = 0;
+    };
+
+    /// A row's identity for its reveal state (Row::occurrence).
+    using RowKey = std::pair<std::string, std::size_t>;
+    /// A non-owning RowKey, for lookups that must not copy the name (isRevealed() runs every frame).
+    using RowKeyView = std::pair<std::string_view, std::size_t>;
+
+    /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
+    /// table or its status line. Draws nothing at all when @p hasEnvironment is false (no reader can
+    /// read environments: synthetic runs).
+    void render(bool hasEnvironment);
+
+    /// The panel's per-frame update: takes in a read that has finished, then starts @p target's on a
+    /// worker through @p reader when the section was drawn open on the last frame and a read is due --
+    /// none yet since it opened or the selection changed, or PROCESS_ENVIRONMENT_REFRESH_MS since the
+    /// last. @p reader may be null (nothing is read); the caller keeps it alive while a read runs.
+    /// @return Whether it started a read.
+    bool update(Platform::IProcessEnvironmentReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
+    {
+        takeFinishedRead(target, false);
+        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
+        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
+        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
+        {
+            if (auto failed = m_Read.start(target,
+                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
+                                           { return reader->readAuthorized(t, stopToken); }))
+            {
+                applyResult(std::move(*failed));
+            }
+            return true;
+        }
+        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasEnvironment())
+        {
+            return false;
+        }
+        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readEnvironment(t); }))
+        {
+            applyResult(std::move(*failed));
+        }
+        return true;
+    }
+
+    /// Whether the status line offers "Authenticate to read" (#2309): the read was refused for want of
+    /// permission and the reader can read as an administrator.
+    [[nodiscard]] bool offersAuthenticateToRead() const noexcept
+    {
+        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+    }
+
+    /// "Authenticate to read" was pressed: the next update() reads as an administrator.
+    void requestAuthorizedRead() noexcept
+    {
+        m_Read.requestAuthorized();
+    }
+
+    /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
+    void finishPendingRead(const Platform::ProcessTarget& target)
+    {
+        takeFinishedRead(target, true);
+    }
+
+    /// Whether a read is running on its worker.
+    [[nodiscard]] bool readInFlight() const noexcept
+    {
+        return m_Read.inFlight();
+    }
+
+    /// A different process was selected: drop its variables, the values revealed for it and the
+    /// filter, so nothing of one process is shown for the next, and read afresh when next shown. A read
+    /// in flight for the previous process is dropped when it arrives.
+    void onSelectionChanged() noexcept
+    {
+        m_Read.reset();
+        m_HasRead = false;
+        m_Status = Platform::EnvironmentReadStatus::Ok;
+        m_Detail.clear();
+        m_Truncated = false;
+        m_Rows.clear();
+        m_Revealed.clear();
+        m_Filter.clear();
+        m_FilterKey.clear();
+        m_FilteredRows.clear();
+        m_FilterDirty = true;
+    }
+
+    /// Takes in a read: its status and, for Ok, its variables sorted by name with their mask flags.
+    /// Values revealed for this process stay revealed across re-reads.
+    void applyResult(Platform::EnvironmentReadResult result)
+    {
+        m_HasRead = true;
+        m_Status = result.status;
+        m_Detail = std::move(result.detail);
+        m_Truncated = result.truncated;
+        m_Rows.clear();
+        m_Rows.reserve(result.variables.size());
+        for (Platform::EnvironmentVariable& variable : result.variables)
+        {
+            const bool secret = Detail::isSecretEnvironmentVariable(variable.name, variable.value);
+            m_Rows.push_back({.name = std::move(variable.name), .value = std::move(variable.value), .secret = secret, .occurrence = 0});
+        }
+        // Stable: duplicates of a name keep their read order, which the occurrence numbers follow.
+        std::ranges::stable_sort(m_Rows, {}, &Row::name);
+        for (std::size_t i = 1; i < m_Rows.size(); ++i)
+        {
+            if (m_Rows[i].name == m_Rows[i - 1].name)
+            {
+                m_Rows[i].occurrence = m_Rows[i - 1].occurrence + 1;
+            }
+        }
+        m_FilterDirty = true;
+    }
+
+    /// Records that render() drew the section open this frame (render() calls it; tests may too).
+    void markDrawnOpen() noexcept
+    {
+        m_Read.markDrawnOpen();
+    }
+
+    /// Shows @p row's value if it is masked, or masks it again if it was revealed. Only that row:
+    /// another entry with the same name stays as it was.
+    void toggleReveal(const Row& row)
+    {
+        const RowKeyView key{row.name, row.occurrence};
+        const auto it = std::ranges::lower_bound(m_Revealed, key, {}, keyView);
+        if (it != m_Revealed.end() && keyView(*it) == key)
+        {
+            m_Revealed.erase(it);
+        }
+        else
+        {
+            m_Revealed.insert(it, RowKey{row.name, row.occurrence});
+        }
+        m_FilterDirty = true; // a revealed value becomes searchable
+    }
+
+    /// Whether @p row's value has been revealed since the selection changed.
+    [[nodiscard]] bool isRevealed(const Row& row) const
+    {
+        // Compared through views: no copy of the name, so no allocation per secret row per frame.
+        return std::ranges::binary_search(m_Revealed, RowKeyView{row.name, row.occurrence}, {}, keyView);
+    }
+
+    /// Whether the filter box is drawn: past ENVIRONMENT_FILTER_MIN_ROWS, or while a filter is set --
+    /// a filter typed at 25 rows must stay visible (and clearable) after a re-read returns 10.
+    [[nodiscard]] bool showsFilterBox() const noexcept
+    {
+        return m_Rows.size() > Detail::ENVIRONMENT_FILTER_MIN_ROWS || !m_Filter.empty();
+    }
+
+    /// Whether @p row's value is drawn as Detail::MASKED_ENVIRONMENT_VALUE now.
+    [[nodiscard]] bool isMasked(const Row& row) const
+    {
+        return row.secret && !isRevealed(row);
+    }
+
+    /// Whether a read has been taken in since the selection changed (false: "Reading...").
+    [[nodiscard]] bool hasRead() const noexcept
+    {
+        return m_HasRead;
+    }
+
+    /// The last read's status (Ok before the first).
+    [[nodiscard]] Platform::EnvironmentReadStatus status() const noexcept
+    {
+        return m_Status;
+    }
+
+    /// Why the last read Failed, when its reader said (EnvironmentReadResult::detail); else empty.
+    [[nodiscard]] const std::string& detail() const noexcept
+    {
+        return m_Detail;
+    }
+
+    /// The last read's variables, sorted by name.
+    [[nodiscard]] std::span<const Row> rows() const noexcept
+    {
+        return m_Rows;
+    }
+
+    /// Sets the filter text, as typing in the filter box does.
+    void setFilter(std::string filter)
+    {
+        m_Filter = std::move(filter);
+    }
+
+    /// Indices into rows() that the filter keeps: the name contains the filter text (ignoring case),
+    /// or the value does and is not masked -- a masked value is never searched, so typing guesses into
+    /// the filter cannot probe a secret. Cached until the rows, the filter or a reveal change.
+    [[nodiscard]] std::span<const std::size_t> filteredRows()
+    {
+        if (m_FilterDirty || m_FilterKey != m_Filter)
+        {
+            m_FilteredRows.clear();
+            for (std::size_t i = 0; i < m_Rows.size(); ++i)
+            {
+                const Row& row = m_Rows[i];
+                if (Platform::containsIgnoreCase(row.name, m_Filter) ||
+                    (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter)))
+                {
+                    m_FilteredRows.push_back(i);
+                }
+            }
+            m_FilterKey = m_Filter;
+            m_FilterDirty = false;
+        }
+        return m_FilteredRows;
+    }
+
+  private:
+    /// @p key as a RowKeyView: the projection that lets the sorted m_Revealed be searched by views.
+    [[nodiscard]] static RowKeyView keyView(const RowKey& key) noexcept
+    {
+        return {key.first, key.second};
+    }
+
+    void renderTable();
+
+    void takeFinishedRead(const Platform::ProcessTarget& target, bool wait)
+    {
+        if (auto result = m_Read.takeFinished(target, wait))
+        {
+            applyResult(std::move(*result));
+        }
+    }
+
+    /// The Failed result for a read that threw, or one no worker could be started for. That detail is
+    /// not kept (an exception's text could quote a value, which must never be shown or logged, #179):
+    /// the status line says "Could not be read"; only a reader's own detail is drawn after it.
+    // NOLINTNEXTLINE(performance-unnecessary-value-param) - the signature LazyBackgroundRead::FailedResultFn takes
+    [[nodiscard]] static Platform::EnvironmentReadResult failedRead(std::string /*detail*/)
+    {
+        return {.status = Platform::EnvironmentReadStatus::Failed, .variables = {}};
+    }
+
+    bool m_HasRead = false;
+    Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
+    std::string m_Detail;     // why it Failed, when the reader said (the Windows reader does, #2569)
+    bool m_Truncated = false; // the read listed only the first (the helper's reply holds one frame, #2403)
+    std::vector<Row> m_Rows;
+    std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
+    std::string m_Filter;
+    std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
+    std::vector<std::size_t> m_FilteredRows;
+    bool m_FilterDirty = true;
+    // The read in flight, its cadence and the "Authenticate to read" request (#2309). Last: destroying
+    // it waits for a read in flight, which writes only into its own future.
+    Detail::LazyBackgroundRead<Platform::EnvironmentReadResult> m_Read{
+        Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, Platform::ENVIRONMENT_READ_THREAD_NAME, &failedRead};
+};
+
+} // namespace App

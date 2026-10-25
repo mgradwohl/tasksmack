@@ -11,10 +11,13 @@
 #include <toml++/toml.hpp>
 
 #include <array>
+#include <cerrno>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -377,13 +380,20 @@ TEST_F(UserConfigLoadSaveTest, LoadLogsParseFailureAndKeepsDefaultsForTomlppCras
         const char* name;
         std::string_view content;
     };
-    const std::array<MalformedToml, 6> inputs = {{
-        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
-        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
-        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
-        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
-        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
-        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    const std::array<MalformedToml, 13> inputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"},                                  // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},                                    // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},                                   // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},                                       // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"},                                  // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"},                                  // #1389
+        {.name = "DateBadDayThenValues", .content = "h=2000-02-1a 1 1"},                       // #1659
+        {.name = "DateSpaceDigitNewline", .content = "h=2000-02-01 1\n"},                      // #1659
+        {.name = "DateSpaceDigitInArray", .content = "h=[2000-02-01 1]"},                      // #1659
+        {.name = "DateTimeLowerTThenLetter", .content = "2h=0200-02-10thexxxxxxxxxxWq\x7f:t"}, // #2427 (the fuzzer's input)
+        {.name = "DateTimeUpperTThenLetter", .content = "h=2000-02-10Tx:"},                    // #2427
+        {.name = "DateTimeTThenSign", .content = "h=2000-02-10T+1:"},                          // #2427
+        {.name = "DateTimeTThenColonInArray", .content = "h=[2000-02-10t:00]"},                // #2427
     }};
 
     for (const auto& input : inputs)
@@ -449,8 +459,11 @@ TEST_F(UserConfigLoadSaveTest, LoadClampsInsaneWindowPosition)
 TEST_F(UserConfigLoadSaveTest, LoadClampsSettingsAndAppliesConfiguredColumns)
 {
     {
+        // config_version 2: every listed column is a choice, even one at its default (#1376).
         std::ofstream file(m_ConfigPath);
-        file << R"([sampling]
+        file << R"(config_version = 2
+
+[sampling]
 interval_ms = 999999
 history_max_seconds = -1
 
@@ -568,6 +581,75 @@ TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
     const auto fontSize = savedConfig["font"]["size"].value<std::string>();
     ASSERT_TRUE(fontSize.has_value());
     EXPECT_EQ(*fontSize, "medium");
+}
+
+// ========== saveInBackground() (#2916): the UI thread's saves, written by a worker ==========
+
+TEST_F(UserConfigLoadSaveTest, BackgroundSaveIsWrittenAndLoadedBack)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+
+    ASSERT_TRUE(std::filesystem::exists(m_ConfigPath));
+    cfg.resetConfigPathForTesting(m_ConfigPath);
+    cfg.load();
+    EXPECT_EQ(cfg.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadWaitsForABackgroundSaveAndReadsWhatItWrote)
+{
+    auto& cfg = UserConfig::get();
+    cfg.load(); // no file yet: loaded, with defaults
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.settings().themeId = "nord"; // changed after the snapshot, never saved
+
+    cfg.load(); // the write finishes first, and makes the file worth re-reading
+    EXPECT_EQ(cfg.settings().themeId, "dracula");
+}
+
+TEST_F(UserConfigLoadSaveTest, SaveAfterABackgroundSaveWritesTheLastState)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.settings().themeId = "nord";
+    cfg.save(); // the exit path: the background write can't land over this one
+
+    const auto saved = toml::parse_file(m_ConfigPath.string());
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), std::optional<std::string>("nord"));
+}
+
+TEST_F(UserConfigLoadSaveTest, ARunOfFailedBackgroundSavesIsLoggedOnce)
+{
+    auto& cfg = UserConfig::get();
+    cfg.failSaveStepForTesting(UserConfig::SaveStep::Rename, EACCES);
+
+    std::ostringstream log;
+    const auto previousLogger = spdlog::default_logger();
+    // _mt: the worker logs while this thread holds the logger.
+    spdlog::set_default_logger(
+        std::make_shared<spdlog::logger>("background-save-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log)));
+    cfg.settings().themeId = "dracula";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+    cfg.settings().themeId = "nord";
+    cfg.saveInBackground();
+    cfg.flushPendingSave();
+    spdlog::set_default_logger(previousLogger);
+
+    const std::string text = log.str();
+    const std::string_view report = "Settings weren't saved";
+    std::size_t reports = 0;
+    for (std::size_t at = text.find(report); at != std::string::npos; at = text.find(report, at + 1))
+    {
+        ++reports;
+    }
+    EXPECT_EQ(reports, 1U) << text;
+    EXPECT_NE(text.find("Failed to replace"), std::string::npos) << "each failure's reason is still logged: " << text;
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath));
 }
 
 // ========== parseSettings (the string seam the config fuzz target drives) ==========

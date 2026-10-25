@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -141,6 +143,46 @@ struct ProcessThreadTally
     return threads.suspended == threads.waiting ? 'T' : 'S';
 }
 
+/// PROCESS_EXTENDED_BASIC_INFORMATION::Flags' IsFrozen bit: the process is frozen (a suspended UWP
+/// or packaged app, or a frozen job). Spelled out so this header stays free of <windows.h>.
+inline constexpr std::uint32_t EXTENDED_BASIC_IS_FROZEN = 0x10;
+/// PROCESS_POWER_THROTTLING_EXECUTION_SPEED: EcoQoS, which Task Manager shows as Efficiency Mode.
+inline constexpr std::uint32_t POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+
+/// PROCESS_POWER_THROTTLING_STATE's masks, as GetProcessInformation(ProcessPowerThrottling) reads them.
+struct PowerThrottlingMasks
+{
+    std::uint32_t controlMask = 0; ///< Mechanisms the process (or Task Manager) took control of
+    std::uint32_t stateMask = 0;   ///< Of those, the ones switched on
+};
+
+/// The Windows Status (#186, #2312) from its two independent reads, either of which may be
+/// unavailable (std::nullopt):
+///  - @p extendedBasicFlags: PROCESS_EXTENDED_BASIC_INFORMATION::Flags, from ProcessBasicInformation
+///    (class 0) with the extended structure's size. Only IsFrozen is used: IsBackground is not
+///    Efficiency Mode.
+///  - @p powerThrottling: the process's power-throttling state. Efficiency Mode is execution-speed
+///    throttling (EcoQoS) the process has taken control of and switched on.
+/// "Suspended" wins over "Efficiency Mode"; an empty status is a process with neither. std::nullopt
+/// only when neither read was available, so the caller can tell "unknown" from "nothing to show".
+[[nodiscard]] constexpr std::optional<std::string_view> windowsProcessStatus(std::optional<std::uint32_t> extendedBasicFlags,
+                                                                             std::optional<PowerThrottlingMasks> powerThrottling) noexcept
+{
+    if (extendedBasicFlags.has_value() && (*extendedBasicFlags & EXTENDED_BASIC_IS_FROZEN) != 0)
+    {
+        return "Suspended";
+    }
+    if (powerThrottling.has_value() && (powerThrottling->controlMask & powerThrottling->stateMask & POWER_THROTTLING_EXECUTION_SPEED) != 0)
+    {
+        return "Efficiency Mode";
+    }
+    if (!extendedBasicFlags.has_value() && !powerThrottling.has_value())
+    {
+        return std::nullopt;
+    }
+    return std::string_view{};
+}
+
 /// Which TTL-cached details getProcessDetails() refreshes for one process this sample (#1156).
 struct DetailRefreshPlan
 {
@@ -199,10 +241,11 @@ inline constexpr std::uint64_t MAX_SANE_ESTATS_CONNECTION_BYTES = 1'000'000'000'
 /// What classifyEStatsRow() made of one TCP table row.
 enum class EStatsRowOutcome : std::uint8_t
 {
-    SkippedState, // Not ESTABLISHED: no EStats calls are made for it
-    ReadFailed,   // GetPerTcp[6]ConnectionEStats returned an error
-    Garbage,      // A counter exceeded MAX_SANE_ESTATS_CONNECTION_BYTES
-    Accumulated,  // A sane read: the connection's byte counts are reported
+    SkippedState,  // Not ESTABLISHED: no EStats calls are made for it
+    ReadFailed,    // GetPerTcp[6]ConnectionEStats returned an error
+    CollectionOff, // The read succeeded but reported collection off: counters undefined (#1418)
+    Garbage,       // A counter exceeded MAX_SANE_ESTATS_CONNECTION_BYTES
+    Accumulated,   // A sane read: the connection's byte counts are reported
 };
 
 /// Per-row decision shared by the IPv4 and IPv6 EStats loops (#1100), extracted so both address
@@ -211,8 +254,13 @@ enum class EStatsRowOutcome : std::uint8_t
 /// non-ESTABLISHED rows; the check is repeated here so the function is self-contained.
 /// @param readStatus Return value of GetPerTcp[6]ConnectionEStats (0 == NO_ERROR); ignored for
 ///                   non-ESTABLISHED rows.
-[[nodiscard]] constexpr EStatsRowOutcome
-classifyEStatsRow(std::uint32_t state, std::uint32_t readStatus, std::uint64_t bytesOut, std::uint64_t bytesIn) noexcept
+/// @param collectionEnabled TCP_ESTATS_DATA_RW_v0::EnableCollection as the same read returned it.
+///                   Microsoft documents the counters as undefined while it is off, so such a read
+///                   is not accepted however plausible its counters look (#1418): another tool may
+///                   have turned collection off, or the connection is a new one on a 4-tuple whose
+///                   predecessor was enabled.
+[[nodiscard]] constexpr EStatsRowOutcome classifyEStatsRow(
+    std::uint32_t state, std::uint32_t readStatus, std::uint64_t bytesOut, std::uint64_t bytesIn, bool collectionEnabled = true) noexcept
 {
     if (state != TCP_STATE_ESTABLISHED)
     {
@@ -221,6 +269,10 @@ classifyEStatsRow(std::uint32_t state, std::uint32_t readStatus, std::uint64_t b
     if (readStatus != 0)
     {
         return EStatsRowOutcome::ReadFailed;
+    }
+    if (!collectionEnabled)
+    {
+        return EStatsRowOutcome::CollectionOff;
     }
     if (bytesOut > MAX_SANE_ESTATS_CONNECTION_BYTES || bytesIn > MAX_SANE_ESTATS_CONNECTION_BYTES)
     {
@@ -242,19 +294,22 @@ struct EStatsSampleCounts
     std::size_t total = 0;           // Rows in the TCP table(s)
     std::size_t established = 0;     // ESTABLISHED rows (the only ones EStats is attempted on)
     std::size_t enabled = 0;         // SetPerTcp[6]ConnectionEStats succeeded
-    std::size_t readOk = 0;          // GetPerTcp[6]ConnectionEStats succeeded (sane or garbage)
+    std::size_t alreadyEnabled = 0;  // Not re-enabled: enabled on an earlier sample (#1418)
+    std::size_t readOk = 0;          // GetPerTcp[6]ConnectionEStats succeeded (sane, garbage or collection off)
     std::size_t saneReads = 0;       // Read OK and within the 1 TB sanity cap (accumulated)
     std::size_t readNotFound = 0;    // Read returned ERROR_NOT_FOUND: connection closed mid-walk
     std::size_t readFailedOther = 0; // Read failed with anything but NOT_FOUND / ACCESS_DENIED
     std::size_t accessDenied = 0;    // Either call returned ERROR_ACCESS_DENIED
     std::size_t hasData = 0;         // Read OK, sane, and at least one non-zero counter
     std::size_t garbage = 0;         // Read OK but rejected by the 1 TB sanity cap
+    std::size_t collectionOff = 0;   // Read OK but collection off: counters undefined (#1418)
 
     EStatsSampleCounts& operator+=(const EStatsSampleCounts& other) noexcept
     {
         total += other.total;
         established += other.established;
         enabled += other.enabled;
+        alreadyEnabled += other.alreadyEnabled;
         readOk += other.readOk;
         saneReads += other.saneReads;
         readNotFound += other.readNotFound;
@@ -262,6 +317,7 @@ struct EStatsSampleCounts
         accessDenied += other.accessDenied;
         hasData += other.hasData;
         garbage += other.garbage;
+        collectionOff += other.collectionOff;
         return *this;
     }
 };
@@ -272,14 +328,19 @@ struct EStatsSampleCounts
 /// @param enableStatus Return value of SetPerTcp[6]ConnectionEStats, or std::nullopt if no enable
 ///                     was attempted.
 /// @param readStatus   Return value of GetPerTcp[6]ConnectionEStats.
+/// @param collectionEnabled The read's TCP_ESTATS_DATA_RW_v0::EnableCollection (see
+///                     classifyEStatsRow()). A collection-off read is a successful read that is
+///                     neither sane nor denied: classifyEStatsProbe() treats it, like garbage, as
+///                     inconclusive.
 inline EStatsRowOutcome recordEStatsRow(EStatsSampleCounts& counts,
                                         std::uint32_t state,
                                         std::optional<std::uint32_t> enableStatus,
                                         std::uint32_t readStatus,
                                         std::uint64_t bytesOut,
-                                        std::uint64_t bytesIn)
+                                        std::uint64_t bytesIn,
+                                        bool collectionEnabled = true)
 {
-    const EStatsRowOutcome outcome = classifyEStatsRow(state, readStatus, bytesOut, bytesIn);
+    const EStatsRowOutcome outcome = classifyEStatsRow(state, readStatus, bytesOut, bytesIn, collectionEnabled);
     if (outcome == EStatsRowOutcome::SkippedState)
     {
         return outcome;
@@ -309,6 +370,10 @@ inline EStatsRowOutcome recordEStatsRow(EStatsSampleCounts& counts,
         ++counts.readOk;
         ++counts.garbage; // > 1 TB: garbage/uninitialized data, connection skipped
         break;
+    case EStatsRowOutcome::CollectionOff:
+        ++counts.readOk;
+        ++counts.collectionOff; // Counters undefined: connection reported unreadable
+        break;
     case EStatsRowOutcome::ReadFailed:
         if (readStatus == ESTATS_ERROR_NOT_FOUND)
         {
@@ -325,6 +390,90 @@ inline EStatsRowOutcome recordEStatsRow(EStatsSampleCounts& counts,
     return outcome;
 }
 
+/// Remembers which ESTABLISHED connections already have EStats collection enabled, so
+/// SetPerTcp[6]ConnectionEStats is called once per connection instead of on every sample (#1418).
+/// Enabling is sticky per connection; re-enabling every connection every sample was N redundant
+/// kernel calls per sample on top of the N reads.
+///
+/// A connection counts as enabled only after evidence that it is: an enable that returned
+/// ESTATS_NO_ERROR (this sample or an earlier one) followed by a sane read with data. Anything else
+/// forgets it, so the next sample enables it again:
+///  - A failed enable (access denied, not found, ...): never remembered, so every sample still
+///    hands recordEStatsRow() a real enable status for it. The #1161 / #1285 / #1358 denial
+///    detection keeps seeing every enable failure it saw before.
+///  - A failed, garbage or collection-off read (TCP_ESTATS_DATA_RW_v0::EnableCollection read back
+///    FALSE), or a sane read with both counters 0: collection may be off (a reused 4-tuple, or
+///    another tool turned it off), and re-enabling an enabled connection is harmless -- it is
+///    what every sample used to do.
+///
+/// A known connection's read is recorded with enableStatus std::nullopt (no enable attempted), as
+/// when the Set function is unavailable. recordEStatsRow() then tallies no `enabled`, which
+/// classifyEStatsProbe() never consults: its verdict rests on accessDenied, established,
+/// saneReads and readFailedOther, which come from the read alone. A sample of only known
+/// connections that read sanely is Available, exactly as when each was re-enabled first.
+///
+/// Key reuse: estatsConnectionKey() hashes the 4-tuple, so a connection that closes and is
+/// replaced by a new one on the same 4-tuple between two samples keeps a remembered key. That is
+/// benign: the new connection was never enabled, so the same Get reads EnableCollection back as
+/// FALSE (or fails), the row is reported unreadable rather than its undefined counters, the key is
+/// forgotten, and the next sample enables it. (A connection missing from a complete walk is pruned
+/// by endSample(), so a 4-tuple reused after a sample without it starts over anyway.)
+///
+/// Not thread-safe: the owner serializes access (WindowsProcessProbe holds it under a mutex).
+class EStatsEnableTracker
+{
+  public:
+    /// True when @p key has no remembered enable: call SetPerTcp[6]ConnectionEStats for it.
+    [[nodiscard]] bool needsEnable(std::uint64_t key) const
+    {
+        return !m_LastSeen.contains(key);
+    }
+
+    /// Record one row's result for this sample.
+    /// @param enableStatus Return value of SetPerTcp[6]ConnectionEStats, or std::nullopt when no
+    ///                     enable was attempted (needsEnable() was false, or no Set function).
+    /// @param outcome      recordEStatsRow()'s outcome for the row; SkippedState rows are ignored.
+    /// @param hasData      The read reported at least one non-zero byte counter.
+    void record(std::uint64_t key, std::optional<std::uint32_t> enableStatus, EStatsRowOutcome outcome, bool hasData)
+    {
+        if (outcome == EStatsRowOutcome::SkippedState)
+        {
+            return;
+        }
+        const bool enabled = enableStatus.has_value() ? *enableStatus == ESTATS_NO_ERROR : m_LastSeen.contains(key);
+        if (enabled && outcome == EStatsRowOutcome::Accumulated && hasData)
+        {
+            m_LastSeen.insert_or_assign(key, m_Sample);
+        }
+        else
+        {
+            m_LastSeen.erase(key);
+        }
+    }
+
+    /// Close one sample (both address families). @p complete: every TCP table was read, so a
+    /// remembered connection not recorded this sample has closed and is forgotten. After an
+    /// incomplete walk nothing is pruned: the unread table's connections may still be open.
+    void endSample(bool complete)
+    {
+        if (complete)
+        {
+            std::erase_if(m_LastSeen, [sample = m_Sample](const auto& entry) { return entry.second != sample; });
+        }
+        ++m_Sample;
+    }
+
+    /// Connections currently remembered as enabled.
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_LastSeen.size();
+    }
+
+  private:
+    std::unordered_map<std::uint64_t, std::uint64_t> m_LastSeen; // Key -> last sample it was recorded enabled
+    std::uint64_t m_Sample = 0;
+};
+
 /// Verdict of classifyEStatsProbe() on whether EStats per-process network counters really work.
 enum class EStatsProbeResult : std::uint8_t
 {
@@ -333,8 +482,8 @@ enum class EStatsProbeResult : std::uint8_t
     Undetermined, // Nothing conclusive this sample (idle, or only transient failures): try again
 };
 
-/// Consecutive inconclusive samples (established connections, but only NOT_FOUND reads and/or
-/// garbage counters) after which classifyEStatsProbe() gives up and reports Unavailable (#1161).
+/// Consecutive inconclusive samples (established connections, but only NOT_FOUND reads, garbage
+/// counters and/or collection-off reads) after which classifyEStatsProbe() gives up and reports Unavailable (#1161).
 /// One such sample is an ordinary race - every snapshotted connection closed before its EStats
 /// read - but the same outcome on this many samples in a row means the reads never work.
 inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
@@ -346,7 +495,7 @@ inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
 ///  - At least one sane (within the 1 TB cap) successful read proves them real: Available.
 ///  - Reads failing with anything but ERROR_NOT_FOUND, and none sane, prove them broken:
 ///    Unavailable at once (a non-transient error does not fix itself next sample).
-///  - Only ERROR_NOT_FOUND failures and/or garbage counters are inconclusive: a connection can
+///  - Only ERROR_NOT_FOUND failures, garbage counters and/or collection-off reads are inconclusive: a connection can
 ///    close between the table snapshot and its read. Undetermined, unless this is the
 ///    MAX_INCONCLUSIVE_ESTATS_SAMPLES-th such sample in a row, which is no longer plausibly a race.
 /// @param priorInconclusiveSamples Inconclusive samples (as above) already seen in a row.
@@ -369,7 +518,7 @@ inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
     {
         return EStatsProbeResult::Unavailable;
     }
-    // Only NOT_FOUND reads and/or garbage counters this sample.
+    // Only NOT_FOUND reads, garbage counters and/or collection-off reads this sample.
     if (priorInconclusiveSamples + 1 >= MAX_INCONCLUSIVE_ESTATS_SAMPLES)
     {
         return EStatsProbeResult::Unavailable;
@@ -484,7 +633,8 @@ struct EStatsConnectionRead
 /// Turn one complete walk of the TCP tables into the per-connection samples readSocketTraffic()
 /// reports (#1256). Stateless: Domain::SocketTrafficAccumulator keeps the per-connection baselines.
 ///
-/// A connection whose EStats read failed or returned garbage this walk is still in the table, so
+/// A connection whose EStats read failed, returned garbage or reported collection off this walk is
+/// still in the table, so
 /// it is reported unreadable (SocketTrafficSample::readable false) rather than left out: the
 /// accumulator would take a connection missing from one reading as closed, and the same connection
 /// back in the next as new, crediting all its lifetime bytes to the process in one interval.
@@ -505,7 +655,8 @@ struct EStatsConnectionRead
             samples.push_back(
                 SocketTrafficSample{.key = read.key, .pid = pid, .bytesReceived = read.bytesReceived, .bytesSent = read.bytesSent});
         }
-        else if (read.outcome == EStatsRowOutcome::ReadFailed || read.outcome == EStatsRowOutcome::Garbage)
+        else if (read.outcome == EStatsRowOutcome::ReadFailed || read.outcome == EStatsRowOutcome::Garbage ||
+                 read.outcome == EStatsRowOutcome::CollectionOff)
         {
             samples.push_back(SocketTrafficSample{.key = read.key, .pid = pid, .readable = false});
         }
@@ -744,6 +895,52 @@ struct ThreadGroupAffinityReads
         }
     }
     return threads.masks;
+}
+
+/// The memory figures of one SYSTEM_PROCESS_INFORMATION entry that windowsProcessMemory() chooses
+/// between, spelled out so this header stays free of <windows.h>.
+struct WindowsProcessMemoryFields
+{
+    std::int64_t workingSetPrivateSize = 0; ///< WorkingSetPrivateSize (a signed LARGE_INTEGER)
+    std::uint64_t workingSetSize = 0;       ///< WorkingSetSize: private and shared pages in RAM
+    std::uint64_t peakWorkingSetSize = 0;   ///< PeakWorkingSetSize
+    std::uint64_t virtualSize = 0;          ///< VirtualSize: address space, reservations included
+    std::uint64_t pagefileUsage = 0;        ///< PagefileUsage: the commit charge, PROCESS_MEMORY_COUNTERS_EX::PrivateUsage
+};
+
+/// The ProcessCounters memory fields a Windows process reports.
+struct WindowsProcessMemory
+{
+    std::uint64_t rssBytes = 0;
+    std::uint64_t sharedBytes = 0;
+    std::uint64_t peakRssBytes = 0;
+    std::uint64_t virtualBytes = 0;
+};
+
+/// Which Windows figure each memory column shows, matching Task Manager's Details tab (#1184).
+/// - Memory (rssBytes): the private working set, Task Manager's default "Memory (private working
+///   set)". The full working set also counts shared pages (DLLs, mapped files) that every process
+///   mapping them shows again.
+/// - Shared (sharedBytes): the shareable working set, WorkingSetSize - WorkingSetPrivateSize: the pages
+///   in RAM that can be shared with other processes (DLLs, mapped files), whether or not another
+///   process maps them now (#2583). Both figures come in the same SYSTEM_PROCESS_INFORMATION entry, so
+///   it costs no system call; QueryWorkingSetEx would say which pages are shared now, page by page.
+///   Clamped at 0: the two are read together but not atomically, and a negative private working set
+///   counts as 0, as it does for Memory.
+/// - Virtual (virtualBytes): the commit size, Task Manager's "Commit size". VirtualSize counts
+///   reserved address space too, which reads in terabytes for any process using Control Flow Guard
+///   or a large reservation (Chromium, the JVM).
+/// - Peak Mem (peakRssBytes): PeakWorkingSetSize, the only peak Windows keeps. It counts shared
+///   pages, so it can be above every private working set the process had.
+[[nodiscard]] constexpr WindowsProcessMemory windowsProcessMemory(const WindowsProcessMemoryFields& fields) noexcept
+{
+    const std::uint64_t privateWorkingSet = fields.workingSetPrivateSize > 0 ? static_cast<std::uint64_t>(fields.workingSetPrivateSize) : 0;
+    return WindowsProcessMemory{
+        .rssBytes = privateWorkingSet,
+        .sharedBytes = fields.workingSetSize > privateWorkingSet ? fields.workingSetSize - privateWorkingSet : 0,
+        .peakRssBytes = fields.peakWorkingSetSize,
+        .virtualBytes = fields.pagefileUsage,
+    };
 }
 
 } // namespace Platform

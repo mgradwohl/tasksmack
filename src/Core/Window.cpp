@@ -1,5 +1,7 @@
 #include "Window.h"
 
+#include "Core/GraphicsHostInfo.h"
+#include "Core/OpenGLRequirement.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
@@ -17,6 +19,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -59,6 +62,7 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
 [[nodiscard]] auto shellRestoreKeysHeld() noexcept -> std::pair<bool, bool>
 {
 #ifdef _WIN32
+    // LCOV_EXCL_START - reads the physical keyboard; tests inject the keys through m_ShellRestoreKeysReader (#2039)
     const auto isKeyHeld = [](int virtualKey)
     {
         // GetAsyncKeyState's most significant bit: the key is down right now.
@@ -66,6 +70,7 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
         return (static_cast<unsigned>(static_cast<unsigned short>(GetAsyncKeyState(virtualKey))) & KEY_DOWN_BIT) != 0U;
     };
     return {isKeyHeld(VK_LWIN) || isKeyHeld(VK_RWIN), isKeyHeld(VK_DOWN)};
+    // LCOV_EXCL_STOP
 #else
     return {false, false};
 #endif
@@ -80,18 +85,20 @@ namespace
 [[nodiscard]] auto loadIconFromResource(HINSTANCE instance, int width, int height) -> HANDLE
 {
     // LoadImage returns HANDLE; with IMAGE_ICON the returned handle is an icon handle.
-    return LoadImage(instance, MAKEINTRESOURCE(1), IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
+    return LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
 }
 
+// LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, never into a test binary (#2039)
 void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 {
     // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely
     // NOLINT: Required cast for Win32 API - HICON and LPARAM have compatible sizes
-    SendMessage(hwnd,
-                WM_SETICON,
-                iconType,
-                reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
+    SendMessageW(hwnd,
+                 WM_SETICON,
+                 iconType,
+                 reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
 }
+// LCOV_EXCL_STOP
 
 // Returns the {small, large} icon handles so the caller (Window) can own and eventually
 // DestroyIcon() them; LoadImage(..., IMAGE_ICON, ...) without LR_SHARED returns handles
@@ -103,13 +110,15 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                                                               SDL_PROP_WINDOW_WIN32_HWND_POINTER,
                                                               nullptr)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         spdlog::warn("Failed to get Win32 window handle for icon");
         return {nullptr, nullptr};
     }
+    // LCOV_EXCL_STOP
 
     // Get the module handle for this executable
-    HINSTANCE hInstance = GetModuleHandle(nullptr);
+    HINSTANCE hInstance = GetModuleHandleW(nullptr);
 
     // Get icon dimensions from system metrics (with validation)
     const int smallIconWidth = GetSystemMetrics(SM_CXSMICON);
@@ -119,6 +128,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 
     // Validate dimensions (GetSystemMetrics can return 0 on failure)
     if (smallIconWidth <= 0 || smallIconHeight <= 0 || largeIconWidth <= 0 || largeIconHeight <= 0)
+    // LCOV_EXCL_START - GetSystemMetrics fails only without a desktop, where no window exists (#2039)
     {
         spdlog::warn("Invalid icon dimensions from GetSystemMetrics (small={}x{}, large={}x{})",
                      smallIconWidth,
@@ -127,6 +137,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                      largeIconHeight);
         return {nullptr, nullptr};
     }
+    // LCOV_EXCL_STOP
 
     // Load small icon (16x16) for title bar and Alt+Tab
     // MAKEINTRESOURCE(1) refers to IDI_ICON1 (resource ID 1) defined in the .rc file
@@ -136,20 +147,24 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     HANDLE hIconBig = loadIconFromResource(hInstance, largeIconWidth, largeIconHeight);
 
     if (hIconSmall != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only (#2039)
     {
         setWindowIcon(hwnd, ICON_SMALL, hIconSmall);
         spdlog::debug("Set small window icon ({}x{})", smallIconWidth, smallIconHeight);
     }
+    // LCOV_EXCL_STOP
     else
     {
         spdlog::warn("Failed to load small icon from resource");
     }
 
     if (hIconBig != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only (#2039)
     {
         setWindowIcon(hwnd, ICON_BIG, hIconBig);
         spdlog::debug("Set large window icon ({}x{})", largeIconWidth, largeIconHeight);
     }
+    // LCOV_EXCL_STOP
     else
     {
         spdlog::warn("Failed to load large icon from resource");
@@ -189,8 +204,10 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
             catch (...)
             {
                 // No exception may cross back into the OS; let the minimize through instead.
+                // LCOV_EXCL_START - a guard; restoreForShellMinimize() has no failure a test can force (#2039)
                 restored = false;
             }
+            // LCOV_EXCL_STOP
             if (restored)
             {
                 return 0;
@@ -200,9 +217,11 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the window procedure is stored as an opaque window property
     const auto sdlWindowProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, SDL_WINDOW_PROC_PROP));
     if (sdlWindowProc == nullptr)
+    // LCOV_EXCL_START - the property is set before this procedure is installed and outlives it (#2039)
     {
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
+    // LCOV_EXCL_STOP
     return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
 }
 
@@ -221,28 +240,34 @@ void hookShellCommands(SDL_Window* sdlWindow, Window* window)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         spdlog::warn("Failed to get Win32 window handle; Win+Down will minimize the maximized window (#1279)");
         return;
     }
+    // LCOV_EXCL_STOP
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - GWLP_WNDPROC holds the window procedure as LONG_PTR
     auto* const sdlWindowProc = reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
     // Both properties are in place before the procedure is, so it never runs without them.
     if (sdlWindowProc == nullptr || SetPropW(hwnd, SDL_WINDOW_PROC_PROP, sdlWindowProc) == 0 || SetPropW(hwnd, WINDOW_PROP, window) == 0)
+    // LCOV_EXCL_START - Windows refusing a property on the process's own window; no test can force it (#2039)
     {
         spdlog::warn("Failed to subclass the window; Win+Down will minimize the maximized window (#1279)");
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
         return;
     }
+    // LCOV_EXCL_STOP
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
     if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc)))
+    // LCOV_EXCL_START - Windows refusing SetWindowLongPtr on the process's own window; no test can force it (#2039)
     {
         // SDL's procedure is still in place and nothing reads the properties; don't leave them behind.
         spdlog::warn("Failed to subclass the window (error {}); Win+Down will minimize the maximized window (#1279)", GetLastError());
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
     }
+    // LCOV_EXCL_STOP
 }
 
 // Undo hookShellCommands() before SDL destroys the window.
@@ -250,9 +275,11 @@ void unhookShellCommands(SDL_Window* sdlWindow)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     // The Window is going away: stop reporting to it, whatever happens below.
     RemovePropW(hwnd, WINDOW_PROP);
     HANDLE sdlWindowProc = GetPropW(hwnd, SDL_WINDOW_PROC_PROP);
@@ -265,6 +292,7 @@ void unhookShellCommands(SDL_Window* sdlWindow)
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
     if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(sdlWindowProc)))
+    // LCOV_EXCL_START - Windows refusing SetWindowLongPtr on the process's own window; no test can force it (#2039)
     {
         // Our procedure is still installed and still receives every message SDL_DestroyWindow()
         // sends, so keep the property it forwards them to SDL's procedure through.
@@ -277,6 +305,7 @@ void unhookShellCommands(SDL_Window* sdlWindow)
         {}
         return;
     }
+    // LCOV_EXCL_STOP
     RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
 }
 } // namespace
@@ -290,8 +319,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     m_Spec.Height = clampWindowDimension(m_Spec.Height);
 
     // Set OpenGL attributes before creating window
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, REQUIRED_GL_MAJOR);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, REQUIRED_GL_MINOR);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 #ifndef NDEBUG
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
@@ -347,10 +376,27 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
         throw std::runtime_error("Failed to initialize GLAD");
     }
 
+    m_GLInfo.glVendor = glString(GL_VENDOR);
+    m_GLInfo.glRenderer = glString(GL_RENDERER);
+    m_GLInfo.glVersion = glString(GL_VERSION);
     spdlog::info("OpenGL Info:");
-    spdlog::info("  Vendor: {}", glString(GL_VENDOR));
-    spdlog::info("  Renderer: {}", glString(GL_RENDERER));
-    spdlog::info("  Version: {}", glString(GL_VERSION));
+    spdlog::info("  Vendor: {}", m_GLInfo.glVendor);
+    spdlog::info("  Renderer: {}", m_GLInfo.glRenderer);
+    spdlog::info("  Version: {}", m_GLInfo.glVersion);
+
+    // SDL can hand back an older context than the one requested (GDI Generic's OpenGL 1.1 on a PC with
+    // no GPU driver), and GLAD loads it without complaint: stop here with a message, rather than crash
+    // on the first null OpenGL 2.0+ function (#1398).
+    if (!meetsRequiredGLVersion(GLAD_VERSION_MAJOR(version), GLAD_VERSION_MINOR(version)))
+    // LCOV_EXCL_START - needs a driver without OpenGL 3.3; the decision itself is tested (test_OpenGLRequirement.cpp)
+    {
+        const std::string message = unsupportedGLVersionMessage(m_GLInfo.glVersion, m_GLInfo.glRenderer, m_GLInfo.glVendor);
+        spdlog::critical("{}", message);
+        SDL_GL_DestroyContext(m_GLContext);
+        SDL_DestroyWindow(m_Handle);
+        throw std::runtime_error(message);
+    }
+    // LCOV_EXCL_STOP
 
     if (m_Spec.VSync)
     {
@@ -391,17 +437,21 @@ Window::~Window()
         unhookShellCommands(m_Handle);
     }
     if (m_IconSmall != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, so no test window has icons (#2039)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
         DestroyIcon(reinterpret_cast<HICON>(m_IconSmall));
         m_IconSmall = nullptr;
     }
+    // LCOV_EXCL_STOP
     if (m_IconBig != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, so no test window has icons (#2039)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
         DestroyIcon(reinterpret_cast<HICON>(m_IconBig));
         m_IconBig = nullptr;
     }
+    // LCOV_EXCL_STOP
 #endif
 
     if (m_GLContext != nullptr)
@@ -412,6 +462,15 @@ Window::~Window()
 
     if (m_Handle != nullptr)
     {
+        // X11 (#2054): an event SDL queues while SDL_WaitEventTimeout() is dispatching wakes that wait
+        // with an XSendEvent() to this window on SDL's second X connection. The server may take this
+        // connection's XDestroyWindow() first, and the late send then fails with BadWindow. SDL sets
+        // no error handler there, so Xlib's default one exits the process when SDL_Quit() closes that
+        // connection. A round trip here gives the server time to take the queued send first.
+        if (VideoBackend::isX11() || VideoBackend::isXWaylandFallback())
+        {
+            static_cast<void>(SDL_SyncWindow(m_Handle));
+        }
         SDL_DestroyWindow(m_Handle);
         m_Handle = nullptr;
     }
@@ -447,6 +506,14 @@ bool Window::shouldClose() const noexcept
 void Window::requestClose() noexcept
 {
     m_ShouldClose = true;
+}
+
+void Window::setTitle(const std::string& title)
+{
+    if (m_Handle != nullptr && !SDL_SetWindowTitle(m_Handle, title.c_str()))
+    {
+        spdlog::warn("Window: could not set the title: {}", SDL_GetError());
+    }
 }
 
 void Window::clearCloseRequest() noexcept
@@ -513,6 +580,53 @@ void Window::setSize(int width, int height)
     traceResizePerfSDL(ResizePerfOperation::WindowSync, clampedWidth, clampedHeight, [&] { return SDL_SyncWindow(m_Handle); });
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
+}
+
+bool Window::setMinimumSize(int width, int height, WindowGeometry::MinimumSizeChange change)
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+
+    m_WantedMinimum = {width, height};
+    if (change == WindowGeometry::MinimumSizeChange::AllowGrow)
+    {
+        return applyMinimumSize(m_WantedMinimum);
+    }
+    // A minimum the content on show moved (a tab measured on its first showing) must not resize the
+    // window, as SDL_SetWindowMinimumSize() would grow it (#1945). A side the window is smaller than
+    // keeps the window's size instead, until the user makes it that big (handleGeometryChanged()).
+    const std::pair<int, int> normalSize =
+        getNormalGeometry()
+            .transform([](const WindowGeometry::Rect& rect) { return std::pair{rect.width, rect.height}; })
+            .value_or(std::pair{0, 0});
+    return applyMinimumSize(WindowGeometry::minimumKeepingSize(m_WantedMinimum, normalSize, m_WantedMinimum));
+}
+
+bool Window::applyMinimumSize(std::pair<int, int> minimum)
+{
+    const auto [width, height] = minimum;
+    const std::pair<int, int> current = getSize();
+    if (!SDL_SetWindowMinimumSize(m_Handle, width, height))
+    {
+        spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
+        return false;
+    }
+    m_AppliedMinimum = std::move(minimum);
+    // SDL_SetWindowMinimumSize() has just resized the window to SDL's saved floating size, which
+    // native Wayland leaves stale while the compositor tiles the window (#1777); put the size the
+    // compositor gave back. X11 and Windows refresh the floating size on every configure, so there it
+    // already is the current size.
+    if (VideoBackend::isWayland())
+    {
+        const bool maximizedOrFullscreen = (SDL_GetWindowFlags(m_Handle) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) != 0;
+        if (const auto keep = WindowGeometry::sizeAfterMinimumChange(current, width, height, maximizedOrFullscreen); keep.has_value())
+        {
+            SDL_SetWindowSize(m_Handle, keep->first, keep->second);
+        }
+    }
+    return true;
 }
 
 auto Window::getSize() const noexcept -> std::pair<int, int>
@@ -588,7 +702,21 @@ void Window::handleGeometryChanged()
     {
         return;
     }
-    m_Geometry.observe(liveRect(), getUnitScale(), isNormalNow());
+    const bool normalNow = isNormalNow();
+    m_Geometry.observe(liveRect(), getUnitScale(), normalNow);
+
+    // A side held below the wanted minimum (setMinimumSize(), #1945) takes it once the window has been
+    // made that big, and never holds the window bigger than it was resized to. Only from a normal
+    // window's own size: a maximized one's normal size has not changed, a minimized one's is not real.
+    if (normalNow && m_AppliedMinimum != m_WantedMinimum)
+    {
+        const auto [width, height] = getSize();
+        if (const std::pair<int, int> next = WindowGeometry::minimumKeepingSize(m_WantedMinimum, {width, height}, m_AppliedMinimum);
+            next != m_AppliedMinimum)
+        {
+            static_cast<void>(applyMinimumSize(next));
+        }
+    }
 }
 
 void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
@@ -704,6 +832,30 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
                          fitted.y);
         }
         setPosition(fitted.x, fitted.y);
+    }
+    else if (supportsPositioning())
+    {
+        // No saved position: the window is where the system placed it at its created size, centred
+        // for a first launch. Shrunk to fit, it is moved wholly inside the display's usable bounds, so
+        // it opens neither partly off a display smaller than the default nor under the taskbar (#2735).
+        if (const auto target = WindowGeometry::targetDisplayIndex(fitted, displays, primaryIndex, WindowGeometry::MIN_VISIBLE_EXTENT);
+            target.has_value())
+        {
+            const WindowGeometry::Rect inside = WindowGeometry::moveInside(fitted, displays[*target]);
+            if (inside.width != fitted.width || inside.height != fitted.height)
+            {
+                setSize(inside.width, inside.height);
+            }
+            if (inside.x != saved.x || inside.y != saved.y) // saved holds where the window is now
+            {
+                spdlog::info("Window::applySavedGeometry: moved from ({}, {}) to ({}, {}) to lie on the display",
+                             saved.x,
+                             saved.y,
+                             inside.x,
+                             inside.y);
+                setPosition(inside.x, inside.y);
+            }
+        }
     }
 
     // The normal geometry a later maximize from outside the app restores to, until the window is
@@ -832,7 +984,9 @@ void Window::maximize()
         if (displayID != 0)
         {
             SDL_Rect usableBounds{};
-            if (SDL_GetDisplayUsableBounds(displayID, &usableBounds))
+            const bool haveBounds = m_UsableBoundsReader != nullptr ? m_UsableBoundsReader(displayID, &usableBounds)
+                                                                    : SDL_GetDisplayUsableBounds(displayID, &usableBounds);
+            if (haveBounds)
             {
                 // Position window at the usable area origin
                 SDL_SetWindowPosition(m_Handle, usableBounds.x, usableBounds.y);
@@ -1016,6 +1170,49 @@ bool Window::isOccluded() const noexcept
     }
     // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
+}
+
+GraphicsHostInfo Window::queryGraphicsHostInfo() const
+{
+    GraphicsHostInfo info = m_GLInfo;
+    const char* driver = SDL_GetCurrentVideoDriver();
+    info.videoDriver = driver != nullptr ? driver : "";
+    int count = 0;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    if (ids == nullptr)
+    {
+        return info;
+    }
+    const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    for (const SDL_DisplayID id : std::span<const SDL_DisplayID>(ids, static_cast<std::size_t>(std::max(count, 0))))
+    {
+        DisplayInfo display;
+        const char* name = SDL_GetDisplayName(id);
+        display.name = name != nullptr ? name : "";
+        SDL_Rect bounds{};
+        if (SDL_GetDisplayBounds(id, &bounds))
+        {
+            display.x = bounds.x;
+            display.y = bounds.y;
+            display.width = bounds.w;
+            display.height = bounds.h;
+        }
+        if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(id); mode != nullptr)
+        {
+            const float density = mode->pixel_density > 0.0F ? mode->pixel_density : 1.0F;
+            display.pixelWidth = static_cast<int>(std::lround(static_cast<float>(mode->w) * density));
+            display.pixelHeight = static_cast<int>(std::lround(static_cast<float>(mode->h) * density));
+            display.refreshHz = mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0
+                                  ? static_cast<double>(mode->refresh_rate_numerator) / static_cast<double>(mode->refresh_rate_denominator)
+                                  : static_cast<double>(mode->refresh_rate);
+        }
+        display.contentScale = SDL_GetDisplayContentScale(id);
+        display.primary = id == primary;
+        display.hdrEnabled = SDL_GetBooleanProperty(SDL_GetDisplayProperties(id), SDL_PROP_DISPLAY_HDR_ENABLED_BOOLEAN, false);
+        info.displays.push_back(std::move(display));
+    }
+    SDL_free(ids);
+    return info;
 }
 
 double Window::getDisplayRefreshRate() const noexcept

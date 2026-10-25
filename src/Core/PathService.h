@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace Platform
 {
@@ -26,6 +27,10 @@ class PathService
     /// Useful for unit tests that supply a fake provider to control path inputs.
     explicit PathService(std::unique_ptr<Platform::IPathProvider> provider);
 
+    /// As above, with @p configDirOverride (TASKSMACK_CONFIG_DIR, #1596) replacing the provider's
+    /// config directory when set. The default constructor passes ConfigDirOverride::active().
+    PathService(std::unique_ptr<Platform::IPathProvider> provider, const std::optional<std::filesystem::path>& configDirOverride);
+
     PathService(const PathService&) = delete;
     PathService& operator=(const PathService&) = delete;
     PathService(PathService&&) = delete;
@@ -39,6 +44,7 @@ class PathService
     /// Returns the user-specific configuration directory.
     /// Linux: ~/.config/tasksmack (or $XDG_CONFIG_HOME/tasksmack)
     /// Windows: %APPDATA%/TaskSmack
+    /// TASKSMACK_CONFIG_DIR, when set, replaces both (#1596).
     [[nodiscard]] const std::filesystem::path& userConfigDir() const noexcept;
 
   private:

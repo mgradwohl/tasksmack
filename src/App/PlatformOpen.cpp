@@ -10,17 +10,17 @@
 #include <string>
 #include <string_view>
 
-// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
 #ifdef __linux__
-#include <cerrno>
-#include <cstdlib>
-#include <system_error>
+#include "Platform/Linux/DetachedSpawn.h"
+#include "Platform/Linux/SessionUser.h"
+#include "Platform/Linux/SyscallTrace.h"
 
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <array>
+#include <cstdlib>
+#include <optional>
+
 #include <unistd.h>
 #endif
-// NOLINTEND(misc-include-cleaner)
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -34,16 +34,63 @@
 namespace App::PlatformOpen
 {
 
+NativeTarget nativeTargetFromUtf8(std::string_view target)
+{
+#ifdef _WIN32
+    return Platform::WinString::utf8ToWide(target);
+#else
+    return NativeTarget{target};
+#endif
+}
+
+NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
+{
+    return path.native();
+}
+
+#ifdef __linux__
+bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup& session)
+{
+    // Linux: xdg-open, found on PATH as execvp would and started through Platform's DetachedSpawn (#2138):
+    // double fork and setsid, every inherited descriptor close-on-exec (TaskSmack's sampler threads keep
+    // /proc and /sys files open, and drivers their device nodes), stdio on /dev/null, signals reset, and
+    // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
+    const std::string targetStr = nativeTargetFromUtf8(target);
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on the UI thread; nothing sets it
+    const std::optional<std::string> xdgOpen =
+        Platform::SyscallTrace::findExecutable("xdg-open",
+                                               pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
+                                               [](const std::string& path) { return ::access(path.c_str(), X_OK) == 0; });
+    if (!xdgOpen.has_value())
+    {
+        spdlog::warn("Can't open {}: xdg-open isn't installed", targetStr);
+        return false;
+    }
+    const std::array<std::string, 2> argv{*xdgOpen, targetStr};
+    // Run as root for another user (sudo, pkexec): opened as that user, in their session (#2461).
+    const std::optional<Platform::DetachedSpawn::RunAs> user = session();
+    const auto spawned =
+        user.has_value() ? Platform::DetachedSpawn::spawnDetached(argv, *user) : Platform::DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
+    {
+        spdlog::warn("{}", Platform::DetachedSpawn::spawnFailureMessage(spawned.error(), *xdgOpen));
+        return false;
+    }
+    return true;
+}
+#endif
+
 [[nodiscard]] bool openWithSystemHandler(std::string_view target)
 {
 #ifdef _WIN32
-    const std::wstring wideTarget = Platform::WinString::utf8ToWide(target);
+    const std::wstring wideTarget = nativeTargetFromUtf8(target);
     if (wideTarget.empty())
     {
         spdlog::warn("Failed to convert UTF-8 target to UTF-16: {}", std::string{target});
         return false;
     }
 
+    // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
@@ -54,68 +101,9 @@ namespace App::PlatformOpen
         return false;
     }
     return true;
+    // LCOV_EXCL_STOP
 #elif defined(__linux__)
-    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
-    const std::string targetStr{target};
-    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
-    const pid_t pid = ::fork();
-    if (pid == -1)
-    {
-        spdlog::warn("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
-        return false;
-    }
-
-    if (pid == 0)
-    {
-        // First child: fork again to create grandchild
-        const pid_t grandchild = ::fork();
-        if (grandchild == -1)
-        {
-            _exit(EXIT_FAILURE);
-        }
-
-        if (grandchild == 0)
-        {
-            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): execlp varargs require a typed null char* terminator
-            ::execlp("xdg-open", "xdg-open", targetStr.c_str(), static_cast<char*>(nullptr));
-            _exit(127); // execlp only returns on error
-        }
-        // First child exits immediately (grandchild will be adopted by init)
-        _exit(0);
-    }
-
-    // Parent: wait for first child to prevent zombie; retry on EINTR
-    int status = 0;
-    pid_t waited = ::waitpid(pid, &status, 0);
-    while (waited == -1 && errno == EINTR)
-    {
-        waited = ::waitpid(pid, &status, 0);
-    }
-
-    if (waited == -1)
-    {
-        spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
-        return false;
-    }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFEXITED/WEXITSTATUS from sys/wait.h, include-cleaner false positive
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WEXITSTATUS from sys/wait.h
-        spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
-        return false;
-    }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFSIGNALED from sys/wait.h, include-cleaner false positive
-    if (WIFSIGNALED(status))
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WTERMSIG from sys/wait.h
-        spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
-        return false;
-    }
-    // Launcher reaped successfully. Note: grandchild exec failure (e.g., xdg-open
-    // not installed) is not detectable here by design — the grandchild is adopted
-    // by init before the parent can observe its exit status.
-    return true;
+    return Detail::openWithSystemHandler(target, [] { return Platform::SessionUser::invokingUserSession(); });
 #else
     spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});
     return false;
@@ -125,8 +113,9 @@ namespace App::PlatformOpen
 [[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path)
 {
 #ifdef _WIN32
-    // Use the native wide path directly to avoid ANSI/UTF-8 encoding issues.
-    const std::wstring widePath = path.wstring();
+    // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
+    // The native wide path directly, never a narrowed one (#1648).
+    const std::wstring widePath = nativeTargetFromPath(path);
 
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -138,12 +127,13 @@ namespace App::PlatformOpen
         return false;
     }
     return true;
+    // LCOV_EXCL_STOP
 #elif defined(__linux__)
-    // On Linux, std::filesystem::path::string() typically returns a UTF-8 string
-    // (the encoding is locale-dependent, but virtually all Linux distros use UTF-8).
-    return openWithSystemHandler(std::string_view{path.string()});
+    // A Linux path is bytes, and xdg-open takes them as they are (valid UTF-8 or not).
+    const std::string nativePath = nativeTargetFromPath(path);
+    return openWithSystemHandler(std::string_view{nativePath});
 #else
-    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", path.string());
+    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", nativeTargetFromPath(path));
     return false;
 #endif
 }

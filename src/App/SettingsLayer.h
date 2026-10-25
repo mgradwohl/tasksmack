@@ -1,22 +1,32 @@
 #pragma once
 
-#include "App/SettingsLayerDetail.h"
+#include "App/SettingsDialog.h"
+#include "Core/Event.h"
 #include "Core/Layer.h"
-#include "UI/Theme.h"
 
-#include <string>
-#include <vector>
+#include <filesystem>
+#include <functional>
 
 namespace App
 {
 
-/// Settings dialog layer. Opened by raising Core::OpenSettingsEvent.
+/// Settings dialog layer. Opened by raising Core::OpenSettingsEvent (the title bar's gear, F2, the status
+/// bar) or by TASKSMACK_OPEN=settings at startup, and closed by Core::CloseDialogEvent as Cancel closes it
+/// (#2827).
 /// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
 /// are guaranteed to be called from the main thread only, as required by SDL and ImGui.
 class SettingsLayer : public Core::Layer
 {
   public:
     SettingsLayer();
+
+    /// Test seam (#1395): the events the layer raises (refresh rate, history length, About) go to
+    /// @p raiseEvent instead of Core::Application, the Edit Config and Open Themes Folder buttons hand
+    /// their path to @p openPath instead of the system handler, and the themes folder is made under
+    /// @p userConfigDir instead of the Application's config directory. Lets the layer run headless.
+    SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
+                  std::function<bool(const std::filesystem::path&)> openPath,
+                  std::function<std::filesystem::path()> userConfigDir);
     ~SettingsLayer() override;
 
     SettingsLayer(const SettingsLayer&) = delete;
@@ -24,37 +34,22 @@ class SettingsLayer : public Core::Layer
     SettingsLayer(SettingsLayer&&) = delete;
     SettingsLayer& operator=(SettingsLayer&&) = delete;
 
+    void onAttach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
   private:
     void requestOpen();
-    void renderSettingsDialog();
-    void loadCurrentSettings();
     void applySettings();
-    void resetToDefaults();
+    void raiseEvent(Core::Event& event) const;
+    void openPath(const std::filesystem::path& path) const;
+    [[nodiscard]] std::filesystem::path userThemesDir() const;
 
-    bool m_OpenRequested = false;
-    // Whether one of the dialog's combos was open on the previous frame, so the Escape that closes
-    // a combo does not also cancel the dialog (#1129).
-    bool m_ComboOpenLastFrame = false;
-
-    // The combos' state while the dialog is open. Save writes only the ones the user picked (#1120).
-    Detail::ComboState m_ThemeChoice;
-    Detail::ComboState m_FontSizeChoice;
-    Detail::ComboState m_RefreshRateChoice;
-    Detail::ComboState m_HistoryChoice;
-    bool m_ForceNativeDecorationsOnWayland = false;
-    bool m_ShowPrivilegeNotice = true;
-
-    // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
-    std::string m_CustomThemePreview;
-    std::string m_CustomRefreshPreview;
-    std::string m_CustomHistoryPreview;
-
-    // Available options
-    std::vector<UI::DiscoveredTheme> m_Themes;
+    SettingsDialog::State m_State;
+    std::function<void(Core::Event&)> m_RaiseEvent;               ///< Set by the test seam only; else the Application
+    std::function<bool(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
+    std::function<std::filesystem::path()> m_UserConfigDir;       ///< Set by the test seam only; else the Application's
 };
 
 } // namespace App

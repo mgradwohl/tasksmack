@@ -3,6 +3,8 @@ name: ClusterFuzzLite PR Fuzzing
 on:
   pull_request:
     branches: [main]
+    # Must match cflite_build.yml's paths, so the main baseline this job fuzzes against is rebuilt for
+    # every path it watches; tools/check-cflite-paths.py (a pre-commit hook) fails if they drift (#2533).
     paths:
       - '.clusterfuzzlite/**'
       - '.github/workflows/cflite_*.yml'
@@ -13,7 +15,28 @@ on:
       - 'src/App/UserConfig.cpp'
       - 'src/App/UserConfig.h'
       - 'src/App/UserConfigHelpers.h'
+      - 'src/Core/ConfigDirOverride.*'
+      - 'src/Platform/BrokerProtocol.h'
+      - 'src/Platform/DnsMessage.h'
+      - 'src/Platform/EdidParser.h'
+      - 'src/Platform/HwIdsParser.h'
+      - 'src/Platform/IProcessModules.h'
+      - 'src/Platform/IProcessOpenFiles.h'
+      - 'src/Platform/ISystemInfoProbe.h'
+      - 'src/Platform/Linux/BrokerSocket.*'
+      - 'src/Platform/Linux/DesktopEntryIcons.h'
+      - 'src/Platform/Linux/LinuxCommitPaging.h'
+      - 'src/Platform/Linux/LinuxCoredumps.h'
+      - 'src/Platform/Linux/LinuxKernelModules.h'
+      - 'src/Platform/Linux/LinuxNetworkAdapters.h'
+      - 'src/Platform/Linux/LinuxStorage.h'
+      - 'src/Platform/Linux/NetworkdLinkJson.h'
+      - 'src/Platform/Linux/ProcFdParser.h'
+      - 'src/Platform/Linux/ProcMapsParser.h'
       - 'src/Platform/Linux/ProcParsing.h'
+      - 'src/Platform/Linux/ProcStatusSecurityParser.h'
+      - 'src/Platform/PartitionTable.h'
+      - 'src/Platform/SmbiosParser.h'
       - 'src/UI/Theme.h'
       - 'src/UI/ThemeLoader.cpp'
       - 'src/UI/ThemeLoader.h'
@@ -33,9 +56,16 @@ jobs:
   fuzz:
     name: Fuzz changed parsers
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
+      # Step timeouts well above the normal times, so a stalled download (#1406: the artifacts API rate
+      # limit) or a hung build fails in minutes rather than holding the job for its whole 30. Building
+      # took 90-260 s over the 30 runs before #2354, and a slow runner passed the old 6 min, so it gets
+      # 10. Run fuzzers is 120 s of fuzzing shared out among the targets a change reaches, plus a corpus
+      # download of about 15 s per target: 4-7 min over those runs as the target count grew, against
+      # the old 10, so it gets 15.
       - name: Build fuzzers
+        timeout-minutes: 10
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: c++
@@ -43,6 +73,7 @@ jobs:
           sanitizer: address
 
       - name: Run fuzzers
+        timeout-minutes: 15
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

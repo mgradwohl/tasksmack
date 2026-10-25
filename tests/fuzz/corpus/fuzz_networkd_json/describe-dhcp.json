@@ -1,0 +1,12 @@
+{
+  "Index": 2, "Name": "enp3s0", "Type": "ether", "OperationalState": "routable",
+  "Addresses": [
+    {"Family": 10, "Address": [254,128,0,0,0,0,0,0,26,42,59,255,254,77,94,111], "PrefixLength": 64,
+     "ConfigSource": "foreign", "ConfigState": "configured"},
+    {"Family": 2, "Address": [192,168,1,20], "PrefixLength": 24, "ConfigSource": "DHCPv4",
+     "ConfigProvider": [192,168,1,1], "PreferredLifetimeUSec": 86412000000, "ValidLifetimeUSec": 86412000000,
+     "ConfigState": "configured"}
+  ],
+  "DHCPv4Client": {"Lease": {"LeaseTimestampUSec": 12000000, "Timeout1USec": 43212000000,
+                             "Timeout2USec": 75612000000, "Hostname": "box"}}
+}

@@ -29,7 +29,7 @@ Options:
   --yes        Skip the confirmation prompt
   -h, --help   Show this help
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY_RUN=true; shift ;;
         --yes|-y)  YES=true; shift ;;
         -h|--help) usage ;;
-        *) echo "Unknown argument: $1" >&2; usage ;;
+        *) echo "Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 

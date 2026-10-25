@@ -34,7 +34,7 @@ inline constexpr float TITLE_BAR_PT = 24.0F;
 }
 
 /// Font Awesome glyph size for the title bar's controls, as a share of the bar height: roughly the
-/// wordmark's cap height, with even clearance above and below (see UILayer::loadAllFonts()).
+/// wordmark's cap height, with even clearance above and below (see UI::loadAllFonts(), FontLoading.h).
 inline constexpr float CHROME_ICON_RATIO = 0.55F;
 
 /// The chrome icon font's pixel size for a title bar @p titleBarPx tall.

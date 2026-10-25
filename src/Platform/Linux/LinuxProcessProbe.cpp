@@ -4,17 +4,22 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "CgroupContainer.h"
 #include "CgroupFreezeStatus.h"
+#include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
+#include "ElfArchitecture.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
 #include "UserNameLookup.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
 #endif
 
+#include "MemoryRollupRead.h"
 #include "Platform/ProcessTypes.h"
 #include "PosixGuards.h"
 #include "ProcFdScan.h"
@@ -50,6 +55,7 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 namespace Platform
@@ -118,7 +124,8 @@ constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
     {
         return ttl;
     }
-    const std::uint64_t hash = static_cast<std::uint32_t>(static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH); // wraps mod 2^32
+    const std::uint32_t hash32 = static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH; // wraps mod 2^32
+    const std::uint64_t hash = hash32;
     const std::uint64_t share = hash % (static_cast<std::uint64_t>(half.count()) + 1);
     return (ttl - half) + std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(share)};
 }
@@ -156,18 +163,22 @@ constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
     return false;
 }
 
+// The username cache and its mutex are never destroyed. exit() runs static destructors while the
+// sampler thread may still be enumerating -- Xlib calls exit() when the X connection drops -- and a
+// destroyed cache sent the next getUsername() through a null bucket array (#2633).
+
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
 {
-    static std::unordered_map<uid_t, std::string> cache;
-    return cache;
+    static auto* const cache = new std::unordered_map<uid_t, std::string>(); // NOLINT(cppcoreguidelines-owning-memory) - never destroyed
+    return *cache;
 }
 
 /// Mutex to protect the username cache
 std::mutex& getUsernameCacheMutex()
 {
-    static std::mutex mutex;
-    return mutex;
+    static auto* const mutex = new std::mutex(); // NOLINT(cppcoreguidelines-owning-memory) - never destroyed
+    return *mutex;
 }
 
 /// Get username from UID, with caching
@@ -175,7 +186,7 @@ std::mutex& getUsernameCacheMutex()
 {
     const std::scoped_lock lock(getUsernameCacheMutex());
     auto& cache = getUsernameCache();
-    auto it = cache.find(uid);
+    const auto it = cache.find(uid);
     if (it != cache.end())
     {
         return it->second;
@@ -219,6 +230,9 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
       m_BootTimeEpoch(readBootTime(m_ProcRoot)),
       m_CmdlineCacheTtl(Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS)
 {
+    // This process's network namespace ("net:[4026531840]"), which the socket dump sees (#2398)
+    std::error_code nsEc;
+    m_OwnNetNamespace = std::filesystem::read_symlink(m_ProcRoot / "self/ns/net", nsEc).string();
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
     m_InodeMapTtl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
@@ -235,6 +249,24 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
     if (m_BootTimeEpoch == 0)
     {
         spdlog::warn("Failed to read boot time from {}", (m_ProcRoot / "stat").string());
+    }
+
+    // The machine this kernel runs, for the Architecture column (#2394): a process of another is emulated.
+    if (utsname host{}; ::uname(&host) == 0)
+    {
+        m_HostMachine = ElfArchitecture::machineFromName(static_cast<const char*>(host.machine));
+    }
+
+    // How /proc is mounted, for the hidepid bit of capabilities().missingPrivileges (#2303).
+    if (const std::vector<char> mountinfo = readProcFileFull((m_ProcRoot / "self" / "mountinfo").c_str()); !mountinfo.empty())
+    {
+        m_ProcMount = ProcPrivileges::parseProcMount(std::string_view(mountinfo.data(), mountinfo.size()));
+    }
+    if (m_ProcMount.has_value() && m_ProcMount->gid.has_value())
+    {
+        const auto gid = static_cast<gid_t>(*m_ProcMount->gid);
+        const std::vector<gid_t> groups = ProcPrivileges::supplementaryGroups(::getgroups);
+        m_InProcMountGroup = ::getegid() == gid || std::ranges::find(groups, gid) != groups.end();
     }
 
     // Detect and initialize power monitoring if available
@@ -319,8 +351,17 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     CmdlineCache seenCmdlines;
     seenCmdlines.reserve(previousCmdlines.size());
 
-    // Freeze states by /proc/[pid]/cgroup contents, for this pass only (see getProcessStatus()).
-    FrozenByCgroup frozenByCgroup;
+    // Likewise this pass's architectures (#2394), each read once per process.
+    ArchitectureCache previousArchitectures;
+    {
+        const std::scoped_lock lock(m_ArchitectureCacheMutex);
+        previousArchitectures = std::exchange(m_ArchitectureCache, {});
+    }
+    ArchitectureCache seenArchitectures;
+    seenArchitectures.reserve(previousArchitectures.size());
+
+    // Freeze states and containers by /proc/[pid]/cgroup contents, for this pass only (see readCgroupFacts()).
+    FactsByCgroup factsByCgroup;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Whether this pass also rebuilds the socket inode-to-PID map (#1426): due every m_InodeMapTtl, it
@@ -372,6 +413,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
         parseProcessStatm(pidDirFd.get(), counters);
         parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
+        readProcessArchitecture(pidDirFd.get(), counters, previousArchitectures, seenArchitectures); // While the name is comm
         readProcessCommand(pidDirFd.get(), counters, previousCmdlines, seenCmdlines, now);
 
         // Count open file descriptors (may fail for some processes due to permissions). A pass that
@@ -380,11 +422,17 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             countProcessFds(pidDirFd.get(), counters, /*readEveryLink=*/false, [](std::uint64_t /*inode*/) {});
         }
+        // The socket dump sees only TaskSmack's network namespace: a process in another one (a container's)
+        // has traffic it can't attribute, so unknown, not 0 B/s (#2398)
+        if (m_HasNetworkCounters && inAnotherNetworkNamespace(pidDirFd.get()))
+        {
+            counters.networkCountersAvailable = false;
+        }
 
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
         std::call_once(m_IoCountersCheckFlag,
-                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
+                       [this] { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pidDirFd.get(), counters);
@@ -393,7 +441,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pidDirFd.get(), m_CgroupRoot, frozenByCgroup); // Get cgroup freezer status
+        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // cgroup freezer status, container
         processes.push_back(std::move(counters));
     }
 
@@ -405,6 +453,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     {
         const std::scoped_lock lock(m_CmdlineCacheMutex);
         m_CmdlineCache = std::move(seenCmdlines);
+    }
+    {
+        const std::scoped_lock lock(m_ArchitectureCacheMutex);
+        m_ArchitectureCache = std::move(seenArchitectures);
     }
 
     // The system total that the processes' CPU deltas are divided by, taken now -- right after
@@ -434,7 +486,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
     std::call_once(m_IoCountersCheckFlag,
-                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
+                   [this] { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
@@ -442,33 +494,46 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
-    // attribution for processes owned by other users need CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE in
-    // the effective set -- root with its normal capabilities has them, but root alone isn't enough
-    // where capabilities are dropped (docs/guide/faq.md's setcap line).
+    // Missing privileges (#2303): reading other users' FD counts, I/O and network attribution needs
+    // CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE; signalling them CAP_KILL; raising priority, the Realtime
+    // I/O class and their priority or affinity CAP_SYS_NICE; and hidepid hides them unless TaskSmack is
+    // in /proc's gid= group (or has CAP_SYS_PTRACE). Root with its normal capabilities has them all, but
+    // root alone isn't enough where capabilities are dropped (docs/guide/faq.md's setcap line). The
+    // effective set is re-read on every call: a probe can lose a capability after the first sample.
     const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
-    const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
+    const std::uint8_t missingPrivileges = ProcPrivileges::missingPrivileges(
         geteuid() == 0,
-        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
+        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())),
+        m_ProcMount,
+        m_InProcMountGroup);
 
+    std::error_code ignored; // A missing smaps_rollup (before Linux 4.14) is just "no PSS/USS"
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
                                .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,                           // From /proc/[pid]/status Uid field
-                               .hasCommand = true,                        // From /proc/[pid]/cmdline
-                               .hasNice = true,                           // From /proc/[pid]/stat
-                               .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
-                               .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
-                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
-                               .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
-                               .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
-                               .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
-                               .hasStatus = true,                         // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
-                               .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
-                               .hasSharedMemory = true};                  // From /proc/[pid]/statm
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasPageFaults = true,   // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = true,      // From /proc/[pid]/status VmHWM (kernel threads have none)
+                               .hasPrivateBytes = true, // From /proc/[pid]/status RssAnon (#1885)
+                               .hasSwapBytes = true,    // From /proc/[pid]/status VmSwap (#1885)
+                               // From /proc/[pid]/smaps_rollup (Linux 4.14+), for one process at a time (#1885)
+                               .hasMemoryRollup = std::filesystem::exists(m_ProcRoot / "self" / "smaps_rollup", ignored),
+                               .hasCpuAffinity = true,                         // From status Cpus_allowed_list
+                               .hasNetworkCounters = hasNetworkCounters,       // From Netlink INET_DIAG (if available)
+                               .hasUdpNetworkCounters = false,                 // sock_diag has no UDP byte counters (#1101)
+                               .hasPowerUsage = m_HasPowerCap,                 // Available if RAPL is detected
+                               .hasStatus = true,                              // From cgroup freezer state
+                               .hasContainer = true,                           // From /proc/[pid]/cgroup paths
+                               .hasServices = true,                            // The systemd service, from the same paths (#1886)
+                               .hasArchitecture = true,                        // The ELF header of /proc/[pid]/exe (#2394)
+                               .hasReducedPrivileges = missingPrivileges != 0, // Data or actions limited (#2303)
+                               .networkCountersBlocked = false,                // Linux gaps are privilege gaps (#1358)
+                               .hasSharedMemory = true,                        // From /proc/[pid]/statm
+                               .missingPrivileges = missingPrivileges};
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -606,6 +671,8 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
     // Read /proc/[pid]/status, key:value pairs one per line, for:
     //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
     //   VmHWM:             <n> kB                                    -- peak resident set size (#1184)
+    //   RssAnon:           <n> kB                                    -- private (anonymous) resident memory (#1885)
+    //   VmSwap:            <n> kB                                    -- swapped out (#1885)
     //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>        -- the CPU affinity
     // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
     // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
@@ -625,6 +692,8 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
     }
     constexpr std::string_view UID_PREFIX = "Uid:";
     constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view RSS_ANON_PREFIX = "RssAnon:";
+    constexpr std::string_view VM_SWAP_PREFIX = "VmSwap:";
     constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
     constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
@@ -656,10 +725,23 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
 
     bool haveUid = false;
     bool havePeakRss = false;
+    bool havePrivate = false;
+    bool haveSwap = false;
     bool haveAffinity = false;
+    // A kibibyte count on a whole line (newline-terminated: one cut off by the read could hold a
+    // truncated number), in bytes; nullopt otherwise.
+    const auto kibLine = [end = text.data() + text.size()](const char* value, const char* lineEnd) -> std::optional<std::uint64_t>
+    {
+        std::uint64_t kib = 0;
+        if (lineEnd < end && parseNum(value, lineEnd, kib) && kib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))
+        {
+            return kib * BYTES_PER_KIB;
+        }
+        return std::nullopt;
+    };
     const char* p = text.data();
     const char* const end = text.data() + text.size();
-    while (p < end && !(haveUid && havePeakRss && haveAffinity))
+    while (p < end && !(haveUid && havePeakRss && havePrivate && haveSwap && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
@@ -671,12 +753,21 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
         if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
             haveUid = true;
-            // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
+            // "Uid: real effective saved fs": the effective UID is the user the process runs as, which
+            // ps and top show (a setuid program run by alice is root's) (#2401)
             const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
-            if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
+            if (const auto realEnd = std::from_chars(ptr, lineEnd, realUid); realEnd.ec == std::errc{})
             {
-                counters.user = getUsername(realUid);
+                ptr = ProcParsing::skipSpaces(realEnd.ptr, lineEnd);
+                uid_t effectiveUid = 0;
+                const bool haveEffective = std::from_chars(ptr, lineEnd, effectiveUid).ec == std::errc{};
+                counters.user = getUsername(haveEffective ? effectiveUid : realUid);
+                // Who started it, for Process Details, when that isn't who it runs as (#2475)
+                if (haveEffective && effectiveUid != realUid)
+                {
+                    counters.realUser = getUsername(realUid);
+                }
             }
         }
         else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))
@@ -692,6 +783,16 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
                 // are batched per CPU, so the two reads can disagree by a little.
                 counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
             }
+        }
+        else if (!havePrivate && line.starts_with(RSS_ANON_PREFIX))
+        {
+            havePrivate = true;
+            counters.privateBytes = kibLine(p + RSS_ANON_PREFIX.size(), lineEnd).value_or(0);
+        }
+        else if (!haveSwap && line.starts_with(VM_SWAP_PREFIX))
+        {
+            haveSwap = true;
+            counters.swapBytes = kibLine(p + VM_SWAP_PREFIX.size(), lineEnd).value_or(0);
         }
         else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
         {
@@ -783,6 +884,69 @@ void LinuxProcessProbe::readProcessCommand(
     {
         seen.insert_or_assign(counters.pid, std::move(entry));
     }
+}
+
+void LinuxProcessProbe::readProcessArchitecture(int pidDirFd,
+                                                ProcessCounters& counters,
+                                                ArchitectureCache& previous,
+                                                ArchitectureCache& seen) const
+{
+    // An executable's architecture is fixed, so it is read once per process: the same start time (not a
+    // later process that reused the PID) and the same comm (not replaced by an exec of another program).
+    auto node = previous.extract(counters.pid);
+    if (!node.empty() && node.mapped().startTimeTicks == counters.startTimeTicks && node.mapped().comm == counters.name)
+    {
+        counters.architecture = node.mapped().architecture;
+        seen.insert(std::move(node));
+        return;
+    }
+    // Unreadable is cached too: another user's exe stays unreadable while the process lives.
+    counters.architecture = readExecutableArchitecture(pidDirFd, m_HostMachine);
+    ArchitectureCacheEntry entry{.startTimeTicks = counters.startTimeTicks, .comm = counters.name, .architecture = counters.architecture};
+    if (!node.empty())
+    {
+        node.mapped() = std::move(entry); // Reuse the stale entry's node: no allocation
+        seen.insert(std::move(node));
+    }
+    else
+    {
+        seen.insert_or_assign(counters.pid, std::move(entry));
+    }
+}
+
+std::string LinuxProcessProbe::readExecutableArchitecture(int pidDirFd, ProcessArchitecture::Machine host)
+{
+    // Opening exe needs the same access as reading the link (ptrace read access): another user's process,
+    // without CAP_SYS_PTRACE, and a kernel thread, which has none, are unknown. Non-blocking, and only the
+    // header's first bytes are read.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const FdGuard exe(::openat(pidDirFd, "exe", O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK));
+    if (exe.get() == -1)
+    {
+        return {};
+    }
+    std::array<std::uint8_t, ElfArchitecture::ELF_HEADER_PREFIX_BYTES> header{};
+    std::size_t got = 0;
+    while (got < header.size())
+    {
+        const auto n = ::read(exe.get(), header.data() + got, header.size() - got); // Just opened: from offset 0
+        if (n < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (n <= 0)
+        {
+            break;
+        }
+        got += static_cast<std::size_t>(n);
+    }
+    // The exe's path, for an emulator's name (qemu-user through binfmt_misc). A fixture's exe is a plain
+    // file, not a link: no path, so no emulator.
+    std::array<char, 4096> path{};
+    const auto pathLength = ::readlinkat(pidDirFd, "exe", path.data(), path.size());
+    const std::string_view exePath =
+        (pathLength > 0) ? std::string_view(path.data(), static_cast<std::size_t>(pathLength)) : std::string_view{};
+    return ElfArchitecture::linuxArchitectureLabel({header.data(), got}, exePath, host);
 }
 
 std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)
@@ -945,6 +1109,21 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
     counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
+bool LinuxProcessProbe::inAnotherNetworkNamespace(int pidDirFd) const
+{
+    if (m_OwnNetNamespace.empty())
+    {
+        return false; // ours unknown (a fixture tree without it): nothing to compare
+    }
+    std::array<char, 64> target{};
+    const auto length = ::readlinkat(pidDirFd, "ns/net", target.data(), target.size());
+    if (length <= 0 || static_cast<std::size_t>(length) >= target.size())
+    {
+        return false; // its link unreadable: judged by its fds alone, as before
+    }
+    return std::string_view(target.data(), static_cast<std::size_t>(length)) != m_OwnNetNamespace;
+}
+
 template<typename OnSocket>
 void LinuxProcessProbe::countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket)
 {
@@ -989,7 +1168,10 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup)
+void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
+                                        const std::filesystem::path& cgroupRoot,
+                                        FactsByCgroup& factsByCgroup,
+                                        ProcessCounters& counters)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
@@ -1008,16 +1190,26 @@ std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesys
     }
     if (cgroups.empty())
     {
-        return {};
+        return;
     }
     // Processes in the same cgroups share one freeze-state read per pass: the state is a property of
     // the cgroup, and the answer for the first of them is the one a read microseconds later gives.
-    auto known = frozenByCgroup.find(cgroups);
-    if (known == frozenByCgroup.end())
+    auto known = factsByCgroup.find(cgroups);
+    if (known == factsByCgroup.end())
     {
-        known = frozenByCgroup.emplace(std::string(cgroups), CgroupPath::isCgroupFrozen(cgroups, cgroupRoot)).first;
+        known = factsByCgroup
+                    .emplace(std::string(cgroups),
+                             CgroupFacts{.frozen = CgroupPath::isCgroupFrozen(cgroups, cgroupRoot),
+                                         .container = CgroupContainer::containerFromCgroups(cgroups),
+                                         .services = CgroupService::serviceFromCgroups(cgroups)})
+                    .first;
     }
-    return known->second ? std::string("Suspended") : std::string{}; // No special status unless frozen
+    if (known->second.frozen)
+    {
+        counters.status = "Suspended"; // No special status unless frozen
+    }
+    counters.container = known->second.container;
+    counters.services = known->second.services;
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
@@ -1199,29 +1391,74 @@ bool LinuxProcessProbe::detectPowerCap()
         }
     }
 
-    for (const auto& path : candidates)
+    const auto found = std::ranges::find_if(candidates, isReadable);
+    if (found == candidates.end())
     {
-        if (!isReadable(path))
+        return false;
+    }
+    const std::filesystem::path& path = *found;
+    m_PowerCapPath = path.string();
+
+    // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
+    m_PowerCapMaxRangeUj = readEnergyFile((path.parent_path() / "max_energy_range_uj").string()).value_or(0);
+    if (path.parent_path().filename() == "intel-rapl:0")
+    {
+        detectOtherPackages(path.parent_path());
+    }
+    return true;
+}
+
+void LinuxProcessProbe::detectOtherPackages(const std::filesystem::path& firstZone)
+{
+    // Only "intel-rapl:N" itself: "intel-rapl:N:M" are a package's subzones (cores, uncore, DRAM),
+    // already in its energy. AMD's RAPL zones are named the same.
+    std::vector<std::pair<unsigned, OtherPackageCounter>> found;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(firstZone.parent_path(), ec), end; !ec && it != end; it.increment(ec))
+    {
+        const std::string name = it->path().filename().string();
+        constexpr std::string_view PREFIX = "intel-rapl:";
+        unsigned index = 0;
+        const char* const first = name.data() + std::min(PREFIX.size(), name.size());
+        const char* const last = name.data() + name.size();
+        if (!name.starts_with(PREFIX) || first == last || std::from_chars(first, last, index, 10).ptr != last || index == 0)
         {
             continue;
         }
-        m_PowerCapPath = path.string();
-
-        // Where the counter wraps back to 0, so a wrap reads as the energy used, not a drop.
-        std::array<char, 32> buf{};
-        const std::string rangePath = (path.parent_path() / "max_energy_range_uj").string();
-        if (const std::size_t len = readProcFile(rangePath.c_str(), buf.data(), buf.size()); len > 0)
+        std::array<char, 64> zoneName{};
+        const std::string namePath = (it->path() / "name").string();
+        const std::size_t len = readProcFile(namePath.c_str(), zoneName.data(), zoneName.size());
+        const std::string energyPath = (it->path() / "energy_uj").string();
+        if (!std::string_view(zoneName.data(), len).starts_with("package-") || !readEnergyFile(energyPath).has_value())
         {
-            const char* p = buf.data();
-            if (!parseNum(p, buf.data() + len, m_PowerCapMaxRangeUj))
-            {
-                m_PowerCapMaxRangeUj = 0;
-            }
+            continue;
         }
-        return true;
+        found.emplace_back(index,
+                           OtherPackageCounter{.path = energyPath,
+                                               .maxRangeUj = readEnergyFile((it->path() / "max_energy_range_uj").string()).value_or(0)});
     }
+    std::ranges::sort(found, {}, &std::pair<unsigned, OtherPackageCounter>::first);
+    for (auto& [index, counter] : found)
+    {
+        m_OtherPackages.push_back(std::move(counter));
+    }
+}
 
-    return false;
+std::optional<uint64_t> LinuxProcessProbe::readEnergyFile(const std::string& path)
+{
+    std::array<char, 32> buf{};
+    const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
+    if (len == 0)
+    {
+        return std::nullopt;
+    }
+    const char* p = buf.data();
+    uint64_t value = 0;
+    if (!parseNum(p, buf.data() + len, value))
+    {
+        return std::nullopt;
+    }
+    return value;
 }
 
 std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
@@ -1230,22 +1467,12 @@ std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
     {
         return std::nullopt;
     }
+    return readEnergyFile(m_PowerCapPath); // Already in microjoules
+}
 
-    std::array<char, 32> buf{};
-    const std::size_t len = readProcFile(m_PowerCapPath.c_str(), buf.data(), buf.size());
-    if (len == 0)
-    {
-        return std::nullopt;
-    }
-
-    const char* p = buf.data();
-    uint64_t energyUj = 0;
-    if (!parseNum(p, buf.data() + len, energyUj))
-    {
-        return std::nullopt;
-    }
-
-    return energyUj; // Already in microjoules
+MemoryRollupRead LinuxProcessProbe::readMemoryRollup(const std::int32_t pid, const std::uint64_t startTimeTicks) const
+{
+    return Linux::readMemoryRollupAt(m_ProcRoot, pid, startTimeTicks);
 }
 
 std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
@@ -1256,9 +1483,24 @@ std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const
     }
     // Raw read only: ProcessModel shares it out between processes per interval (#1093).
     const auto cpuTimes = readCpuTimes();
-    return PackageEnergyReading{.energyUj = readSystemEnergy(),
-                                .maxRangeUj = m_PowerCapMaxRangeUj,
-                                .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt};
+    PackageEnergyReading reading{.energyUj = readSystemEnergy(),
+                                 .maxRangeUj = m_PowerCapMaxRangeUj,
+                                 .busyCpuTicks = cpuTimes.has_value() ? std::optional{cpuTimes->busy} : std::nullopt,
+                                 .otherPackages = {}};
+    // Every package's energy, as the busy ticks are every package's CPUs' (#2444). One that can't be read
+    // makes the sample unread, rather than one package's energy shared out over all of them.
+    for (const OtherPackageCounter& package : m_OtherPackages)
+    {
+        const std::optional<uint64_t> energyUj = reading.energyUj.has_value() ? readEnergyFile(package.path) : std::nullopt;
+        if (!energyUj.has_value())
+        {
+            reading.energyUj = std::nullopt;
+            reading.otherPackages.clear();
+            break;
+        }
+        reading.otherPackages.push_back({.energyUj = *energyUj, .maxRangeUj = package.maxRangeUj});
+    }
+    return reading;
 }
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -1470,7 +1712,7 @@ void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<P
         }
         // The process behind this handle, which may not be the row's: its PID can have been reused
         // since the stat pass. Its sockets go into the map under its own start time either way.
-        const std::uint64_t startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+        const std::uint64_t startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
         ProcessCounters scanned{};
         scanned.pid = counters.pid;
         countProcessFds(pidDirFd.get(),

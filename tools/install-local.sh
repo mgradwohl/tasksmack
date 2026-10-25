@@ -1,13 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PREFIX="${PREFIX:-${ROOT_DIR}/packaging/dist}"
 HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
 INDEX_FILE="${HICOLOR_DIR}/index.theme"
 
-BUILD_BIN="${ROOT_DIR}/build/optimized/TaskSmack"
-ALT_BUILD_BIN="${ROOT_DIR}/build/optimized/bin/TaskSmack"
+# The optimized preset puts the binary in bin/; the second path is the pre-bin/ layout
+BUILD_BIN="${ROOT_DIR}/build/optimized/bin/TaskSmack"
+ALT_BUILD_BIN="${ROOT_DIR}/build/optimized/TaskSmack"
+
+# Refresh the desktop/icon caches when their tools are installed (desktop-file-utils and
+# gtk-update-icon-cache are optional; a missing one shouldn't abort the install under set -e)
+refresh_desktop_caches() {
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "${HOME}/.local/share/applications" || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache "${HICOLOR_DIR}" || true
+    fi
+}
+
+# One Desktop Entry Exec argument for a path (#2342): quoted, with the quoting rule's escapes
+# (\ " ` $), % doubled, then the string type's backslash escape. A newline cannot be represented.
+desktop_exec_quote() {
+    local path="$1"
+    if [[ "${path}" == *$'\n'* ]]; then
+        echo "A launcher path cannot contain a newline: ${path}" >&2
+        return 1
+    fi
+    path="${path//\\/\\\\}"
+    path="${path//\"/\\\"}"
+    path="${path//\`/\\\`}"
+    path="${path//\$/\\\$}"
+    path="\"${path}\""
+    path="${path//%/%%}"
+    path="${path//\\/\\\\}"
+    printf '%s' "${path}"
+}
+
+# Point a desktop entry's Exec line at a binary, without passing the path through sed syntax
+set_desktop_exec() {
+    local entry="$1" exec_value
+    exec_value="$(desktop_exec_quote "$2")" || return 1
+    EXEC_LINE="Exec=${exec_value}" awk '/^Exec=/ { print ENVIRON["EXEC_LINE"]; next } { print }' "${entry}" >"${entry}.tmp"
+    mv "${entry}.tmp" "${entry}"
+}
+
+# Sourced (tests/tools/test_install_local_sh.py): define the functions only
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 if [[ -x "${BUILD_BIN}" ]]; then
     :
@@ -30,16 +74,13 @@ ICON_DST="${HOME}/.local/share/icons/hicolor/256x256/apps/app.tasksmack.TaskSmac
 BINARY_PATH="${PREFIX}/bin/TaskSmack"
 
 install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
-sed -i "s|^Exec=.*|Exec=${BINARY_PATH}|" "${DESKTOP_DST}"
+set_desktop_exec "${DESKTOP_DST}" "${BINARY_PATH}"
 install -Dm644 "${ICON_SRC_PNG}" "${ICON_DST}"
 
-update-desktop-database "${HOME}/.local/share/applications"
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache "${HOME}/.local/share/icons/hicolor" || true
-fi
-
-# Ensure a complete hicolor index so gtk-update-icon-cache keeps all sizes
+# Ensure a hicolor index so gtk-update-icon-cache keeps all sizes. Only when there is none: an
+# existing ~/.local/share/icons/hicolor/index.theme belongs to the user or another app.
 mkdir -p "${HICOLOR_DIR}"
+if [[ ! -f "${INDEX_FILE}" ]]; then
 cat >"${INDEX_FILE}" <<'EOF'
 [Icon Theme]
 Name=Hicolor
@@ -82,10 +123,8 @@ MinSize=8
 MaxSize=512
 Context=Applications
 EOF
-
-update-desktop-database "${HOME}/.local/share/applications"
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache "${HICOLOR_DIR}" || true
 fi
+
+refresh_desktop_caches
 
 echo "Installed to ${PREFIX} and registered launcher entry app.tasksmack.TaskSmack"

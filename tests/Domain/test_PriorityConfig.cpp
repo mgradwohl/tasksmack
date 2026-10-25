@@ -171,6 +171,40 @@ TEST(PriorityConfigTest, ConstantsRelationship)
 
 // ========== Priority classes (#1280) ==========
 
+TEST(PriorityConfigTest, IoLevelsAreZeroToSeven)
+{
+    EXPECT_EQ(MIN_IO_LEVEL, 0);
+    EXPECT_EQ(MAX_IO_LEVEL, 7);
+    EXPECT_EQ(clampIoLevel(-1), 0);
+    EXPECT_EQ(clampIoLevel(3), 3);
+    EXPECT_EQ(clampIoLevel(8), 7);
+}
+
+TEST(PriorityConfigTest, IoLevelForNiceIsTheKernelDerivation)
+{
+    // (nice + 20) / 5: nice 0 is best-effort 4, the ends are 0 and 7, out-of-range nice is clamped first.
+    struct Case
+    {
+        int32_t nice;
+        int32_t level;
+    };
+    constexpr std::array<Case, 8> CASES{{
+        {.nice = -20, .level = 0},
+        {.nice = -16, .level = 0},
+        {.nice = -15, .level = 1},
+        {.nice = 0, .level = 4},
+        {.nice = 5, .level = 5},
+        {.nice = 19, .level = 7},
+        {.nice = -100, .level = 0},
+        {.nice = 100, .level = 7},
+    }};
+    for (const Case& testCase : CASES)
+    {
+        SCOPED_TRACE(testCase.nice);
+        EXPECT_EQ(ioLevelForNice(testCase.nice), testCase.level);
+    }
+}
+
 TEST(PriorityClassTest, ClassLabelsMatchTheNiceLabelsAndNameRealtime)
 {
     EXPECT_EQ(getPriorityClassLabel(PriorityClass::Idle), getPriorityLabel(MAX_NICE));
@@ -248,6 +282,66 @@ TEST(PriorityClassTest, ForNiceMatchesTheLabelBucket)
     {
         EXPECT_EQ(getPriorityClassLabel(priorityClassForNice(nice)), getPriorityLabel(nice)) << nice;
     }
+}
+
+// ========== classNice / classFromNice (#1204, #2168) ==========
+
+TEST(PriorityClassTest, ClassNiceIsLabelledAsItsClassAndRoundTrips)
+{
+    for (const PriorityClass priorityClass : {
+             PriorityClass::Idle,
+             PriorityClass::BelowNormal,
+             PriorityClass::Normal,
+             PriorityClass::AboveNormal,
+             PriorityClass::High,
+             PriorityClass::Realtime,
+         })
+    {
+        const int32_t nice = classNice(priorityClass);
+        EXPECT_EQ(classFromNice(nice), priorityClass) << getPriorityClassLabel(priorityClass);
+        if (priorityClass != PriorityClass::Realtime)
+        {
+            // Realtime shares High's bucket; every other class's value is labelled as itself.
+            EXPECT_EQ(getPriorityLabel(nice), getPriorityClassLabel(priorityClass));
+        }
+    }
+}
+
+TEST(PriorityClassTest, ClassNiceNeverSitsOnALabelThreshold)
+{
+    // -5 and -10, the values the probe used to report, are where the next class down starts.
+    for (const PriorityClass priorityClass : {
+             PriorityClass::Idle,
+             PriorityClass::BelowNormal,
+             PriorityClass::Normal,
+             PriorityClass::AboveNormal,
+             PriorityClass::High,
+         })
+    {
+        const int32_t nice = classNice(priorityClass);
+        EXPECT_NE(nice, HIGH_THRESHOLD);
+        EXPECT_NE(nice, ABOVE_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, BELOW_NORMAL_THRESHOLD);
+        EXPECT_NE(nice, IDLE_THRESHOLD);
+    }
+}
+
+TEST(PriorityClassTest, RealtimeIsMinNiceAndAnUnreadClassIsNormal)
+{
+    EXPECT_EQ(classNice(PriorityClass::Realtime), MIN_NICE);
+    EXPECT_NE(classNice(PriorityClass::Realtime), classNice(PriorityClass::High));
+    EXPECT_EQ(classNice(PriorityClass::None), NORMAL_NICE);
+}
+
+TEST(PriorityClassTest, ClassFromNiceIsTheLabelBucketAboveMinNice)
+{
+    EXPECT_EQ(classFromNice(MIN_NICE), PriorityClass::Realtime);
+    EXPECT_EQ(classFromNice(-100), PriorityClass::Realtime);
+    for (int32_t nice = MIN_NICE + 1; nice <= MAX_NICE; ++nice)
+    {
+        EXPECT_EQ(classFromNice(nice), priorityClassForNice(nice)) << nice;
+    }
+    EXPECT_EQ(classFromNice(100), PriorityClass::Idle);
 }
 
 TEST(PriorityClassTest, SortKeyPutsAnUnreadClassWithTheClassItsLabelNames)

@@ -3,17 +3,24 @@
 #include "Core/Window.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/WindowSizeTestUtils.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -44,20 +51,8 @@ bool isOffscreenVideoDriver()
 bool detectDisplay()
 {
 #ifdef _WIN32
-    // Check for CI environment - headless Windows CI runners cannot create windows.
-    // Mirror the guard used in test_Application.cpp: use _dupenv_s to avoid the
-    // MSVC CRT deprecation warning on std::getenv that is treated as an error under /WX.
-    char* ciEnv = nullptr;
-    std::size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc; must free with free()
-    free(ciEnv);
-    if (isCI)
-    {
-        return false;
-    }
-    return true;
+    // A GL 3.3 core context on the desktop, CI included (#2134), as test_Application.cpp checks.
+    return TestSupport::detectWindowsDisplay();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");
@@ -92,18 +87,13 @@ namespace Core
 namespace
 {
 
-// Window::setSize() calls SDL_SyncWindow(), but that only waits a bounded time (100ms on X11),
-// and on a real display the resize is asynchronous (#1309): SDL only updates the size
-// getWidth()/getHeight() report when it processes the resulting configure event, which can come
-// later than that under load or under a compositing window manager (WSLg). Pump events until the
-// window reports the expected size or the deadline passes; the caller still asserts the size, so
-// a resize that never lands still fails.
-void waitForWindowSize(const Window& window, int width, int height)
+// Pumps events until the window's size differs from @p before, or a timeout (#1896).
+void waitForWindowSizeChange(const Window& window, std::pair<int, int> before)
 {
     constexpr auto RESIZE_TIMEOUT = std::chrono::seconds{5};
     constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
     const auto deadline = std::chrono::steady_clock::now() + RESIZE_TIMEOUT;
-    while (window.getSize() != std::pair{width, height} && std::chrono::steady_clock::now() < deadline)
+    while (window.getSize() == before && std::chrono::steady_clock::now() < deadline)
     {
         SDL_PumpEvents();
         std::this_thread::sleep_for(POLL_INTERVAL);
@@ -181,7 +171,8 @@ TEST_F(WindowTest, GetGLContextReturnsNonNullAfterConstruction)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "WindowGLContextTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowGLContextTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
         EXPECT_NE(window.getGLContext(), nullptr);
     }
     catch (const std::exception& e)
@@ -203,13 +194,17 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
         Window window(WindowSpecification{.Title = "WindowClampTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         window.setSize(0, -10);
-        waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
+        // Once a parallel ctest run read it as 1x1 on WSLg (#2650); skip that on a desktop.
+        if (!TestSupport::waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
+        }
         EXPECT_EQ(window.getWidth(), WINDOW_MIN_DIMENSION);
         EXPECT_EQ(window.getHeight(), WINDOW_MIN_DIMENSION);
 
         const auto sizeBefore = window.getSize();
         window.setSize(20000, 50000);
-        waitForWindowSize(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION);
+        (void) TestSupport::waitForWindowSize(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION);
         // A window manager may refuse to grow a window past the display: WSLg's (Weston's XWM)
         // leaves this 200x200 window at 200x200 in roughly a third of runs, even when asked again
         // and again, while the X server alone (Xvfb in CI, no window manager) always applies it.
@@ -239,8 +234,13 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
     // Resize through SDL directly so a cached WindowSpecification cannot satisfy the assertions.
     try
     {
-        Window window(WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
 
@@ -248,12 +248,20 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
         {
             GTEST_SKIP() << "Display server could not apply the first window resize: " << SDL_GetError();
         }
+        if (!TestSupport::waitForWindowSize(window, 512, 384) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 512, 384);
+        }
         EXPECT_EQ(window.getWidth(), 512);
         EXPECT_EQ(window.getHeight(), 384);
 
         if (!SDL_SetWindowSize(window.getHandle(), 576, 432) || !SDL_SyncWindow(window.getHandle()))
         {
             GTEST_SKIP() << "Display server could not apply the second window resize: " << SDL_GetError();
+        }
+        if (!TestSupport::waitForWindowSize(window, 576, 432) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 576, 432);
         }
         EXPECT_EQ(window.getWidth(), 576);
         EXPECT_EQ(window.getHeight(), 432);
@@ -272,8 +280,13 @@ TEST_F(WindowTest, GetSizeInPixelsReturnsPositiveDimensions)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         const auto [pixelW, pixelH] = window.getSizeInPixels();
         // Physical pixel size must be at least as large as logical size on any display.
         EXPECT_GE(pixelW, 640);
@@ -298,7 +311,8 @@ TEST_F(WindowTest, SetAndGetPositionRoundTrip)
 
     try
     {
-        Window window(WindowSpecification{.Title = "WindowPositionTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowPositionTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
         window.setPosition(40, 60);
         const auto [x, y] = window.getPosition();
 
@@ -364,6 +378,118 @@ TEST_F(WindowTest, IsMaximizedTracksStateForBorderlessWindow)
         // After restore(), the flag must be cleared.
         window.restore();
         EXPECT_FALSE(window.isMaximized());
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #2722: the client-side maximize (Windows, X11 without a window manager's EWMH maximize) reads the
+// display's usable bounds through a seam, so a test can choose them, or make the read fail.
+constexpr SDL_Rect CHOSEN_USABLE_BOUNDS{.x = 100, .y = 60, .w = 900, .h = 640};
+
+int& usableBoundsReads() noexcept
+{
+    static int reads = 0;
+    return reads;
+}
+
+bool readChosenUsableBounds(SDL_DisplayID /*display*/, SDL_Rect* bounds) noexcept
+{
+    ++usableBoundsReads();
+    *bounds = CHOSEN_USABLE_BOUNDS;
+    return true;
+}
+
+bool failUsableBoundsRead(SDL_DisplayID /*display*/, SDL_Rect* /*bounds*/) noexcept
+{
+    ++usableBoundsReads();
+    return false;
+}
+
+TEST_F(WindowTest, AClientSideMaximizeFillsTheDisplaysUsableBounds)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "UsableBoundsTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setUsableBoundsReader(&readChosenUsableBounds);
+        usableBoundsReads() = 0;
+        window.maximize();
+        if (usableBoundsReads() == 0)
+        {
+            GTEST_SKIP() << "The compositor or window manager maximizes here, not the client";
+        }
+        SDL_SyncWindow(window.getHandle());
+
+        EXPECT_TRUE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{CHOSEN_USABLE_BOUNDS.w, CHOSEN_USABLE_BOUNDS.h}));
+        if (!isOffscreenVideoDriver()) // the offscreen driver keeps a window where it was made
+        {
+            EXPECT_EQ(window.getPosition(), (std::pair{CHOSEN_USABLE_BOUNDS.x, CHOSEN_USABLE_BOUNDS.y}));
+        }
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+/// WindowTest, with the default logger writing to m_Logged for the test.
+class WindowLogTest : public WindowTest
+{
+  protected:
+    void SetUp() override
+    {
+        m_PreviousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("window-log-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(m_Logged)));
+        WindowTest::SetUp();
+    }
+
+    void TearDown() override
+    {
+        WindowTest::TearDown();
+        spdlog::set_default_logger(m_PreviousLogger);
+    }
+
+    std::ostringstream m_Logged;
+
+  private:
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+};
+
+// #865 checked this by hand: when the usable bounds can't be read, maximize() warns and asks SDL to
+// maximize instead, and tracks that as a maximize, so the normal geometry isn't lost (#1121).
+TEST_F(WindowLogTest, AClientSideMaximizeWithoutUsableBoundsWarnsAndAsksSDLInstead)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "UsableBoundsTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setUsableBoundsReader(&failUsableBoundsRead);
+        const std::optional<WindowGeometry::Rect> normal = window.getNormalGeometry();
+        ASSERT_TRUE(normal.has_value());
+        usableBoundsReads() = 0;
+        window.maximize();
+        if (usableBoundsReads() == 0)
+        {
+            GTEST_SKIP() << "The compositor or window manager maximizes here, not the client";
+        }
+
+        EXPECT_TRUE(m_Logged.str().contains("Failed to get display usable bounds for borderless maximize")) << m_Logged.str();
+        if (!isOffscreenVideoDriver()) // the offscreen driver can't maximize, so SDL's fallback fails too
+        {
+            EXPECT_TRUE(window.isMaximized());
+        }
+        EXPECT_EQ(window.getNormalGeometry(), normal);
     }
     catch (const std::exception& e)
     {
@@ -617,7 +743,8 @@ TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "HitTestCallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "HitTestCallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         // Setting a no-op hit-test callback must not crash or throw.
         EXPECT_NO_THROW(window.setHitTestCallback([](SDL_Window* /*win*/, const SDL_Point* /*area*/, void* /*data*/) -> SDL_HitTestResult
@@ -634,6 +761,89 @@ TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
             GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
         }
         FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(WindowTest, ASizeSavedAtTwiceTheScaleComesBackAtHalfTheSize)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedScaleTest", .Width = 800, .Height = 600, .VSync = false, .Borderless = true});
+        // applySavedGeometry() converts the current size, so it must be the created one: read as 1x1
+        // on WSLg it converts to the 200x200 minimum (#2706).
+        if (!TestSupport::waitForWindowSize(window, 800, 600) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 800, 600);
+        }
+        const float scale = window.getUnitScale();
+        if (scale <= 0.0F)
+        {
+            GTEST_SKIP() << "No window scale on this display";
+        }
+        // Saved on a display at twice this one's scale: the same apparent size is half as many units
+        // here (#1168). No position, so only the size is converted and fitted.
+        window.applySavedGeometry(std::nullopt, false, scale * 2.0F);
+        if (!TestSupport::waitForWindowSize(window, 400, 300) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 400, 300);
+        }
+        EXPECT_EQ(window.getSize(), (std::pair{400, 300}));
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
+    }
+}
+
+TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedSizeFitTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        SDL_Rect usable{};
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window.getHandle());
+        if (display == 0 || !SDL_GetDisplayUsableBounds(display, &usable) || usable.w <= 0 || usable.h <= 0)
+        {
+            GTEST_SKIP() << "No display bounds available";
+        }
+        // A size saved on a bigger monitor, now gone: kept within this display rather than off its edges.
+        const auto sizeBefore = window.getSize();
+        window.setSize(std::min(usable.w * 2, 16'000), std::min(usable.h * 2, 16'000));
+        // On X11 the resize is only a request: applySavedGeometry() reads the current size, so wait until
+        // the resize lands, or the fit sees 640x480, has nothing to shrink, and the 2x size lands after
+        // it (#1896). A window manager may clamp the grow at the display (WSLg's XWM), so wait for any
+        // change, not the exact size.
+        waitForWindowSizeChange(window, sizeBefore);
+        if (window.getSize() == sizeBefore && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window manager declined to grow the window; nothing to shrink";
+        }
+        window.applySavedGeometry(std::nullopt, false, std::nullopt);
+        (void) TestSupport::waitForWindowSize(window, usable.w, usable.h);
+        // The grow can carry the window onto a bigger monitor, and the fit is to the display it is on
+        // then, so compare with that display's bounds, not the one it started on (#2088).
+        SDL_Rect fitted = usable;
+        if (const SDL_DisplayID now = SDL_GetDisplayForWindow(window.getHandle()); now != 0 && now != display)
+        {
+            ASSERT_TRUE(SDL_GetDisplayUsableBounds(now, &fitted));
+        }
+        const auto [width, height] = window.getSize();
+        EXPECT_LE(width, fitted.w);
+        EXPECT_LE(height, fitted.h);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
     }
 }
 

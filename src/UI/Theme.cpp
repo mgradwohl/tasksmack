@@ -1,7 +1,9 @@
 #include "Theme.h"
 
 #include "ColorContrast.h"
+#include "Core/Utf8Path.h"
 #include "DpiScale.h"
+#include "FallbackTheme.h"
 #include "StyleScale.h"
 #include "ThemeCatalog.h"
 #include "ThemeLoader.h"
@@ -47,164 +49,11 @@ Theme::Theme()
 
 void Theme::loadDefaultFallbackTheme()
 {
-    // Create a minimal fallback theme in case TOML files aren't found
-    ColorScheme fallback{};
+    // Arctic Fire's own file, embedded at build time (FallbackTheme.h): the fallback had 8 identical
+    // accents and drew network in the CPU and memory colours (#1196). It parses at every start-up and
+    // a unit test loads it, so it cannot fail here; should it ever, a default scheme still installs.
+    ColorScheme fallback = ThemeLoader::loadThemeFromString(FALLBACK_THEME_TOML, "built-in fallback theme").value_or(ColorScheme{});
     fallback.name = "Fallback";
-
-    // Named color constants to avoid repeating raw ImVec4 literals throughout this function
-    const auto gray = ImVec4(0.5F, 0.5F, 0.5F, 1.0F);
-    const auto blue = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
-    const auto darkBg = ImVec4(0.1F, 0.1F, 0.1F, 1.0F);
-    const auto red = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
-    const auto green = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
-    const auto yellow = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
-    const auto orange = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
-    const auto transparent = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
-
-    fallback.accents = {blue, blue, blue, blue, blue, blue, blue, blue};
-    fallback.progressLow = blue;
-    fallback.progressMedium = gray;
-    fallback.progressHigh = red;
-
-    fallback.textPrimary = ImVec4(0.90F, 0.92F, 0.96F, 1.0F);
-    fallback.textDisabled = ImVec4(0.65F, 0.68F, 0.72F, 1.0F);
-    fallback.textMuted = gray;
-    fallback.textError = red;
-    fallback.textWarning = yellow;
-    fallback.textSuccess = green;
-    fallback.textInfo = blue;
-
-    fallback.statusRunning = green;
-    fallback.statusStopped = red;
-    fallback.statusSleeping = yellow;
-    fallback.statusDiskSleep = orange; // Uninterruptible disk sleep
-    fallback.statusZombie = red;       // Defunct/zombie process
-    fallback.statusIdle = gray;        // Idle kernel thread
-
-    fallback.chartCpu = blue;
-    fallback.chartMemory = green;
-    fallback.chartIo = orange;
-    fallback.chartIoWrite = red;
-
-    // Chart fill colors (semi-transparent versions)
-    fallback.chartCpuFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
-    fallback.chartMemoryFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
-    fallback.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
-    fallback.chartIoWriteFill = ImVec4(1.0F, 0.0F, 0.0F, 0.3F);
-
-    fallback.cpuUser = ImVec4(0.60F, 0.80F, 1.0F, 1.0F); // Lighter than chartCpu: User is not CPU Total (#1192)
-    fallback.cpuSystem = orange;
-    fallback.cpuIowait = yellow;
-    fallback.cpuIdle = gray;
-
-    // CPU breakdown fill colors (semi-transparent versions)
-    fallback.cpuUserFill = ImVec4(0.60F, 0.80F, 1.0F, 0.35F);
-    fallback.cpuSystemFill = ImVec4(1.0F, 0.5F, 0.0F, 0.35F);
-    fallback.cpuIowaitFill = ImVec4(1.0F, 1.0F, 0.0F, 0.35F);
-    fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F); // semi-transparent gray
-
-    fallback.windowBg = darkBg;
-    fallback.childBg = transparent;
-    fallback.popupBg = ImVec4(0.08F, 0.08F, 0.08F, 0.94F);
-    fallback.border = ImVec4(0.43F, 0.43F, 0.50F, 0.50F);
-    fallback.borderShadow = transparent;
-    fallback.frameBg = ImVec4(0.16F, 0.29F, 0.48F, 0.54F);
-    fallback.frameBgHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.40F);
-    fallback.frameBgActive = ImVec4(0.26F, 0.59F, 0.98F, 0.67F);
-    fallback.titleBg = ImVec4(0.04F, 0.04F, 0.04F, 1.0F);
-    fallback.titleBgActive = ImVec4(0.16F, 0.29F, 0.48F, 1.0F);
-    fallback.titleBgCollapsed = ImVec4(0.0F, 0.0F, 0.0F, 0.51F); // near-transparent
-    fallback.menuBarBg = ImVec4(0.14F, 0.14F, 0.14F, 1.0F);
-    fallback.statusBarBg = ImVec4(0.14F, 0.14F, 0.14F, 1.0F);
-    fallback.scrollbarBg = ImVec4(0.02F, 0.02F, 0.02F, 0.53F);
-    fallback.scrollbarGrab = ImVec4(0.31F, 0.31F, 0.31F, 1.0F);
-    fallback.scrollbarGrabHovered = ImVec4(0.41F, 0.41F, 0.41F, 1.0F);
-    fallback.scrollbarGrabActive = ImVec4(0.51F, 0.51F, 0.51F, 1.0F);
-    fallback.checkMark = blue;
-    fallback.sliderGrab = blue;
-    fallback.sliderGrabActive = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
-    fallback.button = ImVec4(0.26F, 0.59F, 0.98F, 0.40F);
-    fallback.buttonHovered = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
-    fallback.buttonActive = ImVec4(0.06F, 0.53F, 0.98F, 1.0F);
-    // Selected rows stronger than hovered ones, so hovering never looks like selecting (#1190).
-    fallback.header = ImVec4(0.26F, 0.59F, 0.98F, 0.45F);
-    fallback.headerHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.22F);
-    fallback.headerActive = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
-    fallback.separator = ImVec4(0.43F, 0.43F, 0.50F, 0.50F);
-    fallback.separatorHovered = ImVec4(0.10F, 0.40F, 0.75F, 0.78F);
-    fallback.separatorActive = ImVec4(0.10F, 0.40F, 0.75F, 1.0F);
-    fallback.resizeGrip = ImVec4(0.26F, 0.59F, 0.98F, 0.20F);
-    fallback.resizeGripHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.67F);
-    fallback.resizeGripActive = ImVec4(0.26F, 0.59F, 0.98F, 0.95F);
-    fallback.tab = ImVec4(0.18F, 0.35F, 0.58F, 0.86F);
-    fallback.tabHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
-    fallback.tabSelected = ImVec4(0.20F, 0.41F, 0.68F, 1.0F);
-    fallback.tabSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 1.0F); // The selected tab's cue, >= 3:1 on tabSelected (#1190)
-    fallback.tabDimmed = ImVec4(0.07F, 0.10F, 0.15F, 0.97F);
-    fallback.tabDimmedSelected = ImVec4(0.14F, 0.26F, 0.42F, 1.0F);
-    fallback.tabDimmedSelectedOverline = ImVec4(0.60F, 0.82F, 1.0F, 0.50F);
-    fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
-    fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
-    fallback.plotGrid = ImVec4(0.27F, 0.31F, 0.38F, 1.0F); // About 1.5:1 on the fallback plot (#1191)
-    fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
-    fallback.plotLinesHovered = ImVec4(1.0F, 0.43F, 0.35F, 1.0F);
-    fallback.plotHistogram = ImVec4(0.90F, 0.70F, 0.0F, 1.0F);
-    fallback.plotHistogramHovered = ImVec4(1.0F, 0.60F, 0.0F, 1.0F);
-    fallback.tableHeaderBg = ImVec4(0.19F, 0.19F, 0.20F, 1.0F);
-    fallback.tableBorderStrong = ImVec4(0.31F, 0.31F, 0.35F, 1.0F);
-    fallback.tableBorderLight = ImVec4(0.23F, 0.23F, 0.25F, 1.0F);
-    fallback.tableRowBg = transparent;
-    fallback.tableRowBgAlt = ImVec4(1.0F, 1.0F, 1.0F, 0.06F);
-    fallback.textSelectedBg = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
-    fallback.dragDropTarget = ImVec4(1.0F, 1.0F, 0.0F, 0.90F);
-    fallback.navHighlight = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
-    fallback.navWindowingHighlight = ImVec4(1.0F, 1.0F, 1.0F, 0.70F);
-    fallback.navWindowingDimBg = ImVec4(0.80F, 0.80F, 0.80F, 0.20F);
-    fallback.modalWindowDimBg = ImVec4(0.80F, 0.80F, 0.80F, 0.35F);
-
-    // Close button colors (title bar ×)
-    fallback.closeButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
-    fallback.closeButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
-
-    // Danger button colors (Terminate, Kill)
-    fallback.dangerButton = ImVec4(0.64F, 0.08F, 0.08F, 1.0F);
-    fallback.dangerButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
-    fallback.dangerButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
-
-    // Success button colors (Apply, Resume, etc.)
-    fallback.successButton = ImVec4(0.20F, 0.60F, 0.20F, 1.0F);
-    fallback.successButtonHovered = ImVec4(0.25F, 0.70F, 0.25F, 1.0F);
-    fallback.successButtonActive = ImVec4(0.15F, 0.50F, 0.15F, 1.0F);
-
-    // GPU chart colors (reuse blue/green/orange/red family for readable defaults)
-    fallback.gpuUtilization = blue;
-    fallback.gpuUtilizationFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
-    fallback.gpuMemory = green;
-    fallback.gpuMemoryFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
-    fallback.gpuTemperature = orange;
-    fallback.gpuPower = yellow;
-    fallback.gpuEncoder = ImVec4(0.60F, 0.40F, 0.80F, 1.0F); // purple
-    fallback.gpuDecoder = ImVec4(0.40F, 0.80F, 0.80F, 1.0F); // teal
-    fallback.gpuClock = ImVec4(0.90F, 0.70F, 0.0F, 1.0F);    // amber
-    fallback.gpuClockFill = ImVec4(0.90F, 0.70F, 0.0F, 0.3F);
-    fallback.gpuFan = ImVec4(0.60F, 0.80F, 0.60F, 1.0F); // light green
-
-    // Chart overlay: semi-transparent white line for peak markers
-    fallback.chartPeakLine = ImVec4(1.0F, 1.0F, 1.0F, 0.35F);
-
-    // Network chart colors (TX = blue like CPU; RX = green like memory, both safe distinct defaults)
-    fallback.chartNetTx = blue;
-    fallback.chartNetRx = green;
-    fallback.chartNetTxFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
-    fallback.chartNetRxFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
-
-    // Priority badge text color (white for contrast on any colored badge)
-    fallback.priorityBadgeTextColor = ImVec4(1.0F, 1.0F, 1.0F, 1.0F);
-
-    // Priority slider gradient endpoints
-    fallback.priorityHighColor = ImVec4(1.0F, 0.3F, 0.2F, 1.0F);
-    fallback.priorityNormalColor = ImVec4(0.5F, 0.8F, 0.2F, 1.0F);
-    fallback.priorityLowColor = ImVec4(0.4F, 0.4F, 0.8F, 1.0F);
 
     // Add as the initial theme
     DiscoveredTheme fallbackInfo;
@@ -218,13 +67,13 @@ void Theme::loadDefaultFallbackTheme()
 
 void Theme::loadThemes(const std::filesystem::path& themesDir)
 {
-    spdlog::info("Loading themes from: {}", themesDir.string());
+    spdlog::info("Loading themes from: {}", Core::pathToUtf8(themesDir));
 
-    auto discovered = ThemeLoader::discoverThemes(themesDir);
+    const auto discovered = ThemeLoader::discoverThemes(themesDir);
 
     if (discovered.empty())
     {
-        spdlog::warn("No themes found in {}, using fallback", themesDir.string());
+        spdlog::warn("No themes found in {}, using fallback", Core::pathToUtf8(themesDir));
         return; // Keep the fallback theme
     }
 
@@ -235,7 +84,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
     discoveredThemes.reserve(discovered.size());
     loadedSchemes.reserve(discovered.size());
 
-    for (auto& info : discovered)
+    for (const auto& info : discovered)
     {
         if (auto scheme = ThemeLoader::loadTheme(info.path))
         {
@@ -254,7 +103,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
         // Keep whatever is already loaded: the built-in fallback from the constructor, or the
         // built-in themes when this was the user directory. Appending another fallback here
         // produced a duplicate "Fallback" entry (#1127).
-        spdlog::error("Failed to load any themes from {}", themesDir.string());
+        spdlog::error("Failed to load any themes from {}", Core::pathToUtf8(themesDir));
         return;
     }
 
@@ -431,6 +280,7 @@ void Theme::applyImGuiStyle() const
     style.Colors[ImGuiCol_TableBorderLight] = s.tableBorderLight;
     style.Colors[ImGuiCol_TableRowBg] = s.tableRowBg;
     style.Colors[ImGuiCol_TableRowBgAlt] = s.tableRowBgAlt;
+    style.Colors[ImGuiCol_TreeLines] = s.treeLines;
     style.Colors[ImGuiCol_TextSelectedBg] = s.textSelectedBg;
     style.Colors[ImGuiCol_DragDropTarget] = s.dragDropTarget;
     style.Colors[ImGuiCol_NavHighlight] = s.navHighlight;
@@ -464,6 +314,9 @@ void Theme::applyImGuiStyle() const
     style.WindowBorderSize = 1.0F;
     style.ChildBorderSize = 1.0F;
     style.PopupBorderSize = 1.0F;
+    // Off by default: buttons, headers and chart frames carry their own fills. Checkboxes, text fields,
+    // combos and radio buttons, whose fill barely differs from the surface, turn it on with
+    // UI::Widgets::FrameOutlineScope and the scheme's frameBorder (#1923).
     style.FrameBorderSize = 0.0F;
     style.TabBorderSize = 0.0F;
 
@@ -555,31 +408,6 @@ auto Theme::styleScale() const -> float
 auto Theme::scheme() const -> const ColorScheme&
 {
     return m_LoadedSchemes[m_CurrentThemeIndex];
-}
-
-auto Theme::themeName(std::size_t index) const -> std::string_view
-{
-    if (index >= m_DiscoveredThemes.size())
-    {
-        return "Unknown";
-    }
-    return m_DiscoveredThemes[index].name;
-}
-
-auto Theme::progressColor(double percent) const -> ImVec4
-{
-    constexpr double LOW_THRESHOLD = 50.0;
-    constexpr double HIGH_THRESHOLD = 80.0;
-
-    if (percent < LOW_THRESHOLD)
-    {
-        return scheme().progressLow;
-    }
-    if (percent < HIGH_THRESHOLD)
-    {
-        return scheme().progressMedium;
-    }
-    return scheme().progressHigh;
 }
 
 auto Theme::accentColor(std::size_t index) const -> ImVec4
@@ -687,15 +515,25 @@ auto Theme::regularFont() const -> ImFont*
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].regular;
 }
 
+auto Theme::pushRegularFont() const -> ImFont*
+{
+    ImFont* font = regularFont();
+    if (font != nullptr)
+    {
+        ImGui::PushFont(font, font->LegacySize);
+    }
+    return font;
+}
+
 auto Theme::largeFont() const -> ImFont*
 {
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;
 }
 
-auto Theme::monospaceFont() const -> ImFont*
+auto Theme::boldFont() const -> ImFont*
 {
     const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
-    return fonts.monospace != nullptr ? fonts.monospace : fonts.regular;
+    return fonts.bold != nullptr ? fonts.bold : fonts.regular;
 }
 
 auto Theme::chartFont() const -> ImFont*
@@ -703,9 +541,14 @@ auto Theme::chartFont() const -> ImFont*
     return m_Fonts[fontSizeIndex(chartFontSize(m_CurrentFontSize))].regular;
 }
 
-void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)
+void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
 {
-    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
+    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .bold = nullptr};
+}
+
+void Theme::registerBoldFont(FontSize size, ImFont* bold)
+{
+    m_Fonts[fontSizeIndex(size)].bold = bold;
 }
 
 void Theme::registerTitleFont(ImFont* font)

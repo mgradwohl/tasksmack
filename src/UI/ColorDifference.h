@@ -163,6 +163,42 @@ struct Lab
     return deltaE2000(toLab(color1), toLab(color2));
 }
 
+/// An OKLCH colour (Ottosson 2020, "A perceptual color space for image processing"): lightness 0..1,
+/// chroma (0 for a grey, about 0.37 at most in sRGB) and hue angle in degrees, 0..360. OKLab's hue is
+/// more even than CIELAB's -- CIELAB bends blue towards violet -- so it is the one theme palettes are
+/// grouped by (#1196).
+struct Oklch
+{
+    double l = 0.0;
+    double c = 0.0;
+    double h = 0.0;
+};
+
+/// An opaque sRGB colour in OKLCH. Alpha is ignored; a grey's hue is 0.
+[[nodiscard]] inline Oklch toOklch(const ImVec4& color) noexcept
+{
+    const double r = toLinear(static_cast<double>(color.x));
+    const double g = toLinear(static_cast<double>(color.y));
+    const double b = toLinear(static_cast<double>(color.z));
+    const double lms0 = std::cbrt((0.4122214708 * r) + (0.5363325363 * g) + (0.0514459929 * b));
+    const double lms1 = std::cbrt((0.2119034982 * r) + (0.6806995451 * g) + (0.1073969566 * b));
+    const double lms2 = std::cbrt((0.0883024619 * r) + (0.2817188376 * g) + (0.6299787005 * b));
+    const double okL = (0.2104542553 * lms0) + (0.7936177850 * lms1) - (0.0040720468 * lms2);
+    const double okA = (1.9779984951 * lms0) - (2.4285922050 * lms1) + (0.4505937099 * lms2);
+    const double okB = (0.0259040371 * lms0) + (0.7827717662 * lms1) - (0.8086757660 * lms2);
+    // The matrices leave a grey a residual chroma of about 1e-7, whose angle is noise (white came out at
+    // hue 89.9): below ACHROMATIC a colour is a grey, with chroma and hue 0.
+    constexpr double ACHROMATIC = 1e-4;
+    const double rawChroma = std::hypot(okA, okB);
+    const double chroma = (rawChroma < ACHROMATIC) ? 0.0 : rawChroma;
+    double hue = (chroma > 0.0) ? std::atan2(okB, okA) * (180.0 / std::numbers::pi) : 0.0;
+    if (hue < 0.0)
+    {
+        hue += 360.0;
+    }
+    return {.l = okL, .c = chroma, .h = hue};
+}
+
 /// The red/green dichromacies, which together affect about 2% of men (and anomalous trichromacy of
 /// the same cones a further 6%).
 enum class Deficiency

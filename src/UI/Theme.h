@@ -45,11 +45,6 @@ struct ColorScheme
     // Accent colors for line charts, legends, etc. (8 colors)
     std::array<ImVec4, 8> accents{};
 
-    // Progress bar colors (low, medium, high)
-    ImVec4 progressLow;    // 0-50%
-    ImVec4 progressMedium; // 50-80%
-    ImVec4 progressHigh;   // 80-100%
-
     // Semantic UI colors
     ImVec4 textPrimary;  // Primary text color
     ImVec4 textDisabled; // Disabled text color
@@ -58,6 +53,19 @@ struct ColorScheme
     ImVec4 textWarning;  // Warning messages
     ImVec4 textSuccess;  // Success messages
     ImVec4 textInfo;     // Informational text
+
+    // CPU Cores markers on a hybrid CPU (#1536): the P-core bolt, the E-core leaf and the dimmer
+    // low-power E-core leaf (fallbacks: text_warning, text_success, text_muted).
+    ImVec4 corePerformance;
+    ImVec4 coreEfficiency;
+    ImVec4 coreLowPower;
+
+    // Processes table inline meters (#1528): the heat gradient a cell's bar runs along as its value
+    // rises, alpha included so the text stays readable on it ([process_meter] low / high; fallbacks:
+    // text_warning at up to 0.15 alpha and text_error at up to 0.30, lowered until text_primary keeps
+    // 4.5:1 on them over a plain, striped and selected row).
+    ImVec4 processMeterLow;
+    ImVec4 processMeterHigh;
 
     // Status colors for process states
     ImVec4 statusRunning;   // R - Running/Active (green)
@@ -110,6 +118,35 @@ struct ColorScheme
     ImVec4 gpuClockFill;       // GPU clock speed fill (semi-transparent)
     ImVec4 gpuFan;             // GPU fan speed line
 
+    // Metric roles (#1196): every metric has its own colour field, so no chart borrows another
+    // metric's colour. Each falls back to the field it used to borrow when a theme omits it, so older
+    // themes look as they did (except process Power, which now matches system Power). A fill falls
+    // back to its line at ~0.35 alpha, or to the borrowed fill; CPU Total, Page Faults and GDI are
+    // drawn as lines only and have none.
+    ImVec4 chartCpuTotal;          // CPU Total line over the User/System bands (fallback: charts.cpu)
+    ImVec4 chartMemoryCached;      // System Memory: Cached (fallback: charts.cpu)
+    ImVec4 chartMemoryCachedFill;  // (fallback: charts.cpu_fill)
+    ImVec4 chartMemoryShared;      // Process Memory: Shared (fallback: charts.memory_cached)
+    ImVec4 chartMemorySharedFill;  // (fallback: charts.memory_cached_fill)
+    ImVec4 chartMemoryVirtual;     // Process Memory: Virtual (fallback: charts.swap)
+    ImVec4 chartMemoryVirtualFill; // (fallback: charts.swap_fill)
+    ImVec4 chartMemoryPrivate;     // Process Memory: Private (fallback: charts.memory_shared, #1885)
+    ImVec4 chartMemoryPrivateFill; // (fallback: charts.memory_shared_fill)
+    ImVec4 chartMemorySwap;        // Process Memory: Swap (fallback: charts.swap, #1885)
+    ImVec4 chartMemorySwapFill;    // (fallback: charts.swap_fill)
+    ImVec4 chartSwap;              // System Memory: Swap (fallback: charts.io)
+    ImVec4 chartSwapFill;          // (fallback: charts.io_fill)
+    ImVec4 chartPower;             // System and process power draw (fallback: charts.cpu)
+    ImVec4 chartPowerFill;         // (fallback: charts.cpu_fill)
+    ImVec4 chartBattery;           // Battery charge (fallback: charts.memory)
+    ImVec4 chartBatteryFill;       // (fallback: charts.memory_fill)
+    ImVec4 chartThreads;           // Thread count (fallback: charts.cpu)
+    ImVec4 chartThreadsFill;       // (fallback: charts.cpu_fill)
+    ImVec4 chartHandles;           // Handles / FDs (fallback: charts.memory)
+    ImVec4 chartHandlesFill;       // (fallback: charts.memory_fill)
+    ImVec4 chartPageFaults;        // Page faults per second (fallback: accents[3])
+    ImVec4 chartGdi;               // GDI objects, Windows (fallback: accents[4])
+
     // Chart overlay colors
     ImVec4 chartPeakLine; // Peak value reference line (semi-transparent)
 
@@ -143,6 +180,14 @@ struct ColorScheme
     ImVec4 frameBg;
     ImVec4 frameBgHovered;
     ImVec4 frameBgActive;
+    /// Outline of checkboxes, text fields, combo boxes and radio buttons (#1923): ui.frame.border, else
+    /// ui.window.border, moved toward text_primary until it reaches ColorContrast::FRAME_BORDER_CONTRAST_MIN
+    /// on the window, a card and a popup. Opaque. Drawn only inside UI::Widgets::FrameOutlineScope.
+    ImVec4 frameBorder;
+    /// Hatch of a NowBar with no reading (N/A, #1918, #1935): text_disabled, moved toward text_primary
+    /// until it reaches ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN on the bar's track (the frame
+    /// fill over the window and over a card) and on the window and a card themselves. Opaque.
+    ImVec4 unavailableHatch;
     ImVec4 titleBg;
     ImVec4 titleBgActive;
     ImVec4 titleBgCollapsed;
@@ -155,6 +200,11 @@ struct ColorScheme
     ImVec4 checkMark;
     ImVec4 sliderGrab;
     ImVec4 sliderGrabActive;
+    /// Fills of a plain button (ImGuiCol_Button*) (#1976): ui.button.normal / hovered / active as the
+    /// theme gives them when they already reach ColorContrast::BUTTON_FILL_CONTRAST_MIN on the window, a
+    /// card and a popup (and hovered and active stay BUTTON_STATE_CONTRAST_MIN from normal), else moved
+    /// toward text_primary until they do -- never so far that text_primary drops below
+    /// ColorContrast::TEXT_CONTRAST_MIN on them. A moved fill is opaque.
     ImVec4 button;
     ImVec4 buttonHovered;
     ImVec4 buttonActive;
@@ -186,6 +236,16 @@ struct ColorScheme
     ImVec4 tableBorderLight;
     ImVec4 tableRowBg;
     ImVec4 tableRowBgAlt;
+    /// Marker of a multi-selection's primary row, the one Process Details shows (#1926): a bar at the
+    /// row's left edge and an outline round it. ui.table.selection_primary, else ui.misc.nav_highlight
+    /// (ImGui's focus colour), moved toward text_primary until it reaches
+    /// ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill of a plain and a striped row.
+    /// Opaque.
+    ImVec4 selectionPrimary;
+    /// The Processes tree's depth guide lines (#838), also ImGui's ImGuiCol_TreeLines: ui.table.border_light
+    /// made opaque over the window, then moved toward text_primary until it reaches
+    /// ColorContrast::TREE_LINES_CONTRAST_MIN on a plain and a striped row. Opaque.
+    ImVec4 treeLines;
     ImVec4 textSelectedBg;
     ImVec4 dragDropTarget;
     ImVec4 navHighlight;
@@ -287,12 +347,6 @@ class Theme
         return m_DiscoveredThemes;
     }
 
-    /// Get current theme index
-    [[nodiscard]] auto currentThemeIndex() const -> std::size_t
-    {
-        return m_CurrentThemeIndex;
-    }
-
     /// Get current theme ID (filename without extension)
     [[nodiscard]] auto currentThemeId() const -> const std::string&;
 
@@ -320,12 +374,6 @@ class Theme
 
     /// Get current color scheme
     [[nodiscard]] auto scheme() const -> const ColorScheme&;
-
-    /// Get theme name
-    [[nodiscard]] auto themeName(std::size_t index) const -> std::string_view;
-
-    /// Get progress bar color based on percent
-    [[nodiscard]] auto progressColor(double percent) const -> ImVec4;
 
     /// Get accent color by index (wraps around)
     [[nodiscard]] auto accentColor(std::size_t index) const -> ImVec4;
@@ -397,11 +445,23 @@ class Theme
     /// Get the current regular font (based on font size setting)
     [[nodiscard]] auto regularFont() const -> ImFont*;
 
+    /// Push regularFont() as the frame's body font, at that font's own preset size.
+    ///
+    /// The one way to select the body font for a frame, shared by UILayer and the headless UI
+    /// training driver so both draw at the same size (#2338). ImGui's PushFont(font, 0.0F) would keep
+    /// the size already current -- at the start of a frame, that of the atlas's first font, Small --
+    /// so this passes the font's LegacySize, the size it was baked for.
+    ///
+    /// @return The font pushed, which the caller pops with ImGui::PopFont() at the end of the frame;
+    ///         nullptr, with nothing pushed, when no font is registered for the current preset.
+    [[nodiscard]] auto pushRegularFont() const -> ImFont*;
+
     /// Get the current large/heading font (based on font size setting)
     [[nodiscard]] auto largeFont() const -> ImFont*;
 
-    /// Get the current monospace font (based on font size setting); falls back to regular if unset
-    [[nodiscard]] auto monospaceFont() const -> ImFont*;
+    /// Get the current bold font, at the body size (based on font size setting), for section headers
+    /// (#1200). Falls back to the regular font when Inter-Bold could not be loaded.
+    [[nodiscard]] auto boldFont() const -> ImFont*;
 
     /// Get the font for chart axis labels, legends and hints (see chartFontSize())
     [[nodiscard]] auto chartFont() const -> ImFont*;
@@ -410,7 +470,11 @@ class Theme
     [[nodiscard]] auto titleFont() const -> ImFont*;
 
     /// Register pre-baked fonts (called by UILayer during initialization)
-    void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
+    void registerFonts(FontSize size, ImFont* regular, ImFont* large);
+
+    /// Register the bold body-size font for one preset (called by UILayer during initialization).
+    /// Optional: a preset with none falls back to its regular font.
+    void registerBoldFont(FontSize size, ImFont* bold);
 
     /// Register the title-bar display font (called by UILayer during initialization).
     void registerTitleFont(ImFont* font);
@@ -482,7 +546,7 @@ class Theme
     {
         ImFont* regular = nullptr;
         ImFont* large = nullptr;
-        ImFont* monospace = nullptr;
+        ImFont* bold = nullptr; // Body size, for section headers (#1200); optional
     };
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
     ImFont* m_TitleFont = nullptr;      // Sixtyfour pixel font for title bar

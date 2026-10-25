@@ -1,3 +1,5 @@
+#include "UI/ColorContrast.h"
+#include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
@@ -5,6 +7,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -45,11 +48,6 @@ void expectColorNear(const ImVec4& actual, const ImVec4& expected, float toleran
 constexpr const char* k_FullThemeTomlBody = R"(
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
 
 [semantic]
 text_primary = "#FFFFFF"
@@ -691,14 +689,21 @@ class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest
         std::string_view content;
     };
 
-    // Each input crashed toml++ before #1387/#1388/#1389 were fixed.
-    static constexpr std::array<MalformedTheme, 6> kTomlppCrashInputs = {{
-        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
-        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
-        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
-        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
-        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
-        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    // Each input crashed toml++ before #1387/#1388/#1389/#1659/#2427 were fixed.
+    static constexpr std::array<MalformedTheme, 13> kTomlppCrashInputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"},                                  // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},                                    // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},                                   // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},                                       // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"},                                  // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"},                                  // #1389
+        {.name = "DateBadDayThenValues", .content = "h=2000-02-1a 1 1"},                       // #1659
+        {.name = "DateSpaceDigitNewline", .content = "h=2000-02-01 1\n"},                      // #1659
+        {.name = "DateSpaceDigitInArray", .content = "h=[2000-02-01 1]"},                      // #1659
+        {.name = "DateTimeLowerTThenLetter", .content = "2h=0200-02-10thexxxxxxxxxxWq\x7f:t"}, // #2427 (the fuzzer's input)
+        {.name = "DateTimeUpperTThenLetter", .content = "h=2000-02-10Tx:"},                    // #2427
+        {.name = "DateTimeTThenSign", .content = "h=2000-02-10T+1:"},                          // #2427
+        {.name = "DateTimeTThenColonInArray", .content = "h=[2000-02-10t:00]"},                // #2427
     }};
 
     void SetUp() override
@@ -781,11 +786,6 @@ description = "A complete theme"
 
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
 
 [semantic]
 text_primary = "#FFFFFF"
@@ -924,11 +924,6 @@ modal_window_dim_background = "#0000004D"
     // Check that semantic text_primary was parsed correctly
     expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
 
-    // Check progress colors
-    expectColorNear(theme->progressLow, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));    // #00FF00
-    expectColorNear(theme->progressMedium, ImVec4(1.0F, 1.0F, 0.0F, 1.0F)); // #FFFF00
-    expectColorNear(theme->progressHigh, ImVec4(1.0F, 0.0F, 0.0F, 1.0F));   // #FF0000
-
     // Check I/O chart colors (read vs write must be distinct)
     // #E74856 = (231/255, 72/255, 86/255, 1.0)
     expectColorNear(theme->chartIo, ImVec4(0xE7 / 255.0F, 0x48 / 255.0F, 0x56 / 255.0F, 1.0F));
@@ -966,11 +961,6 @@ name = "Array Colors"
 
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#10893E"
-medium = "#FFB900"
-high = "#E74856"
 
 [semantic]
 text_primary = "#FFFFFF"
@@ -1122,14 +1112,14 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingMetaSection_NameIsEmpty)
     // No [meta] section → name stays default-constructed (empty)
     EXPECT_TRUE(theme->name.empty());
     // Colors should still parse correctly from the rest of the file
-    expectColorNear(theme->progressLow, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));
+    expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F)); // #FFFFFF
 }
 
 // ========== Missing Required Color Keys Tests ==========
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingRequiredColors_FallsBackToErrorColor)
 {
-    // A TOML file with [meta] and [charts] but missing required progress/semantic/status/etc.
+    // A TOML file with [meta] and [charts] but missing required semantic/status/etc.
     // Missing required keys (those without explicit C++ fallbacks) → errorColor (magenta).
     createThemeFile("sparse-theme.toml", R"(
 [meta]
@@ -1157,9 +1147,9 @@ idle = "#808080"
 
     // Required colors that are absent without a default should be errorColor (magenta)
     const ImVec4 magenta{1.0F, 0.0F, 1.0F, 1.0F};
-    expectColorNear(theme->progressLow, magenta);
-    expectColorNear(theme->progressMedium, magenta);
-    expectColorNear(theme->progressHigh, magenta);
+    expectColorNear(theme->textError, magenta);
+    expectColorNear(theme->textWarning, magenta);
+    expectColorNear(theme->textSuccess, magenta);
 
     // Optional colors with explicit C++ defaults should NOT be magenta
     // io_write falls back to chartMemory (#10893E = 16/255, 137/255, 62/255)
@@ -1179,15 +1169,10 @@ name = "Invalid Color Theme"
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
 
-[progress]
-low = "not-a-color"
-medium = "#FFFF00"
-high = "#FF0000"
-
 [semantic]
 text_primary = "#FFFFFF"
 text_disabled = "#808080"
-text_muted = "#CCCCCC"
+text_muted = "not-a-color"
 text_error = "#FF0000"
 text_warning = "#FFA500"
 text_success = "#00FF00"
@@ -1319,11 +1304,11 @@ modal_window_dim_background = "#0000004D"
     EXPECT_EQ(theme->name, "Invalid Color Theme");
 
     // The invalid color "not-a-color" should produce magenta error color
-    expectColorNear(theme->progressLow, ImVec4(1.0F, 0.0F, 1.0F, 1.0F));
+    expectColorNear(theme->textMuted, ImVec4(1.0F, 0.0F, 1.0F, 1.0F));
 
     // Valid entries should parse correctly
-    expectColorNear(theme->progressMedium, ImVec4(1.0F, 1.0F, 0.0F, 1.0F)); // #FFFF00
-    expectColorNear(theme->progressHigh, ImVec4(1.0F, 0.0F, 0.0F, 1.0F));   // #FF0000
+    expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));                             // #FFFFFF
+    expectColorNear(theme->textDisabled, ImVec4(0x80 / 255.0F, 0x80 / 255.0F, 0x80 / 255.0F, 1.0F)); // #808080
 }
 
 // ========== Duplicate Theme Names Tests ==========
@@ -1408,11 +1393,6 @@ name = "No IO Write"
 
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#10893E"
-medium = "#FFB900"
-high = "#E74856"
 
 [semantic]
 text_primary = "#FFFFFF"
@@ -1811,9 +1791,413 @@ border = "#11223344"
     expectSameColour(fromString->windowBg, fromFile->windowBg);
 }
 
+TEST(ThemeLoaderTest, LoadThemeFromString_AColourOfTheWrongTypeIsErrorMagenta)
+{
+    // A number, or an array of fewer than three components, is no colour: each reads as error magenta
+    // (as an invalid hex string does) instead of failing the whole theme.
+    const auto scheme = ThemeLoader::loadThemeFromString(R"(
+[meta]
+name = "Wrong Types"
+
+[accents]
+colors = [7, [0.5, 0.5]]
+
+[charts]
+cpu = 42
+memory = [0.1]
+)",
+                                                         "wrong-types.toml");
+    ASSERT_TRUE(scheme.has_value());
+    const auto expectMagenta = [](const ImVec4& colour)
+    {
+        EXPECT_FLOAT_EQ(colour.x, 1.0F);
+        EXPECT_FLOAT_EQ(colour.y, 0.0F);
+        EXPECT_FLOAT_EQ(colour.z, 1.0F);
+        EXPECT_FLOAT_EQ(colour.w, 1.0F);
+    };
+    // value_or, not ->: clang-tidy's optional check does not model ASSERT_TRUE's early return.
+    const ColorScheme loaded = scheme.value_or(ColorScheme{});
+    expectMagenta(loaded.accents[0]);
+    expectMagenta(loaded.accents[1]);
+    expectMagenta(loaded.chartCpu);
+    expectMagenta(loaded.chartMemory);
+}
+
+// #2318: TOML accepts nan and inf, and ImGui's float-to-byte colour conversion is undefined for them.
+// An array colour with a non-finite (or non-numeric) component is error magenta, in both array paths
+// (a single colour and an accents entry); a finite component outside [0, 1] -- including one too big
+// for a float -- is clamped into it.
+TEST(ThemeLoaderTest, LoadThemeFromString_NonFiniteArrayColourIsErrorMagentaAndOutOfRangeIsClamped)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(R"(
+[meta]
+name = "Non-finite"
+
+[accents]
+colors = [[nan, 0.5, 0.5], [0.5, inf, 0.5], [0.5, 0.5, -inf], [0.5, 0.5, 0.5, nan], [1, 0, 0]]
+
+[semantic]
+text_primary = [nan, 0.5, 0.5, 1.0]
+text_error = [0.5, 0.5, 0.5, inf]
+text_warning = ["red", 0.5, 0.5]
+
+[charts]
+cpu = [1e300, -1e300, 0.5, 2.0]
+memory = [-0.25, 1.5, 0.25]
+)",
+                                                         "non-finite.toml");
+    ASSERT_TRUE(scheme.has_value());
+    // value_or, not ->: clang-tidy's optional check does not model ASSERT_TRUE's early return.
+    const ColorScheme loaded = scheme.value_or(ColorScheme{});
+    const auto expectColour = [](const ImVec4& colour, float r, float g, float b, float a)
+    {
+        EXPECT_FLOAT_EQ(colour.x, r);
+        EXPECT_FLOAT_EQ(colour.y, g);
+        EXPECT_FLOAT_EQ(colour.z, b);
+        EXPECT_FLOAT_EQ(colour.w, a);
+    };
+    const auto expectMagenta = [&expectColour](const ImVec4& colour)
+    {
+        expectColour(colour, 1.0F, 0.0F, 1.0F, 1.0F);
+    };
+
+    expectMagenta(loaded.accents[0]);
+    expectMagenta(loaded.accents[1]);
+    expectMagenta(loaded.accents[2]);
+    expectMagenta(loaded.accents[3]);
+    expectColour(loaded.accents[4], 1.0F, 0.0F, 0.0F, 1.0F); // integer components still read
+    expectMagenta(loaded.textPrimary);
+    expectMagenta(loaded.textError);
+    expectMagenta(loaded.textWarning);
+    expectColour(loaded.chartCpu, 1.0F, 0.0F, 0.5F, 1.0F);
+    expectColour(loaded.chartMemory, 0.0F, 1.0F, 0.25F, 1.0F);
+}
+
 TEST(ThemeLoaderTest, LoadThemeFromString_InvalidTomlReturnsNullopt)
 {
     EXPECT_FALSE(ThemeLoader::loadThemeFromString("[meta\nname = \"Broken\"\n").has_value());
+}
+
+// #1196: a theme written before the metric roles existed draws exactly as it did -- each role falls back
+// to the field it used to borrow, line and fill.
+TEST(ThemeLoaderTest, MetricRolesFallBackToTheFieldsTheyBorrowed)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "no-roles.toml");
+    ASSERT_TRUE(scheme.has_value());
+    const auto expectSame = [](const ImVec4& actual, const ImVec4& expected, const char* role)
+    {
+        EXPECT_FLOAT_EQ(actual.x, expected.x) << role;
+        EXPECT_FLOAT_EQ(actual.y, expected.y) << role;
+        EXPECT_FLOAT_EQ(actual.z, expected.z) << role;
+        EXPECT_FLOAT_EQ(actual.w, expected.w) << role;
+    };
+    expectSame(scheme->chartCpuTotal, scheme->chartCpu, "cpu_total");
+    expectSame(scheme->chartMemoryCached, scheme->chartCpu, "memory_cached");
+    expectSame(scheme->chartMemoryCachedFill, scheme->chartCpuFill, "memory_cached_fill");
+    expectSame(scheme->chartMemoryShared, scheme->chartCpu, "memory_shared");
+    expectSame(scheme->chartSwap, scheme->chartIo, "swap");
+    expectSame(scheme->chartSwapFill, scheme->chartIoFill, "swap_fill");
+    expectSame(scheme->chartMemoryVirtual, scheme->chartIo, "memory_virtual");
+    expectSame(scheme->chartMemoryVirtualFill, scheme->chartIoFill, "memory_virtual_fill");
+    expectSame(scheme->chartMemoryPrivate, scheme->chartCpu, "memory_private");
+    expectSame(scheme->chartMemorySwap, scheme->chartIo, "memory_swap");
+    expectSame(scheme->chartMemorySwapFill, scheme->chartIoFill, "memory_swap_fill");
+    expectSame(scheme->chartPower, scheme->chartCpu, "power");
+    expectSame(scheme->chartPowerFill, scheme->chartCpuFill, "power_fill");
+    expectSame(scheme->chartBattery, scheme->chartMemory, "battery");
+    expectSame(scheme->chartBatteryFill, scheme->chartMemoryFill, "battery_fill");
+    expectSame(scheme->chartThreads, scheme->chartCpu, "threads");
+    expectSame(scheme->chartThreadsFill, scheme->chartCpuFill, "threads_fill");
+    expectSame(scheme->chartHandles, scheme->chartMemory, "handles");
+    expectSame(scheme->chartHandlesFill, scheme->chartMemoryFill, "handles_fill");
+    expectSame(scheme->chartPageFaults, scheme->accents[3], "page_faults");
+    expectSame(scheme->chartGdi, scheme->accents[4], "gdi");
+}
+
+// #1196: a role's own colour is read; without its own fill it gets a translucent one, and Shared and
+// Virtual follow Cached and Swap unless they are set too.
+TEST(ThemeLoaderTest, MetricRolesAreReadAndDeriveTheirFills)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(buildFullThemeWithCpuColor("\"#0078D4\"\n"
+                                                                                    "memory_cached = \"#00FF80\"\n"
+                                                                                    "swap = \"#8000FF\"\n"
+                                                                                    "swap_fill = \"#8000FF40\"\n"
+                                                                                    "memory_virtual = \"#A040FF\"\n"
+                                                                                    "power = \"#FFE000\"\n"
+                                                                                    "page_faults = \"#FF80C0\""),
+                                                         "roles.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->chartMemoryCached, ThemeLoader::hexToImVec4("#00FF80"));
+    expectColorNear(scheme->chartMemoryCachedFill, ThemeLoader::hexToImVec4("#00FF8059")); // 0.35 alpha
+    expectColorNear(scheme->chartMemoryShared, scheme->chartMemoryCached);
+    expectColorNear(scheme->chartSwap, ThemeLoader::hexToImVec4("#8000FF"));
+    expectColorNear(scheme->chartSwapFill, ThemeLoader::hexToImVec4("#8000FF40"));
+    expectColorNear(scheme->chartMemoryVirtual, ThemeLoader::hexToImVec4("#A040FF"));
+    // Process Private and Swap (#1885) borrow Shared and system Swap when they are left out.
+    expectColorNear(scheme->chartMemoryPrivate, scheme->chartMemoryShared);
+    expectColorNear(scheme->chartMemorySwap, scheme->chartSwap);
+    expectColorNear(scheme->chartMemorySwapFill, scheme->chartSwapFill);
+    expectColorNear(scheme->chartPower, ThemeLoader::hexToImVec4("#FFE000"));
+    expectColorNear(scheme->chartPageFaults, ThemeLoader::hexToImVec4("#FF80C0"));
+    // Roles left out still borrow.
+    expectColorNear(scheme->chartThreads, scheme->chartCpu);
+    expectColorNear(scheme->chartGdi, scheme->accents[4]);
+}
+
+// #1885: process Private and Swap are read like the other roles, with fills derived from their lines.
+TEST(ThemeLoaderTest, ProcessPrivateAndSwapRolesAreRead)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(buildFullThemeWithCpuColor("\"#0078D4\"\n"
+                                                                                    "memory_private = \"#40C080\"\n"
+                                                                                    "memory_swap = \"#9060D0\"\n"
+                                                                                    "memory_swap_fill = \"#9060D040\""),
+                                                         "private-swap.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->chartMemoryPrivate, ThemeLoader::hexToImVec4("#40C080"));
+    expectColorNear(scheme->chartMemoryPrivateFill, ThemeLoader::hexToImVec4("#40C08059")); // 0.35 alpha
+    expectColorNear(scheme->chartMemorySwap, ThemeLoader::hexToImVec4("#9060D0"));
+    expectColorNear(scheme->chartMemorySwapFill, ThemeLoader::hexToImVec4("#9060D040"));
+}
+
+// ========== frameBorder: the outline of checkboxes, text fields and combos (#1923) ==========
+
+/// The test theme body with @p line added to its [ui.frame] table.
+std::string withFrameLine(std::string_view line)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view table = "[ui.frame]\n";
+    const auto at = toml.find(table);
+    EXPECT_NE(at, std::string::npos);
+    toml.insert(at + table.size(), std::string(line) + "\n");
+    return toml;
+}
+
+/// The surfaces a frame-drawn control sits on: the window, a card and a popup, opaque.
+std::array<ImVec4, 3> controlSurfaces(const ColorScheme& scheme)
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    return {window,
+            ColorContrast::flattenOver(scheme.childBg, window),
+            ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window))};
+}
+
+// A theme without ui.frame.border gets its window border, moved toward its text until the outline
+// reaches 3:1 on every surface, opaque.
+TEST(ThemeLoaderTest, FrameBorderIsTheWindowBorderRaisedToTheOutlineFloor)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    ASSERT_LT(ColorContrast::contrastRatio(scheme->border, scheme->windowBg), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    for (const ImVec4& surface : controlSurfaces(*scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(scheme->frameBorder.w, 1.0F);
+    // Lighter than the border it started from (a dark theme), toward the white text, but short of it.
+    EXPECT_GT(scheme->frameBorder.x, scheme->border.x);
+    EXPECT_LT(scheme->frameBorder.x, scheme->textPrimary.x);
+}
+
+// A theme's own ui.frame.border is used as it is when it already stands out...
+TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsKeptWhenItStandsOut)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(withFrameLine("border = \"#A0A0A0\""), "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->frameBorder, ThemeLoader::hexToImVec4("#A0A0A0"));
+}
+
+// ...and raised to the floor, like the window border, when it does not.
+TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsRaisedWhenTooFaint)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(withFrameLine("border = \"#2A2A2A\""), "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    for (const ImVec4& surface : controlSurfaces(*scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
+}
+
+// ========== Button fills: a button stands out from the window, cards and dialogs (#1976) ==========
+
+/// The test theme body with its [ui.button] fills replaced by @p normal, @p hovered and @p active.
+std::string withButtonFills(std::string_view normal, std::string_view hovered, std::string_view active)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view fills = "[ui.button]\nnormal = \"#333337\"\nhovered = \"#3E3E42\"\nactive = \"#0078D4\"\n";
+    const auto at = toml.find(fills);
+    EXPECT_NE(at, std::string::npos);
+    toml.replace(at,
+                 fills.size(),
+                 "[ui.button]\nnormal = \"" + std::string(normal) + "\"\nhovered = \"" + std::string(hovered) + "\"\nactive = \"" +
+                     std::string(active) + "\"\n");
+    return toml;
+}
+
+/// The test theme body with its text_primary replaced by @p text.
+std::string withTextPrimary(std::string_view text)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view line = "text_primary = \"#FFFFFF\"";
+    const auto at = toml.find(line);
+    EXPECT_NE(at, std::string::npos);
+    toml.replace(at, line.size(), "text_primary = \"" + std::string(text) + "\"");
+    return toml;
+}
+
+/// The lowest contrast @p fill has on any of the surfaces a button is drawn on.
+float weakestButtonContrast(const ImVec4& fill, const ColorScheme& scheme)
+{
+    float weakest = 21.0F;
+    for (const ImVec4& surface : controlSurfaces(scheme))
+    {
+        weakest = std::min(weakest, ColorContrast::contrastRatio(ColorContrast::flattenOver(fill, surface), surface));
+    }
+    return weakest;
+}
+
+// The test theme fills its buttons with #333337, 1.05:1 on its popup: the fill is moved toward the
+// white text until it reaches the floor on every surface, opaque, with the label still readable.
+TEST(ThemeLoaderTest, ButtonFillIsRaisedUntilItStandsOutOnEverySurface)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themed = ThemeLoader::hexToImVec4("#333337");
+    ASSERT_LT(weakestButtonContrast(themed, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+
+    EXPECT_GE(weakestButtonContrast(scheme.button, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(scheme.button.w, 1.0F);
+    EXPECT_GE(ColorContrast::contrastRatio(scheme.textPrimary, scheme.button), ColorContrast::TEXT_CONTRAST_MIN);
+    // Lighter than the theme's fill, toward the white text, but nowhere near it.
+    EXPECT_GT(scheme.button.x, themed.x);
+    EXPECT_LT(scheme.button.x, 0.5F);
+}
+
+// Hovering and pressing stay visibly different from the raised resting fill, and stand out too.
+TEST(ThemeLoaderTest, ButtonHoverAndPressStayDistinctFromTheRaisedFill)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 resting = ColorContrast::flattenOver(scheme.button, window);
+    for (const ImVec4& state : std::array{scheme.buttonHovered, scheme.buttonActive})
+    {
+        EXPECT_GE(weakestButtonContrast(state, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+        EXPECT_GE(ColorContrast::contrastRatio(ColorContrast::flattenOver(state, window), resting),
+                  ColorContrast::BUTTON_STATE_CONTRAST_MIN);
+    }
+    // The pressed fill (#0078D4) already stood out from everything, so it is the theme's own.
+    expectColorNear(scheme.buttonActive, ThemeLoader::hexToImVec4("#0078D4"));
+}
+
+// Fills that already stand out are the theme's own, exactly.
+TEST(ThemeLoaderTest, ButtonFillsThatStandOutAreKept)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withButtonFills("#5A5A5A", "#6A6A6A", "#0078D4"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    expectColorNear(scheme.button, ThemeLoader::hexToImVec4("#5A5A5A"), 0.0F);
+    expectColorNear(scheme.buttonHovered, ThemeLoader::hexToImVec4("#6A6A6A"), 0.0F);
+    expectColorNear(scheme.buttonActive, ThemeLoader::hexToImVec4("#0078D4"), 0.0F);
+}
+
+// A translucent hovered fill is judged against the resting fill on every surface, not only the window:
+// white at 20% is 1.27:1 from #5A5A5A over the window but blends to 1.05:1 on the popup, so it is
+// replaced by an opaque fill that stays apart everywhere.
+TEST(ThemeLoaderTest, ATranslucentHoverIsKeptApartFromRestingOnEverySurface)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withButtonFills("#5A5A5A", "#FFFFFF33", "#0078D4"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themedHover = ThemeLoader::hexToImVec4("#FFFFFF33");
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    ASSERT_GE(
+        ColorContrast::contrastRatio(ColorContrast::flattenOver(themedHover, window), ColorContrast::flattenOver(scheme.button, window)),
+        ColorContrast::BUTTON_STATE_CONTRAST_MIN); // what the window-only check accepted
+
+    EXPECT_FLOAT_EQ(scheme.buttonHovered.w, 1.0F); // derived, not the theme's translucent fill
+    for (const ImVec4& surface : controlSurfaces(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(ColorContrast::flattenOver(scheme.buttonHovered, surface),
+                                               ColorContrast::flattenOver(scheme.button, surface)),
+                  ColorContrast::BUTTON_STATE_CONTRAST_MIN);
+    }
+}
+
+// The label comes first: with a dim grey text, raising the fill to the floor would take the label
+// below 4.5:1, so the fill moves only as far as the label allows.
+TEST(ThemeLoaderTest, ButtonFillStopsBeforeTheLabelBecomesHardToRead)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTextPrimary("#A8A8A8"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themed = ThemeLoader::hexToImVec4("#333337");
+    EXPECT_GE(ColorContrast::contrastRatio(scheme.textPrimary, scheme.button), ColorContrast::TEXT_CONTRAST_MIN);
+    EXPECT_GT(scheme.button.x, themed.x);                                                             // moved as far as it could...
+    EXPECT_LT(weakestButtonContrast(scheme.button, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN); // ...short of the floor
+}
+
+// ========== selectionPrimary: the marker of a multi-selection's primary row (#1926) ==========
+
+/// The test theme body with @p line added to its [ui.table] table.
+std::string withTableLine(std::string_view line)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view table = "[ui.table]\n";
+    const auto at = toml.find(table);
+    EXPECT_NE(at, std::string::npos);
+    toml.insert(at + table.size(), std::string(line) + "\n");
+    return toml;
+}
+
+/// The selection fill of a plain and of a striped row, opaque: what the marker is drawn on.
+std::array<ImVec4, 2> selectedRows(const ColorScheme& scheme)
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    return {
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBg, window)),
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBgAlt, window)),
+    };
+}
+
+// A theme without ui.table.selection_primary gets its focus colour (nav_highlight), moved toward its
+// text until it reaches 3:1 on the selected rows, opaque, keeping its hue.
+TEST(ThemeLoaderTest, SelectionPrimaryIsTheFocusColourRaisedToTheFloor)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    ASSERT_LT(ColorContrast::contrastRatio(scheme.navHighlight, selectedRows(scheme)[0]), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(scheme.selectionPrimary.w, 1.0F);
+    // Still blue (#0078D4 lightened toward the white text), not the text colour itself.
+    EXPECT_GT(scheme.selectionPrimary.z, scheme.selectionPrimary.x);
+    EXPECT_GT(scheme.selectionPrimary.x, scheme.navHighlight.x);
+}
+
+// A theme's own ui.table.selection_primary is used as it is when it already stands out...
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsKeptWhenItStandsOut)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#FFB900\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    expectColorNear(scheme.selectionPrimary, ThemeLoader::hexToImVec4("#FFB900"));
+}
+
+// ...and raised to the floor when it does not.
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsRaisedWhenTooFaint)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#3A3A3A\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    }
 }
 
 } // namespace

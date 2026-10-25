@@ -32,16 +32,19 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_BOLT "\xef\x83\xa7"                   // U+f0e7 - Lightning bolt (charging)
 #define ICON_FA_PLUG "\xef\x87\xa6"                   // U+f1e6 - Power plug (AC)
 #define ICON_FA_CHARGING_STATION "\xef\x97\xa7"       // U+f5e7 - Charging station
+#define ICON_FA_LEAF "\xef\x81\xac"                   // U+f06c - Leaf (efficiency core)
 
 // ============================================================================
 // Status & Info Icons
 // ============================================================================
+#define ICON_FA_CHECK "\xef\x80\x8c"                // U+f00c - Check mark (apply)
 #define ICON_FA_CIRCLE_CHECK "\xef\x81\x98"         // U+f058 - Check in circle
 #define ICON_FA_CIRCLE_EXCLAMATION "\xef\x81\xaa"   // U+f06a - Exclamation in circle
 #define ICON_FA_CIRCLE_INFO "\xef\x81\x9a"          // U+f05a - Info in circle
 #define ICON_FA_TRIANGLE_EXCLAMATION "\xef\x81\xb1" // U+f071 - Warning triangle
 #define ICON_FA_CIRCLE_QUESTION "\xef\x81\x99"      // U+f059 - Question in circle
 #define ICON_FA_LOCK "\xef\x80\xa3"                 // U+f023 - Lock (reduced privileges indicator)
+#define ICON_FA_SHIELD_HALVED "\xef\x8f\xad"        // U+f3ed - Half shield (an Administrator session, #2728)
 
 // ============================================================================
 // System & Hardware Icons
@@ -53,19 +56,21 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_NETWORK_WIRED "\xef\x9b\xbf"    // U+f6ff - Network
 #define ICON_FA_GAUGE_HIGH "\xef\x98\xa5"       // U+f625 - Performance gauge
 #define ICON_FA_TEMPERATURE_HALF "\xef\x8b\x89" // U+f2c9 - Temperature
+#define ICON_FA_BRAIN "\xef\x97\x9c"            // U+f5dc - NPU / compute accelerator (#1799)
 
 // ============================================================================
 // Process & Task Icons
 // ============================================================================
-#define ICON_FA_LIST "\xef\x80\xba"  // U+f03a - List
-#define ICON_FA_BARS "\xef\x83\x89"  // U+f0c9 - Menu bars
-#define ICON_FA_GEAR "\xef\x80\x93"  // U+f013 - Settings gear
-#define ICON_FA_GEARS "\xef\x82\x85" // U+f085 - Multiple gears
-#define ICON_FA_SKULL "\xef\x95\x8c" // U+f54c - Kill process
-#define ICON_FA_STOP "\xef\x81\x8d"  // U+f04d - Stop
-#define ICON_FA_PLAY "\xef\x81\x8b"  // U+f04b - Play/Resume
-#define ICON_FA_PAUSE "\xef\x81\x8c" // U+f04c - Pause/Suspend
-#define ICON_FA_XMARK "\xef\x80\x8d" // U+f00d - Close/Terminate
+#define ICON_FA_LIST "\xef\x80\xba"     // U+f03a - List
+#define ICON_FA_BARS "\xef\x83\x89"     // U+f0c9 - Menu bars
+#define ICON_FA_GEAR "\xef\x80\x93"     // U+f013 - Settings gear
+#define ICON_FA_GEARS "\xef\x82\x85"    // U+f085 - Multiple gears
+#define ICON_FA_SKULL "\xef\x95\x8c"    // U+f54c - Kill process
+#define ICON_FA_STOP "\xef\x81\x8d"     // U+f04d - Stop
+#define ICON_FA_PLAY "\xef\x81\x8b"     // U+f04b - Play/Resume
+#define ICON_FA_PAUSE "\xef\x81\x8c"    // U+f04c - Pause/Suspend
+#define ICON_FA_XMARK "\xef\x80\x8d"    // U+f00d - Close/Terminate
+#define ICON_FA_TERMINAL "\xef\x84\xa0" // U+f120 - Terminal (trace system calls)
 
 // ============================================================================
 // Arrow & Direction Icons
@@ -79,6 +84,8 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_SORT_DOWN "\xef\x83\x9d"   // U+f0dd - Sort descending
 #define ICON_FA_CARET_RIGHT "\xef\x83\x9a" // U+f0da - Collapsed tree node
 #define ICON_FA_CARET_DOWN "\xef\x83\x97"  // U+f0d7 - Expanded tree node
+#define ICON_FA_ANGLES_DOWN "\xef\x84\x83" // U+f103 - Expand all tree nodes
+#define ICON_FA_ANGLES_UP "\xef\x84\x82"   // U+f102 - Collapse all tree nodes
 
 // ============================================================================
 // UI & Display Icons
@@ -113,6 +120,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 #define ICON_FA_FILE "\xef\x85\x9b"        // U+f15b - File
 #define ICON_FA_FILE_PEN "\xef\x8c\x9c"    // U+f31c - File with pen (edit)
+#define ICON_FA_FLOPPY_DISK "\xef\x83\x87" // U+f0c7 - Floppy disk (save)
 #define ICON_FA_FOLDER "\xef\x81\xbb"      // U+f07b - Folder
 #define ICON_FA_FOLDER_OPEN "\xef\x81\xbc" // U+f07c - Open folder
 
@@ -131,6 +139,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 #define ICON_FA_COMPUTER "\xef\x84\x88"  // U+f108 - Desktop computer
 #define ICON_FA_DESKTOP "\xef\x84\x88"   // U+f108 - Desktop (alias)
+#define ICON_FA_TV "\xef\x89\xac"        // U+f26c - TV/monitor
 #define ICON_FA_ID_CARD "\xef\x8b\x82"   // U+f2c2 - ID card
 #define ICON_FA_FAN "\xef\xa1\xa3"       // U+f863 - Fan
 #define ICON_FA_VIDEO "\xef\x80\xbd"     // U+f03d - Video camera
@@ -138,6 +147,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_BLUETOOTH "\xef\x8a\x93" // U+f293 - Bluetooth
 #define ICON_FA_ETHERNET "\xef\x9e\x96"  // U+f796 - Ethernet plug
 #define ICON_FA_CLOUD "\xef\x83\x82"     // U+f0c2 - Cloud (for virtual/VPN)
+#define ICON_FA_SIGNAL "\xef\x80\x92"    // U+f012 - Signal bars (for mobile broadband)
 #define ICON_FA_HOUSE "\xef\x80\x95"     // U+f015 - House (for loopback)
 
 // ============================================================================

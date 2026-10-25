@@ -1,0 +1,8 @@
+22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro
+23 22 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+25 22 0:5 / /dev rw,nosuid,relatime shared:3 - devtmpfs udev rw,size=16243500k
+28 22 0:25 / /tmp rw,nosuid,nodev shared:6 - tmpfs tmpfs rw
+29 22 259:1 / /boot/efi rw,relatime shared:7 - vfat /dev/nvme0n1p1 rw,fmask=0077
+32 22 8:17 / /mnt/My\040Data rw,relatime shared:10 - ntfs3 /dev/sdb1 rw
+33 22 259:2 /srv/data /srv/bind rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+34 22 0:40 / /mnt/nas rw,relatime shared:11 master:3 - nfs4 nas:/export rw,vers=4.2

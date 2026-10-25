@@ -11,10 +11,12 @@
 // applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
 // rendering context.  The stubs here satisfy the linker without a context.
 
+#include "ColorSchemeFields.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -113,6 +115,47 @@ namespace
     s.cpuIowaitFill = fill(s.cpuIowait);
     s.cpuIdleFill = fill(s.cpuIdle);
     s.chartPeakLine = ImVec4(0.90F, 0.90F, 0.90F, 0.50F);
+    // The metric roles (#1196), each in its own colour as a theme draws them.
+    s.chartCpuTotal = s.chartCpu;
+    s.chartMemoryCached = line(0.70F, 0.95F, 0.75F);
+    s.chartMemoryShared = s.chartMemoryCached;
+    s.chartSwap = line(0.70F, 0.55F, 0.95F);
+    s.chartMemoryVirtual = s.chartSwap;
+    s.chartMemoryPrivate = line(0.45F, 0.80F, 0.60F);
+    s.chartMemorySwap = line(0.55F, 0.40F, 0.85F);
+    s.chartPower = line(0.95F, 0.90F, 0.40F);
+    s.chartBattery = line(0.35F, 0.80F, 0.75F);
+    s.chartThreads = line(0.95F, 0.50F, 0.75F);
+    s.chartHandles = line(0.70F, 0.72F, 0.75F);
+    s.chartPageFaults = line(0.65F, 0.68F, 0.98F);
+    s.chartGdi = line(0.40F, 0.80F, 0.60F);
+    s.chartMemoryCachedFill = fill(s.chartMemoryCached);
+    s.chartMemorySharedFill = fill(s.chartMemoryShared);
+    s.chartSwapFill = fill(s.chartSwap);
+    s.chartMemoryVirtualFill = fill(s.chartMemoryVirtual);
+    s.chartMemoryPrivateFill = fill(s.chartMemoryPrivate);
+    s.chartMemorySwapFill = fill(s.chartMemorySwap);
+    s.chartPowerFill = fill(s.chartPower);
+    s.chartBatteryFill = fill(s.chartBattery);
+    s.chartThreadsFill = fill(s.chartThreads);
+    s.chartHandlesFill = fill(s.chartHandles);
+    s.gpuPower = s.chartPower;
+    // The primary row's marker (#1926), in a colour nothing else uses, so a test can find its geometry.
+    s.selectionPrimary = line(1.00F, 0.20F, 0.80F);
+    // The N/A NowBars' hatch (#1935), likewise unique, so a test can tell an N/A bar from a measured 0.
+    s.unavailableHatch = line(0.10F, 0.95F, 0.95F);
+    // The Processes tree's guide lines (#838), likewise unique, so a test can find them.
+    s.treeLines = line(0.30F, 0.95F, 0.20F);
+    // Anything still unset -- chrome, GPU series, accents, a role added later -- is drawn in a visible
+    // grey rather than not at all; test_ThemeHeader.cpp holds every field to a non-zero alpha.
+    TestColorScheme::forEachColor(s,
+                                  [](ImVec4& c)
+                                  {
+                                      if (c.w <= 0.0F)
+                                      {
+                                          c = ImVec4(0.55F, 0.55F, 0.58F, 1.0F);
+                                      }
+                                  });
     return s;
 }
 
@@ -127,9 +170,38 @@ auto Theme::scheme() const -> const ColorScheme&
     return k_Scheme;
 }
 
+// Referenced by Process Details' Resources chart (Page Faults, GDI Objects), which
+// test_ProcessDetailsChartsRender.cpp runs headless. The same lookup as Theme.cpp's.
+auto Theme::accentColor(std::size_t index) const -> ImVec4
+{
+    return scheme().accents[index % accentCount()];
+}
+
 // Referenced by ChartWidgets.h's PlotFontGuard. No fonts are loaded here, so charts draw in the
 // context's default font, as the headless scenes want.
 auto Theme::chartFont() const -> ImFont*
+{
+    return nullptr;
+}
+
+// Referenced by UI/ChromeWidgets.h's sectionHeader(), which the Actions block and priority control
+// draw under test_ProcessActionConfirmPopup.cpp and test_ProcessPriorityViewRender.cpp. No fonts are
+// loaded here, so headers draw in the context's default font.
+auto Theme::boldFont() const -> ImFont*
+{
+    return nullptr;
+}
+
+// Referenced by App/AboutDialog.cpp's title (test_AboutDialogRender.cpp). No fonts are loaded here,
+// so the title draws in the context's default font.
+auto Theme::largeFont() const -> ImFont*
+{
+    return nullptr;
+}
+
+// Referenced by App/TitleBarView.cpp's wordmark (test_TitleBarViewRender.cpp). No fonts are loaded
+// here, so the wordmark draws in the context's default font.
+auto Theme::titleFont() const -> ImFont*
 {
     return nullptr;
 }
@@ -149,6 +221,28 @@ void Theme::setThemeById(std::string_view id)
 void Theme::setFontSize(FontSize size)
 {
     m_CurrentFontSize = size;
+}
+
+// One step up or down the sizes, as the real ones (Ctrl+= / Ctrl+- in ShellLayer, #1547); no fonts to rebuild.
+auto Theme::increaseFontSize() -> bool
+{
+    const auto next = static_cast<std::size_t>(m_CurrentFontSize) + 1;
+    if (next >= static_cast<std::size_t>(FontSize::Count))
+    {
+        return false;
+    }
+    setFontSize(static_cast<FontSize>(next));
+    return true;
+}
+
+auto Theme::decreaseFontSize() -> bool
+{
+    if (m_CurrentFontSize == FontSize::Small)
+    {
+        return false;
+    }
+    setFontSize(static_cast<FontSize>(static_cast<std::size_t>(m_CurrentFontSize) - 1));
+    return true;
 }
 
 // NOLINTEND(readability-convert-member-functions-to-static)

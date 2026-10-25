@@ -4,25 +4,27 @@ This directory contains TOML theme files that customize TaskSmack's appearance.
 
 ## Using Themes
 
-1. Select a theme from **Settings** → **Theme**.
-2. Click **Apply**.
+1. Select a theme from **Settings** (F2) → **Theme**.
+2. Click **Save**.
 
 ## Creating Custom Themes
 
 ### Quick Start
 
-1. Copy an existing theme file, such as `arctic-fire.toml`.
-2. Rename it, such as `my-theme.toml`.
+1. In **Settings**, click **Open Themes Folder**. It opens your user themes directory (below).
+2. Copy an existing theme file there, such as `arctic-fire.toml` from this directory, and rename it, such as
+   `my-theme.toml`.
 3. Edit the colors.
-4. Restart TaskSmack to load the new theme.
+4. Restart TaskSmack: themes are loaded only at startup.
 
 ### User Themes Directory
 
-You can also place theme files in your user config directory:
-- **Linux:** `~/.config/tasksmack/themes/`
+User themes live beside `config.toml`:
+- **Linux:** `$XDG_CONFIG_HOME/tasksmack/themes/` (usually `~/.config/tasksmack/themes/`)
 - **Windows:** `%APPDATA%/TaskSmack/themes/`
 
-User themes are loaded in addition to built-in themes.
+User themes are merged over the built-in themes by file name: a user theme with the same file name as a
+built-in one, such as `nord.toml`, replaces it.
 
 ## Theme File Structure
 
@@ -34,9 +36,11 @@ Themes are TOML files with the following sections:
 [meta]
 name = "My Theme"
 description = "A brief description"
-author = "Your Name"
-version = "1.0"
+author = "Your Name"   # optional, informational only
+version = "1.0"        # optional, informational only
 ```
+
+Without `name`, the theme is listed under its file name.
 
 ### `[accents]` - Chart and UI Accent Colors
 
@@ -56,15 +60,6 @@ colors = [
 ]
 ```
 
-### `[progress]` - Progress Bar Colors
-
-```toml
-[progress]
-low = "#00E676"       # 0-50% (healthy)
-medium = "#FFB300"    # 50-80% (caution)
-high = "#E53935"      # 80-100% (critical)
-```
-
 ### `[semantic]` - Text Colors
 
 ```toml
@@ -76,6 +71,9 @@ text_error = "#E53935"     # Error messages
 text_warning = "#FFB300"   # Warnings
 text_success = "#00E676"   # Success messages
 text_info = "#42A5F5"      # Info messages
+core_performance = "#FFB300" # CPU Cores P-core marker (fallback: text_warning)
+core_efficiency = "#00E676"  # CPU Cores E-core marker (fallback: text_success)
+core_low_power = "#999999"   # CPU Cores low-power E-core marker (fallback: text_muted)
 ```
 
 ### `[status]` - Process State Colors
@@ -108,6 +106,47 @@ net_rx = "#00E676"           # Network receive (RX) line color (fallback: memory
 net_rx_fill = "#00E6764D"    # Network receive (RX) fill       (fallback: net_rx with ~0.35 alpha)
 peak_line = "#FFD54FB3"      # Peak reference line (e.g., peak memory)
 ```
+
+#### Metric roles
+
+Every metric has its own colour, so no chart draws one metric in another's colour. Each role is
+optional: a theme without it keeps the colour the metric used to borrow, shown in the last column.
+The one exception is process Power, which used `semantic.text_info`: it now follows `power` like
+system Power, so it draws in `charts.cpu` unless `charts.power` is set.
+Each takes an optional `<role>_fill` too, except `cpu_total`, `page_faults` and `gdi`, which are drawn
+as lines only (CPU Total's fill is the User/System bands under it); without
+one, the fill is the line at about 35% alpha, or the borrowed fill when the line is borrowed as well.
+
+| Key | Drawn for | Without it |
+|-----|-----------|------------|
+| `cpu_total` | CPU Total, the line over the User/System bands | `cpu` |
+| `memory_cached` | Memory: Cached | `cpu` |
+| `memory_shared` | Process Memory: Shared | `memory_cached` |
+| `swap` | Memory: Swap | `io` |
+| `memory_virtual` | Process Memory: Virtual | `swap` |
+| `memory_private` | Process Memory: Private | `memory_shared` |
+| `memory_swap` | Process Memory: Swap | `swap` |
+| `power` | Power: system, process (use the same colour for `charts.gpu.power`) | `cpu` |
+| `battery` | Battery charge | `memory` |
+| `threads` | Threads | `cpu` |
+| `handles` | Handles / file descriptors | `memory` |
+| `page_faults` | Page faults per second | `accents.colors[3]` |
+| `gdi` | GDI objects (Windows) | `accents.colors[4]` |
+
+#### Colour families
+
+The bundled themes keep each metric in one family of colour, so a metric looks the same in every
+theme and on every screen, and a unit test holds them to it:
+
+- CPU blue; memory green; swap violet.
+- Disk read orange, disk write brown/olive (duller than read).
+- Network send amber, receive cyan/teal.
+- GPU utilisation magenta; power yellow, the same colour on every screen.
+- The other roles each keep a family too: battery teal, threads rose, page faults periwinkle, GDI
+  objects green-teal, and handles a neutral grey.
+- Severity reads green, amber, red: `text_success`, `text_warning` and `text_error` keep those hues, in that order.
+- The status colours (`text_error`, `text_warning`, `text_success`, `status.running`) are kept for
+  state and messages: no data series uses them, or a colour within CIEDE2000 10 of them.
 
 ### `[charts.gpu]` - GPU Metrics Colors
 
@@ -142,6 +181,14 @@ iowait_fill = "#FFB30059" # I/O wait fill
 idle_fill = "#80808033"   # Idle fill (20% alpha)
 ```
 
+### `[buttons.close]` - Title Bar Close Button
+
+```toml
+[buttons.close]
+hovered = "#CC1A1A"   # The custom title bar's close button under the mouse
+active = "#E63333"    # While it's pressed
+```
+
 ### `[buttons.success]` - Success Button Colors
 
 ```toml
@@ -163,10 +210,25 @@ hovered = "#CC1A1A"
 active = "#E63333"
 ```
 
+### `[process_meter]` - Processes Table Meter Colors
+
+```toml
+[process_meter]
+low = "#E5C07B26"   # A meter's colour at 0 (alpha included, so the cell's text stays readable)
+high = "#E060704D"  # Its colour at full scale; a bar in between blends the two
+```
+
+Optional. The Processes table's inline meters (Columns › Show meter) draw a bar behind a cell's text
+whose colour runs from `low` to `high` as the value rises. Without this section they use
+`semantic.text_warning` at up to 0.15 alpha and `semantic.text_error` at up to 0.30 alpha, made fainter where needed so `text_primary` keeps 4.5:1 on them over plain, striped and selected rows. If you set them, keep that contrast yourself.
+
 ### `[priority]` - Priority Badge Colors
 
 ```toml
 [priority]
+high   = "#E53935"            # Badge fill at the highest priority
+normal = "#00E676"            # Badge fill at normal priority
+low    = "#42A5F5"            # Badge fill at the lowest priority
 badge_text_color = "#FFFFFF"  # Preferred text color on priority indicator badges
 ```
 
@@ -194,8 +256,30 @@ The `[ui]` section contains colors for various UI elements:
 | `[ui.button]` | Standard buttons |
 | `[ui.header]` | Collapsible headers |
 | `[ui.separator]` | Separators |
+| `[ui.resize_grip]` | The window's resize grip |
 | `[ui.tab]` | Tab bars |
+| `[ui.docking]` | Docking preview and empty dock background |
+| `[ui.plot]` | ImGui plot widgets |
 | `[ui.table]` | Table elements |
+| `[ui.misc]` | Navigation highlight, drag-and-drop target, modal dimming, text selection |
+
+Checkboxes, text fields, combo boxes and radio buttons are drawn with a 1-pixel outline, because a
+frame fill close to the window colour leaves an unchecked checkbox looking like a plain label. The
+outline is `[ui.frame] border` if the theme sets one, otherwise `[ui.window] border`, and TaskSmack
+moves it toward `text_primary` just far enough to reach 3:1 contrast (WCAG 1.4.11 for a control's
+boundary) on the window, child and popup backgrounds. Set `border` under `[ui.frame]` only to pick
+the outline's hue; it can't make the outline fainter than that.
+
+Buttons keep `[ui.button]`'s colours when they already stand out: the fill at least 1.5:1 from the
+window, child and popup backgrounds, and `hovered` and `active` at least 1.1:1 from `normal`. A fill
+that doesn't is moved toward `text_primary` until it does, but never so far that `text_primary`, the
+button's label, drops below 4.5:1 on it. So a `normal` equal to `popup_background` still gives a
+dialog's OK and Cancel a visible shape.
+
+With several rows selected in the Processes table, the primary row -- the one Process Details shows --
+gets a bar at its left edge and an outline. Their colour is `[ui.table] selection_primary` if the theme
+sets one, otherwise `[ui.misc] nav_highlight`, moved toward `text_primary` just far enough to reach 3:1
+contrast on the selection fill (`[ui.header] normal`) of a plain and a striped row.
 
 ## Color Format
 
@@ -205,8 +289,8 @@ Colors use hex format:
 
 Alpha values:
 - `FF` = fully opaque (100%)
-- `80` = 50% transparent
-- `4D` = 30% transparent
+- `80` = 50% opacity
+- `4D` = 30% opacity
 - `00` = fully transparent
 
 ## Tips
@@ -246,13 +330,14 @@ Alpha values:
 
 **Theme doesn't appear in list:**
 - Check TOML syntax (use a TOML validator)
-- Ensure `[meta]` section has `name` field
 - Check file extension is `.toml`
+- Check it's in the user themes directory, and restart TaskSmack
+- A theme whose TOML doesn't parse is skipped; the log says "Failed to parse theme"
 
 **Colors look wrong:**
 - Verify hex color format (`#RRGGBB` or `#RRGGBBAA`)
 - Check alpha values if elements appear transparent
 
 **Theme resets after restart:**
-- Themes are applied via Settings → Apply
+- Pick the theme in Settings and click **Save**
 - Settings are saved to `config.toml`

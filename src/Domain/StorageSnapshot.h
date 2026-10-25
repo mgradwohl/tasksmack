@@ -46,7 +46,7 @@ struct DiskSnapshot
 /// Aggregate storage metrics across all devices.
 struct StorageSnapshot
 {
-    std::vector<DiskSnapshot> disks;
+    std::vector<DiskSnapshot> disks; // one per device name: a name the probe repeats is listed once (#1467)
 
     // System-wide totals
     double totalReadBytesPerSec = 0.0;

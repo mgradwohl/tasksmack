@@ -71,6 +71,7 @@ struct PowerCapabilities
     bool hasTechnology = false;
     bool hasCycleCount = false;
     bool hasHealthPercent = false;
+    bool hasDesignCapacity = false; // chargeDesignWh and chargeFullWh (#1523)
 };
 
 } // namespace Platform

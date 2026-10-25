@@ -36,7 +36,7 @@ namespace
 {
 
 // ========== Column Visibility Count Tests ==========
-// Tests for ProcessColumnSettings counting logic used by visibleColumnCount()
+// Tests for ProcessColumnSettings' default and toggled column visibility
 
 TEST(ProcessesPanelTest, ColumnSettingsDefaultVisibleCount)
 {

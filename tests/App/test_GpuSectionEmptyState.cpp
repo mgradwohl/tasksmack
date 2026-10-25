@@ -26,7 +26,6 @@ Platform::GPUCapabilities allSensorsProbe()
 {
     Platform::GPUCapabilities probe;
     probe.hasTemperature = true;
-    probe.hasHotspotTemp = true;
     probe.hasPowerMetrics = true;
     probe.hasClockSpeeds = true;
     probe.hasFanSpeed = true;
@@ -53,7 +52,6 @@ TEST(GpuSectionCapabilitiesTest, AnAdapterWithoutSensorsGetsNoSensorSeries)
     const auto withoutSensors = GpuSection::capabilitiesForGpu(allSensorsProbe(), Platform::GPUCapabilities{});
 
     EXPECT_FALSE(withoutSensors.hasTemperature);
-    EXPECT_FALSE(withoutSensors.hasHotspotTemp);
     EXPECT_FALSE(withoutSensors.hasPowerMetrics);
     EXPECT_FALSE(withoutSensors.hasClockSpeeds);
     EXPECT_FALSE(withoutSensors.hasFanSpeed);

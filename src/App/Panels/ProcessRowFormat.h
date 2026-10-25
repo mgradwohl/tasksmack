@@ -3,7 +3,7 @@
 // Pure per-row formatting logic extracted from ProcessesPanel (perf-plan #843 phase 3b), so it
 // can be unit-tested directly instead of only indirectly through a live ImGui context. See
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern (also used by
-// ProcessTreeFlatten.h, AdaptiveIntervalUtils.h, TitleBarGeometry.h). buildRowFormatCache() makes
+// ProcessTreeFlatten.h, TitleBarGeometry.h). buildRowFormatCache() makes
 // no ImGui calls at all -- it only formats strings from a ProcessSnapshot -- so there is no
 // live-context blocker to extracting and testing it directly.
 
@@ -17,6 +17,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace App::ProcessRowFormat
 {
@@ -122,12 +123,21 @@ inline constexpr const char* UNREADABLE_CELL_REASON =
 /// data (#1210): a gap in one sample, not a lack of support.
 inline constexpr const char* GPU_READ_FAILED_CELL_REASON = "Not available: reading per-process GPU data failed for this sample.";
 
-/// Tooltip of a GPU cell of a process that started since per-process GPU data was last read, while
-/// those reads are throttled (#1210): its GPU figures have not been read yet.
+/// Tooltip of a GPU cell of a process that started since per-process GPU data was last read by the
+/// GPU sampler (#1210, #1417): its GPU figures have not been read yet.
 inline constexpr const char* GPU_NOT_READ_YET_CELL_REASON = "Not available yet: this process started since GPU usage was last read.";
 
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
 inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
+
+/// Tooltip of a Private cell where the probe doesn't fill it (#1879): on Windows a process's private
+/// bytes are its commit charge, which the Virtual column already shows.
+inline constexpr const char* PRIVATE_UNSUPPORTED_CELL_REASON = "Private bytes on Windows are the commit size, shown in the Virtual column.";
+
+/// Tooltip of a Swap cell where the probe has no per-process swap figure (#1879): Windows pages a
+/// process's memory out to the pagefile but doesn't count how much of each process is there.
+inline constexpr const char* SWAP_UNSUPPORTED_CELL_REASON =
+    "Not available on this system: Windows doesn't count how much of each process is in the pagefile.";
 
 /// Which optional fields the process probe can fill (Platform::ProcessCapabilities). A column it
 /// cannot reads UNAVAILABLE_CELL_TEXT on every row, rather than a column of zeros that reads like a
@@ -136,6 +146,8 @@ struct RowFormatOptions
 {
     bool hasPowerUsage = true;
     bool hasSharedMemory = true;
+    bool hasPrivateBytes = true;
+    bool hasSwapBytes = true;
     bool hasIoCounters = true;
     bool hasNetworkCounters = true;
     bool hasThreadCount = true;
@@ -146,10 +158,24 @@ struct RowFormatOptions
     bool hasPerProcessGpu = true;            ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
     bool hasPerProcessGpuUtilization = true; ///< Platform::GPUCapabilities::hasPerProcessUtilization (#1210)
     bool gpuReadFailed = false;              ///< Supported, but this generation's per-process GPU read failed (#1210)
+    /// Per-process NPU data on a system with an NPU or compute accelerator (#1799, #1827): the NPU columns.
+    /// NPU % needs hasPerProcessNpuUtilization too; their read is the GPU's, so gpuReadFailed covers them.
+    bool hasPerProcessNpu = true;
+    bool hasPerProcessNpuUtilization = true; ///< Platform::perProcessNpuUtilizationSupported() (#1827)
     bool hasStatus = true;
     bool hasPublisher = true;
+    bool hasContainer = true;
+    bool hasServices = true; ///< The Services column (#1880): ProcessCapabilities::hasServices
     bool hasProcessType = true;
+    bool hasArchitecture = true; // #2394
 };
+
+/// The first line of a Services cell's tooltip (#1880), above the names one per line: "1 service",
+/// "3 services".
+[[nodiscard]] inline std::string servicesTooltipHeading(std::size_t count)
+{
+    return std::to_string(count) + (count == 1 ? " service" : " services");
+}
 
 /// A cell with no value: UNAVAILABLE_CELL_TEXT, with `reason` (a string literal) as its tooltip.
 [[nodiscard]] inline AlignedCellText unavailableCell(const char* reason)
@@ -234,19 +260,21 @@ template<std::integral T> [[nodiscard]] inline AlignedCellText countCell(T value
     return cell;
 }
 
-[[nodiscard]] inline std::string formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit)
+/// @p engines comma-joined ("3D, Compute"), as the GPU Engine and NPU Engine cells show them; empty for none.
+[[nodiscard]] inline std::string joinEngines(const std::vector<std::string>& engines)
 {
-    return alignedBytesCell(bytes, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedBytesPerSecString(double bytesPerSec, UI::Format::ByteUnit unit)
-{
-    return alignedBytesPerSecCell(bytesPerSec, unit).text;
-}
-
-[[nodiscard]] inline std::string formatAlignedPowerString(double watts)
-{
-    return alignedPowerCell(watts).text;
+    std::string joined;
+    std::size_t i = 0;
+    while (i < engines.size())
+    {
+        if (i > 0)
+        {
+            joined += ", ";
+        }
+        joined += engines[i];
+        ++i;
+    }
+    return joined;
 }
 
 /// Cache of pre-formatted strings for one process row, keyed externally by uniqueKey (see
@@ -263,6 +291,10 @@ struct RowFormatCache
     // storing it as an integer keeps a caller-supplied address from escaping into this long-lived
     // map (CodeQL cpp/stack-address-escape, see #904). Also keeps this header ImGui-free.
     std::uintptr_t fontId = 0;
+    // The process this entry was built for (#2115). The map is keyed by uniqueKey, a hash of these two
+    // that can collide, so an entry is reused only for the exact process: never another one's cells.
+    std::int32_t pid = 0;
+    std::uint64_t startTimeTicks = 0;
 
     AlignedCellText ppid;       // formatId(parentPid)          — immutable
     AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
@@ -273,6 +305,8 @@ struct RowFormatCache
     AlignedCellText resident;   // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText peakRss;    // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText shared;     // pre-formatted to avoid per-frame decimal alignment work
+    AlignedCellText privateMem; // pre-formatted to avoid per-frame decimal alignment work (#1885)
+    AlignedCellText swap;       // pre-formatted to avoid per-frame decimal alignment work (#1885)
     AlignedCellText ioRead;     // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText netSent;    // pre-formatted to avoid per-frame decimal alignment work
@@ -281,6 +315,9 @@ struct RowFormatCache
     AlignedCellText gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
     std::string gpuEngines;     // comma-joined engine list, empty for none; avoids per-frame string joins
+    AlignedCellText npuPercent; // The NPU columns' (#1799), as the GPU ones above
+    AlignedCellText npuMemory;
+    std::string npuEngines;
     AlignedCellText threads;    // countCell(threadCount), or unavailable
     AlignedCellText handles;    // countCell(handleCount), or unavailable
     AlignedCellText pageFaults; // countCell(pageFaults), or unavailable
@@ -295,17 +332,25 @@ struct RowFormatCache
     LazyTextWidth commandWidth;
     LazyTextWidth gpuEnginesWidth; // of gpuEngines above
     LazyTextWidth gpuDevicesWidth;
+    LazyTextWidth npuEnginesWidth; // of npuEngines above
     LazyTextWidth publisherWidth;
+    LazyTextWidth containerWidth;
+    LazyTextWidth servicesWidth; // of the snapshot's services text
     LazyTextWidth processTypeWidth;
+    LazyTextWidth architectureWidth; // #2394
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
     // where it cannot, the cell is the unavailable dash rather than blank. Copied from the
     // RowFormatOptions the entry was built with, so the cell renderers need no capabilities.
     bool statusSupported = true;
     bool publisherSupported = true;
+    bool containerSupported = true;
+    bool servicesSupported = true;
     bool processTypeSupported = true;
-    bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
-    bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
+    bool architectureSupported = true; // #2394
+    bool gpuSupported = true;          // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
+    bool npuSupported = true;          // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
+    bool gpuReadFailed = false;        // Supported, but this generation's per-process GPU read failed (#1210)
     // Why this row's GPU figures are not readings although the system has them -- a failed read, or a
     // process the last GPU read did not see -- or null when they are (#1210).
     const char* gpuUnreadReason = nullptr;
@@ -327,10 +372,16 @@ struct RowFormatCache
     RowFormatCache fmt;
     fmt.statusSupported = options.hasStatus;
     fmt.publisherSupported = options.hasPublisher;
+    fmt.containerSupported = options.hasContainer;
+    fmt.servicesSupported = options.hasServices;
     fmt.processTypeSupported = options.hasProcessType;
+    fmt.architectureSupported = options.hasArchitecture;
     fmt.gpuSupported = options.hasPerProcessGpu;
+    fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
-    if (options.hasPerProcessGpu)
+    // One read for the GPU and NPU figures: why it has none applies to the NPU cells too, also where only
+    // the NPU's per-process data is supported (#1827).
+    if (options.hasPerProcessGpu || options.hasPerProcessNpu)
     {
         if (options.gpuReadFailed)
         {
@@ -358,6 +409,8 @@ struct RowFormatCache
     // Not gated on ProcessCapabilities::hasPeakRss: where the OS has no peak, the model tracks one.
     fmt.peakRss = bytesCell(proc.peakMemoryBytes);
     fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.privateMem = options.hasPrivateBytes ? bytesCell(proc.privateBytes) : unavailableCell(PRIVATE_UNSUPPORTED_CELL_REASON);
+    fmt.swap = options.hasSwapBytes ? bytesCell(proc.swapBytes) : unavailableCell(SWAP_UNSUPPORTED_CELL_REASON);
     // An idle rate is a measured "0.0 B/s"; one the probe could not read is unavailable (#1110) --
     // without root, every other user's process used to look as idle as a process that was.
     const auto rateCell = [](bool supported, bool available, double bytesPerSec) -> AlignedCellText
@@ -407,14 +460,32 @@ struct RowFormatCache
         fmt.gpuMemory = (fmt.gpuUnreadReason != nullptr) ? unavailableCell(fmt.gpuUnreadReason) : bytesCell(proc.gpuMemoryBytes);
     }
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
-    for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
+    fmt.gpuEngines = joinEngines(proc.gpuEngines);
+    // The NPU columns (#1799) as the GPU ones: their figures are read with the GPU's, so a failed or
+    // missing GPU read leaves them unread too. Without an NPU or compute accelerator they are not
+    // available on this system.
+    if (!(fmt.npuSupported && options.hasPerProcessNpuUtilization))
     {
-        if (i > 0)
-        {
-            fmt.gpuEngines += ", ";
-        }
-        fmt.gpuEngines += proc.gpuEngines[i];
+        fmt.npuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
     }
+    else if (fmt.gpuUnreadReason != nullptr)
+    {
+        fmt.npuPercent = unavailableCell(fmt.gpuUnreadReason);
+    }
+    else
+    {
+        fmt.npuPercent = withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.npuUtilPercent)),
+                                      readsAsZeroAtOneDecimal(proc.npuUtilPercent));
+    }
+    if (!fmt.npuSupported)
+    {
+        fmt.npuMemory = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.npuMemory = (fmt.gpuUnreadReason != nullptr) ? unavailableCell(fmt.gpuUnreadReason) : bytesCell(proc.npuMemoryBytes);
+    }
+    fmt.npuEngines = joinEngines(proc.npuEngines);
     // A running process has at least one thread, so a count of 0 is one that was not read.
     if (!options.hasThreadCount)
     {
@@ -457,8 +528,10 @@ struct RowFormatCache
 }
 
 /// Get-or-build one row's cache entry: reuses it as-is if it was already built for this exact
-/// `generation`/`fontId`, otherwise (re)builds it from `proc` via buildRowFormatCache() and
-/// stamps the new generation/fontId. ImGui-free (only touches the map and calls
+/// process (pid and start time), `generation` and `fontId`, otherwise (re)builds it from `proc` via
+/// buildRowFormatCache() and stamps the new process, generation and fontId. Two live processes whose
+/// uniqueKey collides share one entry, so each rebuilds it for itself rather than showing the other's
+/// cells (#2115); the returned reference is valid until the next call. ImGui-free (only touches the map and calls
 /// buildRowFormatCache()) so the lazy-invalidation policy itself -- not just the formatting it
 /// produces -- is directly unit-testable, separate from renderProcessRow()'s live ImGui context.
 inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t, RowFormatCache>& cache,
@@ -474,11 +547,14 @@ inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t
     // whatever the caller happens to seed its generation counter and font identity with.
     const auto [it, inserted] = cache.try_emplace(proc.uniqueKey);
     RowFormatCache& entry = it->second;
-    if (inserted || entry.generation != generation || entry.fontId != fontId)
+    if (inserted || entry.generation != generation || entry.fontId != fontId || entry.pid != proc.pid ||
+        entry.startTimeTicks != proc.startTimeTicks)
     {
         entry = buildRowFormatCache(proc, options);
         entry.generation = generation;
         entry.fontId = fontId;
+        entry.pid = proc.pid;
+        entry.startTimeTicks = proc.startTimeTicks;
     }
     return entry;
 }

@@ -386,6 +386,63 @@ class NormalGeometryTracker
     return primaryIndex < displays.size() ? primaryIndex : 0;
 }
 
+/// The size to put back after SDL_SetWindowMinimumSize() (#1777), or std::nullopt to leave the
+/// window alone.
+///
+/// SDL_SetWindowMinimumSize() ends by resizing the window to SDL's saved floating size. On native
+/// Wayland SDL does not update that size while the compositor tiles the window (a tiling compositor,
+/// or a half-screen snap), so the call would shrink a tiled window back to its creation size inside
+/// its tile. Putting back @p current -- grown to the new minimum where it is smaller -- keeps the size
+/// the compositor gave. A maximized or fullscreen window is never resized by SDL, and a size that is
+/// not known (not positive) is not restored.
+[[nodiscard]] constexpr std::optional<std::pair<int, int>>
+sizeAfterMinimumChange(std::pair<int, int> current, int minimumWidth, int minimumHeight, bool maximizedOrFullscreen) noexcept
+{
+    if (maximizedOrFullscreen || current.first <= 0 || current.second <= 0)
+    {
+        return std::nullopt;
+    }
+    return std::pair{std::max(current.first, minimumWidth), std::max(current.second, minimumHeight)};
+}
+
+/// How Window::setMinimumSize() treats a window smaller than the new minimum (#1945).
+enum class MinimumSizeChange : std::uint8_t
+{
+    /// Grow the window to the minimum, as SDL_SetWindowMinimumSize() does: the first minimum, or one
+    /// moved by the font size, the display scale or the display -- nothing the user sized yet.
+    AllowGrow,
+    /// Keep the window's size (minimumKeepingSize()): the minimum moved only because the content on
+    /// show was re-measured (a tab switch), which must not resize the window.
+    KeepSize,
+};
+
+/// The minimum size to hand SDL for the minimum the app wants, @p wanted, so that setting it does
+/// not resize the window (MinimumSizeChange::KeepSize, #1945).
+///
+/// SDL_SetWindowMinimumSize() grows a window that is smaller than the new minimum. Part of the app's
+/// minimum is the tallest first chart a tab has measured, so it rises when a tab is first shown,
+/// and the window would jump to it and never shrink back. Instead, each side takes the wanted
+/// minimum only once the window is at least that big; until then it is the size the window had (@p applied, never more than
+/// @p normalSize), so the user can grow the window but not shrink it further, and once it reaches the
+/// wanted minimum that minimum holds from then on. Pass @p applied = @p wanted when the wanted
+/// minimum has just changed, and the minimum last handed to SDL when the window has been resized.
+///
+/// @param normalSize  The window's normal (restored) size; a side that is not known (not positive)
+///                    takes the wanted minimum, as before.
+[[nodiscard]] constexpr std::pair<int, int>
+minimumKeepingSize(std::pair<int, int> wanted, std::pair<int, int> normalSize, std::pair<int, int> applied) noexcept
+{
+    const auto side = [](const int wantedSide, const int size, const int appliedSide)
+    {
+        if (size <= 0 || size >= wantedSide)
+        {
+            return wantedSide;
+        }
+        return std::max(std::min(appliedSide, size), 0);
+    };
+    return std::pair{side(wanted.first, normalSize.first, applied.first), side(wanted.second, normalSize.second, applied.second)};
+}
+
 /// Largest window scale (window units per 96-DPI point) accepted from a saved config. Windows tops
 /// out at 500 %; anything far beyond that is a corrupt value, not a display.
 inline constexpr float MAX_WINDOW_SCALE = 16.0F;
@@ -496,6 +553,25 @@ inline constexpr float MAX_WINDOW_SCALE = 16.0F;
     centred.x = primary.x + ((primary.width - centred.width) / 2);
     centred.y = primary.y + ((primary.height - centred.height) / 2);
     return centred;
+}
+
+/// @p rect moved, by as little as it takes, to lie wholly inside @p display, and shrunk first to fit
+/// it. For a window with no saved position (#2735): the system placed it at its created size, and a
+/// first launch must not open partly off the display or under the taskbar.
+[[nodiscard]] constexpr auto moveInside(const Rect& rect, const Rect& display) -> Rect
+{
+    const auto clampAxis = [](int pos, int length, int start, int span)
+    {
+        const std::int64_t lo = start;
+        const std::int64_t hi = static_cast<std::int64_t>(start) + span - length; // >= lo: length <= span
+        return static_cast<int>(std::clamp<std::int64_t>(pos, lo, hi));
+    };
+    Rect inside = rect;
+    inside.width = std::min(rect.width, display.width);
+    inside.height = std::min(rect.height, display.height);
+    inside.x = clampAxis(rect.x, inside.width, display.x, display.width);
+    inside.y = clampAxis(rect.y, inside.height, display.y, display.height);
+    return inside;
 }
 
 } // namespace Core::WindowGeometry

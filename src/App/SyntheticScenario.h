@@ -20,6 +20,7 @@
 //   refresh=MS    refresh interval to start at, instead of the configured one
 // The history and refresh overrides apply to this run only; the config file is not changed.
 
+#include "Core/EnvUtils.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
@@ -27,8 +28,15 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
 
 #include <chrono>
@@ -43,6 +51,7 @@ namespace App::Synthetic
 {
 
 inline constexpr std::string_view ENV_VAR = "TASKSMACK_SYNTHETIC";
+static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#2170)
 
 struct ScenarioConfig
 {
@@ -100,6 +109,23 @@ class Scenario
 
 [[nodiscard]] std::unique_ptr<Platform::IProcessProbe> makeProcessProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* scenario);
+/// The opt-in UDP collector (#1492): none with a scenario (synthetic processes send no real UDP), else
+/// the platform's (null on Linux).
+[[nodiscard]] std::shared_ptr<Platform::IUdpTrafficCollector> makeUdpTrafficCollector(const Scenario* scenario);
+/// With a scenario, a source with no icons: synthetic PIDs are not real processes, and some may be the
+/// PIDs of real ones, whose icons must not be shown for them (#1800).
+[[nodiscard]] std::unique_ptr<Platform::IProcessIconSource> makeProcessIconSource(const Scenario* scenario);
+/// With a scenario, a reader that reports no environment support: synthetic PIDs are not real
+/// processes, and some may be the PIDs of real ones whose environment must not be shown for them.
+[[nodiscard]] std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no connections support, for the same reason (#799).
+[[nodiscard]] std::unique_ptr<Platform::IProcessConnectionsReader> makeProcessConnectionsReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no modules support, for the same reason (#802).
+[[nodiscard]] std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no open-files support, for the same reason (#183).
+[[nodiscard]] std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no security support, for the same reason (#1526).
+[[nodiscard]] std::unique_ptr<Platform::IProcessSecurityReader> makeProcessSecurityReader(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IPowerProbe> makePowerProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IDiskProbe> makeDiskProbe(const Scenario* scenario);

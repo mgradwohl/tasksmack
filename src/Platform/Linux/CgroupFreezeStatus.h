@@ -109,12 +109,9 @@ namespace Detail
                 return true;
             }
         }
-        else if (Detail::hasController(controllers, "freezer"))
+        else if (Detail::hasController(controllers, "freezer") && Detail::isV1CgroupFrozen(cgroupRoot, relativePath))
         {
-            if (Detail::isV1CgroupFrozen(cgroupRoot, relativePath))
-            {
-                return true;
-            }
+            return true;
         }
     }
     return false;

@@ -1,7 +1,16 @@
 #include "WindowsProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/CpuAffinity.h"
+#include "Platform/IProcessActions.h"
+#include "WindowsAffinityMath.h"
+#include "WindowsFolderPicker.h"
+#include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
 #include "WindowsProcessActionsMath.h"
+#include "WindowsProcessDump.h"
+#include "WindowsProcessDumpMath.h"
+#include "WindowsProcessIdentity.h"
 
 #include <spdlog/spdlog.h>
 
@@ -15,84 +24,83 @@
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
 // clang-format on
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <expected>
+#include <filesystem>
 #include <format>
-#include <memory>
+#include <optional>
+#include <stop_token>
 #include <string>
-#include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
+
+// TaskSmackHelper.exe builds this file with TASKSMACK_NO_PROCESS_DUMPS (CMakeLists.txt, #2557): the
+// helper never serves a dump or a folder dialog, so the dump writer (dbghelp.dll) and the COM folder
+// picker, which loads shell extensions in-process, stay out of the elevated image. There the three dump
+// members are IProcessActions' defaults, which refuse as unsupported.
+#ifdef TASKSMACK_NO_PROCESS_DUMPS
+constexpr bool HAS_DUMPS = false;
+#else
+constexpr bool HAS_DUMPS = true;
+#endif
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
 
-struct HandleCloser
-{
-    void operator()(HANDLE handle) const noexcept
-    {
-        CloseHandle(handle);
-    }
-};
-using UniqueProcessHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, HandleCloser>;
-
 /// A process handle that has passed the identity check, or the reason there is none.
 struct VerifiedProcess
 {
-    UniqueProcessHandle handle;
+    Windows::InjectableHandle handle;
     ProcessActionResult result;
 };
 
-/// Open `target` with `access` and confirm it is the process the target names.
-///
-/// The creation time is read from the opened handle, not looked up by PID, and the handle pins the
-/// process object until it is closed: so the process checked is the process acted on, with no
-/// window for the PID to be reused in between. GetProcessTimes reports the same creation time the
-/// probe reads from SYSTEM_PROCESS_INFORMATION::CreateTime, in the same 100ns FILETIME units.
+/// Open `target` with `access` and confirm it is the process the target names, through
+/// Windows::openProcessVerified() (the check every reader shares, #2149), and say why not.
 ///
 /// @param describeOpenFailure  Turns an OpenProcess error code into the message to show.
 template<typename DescribeOpenFailure>
-[[nodiscard]] VerifiedProcess openVerified(const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
+[[nodiscard]] VerifiedProcess
+openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
 {
-    if (target.pid <= 0)
+    // Closed with the real CloseHandle: this seam's fakes hand out real handles.
+    auto opened = Windows::openProcessVerified(
+        {.openProcess = fns.openProcess, .getProcessTimes = fns.getProcessTimes, .closeHandle = &::CloseHandle}, target, access);
+    if (opened)
     {
-        return {.handle = nullptr, .result = ProcessActionResult::error("Invalid PID")};
-    }
-    if (target.startTimeTicks == 0)
-    {
-        return {.handle = nullptr, .result = checkProcessIdentity(target, 0)};
-    }
-
-    // Note: Windows APIs require DWORD for PIDs; explicit cast from a positive int32_t is safe.
-    UniqueProcessHandle handle(OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
-    if (!handle)
-    {
-        return {.handle = nullptr, .result = ProcessActionResult::error(describeOpenFailure(GetLastError()))};
+        return {.handle = std::move(*opened), .result = ProcessActionResult::ok()};
     }
 
-    FILETIME creation{};
-    FILETIME exitTime{};
-    FILETIME kernelTime{};
-    FILETIME userTime{};
-    if (GetProcessTimes(handle.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
+    const Windows::IdentityFailure failure = opened.error();
+    switch (failure.kind)
     {
-        return {
-            .handle = nullptr,
-            .result = ProcessActionResult::error(
-                std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, GetLastError())),
-        };
+    case Windows::IdentityFailureKind::InvalidPid:
+        return {.handle = {}, .result = ProcessActionResult::error("Invalid PID")};
+    case Windows::IdentityFailureKind::IdentityUnknown:
+    case Windows::IdentityFailureKind::Mismatch:
+        // The start time this PID's process has is not the target's (or the target's is unknown):
+        // checkProcessIdentity() words both, given any time other than the target's.
+        return {.handle = {}, .result = checkProcessIdentity(target, 0)};
+    case Windows::IdentityFailureKind::AccessDenied:
+    case Windows::IdentityFailureKind::ProcessGone:
+    case Windows::IdentityFailureKind::OpenFailed:
+        return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(failure.win32Error))};
+    case Windows::IdentityFailureKind::Exited:
+        return {.handle = {}, .result = ProcessActionResult::error(std::format("Process {} has exited; action not sent", target.pid))};
+    case Windows::IdentityFailureKind::TimesFailed:
+        break;
     }
-    const std::uint64_t actualTicks =
-        (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(creation.dwLowDateTime);
-
-    ProcessActionResult identity = checkProcessIdentity(target, actualTicks);
-    if (!identity.success)
-    {
-        return {.handle = nullptr, .result = std::move(identity)};
-    }
-    return {.handle = std::move(handle), .result = ProcessActionResult::ok()};
+    return {
+        .handle = {},
+        .result = ProcessActionResult::error(
+            std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, failure.win32Error)),
+    };
 }
 
 /// EnumWindows state for Terminate: the process whose windows to close, and how many were asked.
@@ -126,16 +134,264 @@ BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
     return TRUE;
 }
 
+std::vector<std::uint32_t> realReadGroupSizes()
+{
+    const WORD groups = GetMaximumProcessorGroupCount();
+    std::vector<std::uint32_t> sizes;
+    sizes.reserve(groups);
+    WORD group = 0;
+    while (group < groups)
+    {
+        sizes.push_back(GetMaximumProcessorCount(group));
+        ++group;
+    }
+    return sizes;
+}
+
+std::vector<ProcessorCoreRecord> realReadCores()
+{
+    DWORD length = 0;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> buffer(length);
+    if (GetLogicalProcessorInformationEx(
+            RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) == FALSE)
+    {
+        return {};
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+    std::vector<ProcessorCoreRecord> cores;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        // Copied out rather than cast in place, as WindowsSystemProbe does: records are variable-sized.
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Relationship selects the union member
+        if (record.Relationship == RelationProcessorCore && record.Processor.GroupCount > 0)
+        {
+            // A core's processors are in one group, so its first GroupMask is all of them.
+            cores.push_back({.group = record.Processor.GroupMask[0].Group,
+                             .mask = static_cast<std::uint64_t>(record.Processor.GroupMask[0].Mask),
+                             .efficiencyClass = record.Processor.EfficiencyClass});
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+    return cores;
+}
+
+std::vector<CpuSetRecord> realReadCpuSets()
+{
+    ULONG length = 0;
+    if (GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> buffer(length);
+    if (GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), length, &length, GetCurrentProcess(), 0) ==
+        FALSE)
+    {
+        return {};
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+    std::vector<CpuSetRecord> sets;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_CPU_SET_INFORMATION, CpuSet);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        SYSTEM_CPU_SET_INFORMATION record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Type selects the union member
+        if (record.Type == CpuSetInformation)
+        {
+            sets.push_back(
+                {.id = record.CpuSet.Id, .group = record.CpuSet.Group, .logicalProcessorIndex = record.CpuSet.LogicalProcessorIndex});
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+    return sets;
+}
+
+/// Whether `process` is protected (PPL or PP), through the seam; false when that can't be read.
+[[nodiscard]] bool isProtected(const WindowsProcessFunctions& fns, HANDLE process)
+{
+    if (fns.getProcessInformation == nullptr)
+    {
+        return false;
+    }
+    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
+    if (fns.getProcessInformation(process, ProcessProtectionLevelInfo, &protection, sizeof(protection)) == 0)
+    {
+        return false;
+    }
+    return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
+}
+
+/// Whether `pid`'s process is protected, to word a refused open: a protected process still lets
+/// anyone open it for a limited query. Not identity-checked, since it decides no action, only how one
+/// Windows already refused is explained.
+[[nodiscard]] bool isProtectedPid(const WindowsProcessFunctions& fns, std::int32_t pid)
+{
+    if (fns.openProcess == nullptr)
+    {
+        return false;
+    }
+    const Windows::UniqueHandle process(fns.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+    return process && isProtected(fns, process.get());
+}
+
+/// openVerified() for an action an administrator can do (#2602): an access-denied open is
+/// permissionDenied, so BrokeredProcessActions retries it through a running elevated helper, or the UI
+/// offers "Retry as administrator". Not for a protected process, which Windows refuses even an
+/// administrator: that refusal is a plain error, worded by @p describeOpenFailure.
+///
+/// @param describeOpenFailure  (DWORD error, bool isProtected) -> std::string: the message to show for
+///                             an OpenProcess error; isProtected only ever true with ERROR_ACCESS_DENIED.
+template<typename DescribeOpenFailure>
+[[nodiscard]] VerifiedProcess
+openForAction(const WindowsProcessFunctions& fns, const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
+{
+    bool retryable = false;
+    VerifiedProcess process = openVerified(fns,
+                                           target,
+                                           access,
+                                           [&fns, &target, &retryable, &describeOpenFailure](DWORD error)
+                                           {
+                                               const bool isProtected = error == ERROR_ACCESS_DENIED && isProtectedPid(fns, target.pid);
+                                               retryable = error == ERROR_ACCESS_DENIED && !isProtected;
+                                               return describeOpenFailure(error, isProtected);
+                                           });
+    process.result.permissionDenied = !process.result.success && retryable;
+    return process;
+}
+
+/// The failure, logged, of @p action's Win32 call on the verified @p process with @p error (#2602):
+/// ERROR_ACCESS_DENIED is permissionDenied, which running as administrator could cure, unless the process
+/// is protected, which refuses an administrator too; any other error is a plain error, @p otherMessage.
+[[nodiscard]] ProcessActionResult callFailure(const WindowsProcessFunctions& fns,
+                                              HANDLE process,
+                                              const ProcessTarget& target,
+                                              GuardedAction action,
+                                              DWORD error,
+                                              std::string otherMessage)
+{
+    ProcessActionResult result = ProcessActionResult::error(std::move(otherMessage));
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        result = isProtected(fns, process) ? ProcessActionResult::error(protectedProcessRefusal(target.pid, action))
+                                           : ProcessActionResult::denied(accessDeniedMessage(target.pid, action));
+    }
+    spdlog::warn("{}", result.errorMessage);
+    return result;
+}
+
+/// The refusal for PID 4, the System process (#2556), logged, or nullopt for any other PID.
+[[nodiscard]] std::optional<ProcessActionResult> systemPidResult(const ProcessTarget& target, GuardedAction action)
+{
+    std::string refusal = systemPidRefusal(target.pid, action);
+    if (refusal.empty())
+    {
+        return std::nullopt;
+    }
+    spdlog::warn("{}", refusal);
+    return ProcessActionResult::error(std::move(refusal));
+}
+
+/// Why `action` must not reach the verified `process` (#2556), logged, or nullopt: a protected process
+/// is never ended or suspended, and a critical one (or one whose criticality can't be read) never
+/// ended, suspended, re-prioritised or re-pinned. Errors, not permissionDenied: no administrator
+/// password makes them safe.
+[[nodiscard]] std::optional<ProcessActionResult>
+guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTarget& target, GuardedAction action)
+{
+    std::string refusal;
+    BOOL critical = FALSE;
+    if ((action == GuardedAction::End || action == GuardedAction::Suspend) && isProtected(fns, process))
+    {
+        refusal = protectedProcessRefusal(target.pid, action);
+    }
+    else if (fns.isProcessCritical == nullptr)
+    {
+        refusal = criticalCheckFailure(target.pid, ERROR_CALL_NOT_IMPLEMENTED);
+    }
+    else if (fns.isProcessCritical(process, &critical) == 0)
+    {
+        refusal = criticalCheckFailure(target.pid, GetLastError());
+    }
+    else if (critical != FALSE)
+    {
+        refusal = criticalProcessRefusal(target.pid, action);
+    }
+    if (refusal.empty())
+    {
+        return std::nullopt;
+    }
+    spdlog::warn("{}", refusal);
+    return ProcessActionResult::error(std::move(refusal));
+}
+
 } // namespace
+
+WindowsProcessFunctions realWindowsProcessFunctions() noexcept
+{
+    return {
+        .openProcess = &OpenProcess,
+        .getProcessTimes = &GetProcessTimes,
+        .setProcessAffinityMask = &SetProcessAffinityMask,
+        .setProcessDefaultCpuSets = &SetProcessDefaultCpuSets,
+        .readGroupSizes = &realReadGroupSizes,
+        .readCores = &realReadCores,
+        .readCpuSets = &realReadCpuSets,
+        .pssCaptureSnapshot = &PssCaptureSnapshot,
+        .isProcessCritical = &IsProcessCritical,
+        .getProcessInformation = &GetProcessInformation,
+        .ntSuspendProcess = Windows::ntSuspendProcess(),
+        .ntResumeProcess = Windows::ntResumeProcess(),
+        .getCurrentProcessId = &GetCurrentProcessId,
+    };
+}
+
+WindowsProcessActions::WindowsProcessActions() : WindowsProcessActions(realWindowsProcessFunctions())
+{}
+
+WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
+    : m_Fns(functions), m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{})
+{}
 
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,   // WM_CLOSE to the process's windows: a request it may answer (#1094)
-        .canKill = true,        // TerminateProcess
-        .canStop = false,       // Windows doesn't have SIGSTOP equivalent
-        .canContinue = false,   // Windows doesn't have SIGCONT equivalent
-        .canSetPriority = true, // SetPriorityClass
+        .canTerminate = true,                            // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,                                 // TerminateProcess
+        .canStop = m_Fns.ntSuspendProcess != nullptr,    // NtSuspendProcess (#2582)
+        .canContinue = m_Fns.ntResumeProcess != nullptr, // NtResumeProcess (#2582)
+        .canSetPriority = true,                          // SetPriorityClass
+        .canSetIoPriority = false,                       // No ionice equivalent (#803)
+        .canSetRealtimeIoPriority = false,
+        // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
+        .canSetAffinity = !m_GroupSizes.empty(),
+        .syscallTrace = SyscallTraceAvailability::Unsupported,
+        .canCreateDump = HAS_DUMPS,         // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = HAS_DUMPS,   // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
+        .dumpsFromSnapshot = HAS_DUMPS,     // PssCaptureSnapshot, else from the running process (#2001)
+        .canAuthorizeInteractively = false, // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
     };
 }
 
@@ -145,13 +401,26 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     // to, or refuse. It used to be TerminateProcess, the same as Kill, though the UI promised a
     // graceful shutdown and users pick Terminate over Kill to keep unsaved work (#1094).
     spdlog::info("Asking process {} to close", target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::End))
+    {
+        return std::move(*refused);
+    }
     // The verified handle is held while the windows are enumerated, so the PID cannot be reused
     // by another process between the identity check and the close requests.
-    const VerifiedProcess process = openVerified(
-        target, SYNCHRONIZE, [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
-    if (!process.handle)
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            SYNCHRONIZE,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::End, isProtected); });
+    if (!process.result.success)
     {
-        return process.result;
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // A critical process that closes when asked stops Windows as surely as one killed (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::End))
+    {
+        return std::move(*refused);
     }
 
     CloseRequest request{.pid = static_cast<DWORD>(target.pid)};
@@ -165,7 +434,11 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     if (std::string failure = closeRequestFailure(target.pid, request.eligible, request.failed, request.firstError); !failure.empty())
     {
         spdlog::info("{}", failure);
-        return ProcessActionResult::error(std::move(failure));
+        // Every request refused for want of access (UIPI: the process runs elevated) is one the elevated
+        // helper can post (#2602).
+        return isCloseRequestAccessDenied(request.eligible, request.failed, request.firstError)
+                 ? ProcessActionResult::denied(std::move(failure))
+                 : ProcessActionResult::error(std::move(failure));
     }
     spdlog::info("Asked {} window(s) of process {} to close", request.eligible, target.pid);
     return ProcessActionResult::ok();
@@ -179,29 +452,97 @@ ProcessActionResult WindowsProcessActions::kill(const ProcessTarget& target)
 
 ProcessActionResult WindowsProcessActions::stop(const ProcessTarget& target)
 {
-    // Windows doesn't have a direct equivalent to SIGSTOP
-    // Could potentially use SuspendThread on all threads, but that's complex
-    spdlog::warn("Stop not supported on Windows for process {}", target.pid);
-    return ProcessActionResult::error("Stop (SIGSTOP) is not supported on Windows");
+    spdlog::info("Suspending process {}", target.pid);
+    return suspendOrResume(target, true);
 }
 
 ProcessActionResult WindowsProcessActions::resume(const ProcessTarget& target)
 {
-    // Windows doesn't have a direct equivalent to SIGCONT
-    spdlog::warn("Resume not supported on Windows for process {}", target.pid);
-    return ProcessActionResult::error("Resume (SIGCONT) is not supported on Windows");
+    spdlog::info("Resuming process {}", target.pid);
+    return suspendOrResume(target, false);
 }
 
-ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode)
+ProcessActionResult WindowsProcessActions::suspendOrResume(const ProcessTarget& target, bool suspend) const
 {
-    VerifiedProcess process =
-        openVerified(target,
-                     PROCESS_TERMINATE,
-                     [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
+    // NtSuspendProcess and NtResumeProcess act on every thread in one call, so a thread the process
+    // starts meanwhile isn't missed, as it would be by SuspendThread on each (#2582).
+    Windows::NtProcessSuspendResumeFn call = suspend ? m_Fns.ntSuspendProcess : m_Fns.ntResumeProcess;
+    if (call == nullptr)
+    {
+        return ProcessActionResult::error(
+            std::format("{} is not available on this Windows; nothing sent to process {}", suspend ? "Suspend" : "Resume", target.pid));
+    }
+    if (suspend)
+    {
+        if (auto refused = systemPidResult(target, GuardedAction::Suspend))
+        {
+            return std::move(*refused);
+        }
+        // TaskSmack (or, in the elevated helper, the helper) suspended would hang with nothing left to
+        // resume it. Checked by PID before anything is opened (isSamePid(): Windows ignores a PID's
+        // low two bits when it looks one up, so PID+1 would open this process too). The own PID is
+        // the table's, so a test can name one that is never its fake target's (#2785).
+        if (isSamePid(static_cast<std::uint32_t>(target.pid), m_Fns.getCurrentProcessId()))
+        {
+            std::string refusal = selfSuspendRefusal(target.pid);
+            spdlog::warn("{}", refusal);
+            return ProcessActionResult::error(std::move(refusal));
+        }
+    }
+
+    // A protected process refuses PROCESS_SUSPEND_RESUME even to an administrator: said so, with no retry.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_SUSPEND_RESUME,
+                                            [&target, suspend](DWORD error, bool isProtected)
+                                            { return suspendResumeOpenFailure(error, target.pid, suspend, isProtected); });
     if (!process.result.success)
     {
-        spdlog::error("{}", process.result.errorMessage);
+        spdlog::warn("{}", process.result.errorMessage);
         return std::move(process.result);
+    }
+    // Checked on the handle the call goes through, so the process checked is the process suspended.
+    if (suspend)
+    {
+        if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Suspend))
+        {
+            return std::move(*refused);
+        }
+    }
+
+    const LONG status = call(process.handle.get());
+    if (status < 0) // NT_SUCCESS() is a non-negative NTSTATUS
+    {
+        const auto code = static_cast<std::uint32_t>(status);
+        std::string msg = suspendResumeFailure(code, target.pid, suspend);
+        spdlog::warn("{}", msg);
+        return isSuspendResumeAccessDenied(code) ? ProcessActionResult::denied(std::move(msg)) : ProcessActionResult::error(std::move(msg));
+    }
+    spdlog::info("{} process {}", suspend ? "Suspended" : "Resumed", target.pid);
+    return ProcessActionResult::ok();
+}
+
+ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode) const
+{
+    if (auto refused = systemPidResult(target, GuardedAction::End))
+    {
+        return std::move(*refused);
+    }
+    // A protected process refuses PROCESS_TERMINATE even to an administrator: said so, with no retry.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_TERMINATE,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::End, isProtected); });
+    if (!process.result.success)
+    {
+        spdlog::warn("{}", process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // Checked on the handle the kill goes through, so the process checked is the process ended (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::End))
+    {
+        return std::move(*refused);
     }
 
     const BOOL result = TerminateProcess(process.handle.get(), exitCode);
@@ -209,9 +550,12 @@ ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget&
 
     if (result == 0)
     {
-        std::string msg = std::format("Failed to terminate process {}: error {}", target.pid, error);
-        spdlog::error("{}", msg);
-        return ProcessActionResult::error(std::move(msg));
+        return callFailure(m_Fns,
+                           process.handle.get(),
+                           target,
+                           GuardedAction::End,
+                           error,
+                           std::format("Failed to terminate process {}: error {}", target.pid, error));
     }
 
     spdlog::info("Successfully terminated process {} with exit code {}", target.pid, exitCode);
@@ -225,25 +569,26 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
 
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, target.pid);
+    if (auto refused = systemPidResult(target, GuardedAction::Priority))
+    {
+        return std::move(*refused);
+    }
 
-    VerifiedProcess process = openVerified(target,
-                                           PROCESS_SET_INFORMATION,
-                                           [&target](DWORD error) -> std::string
-                                           {
-                                               switch (error)
-                                               {
-                                               case ERROR_ACCESS_DENIED:
-                                                   return "Permission denied - cannot change priority of this process";
-                                               case ERROR_INVALID_PARAMETER:
-                                                   return "Process not found - may have already exited";
-                                               default:
-                                                   return std::format("Failed to open process {}: error {}", target.pid, error);
-                                               }
-                                           });
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            PROCESS_SET_INFORMATION,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::Priority, isProtected); });
     if (!process.result.success)
     {
         spdlog::warn("{}", process.result.errorMessage);
         return std::move(process.result);
+    }
+    // Idle or Below normal starves a critical process, and the session with it; nothing a user needs
+    // is served by raising one either (#2556). Realtime is never set at all (niceToPriorityClass()).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Priority))
+    {
+        return std::move(*refused);
     }
 
     const BOOL result = SetPriorityClass(process.handle.get(), priorityClass);
@@ -251,9 +596,12 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
 
     if (result == 0)
     {
-        std::string msg = std::format("Failed to set priority for process {}: error {}", target.pid, error);
-        spdlog::warn("{}", msg);
-        return ProcessActionResult::error(std::move(msg));
+        return callFailure(m_Fns,
+                           process.handle.get(),
+                           target,
+                           GuardedAction::Priority,
+                           error,
+                           std::format("Failed to set priority for process {}: error {}", target.pid, error));
     }
 
     spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, target.pid);
@@ -261,4 +609,184 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
 }
 
 // NOLINTEND(misc-include-cleaner)
+ProcessActionResult
+WindowsProcessActions::setIoPriority(const ProcessTarget& target, [[maybe_unused]] IoPriorityClass ioClass, [[maybe_unused]] int32_t level)
+{
+    return ProcessActionResult::error(std::format("I/O priority is not supported on Windows; nothing sent to process {}", target.pid));
+}
+
+IoPriorityReadResult WindowsProcessActions::getIoPriority(const ProcessTarget& target)
+{
+    return std::unexpected(std::format("I/O priority is not supported on Windows (process {})", target.pid));
+}
+
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
+ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    if (auto refused = systemPidResult(target, GuardedAction::Affinity))
+    {
+        return std::move(*refused);
+    }
+    auto masks = groupMasksForAffinity(cpus, m_GroupSizes);
+    if (!masks.has_value())
+    {
+        return ProcessActionResult::error(std::move(masks.error()));
+    }
+    const bool useCpuSets = m_GroupSizes.size() > 1;
+
+    // CPU sets need only PROCESS_SET_LIMITED_INFORMATION; the affinity mask needs PROCESS_SET_INFORMATION.
+    VerifiedProcess process = openForAction(m_Fns,
+                                            target,
+                                            useCpuSets ? PROCESS_SET_LIMITED_INFORMATION : PROCESS_SET_INFORMATION,
+                                            [&target](DWORD error, bool isProtected)
+                                            { return actionOpenFailure(error, target.pid, GuardedAction::Affinity, isProtected); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not setting CPU affinity for PID {}: {}", target.pid, process.result.errorMessage);
+        return std::move(process.result);
+    }
+    // Pinning a critical process to one CPU can hang the session as surely as starving it (#2556).
+    if (auto refused = guardRefusal(m_Fns, process.handle.get(), target, GuardedAction::Affinity))
+    {
+        return std::move(*refused);
+    }
+
+    BOOL ok = FALSE;
+    std::string note; // Default CPU sets are a preference: say so rather than claim a hard affinity (#2173)
+    if (!useCpuSets)
+    {
+        // One group: masks holds exactly group 0's mask (an empty choice was refused above).
+        ok = m_Fns.setProcessAffinityMask(process.handle.get(), static_cast<DWORD_PTR>(masks->front().mask));
+    }
+    else if (cpus == affinityLayout().online)
+    {
+        // Every CPU: clear the default CPU sets rather than pin the process to today's processors.
+        ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), nullptr, 0);
+        note = "by clearing its preferred CPUs (CPU sets); any affinity mask or thread affinity set earlier still applies";
+    }
+    else
+    {
+        auto ids = cpuSetIdsFor(*masks, m_Fns.readCpuSets());
+        if (!ids.has_value())
+        {
+            return ProcessActionResult::error(std::move(ids.error()));
+        }
+        const std::vector<ULONG> cpuSetIds(ids->begin(), ids->end()); // ULONG is 32 bits, but not uint32_t's type
+        ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), cpuSetIds.data(), static_cast<ULONG>(cpuSetIds.size()));
+        note = "as preferred CPUs (CPU sets); threads with their own affinity are not moved";
+    }
+    if (ok == FALSE)
+    {
+        const DWORD error = GetLastError();
+        return callFailure(
+            m_Fns, process.handle.get(), target, GuardedAction::Affinity, error, affinitySetErrorMessage(error, target.pid, useCpuSets));
+    }
+    if (note.empty())
+    {
+        spdlog::info("Set CPU affinity ({} CPUs) for PID {}", cpus.count(), target.pid);
+    }
+    else
+    {
+        spdlog::info("Set CPU affinity ({} CPUs) for PID {} {}", cpus.count(), target.pid, note);
+    }
+    return ProcessActionResult::ok(std::move(note));
+}
+
+CpuAffinityLayout WindowsProcessActions::affinityLayout() const
+{
+    const std::vector<ProcessorCoreRecord> cores = (m_Fns.readCores != nullptr) ? m_Fns.readCores() : std::vector<ProcessorCoreRecord>{};
+    return affinityLayoutFromCores(m_GroupSizes, cores);
+}
+// NOLINTEND(misc-include-cleaner)
+
+#ifdef TASKSMACK_NO_PROCESS_DUMPS
+ProcessDumpResult
+WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+{
+    return IProcessActions::createDump(target, directory, stopToken);
+}
+
+DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+{
+    return IProcessActions::dumpSpace(target, directory);
+}
+
+FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+{
+    return IProcessActions::chooseDumpFolder(initial, ownerWindow);
+}
+#else
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
+ProcessDumpResult
+WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+{
+    // A snapshot needs more access than a live dump (Windows::SNAPSHOT_PROCESS_ACCESS). A process that
+    // refuses it may still allow a live dump's, so that is asked for next, and the dump says why it
+    // is live.
+    Windows::DumpSource source{.captureSnapshot = m_Fns.pssCaptureSnapshot, .liveReason = {}, .processMachine = nullptr};
+    VerifiedProcess process;
+    bool snapshotOpenRefused = false;
+    if (source.captureSnapshot != nullptr)
+    {
+        process = openVerified(m_Fns,
+                               target,
+                               Windows::SNAPSHOT_PROCESS_ACCESS,
+                               [&snapshotOpenRefused](DWORD /*error*/)
+                               {
+                                   snapshotOpenRefused = true;
+                                   return std::string{};
+                               });
+    }
+    if (source.captureSnapshot == nullptr || snapshotOpenRefused)
+    {
+        process = openVerified(m_Fns,
+                               target,
+                               Windows::DUMP_PROCESS_ACCESS,
+                               [&target](DWORD error)
+                               {
+                                   // Only a refusal asks whether the process is protected: the one case
+                                   // where running as administrator would not help.
+                                   const bool isProtected =
+                                       error == ERROR_ACCESS_DENIED && Windows::isProtectedProcess(static_cast<DWORD>(target.pid));
+                                   return DumpMath::openFailureMessage(error, target.pid, isProtected);
+                               });
+        if (snapshotOpenRefused)
+        {
+            source.captureSnapshot = nullptr;
+            source.liveReason = DumpMath::snapshotFailureReason(0, true);
+        }
+    }
+    if (!process.result.success)
+    {
+        spdlog::warn("Not writing a dump of PID {}: {}", target.pid, process.result.errorMessage);
+        return std::unexpected(std::move(process.result.errorMessage));
+    }
+    return Windows::writeProcessDump(process.handle.get(), target.pid, directory, stopToken, source);
+}
+
+DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+{
+    DumpSpace space{.freeBytes = Windows::freeBytesInFolder(directory), .processBytes = std::nullopt};
+    // The private bytes are read from the target itself, through the identity check, never from
+    // whatever holds its PID now.
+    const VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return std::format("error {}", error); });
+    if (process.result.success)
+    {
+        space.processBytes = Windows::processPrivateBytes(process.handle.get());
+    }
+    return space;
+}
+
+FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+{
+    return Windows::pickFolder(ownerWindow, initial, L"Save dump files to");
+}
+// NOLINTEND(misc-include-cleaner)
+#endif // TASKSMACK_NO_PROCESS_DUMPS
+
 } // namespace Platform

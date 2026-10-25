@@ -9,6 +9,9 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -69,6 +72,80 @@ using DXCoreCreateAdapterFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
     return factory;
 }
 
+// DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU and _COMPUTE_ACCELERATOR (dxcore_interface.h), spelled out so
+// this translation unit needs neither <initguid.h> nor dxguid.lib (#1799).
+constexpr GUID NPU_ATTRIBUTE{
+    .Data1 = 0xd46140c4,
+    .Data2 = 0xadd7,
+    .Data3 = 0x451b,
+    .Data4 = {0x9e, 0x56, 0x06, 0xfe, 0x8c, 0x3b, 0x58, 0xed},
+};
+constexpr GUID COMPUTE_ACCELERATOR_ATTRIBUTE{
+    .Data1 = 0xe0b195da,
+    .Data2 = 0x58ef,
+    .Data3 = 0x4a22,
+    .Data4 = {0x90, 0xf1, 0x1f, 0x28, 0x16, 0x9c, 0xab, 0x8d},
+};
+
+/// A fixed-size DXCore property, or nullopt when the adapter doesn't support it or the read fails.
+template<typename T> [[nodiscard]] std::optional<T> dxcoreProperty(IDXCoreAdapter& adapter, DXCoreAdapterProperty property)
+{
+    if (!adapter.IsPropertySupported(property))
+    {
+        return std::nullopt;
+    }
+    T value{};
+    if (FAILED(adapter.GetProperty(property, sizeof(value), &value)))
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// The adapter's DXCoreAdapterProperty::DriverDescription, empty when unreadable.
+[[nodiscard]] std::string dxcoreDescription(IDXCoreAdapter& adapter)
+{
+    std::size_t size = 0;
+    if (!adapter.IsPropertySupported(DXCoreAdapterProperty::DriverDescription) ||
+        FAILED(adapter.GetPropertySize(DXCoreAdapterProperty::DriverDescription, &size)) || size == 0)
+    {
+        return {};
+    }
+    std::string text(size, '\0');
+    if (FAILED(adapter.GetProperty(DXCoreAdapterProperty::DriverDescription, size, text.data())))
+    {
+        return {};
+    }
+    text.resize(std::char_traits<char>::length(text.c_str())); // Up to the terminating NUL
+    return text;
+}
+
+/// One DXCore adapter as a DXCoreAdapterRecord, or nullopt without a readable LUID.
+[[nodiscard]] std::optional<DXCoreAdapterRecord> readDXCoreRecord(IDXCoreAdapter& adapter)
+{
+    const auto luid = dxcoreProperty<LUID>(adapter, DXCoreAdapterProperty::InstanceLuid);
+    if (!luid.has_value())
+    {
+        return std::nullopt;
+    }
+    DXCoreAdapterRecord record;
+    record.luidHighPart = static_cast<std::uint32_t>(luid->HighPart);
+    record.luidLowPart = static_cast<std::uint32_t>(luid->LowPart);
+    record.npu = adapter.IsAttributeSupported(NPU_ATTRIBUTE);
+    record.computeAccelerator = adapter.IsAttributeSupported(COMPUTE_ACCELERATOR_ATTRIBUTE);
+    record.isHardware = dxcoreProperty<bool>(adapter, DXCoreAdapterProperty::IsHardware).value_or(true);
+    record.isIntegrated = dxcoreProperty<bool>(adapter, DXCoreAdapterProperty::IsIntegrated).value_or(false);
+    record.description = dxcoreDescription(adapter);
+    if (const auto hardwareId = dxcoreProperty<DXCoreHardwareID>(adapter, DXCoreAdapterProperty::HardwareID))
+    {
+        record.vendorId = hardwareId->vendorID;
+        record.deviceId = hardwareId->deviceID;
+    }
+    record.dedicatedAdapterMemory = dxcoreProperty<std::uint64_t>(adapter, DXCoreAdapterProperty::DedicatedAdapterMemory).value_or(0);
+    record.sharedSystemMemory = dxcoreProperty<std::uint64_t>(adapter, DXCoreAdapterProperty::SharedSystemMemory).value_or(0);
+    return record;
+}
+
 } // namespace
 
 // DXCore says whether an adapter is integrated (#1263); load it from System32 only, like nvml.dll.
@@ -76,7 +153,8 @@ DXGIGPUProbe::DXGIGPUProbe()
     : m_CreateFactory(createSystemDXGIFactory),
       m_D3DKMT(std::make_unique<D3DKMTAdapterFunctions>()),
       m_Initialized(initialize()),
-      m_DXCoreModule(LoadLibraryExW(L"dxcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+      m_DXCoreModule(LoadLibraryExW(L"dxcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)),
+      m_ListAccelerators([this] { return listDXCoreAccelerators(); })
 {
     if (m_DXCoreModule == nullptr)
     {
@@ -151,10 +229,11 @@ bool DXGIGPUProbe::rescanGPUs(GPURescan depth)
         return false;
     }
     // A factory lists the adapters present when it was made; IsCurrent() turns false once one is
-    // added or removed, or a driver is updated or reset (#1294).
+    // added or removed, or a driver is updated or reset (#1294). DXGI never lists the compute
+    // accelerators, so their set is compared on its own (#1799).
     if (m_Factory && m_Factory->IsCurrent() != FALSE)
     {
-        return false;
+        return acceleratorsChanged();
     }
     auto factory = m_CreateFactory ? m_CreateFactory() : ComPtr<IDXGIFactory1>{};
     if (!factory)
@@ -425,6 +504,180 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
     return counters;
 }
 
+std::vector<DXCoreAdapterRecord> DXGIGPUProbe::listDXCoreAccelerators() const
+{
+    std::vector<DXCoreAdapterRecord> records;
+    if (!m_DXCoreFactory)
+    {
+        return records;
+    }
+    // One list per hardware type: CreateAdapterList() returns the adapters with every attribute
+    // asked for, so the two together would find nothing. An OS that doesn't know an attribute fails
+    // the call or lists nothing, so no accelerator is found there, as before.
+    const std::array<GUID, 2> attributes{NPU_ATTRIBUTE, COMPUTE_ACCELERATOR_ATTRIBUTE};
+    std::size_t attributeIndex = 0;
+    while (attributeIndex < attributes.size())
+    {
+        const GUID& attribute = attributes[attributeIndex];
+        ++attributeIndex;
+        ComPtr<IDXCoreAdapterList> list;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+        const HRESULT hr = m_DXCoreFactory->CreateAdapterList(
+            1, &attribute, __uuidof(IDXCoreAdapterList), reinterpret_cast<void**>(list.releaseAndGetAddressOf()));
+#pragma clang diagnostic pop
+        if (FAILED(hr) || !list)
+        {
+            continue;
+        }
+        const std::uint32_t count = list->GetAdapterCount();
+        std::uint32_t adapterIndex = 0;
+        while (adapterIndex < count)
+        {
+            ComPtr<IDXCoreAdapter> adapter;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+            const HRESULT got =
+                list->GetAdapter(adapterIndex, __uuidof(IDXCoreAdapter), reinterpret_cast<void**>(adapter.releaseAndGetAddressOf()));
+#pragma clang diagnostic pop
+            ++adapterIndex;
+            if (FAILED(got) || !adapter)
+            {
+                continue;
+            }
+            if (auto record = readDXCoreRecord(*adapter.get()))
+            {
+                records.push_back(std::move(*record));
+            }
+        }
+    }
+    return records;
+}
+
+std::unordered_set<std::uint64_t> DXGIGPUProbe::dxgiAdapterLuids() const
+{
+    std::unordered_set<std::uint64_t> luids;
+    if (!m_Initialized || !m_Factory)
+    {
+        return luids;
+    }
+    UINT adapterIndex = 0;
+    ComPtr<IDXGIAdapter1> adapter;
+    while (m_Factory->EnumAdapters1(adapterIndex, adapter.releaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND && adapter)
+    {
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapter->GetDesc1(&desc)))
+        {
+            luids.insert(adapterLuidKey(static_cast<std::uint32_t>(desc.AdapterLuid.HighPart), desc.AdapterLuid.LowPart));
+        }
+        ++adapterIndex;
+    }
+    return luids;
+}
+
+std::vector<std::uint64_t> DXGIGPUProbe::acceleratorLuids(const std::vector<DXCoreAdapterRecord>& records)
+{
+    std::vector<std::uint64_t> luids;
+    for (const auto& record : records)
+    {
+        if (record.isHardware && acceleratorKind(record).has_value())
+        {
+            luids.push_back(adapterLuidKey(record.luidHighPart, record.luidLowPart));
+        }
+    }
+    std::ranges::sort(luids);
+    const auto [first, last] = std::ranges::unique(luids);
+    luids.erase(first, last);
+    return luids;
+}
+
+bool DXGIGPUProbe::acceleratorsChanged()
+{
+    if (!m_AcceleratorLuids.has_value() || !m_ListAccelerators)
+    {
+        return false;
+    }
+    const std::vector<std::uint64_t> current = acceleratorLuids(m_ListAccelerators());
+    if (current == *m_AcceleratorLuids)
+    {
+        return false;
+    }
+    spdlog::info("DXGIGPUProbe: The compute accelerators changed ({} before, {} now); re-enumerating adapters",
+                 m_AcceleratorLuids->size(),
+                 current.size());
+    for (const std::uint64_t gone : *m_AcceleratorLuids)
+    {
+        if (!std::ranges::binary_search(current, gone))
+        {
+            m_IdByLuid.erase(gone);
+        }
+    }
+    return true;
+}
+
+std::vector<GPUInfo> DXGIGPUProbe::enumerateAccelerators()
+{
+    std::vector<GPUInfo> accelerators;
+    m_Accelerators.clear();
+    const std::vector<DXCoreAdapterRecord> records = m_ListAccelerators ? m_ListAccelerators() : std::vector<DXCoreAdapterRecord>{};
+    m_AcceleratorLuids = acceleratorLuids(records);
+    const std::vector<DXCoreAdapterRecord> selected = selectAcceleratorAdapters(records, dxgiAdapterLuids());
+    std::uint32_t position = 0;
+    for (const auto& record : selected)
+    {
+        GPUInfo info{};
+        info.kind = acceleratorKind(record).value_or(DeviceKind::ComputeAccelerator);
+        info.pciDeviceId = (record.deviceId << 16U) | (record.vendorId & 0xFFFFU);
+        const LUID luid{.LowPart = record.luidLowPart, .HighPart = static_cast<LONG>(record.luidHighPart)};
+        info.pciLocation = adapterPciLocation(luid, *m_D3DKMT);
+        // The same kind of id a GPU gets: its PCI location and model, or its LUID (#1317)
+        info.id = adapterId(record.vendorId,
+                            record.deviceId,
+                            static_cast<std::int32_t>(record.luidHighPart),
+                            record.luidLowPart,
+                            [&info] { return info.pciLocation; });
+        info.luidId = luidToPdhFormat(record.luidHighPart, record.luidLowPart);
+        info.name = record.description.empty() ? std::string("Unknown accelerator") : record.description;
+        info.vendor = vendorIdToName(record.vendorId);
+        info.driverVersion = "Unknown"; // DXCore reads 0.0.0.0 without a user-mode driver; WindowsGPUProbe reads PnP's
+        info.isIntegrated = record.isIntegrated;
+        info.memoryIsShared = acceleratorMemoryIsShared(record.dedicatedAdapterMemory);
+        info.sensorCapabilities = GPUCapabilities{}; // No temperature, power, clock, fan or encoder readings
+        info.deviceIndex = position++;
+        spdlog::debug("DXGIGPUProbe: Enumerated {} {} ({}): {} ({}) - LUID: {}",
+                      info.kind == DeviceKind::Npu ? "NPU" : "compute accelerator",
+                      info.deviceIndex,
+                      info.id,
+                      info.name,
+                      info.vendor,
+                      info.luidId);
+        m_Accelerators.push_back(AcceleratorEntry{
+            .id = info.id,
+            .kind = info.kind,
+            .memoryTotalBytes = acceleratorMemoryTotalBytes(record.dedicatedAdapterMemory, record.sharedSystemMemory),
+        });
+        accelerators.push_back(std::move(info));
+    }
+    if (!accelerators.empty())
+    {
+        spdlog::info("DXGIGPUProbe: Enumerated {} compute accelerator(s)", accelerators.size());
+    }
+    return accelerators;
+}
+
+std::vector<GPUCounters> DXGIGPUProbe::readAcceleratorCounters() const
+{
+    std::vector<GPUCounters> counters;
+    counters.reserve(m_Accelerators.size());
+    for (const auto& accelerator : m_Accelerators)
+    {
+        GPUCounters counter = makeDXGIAdapterCounters(accelerator.id, accelerator.memoryTotalBytes);
+        counter.kind = accelerator.kind;
+        counters.push_back(std::move(counter));
+    }
+    return counters;
+}
+
 std::vector<ProcessGPUCounters> DXGIGPUProbe::readProcessGPUCounters()
 {
     // DXGI does not provide per-process GPU metrics
@@ -444,11 +697,9 @@ GPUCapabilities DXGIGPUProbe::capabilities() const
 
     // DXGI provides basic capabilities
     caps.hasTemperature = false;       // No temperature via DXGI
-    caps.hasHotspotTemp = false;       // No hotspot temp via DXGI
     caps.hasPowerMetrics = false;      // No power metrics via DXGI
     caps.hasClockSpeeds = false;       // No clock speeds via DXGI
     caps.hasFanSpeed = false;          // No fan speed via DXGI
-    caps.hasPCIeMetrics = false;       // No PCIe metrics via DXGI
     caps.hasEngineUtilization = false; // No engine utilization via DXGI
     caps.hasPerProcessMetrics = false; // No per-process metrics via DXGI
     caps.hasPerProcessUtilization = false;

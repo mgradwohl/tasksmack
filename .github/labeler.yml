@@ -46,6 +46,8 @@
       - ".github/codeql/**"
       - ".github/labeler.yml"
       - ".github/dependabot.yml"
+      - ".github/renovate.json5"
+      - ".github/actionlint.yaml"
       - "CMakePresets.json"
 
 "tooling":
@@ -62,7 +64,11 @@
   - changed-files:
     - any-glob-to-any-file:
       - "CMakeLists.txt"
+      - "cmake/Dependencies.cmake"
       - ".github/dependabot.yml"
+      - ".github/renovate.json5"
+      - "requirements*.in"
+      - "requirements*.txt"
 
 "security":
   - changed-files:

@@ -8,23 +8,24 @@
 //
 //   FullHistory  -- one sample (append, trim, publish) with N samples retained, N = 300 / 3k / 18k.
 //                   18k is the longest history: 1800 s (HISTORY_SECONDS_MAX) at 100 ms
-//                   (REFRESH_INTERVAL_MIN_MS). publish() copies every series into a new publication.
+//                   (REFRESH_INTERVAL_MIN_MS). Until #1412 publish() copied every series into each publication.
 //   Cardinality  -- the same at a 300-sample history with many cores, interfaces or disks, and one
-//                   ProcessModel refresh with many processes.
-//   Concurrent   -- how long a UI-style SystemModel/GPUModel::publication() call waits when it lands on
+//                   ProcessModel refresh with many processes. CardinalityHistory: 64 cores and 10
+//                   interfaces, or 16 disks, at 3k and 18k samples.
+//   Concurrent   -- how long a UI-style System/Storage/GPUModel::publication() call waits when it lands on
 //                   a publish in another thread. Before #868 publish() ran under the model's exclusive
 //                   lock, so this was the lock hold a frame could be stuck behind; now it is a swap.
-//   GPUModel     -- History_Publish and Concurrent on a mock GPU probe, at a 3k-sample history. Being
+//   GPUModel     -- History_Publish and Concurrent on a mock GPU probe, at 3k- and 18k-sample histories. Being
 //                   mocks, they run on a GPU-less runner too, unlike bench_GPUModel.cpp's (#1420).
 //
 // History is held at N samples by setting the model's window to N sample intervals: trimming then
-// drops one old sample per new one. Building a full window takes N publishes -- O(N^2) copying, about
-// a second at 18k -- so each configuration's model is built once per process and reused by every
-// repetition (cachedFixture()); a further sample leaves it at the same size.
+// drops one old sample per new one. Each configuration's model is built once per process and reused
+// by every repetition (cachedFixture()); a further sample leaves it at the same size.
 
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SingleLineText.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockDiskProbe.h"
@@ -164,16 +165,32 @@ struct SystemFixture
         model = std::make_unique<Domain::SystemModel>(std::move(probe));
         model->setMaxHistorySeconds(windowSecondsFor(samples));
         // One more than the window holds, so the history is full before the first measured sample.
-        for (std::int64_t i = 0; i <= samples; ++i)
-        {
-            sampleOnce();
-        }
+        // Preloaded as one series with one publish (#1413) rather than a publish per sample, which
+        // was O(N^2) to build at 18k samples and many series.
+        const auto last = static_cast<std::uint64_t>(samples);
+        model->updateFromCounterSeries(
+            [this, last](Platform::SystemCounters& counters, double& nowSeconds)
+            {
+                if (step > last)
+                {
+                    return false;
+                }
+                counters = feed.at(step);
+                nowSeconds = sampleSeconds(step);
+                ++step;
+                return true;
+            });
+    }
+
+    [[nodiscard]] static double sampleSeconds(std::uint64_t at) noexcept
+    {
+        return START_SECONDS + (static_cast<double>(at) * SAMPLE_INTERVAL_SECONDS);
     }
 
     /// Append, trim and publish one sample.
     void sampleOnce()
     {
-        model->updateFromCounters(feed.at(step), START_SECONDS + (static_cast<double>(step) * SAMPLE_INTERVAL_SECONDS));
+        model->updateFromCounters(feed.at(step), sampleSeconds(step));
         ++step;
     }
 };
@@ -196,7 +213,8 @@ constexpr std::size_t DEFAULT_CORES = 8;
 constexpr std::size_t DEFAULT_INTERFACES = 2;
 
 // One SystemModel sample -- append, trim, publish() -- with range(0) samples retained (8 cores, 2
-// interfaces). publish() copies every series, so this grows with history length (#1412).
+// interfaces). publish() shares every series rather than copying it (#1412), so this no longer
+// grows with history length.
 void BM_SystemModel_FullHistory_Publish(benchmark::State& state)
 {
     SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
@@ -227,7 +245,7 @@ void BM_SystemModel_FullHistory_Publication(benchmark::State& state)
 BENCHMARK(BM_SystemModel_FullHistory_Publication)->Arg(FULL_HISTORY_SAMPLES);
 
 // One SystemModel sample at a 300-sample history with range(0) cores and range(1) interfaces: the
-// per-core and per-interface series publish() copies, and the per-interface maps it rebuilds.
+// per-core and per-interface series publish() shares (#1412), and the per-interface maps it rebuilds.
 void BM_SystemModel_Cardinality_Publish(benchmark::State& state)
 {
     constexpr std::int64_t SAMPLES = DEFAULT_HISTORY_SAMPLES;
@@ -246,6 +264,81 @@ BENCHMARK(BM_SystemModel_Cardinality_Publish)
     ->Args({8, 100})
     ->Args({8, 500})
     ->Unit(benchmark::kMicrosecond);
+
+// One SystemModel sample at range(0) samples retained with range(1) cores and range(2) interfaces: the
+// cardinality benchmark's many series at the default and longest histories. Before #1412 publish()
+// copied every one of them, so 18k cost about 6x 3k; with shared history the two should match.
+void BM_SystemModel_CardinalityHistory_Publish(benchmark::State& state)
+{
+    SystemFixture& fixture =
+        systemFixture(state.range(0), static_cast<std::size_t>(state.range(1)), static_cast<std::size_t>(state.range(2)));
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    reportSystemShape(state, *fixture.model);
+}
+BENCHMARK(BM_SystemModel_CardinalityHistory_Publish)
+    ->ArgNames({"samples", "cores", "interfaces"})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 64, 10})
+    ->Args({FULL_HISTORY_SAMPLES, 64, 10})
+    ->Unit(benchmark::kMicrosecond);
+
+// The UI's read side at full history: take the publication and walk every published series once --
+// the timestamps, all twelve aggregate series, every per-core series and both per-interface maps --
+// as the charts' reductions do. Shared history (#1412) must not make this slower than reading a
+// plain vector. Counter: `series`, how many series one iteration walks.
+void BM_SystemModel_FullHistory_ReadSeries(benchmark::State& state)
+{
+    const SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
+    std::size_t seriesWalked = 0;
+    for (auto _ : state)
+    {
+        const auto publication = fixture.model->publication();
+        double sum = 0.0;
+        std::size_t series = 1; // the timestamps
+        for (const double t : publication->timestamps)
+        {
+            sum += t;
+        }
+        const auto add = [&sum, &series](const auto& values)
+        {
+            for (const float value : values)
+            {
+                sum += static_cast<double>(value);
+            }
+            ++series;
+        };
+        add(publication->cpuHistory);
+        add(publication->cpuUserHistory);
+        add(publication->cpuSystemHistory);
+        add(publication->cpuIowaitHistory);
+        add(publication->cpuIdleHistory);
+        add(publication->memoryHistory);
+        add(publication->memoryCachedHistory);
+        add(publication->swapHistory);
+        add(publication->batteryChargeHistory);
+        add(publication->netRxHistory);
+        add(publication->netTxHistory);
+        for (const auto& core : publication->perCoreHistory)
+        {
+            add(core);
+        }
+        for (const auto& [name, rx] : publication->perInterfaceRxHistory)
+        {
+            add(rx);
+        }
+        for (const auto& [name, tx] : publication->perInterfaceTxHistory)
+        {
+            add(tx);
+        }
+        benchmark::DoNotOptimize(sum);
+        seriesWalked = series;
+    }
+    reportSystemShape(state, *fixture.model);
+    state.counters["series"] = benchmark::Counter(static_cast<double>(seriesWalked));
+}
+BENCHMARK(BM_SystemModel_FullHistory_ReadSeries)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 /// How long the concurrent benchmark's reader lets the writer run before it asks for the publication:
 /// ample for the writer to see its cue and take the model's lock, short against any publish.
@@ -404,13 +497,33 @@ struct StorageFixture
         {
             counters.disks[i].deviceName = "nvme" + std::to_string(i) + "n1";
         }
-        for (std::int64_t i = 0; i <= samples; ++i)
-        {
-            sampleOnce();
-        }
+        // One more than the window holds, so the history is full before the first measured sample.
+        // Preloaded as one series with one publish (#1413) rather than a publish per sample, which
+        // was O(N^2) to build at 18k samples.
+        const auto last = static_cast<std::uint64_t>(samples);
+        model->sampleSeries(
+            [this, last](Platform::SystemDiskCounters& next, std::chrono::steady_clock::time_point& now)
+            {
+                if (step > last)
+                {
+                    return false;
+                }
+                advance();
+                next = counters;
+                now = sampleTime(step);
+                ++step;
+                return true;
+            });
     }
 
-    void sampleOnce()
+    [[nodiscard]] static std::chrono::steady_clock::time_point sampleTime(std::uint64_t at)
+    {
+        return std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(START_SECONDS + (static_cast<double>(at) * SAMPLE_INTERVAL_SECONDS))));
+    }
+
+    /// Advance every disk's counters by one sample's I/O.
+    void advance()
     {
         for (std::size_t i = 0; i < counters.disks.size(); ++i)
         {
@@ -423,10 +536,14 @@ struct StorageFixture
             disk.writeTimeMs += 1;
             disk.ioTimeMs += 3;
         }
+    }
+
+    /// Append, trim and publish one sample.
+    void sampleOnce()
+    {
+        advance();
         probe->setNextCounters(counters);
-        const auto now = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(START_SECONDS + (static_cast<double>(step) * SAMPLE_INTERVAL_SECONDS))));
-        model->sampleAt(now);
+        model->sampleAt(sampleTime(step));
         ++step;
     }
 };
@@ -443,19 +560,76 @@ void reportStorageShape(benchmark::State& state, const Domain::StorageModel& mod
     state.counters["disks"] = benchmark::Counter(static_cast<double>(publication->perDiskHistory.size()));
 }
 
-// One StorageModel sample -- per-disk rates, history append, trim, publish -- at an 18k-sample
-// history of 4 disks.
+constexpr std::size_t DEFAULT_DISKS = 4;
+
+// One StorageModel sample -- per-disk rates, history append, trim, publish -- with range(0) samples
+// retained (4 disks). Before #1412 publish() copied the timestamps, both totals and every per-disk
+// series into each publication, so this grew with history length; with shared history it should not.
 void BM_StorageModel_FullHistory_Publish(benchmark::State& state)
 {
-    constexpr std::size_t DISKS = 4;
-    StorageFixture& fixture = storageFixture(state.range(0), DISKS);
+    StorageFixture& fixture = storageFixture(state.range(0), DEFAULT_DISKS);
     for (auto _ : state)
     {
         fixture.sampleOnce();
     }
     reportStorageShape(state, *fixture.model);
 }
-BENCHMARK(BM_StorageModel_FullHistory_Publish)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_StorageModel_FullHistory_Publish)
+    ->Arg(DEFAULT_HISTORY_SAMPLES)
+    ->Arg(DEFAULT_WINDOW_FAST_SAMPLES)
+    ->Arg(FULL_HISTORY_SAMPLES)
+    ->Unit(benchmark::kMicrosecond);
+
+// The UI's side at full history, uncontended: StorageModel::publication(). It must stay O(1) however
+// long the history is.
+void BM_StorageModel_FullHistory_Publication(benchmark::State& state)
+{
+    const StorageFixture& fixture = storageFixture(state.range(0), DEFAULT_DISKS);
+    for (auto _ : state)
+    {
+        auto publication = fixture.model->publication();
+        benchmark::DoNotOptimize(publication->version);
+    }
+    reportStorageShape(state, *fixture.model);
+}
+BENCHMARK(BM_StorageModel_FullHistory_Publication)->Arg(FULL_HISTORY_SAMPLES);
+
+// The UI's read side at full history: take the publication and walk every published series once --
+// the timestamps, both totals and each disk's read and write series -- as the charts' reductions do.
+// Shared history (#1412) must not make this slower than reading a plain vector. Counter: `series`,
+// how many series one iteration walks.
+void BM_StorageModel_FullHistory_ReadSeries(benchmark::State& state)
+{
+    const StorageFixture& fixture = storageFixture(state.range(0), DEFAULT_DISKS);
+    std::size_t seriesWalked = 0;
+    for (auto _ : state)
+    {
+        const auto publication = fixture.model->publication();
+        double sum = 0.0;
+        std::size_t series = 0;
+        const auto add = [&sum, &series](const auto& values)
+        {
+            for (const double value : values)
+            {
+                sum += value;
+            }
+            ++series;
+        };
+        add(publication->timestamps);
+        add(publication->totalReadHistory);
+        add(publication->totalWriteHistory);
+        for (const auto& disk : publication->perDiskHistory)
+        {
+            add(disk.readBytesPerSec);
+            add(disk.writeBytesPerSec);
+        }
+        benchmark::DoNotOptimize(sum);
+        seriesWalked = series;
+    }
+    reportStorageShape(state, *fixture.model);
+    state.counters["series"] = benchmark::Counter(static_cast<double>(seriesWalked));
+}
+BENCHMARK(BM_StorageModel_FullHistory_ReadSeries)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 // One StorageModel sample at a 300-sample history of range(0) disks.
 void BM_StorageModel_Cardinality_Publish(benchmark::State& state)
@@ -469,6 +643,40 @@ void BM_StorageModel_Cardinality_Publish(benchmark::State& state)
     reportStorageShape(state, *fixture.model);
 }
 BENCHMARK(BM_StorageModel_Cardinality_Publish)->ArgName("disks")->Arg(16)->Arg(64)->Unit(benchmark::kMicrosecond);
+
+// One StorageModel sample at range(0) samples retained with range(1) disks: the cardinality
+// benchmark's many series at the default-window-fast and longest histories. Before #1412 publish()
+// copied every one of them, so 18k cost about 6x 3k; with shared history the two should match.
+void BM_StorageModel_CardinalityHistory_Publish(benchmark::State& state)
+{
+    StorageFixture& fixture = storageFixture(state.range(0), static_cast<std::size_t>(state.range(1)));
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    reportStorageShape(state, *fixture.model);
+}
+BENCHMARK(BM_StorageModel_CardinalityHistory_Publish)
+    ->ArgNames({"samples", "disks"})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 16})
+    ->Args({FULL_HISTORY_SAMPLES, 16})
+    ->Unit(benchmark::kMicrosecond);
+
+// measureConcurrentPublicationWait() on StorageModel at a range(0)-sample history of 4 disks, with
+// range(1) extra readers. Compare BM_StorageModel_FullHistory_Publish.
+void BM_StorageModel_Concurrent_PublicationWait(benchmark::State& state)
+{
+    StorageFixture& fixture = storageFixture(state.range(0), DEFAULT_DISKS);
+    measureConcurrentPublicationWait(state, fixture);
+    reportStorageShape(state, *fixture.model);
+}
+BENCHMARK(BM_StorageModel_Concurrent_PublicationWait)
+    ->ArgNames({"samples", "extra_readers"})
+    ->Args({FULL_HISTORY_SAMPLES, 0})
+    ->Args({FULL_HISTORY_SAMPLES, 2})
+    ->Iterations(CONCURRENT_ITERATIONS)
+    ->UseManualTime()
+    ->Unit(benchmark::kMicrosecond);
 
 // =============================================================================
 // GPUModel
@@ -532,9 +740,9 @@ void reportGpuShape(benchmark::State& state, const Domain::GPUModel& model)
 }
 
 // One GPUModel sample -- snapshots, history append, trim, publish -- at a range(0)-sample history of 2
-// GPUs. publish() derives 11 series per GPU from the history. Held at the 5-minute window at 100 ms
-// (3000), not the 18k maximum: GPUModel has no batch path, so building an 18k window takes 18k
-// publishes, far longer than the measurement.
+// GPUs. publish() takes a view of each GPU's 11 series, so its cost does not depend on the history's
+// length (#1412): compare the 5-minute window at 100 ms (3000) with the 30-minute one (18000).
+// GPUModel has no batch path, so the fixture builds its window one refresh at a time.
 void BM_GPUModel_History_Publish(benchmark::State& state)
 {
     GPUFixture& fixture = gpuFixture(state.range(0), DEFAULT_GPUS);
@@ -544,7 +752,7 @@ void BM_GPUModel_History_Publish(benchmark::State& state)
     }
     reportGpuShape(state, *fixture.model);
 }
-BENCHMARK(BM_GPUModel_History_Publish)->Arg(DEFAULT_WINDOW_FAST_SAMPLES)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_GPUModel_History_Publish)->Arg(DEFAULT_WINDOW_FAST_SAMPLES)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 // measureConcurrentPublicationWait() on GPUModel at a range(0)-sample history of 2 GPUs, with
 // range(1) extra readers (#868). Compare BM_GPUModel_History_Publish.
@@ -558,6 +766,7 @@ BENCHMARK(BM_GPUModel_Concurrent_PublicationWait)
     ->ArgNames({"samples", "extra_readers"})
     ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 0})
     ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 2})
+    ->Args({FULL_HISTORY_SAMPLES, 0})
     ->Iterations(CONCURRENT_ITERATIONS)
     ->UseManualTime()
     ->Unit(benchmark::kMicrosecond);
@@ -577,15 +786,29 @@ struct ProcessFixture
     std::uint64_t totalCpuTime = 0;
     std::uint64_t step = 0;
 
-    explicit ProcessFixture(std::size_t processes)
+    /// With @p withCommands, each process gets a heap-sized name and a browser-style command line, as
+    /// a real process table has (#1624); every 100th command carries a newline for toSingleLine() to
+    /// collapse. Without it, names are short and commands empty.
+    explicit ProcessFixture(std::size_t processes, bool withCommands = false)
     {
         model = std::make_unique<Domain::ProcessModel>(std::make_unique<TestMocks::MockProcessProbe>(), [clock = now] { return *clock; });
         counters.reserve(processes);
         for (std::size_t i = 0; i < processes; ++i)
         {
             const auto pid = static_cast<std::int32_t>(100 + i);
-            counters.push_back(
-                TestMocks::makeProcessCounters(pid, "proc" + std::to_string(i), 'S', 0, 0, 1000 + i, (4ULL + (i % 64)) << 20U));
+            const std::string name = withCommands ? "firefox-contentproc-" + std::to_string(i) : "proc" + std::to_string(i);
+            auto process = TestMocks::makeProcessCounters(pid, name, 'S', 0, 0, 1000 + i, (4ULL + (i % 64)) << 20U);
+            if (withCommands)
+            {
+                process.command = "/usr/lib/firefox/firefox -contentproc -childID " + std::to_string(i) +
+                                  " -isForBrowser -prefsLen 31337 -prefMapSize 244787 -jsInitLen 277276"
+                                  " -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser 4242 true tab";
+                if (i % 100 == 0)
+                {
+                    process.command += "\n--injected-line";
+                }
+            }
+            counters.push_back(std::move(process));
         }
         sampleOnce(); // Seeds the previous counters, so later samples compute deltas
     }
@@ -618,5 +841,38 @@ void BM_ProcessModel_Cardinality_Publish(benchmark::State& state)
     state.counters["processes"] = benchmark::Counter(static_cast<double>(fixture.model->snapshots().size()));
 }
 BENCHMARK(BM_ProcessModel_Cardinality_Publish)->ArgName("processes")->Arg(500)->Arg(2'000)->Arg(10'000)->Unit(benchmark::kMicrosecond);
+
+// One ProcessModel refresh with range(0) processes that have realistic names and command lines
+// (#1624): the snapshot build sanitizes both for every process on every refresh, so this is the
+// figure that moves with Domain::toSingleLine and the per-process reuse of its result.
+void BM_ProcessModel_Snapshot_NamesAndCommands(benchmark::State& state)
+{
+    auto& fixture = cachedFixture<ProcessFixture>(
+        std::pair{state.range(0), true}, [&] { return std::make_unique<ProcessFixture>(static_cast<std::size_t>(state.range(0)), true); });
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(fixture.model->snapshots().size()));
+}
+BENCHMARK(BM_ProcessModel_Snapshot_NamesAndCommands)->ArgName("processes")->Arg(1'000)->Arg(5'000)->Unit(benchmark::kMicrosecond);
+
+// Domain::toSingleLine on one browser-style command line, as typed (range(0) == 0, the common case)
+// and with a newline in it (range(0) == 1) (#1624).
+void BM_ToSingleLine(benchmark::State& state)
+{
+    std::string command = "/usr/lib/firefox/firefox -contentproc -childID 42 -isForBrowser -prefsLen 31337"
+                          " -prefMapSize 244787 -jsInitLen 277276 -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser";
+    if (state.range(0) != 0)
+    {
+        command += "\n--injected-line";
+    }
+    for (auto _ : state)
+    {
+        auto single = Domain::toSingleLine(command);
+        benchmark::DoNotOptimize(single.data());
+    }
+}
+BENCHMARK(BM_ToSingleLine)->ArgName("control")->Arg(0)->Arg(1);
 
 } // namespace

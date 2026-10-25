@@ -5,7 +5,7 @@ description: Reviews TaskSmack pull requests for C++23 compliance, memory/except
 
 # TaskSmack Code Review
 
-Apply these checks when reviewing pull requests in this repository. Report only genuine issues; skip style nits already enforced by clang-format.
+Apply these checks when reviewing pull requests or diffs in this repository. Report only genuine issues; skip style nits already enforced by clang-format.
 
 ## 1. Architecture boundaries (highest priority)
 
@@ -14,7 +14,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Platform probes (`src/Platform/`) must return **raw counters** only (CPU ticks, bytes). Flag any computation of rates, deltas, or percentages in a probe.
 - Domain (`src/Domain/`) must not depend on UI, Core, ImGui/ImPlot, or graphics libraries.
 - UI code must never call Platform directly, include `Platform/Factory.h`, or call `Platform::make*()`. Path access goes through `Core::Application::get().paths()`.
-- App panels may call `Platform::make*Probe()` / `Platform::makeProcessActions()` only at construction/`onAttach` time — never in render loops.
+- App is the composition root: `Platform::make*Probe()` / `Platform::makeProcessActions()` are called only in `App/PanelPlatforms.cpp` (and `App/SyntheticScenario.cpp`), which a panel calls at attach time from its sampler's start hook (`SamplerConfig::onThreadStart`), so probes are built and seeded on their sampler thread, never on the UI thread and never in render loops (#2731). The factory stays the only caller: flag a probe built anywhere else, and `Platform/Factory.h` included anywhere else in `App/` or `UI/`.
 - OpenGL calls belong in `Core/` and `UI/` only.
 
 ## 2. C++23 compliance
@@ -36,9 +36,27 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Verify mutex usage and `std::atomic` correctness in `BackgroundSampler` and snapshot publication paths.
 - Snapshots published to UI must be immutable and versioned; flag shared mutable state crossed between sampler threads and render code.
 
+### Timing and cadence (#2731)
+
+- **The Settings interval rules:** data is sampled at the refresh interval the user set in Settings. Flag anything
+  that rescales or pauses that interval from UI state: tab visibility, interaction, resizing, a minimized window,
+  or the frame rate.
+- **The UI thread draws, it doesn't sample:**
+  - flag any probe call, blocking syscall, registry or file read, PDH/WMI/COM query or file write in `onUpdate` or
+    render paths;
+  - flag probe construction or seed sampling in `onAttach`: probes are built and seeded on their sampler thread.
+- **Locks:** flag a lock that a sampler holds across I/O when the UI thread also takes it. The UI may only wait for
+  a pointer swap.
+- **Separate cadences:**
+  - unrelated data domains must not share one sampler thread when one of them can stall (GPU/NVML/DXGI, disk PDH);
+  - slow facts use a named constant in `SamplingConfig.h`;
+  - flag timing that counts frames instead of using a clock.
+- **Tests:** new timed work needs a test that its period doesn't depend on UI state or frame rate, and that a stalled
+  sampler doesn't delay frames.
+
 ## 5. Conventions
 
-- Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants.
+- Naming: `PascalCase` classes, `camelCase` functions, `m_PascalCase` members, `UPPER_SNAKE_CASE` constants, `PascalCase` enumerators.
 - Include order: matching header → project headers → third-party → stdlib, blank line between groups; `#pragma once` in headers.
 - GLAD before SDL: `#include <glad/gl.h>` then `#include <SDL3/SDL.h>`.
 - Reuse constants from `src/Domain/SamplingConfig.h`; flag re-declared sampling literals.

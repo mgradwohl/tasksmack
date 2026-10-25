@@ -2,19 +2,19 @@ name: CodeQL Security Analysis
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   schedule:
     # Run weekly on Sundays at 10:00 UTC
     - cron: '0 10 * * 0'
   workflow_dispatch:
 
 # A new commit on a PR branch cancels that branch's in-progress analysis, as CI, Static Analysis and
-# Heavy Checks already do (#1331): a full CodeQL analysis is long (see the job's timeout) and stale
-# ones starved the required jobs of runners. Pushes to main, the weekly schedule and manual runs are never cancelled mid-run, so
-# code scanning's baseline for main stays complete; at most one waits behind the running one (GitHub
-# drops an older *queued* run in the same group when a newer one arrives).
+# Heavy Checks already do (#1331): stale analyses starved the required jobs of runners. Pushes to
+# main, the weekly schedule and manual runs are never cancelled mid-run, so code scanning's baseline
+# for main stays complete; at most one waits behind the running one (GitHub drops an older *queued*
+# run in the same group when a newer one arrives).
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -25,12 +25,61 @@ env:
 permissions: {}
 
 jobs:
+  # A pull request that changes only documentation can't change what CodeQL finds, so Analyze C++
+  # is skipped for it (#1786), with the same docs set as ci.yml's detect-docs-only. The skip is a
+  # job-level `if`, never a top-level `paths:` filter: a job skipped by its `if` reports its check
+  # as successful, so the required "Analyze C++" check still passes, whereas a workflow that never
+  # triggers never reports the check and leaves the PR blocked (see osv-scanner.yml, #866).
+  detect-docs-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.set_output.outputs.docs_only }}
+    steps:
+      - name: Detect docs-only pull request changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          # With predicate-quantifier=every, outside_docs is true when some changed file lies
+          # outside the docs set, and false only when every changed file is docs (see ci.yml).
+          predicate-quantifier: every
+          filters: |
+            outside_docs:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/pull_request_template.md'
+              - '!.github/PULL_REQUEST_TEMPLATE/**'
+              - '!LICENSE'
+
+      - name: Normalize output
+        id: set_output
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          OUTSIDE_DOCS: ${{ steps.filter.outputs.outside_docs }}
+        run: |
+          # paths-filter reports 'false' for a filter no changed file matched. Anything but a pull
+          # request (a push to main, the schedule, a manual run) always analyzes.
+          if [[ "$EVENT_NAME" = 'pull_request' && "$OUTSIDE_DOCS" = 'false' ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   analyze:
     name: Analyze C++
+    needs: [detect-docs-only]
+    if: needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
-    # 45, not 30: full C++ analyses grew past the old 30-minute limit on busy runners, which cancelled
-    # otherwise-clean runs and left PRs without a CodeQL result to gate on.
-    timeout-minutes: 45
+    # Only the app's own compiles are traced (#1786), which took the job from 35-45+ minutes to
+    # about a third of that; 30 leaves headroom for a busy runner. It was 45 (#1444) while the
+    # tests were traced too, and still timed out.
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
@@ -44,28 +93,133 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          # No ccache in this job (#1406): nothing restores a cache here, so every traced compile
+          # paid for a cold-cache miss (an extra preprocessor pass plus hashing) for nothing. And
+          # a cache *hit* would skip the real compiler, which hides that translation unit from the
+          # CodeQL tracer. The Configure step also turns the launcher off explicitly.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
+
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406). Without it,
+      # Configure downloaded every dependency's sources (#1786).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
+        with:
+          mode: restore
+
+      # The exact compiler version is part of the configure-check cache key below.
+      - name: Compiler version
+        id: compiler
+        run: echo "version=$(clang-"$LLVM_VERSION" --version | head -n 1 | tr -cs 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+
+      # Preloads the results of CMake's configure checks so Configure skips their try_compiles
+      # (#1406, #1786). Its own "codeql-debug" key, saved by this job: this configure leaves the
+      # tests out, so its checks are not quite those of the CI debug builds.
+      - name: Restore configure-check results
+        id: cmake-checks
+        uses: ./.github/actions/cmake-check-cache
+        with:
+          mode: restore
+          preset: codeql-debug
+          toolchain: ${{ steps.compiler.outputs.version }}
 
       # Configure before CodeQL init so CMake's try_compile() scratch files are
       # compiled outside the CodeQL trace and never enter the analysis database.
       # Doing this after init is what caused false-positive cpp/uninitialized-local
       # alerts in build/debug/CMakeFiles/CMakeScratch/TryCompile-*/src.c.
+      #
+      # CodeQL analyzes the production code only (#1786): the app, TaskSmack. The tests (~300
+      # translation units, most of the traced build, and a database and query run about three times
+      # bigger) pushed the job past its 45-minute timeout, so they are not configured at all; nor is
+      # the PGO UI training driver (src/Training, a developer tool that is never shipped), whose
+      # build waits for TaskSmack's link and then links itself, ~2.5 serial minutes for 3 files.
+      # Benchmarks are already off in the debug preset.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        run: >-
+          cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+          -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_BUILD_TESTS=OFF -DTASKSMACK_BUILD_UI_TRAINING=OFF
+          ${{ steps.cmake-checks.outputs.cmake-args }}
+
+      - name: Save configure-check results
+        uses: ./.github/actions/cmake-check-cache
+        with:
+          mode: save
+          preset: codeql-debug
+          toolchain: ${{ steps.compiler.outputs.version }}
+          build-dir: build/debug
+          cache-hit: ${{ steps.cmake-checks.outputs.cache-hit }}
+
+      # Build the third-party libraries before CodeQL init (#1406). With a manual (traced) C/C++
+      # build, CodeQL extracts every compiler invocation it traces, and only those: what enters
+      # the database is decided by which compiles run after init, not by codeql-config.yml
+      # (its paths/paths-ignore filter nothing for a traced build, #2794; the "Keep results under
+      # src/" step below is what filters the results). These dependency translation units (mostly
+      # SDL3 and FreeType) are compiled here, before the tracer is active, so they are never
+      # extracted and cost no traced-build or TRAP-import time; Ninja then sees them as up to date
+      # in the traced Build step, which compiles only our own sources. Dependency headers are
+      # still extracted wherever our sources include them.
+      # A renamed or removed dependency target fails this step loudly; a new dependency missing
+      # from this list is still built (and traced) by the Build step, so it is only slower.
+      - name: Build third-party dependencies (untraced)
+        run: >-
+          cmake --build --preset debug --target
+          SDL3-static freetype spdlog imgui_lib implot_lib glad_gl_core_33
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           languages: c-cpp
           queries: security-and-quality
           config-file: ./.github/codeql/codeql-config.yml
 
+      # The traced build: TaskSmack's object files only -- everything but main() in the
+      # TaskSmackApp object library, plus main.cpp's object (a Ninja output path; a wrong one fails
+      # loudly). CodeQL extracts compiles, not links, and the debug link alone took ~1 minute.
       - name: Build
-        run: cmake --build --preset debug
+        run: >-
+          cmake --build --preset debug --target
+          TaskSmackApp CMakeFiles/TaskSmack.dir/src/main.cpp.o
 
+      # The CLI writes the SARIF; the upload is the last step. codeql-config.yml's paths and
+      # paths-ignore apply only to interpreted languages and to build-mode: none, so for this traced
+      # build they filter nothing (#2794): the dependency headers that src/ includes (ImGui, SDL3,
+      # stb, toml++, ...) are extracted with it, and 110 of main's 113 results were under
+      # .cache/fetchcontent/. The next step keeps only the results whose primary location is under
+      # src/ (the config's `paths: [src]`, applied by hand) and the upload sends that file under the
+      # same category from the same job, so the alerts' identity is unchanged. 'failure-only' still
+      # uploads the CLI's diagnostics when the analysis itself fails, so a broken run stays visible
+      # in code scanning.
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
+          category: "/language:c-cpp"
+          upload: failure-only
+          output: sarif-results
+
+      - name: Keep results under src/
+        run: |
+          # A result's primary location is locations[0]: one in third-party or generated code is
+          # dropped whole; related locations and code flows that pass through such code stay with
+          # the src/ result that owns them. Artifacts and the rest of each run are left as they are.
+          shopt -s nullglob
+          sarifs=(sarif-results/*.sarif)
+          if [[ ${#sarifs[@]} -eq 0 ]]; then
+            echo "::error title=CodeQL::no SARIF file in sarif-results/ to filter"
+            exit 1
+          fi
+          for sarif in "${sarifs[@]}"; do
+            before=$(jq '[.runs[] | (.results // [])[]] | length' "$sarif")
+            jq '.runs[].results |= ((. // []) | map(select((.locations[0].physicalLocation.artifactLocation.uri // "") | startswith("src/"))))' \
+              "$sarif" > "$sarif.tmp"
+            mv "$sarif.tmp" "$sarif"
+            after=$(jq '[.runs[] | (.results // [])[]] | length' "$sarif")
+            echo "$sarif: kept $after of $before results (dropped $((before - after)) outside src/)"
+          done
+
+      - name: Upload CodeQL results
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: sarif-results
           category: "/language:c-cpp"

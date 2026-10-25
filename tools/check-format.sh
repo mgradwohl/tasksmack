@@ -20,7 +20,7 @@ Options:
   -v, --verbose   Show per-file progress
   -h, --help      Show this help
 EOF
-    exit 0
+    exit "${1:-0}"
 }
 
 # Parse arguments
@@ -28,33 +28,27 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
         -h|--help) usage ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
 echo "Checking clang-format compliance..."
 
-# Find clang-format
-CLANG_FORMAT=""
-if command -v clang-format &> /dev/null; then
-    CLANG_FORMAT="clang-format"
-else
-    for ver in 22 21 20 19 18 17; do
-        if [[ -x "/usr/lib/llvm-$ver/bin/clang-format" ]]; then
-            CLANG_FORMAT="/usr/lib/llvm-$ver/bin/clang-format"
-            break
-        fi
-    done
-fi
-
-if [[ -z "$CLANG_FORMAT" ]]; then
-    echo "Error: clang-format not found" >&2
-    exit 1
-fi
-
 # shellcheck source=tools/common.sh
 source "$SCRIPT_DIR/common.sh"
-warn_clang_format_version_skew "$CLANG_FORMAT"
+
+# Find clang-format: the CI-pinned LLVM's (/usr/lib/llvm-23/bin) before an older unversioned one on PATH
+CLANG_FORMAT="$(find_llvm_tool clang-format || true)"
+if [[ -z "$CLANG_FORMAT" ]]; then
+    echo "Error: clang-format not found. Install via: apt install clang-format-$(pinned_llvm_major)" >&2
+    exit 1
+fi
+warn_llvm_version_skew "$CLANG_FORMAT" clang-format
+
+SEARCH_DIRS=()
+for dir in "${FORMAT_DIRS[@]}"; do
+    SEARCH_DIRS+=("$PROJECT_ROOT/$dir")
+done
 
 FAILED=0
 FILE_COUNT=0
@@ -64,11 +58,11 @@ while IFS= read -r -d '' file; do
     if $VERBOSE; then
         echo "Checking: $(basename "$file")"
     fi
-    if ! $CLANG_FORMAT --dry-run --Werror "$file" 2>/dev/null; then
+    if ! "$CLANG_FORMAT" --dry-run --Werror "$file" 2>/dev/null; then
         echo "FAIL: $file"
         FAILED=$((FAILED + 1))
     fi
-done < <(find "$PROJECT_ROOT/src" "$PROJECT_ROOT/tests" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
+done < <(find "${SEARCH_DIRS[@]}" -type f \( -name "*.cpp" -o -name "*.h" \) ! -path "*/build/*" ! -path "*/.git/*" -print0 2>/dev/null)
 
 if [[ $FAILED -gt 0 ]]; then
     echo "$FAILED of $FILE_COUNT files need formatting."

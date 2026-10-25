@@ -1,0 +1,64 @@
+name: 'FetchContent dependency cache'
+description: >-
+  Restore (mode: restore) or save (mode: save) the FetchContent source cache under .cache/fetchcontent.
+  Every job restores; only runs on main save (one job per OS, see reusable-build-test.yml), so
+  pull requests read main's entry instead of each
+  writing its own ~440 MB copy that only that PR can use (#1406).
+
+inputs:
+  mode:
+    description: "'restore' (before Configure) or 'save' (after Configure)"
+    required: true
+  cache-hit:
+    description: "mode: save only -- the restore step's cache-hit output; an exact hit is not saved again"
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: 'mode: restore only -- true when the exact key was restored'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    # The key hashes only what declares or patches FetchContent dependencies: cmake/Dependencies.cmake,
+    # cmake/patches/**, and the FetchContent_Declare(...) blocks of tests/ and benchmarks/CMakeLists.txt
+    # (googletest, Google Benchmark). Hashing those two files whole minted a new ~460 MB entry per OS
+    # on every merge that added a test (#1582), as hashing the top-level CMakeLists.txt once did.
+    - name: FetchContent cache key
+      id: key
+      shell: bash
+      run: |
+        hash=$( {
+          cat cmake/Dependencies.cmake
+          find cmake/patches -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$f"; cat "$f"; done
+          awk '/^FetchContent_Declare\(/ { declare = 1 } declare { print } declare && /^\)/ { declare = 0 }' \
+            tests/CMakeLists.txt benchmarks/CMakeLists.txt
+        } | sha256sum | cut -c1-64 )
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+        echo "FetchContent cache key hash: $hash"
+
+    - name: Restore FetchContent dependencies
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # Sources and population stamps only: <dep>-build holds objects compiled with this
+        # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+        path: |
+          .cache/fetchcontent/*
+          !.cache/fetchcontent/*-build
+        key: ${{ runner.os }}-fetchcontent-${{ steps.key.outputs.hash }}
+        restore-keys: ${{ runner.os }}-fetchcontent-
+
+    - name: Save FetchContent dependencies (main only)
+      if: >-
+        inputs.mode == 'save' && inputs.cache-hit != 'true' &&
+        github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          .cache/fetchcontent/*
+          !.cache/fetchcontent/*-build
+        key: ${{ runner.os }}-fetchcontent-${{ steps.key.outputs.hash }}

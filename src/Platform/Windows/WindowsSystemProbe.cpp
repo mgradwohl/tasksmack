@@ -1,5 +1,7 @@
 #include "WindowsSystemProbe.h"
 
+#include "Domain/SamplingConfig.h"
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 
 #include <spdlog/spdlog.h>
@@ -12,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 // clang-format off
@@ -28,35 +31,38 @@
 #undef max
 #undef min
 
+#include "CpuBaseClock.h"
+#include "PerfProviderApartment.h"
+#include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
-#include "WindowsProcAddress.h"
+#include "WindowsConversions.h"
+#include "WindowsNtQuery.h"
 #include "WindowsSystemProbeMath.h"
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <concepts>
 #include <cwchar>
 #include <format>
+#include <ranges>
 #include <span>
 #include <type_traits>
 #include <vector>
 
 #include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <intrin.h> // __cpuid: the hypervisor-present bit (#809); x64 only (64-bit builds only, #2214)
+#else
+#include "Platform/SmbiosParser.h" // ARM64's hypervisor hint without CPUID (#2377)
+#endif
+
 namespace Platform
 {
 
 namespace
 {
-
-/// Convert FILETIME to 100-nanosecond intervals (ticks)
-[[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
-{
-    ULARGE_INTEGER uli{};
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-    return uli.QuadPart;
-}
 
 template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value) noexcept -> uint64_t
 {
@@ -75,12 +81,6 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value)
 {
     return toU64NonNegative(value.QuadPart);
 }
-
-// NtQuerySystemInformation function pointer type
-using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                     PVOID systemInformation,
-                                                     ULONG systemInformationLength,
-                                                     PULONG returnLength);
 
 // System information class for per-processor performance
 constexpr ULONG SystemProcessorPerformanceInformation = 8;
@@ -102,51 +102,6 @@ struct ProcessorPerformanceInfo
     LARGE_INTEGER InterruptTime;
     ULONG InterruptCount;
 };
-
-/// Get NtQuerySystemInformation function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformation()
-{
-    static NtQuerySystemInformationFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
-        }
-        initialized = true;
-    }
-    return fn;
-}
-
-// NtQuerySystemInformationEx function pointer type. For SystemProcessorPerformanceInformation the
-// input buffer is the USHORT processor group to report (#1107).
-using NtQuerySystemInformationExFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                       PVOID inputBuffer,
-                                                       ULONG inputBufferLength,
-                                                       PVOID systemInformation,
-                                                       ULONG systemInformationLength,
-                                                       PULONG returnLength);
-
-/// Get NtQuerySystemInformationEx function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationExFn getNtQuerySystemInformationEx()
-{
-    static NtQuerySystemInformationExFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationExFn>(ntdll, "NtQuerySystemInformationEx");
-        }
-        initialized = true;
-    }
-    return fn;
-}
 
 /// Run one SystemProcessorPerformanceInformation query into `buffer`, growing it and retrying on
 /// a length mismatch (the processor count can change between sizing and querying).
@@ -172,35 +127,352 @@ template<typename Query>
 
 /// Logical processors across every processor group. dwNumberOfProcessors counts only the calling
 /// thread's group (at most 64), so a machine with more under-reported its core count (#1107).
-[[nodiscard]] std::size_t logicalProcessorCount()
+[[nodiscard]] std::size_t logicalProcessorCount(const WindowsSystemProbeFunctions::Cpu& fns)
 {
-    const DWORD allGroups = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const DWORD allGroups = fns.getActiveProcessorCount(ALL_PROCESSOR_GROUPS);
     if (allGroups != 0)
     {
         return allGroups;
     }
     SYSTEM_INFO sysInfo{};
-    GetSystemInfo(&sysInfo);
+    fns.getSystemInfo(&sysInfo);
     return sysInfo.dwNumberOfProcessors;
 }
 
 /// Each processor group's first coreId, from the groups' maximum sizes (#1107; see
 /// processorGroupFirstCoreIds()). Read once: the maximums are fixed for the boot session.
-[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds()
+[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds(const WindowsSystemProbeFunctions::Cpu& fns)
 {
-    const WORD groups = GetMaximumProcessorGroupCount();
+    const WORD groups = fns.getMaximumProcessorGroupCount();
     std::vector<std::uint32_t> maximums;
     maximums.reserve(groups);
     for (WORD group = 0; group < groups; ++group)
     {
-        maximums.push_back(GetMaximumProcessorCount(group));
+        maximums.push_back(fns.getMaximumProcessorCount(group));
     }
     return processorGroupFirstCoreIds(maximums);
 }
 
+/// The registry's ~MHz; 0 if it can't be read. Not the rated base on hybrid parts (#1530): only the
+/// fallback when CallNtPowerInformation has no MaxMhz.
+[[nodiscard]] std::uint64_t readRegistryCpuMHz()
+{
+    DWORD mhz = 0;
+    DWORD dataSize = sizeof(mhz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &mhz,
+                     &dataSize) != ERROR_SUCCESS)
+    {
+        return 0;
+    }
+    return toU64NonNegative(mhz);
+}
+
+// System information classes for the virtualization-based security status (#809)
+constexpr ULONG SystemCodeIntegrityInformationClass = 103;
+constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
+
+#if !defined(_M_X64) && !defined(__x86_64__)
+// SYSTEM_HYPERVISOR_QUERY_INFORMATION's class, which a standard user may query (#2377)
+constexpr ULONG SystemHypervisorInformationClass = 91;
+
+/// Whether the SMBIOS table (GetSystemFirmwareTable('RSMB'), no administrator rights needed) describes
+/// a virtual machine (#2377); nullopt when it can't be read. WindowsSystemInfoProbe reads the same table
+/// for System Information's Firmware section.
+[[nodiscard]] std::optional<bool> readSmbiosVirtualMachine()
+{
+    constexpr DWORD RSMB = 0x52534D42;
+    const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0);
+    if (size == 0)
+    {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> table(size);
+    const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+    if (written == 0 || written > size)
+    {
+        return std::nullopt;
+    }
+    table.resize(written);
+    const std::optional<Smbios::VirtualMachineHint> hint = Smbios::virtualMachineHint(table);
+    if (!hint.has_value())
+    {
+        return std::nullopt;
+    }
+    return hint->virtualMachine;
+}
+
+/// A running hypervisor without CPUID (ARM64, #2377): SystemHypervisorInformation, the secure kernel's
+/// state and the SMBIOS table's virtual-machine hint (hypervisorPresentWithoutCpuid()).
+[[nodiscard]] std::optional<bool> readHypervisorPresentWithoutCpuid(Windows::NtQuerySystemInformationFn ntQuery,
+                                                                    std::optional<bool> vbsRunning)
+{
+    std::optional<bool> kernelReports;
+    if (ntQuery != nullptr)
+    {
+        // Aligned for the ULONGLONG the structure ends with: the kernel rejects a misaligned buffer (#2746).
+        alignas(ULONGLONG) std::array<std::uint8_t, HYPERVISOR_QUERY_INFORMATION_SIZE> information{};
+        if (ntQuery(SystemHypervisorInformationClass, information.data(), static_cast<ULONG>(information.size()), nullptr) == 0)
+        {
+            kernelReports = hypervisorQueryPresent(information);
+        }
+    }
+    return hypervisorPresentWithoutCpuid(kernelReports, vbsRunning, readSmbiosVirtualMachine());
+}
+#endif
+
+/// Sockets, cores, logical processors and cache sizes from one GetLogicalProcessorInformationEx call
+/// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
+/// processor as the per-core counters do (#1107), for efficiencyClassByCoreId and `activeIds`, which
+/// receives every active logical processor's id, ascending (empty if the call fails).
+void readProcessorTopology(const WindowsSystemProbeFunctions::Cpu& fns,
+                           CpuDetails& details,
+                           std::span<const std::size_t> groupFirstCoreIds,
+                           std::vector<std::size_t>& activeIds)
+{
+    DWORD length = 0;
+    if (fns.getLogicalProcessorInformationEx(RelationAll, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        spdlog::debug("GetLogicalProcessorInformationEx sizing failed: {}", GetLastError());
+        return;
+    }
+    std::vector<std::byte> buffer(length);
+    if (fns.getLogicalProcessorInformationEx(
+            RelationAll, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) == FALSE)
+    {
+        spdlog::debug("GetLogicalProcessorInformationEx failed: {}", GetLastError());
+        return;
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+
+    std::size_t packages = 0;
+    std::vector<CpuTopology::CoreRecord> cores;
+    std::vector<CpuTopology::CacheInstance> caches;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        // Copied out rather than cast in place: records are variable-sized, and a copy needs no
+        // alignment. A core's processors are in one group, so its first GroupMask is all of them.
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Relationship selects the union member
+        switch (record.Relationship)
+        {
+        case RelationProcessorPackage:
+            ++packages;
+            break;
+        case RelationProcessorCore:
+            if (record.Processor.GroupCount > 0 && record.Processor.GroupMask[0].Group < groupFirstCoreIds.size())
+            {
+                const std::size_t firstId = groupFirstCoreIds[record.Processor.GroupMask[0].Group];
+                for (KAFFINITY mask = record.Processor.GroupMask[0].Mask; mask != 0; mask &= mask - 1)
+                {
+                    const auto bit = static_cast<std::size_t>(std::countr_zero(mask));
+                    CpuTopology::setEfficiencyClass(details.efficiencyClassByCoreId, firstId + bit, record.Processor.EfficiencyClass);
+                    activeIds.push_back(firstId + bit);
+                }
+            }
+            cores.push_back({
+                .efficiencyClass = record.Processor.EfficiencyClass,
+                .logicalProcessors =
+                    (record.Processor.GroupCount > 0) ? static_cast<std::uint32_t>(std::popcount(record.Processor.GroupMask[0].Mask)) : 0U,
+            });
+            break;
+        case RelationCache:
+            caches.push_back({.level = record.Cache.Level, .bytes = record.Cache.CacheSize});
+            break;
+        default:
+            break;
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+
+    if (packages > 0)
+    {
+        details.sockets = packages;
+    }
+    CpuTopology::summarizeCores(cores, details);
+    CpuTopology::keepOnlyIfHybrid(details.efficiencyClassByCoreId);
+    std::ranges::sort(activeIds);
+    CpuTopology::sumCacheInstances(caches, details);
+}
+
+/// Memory integrity and virtualization-based security (#809), from two NtQuerySystemInformation
+/// classes a standard user may query. Nothing is read without @p ntQuery.
+void readSecureKernelStatus(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+{
+    if (ntQuery == nullptr)
+    {
+        return;
+    }
+    struct CodeIntegrityInformation // SYSTEM_CODEINTEGRITY_INFORMATION
+    {
+        ULONG Length;
+        ULONG CodeIntegrityOptions;
+    };
+    CodeIntegrityInformation codeIntegrity{.Length = sizeof(CodeIntegrityInformation), .CodeIntegrityOptions = 0};
+    if (ntQuery(SystemCodeIntegrityInformationClass, &codeIntegrity, sizeof(codeIntegrity), nullptr) == 0)
+    {
+        details.hvciEnabled = hvciEnabled(codeIntegrity.CodeIntegrityOptions);
+    }
+    // SYSTEM_ISOLATED_USER_MODE_INFORMATION: two flag bytes, six spare bytes and a spare ULONGLONG, which
+    // the buffer is aligned for: the kernel rejects a misaligned one (#2746).
+    alignas(ULONGLONG) std::array<std::uint8_t, 16> isolatedUserMode{};
+    if (ntQuery(SystemIsolatedUserModeInformationClass, isolatedUserMode.data(), static_cast<ULONG>(isolatedUserMode.size()), nullptr) == 0)
+    {
+        details.vbsRunning = secureKernelRunning(isolatedUserMode[0]);
+    }
+}
+
+/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
+/// processor-feature flags, CPUID, and NtQuerySystemInformation classes a standard user may query --
+/// no WMI, no elevation. ARM64 has no CPUID, so it asks Windows and the SMBIOS table instead (#2377).
+void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
+{
+    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
+    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
+    readSecureKernelStatus(ntQuery, details);
+#if defined(_M_X64) || defined(__x86_64__)
+    std::array<int, 4> registers{};
+    __cpuid(registers.data(), 1);
+    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
+#else
+    details.hypervisorPresent = readHypervisorPresentWithoutCpuid(ntQuery, details.vbsRunning);
+#endif
+}
+
+/// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof
+/// (#1530) and stays unknown without it: the registry's ~MHz fallback is not a base clock.
+/// `activeIds` receives the active logical processors' ids the topology describes (ascending).
+[[nodiscard]] CpuDetails
+readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
+{
+    CpuDetails details;
+    activeIds.clear();
+    readProcessorTopology(fns.cpu, details, groupFirstCoreIds, activeIds);
+    readVirtualization(fns.nt.ntQuerySystemInformation, details);
+    const std::vector<std::uint32_t> processorMaxMHz = readProcessorMaxMHz(&CallNtPowerInformation);
+    if (const std::uint64_t ratedMHz = nominalCpuBaseMHz(processorMaxMHz, 0); ratedMHz > 0)
+    {
+        details.baseSpeedMHz = ratedMHz;
+    }
+    return details;
+}
+
+/// The nominal base clock "% Processor Performance" scales (#1530): powrprof's rated MaxMhz, else ~MHz.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    return readNominalCpuBaseMHz(&CallNtPowerInformation, readRegistryCpuMHz());
+}
+
+// The network readers systemFunctions() hands out, defined with readNetworkCounters() below.
+[[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid);
+[[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId);
+
+// read()'s sub-reads, as SystemReadTiming names them (#2731)
+constexpr std::string_view SUB_READ_CPU = "cpu";
+constexpr std::string_view SUB_READ_CPU_DETAILS = "cpu-details";
+constexpr std::string_view SUB_READ_MEMORY = "memory";
+constexpr std::string_view SUB_READ_UPTIME = "uptime";
+constexpr std::string_view SUB_READ_PDH_FREQ = "pdh-freq";
+constexpr std::string_view SUB_READ_IF_TABLE = "ifTable";
+
+// A sub-read this slow is logged by name (#2731)
+constexpr std::chrono::milliseconds SLOW_SUB_READ{Domain::Sampling::SYSTEM_PROBE_SLOW_SUB_READ_MS};
+
+/// Times read()'s sub-reads on the probe's clock (#2731): lap() closes the sub-read since the previous
+/// lap and keeps the slowest. One clock read per sub-read, nothing allocated.
+class SubReadTimer
+{
+  public:
+    using NowFn = std::chrono::steady_clock::time_point (*)() noexcept;
+
+    explicit SubReadTimer(NowFn now) noexcept : m_Now(now), m_Start(now()), m_Last(m_Start)
+    {}
+
+    void lap(std::string_view name) noexcept
+    {
+        const auto at = m_Now();
+        const auto took = at - m_Last;
+        m_Last = at;
+        // The first lap names the slowest even at zero, so the name is never empty after a read
+        if (m_Timing.slowestSubRead.empty() || took > m_Timing.slowest)
+        {
+            m_Timing.slowest = took;
+            m_Timing.slowestSubRead = name;
+        }
+    }
+
+    [[nodiscard]] SystemReadTiming timing() const noexcept
+    {
+        SystemReadTiming timing = m_Timing;
+        timing.total = m_Last - m_Start;
+        return timing;
+    }
+
+  private:
+    NowFn m_Now;
+    std::chrono::steady_clock::time_point m_Start;
+    std::chrono::steady_clock::time_point m_Last;
+    SystemReadTiming m_Timing;
+};
+
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), m_GroupFirstCoreIds(groupFirstCoreIds())
+WindowsSystemProbe::~WindowsSystemProbe() = default;
+
+WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), ProcessorPerformanceCounter::open())
+{
+    // Opening the counter connected PDH, which may have loaded perf providers holding COM objects (#1898).
+    Windows::keepComForPerfProviders();
+}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
+    : WindowsSystemProbe(baseCpuMHz, std::move(processorPerformance), systemFunctions())
+{}
+
+WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
+{
+    WindowsSystemProbeFunctions fns;
+    fns.cpu.getSystemTimes = &GetSystemTimes;
+    fns.cpu.getActiveProcessorGroupCount = &GetActiveProcessorGroupCount;
+    fns.cpu.getActiveProcessorCount = &GetActiveProcessorCount;
+    fns.cpu.getMaximumProcessorGroupCount = &GetMaximumProcessorGroupCount;
+    fns.cpu.getMaximumProcessorCount = &GetMaximumProcessorCount;
+    fns.cpu.getLogicalProcessorInformationEx = &GetLogicalProcessorInformationEx;
+    fns.cpu.getSystemInfo = &GetSystemInfo;
+    fns.nt.ntQuerySystemInformation = Windows::ntQuerySystemInformation();
+    fns.nt.ntQuerySystemInformationEx = Windows::ntQuerySystemInformationEx();
+    fns.memory.globalMemoryStatusEx = &GlobalMemoryStatusEx;
+    fns.memory.getPerformanceInfo = &GetPerformanceInfo;
+    fns.network.getIfTable2 = &GetIfTable2;
+    fns.network.freeMibTable = &FreeMibTable;
+    fns.network.readAdapterDeviceInstanceId = &readAdapterDeviceInstanceId;
+    fns.network.devicePresence = &devicePresence;
+    fns.now = &std::chrono::steady_clock::now;
+    return fns;
+}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz,
+                                       std::unique_ptr<ProcessorPerformanceCounter> processorPerformance,
+                                       const WindowsSystemProbeFunctions& functions)
+    : m_Fns(functions),
+      m_NumCores(logicalProcessorCount(m_Fns.cpu)),
+      m_GroupFirstCoreIds(groupFirstCoreIds(m_Fns.cpu)),
+      m_BaseCpuMHz(baseCpuMHz),
+      m_ProcessorPerformance(std::move(processorPerformance))
 {
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
@@ -250,19 +522,42 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), 
         m_CpuModel = "Unknown CPU";
     }
 
+    // The CPU Details facts (#809), read again only when the set of active processors changes
+    // (refreshCpuDetailsIfProcessorsChanged())
+    m_CpuDetails.details = readCpuDetails(m_Fns, m_GroupFirstCoreIds, m_CpuDetails.ids);
+
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
 
 SystemCounters WindowsSystemProbe::read()
 {
     SystemCounters counters{};
+    SubReadTimer timer(m_Fns.now);
 
     readCpuCounters(counters);
+    timer.lap(SUB_READ_CPU);
+    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore);
+    timer.lap(SUB_READ_CPU_DETAILS);
     readMemoryCounters(counters);
+    timer.lap(SUB_READ_MEMORY);
     readUptime(counters);
     readStaticInfo(counters);
+    timer.lap(SUB_READ_UPTIME);
     readCpuFreq(counters);
+    timer.lap(SUB_READ_PDH_FREQ);
     readNetworkCounters(counters);
+    timer.lap(SUB_READ_IF_TABLE);
+
+    // Kept for the caller, and a slow sub-read named here: BackgroundSampler's overrun log can only say
+    // "system" (#2731)
+    m_LastReadTiming = timer.timing();
+    if (m_LastReadTiming.slowest >= SLOW_SUB_READ)
+    {
+        spdlog::debug("WindowsSystemProbe: the {} sub-read took {} ms of a {} ms pass",
+                      m_LastReadTiming.slowestSubRead,
+                      std::chrono::duration_cast<std::chrono::milliseconds>(m_LastReadTiming.slowest).count(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(m_LastReadTiming.total).count());
+    }
 
     return counters;
 }
@@ -274,27 +569,17 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
     FILETIME ftKernel{};
     FILETIME ftUser{};
 
-    if (GetSystemTimes(&ftIdle, &ftKernel, &ftUser) == 0)
+    if (m_Fns.cpu.getSystemTimes(&ftIdle, &ftKernel, &ftUser) == 0)
     {
         spdlog::error("GetSystemTimes failed: {}", GetLastError());
         return;
     }
 
-    // GetSystemTimes returns:
-    // - idle: time spent idle
-    // - kernel: time spent in kernel mode (includes idle time)
-    // - user: time spent in user mode
-    //
-    // To get actual kernel time: kernel - idle
-
-    const uint64_t idle = filetimeToTicks(ftIdle);
-    const uint64_t kernel = filetimeToTicks(ftKernel);
-    const uint64_t user = filetimeToTicks(ftUser);
-    const uint64_t system = kernel - idle; // Actual kernel time
-
-    counters.cpuTotal.idle = idle;
-    counters.cpuTotal.system = system;
-    counters.cpuTotal.user = user;
+    // GetSystemTimes returns idle time, kernel time (which includes idle) and user time. The split
+    // is processorTimes()', as for each core, so a sample whose idle time exceeds its kernel time
+    // reads as no system time rather than wrapping to ~2^64 ticks (#1719).
+    counters.cpuTotal =
+        processorTimes(Windows::fileTimeTicks(ftKernel), Windows::fileTimeTicks(ftIdle), Windows::fileTimeTicks(ftUser), 0, 0);
 
     // Now get per-core CPU via NtQuerySystemInformation
     readPerCoreCpuCounters(counters);
@@ -318,9 +603,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     // so a machine with more than 64 logical processors (several groups) showed one group's
     // cores (#1107). NtQuerySystemInformationEx takes the group as input: query each in turn and
     // append them in group order.
-    const WORD groupCount = GetActiveProcessorGroupCount();
+    const WORD groupCount = m_Fns.cpu.getActiveProcessorGroupCount();
     const bool multiGroup = groupCount > 1;
-    if (const auto ntQueryEx = getNtQuerySystemInformationEx(); ntQueryEx != nullptr)
+    if (const auto ntQueryEx = m_Fns.nt.ntQuerySystemInformationEx; ntQueryEx != nullptr)
     {
         std::vector<CpuCounters> cores;
         cores.reserve(m_NumCores);
@@ -336,7 +621,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
                 break;
             }
             USHORT groupNumber = group;
-            std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(GetActiveProcessorCount(group), 1));
+            std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(m_Fns.cpu.getActiveProcessorCount(group), 1));
             ULONG returnLength = 0;
             const NTSTATUS status = queryProcessorPerformance(
                 perfInfo,
@@ -379,7 +664,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     // Fallback without NtQuerySystemInformationEx on a single-group machine.
-    auto ntQuery = getNtQuerySystemInformation();
+    const auto ntQuery = m_Fns.nt.ntQuerySystemInformation;
     if (ntQuery == nullptr)
     {
         spdlog::warn("NtQuerySystemInformation not available, per-core CPU disabled");
@@ -405,12 +690,12 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
-void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
+void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
 {
     MEMORYSTATUSEX memStatus{};
     memStatus.dwLength = sizeof(memStatus);
 
-    if (GlobalMemoryStatusEx(&memStatus) == 0)
+    if (m_Fns.memory.globalMemoryStatusEx(&memStatus) == 0)
     {
         spdlog::error("GlobalMemoryStatusEx failed: {}", GetLastError());
         return;
@@ -428,9 +713,18 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     // per-list breakdown (SystemMemoryListInformation).
     PERFORMANCE_INFORMATION perfInfo{};
     perfInfo.cb = sizeof(perfInfo);
-    if (GetPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
+    if (m_Fns.memory.getPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
     {
         counters.memory.cachedBytes = static_cast<uint64_t>(perfInfo.SystemCache) * static_cast<uint64_t>(perfInfo.PageSize);
+
+        // Commit charge, its limit and peak (#1627): the same call, so the Memory chart's value
+        // strip costs no extra system call per sample.
+        const CommitBytes commit =
+            commitFromPerformanceInfo(perfInfo.CommitTotal, perfInfo.CommitLimit, perfInfo.CommitPeak, perfInfo.PageSize);
+        counters.memory.commitChargeBytes = commit.chargeBytes;
+        counters.memory.commitLimitBytes = commit.limitBytes;
+        counters.memory.commitPeakBytes = commit.peakBytes;
+        counters.memory.hasCommitCharge = true;
     }
 
     // Swap: the page files' own sizes (#1026). The commit figures in MEMORYSTATUSEX describe RAM
@@ -441,16 +735,16 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     counters.memory.swapFreeBytes = swap.freeBytes;
 }
 
-SwapBytes WindowsSystemProbe::readSwap()
+SwapBytes WindowsSystemProbe::readSwap() const
 {
-    const auto ntQuerySystemInformation = getNtQuerySystemInformation();
+    const auto ntQuerySystemInformation = m_Fns.nt.ntQuerySystemInformation;
     if (ntQuerySystemInformation == nullptr)
     {
         return {};
     }
 
     SYSTEM_INFO sysInfo{};
-    GetSystemInfo(&sysInfo);
+    m_Fns.cpu.getSystemInfo(&sysInfo);
 
     // One entry is 32 bytes plus its file name; 4 KiB holds dozens of page files. Grow once if the
     // OS says it needs more.
@@ -482,8 +776,8 @@ void WindowsSystemProbe::readUptime(SystemCounters& counters)
     counters.uptimeSeconds = uptimeMs / 1000;
 
     // Calculate boot timestamp
-    auto now = std::chrono::system_clock::now();
-    auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    const auto now = std::chrono::system_clock::now();
+    const auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     const uint64_t nowEpochSeconds = toU64NonNegative(nowEpoch);
     counters.bootTimestamp = (nowEpochSeconds > counters.uptimeSeconds) ? (nowEpochSeconds - counters.uptimeSeconds) : 0ULL;
 }
@@ -493,26 +787,34 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
+    counters.cpuDetails = m_CpuDetails.details;
+}
+
+void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore)
+{
+    const auto sampledIds = perCore | std::views::transform(&CpuCounters::coreId);
+    if (CpuTopology::cpuDetailsNeedRead(m_CpuDetails, sampledIds))
+    {
+        // Rare: only after the set of active processors changes (a hot-add), never every sample
+        std::vector<std::size_t> describedIds;
+        CpuDetails fresh = readCpuDetails(m_Fns, m_GroupFirstCoreIds, describedIds);
+        (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
+    }
+    // cpuCoreCount and the fallback per-core buffer follow the processors actually sampled, so
+    // cpuPerCore.size() keeps matching cpuCoreCount after a hot-add. A failed read (none) keeps both.
+    if (!perCore.empty())
+    {
+        m_NumCores = perCore.size();
+    }
 }
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
 {
-    // Read CPU frequency from registry (in MHz)
-    // This is the base frequency; current frequency requires more complex APIs
-    {
-        DWORD mhz = 0;
-        DWORD dataSize = sizeof(mhz);
-        if (RegGetValueW(HKEY_LOCAL_MACHINE,
-                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         L"~MHz",
-                         RRF_RT_REG_DWORD,
-                         nullptr,
-                         &mhz,
-                         &dataSize) == ERROR_SUCCESS)
-        {
-            counters.cpuFreqMHz = toU64NonNegative(mhz);
-        }
-    }
+    // The current clock, as Linux reports it under the same hasCpuFreq: the base clock scaled by
+    // "% Processor Performance" (#1184). The base clock alone until PDH has a rate, or without PDH.
+    const std::optional<double> performancePercent =
+        (m_ProcessorPerformance != nullptr) ? m_ProcessorPerformance->read() : std::optional<double>{};
+    counters.cpuFreqMHz = currentCpuFrequencyMHz(m_BaseCpuMHz, performancePercent);
     // Load average is not available on Windows (leave at 0)
 }
 
@@ -522,12 +824,15 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasPerCoreCpu = true, // Via NtQuerySystemInformation
         .hasMemoryAvailable = true,
         .hasSwap = true,
+        .hasCommitCharge = true, // GetPerformanceInfo's CommitTotal/CommitLimit/CommitPeak (#1627)
         .hasUptime = true,
-        .hasIoWait = false,         // Windows doesn't expose iowait
-        .hasSteal = false,          // Windows doesn't expose steal time
-        .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // From registry ~MHz
-        .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasIoWait = false,                    // Windows doesn't expose iowait
+        .hasSteal = false,                     // Windows doesn't expose steal time
+        .hasLoadAvg = false,                   // Windows doesn't have load average
+        .hasCpuFreq = true,                    // Current clock: rated base x % Processor Performance (#1184, #1530)
+        .hasNetworkCounters = true,            // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasVirtualizationInfo = true,         // Firmware/SLAT/hypervisor status (#809)
+        .hasVirtualizationSecurityInfo = true, // VBS and memory integrity (#809)
     };
 }
 
@@ -544,6 +849,16 @@ static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
 static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
 static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
 static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
+// And networkRowKind()'s (#2568).
+static_assert(IF_TYPE_ETHERNET == IF_TYPE_ETHERNET_CSMACD);
+static_assert(IF_TYPE_PPP_LINK == IF_TYPE_PPP);
+static_assert(IF_TYPE_LOOPBACK == IF_TYPE_SOFTWARE_LOOPBACK);
+static_assert(IF_TYPE_VIRTUAL == IF_TYPE_PROP_VIRTUAL);
+static_assert(IF_TYPE_WIFI == IF_TYPE_IEEE80211);
+static_assert(IF_TYPE_TUNNEL_LINK == IF_TYPE_TUNNEL);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_LAN == NdisPhysicalMediumWirelessLan);
+static_assert(NDIS_PHYSICAL_MEDIUM_WIRELESS_WAN == NdisPhysicalMediumWirelessWan);
+static_assert(NDIS_PHYSICAL_MEDIUM_NATIVE_802_11 == NdisPhysicalMediumNative802_11);
 
 namespace
 {
@@ -552,27 +867,12 @@ namespace
 constexpr const wchar_t* NETWORK_CLASS_KEY = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
 constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
 
-[[nodiscard]] std::wstring guidText(const GUID& guid)
-{
-    return std::format(L"{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-                       guid.Data1,
-                       guid.Data2,
-                       guid.Data3,
-                       guid.Data4[0],
-                       guid.Data4[1],
-                       guid.Data4[2],
-                       guid.Data4[3],
-                       guid.Data4[4],
-                       guid.Data4[5],
-                       guid.Data4[6],
-                       guid.Data4[7]);
-}
-
 // The adapter's PnP device instance id from the registry, or empty when the interface has none
 // (Teredo, 6to4) or it cannot be read.
 [[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid)
 {
-    const std::wstring keyPath = std::wstring(NETWORK_CLASS_KEY) + guidText(interfaceGuid) + L"\\Connection";
+    const std::wstring keyPath =
+        std::wstring(NETWORK_CLASS_KEY) + WinString::utf8ToWide(Windows::guidText(interfaceGuid)) + L"\\Connection";
     DWORD bytes = 0;
     if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, nullptr, &bytes) !=
             ERROR_SUCCESS ||
@@ -611,21 +911,18 @@ constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
     }
 }
 
-// How long an empty device-id read waits before the registry is asked again (#1369 review).
-constexpr std::chrono::seconds ADAPTER_ID_RETRY_INTERVAL{30};
+// How long an empty device-id read waits before the registry is asked again (#1369 review), and how
+// long a device's presence is trusted with no change in the interface table (#2731): the backstop.
+constexpr std::chrono::seconds ADAPTER_DEVICE_CACHE_TTL{Domain::Sampling::NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS};
+} // namespace
 
-// The adapter's device instance id, from @p cache or the registry. A found id is kept for good (an
-// interface's adapter never changes); an empty read is not taken as final -- the value may not be
-// written yet, or the read failed -- and is retried after ADAPTER_ID_RETRY_INTERVAL, so a phantom
-// adapter first seen too early is still recognised later rather than listed until restart.
-template<typename Cache>
-[[nodiscard]] const std::wstring& adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
+WindowsSystemProbe::AdapterDevice&
+WindowsSystemProbe::adapterDevice(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now)
 {
-    const auto now = std::chrono::steady_clock::now();
     std::array<std::uint64_t, 2> guidHalves{};
     static_assert(sizeof(guidHalves) == sizeof(GUID));
     std::memcpy(guidHalves.data(), &interfaceGuid, sizeof(GUID));
-    auto& entry = cache[interfaceLuid];
+    AdapterDevice& entry = m_AdapterDevices[interfaceLuid];
     // Windows can give a freed LUID to a later interface: a different GUID is a different adapter,
     // whose id is read afresh rather than inherited (#1369 review).
     if (entry.guidLow != guidHalves[0] || entry.guidHigh != guidHalves[1])
@@ -634,14 +931,35 @@ template<typename Cache>
         entry.guidLow = guidHalves[0];
         entry.guidHigh = guidHalves[1];
     }
+    // A found id is kept for good (an interface's adapter never changes); an empty read is not taken
+    // as final -- the value may not be written yet, or the read failed -- and is retried after
+    // ADAPTER_DEVICE_CACHE_TTL, so a phantom adapter first seen too early is still recognised later
+    // rather than listed until restart. The presence was that of the old id: looked up again.
     if (entry.id.empty() && now >= entry.retryAt)
     {
-        entry.id = readAdapterDeviceInstanceId(interfaceGuid);
-        entry.retryAt = now + ADAPTER_ID_RETRY_INTERVAL;
+        entry.id = m_Fns.network.readAdapterDeviceInstanceId(interfaceGuid);
+        entry.retryAt = now + ADAPTER_DEVICE_CACHE_TTL;
+        entry.presenceKnown = false;
     }
-    return entry.id;
+    return entry;
 }
-} // namespace
+
+DevicePresence
+WindowsSystemProbe::adapterDevicePresence(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now)
+{
+    AdapterDevice& entry = adapterDevice(interfaceLuid, interfaceGuid, now);
+    // CM_Locate_DevNodeW is a PnP call, and a machine with Hyper-V or WSL has several down vEthernet
+    // rows, so asking for every one on every pass stalled the pass during network-stack churn (#2731).
+    // The answer is kept until the interface table changes (readNetworkCounters() drops every entry's),
+    // the id is read again, or the backstop runs out.
+    if (!entry.presenceKnown || now >= entry.presenceExpiresAt)
+    {
+        entry.presence = m_Fns.network.devicePresence(entry.id);
+        entry.presenceKnown = true;
+        entry.presenceExpiresAt = now + ADAPTER_DEVICE_CACHE_TTL;
+    }
+    return entry.presence;
+}
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
@@ -649,7 +967,7 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
     // Available since Windows Vista/Server 2008.
     MIB_IF_TABLE2* rawTable = nullptr;
-    const DWORD status = GetIfTable2(&rawTable);
+    const DWORD status = m_Fns.network.getIfTable2(&rawTable);
     if (status != NO_ERROR || rawTable == nullptr)
     {
         spdlog::warn("GetIfTable2 failed: {}", status);
@@ -658,11 +976,28 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // Owned from here, so an exception thrown while the rows are read (the device-id cache and
     // registry lookups allocate) still frees it; the sampler catches and carries on, so a raw
     // pointer leaked a table on every failed sample (#1369 review).
-    const auto freeTable = [](MIB_IF_TABLE2* t) noexcept
+    const auto freeTable = [freeMibTable = m_Fns.network.freeMibTable](MIB_IF_TABLE2* t) noexcept
     {
-        FreeMibTable(t);
+        freeMibTable(t);
     };
     const std::unique_ptr<MIB_IF_TABLE2, decltype(freeTable)> table(rawTable, freeTable);
+
+    // An interface added or gone, or one whose status changed, is a PnP or link event after which a
+    // down interface's device may be gone or back: every cached presence is looked up again (#2731).
+    m_InterfaceKeysScratch.clear();
+    for (ULONG i = 0; i < table->NumEntries; ++i)
+    {
+        const MIB_IF_ROW2& row = table->Table[i];
+        m_InterfaceKeysScratch.push_back({.luid = row.InterfaceLuid.Value, .operStatus = static_cast<std::uint32_t>(row.OperStatus)});
+    }
+    if (networkInterfacesChanged(m_InterfaceKeysScratch, m_InterfaceKeys))
+    {
+        for (AdapterDevice& device : m_AdapterDevices | std::views::values)
+        {
+            device.presenceKnown = false;
+        }
+    }
+    const auto now = m_Fns.now();
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -676,10 +1011,9 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         }
         // Adapters removed from the system stay listed; they carry nothing (#1284). A down row's
         // device is looked up: down alone doesn't mean removed.
-        const DevicePresence presence =
-            needsDevicePresence(row.OperStatus)
-                ? devicePresence(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
-                : DevicePresence::Unknown;
+        const DevicePresence presence = needsDevicePresence(row.OperStatus)
+                                          ? adapterDevicePresence(row.InterfaceLuid.Value, row.InterfaceGuid, now)
+                                          : DevicePresence::Unknown;
         if (isNotPresentNetworkRow(row.OperStatus, presence))
         {
             continue;
@@ -726,7 +1060,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         const bool hardware =
             isHardwareNetworkRow(row.InterfaceAndOperStatusFlags.HardwareInterface != 0, row.Type, row.PhysicalMediumType);
         ifaceCounters.isVirtual = !hardware;
-        ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.isVirtualKnown = true;                                   // Every MIB_IF_ROW2 carries the flag (#1260)
+        ifaceCounters.kind = networkRowKind(row.Type, row.PhysicalMediumType); // The Type icon's link kind (#2568)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)

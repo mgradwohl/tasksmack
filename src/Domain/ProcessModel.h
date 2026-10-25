@@ -1,11 +1,16 @@
 #pragma once
 
+#include "DeferredProbe.h"
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ProcessTypes.h"
 #include "ProcessEnergyAttribution.h"
+#include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
+#include "SingleLineText.h"
 #include "SocketTrafficAccumulator.h"
 
 #include <atomic>
@@ -17,23 +22,29 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace Domain
 {
 
-// Forward declaration
+// Forward declarations
 class GPUModel;
+class ServiceModel;
+struct ProcessGPUPublication;
 
+/// One generation of the aggregated system histories, aligned by timestamps. Each series is a view of
+/// the model's shared, append-only storage (#1412, #2156): taking a generation copies five shared_ptrs,
+/// not the samples, and a view stays valid and unchanged for as long as the reader holds it.
 struct ProcessSystemHistories
 {
     std::uint64_t version = 0;
-    std::vector<double> timestamps;
-    std::vector<double> power;
-    std::vector<double> pageFaults;
-    std::vector<double> threadCount;
-    std::vector<double> handleCount;
+    HistoryView<double> timestamps;
+    HistoryView<double> power;
+    HistoryView<double> pageFaults;
+    HistoryView<double> threadCount;
+    HistoryView<double> handleCount;
     // The probe's capabilities as of the latest published generation (#1254): a probe can withdraw
     // one after the first sample (Windows' EStats check, #1161), so they aren't fixed at startup.
     Platform::ProcessCapabilities capabilities;
@@ -44,8 +55,6 @@ struct ProcessSystemHistories
 struct ProcessSystemHistorySample
 {
     double timeSeconds = 0.0; ///< steady_clock seconds since its epoch, as the histories' timestamps
-    double netSentBytesPerSec = 0.0;
-    double netReceivedBytesPerSec = 0.0;
     double pageFaultsPerSec = 0.0;
     double threadCount = 0.0;
     double handleCount = 0.0;
@@ -65,17 +74,28 @@ class ProcessModel : public ISamplable
     /// per-process GPU counters were read under, published with the generation.
     struct GpuSupport
     {
-        bool perProcess = false;  ///< Per-process GPU data at all
-        bool utilization = false; ///< Per-process utilization among it
-        /// The probe supports per-process GPU data, but reading it failed for this generation: its
-        /// GPU fields are a gap, not a measurement -- and not "not available on this system".
+        bool perProcess = false;     ///< Per-process GPU data at all
+        bool utilization = false;    ///< Per-process utilization among it
+        bool npuPerProcess = false;  ///< Per-process NPU / compute-accelerator data at all (#1827)
+        bool npuUtilization = false; ///< Per-process NPU utilization among it
+        /// The probe supports per-process GPU or NPU data, but reading it failed for this generation:
+        /// its GPU and NPU fields are a gap, not a measurement -- and not "not available on this system".
         bool readFailed = false;
 
         friend bool operator==(const GpuSupport&, const GpuSupport&) = default;
     };
 
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now = [] { return Clock::now(); });
+    /// A model whose probe arrives later, through setProbe() (#2731): nothing is published and the
+    /// capabilities are the defaults until it does.
+    explicit ProcessModel(DeferredProbeTag /*tag*/, NowFunction now = [] { return Clock::now(); });
     ~ProcessModel() override = default;
+
+    /// Gives a model built with DeferredProbeTag its probe (#2731). Reads the probe's capabilities, ticks
+    /// per second and total memory, as the constructor did; the probe is not otherwise read. Meant for
+    /// the sampler thread, before its first sample (the sampler's start hook); thread-safe, and a probe
+    /// already held is replaced.
+    void setProbe(std::unique_ptr<Platform::IProcessProbe> probe);
 
     ProcessModel(const ProcessModel&) = delete;
     ProcessModel& operator=(const ProcessModel&) = delete;
@@ -92,8 +112,8 @@ class ProcessModel : public ISamplable
     /// Thread-safe.
     void refresh();
 
-    /// Update with externally-provided counters (for background sampler).
-    /// Thread-safe.
+    /// Test and benchmark seam (#2155): the app samples through refresh(). Applies externally
+    /// provided counters as one sample. Thread-safe.
     void updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     /// Get latest computed snapshots (copy for thread safety).
@@ -103,24 +123,6 @@ class ProcessModel : public ISamplable
     /// Always reflects the latest published data, unlike a version-gated render cache.
     [[nodiscard]] std::optional<ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
-    /// Result of findSnapshotWithVersion(): a snapshot paired with the exact publication
-    /// version it was read from.
-    struct SnapshotLookupResult
-    {
-        ProcessSnapshot snapshot;
-        std::uint64_t version = 0;
-    };
-
-    /// Same lookup as findSnapshot(), but also returns the publication version the snapshot
-    /// was read under, both under the same lock. A caller that instead calls findSnapshot()
-    /// and snapshotVersion() as two separate calls can have a publish land in between them,
-    /// pairing a snapshot from one generation with the version number of another -- e.g. a
-    /// consumer using that version to gate "is this new data worth recording" (as
-    /// ProcessDetailsPanel's history once did; it now uses watchedSamplesSince()) could see a
-    /// version that never actually matched the snapshot content it was given, silently
-    /// skipping or duplicating a history point.
-    [[nodiscard]] std::optional<SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
-
     /// Copy the snapshot generation only when a newer version exists. "Copy" is a shared_ptr
     /// assignment (an O(1) refcount bump), not a deep copy of the underlying vector: the
     /// vector is immutable once published, so readers can share it directly instead of each
@@ -129,12 +131,24 @@ class ProcessModel : public ISamplable
     /// untouched. With @p outCapabilities, the probe's capabilities published with that generation
     /// are copied into it under the same lock (#1254), so a reader keeps them current at no extra cost.
     /// With @p outGpuSupport, likewise the GPU support that generation's GPU fields were read under
-    /// (#1210): not the GPU model's current state, which can differ while merges are throttled.
+    /// (#1210): not the GPU model's current state, which can have moved on since its last
+    /// per-process publication (#1417). With @p outRowHistory, likewise the per-process histories
+    /// published with that generation (#1612), row-aligned with it; nullptr while none are kept.
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                                std::uint64_t& outVersion,
                                                Platform::ProcessCapabilities* outCapabilities = nullptr,
-                                               GpuSupport* outGpuSupport = nullptr) const;
+                                               GpuSupport* outGpuSupport = nullptr,
+                                               std::shared_ptr<const ProcessRowHistory::Generation>* outRowHistory = nullptr) const;
+
+    /// Which per-process histories to keep for the Processes table's sparklines (#1612): from the next
+    /// generation on, each publishes a ring per process per metric in @p metrics, row-aligned with its
+    /// snapshots (tryCopySnapshotsIfNewer()'s @p outRowHistory). An empty set -- the default -- keeps
+    /// none: the next generation drops every ring and publishes none. Thread-safe and lock-free.
+    void setRowHistoryMetrics(ProcessRowHistory::MetricSet metrics) noexcept;
+
+    /// Test seam (#2155): what setRowHistoryMetrics() last set, for tests of the panels that set it.
+    [[nodiscard]] ProcessRowHistory::MetricSet rowHistoryMetrics() const noexcept;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
     /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
@@ -165,20 +179,15 @@ class ProcessModel : public ISamplable
     /// Copies the aggregated system histories into @p outHistories when their generation differs from
     /// @p lastSeenVersion (a previous ProcessSystemHistories::version) and returns whether it did. Their
     /// generation advances with every snapshot generation and when setMaxHistorySeconds() trims them,
-    /// so it is not a snapshotVersion().
+    /// so it is not a snapshotVersion(). The series are shared views, not copies (#2156): this is
+    /// O(series) under the shared lock, whatever the history length, and consecutive generations'
+    /// views share their storage.
     [[nodiscard]] bool tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const;
-
-    // Aggregated system-level histories derived from per-process data
-    [[nodiscard]] std::vector<double> systemNetSentHistory() const;
-    [[nodiscard]] std::vector<double> systemNetRecvHistory() const;
-    [[nodiscard]] std::vector<double> systemPageFaultsHistory() const;
-    [[nodiscard]] std::vector<double> systemThreadCountHistory() const;
-    [[nodiscard]] std::vector<double> systemHandleCountHistory() const;
-    [[nodiscard]] std::vector<double> systemPowerHistory() const;
-    [[nodiscard]] std::vector<double> historyTimestamps() const;
 
     /// Sets the history window, clamped to SamplingConfig's range, and trims the system histories to
     /// it at once, advancing their generation (tryCopySystemHistoriesIfNewer()) when it has one (#1145).
+    /// Changing the histories' capacity never allocates (#2156), so the five series always keep the
+    /// same capacity and length.
     void setMaxHistorySeconds(double seconds);
 
     /// Fills in the next sample of a series, returning false when there are no more.
@@ -206,18 +215,26 @@ class ProcessModel : public ISamplable
     /// tryCopySystemHistoriesIfNewer() instead.
     [[nodiscard]] Platform::ProcessCapabilities capabilities() const;
 
-    /// Set GPU model for per-process GPU data.
-    /// When set, refresh() automatically queries GPU counters and merges them.
+    /// Set GPU model for per-process GPU data. When set, refresh() merges the per-process GPU
+    /// counters the GPU model's own sampler last published (GPUModel::processGPUPublication()); it
+    /// never calls the GPU probe, so a slow GPU driver read doesn't hold up the process list (#1417).
     void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
 
-    /// Hint whether interactive resize/move redraw is currently active.
-    /// Allows throttling expensive GPU merge work during interactions.
-    void setInteractionActive(bool active) noexcept;
+    /// Set the service list that says which services each process hosts (#1880). When set, refresh()
+    /// fills each snapshot's services from the list the service model last published, if it is current
+    /// (ProcessServices::isCurrent()); it never samples the service model itself, whose own sampler
+    /// keeps it current while something needs it. Its PIDs also make ProcessCapabilities::hasServices
+    /// true. The Linux unit from the probe is merged whether or not one is set.
+    void setServiceModel(std::shared_ptr<const ServiceModel> serviceModel);
 
   private:
+    // Set by the constructor or setProbe() (under m_SamplingMutex); refresh()'s null check reads it outside
+    // the lock, on the one sampling thread (the sampler's, which also runs setProbe() from its start
+    // hook), as before.
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     NowFunction m_Now;
-    std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
+    std::shared_ptr<GPUModel> m_GPUModel;               // For per-process GPU data
+    std::shared_ptr<const ServiceModel> m_ServiceModel; // For the services each process hosts (#1880), guarded by m_Mutex
     // The probe's capabilities as of the sample being computed: sampling thread only, under
     // m_SamplingMutex. m_PublishedCapabilities is the copy readers see, guarded by m_Mutex.
     Platform::ProcessCapabilities m_Capabilities;
@@ -237,11 +254,15 @@ class ProcessModel : public ISamplable
         double netSentBytesPerSec = 0.0;      // last network rates, held while the probe's read is cached
         double netReceivedBytesPerSec = 0.0;
         std::uint64_t generation = 0; // refresh generation when last seen
+        Clock::time_point firstSeen;  // sample time of the generation that first listed it (#1417)
+        // Single-line forms of counters.name / counters.command, re-derived only when those change (#1624).
+        SingleLineMemo name;
+        SingleLineMemo command;
     };
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
     // combined hash stored in ProcessSnapshot::uniqueKey (a display/collapse-state id that
-    // is not collision-free). Using the actual pair as the map key means a hash collision
+    // is unlikely to collide since #2115, but not collision-free). Using the actual pair as the map key means a hash collision
     // only costs a bucket collision, not silently merging two unrelated processes' state.
     struct ProcessIdentity
     {
@@ -264,24 +285,27 @@ class ProcessModel : public ISamplable
     // Monotonically increasing counter; bumped each computeSnapshotsLocked() call.
     // Entries with generation != m_CurrentGeneration belong to dead processes.
     std::uint64_t m_CurrentGeneration = 0;
+    // Set while computeSnapshotsLocked() walks the processes. Still set at the next call means the
+    // last one threw part way, possibly between a process's SingleLineMemo update and its counters
+    // being stored, so that call re-derives every single-line form rather than trust them (#1624).
+    bool m_SnapshotBuildInterrupted = false;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
     Clock::time_point m_PrevSampleTime;    // For rate calculations (network, I/O, power)
     bool m_HasPrevSampleTime = false;
-    Clock::time_point m_StartTime; // For history timestamp alignment
-    bool m_HasStartTime = false;
 
-    // Aggregated system histories (aligned by timestamps). Capacity is set from the
-    // configured window; time-based trimming via discardFront keeps them in the window.
-    HistoryBuffer<double> m_SystemNetSentHistory;
-    HistoryBuffer<double> m_SystemNetRecvHistory;
-    HistoryBuffer<double> m_SystemPageFaultsHistory;
-    HistoryBuffer<double> m_SystemThreadCountHistory;
-    HistoryBuffer<double> m_SystemHandleCountHistory;
-    HistoryBuffer<double> m_SystemPowerHistory;
-    HistoryBuffer<double> m_Timestamps;
+    // Aggregated system histories (aligned by timestamps), guarded by m_Mutex. Capacity is set from
+    // the configured window; time-based trimming via discardFront keeps them in the window. Shared,
+    // append-only storage (#2156), so tryCopySystemHistoriesIfNewer() hands out views rather than
+    // copying every sample. An append reserves room in all five before pushing to any
+    // (appendSystemHistoryLocked()), so a std::bad_alloc leaves them aligned.
+    SharedHistoryBuffer<double> m_SystemPageFaultsHistory;
+    SharedHistoryBuffer<double> m_SystemThreadCountHistory;
+    SharedHistoryBuffer<double> m_SystemHandleCountHistory;
+    SharedHistoryBuffer<double> m_SystemPowerHistory;
+    SharedHistoryBuffer<double> m_Timestamps;
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // Align with Storage/System defaults
 
     // Latest computed snapshots. Immutable once published (replaced wholesale by the writer,
@@ -295,11 +319,10 @@ class ProcessModel : public ISamplable
     // from m_SnapshotVersion, whose generations each have a watched sample (watchedSamplesSince()).
     std::uint64_t m_SystemHistoryVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSystemHistoryVersion{0};
-    std::atomic<bool> m_InteractionActive{false};
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
-    Clock::time_point m_LastGpuMergeTime;
-    bool m_HasLastGpuMergeTime = false;
-    bool m_GpuMergeFailing = false; // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
+    bool m_GpuMergeFailing = false;            // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
+    bool m_GpuDataStale = false;               // guarded by m_SamplingMutex; logs stale per-process GPU data once per streak (#1417)
+    bool m_SystemHistoryAppendFailing = false; // guarded by m_SamplingMutex; logs a failing history append once per streak (#2156)
 
     // The watched process (watchProcess()) and its latest samples, oldest first. A fixed ring --
     // m_WatchedSampleStart is the oldest slot -- so recording a sample never allocates while the
@@ -317,20 +340,35 @@ class ProcessModel : public ISamplable
     ProcessEnergy::Attributor m_EnergyAttributor; // guarded by m_SamplingMutex
     SocketTrafficAccumulator m_NetTraffic;        // guarded by m_SamplingMutex; per-process network bytes (#1099)
 
+    // Per-process histories for the sparklines (#1612): which metrics to keep (set from the UI
+    // thread), the rings carried between generations (sampling thread only), and the generation's
+    // published rings (guarded by m_Mutex, replaced with m_Snapshots so the two always match).
+    std::atomic<ProcessRowHistory::MetricSet> m_RowHistoryMetrics{0};
+    ProcessRowHistory::Tracker m_RowHistoryTracker; // guarded by m_SamplingMutex
+    std::shared_ptr<const ProcessRowHistory::Generation> m_RowHistory;
+
     // Helpers
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    /// Merges the per-process GPU counters into @p snapshots. @p outSupport is set to the support
-    /// they were read under as soon as the read returns, so a throw later in the merge leaves it set.
-    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport);
+    /// Merges @p publication's per-process GPU counters into @p snapshots. @p firstSeen holds, for
+    /// each snapshot, when this model first listed that process: a process first listed after the
+    /// publication was read has GPU fields that were never read (#1210, #1417): an entry for its
+    /// pid belongs to an exited process that held the pid at the read, and is not merged.
+    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
+                             const std::vector<Clock::time_point>& firstSeen,
+                             const ProcessGPUPublication& publication);
 
-    /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
-    /// On a throw the snapshots are published without GPU fields. The returned support keeps the
-    /// per-process support the failed read ran under, with readFailed set when that was supported,
-    /// so the GPU cells read as unreadable rather than as unsupported (#1210). Requires
-    /// m_SamplingMutex held.
-    GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    /// The per-process GPU fields of the generation sampled at @p now, from @p gpuModel's newest
+    /// publication (#1417) -- never a probe call -- and the support they were read under (#1210).
+    /// Nothing published yet: no fields read. Older than Sampling::PROCESS_GPU_DATA_MAX_AGE_MS, or a
+    /// failed read: published without GPU fields and marked readFailed, so the cells read as
+    /// unreadable rather than as measured zeros or as unsupported. Contained: a throwing merge
+    /// (bad_alloc) must not stop process publication (#1142). Requires m_SamplingMutex held.
+    GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
+                                     const std::vector<Clock::time_point>& firstSeen,
+                                     const GPUModel& gpuModel,
+                                     Clock::time_point now);
 
     /// Records @p sample as the newest watched sample, returning the one it displaced from the ring
     /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.
@@ -350,7 +388,10 @@ class ProcessModel : public ISamplable
                                                          unsigned pageFaultCountBits);
 
     void trimHistory();
-    void applyHistoryCapacity();
+    void applyHistoryCapacity() noexcept;
+    /// Appends @p sample to all five system histories, or on std::bad_alloc to none of them: room is
+    /// reserved in every series before any is pushed to. Requires m_Mutex held exclusively.
+    void appendSystemHistoryLocked(const ProcessSystemHistorySample& sample);
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

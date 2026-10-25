@@ -3,9 +3,12 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessArchitecture.h"
+#include "Platform/ProcessTypes.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
+#include "Platform/Linux/ProcPrivileges.h"
 #endif
 
 #include <atomic>
@@ -67,6 +70,7 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
+    [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)
@@ -114,6 +118,13 @@ class LinuxProcessProbe : public IProcessProbe
         m_CmdlineCacheTtl = ttl;
     }
 
+    /// Test seam: the host machine processes' architectures are compared against (#2394), normally
+    /// uname()'s. Not thread-safe; call before sampling starts.
+    void setHostMachineForTesting(ProcessArchitecture::Machine host)
+    {
+        m_HostMachine = host;
+    }
+
     /// Test seam: called at the end of enumerate(), after it captured the CPU total, so a test can
     /// change /proc/stat before totalCpuTime() is called and check the total was taken with the
     /// processes' stat reads (#1119). Not thread-safe against a concurrent enumerate(); set it before
@@ -142,8 +153,19 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::atomic<std::uint64_t> m_TotalCpuTimeAtEnumerate = NO_CAPTURED_TOTAL;
     std::function<void()> m_EnumerateTailHook; // See setEnumerateTailHookForTesting()
     bool m_HasPowerCap = false;
+    // How /proc is mounted (hidepid, gid=) and whether TaskSmack is in its group: read once at
+    // construction, for the PROCESSES_HIDDEN privilege bit (#2303). Remounting /proc is rare enough.
+    std::optional<ProcPrivileges::ProcMount> m_ProcMount;
+    bool m_InProcMountGroup = false;
     std::string m_PowerCapPath;
     std::uint64_t m_PowerCapMaxRangeUj = 0; // max_energy_range_uj, where the counter wraps (0: unknown)
+    /// A multi-socket machine's other package counters (package-1 and up), read with the first (#2444).
+    struct OtherPackageCounter
+    {
+        std::string path;
+        std::uint64_t maxRangeUj = 0;
+    };
+    std::vector<OtherPackageCounter> m_OtherPackages;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
@@ -156,6 +178,7 @@ class LinuxProcessProbe : public IProcessProbe
     mutable std::mutex m_SocketStatsMutex;
     std::shared_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
+    std::string m_OwnNetNamespace; // "net:[...]" of this process; empty when unreadable (#2398)
 
     // Inode-to-PID cache: refreshed on a TTL basis to avoid scanning
     // /proc/[pid]/fd/* every enumerate(). The claim timestamp is set under the
@@ -212,6 +235,31 @@ class LinuxProcessProbe : public IProcessProbe
     // Defaults to Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS. See setCmdlineCacheTtlForTesting().
     std::chrono::milliseconds m_CmdlineCacheTtl{};
 
+    // The machine this kernel runs (uname), which a process's architecture is compared against (#2394).
+    ProcessArchitecture::Machine m_HostMachine = ProcessArchitecture::Machine::Unknown;
+
+    // Architectures by PID (#2394), read once per process from the ELF header of /proc/[pid]/exe: an entry is
+    // used only for the process it was read from (the same start time and comm, as the command-line cache's;
+    // an exec changes the comm). Taken and put back by each enumerate() as m_CmdlineCache is, so it holds at
+    // most one entry per live process. Guarded by m_ArchitectureCacheMutex.
+    struct ArchitectureCacheEntry
+    {
+        std::uint64_t startTimeTicks = 0;
+        std::string comm;
+        std::string architecture; // ElfArchitecture::linuxArchitectureLabel(); empty if unreadable
+    };
+    using ArchitectureCache = std::unordered_map<std::int32_t, ArchitectureCacheEntry>;
+    std::mutex m_ArchitectureCacheMutex;
+    ArchitectureCache m_ArchitectureCache;
+
+    /// Set the architecture from previous's entry for this process, else from its executable (through
+    /// pidDirFd); the process's entry moves to seen. Call before the command line renames the process.
+    void readProcessArchitecture(int pidDirFd, ProcessCounters& counters, ArchitectureCache& previous, ArchitectureCache& seen) const;
+
+    /// The architecture of the executable /proc/[pid]/exe (through pidDirFd) names, on a host machine:
+    /// its ELF header's first bytes, and its path for an emulator's name. Empty if it can't be read.
+    [[nodiscard]] static std::string readExecutableArchitecture(int pidDirFd, ProcessArchitecture::Machine host);
+
     /// Parse the stat file in the /proc/[pid] directory `pidDirFd` is open on, for process `pid`.
     [[nodiscard]] bool parseProcessStat(int pidDirFd, int32_t pid, ProcessCounters& counters) const;
 
@@ -253,6 +301,9 @@ class LinuxProcessProbe : public IProcessProbe
     /// passed to `onSocket`: the inode-to-PID map from the same walk (#1426).
     template<typename OnSocket>
     static void countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket);
+    /// Whether the process whose /proc/[pid] directory @p pidDirFd is open on is in another network
+    /// namespace than this one; false when either link can't be read (#2398).
+    [[nodiscard]] bool inAnotherNetworkNamespace(int pidDirFd) const;
 
     /// Check if we can read I/O counters using the injected proc root
     [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
@@ -266,14 +317,21 @@ class LinuxProcessProbe : public IProcessProbe
             return std::hash<std::string_view>{}(text);
         }
     };
-    /// Whether each set of cgroups (a /proc/[pid]/cgroup file's contents) is frozen, within one pass.
-    using FrozenByCgroup = std::unordered_map<std::string, bool, StringHash, std::equal_to<>>;
+    /// What a set of cgroups (a /proc/[pid]/cgroup file's contents) says of its processes.
+    struct CgroupFacts
+    {
+        bool frozen = false;
+        std::string container; // CgroupContainer::containerFromCgroups()
+        std::string services;  // CgroupService::serviceFromCgroups() (#1886)
+    };
+    /// The facts of each set of cgroups seen, within one pass.
+    using FactsByCgroup = std::unordered_map<std::string, CgroupFacts, StringHash, std::equal_to<>>;
 
-    /// Get process status from cgroups (Suspended state detection); /proc/[pid]/cgroup is read
-    /// through `pidDirFd`. The freeze state is read once per pass for each distinct set of cgroups
-    /// (`frozenByCgroup`): processes sharing a cgroup share the answer.
-    [[nodiscard]] static std::string
-    getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup);
+    /// Fill `counters`' status (Suspended, from the cgroup freezer) and container from its cgroups;
+    /// /proc/[pid]/cgroup is read through `pidDirFd`. Both are worked out once per pass for each
+    /// distinct set of cgroups (`factsByCgroup`): processes sharing a cgroup share the answer.
+    static void
+    readCgroupFacts(int pidDirFd, const std::filesystem::path& cgroupRoot, FactsByCgroup& factsByCgroup, ProcessCounters& counters);
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
@@ -293,8 +351,16 @@ class LinuxProcessProbe : public IProcessProbe
     /// energy_uj is root-only on current kernels, #1103), and its wrap point.
     [[nodiscard]] bool detectPowerCap();
 
+    /// Beside a first counter at <zones>/intel-rapl:0, the other readable top-level zones there that are
+    /// CPU packages (their name "package-N"; not psys, the whole platform, which would count twice), in
+    /// zone order (#2444).
+    void detectOtherPackages(const std::filesystem::path& firstZone);
+
     /// Read the package energy counter in microjoules, or nullopt if it can't be read.
     [[nodiscard]] std::optional<uint64_t> readSystemEnergy() const;
+
+    /// A RAPL counter file (energy_uj, max_energy_range_uj) as a number, or nullopt.
+    [[nodiscard]] static std::optional<uint64_t> readEnergyFile(const std::string& path);
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

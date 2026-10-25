@@ -1,5 +1,19 @@
 name: Changelog
 
+# Tag pushes only. release.yml's dispatched dry runs never push a tag, so they never
+# trigger this workflow, and there is deliberately no workflow_dispatch trigger here.
+#
+# A tag's section comes from its own branch history (#2741): the commits between the previous
+# vX.Y.Z tag reachable from the tag and the tag itself, so v0.9.1 on release/0.9 lists the
+# backports since v0.9.0 and nothing from main, and v0.10.0 lists everything on main since
+# v0.9.0 (a backported fix is in both). git-cliff prepends that one section to CHANGELOG.md on
+# each branch that should carry it, and a pull request is opened against each:
+#   - release/X.Y, when it exists and holds the tag (v0.9.1 on release/0.9; vX.Y.0 at the cut);
+#   - main, always, so main's CHANGELOG.md is the canonical, complete file: every release's
+#     section, in the order the releases shipped. A release branch's copy holds only its own
+#     releases plus what it inherited at the cut.
+# A tag on neither branch aborts. When a release branch is cut after its tag (release/0.9 was,
+# after v0.9.0), label main's changelog PR `backport:X.Y` so the branch gets the section too.
 on:
   push:
     tags:
@@ -12,17 +26,17 @@ concurrency:
 permissions: {}
 
 jobs:
-  changelog:
-    name: Generate Changelog
+  targets:
+    name: Find the tag's branches
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     env:
       TAG_NAME: ${{ github.ref_name }}
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-
+      contents: read
+    outputs:
+      bases: ${{ steps.bases.outputs.bases }}
+      previous: ${{ steps.bases.outputs.previous }}
     steps:
       - name: Validate tag is strict semver
         # Reject pre-release/4-part tags (e.g. v1.2.3-rc1, v1.2.3.4) so the
@@ -36,64 +50,146 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history is required so git-cliff can read all commits and tags
+          # Full history, every branch and tag: the ancestry checks and the previous-tag
+          # lookup below need them.
           fetch-depth: 0
-          # Check out main so we can commit CHANGELOG.md back to the branch
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-      - name: Verify tag is on main
-        # Abort if the tag was not pushed from main to prevent generating a
-        # changelog from the wrong set of commits and committing it to main.
+      - name: Find the branches that hold the tag, and the previous tag on its history
+        id: bases
         run: |
           TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
-          MAIN_SHA=$(git rev-parse origin/main)
-          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting."
+          VERSION="${TAG_NAME#v}"
+          RELEASE_BRANCH="release/${VERSION%.*}"
+          bases=()
+          if git show-ref --verify --quiet "refs/remotes/origin/$RELEASE_BRANCH" &&
+             git merge-base --is-ancestor "$TAG_SHA" "origin/$RELEASE_BRANCH"; then
+            bases+=("$RELEASE_BRANCH")
+          fi
+          if [[ ${#bases[@]} -eq 0 ]] && ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is neither on main nor on ${RELEASE_BRANCH} (an ancestor of neither). Aborting changelog generation." >&2
             exit 1
           fi
+          # main always gets the section (see the header); the release branch only when it holds the tag.
+          bases+=(main)
+          # The previous strict vX.Y.Z tag reachable from the tag's parent: the section covers the
+          # commits after it. "git tag --merged" reads only the tag's own history, so v0.9.1's
+          # previous tag is v0.9.0 even once main carries v0.10.0.
+          previous=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged "${TAG_SHA}^" --sort=-v:refname |
+            grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | head -n1 || true)
+          if [[ -z "$previous" ]]; then
+            echo "No earlier vMAJOR.MINOR.PATCH tag is reachable from '$TAG_NAME', so its section's commit range can't be determined. Aborting changelog generation." >&2
+            exit 1
+          fi
+          echo "Tag '$TAG_NAME' (${TAG_SHA}) follows $previous; CHANGELOG.md pull requests go to: ${bases[*]}"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "bases=$(printf '%s\n' "${bases[@]}" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  changelog:
+    name: Update CHANGELOG.md on ${{ matrix.base }}
+    needs: [targets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      # One base failing (say, a conflicting open PR) must not stop the other's PR.
+      fail-fast: false
+      matrix:
+        base: ${{ fromJSON(needs.targets.outputs.bases) }}
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      BASE: ${{ matrix.base }}
+      PREVIOUS_TAG: ${{ needs.targets.outputs.previous }}
+    # contents/pull-requests: write are only used by the GITHUB_TOKEN fallback below; with
+    # CHANGELOG_TOKEN set, the branch push and the PR use that token instead. Labelling the
+    # PR is covered by pull-requests: write, so no issues permission is needed.
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Check changelog token
+        # Pushes and pull requests made with GITHUB_TOKEN don't trigger other workflows, so a
+        # changelog PR opened with it never gets the required CI checks. CHANGELOG_TOKEN is a
+        # fine-grained PAT for this repository only (Contents: read/write, Pull requests:
+        # read/write; see CONTRIBUTING.md's Release section) whose pushes and PRs do run CI.
+        env:
+          HAS_CHANGELOG_TOKEN: ${{ secrets.CHANGELOG_TOKEN != '' }}
+        run: |
+          if [ "$HAS_CHANGELOG_TOKEN" != "true" ]; then
+            echo "::warning title=CHANGELOG_TOKEN not set::Falling back to GITHUB_TOKEN, so required CI will not run on the changelog PR and it cannot merge until CI is triggered another way. Add the CHANGELOG_TOKEN repository secret (see CONTRIBUTING.md's Release section)."
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history is required so git-cliff can read the tag range, and every branch so
+          # the base can be checked out below.
+          fetch-depth: 0
+          ref: main
+          # The branch pushes below use these persisted credentials, so they must be the PAT
+          # too, or a rerun's push to an existing changelog PR wouldn't re-run its CI.
+          token: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Prepare changelog branch
-        # Reset the branch before generation so reruns always start from the
-        # existing changelog PR branch when it exists, or from main on first run.
+        # One head branch per base (chore/changelog-v0.9.1-to-release-0.9, ...-to-main). Reset it
+        # before generation so reruns always start from the existing changelog PR branch when
+        # it exists, or from the base on first run. Either way CHANGELOG.md is taken from the
+        # base's current head, so a rerun regenerates the same file instead of prepending a
+        # second copy of the section; a base that already carries the section (a rerun after
+        # the PR merged) gets nothing.
         run: |
-          BRANCH="chore/changelog-$TAG_NAME"
-          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+          BRANCH="chore/changelog-$TAG_NAME-to-${BASE//\//-}"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          if gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq 'length' | grep -q '^0$'; then
             if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
               git push origin --delete "$BRANCH"
             fi
-            git checkout -B "$BRANCH" origin/main
+            git checkout -B "$BRANCH" "origin/$BASE"
           else
             git fetch origin "$BRANCH"
             git checkout -B "$BRANCH" "origin/$BRANCH"
           fi
+          git checkout "origin/$BASE" -- CHANGELOG.md
+          if grep -q "^## \[${TAG_NAME#v}\] " CHANGELOG.md; then
+            echo "SECTION_PRESENT=true" >> "$GITHUB_ENV"
+            echo "::notice title=Nothing to do on $BASE::$BASE's CHANGELOG.md already has a [${TAG_NAME#v}] section."
+          fi
+          # main's cliff.toml generates the section for every base, so each branch's copy is
+          # identical; read out of the tree so it is never committed to a release branch.
+          git show origin/main:cliff.toml > "$RUNNER_TEMP/cliff.toml"
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Generate Changelog
+        if: env.SECTION_PRESENT != 'true'
         uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
         id: git-cliff
         with:
-          config: cliff.toml
-          args: --verbose
+          # Pinned explicitly rather than taking the action's default, so a git-cliff
+          # upgrade (template or config semantics) is a reviewed change here.
+          version: v2.14.2
+          config: ${{ runner.temp }}/cliff.toml
+          # The previous tag to this tag, prepended in place to the base's CHANGELOG.md after its
+          # header. Both tags were validated as strict semver by the targets job. The action
+          # writes the section on its own, with the header, to OUTPUT and prints it.
+          args: --verbose --prepend CHANGELOG.md ${{ needs.targets.outputs.previous }}..${{ github.ref_name }}
         env:
-          OUTPUT: CHANGELOG.md
+          OUTPUT: ${{ runner.temp }}/changelog-section.md
           GITHUB_REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit and push CHANGELOG.md via PR
-        # Branch protection rulesets on main require status checks to pass,
+        # The Main Builds ruleset (main and release/*) requires status checks to pass,
         # so we cannot push directly. Instead, open a PR via the GitHub CLI.
         # This step is rerun-safe: it reuses the same branch/PR if they exist.
+        if: env.SECTION_PRESENT != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="chore/changelog-$TAG_NAME"
-          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+          if gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq 'length' | grep -q '^0$'; then
             PR_EXISTS=false
           else
             PR_EXISTS=true
@@ -110,29 +206,37 @@ jobs:
           git commit -m "Update CHANGELOG.md for $TAG_NAME"
           git push origin "$BRANCH"
           if [ "$PR_EXISTS" = false ]; then
+            VERSION="${TAG_NAME#v}"
+            BODY="Auto-generated [$VERSION] section for the $TAG_NAME release via git-cliff ($PREVIOUS_TAG..$TAG_NAME), prepended to \`$BASE\`'s CHANGELOG.md (#2741)."
+            if [ "$BASE" = main ]; then
+              BODY="$BODY
+
+          If \`release/${VERSION%.*}\` is cut from this tag later, label this PR \`backport:${VERSION%.*}\` so the branch gets the section too."
+            fi
             PR_CREATE_ERROR_FILE=$(mktemp)
             # Guarantee temp file cleanup on all exits (success, error, and restricted-token fallback)
             # shellcheck disable=SC2064
             trap "rm -f \"$PR_CREATE_ERROR_FILE\"" EXIT
             if ! gh pr create \
-              --base main \
+              --base "$BASE" \
               --head "$BRANCH" \
-              --title "Update CHANGELOG.md for $TAG_NAME" \
-              --body "Auto-generated changelog for the $TAG_NAME release via git-cliff." \
+              --title "Update CHANGELOG.md for $TAG_NAME on $BASE" \
+              --body "$BODY" \
               --label "documentation" 2>"$PR_CREATE_ERROR_FILE"; then
-              if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible by integration|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
-                echo "Unable to create PR from workflow token."
-                # Encode slashes in branch name so the compare URL works correctly
-                ENCODED_BRANCH="${BRANCH//\//%2F}"
-                echo "Create it manually: https://github.com/${{ github.repository }}/compare/main...${ENCODED_BRANCH}?expand=1"
-                exit 0
-              fi
-
               cat "$PR_CREATE_ERROR_FILE" >&2
+              # Encode slashes in branch names so the compare URL works correctly
+              ENCODED_BRANCH="${BRANCH//\//%2F}"
+              ENCODED_BASE="${BASE//\//%2F}"
+              COMPARE_URL="https://github.com/${GITHUB_REPOSITORY}/compare/${ENCODED_BASE}...${ENCODED_BRANCH}?expand=1"
+              if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
+                echo "::error title=Changelog PR not created::The token was not allowed to open the changelog PR (check CHANGELOG_TOKEN's Pull requests: read/write permission). The branch $BRANCH was pushed; open the PR manually: $COMPARE_URL"
+              else
+                echo "::error title=Changelog PR not created::gh pr create failed (see the log above). The branch $BRANCH was pushed; open the PR manually: $COMPARE_URL"
+              fi
               exit 1
             fi
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}

@@ -2,10 +2,10 @@
 
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/InlineText.h"
-#include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace App::MemorySection
@@ -42,8 +43,36 @@ constexpr const char* USED_LABEL = "Used";
 constexpr const char* CACHED_LABEL = "Cached";
 constexpr const char* SWAP_LABEL = "Swap";
 constexpr const char* PEAK_LABEL = "Peak Used";
+constexpr const char* COMMIT_LABEL = "Commit";
 
 } // namespace
+
+std::string commitStripValue(const Domain::SystemSnapshot& snap)
+{
+    if (!snap.hasCommitCharge || snap.commitLimitBytes == 0)
+    {
+        return {};
+    }
+    // Not clamped: Linux outside strict overcommit lets Committed_AS run past CommitLimit, and
+    // reading over 100% is the truth there.
+    const double percent = 100.0 * (static_cast<double>(snap.commitChargeBytes) / static_cast<double>(snap.commitLimitBytes));
+    return UI::Format::bytesUsedTotalPercentCompact(snap.commitChargeBytes, snap.commitLimitBytes, percent);
+}
+
+std::string commitStripTooltip(const Domain::SystemSnapshot& snap)
+{
+    if (!snap.hasCommitCharge)
+    {
+        return {};
+    }
+    std::string text = "Virtual memory the system has committed, against its commit limit";
+    if (snap.commitPeakBytes > 0)
+    {
+        text += "\nPeak: ";
+        text += UI::Format::formatBytes(static_cast<double>(snap.commitPeakBytes));
+    }
+    return text;
+}
 
 void updateSmoothedMemory(SmoothedMemory& smoothed,
                           const Domain::SystemSnapshot& snap,
@@ -65,7 +94,7 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
     smoothed.initialized = true;
 }
 
-void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns)
+void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps, double nowSeconds, int nowBarColumns)
 {
     if (ctx.publication == nullptr)
     {
@@ -74,15 +103,14 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     const auto& theme = UI::Theme::get();
     const auto& snap = ctx.publication->snapshot;
-    const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // Get history data
     const auto& memHist = ctx.publication->memoryHistory;
     const auto& cachedHist = ctx.publication->memoryCachedHistory;
     const auto& swapHist = ctx.publication->swapHistory;
 
-    ImGui::TextColored(
-        theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
+    (void) UI::Widgets::sectionHeader(ICON_FA_MEMORY, "Memory & Swap", {}, std::min(memHist.size(), timestamps.size()));
     // No spacing here: the value strip shares the heading's line (renderNowBarValueStrip()), like every chart's.
 
     const size_t memCount = std::min(memHist.size(), timestamps.size());
@@ -106,8 +134,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     // The peak of Used over the window, drawn as a reference line labelled PEAK_LABEL. It was
     // "##MemPeak": no legend entry and no tooltip row, so nothing said what the line was (#1007).
-    // Over the samples the window shows, not the one trimming keeps left of it (#1145).
-    const double peakMemPercent = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, memData);
+    // Over the samples the window shows, not the one trimming keeps left of it (#1145), and kept
+    // between frames (UI::Widgets::windowSeriesMax(), #843).
+    const double peakMemPercent = UI::Widgets::windowSeriesMax("##MemoryPeak", ctx.chartDataGeneration, timeData, axisConfig.xMin, memData);
 
     // "N% (used / total)" when the RAM total is known: physical RAM is fixed, so bytes back-calculated
     // from a historical percent are exact. Swap is percent-only: its size can change at runtime.
@@ -121,7 +150,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         return UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct);
     };
 
-    auto memoryPlot = [&]()
+    const auto memoryPlot = [&]
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax),
@@ -147,8 +176,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                            timeData.data(),
                            cachedData.data(),
                            UI::Format::checkedCount(cachedData.size()),
-                           theme.scheme().chartCpu,
-                           theme.scheme().chartCpuFill,
+                           theme.scheme().chartMemoryCached,
+                           theme.scheme().chartMemoryCachedFill,
                            seriesStyle(SeriesRole::Secondary, 0));
             }
 
@@ -158,8 +187,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                            timeData.data(),
                            swapData.data(),
                            UI::Format::checkedCount(swapData.size()),
-                           theme.scheme().chartIo,
-                           theme.scheme().chartIoFill,
+                           theme.scheme().chartSwap,
+                           theme.scheme().chartSwapFill,
                            seriesStyle(SeriesRole::Secondary, 1));
             }
 
@@ -190,14 +219,14 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     if (*idxVal < cachedData.size())
                     {
                         rows.push_back({.label = CACHED_LABEL,
-                                        .color = theme.scheme().chartCpu,
+                                        .color = theme.scheme().chartMemoryCached,
                                         .value = formatRamPercent(static_cast<double>(cachedData[*idxVal]))});
                     }
                     if (*idxVal < swapData.size())
                     {
                         rows.push_back({
                             .label = SWAP_LABEL,
-                            .color = theme.scheme().chartIo,
+                            .color = theme.scheme().chartSwap,
                             .value = UI::Format::formatPercent(static_cast<double>(swapData[*idxVal])),
                         });
                     }
@@ -249,31 +278,44 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             addBar(CACHED_LABEL,
                    ctx.smoothedMemory->cachedPercent,
                    ramTooltip(CACHED_LABEL, snap.memoryCachedBytes, snap.memoryCachedPercent),
-                   theme.scheme().chartCpu);
+                   theme.scheme().chartMemoryCached);
         }
         if (!swapData.empty())
         {
-            addBar(SWAP_LABEL, ctx.smoothedMemory->swapPercent, {}, theme.scheme().chartIo);
+            addBar(SWAP_LABEL, ctx.smoothedMemory->swapPercent, {}, theme.scheme().chartSwap);
         }
     }
 
     // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
-    const std::array peakEntry{UI::Widgets::ValueStripEntry{
-        .label = PEAK_LABEL,
-        .value = UI::Format::formatPercent(peakMemPercent),
-        .color = theme.scheme().chartPeakLine,
-    }};
-    const std::span<const UI::Widgets::ValueStripEntry> stripExtras =
-        (peakMemPercent > 0.0) ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry) : std::span<const UI::Widgets::ValueStripEntry>{};
+    std::array<UI::Widgets::ValueStripEntry, 2> extras{};
+    std::size_t extraCount = 0;
+    if (peakMemPercent > 0.0)
+    {
+        extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
+            .label = PEAK_LABEL,
+            .value = UI::Format::formatPercent(peakMemPercent),
+            .color = theme.scheme().chartPeakLine,
+        };
+    }
+    // Commit charge against the commit limit (#1627): how close the machine is to "out of memory"
+    // while RAM may still be free. A reading only, not a series -- its swatch stays blank -- and only
+    // where the probe supports it and read it this sample.
+    const std::string commitTooltip = commitStripTooltip(snap);
+    if (snap.hasCommitCharge)
+    {
+        extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
+            .label = COMMIT_LABEL,
+            .value = commitStripValue(snap),
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = commitTooltip.c_str(),
+        };
+    }
+    const std::span<const UI::Widgets::ValueStripEntry> stripExtras(extras.data(), extraCount);
     renderHistoryWithNowBars("MemorySwapHistoryLayout",
                              ctx.plotHeight,
                              memoryPlot,
                              memoryBars,
-                             false,
-                             static_cast<size_t>(nowBarColumns),
-                             false,
-                             UI::Widgets::NowBarValues::Strip,
-                             stripExtras);
+                             {.minBarColumns = static_cast<size_t>(nowBarColumns), .stripExtras = stripExtras});
 }
 
 } // namespace App::MemorySection

@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace UI
@@ -69,6 +70,15 @@ class ThemeLoader
      * @return ImVec4 with normalized RGBA values
      */
     static auto hexToImVec4(std::string_view hex) -> ImVec4;
+
+    /**
+     * @brief The warning UILayer::onAttach() logs when it can't tell whether the user themes directory exists
+     * @param userThemesDir The user themes directory
+     * @param error Why std::filesystem::is_directory() failed
+     * @return The message, naming @p userThemesDir as UTF-8 (Core::pathToUtf8()). Never throws for a path
+     *         outside the ANSI code page, which path::string() did, out of onAttach() (#2531).
+     */
+    static auto userThemesSkippedMessage(const std::filesystem::path& userThemesDir, const std::error_code& error) -> std::string;
 };
 
 } // namespace UI

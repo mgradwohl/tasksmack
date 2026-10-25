@@ -6,6 +6,7 @@
 #include "Platform/Linux/NVMLGPUProbeMath.h"
 #include "Platform/Linux/PciDisplayDevices.h"
 #include "Platform/Linux/PciRuntimePm.h"
+#include "Platform/NVMLProcessUtilization.h"
 #include "Platform/NVMLTypes.h"
 #include "Platform/ScopedTempDir.h"
 
@@ -53,6 +54,53 @@ TEST(NVMLGPUProbeMathTest, ResolveErrorStringFallsBackWhenLibraryReturnsNull)
     const auto result =
         NVMLGPUProbeMath::resolveErrorString(NVML::NVML_ERROR_NOT_SUPPORTED, [](NVML::nvmlReturn_t) -> const char* { return nullptr; });
     EXPECT_EQ(result, "Unknown NVML error");
+}
+
+// readEngineUtilization / engineUtilizationSupported (#1477): the video-engine queries are optional
+// symbols, so a library without them must read as "no encoder/decoder", which the mock (which
+// exports them) can't show through the probe.
+
+TEST(NVMLGPUProbeMathTest, AMissingVideoEngineQueryReadsAsUnsupported)
+{
+    const auto reading = NVMLGPUProbeMath::readEngineUtilization(nullptr, nullptr);
+    EXPECT_EQ(reading.result, NVML::NVML_ERROR_FUNCTION_NOT_FOUND);
+    EXPECT_EQ(reading.percent, 0U);
+    EXPECT_FALSE(NVMLGPUProbeMath::engineUtilizationSupported(reading.result));
+}
+
+TEST(NVMLGPUProbeMathTest, AVideoEngineReadKeepsThePercentageNotTheSamplingPeriod)
+{
+    const auto query = [](NVML::nvmlDevice_t, unsigned int* utilization, unsigned int* samplingPeriodUs)
+    {
+        *utilization = 42;
+        *samplingPeriodUs = 167'000;
+        return NVML::NVML_SUCCESS;
+    };
+    const auto reading = NVMLGPUProbeMath::readEngineUtilization(query, nullptr);
+    EXPECT_EQ(reading.result, NVML::NVML_SUCCESS);
+    EXPECT_EQ(reading.percent, 42U);
+    EXPECT_TRUE(NVMLGPUProbeMath::engineUtilizationSupported(reading.result));
+}
+
+TEST(NVMLGPUProbeMathTest, AVideoEngineNotSupportedIsUnsupportedAndAFailedReadIsNot)
+{
+    const auto notSupported = [](NVML::nvmlDevice_t, unsigned int* utilization, unsigned int*)
+    {
+        *utilization = 99; // garbage NVML may leave behind: not passed on
+        return NVML::NVML_ERROR_NOT_SUPPORTED;
+    };
+    const auto unsupported = NVMLGPUProbeMath::readEngineUtilization(notSupported, nullptr);
+    EXPECT_EQ(unsupported.percent, 0U);
+    EXPECT_FALSE(NVMLGPUProbeMath::engineUtilizationSupported(unsupported.result));
+
+    // A transient failure is a missed sample, not a missing engine (#1111).
+    const auto timeout = [](NVML::nvmlDevice_t, unsigned int*, unsigned int*)
+    {
+        return NVML::NVML_ERROR_TIMEOUT;
+    };
+    const auto failed = NVMLGPUProbeMath::readEngineUtilization(timeout, nullptr);
+    EXPECT_EQ(failed.percent, 0U);
+    EXPECT_TRUE(NVMLGPUProbeMath::engineUtilizationSupported(failed.result));
 }
 
 // queryRunningProcesses (#1092): a fake entry point that behaves like NVML's.
@@ -130,6 +178,49 @@ struct FakeResolver
         return nullptr;
     }
 };
+
+// #2589: nvmlDeviceGetProcessUtilization's sized query, and each process's newest sample.
+TEST(NVMLProcessUtilizationTest, EachProcessKeepsItsNewestSample)
+{
+    std::vector<NVML::nvmlProcessUtilizationSample_t> driver{
+        {.pid = 7U, .timeStamp = 50ULL, .smUtil = 20U, .memUtil = 0U, .encUtil = 0U, .decUtil = 0U},
+        {.pid = 7U, .timeStamp = 90ULL, .smUtil = 140U, .memUtil = 0U, .encUtil = 3U, .decUtil = 0U}, // over 100: held
+        {.pid = 8U, .timeStamp = 70ULL, .smUtil = 5U, .memUtil = 0U, .encUtil = 0U, .decUtil = 9U},
+    };
+    const auto fn = [&driver](NVML::nvmlProcessUtilizationSample_t* samples, unsigned int* count, unsigned long long lastSeen)
+    {
+        if (lastSeen >= 90ULL)
+        {
+            return NVML::NVML_ERROR_NOT_FOUND;
+        }
+        if (samples == nullptr || *count < driver.size())
+        {
+            *count = static_cast<unsigned int>(driver.size());
+            return NVML::NVML_ERROR_INSUFFICIENT_SIZE;
+        }
+        std::ranges::copy(driver, samples);
+        *count = static_cast<unsigned int>(driver.size());
+        return NVML::NVML_SUCCESS;
+    };
+    const NVMLProcessUtilization::Query first = NVMLProcessUtilization::query(fn, 0);
+    ASSERT_TRUE(first.ok);
+    EXPECT_EQ(first.newestTimeStamp, 90ULL);
+    ASSERT_EQ(first.byPid.size(), 2U);
+    EXPECT_EQ(first.byPid.at(7).smPercent, 100U);
+    EXPECT_EQ(first.byPid.at(7).encoderPercent, 3U);
+    EXPECT_EQ(first.byPid.at(8).decoderPercent, 9U);
+
+    const NVMLProcessUtilization::Query none = NVMLProcessUtilization::query(fn, first.newestTimeStamp);
+    EXPECT_TRUE(none.ok) << "nothing newer is an answer: every process idle";
+    EXPECT_TRUE(none.byPid.empty());
+    EXPECT_EQ(none.newestTimeStamp, 90ULL);
+
+    const auto failing = [](NVML::nvmlProcessUtilizationSample_t*, unsigned int*, unsigned long long)
+    {
+        return NVML::NVML_ERROR_NOT_SUPPORTED;
+    };
+    EXPECT_FALSE(NVMLProcessUtilization::query(failing, 0).ok);
+}
 
 TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
 {
@@ -349,7 +440,7 @@ TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 
 TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 {
-    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    const NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
     if (probe.isAvailable())
     {
         // Under CTest (ENVIRONMENT_MODIFICATION), LD_LIBRARY_PATH is prepended with the
@@ -363,7 +454,6 @@ TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_FALSE(caps.hasPerProcessMetrics);
     EXPECT_FALSE(caps.supportsMultiGPU);
     EXPECT_FALSE(caps.hasEngineUtilization);
@@ -394,7 +484,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    const NVMLGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
 
     ASSERT_TRUE(probe.isAvailable());
 
@@ -403,14 +493,11 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    // NVML only returns PCIe throughput as rates, not cumulative counters, so this probe
-    // deliberately reports the capability as unavailable rather than present-but-always-zero.
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);
     EXPECT_TRUE(caps.hasEngineUtilization);
-    EXPECT_FALSE(caps.hasHotspotTemp);
-    EXPECT_FALSE(caps.hasEncoderDecoder);
+    // The mock exports nvmlDeviceGetEncoderUtilization/nvmlDeviceGetDecoderUtilization (#1477).
+    EXPECT_TRUE(caps.hasEncoderDecoder);
 }
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
@@ -462,6 +549,8 @@ class NvmlMockControls
             m_QueriesForDevice = reinterpret_cast<QueriesForDeviceFn>(dlsym(m_Library, "tasksmackNvmlMockQueriesForDevice"));
             m_SetPreviousOccupant = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockSetPreviousOccupant"));
             m_SetFailingPciInfo = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetFailingPciInfoDevice"));
+            m_FailDeviceCount = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailDeviceCount"));
+            m_FailGetIndex = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailGetIndex"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -495,6 +584,14 @@ class NvmlMockControls
         if (m_SetFailingPciInfo != nullptr)
         {
             m_SetFailingPciInfo(NO_FAILING_HANDLE);
+        }
+        if (m_FailDeviceCount != nullptr)
+        {
+            m_FailDeviceCount(0);
+        }
+        if (m_FailGetIndex != nullptr)
+        {
+            m_FailGetIndex(0);
         }
         if (m_Library != nullptr)
         {
@@ -584,8 +681,28 @@ class NvmlMockControls
     SetIndexFn m_FailInits = nullptr;
     FailSensorReadsFn m_SetPreviousOccupant = nullptr;
     SetIndexFn m_SetFailingPciInfo = nullptr;
+    FailSensorReadsFn m_FailDeviceCount = nullptr;
+    FailSensorReadsFn m_FailGetIndex = nullptr;
 
   public:
+    /// Whether the mock can fail nvmlDeviceGetCount_v2 and nvmlDeviceGetIndex (#1395).
+    [[nodiscard]] bool controlsCountAndIndex() const
+    {
+        return m_FailDeviceCount != nullptr && m_FailGetIndex != nullptr;
+    }
+
+    /// nvmlDeviceGetCount_v2 fails while set.
+    void failDeviceCount(bool fail) const
+    {
+        m_FailDeviceCount(fail ? 1 : 0);
+    }
+
+    /// nvmlDeviceGetIndex fails while set.
+    void failGetIndex(bool fail) const
+    {
+        m_FailGetIndex(fail ? 1 : 0);
+    }
+
     /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
     [[nodiscard]] unsigned int deviceQueries() const
     {
@@ -656,6 +773,8 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_TRUE(healthy[0].temperatureAvailable);
     EXPECT_TRUE(healthy[0].powerAvailable);
     EXPECT_TRUE(healthy[0].gpuClockAvailable);
+    EXPECT_TRUE(healthy[0].encoderAvailable);
+    EXPECT_TRUE(healthy[0].decoderAvailable);
 
     controls.failSensorReads(true);
     const auto failed = probe.readGPUCounters();
@@ -665,7 +784,10 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_FALSE(failed[0].powerAvailable);
     EXPECT_FALSE(failed[0].gpuClockAvailable);
     EXPECT_FALSE(failed[0].memoryAvailable);
-    EXPECT_EQ(failed[0].memoryClockMHz, 9000U); // reads that still succeed are unaffected
+    EXPECT_FALSE(failed[0].encoderAvailable);
+    EXPECT_FALSE(failed[0].decoderAvailable);
+    EXPECT_GT(healthy[0].fanSpeedMaxRaw, 0U);
+    EXPECT_EQ(failed[0].fanSpeedRaw, healthy[0].fanSpeedRaw); // reads that still succeed are unaffected
 }
 
 TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
@@ -744,17 +866,19 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 125.0);
     EXPECT_DOUBLE_EQ(counters[0].powerLimitWatts, 250.0);
     EXPECT_EQ(counters[0].gpuClockMHz, 1800U);
-    EXPECT_EQ(counters[0].memoryClockMHz, 9000U);
     EXPECT_EQ(counters[0].fanSpeedRaw, 40U);
     EXPECT_EQ(counters[0].fanSpeedMaxRaw, 100U); // NVML already returns 0-100
-    // nvmlDeviceGetPcieThroughput() returns a rate (KB/s over a ~20ms window), not a
-    // cumulative counter, so the probe deliberately leaves these at their zero default
-    // rather than populate a field GPUModel treats as cumulative with mismatched data.
-    EXPECT_EQ(counters[0].pcieTxBytes, 0U);
-    EXPECT_EQ(counters[0].pcieRxBytes, 0U);
+    // NVML's video-engine percentages, not their sampling period (#1477).
+    EXPECT_TRUE(counters[0].encoderAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].encoderUtilPercent, 30.0);
+    EXPECT_TRUE(counters[0].decoderAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].decoderUtilPercent, 12.0);
 
     EXPECT_EQ(counters[1].gpuId, "nvidia-1");
     EXPECT_DOUBLE_EQ(counters[1].utilizationPercent, 25.0);
+    // Device 1 has no video engines (NVML_ERROR_NOT_SUPPORTED): unread, not 0%.
+    EXPECT_FALSE(counters[1].encoderAvailable);
+    EXPECT_FALSE(counters[1].decoderAvailable);
 
     // The mock answers like real NVML: INSUFFICIENT_SIZE for the count query, the _v3 stride, and
     // NVML_VALUE_NOT_AVAILABLE for one process's memory (#1092).
@@ -780,6 +904,17 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     const auto noMemory = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 789; });
     ASSERT_NE(noMemory, processCounters.end());
     EXPECT_EQ(noMemory->gpuMemoryBytes, 0U);
+    // Each process's newest utilization sample (#2589); 789 has none, so it's idle.
+    EXPECT_DOUBLE_EQ(merged->gpuUtilPercent, 37.0);
+    EXPECT_DOUBLE_EQ(merged->encoderUtilPercent, 4.0);
+    EXPECT_DOUBLE_EQ(merged->decoderUtilPercent, 6.0);
+    EXPECT_DOUBLE_EQ(graphicsOnly->gpuUtilPercent, 12.0);
+    EXPECT_DOUBLE_EQ(noMemory->gpuUtilPercent, 0.0);
+    EXPECT_TRUE(probe.capabilities().hasPerProcessUtilization);
+
+    // The next read asks only for newer samples: none, so every process is idle.
+    const auto later = probe.readProcessGPUCounters();
+    EXPECT_TRUE(std::ranges::all_of(later, [](const ProcessGPUCounters& counter) { return counter.gpuUtilPercent == 0.0; }));
 }
 
 // =============================================================================
@@ -861,8 +996,10 @@ TEST(LinuxNVMLGPUProbeTest, ATransientFailureAtEnumerationKeepsTheSensors)
     EXPECT_TRUE(desktop.hasTemperature);
     EXPECT_TRUE(desktop.hasPowerMetrics);
     EXPECT_TRUE(desktop.hasClockSpeeds);
+    EXPECT_TRUE(desktop.hasEncoderDecoder);
     const auto laptop = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
     EXPECT_FALSE(laptop.hasPowerMetrics); // NOT_SUPPORTED still means unsupported
+    EXPECT_FALSE(laptop.hasEncoderDecoder);
 
     const auto counters = probe.readGPUCounters();
     ASSERT_FALSE(counters.empty());
@@ -890,6 +1027,7 @@ TEST(LinuxNVMLGPUProbeTest, SensorCapabilitiesArePerDevice)
     EXPECT_TRUE(desktop.hasPowerMetrics);
     EXPECT_TRUE(desktop.hasClockSpeeds);
     EXPECT_TRUE(desktop.hasFanSpeed);
+    EXPECT_TRUE(desktop.hasEncoderDecoder); // #1477
 
     ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
     const auto laptop = gpus[1].sensorCapabilities.value_or(GPUCapabilities{});
@@ -897,6 +1035,7 @@ TEST(LinuxNVMLGPUProbeTest, SensorCapabilitiesArePerDevice)
     EXPECT_FALSE(laptop.hasPowerMetrics);
     EXPECT_TRUE(laptop.hasClockSpeeds);
     EXPECT_FALSE(laptop.hasFanSpeed);
+    EXPECT_FALSE(laptop.hasEncoderDecoder); // its video-engine queries return NVML_ERROR_NOT_SUPPORTED
 
     // The PCI identity is reported too.
     ASSERT_TRUE(gpus[1].pciLocation.has_value());
@@ -946,6 +1085,8 @@ TEST(LinuxNVMLGPUProbeTest, RuntimeSuspendedGpuIsNotQueried)
     EXPECT_FALSE(asleep[0].powerAvailable);
     EXPECT_FALSE(asleep[0].gpuClockAvailable);
     EXPECT_FALSE(asleep[0].memoryAvailable);
+    EXPECT_FALSE(asleep[0].encoderAvailable);
+    EXPECT_FALSE(asleep[0].decoderAvailable);
     EXPECT_EQ(asleep[0].fanSpeedMaxRaw, 0U);
     EXPECT_EQ(asleep[0].memoryTotalBytes, 8ULL * 1024ULL * 1024ULL * 1024ULL); // last total read awake
     EXPECT_TRUE(processes.empty());
@@ -1790,6 +1931,52 @@ TEST(LinuxNVMLGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
     EXPECT_TRUE(counters[1].suspended);
     EXPECT_EQ(counters[1].memoryTotalBytes, 16ULL * 1024ULL * 1024ULL * 1024ULL);
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
+}
+
+// #1395: NVML that starts but can't count its devices is not available, and an unavailable probe
+// reads nothing.
+TEST(LinuxNVMLGPUProbeTest, NvmlThatCantCountItsDevicesIsUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsCountAndIndex());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_no_count");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+
+    controls.failDeviceCount(true);
+    NVMLGPUProbe probe(pciRoot.path.string());
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+}
+
+// #1395: a GPU whose index NVML won't give is still enumerated, in its place.
+TEST(LinuxNVMLGPUProbeTest, AGpuWhoseIndexCantBeReadKeepsItsPlace)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsCountAndIndex());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_no_index");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    controls.failGetIndex(true);
+    NVMLGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
+    EXPECT_EQ(gpus[1].name, "Mock NVIDIA GPU 1");
+    EXPECT_EQ(probe.readGPUCounters().size(), 2U);
 }
 
 // #1295 review: a restart that fails while the NVIDIA GPUs are still there reports no change, so

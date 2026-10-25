@@ -35,9 +35,6 @@ inline constexpr std::string_view SYSTEM_TAB_ID = "SystemTab";
 inline constexpr std::string_view PROCESSES_TAB_ID = "ProcessesTab";
 inline constexpr std::string_view PROCESS_DETAILS_TAB_ID = "ProcessDetailsTab";
 
-/// The stable ID of the Process Details panel's own window (ProcessDetailsPanel::render()).
-inline constexpr std::string_view PROCESS_DETAILS_WINDOW_ID = "ProcessDetails";
-
 /// Appends `text` to `label` so that ImGui shows all of it: a HASH_BREAK follows every "#" that is
 /// followed by another "#" or ends the text, so the text holds no "##" and forms none with what the
 /// caller appends next (such as the "###" suffix).
@@ -67,15 +64,7 @@ inline void appendDisplayText(std::string& label, std::string_view text)
     return label;
 }
 
-/// The title of the Process Details panel's own window: `processName`, or "Process Details" when there
-/// is no process to name. Its ID is PROCESS_DETAILS_WINDOW_ID whatever the name, so ImGui keeps the
-/// window's position and size when the selection changes.
-[[nodiscard]] inline std::string makeProcessDetailsWindowLabel(std::string_view icon, std::string_view processName)
-{
-    return make(icon, processName.empty() ? std::string_view{"Process Details"} : processName, PROCESS_DETAILS_WINDOW_ID);
-}
-
-/// The part of `label` ImGui's ID hash depends on. Mirrors ImHashStr() in the pinned ImGui (1.92.9b):
+/// The part of `label` ImGui's ID hash depends on. Mirrors ImHashStr() in the pinned ImGui:
 /// scanning left to right, a "#" followed by "##" resets the CRC to the seed and the scan resumes after
 /// all three, so the "###" itself is not hashed (ImGui commit fc89c61; older versions reset without
 /// skipping it). The ID is what follows the last restart, or the whole label when there is none. That

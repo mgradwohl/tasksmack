@@ -7,7 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <deque>
+#include <limits>
 
 namespace App::Detail
 {
@@ -70,6 +72,22 @@ TEST(ProcessGpuHelpersTest, NoGpuUsageTextNamesTheHistoryWindow)
     EXPECT_EQ(noGpuUsageDetail(300.0), "This process has not used a GPU in its retained history (up to 5m).");
     EXPECT_EQ(noGpuUsageDetail(90.0), "This process has not used a GPU in its retained history (up to 1m 30s).");
     EXPECT_EQ(noGpuUsageDetail(3600.0), "This process has not used a GPU in its retained history (up to 1h).");
+}
+
+// #1487: the "No GPU usage" text is cached by the window's whole milliseconds, an exact integer key.
+TEST(ProcessGpuHelpersTest, HistoryWindowCacheKeyIsWholeMilliseconds)
+{
+    EXPECT_EQ(historyWindowCacheKey(300.0), 300'000);
+    EXPECT_EQ(historyWindowCacheKey(0.0), 0);
+    EXPECT_EQ(historyWindowCacheKey(1.2345), 1'235);
+    EXPECT_NE(historyWindowCacheKey(300.0), historyWindowCacheKey(301.0));
+    // Sub-millisecond noise in the double maps to the same key.
+    EXPECT_EQ(historyWindowCacheKey(300.0), historyWindowCacheKey(300.0 + 1e-9));
+
+    constexpr std::int64_t INVALID_KEY = std::numeric_limits<std::int64_t>::min();
+    EXPECT_EQ(historyWindowCacheKey(std::numeric_limits<double>::quiet_NaN()), INVALID_KEY);
+    EXPECT_EQ(historyWindowCacheKey(std::numeric_limits<double>::infinity()), INVALID_KEY);
+    EXPECT_EQ(historyWindowCacheKey(1.0e300), INVALID_KEY);
 }
 
 // #1210: NVML on Linux reports a process's GPU memory but not its utilization; the tab shows N/A,

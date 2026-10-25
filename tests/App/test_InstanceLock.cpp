@@ -1,14 +1,18 @@
 #include "App/InstanceLock.h"
+#include "Core/ConfigDirOverride.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
 
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -17,6 +21,13 @@ namespace App
 {
 namespace
 {
+
+/// TASKSMACK_CONFIG_DIR's value for @p dir: UTF-8, as SDL_getenv() returns it.
+std::string envValue(const std::filesystem::path& dir)
+{
+    const auto utf8 = dir.u8string();
+    return {utf8.begin(), utf8.end()};
+}
 
 /// A fresh directory per test, so parallel test processes never share a lock file.
 class InstanceLockTest : public ::testing::Test
@@ -38,6 +49,25 @@ class InstanceLockTest : public ::testing::Test
 
     std::filesystem::path m_Dir;
 };
+
+// #2250: a launch the lock turned away must not exit 0, or a profiling script that launched it
+// reports the "already running" box as a successful capture.
+TEST(InstanceLockExitCodeTest, OnlyALockHeldByAnotherInstanceEndsTheLaunch)
+{
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::HeldByAnotherInstance), std::optional<int>(ALREADY_RUNNING_EXIT_CODE));
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::Acquired), std::nullopt);
+    // A lock that can't be taken at all doesn't stop TaskSmack starting.
+    EXPECT_EQ(exitCodeForLockStatus(InstanceLock::Status::Unavailable), std::nullopt);
+}
+
+TEST(InstanceLockExitCodeTest, AlreadyRunningExitCodeIsDistinct)
+{
+    static_assert(ALREADY_RUNNING_EXIT_CODE != EXIT_SUCCESS);
+    static_assert(ALREADY_RUNNING_EXIT_CODE != EXIT_FAILURE);
+    static_assert(ALREADY_RUNNING_EXIT_CODE != 3); // abort() on Windows
+    // 75 is what tools/profile-perf.sh, profile-heap.sh and profile-etw-common.ps1 look for.
+    EXPECT_EQ(ALREADY_RUNNING_EXIT_CODE, 75);
+}
 
 TEST_F(InstanceLockTest, FirstInstanceAcquiresTheLock)
 {
@@ -70,6 +100,43 @@ TEST_F(InstanceLockTest, LockIsReleasedWhenTheInstanceEnds)
     EXPECT_EQ(next.status(), InstanceLock::Status::Acquired);
 }
 
+TEST_F(InstanceLockTest, LockFileLivesInTheConfigDirectory)
+{
+    EXPECT_EQ(instanceLockPath(m_Dir), m_Dir / "tasksmack.lock");
+}
+
+TEST_F(InstanceLockTest, ConfigDirOverrideMovesTheLock)
+{
+    // #1596: TASKSMACK_CONFIG_DIR moves the lock with config.toml; unset or blank leaves it alone.
+    const auto platformDir = m_Dir / "platform";
+    const auto overrideDir = m_Dir / "override";
+    EXPECT_EQ(
+        instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(envValue(overrideDir).c_str()), platformDir)),
+        overrideDir / "tasksmack.lock");
+    EXPECT_EQ(instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(nullptr), platformDir)),
+              platformDir / "tasksmack.lock");
+    EXPECT_EQ(instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(" "), platformDir)),
+              platformDir / "tasksmack.lock");
+}
+
+TEST_F(InstanceLockTest, InstancesWithDifferentConfigDirectoriesBothRun)
+{
+    // #1596: a test launch with its own TASKSMACK_CONFIG_DIR starts while the user's TaskSmack runs,
+    // and a second launch on either directory is still refused.
+    const auto platformDir = m_Dir / "platform";
+    const auto testDir = Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(envValue(m_Dir / "test").c_str()), platformDir);
+
+    const InstanceLock user(instanceLockPath(platformDir));
+    const InstanceLock test(instanceLockPath(testDir));
+    EXPECT_EQ(user.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(test.status(), InstanceLock::Status::Acquired);
+
+    const InstanceLock secondTest(instanceLockPath(testDir));
+    EXPECT_EQ(secondTest.status(), InstanceLock::Status::HeldByAnotherInstance);
+    const InstanceLock secondUser(instanceLockPath(platformDir));
+    EXPECT_EQ(secondUser.status(), InstanceLock::Status::HeldByAnotherInstance);
+}
+
 TEST_F(InstanceLockTest, CreatesAMissingConfigDirectory)
 {
     // First launch: the config directory doesn't exist yet.
@@ -79,6 +146,59 @@ TEST_F(InstanceLockTest, CreatesAMissingConfigDirectory)
     EXPECT_TRUE(std::filesystem::exists(nested));
 }
 
+#ifndef _WIN32
+// #2437: root with the user's config directory (sudo -E) gives the directories it makes and the lock file
+// to the owner of their nearest existing ancestor -- here this test's own user, so the handover works
+// without root -- or the user's next normal run couldn't open the lock.
+TEST_F(InstanceLockTest, AsRootWhatItCreatesGoesToTheConfigsUser)
+{
+    const auto nested = m_Dir / "made" / "tasksmack" / "tasksmack.lock";
+    const InstanceLock lock(nested, InstanceLock::Testing{.effectiveUid = 0});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(lock.error(), "");
+    struct stat home = {};
+    struct stat made = {};
+    struct stat file = {};
+    ASSERT_EQ(::stat(m_Dir.c_str(), &home), 0);
+    ASSERT_EQ(::stat((m_Dir / "made").c_str(), &made), 0);
+    ASSERT_EQ(::stat(nested.c_str(), &file), 0);
+    EXPECT_EQ(made.st_uid, home.st_uid);
+    EXPECT_EQ(file.st_uid, home.st_uid);
+}
+
+// #2437: a handover that fails still takes the lock for this run, and says why the next run may not.
+TEST_F(InstanceLockTest, AsRootAFailedHandOverStillLocksAndSaysWhy)
+{
+    const auto nested = m_Dir / "made" / "tasksmack.lock";
+    const InstanceLock lock(nested, InstanceLock::Testing{.effectiveUid = 0, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().starts_with("couldn't give " + (m_Dir / "made").string())) << lock.error();
+}
+
+// #2437 (#2479): the main case is a config directory that already exists, so only the lock file itself is
+// handed over. A failed handover of it is reported too: a lock file left root's would refuse the next run.
+TEST_F(InstanceLockTest, AsRootAnExistingLockFileIsHandedOver)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root the directory is root's own, so nothing is handed over";
+    }
+    const auto lockPath = m_Dir / "tasksmack.lock";
+    std::ofstream(lockPath) << "";
+    const InstanceLock lock(lockPath, InstanceLock::Testing{.effectiveUid = 0, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().starts_with("couldn't give " + lockPath.string())) << lock.error();
+}
+
+// Not root: nothing is handed over, and nothing to report.
+TEST_F(InstanceLockTest, NotRootNothingIsHandedOver)
+{
+    const InstanceLock lock(m_Dir / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 1000, .failChown = true});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(lock.error(), "");
+}
+#endif
+
 TEST_F(InstanceLockTest, UnusableLockPathIsUnavailableNotAlreadyRunning)
 {
     // A lock that can't be taken at all (here its directory is a file) must not be mistaken for a
@@ -87,6 +207,18 @@ TEST_F(InstanceLockTest, UnusableLockPathIsUnavailableNotAlreadyRunning)
     std::ofstream(blocker) << "a file, not a directory\n";
     ASSERT_TRUE(std::filesystem::is_regular_file(blocker));
     const InstanceLock lock(blocker / "tasksmack.lock");
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Unavailable);
+    EXPECT_FALSE(lock.error().empty());
+}
+
+TEST_F(InstanceLockTest, ADirectoryAtTheLockPathIsUnavailableNotAlreadyRunning)
+{
+    // The lock file's directory exists, but a directory sits where the file should be: the open
+    // itself fails (CreateFileW on Windows, open() elsewhere, #1566), which is Unavailable.
+    const auto occupied = m_Dir / "tasksmack.lock";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::create_directory(occupied, ec)) << ec.message();
+    const InstanceLock lock(occupied);
     EXPECT_EQ(lock.status(), InstanceLock::Status::Unavailable);
     EXPECT_FALSE(lock.error().empty());
 }

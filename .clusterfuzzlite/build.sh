@@ -11,12 +11,17 @@ export FUZZ_DEPS_DIR="${FUZZ_DEPS_DIR:-${WORK:-$PWD/build}/fuzz-deps}"
 .clusterfuzzlite/fetch-deps.sh
 
 # ClusterFuzzLite supplies compiler and linker flags as argument lists.
+# -finput-charset/-fexec-charset=UTF-8: the sources are compiled as UTF-8, as in the CMake build
+# (tasksmack_apply_text_encoding, #1648). UTF-8 is clang's only charset, so this states it rather
+# than changing it.
 # shellcheck disable=SC2086
 build_fuzzer() {
     local name="$1"
     shift
     "$CXX" $CXXFLAGS \
         -std=c++23 \
+        -finput-charset=UTF-8 \
+        -fexec-charset=UTF-8 \
         -Isrc \
         -isystem "$FUZZ_DEPS_DIR/tomlplusplus/include" \
         -isystem "$FUZZ_DEPS_DIR/spdlog/include" \
@@ -38,13 +43,85 @@ seed_corpus() {
 
 build_fuzzer fuzz_proc_parsing
 
+# The SMBIOS table parser (#1513): header-only.
+build_fuzzer fuzz_smbios
+
+# The /proc/[pid]/maps module parser (#802): header-only, seeded with a real-looking maps file.
+build_fuzzer fuzz_proc_maps
+seed_corpus fuzz_proc_maps tests/fuzz/corpus/fuzz_proc_maps/*
+
+# The /proc/[pid]/fd link classifier and fdinfo parser (#183): header-only.
+build_fuzzer fuzz_proc_fd
+seed_corpus fuzz_proc_fd tests/fuzz/corpus/fuzz_proc_fd/*
+
+# The /proc/[pid]/status security, attr/current and cgroup parsers (#1526): header-only, seeded with
+# a real-looking status file, label and cgroup line.
+build_fuzzer fuzz_proc_status_security
+seed_corpus fuzz_proc_status_security tests/fuzz/corpus/fuzz_proc_status_security/*
+
+# The Commit & paging parsers (#1516): header-only, seeded with real-looking /proc/meminfo and /proc/swaps.
+build_fuzzer fuzz_commit_paging
+seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
+
+# The Storage parsers (#1517): header-only, seeded with a real-looking /proc/self/mountinfo and udev file.
+build_fuzzer fuzz_mountinfo
+seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
+build_fuzzer fuzz_networkd_json
+seed_corpus fuzz_networkd_json tests/fuzz/corpus/fuzz_networkd_json/*
+
+# The DNS reply parser (#2172): header-only, the only parser fed bytes from the network. Seeded with A,
+# AAAA and NXDOMAIN replies, a compression pointer that points at itself, and an RDLENGTH past the end.
+build_fuzzer fuzz_dns_message
+seed_corpus fuzz_dns_message tests/fuzz/corpus/fuzz_dns_message/*
+
+# The .desktop entry parser (#2172): header-only, on files any program the user runs can write.
+build_fuzzer fuzz_desktop_entry
+seed_corpus fuzz_desktop_entry tests/fuzz/corpus/fuzz_desktop_entry/*
+
+# The privileged-broker protocol (#2306): header-only; the elevated helper decodes what an unprivileged
+# process sends. Seeded with one frame of every message kind (#2643, which test_BrokerProtocol.cpp
+# checks), with a dictionary of the version and kind values.
+build_fuzzer fuzz_broker_protocol
+seed_corpus fuzz_broker_protocol tests/fuzz/corpus/fuzz_broker_protocol/*
+cp tests/fuzz/fuzz_broker_protocol.dict "$OUT/"
+
+# The privileged helper's frame reassembly (#2643): BrokerSocket::receiveFrame() over a real socketpair,
+# joining a frame's SEQPACKET packets by its length prefix. Seeded with one-, two- and three-packet frames,
+# frames cut short, run past their length or the message limit, an oversized packet and empty ones.
+build_fuzzer fuzz_broker_socket src/Platform/Linux/BrokerSocket.cpp
+seed_corpus fuzz_broker_socket tests/fuzz/corpus/fuzz_broker_socket/*
+
+# The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
+# buffers and udev partition type strings.
+build_fuzzer fuzz_partition_layout
+seed_corpus fuzz_partition_layout tests/fuzz/corpus/fuzz_partition_layout/*
+
+# The EDID parser (#1519): header-only, seeded with a real-looking 128-byte base block.
+build_fuzzer fuzz_edid
+seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*
+
+# The pci.ids / usb.ids parser (#1520): header-only, seeded with excerpts of both files.
+build_fuzzer fuzz_hwids
+seed_corpus fuzz_hwids tests/fuzz/corpus/fuzz_hwids/*
+
+# The /proc/modules parser (#1521): header-only, seeded with a real-looking /proc/modules.
+build_fuzzer fuzz_proc_modules
+seed_corpus fuzz_proc_modules tests/fuzz/corpus/fuzz_proc_modules/*
+
+# The systemd-coredump core file name parser (#1524): header-only, seeded with real-looking names.
+build_fuzzer fuzz_coredump_names
+seed_corpus fuzz_coredump_names tests/fuzz/corpus/fuzz_coredump_names/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
-# toml++ crash inputs (#1387, #1388, #1389) as regression seeds.
+# toml++ crash inputs (#1387, #1388, #1389, #1659, #2427) as regression seeds.
 seed_corpus fuzz_theme_loader assets/themes/*.toml tests/fuzz/corpus/fuzz_theme_loader/* tests/fuzz/corpus/toml-regressions/*
 
-# ThemeStub stands in for Theme.cpp (ImGui/ImPlot runtime), exactly as in the unit-test build.
-build_fuzzer fuzz_user_config src/App/UserConfig.cpp tests/Mocks/ThemeStub.cpp
+# ThemeStub stands in for Theme.cpp (ImGui/ImPlot runtime), exactly as in the unit-test build, and
+# ConfigDirOverrideStub for Core/ConfigDirOverride.cpp, which reads TASKSMACK_CONFIG_DIR through SDL.
+# Platform/ThreadName.cpp names the coalescing save worker UserConfig.cpp starts (#2916).
+build_fuzzer fuzz_user_config src/App/UserConfig.cpp src/Platform/ThreadName.cpp tests/Mocks/ThemeStub.cpp \
+    tests/fuzz/ConfigDirOverrideStub.cpp
 # config.toml as UserConfig::save() writes it (defaults, and every optional key set), plus legacy keys
 # and out-of-range values, and the toml++ regression seeds.
 seed_corpus fuzz_user_config tests/fuzz/corpus/fuzz_user_config/* tests/fuzz/corpus/toml-regressions/*

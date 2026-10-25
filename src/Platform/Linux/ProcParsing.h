@@ -13,6 +13,9 @@
 
 #include <array>
 #include <cerrno>
+#include <expected>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include <fcntl.h>
@@ -78,6 +81,7 @@ namespace Platform::ProcParsing
     {
         return 0;
     }
+    // NOLINTNEXTLINE(misc-include-cleaner) - ssize_t is POSIX (<sys/types.h> via <unistd.h>)
     ssize_t n = ::read(fd, buf, bufSize);
     while (n < 0 && errno == EINTR)
     {
@@ -130,6 +134,40 @@ namespace Platform::ProcParsing
     return buf;
 }
 
+/// The file @p name in the directory @p dirFd, read to EOF or until at least @p maxBytes have come (a
+/// /proc/[pid] file the caller caps), or the errno of the open or of a read that failed. EINTR is retried.
+/// The one copy of what the Process Details readers each had of their own (#2501).
+[[nodiscard]] inline std::expected<std::string, int>
+readWholeFileAt(int dirFd, const char* name, std::size_t maxBytes = std::numeric_limits<std::size_t>::max())
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const Posix::FdGuard fd(::openat(dirFd, name, O_RDONLY | O_CLOEXEC));
+    if (fd.get() < 0)
+    {
+        return std::unexpected(errno);
+    }
+    std::string contents;
+    std::array<char, 8192> chunk{};
+    while (contents.size() < maxBytes)
+    {
+        const auto n = ::read(fd.get(), chunk.data(), chunk.size());
+        if (n == 0)
+        {
+            break;
+        }
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by a signal: retry
+            }
+            return std::unexpected(errno);
+        }
+        contents.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+    return contents;
+}
+
 /// readProcFileFullAt() for an ordinary path.
 [[nodiscard]] inline std::vector<char> readProcFileFull(const char* path)
 {
@@ -180,12 +218,16 @@ inline bool parseDouble(const char*& p, const char* end, double& out) noexcept
     return true;
 }
 
+/// PF_KTHREAD in StatFields::flags: a kernel thread, which ignores every signal (#2447).
+inline constexpr std::uint32_t PF_KTHREAD_FLAG = 0x00200000U;
+
 /// The fields TaskSmack reads from a /proc/[pid]/stat line, by their proc(5) field numbers.
 struct StatFields
 {
     std::string_view comm;          ///< (2) without its parentheses; a view into the parsed line
     char state = '?';               ///< (3)
     std::int32_t parentPid = 0;     ///< (4)
+    std::uint32_t flags = 0;        ///< (9) the kernel's PF_* flags
     std::uint64_t minorFaults = 0;  ///< (10) minflt
     std::uint64_t majorFaults = 0;  ///< (12) majflt
     std::uint64_t userTime = 0;     ///< (14) utime, clock ticks
@@ -258,12 +300,11 @@ enum class StatParseExtent : std::uint8_t
         return false;
     }
 
-    // Fields 5-9, 11, 13, 16-18 and 21 are read only to step over them.
+    // Fields 5-8, 11, 13, 16-18 and 21 are read only to step over them.
     std::int32_t pgrp = 0;
     std::int32_t session = 0;
     std::int32_t ttyNr = 0;
     std::int32_t tpgid = 0;
-    std::uint32_t flags = 0;
     std::uint64_t cminflt = 0;
     std::uint64_t cmajflt = 0;
     std::int64_t cutime = 0;
@@ -274,7 +315,7 @@ enum class StatParseExtent : std::uint8_t
     // clang-format off
     if (!parseStatNum(p, end, out.parentPid)   || !parseStatNum(p, end, pgrp)            ||
         !parseStatNum(p, end, session)         || !parseStatNum(p, end, ttyNr)           ||
-        !parseStatNum(p, end, tpgid)           || !parseStatNum(p, end, flags)           ||
+        !parseStatNum(p, end, tpgid)           || !parseStatNum(p, end, out.flags)       ||
         !parseStatNum(p, end, out.minorFaults) || !parseStatNum(p, end, cminflt)         ||
         !parseStatNum(p, end, out.majorFaults) || !parseStatNum(p, end, cmajflt)         ||
         !parseStatNum(p, end, out.userTime)    || !parseStatNum(p, end, out.systemTime)  ||
@@ -320,5 +361,17 @@ enum class StatParseExtent : std::uint8_t
     }
     return fields.startTime;
 }
+
+#if defined(__linux__) && __has_include(<unistd.h>)
+/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory @p pidDirFd
+/// is open on; 0 if it can't be read (the process exited). The one copy of what each reader that checks
+/// a target's identity through its directory used to have of its own (#2500).
+[[nodiscard]] inline std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
+{
+    std::array<char, 1024> buf{};
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
+    return parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
+}
+#endif
 
 } // namespace Platform::ProcParsing

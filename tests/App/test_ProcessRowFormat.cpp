@@ -6,7 +6,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <locale>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -23,10 +22,7 @@ using ProcessRowFormat::AlignedCellText;
 using ProcessRowFormat::alignedPowerCell;
 using ProcessRowFormat::buildRowFormatCache;
 using ProcessRowFormat::CellTone;
-using ProcessRowFormat::formatAlignedBytesPerSecString;
-using ProcessRowFormat::formatAlignedBytesString;
 using ProcessRowFormat::formatAlignedPercentString;
-using ProcessRowFormat::formatAlignedPowerString;
 using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
@@ -47,6 +43,8 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
     snap.memoryBytes = 512ULL * 1024 * 1024;     // 512 MB
     snap.peakMemoryBytes = 768ULL * 1024 * 1024; // 768 MB
     snap.sharedBytes = 64ULL * 1024 * 1024;      // 64 MB
+    snap.privateBytes = 384ULL * 1024 * 1024;    // 384 MB (#1885)
+    snap.swapBytes = 32ULL * 1024 * 1024;        // 32 MB (#1885)
     snap.ioReadBytesPerSec = 1024.0 * 1024.0;    // 1 MB/s
     snap.ioWriteBytesPerSec = 2048.0 * 1024.0;   // 2 MB/s
     snap.netSentBytesPerSec = 512.0;             // 512 B/s
@@ -95,58 +93,26 @@ TEST(ProcessRowFormatTest, ProcessDetailsPercentMatchesTheTableEverywhere)
     }
 }
 
-/// A decimal comma and no digit grouping, as in de_DE, without depending on an OS locale name.
-class CommaDecimalNumpunct : public std::numpunct<char>
-{
-  protected:
-    [[nodiscard]] char do_decimal_point() const override
-    {
-        return ',';
-    }
-};
-
-/// Makes a comma-decimal locale global for one test and restores the previous one after it.
-class ScopedCommaDecimalLocale
-{
-  public:
-    // std::locale takes ownership of the facet and deletes it with its last copy, which the analyzer
-    // does not see.
-    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
-    ScopedCommaDecimalLocale() : m_Previous(std::locale::global(std::locale(std::locale::classic(), new CommaDecimalNumpunct)))
-    {}
-    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
-    ~ScopedCommaDecimalLocale()
-    {
-        std::locale::global(m_Previous);
-    }
-    ScopedCommaDecimalLocale(const ScopedCommaDecimalLocale&) = delete;
-    ScopedCommaDecimalLocale& operator=(const ScopedCommaDecimalLocale&) = delete;
-    ScopedCommaDecimalLocale(ScopedCommaDecimalLocale&&) = delete;
-    ScopedCommaDecimalLocale& operator=(ScopedCommaDecimalLocale&&) = delete;
-
-  private:
-    std::locale m_Previous;
-};
-
 // #1202: the table's aligned cells and the shared value formatters (tooltips, Process Details, chart
 // axes) print the same decimal separator in a comma-decimal locale, not "1.5 MiB" beside "1,5 MiB".
 TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatters)
 {
-    const ScopedCommaDecimalLocale commaLocale;
+    // A decimal comma and no digit grouping, as in de_DE, as the display punctuation (#1648).
+    const UI::Format::ScopedDisplayPunctuation commaDecimal({.decimalPoint = ',', .thousandsSep = {}, .grouping = {}});
     const double bytes = 1.5 * 1024.0 * 1024.0;
 
-    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB");
+    EXPECT_EQ(alignedBytesCell(bytes, UI::Format::BYTE_UNIT_MB).text, "1,5 MiB");
     EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MiB");
-    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB/s");
+    EXPECT_EQ(alignedBytesPerSecCell(bytes, UI::Format::BYTE_UNIT_MB).text, "1,5 MiB/s");
     EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MiB/s");
 
     EXPECT_EQ(formatAlignedPercentString(0.6), "0,6%");
     EXPECT_EQ(UI::Format::formatPercent(0.6), "0,6%");
     EXPECT_EQ(UI::Format::percentOneDecimal(0.6), "0,6%");
 
-    EXPECT_EQ(formatAlignedPowerString(45.0), "45,0 W");
+    EXPECT_EQ(alignedPowerCell(45.0).text, "45,0 W");
     EXPECT_EQ(UI::Format::formatWatts(45.0), "45,0 W");
-    EXPECT_EQ(formatAlignedPowerString(0.0), "0,0 W");
+    EXPECT_EQ(alignedPowerCell(0.0).text, "0,0 W");
     EXPECT_EQ(UI::Format::formatPowerOrZero(0.0), "0,0 W");
 
     // The allocating slow path agrees with the per-cell fast path.
@@ -160,24 +126,24 @@ TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatt
     }
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedBytesStringUsesGivenUnit)
+TEST(ProcessRowFormatTest, AlignedBytesCellUsesGivenUnit)
 {
     const auto formatted =
-        formatAlignedBytesString(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024));
+        alignedBytesCell(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024)).text;
 
     EXPECT_EQ(formatted, "1.0 GiB");
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedBytesPerSecStringUsesGivenUnit)
+TEST(ProcessRowFormatTest, AlignedBytesPerSecCellUsesGivenUnit)
 {
-    const auto formatted = formatAlignedBytesPerSecString(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0));
+    const auto formatted = alignedBytesPerSecCell(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0)).text;
 
     EXPECT_EQ(formatted, "1.0 MiB/s");
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedPowerStringConcatenatesPartsInOrder)
+TEST(ProcessRowFormatTest, AlignedPowerCellConcatenatesPartsInOrder)
 {
-    EXPECT_EQ(formatAlignedPowerString(5.5), "5.5 W");
+    EXPECT_EQ(alignedPowerCell(5.5).text, "5.5 W");
 }
 
 // =============================================================================
@@ -197,6 +163,8 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.resident.text, "512.0 MiB");
     EXPECT_EQ(fmt.peakRss.text, "768.0 MiB");
     EXPECT_EQ(fmt.shared.text, "64.0 MiB");
+    EXPECT_EQ(fmt.privateMem.text, "384.0 MiB");
+    EXPECT_EQ(fmt.swap.text, "32.0 MiB");
     EXPECT_EQ(fmt.ioRead.text, "1.0 MiB/s");
     EXPECT_EQ(fmt.ioWrite.text, "2.0 MiB/s");
     EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
@@ -240,8 +208,8 @@ TEST(ProcessRowFormatTest, UnavailableCellTextIsAnEmDash)
 
 TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
 {
-    // Windows measures neither power (#1028) nor shared memory (#1035): those cells must say "no
-    // data", not a measured-looking value, even when a snapshot carries one.
+    // A platform that doesn't measure power (Windows, #1028) or shared memory: those cells must say
+    // "no data", not a measured-looking value, even when a snapshot carries one.
     ProcessRowFormat::RowFormatOptions unsupported;
     unsupported.hasPowerUsage = false;
     unsupported.hasSharedMemory = false;
@@ -262,11 +230,26 @@ TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
     EXPECT_EQ(entry.shared.text, "64.0 MiB");
 }
 
+TEST(ProcessRowFormatTest, WindowsShowsSharedMemoryButNotPower)
+{
+    // Windows fills Shared from the shareable working set (#2583) but measures no power (#1028).
+    ProcessRowFormat::RowFormatOptions windows;
+    windows.hasPowerUsage = false;
+    windows.hasSharedMemory = true;
+    const RowFormatCache cells = buildRowFormatCache(makeSnapshot(), windows);
+    EXPECT_EQ(cells.shared.text, "64.0 MiB");
+    EXPECT_EQ(cells.shared.tone, CellTone::Value);
+    EXPECT_EQ(cells.shared.unavailableReason, nullptr);
+    expectUnavailable(cells.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+}
+
 TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapability)
 {
     ProcessRowFormat::RowFormatOptions none;
     none.hasPowerUsage = false;
     none.hasSharedMemory = false;
+    none.hasPrivateBytes = false;
+    none.hasSwapBytes = false;
     none.hasIoCounters = false;
     none.hasNetworkCounters = false;
     none.hasThreadCount = false;
@@ -291,6 +274,9 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
     {
         expectUnavailable(*cell, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
     }
+    // Private's and Swap's tooltips say why Windows lacks them (#1879).
+    expectUnavailable(fmt.privateMem, ProcessRowFormat::PRIVATE_UNSUPPORTED_CELL_REASON);
+    expectUnavailable(fmt.swap, ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON);
     // Columns every probe fills keep their values.
     EXPECT_EQ(fmt.resident.text, "512.0 MiB");
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
@@ -489,25 +475,117 @@ TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
     EXPECT_EQ(fmt.gpuMemory.tone, CellTone::Value);
 }
 
+// #1799: the NPU columns' cells, formatted as the GPU ones are: NPU % a percent, NPU Memory decimal-
+// aligned bytes, NPU Engine the joined engines; never the GPU's figures.
+TEST(ProcessRowFormatTest, NpuCellsFormatTheProcessesNpuFigures)
+{
+    ProcessSnapshot snap = makeSnapshot();
+    snap.npuUtilPercent = 62.5;
+    snap.npuMemoryBytes = 8ULL * 1024 * 1024; // 8 MiB
+    snap.npuEngines = {"Compute"};
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_EQ(fmt.npuPercent.text, "62.5%");
+    EXPECT_EQ(fmt.npuPercent.tone, CellTone::Value);
+    EXPECT_EQ(fmt.npuMemory.text, "8.0 MiB");
+    EXPECT_EQ(fmt.npuMemory.unit(), " MiB");
+    EXPECT_EQ(fmt.npuMemory.tone, CellTone::Value);
+    EXPECT_EQ(fmt.npuEngines, "Compute");
+    EXPECT_TRUE(fmt.npuSupported);
+    EXPECT_EQ(fmt.gpuPercent.text, "15.0%") << "The GPU's own figure, not the NPU's";
+
+    // A process that uses none: measured zeros, and no engine (blank, not a dash).
+    snap.npuUtilPercent = 0.0;
+    snap.npuMemoryBytes = 0;
+    snap.npuEngines.clear();
+    const RowFormatCache idle = buildRowFormatCache(snap);
+    expectMeasuredZero(idle.npuPercent);
+    expectMeasuredZero(idle.npuMemory);
+    EXPECT_TRUE(idle.npuEngines.empty());
+}
+
+// #1799: without an NPU or compute accelerator the NPU cells are "not available on this system", as
+// the GPU ones are without per-process data; with one, a GPU read that failed or hasn't happened yet
+// leaves them unread, since they are read with the GPU fields.
+TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
+{
+    ProcessSnapshot snap = makeSnapshot();
+    ProcessRowFormat::RowFormatOptions noAccelerator;
+    noAccelerator.hasPerProcessNpu = false;
+    const RowFormatCache none = buildRowFormatCache(snap, noAccelerator);
+    expectUnavailable(none.npuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectUnavailable(none.npuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_FALSE(none.npuSupported);
+    EXPECT_EQ(none.gpuPercent.text, "15.0%") << "The GPU columns don't need an accelerator";
+
+    // The NPU's support is its own (#1827): no per-process GPU data leaves the NPU cells as they are.
+    ProcessRowFormat::RowFormatOptions noGpu;
+    noGpu.hasPerProcessGpu = false;
+    const RowFormatCache noPerProcessGpu = buildRowFormatCache(snap, noGpu);
+    expectMeasuredZero(noPerProcessGpu.npuMemory);
+    EXPECT_TRUE(noPerProcessGpu.npuSupported);
+
+    ProcessRowFormat::RowFormatOptions memoryOnly;
+    memoryOnly.hasPerProcessNpuUtilization = false;
+    const RowFormatCache noUtil = buildRowFormatCache(snap, memoryOnly);
+    expectUnavailable(noUtil.npuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectMeasuredZero(noUtil.npuMemory);
+
+    ProcessRowFormat::RowFormatOptions failed;
+    failed.gpuReadFailed = true;
+    const RowFormatCache failedRead = buildRowFormatCache(snap, failed);
+    expectUnavailable(failedRead.npuPercent, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    expectUnavailable(failedRead.npuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+
+    // NPU data alone (#1827): a failed read is still why its cells are empty, not a measured zero.
+    ProcessRowFormat::RowFormatOptions npuOnlyFailed;
+    npuOnlyFailed.hasPerProcessGpu = false;
+    npuOnlyFailed.gpuReadFailed = true;
+    expectUnavailable(buildRowFormatCache(snap, npuOnlyFailed).npuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+
+    snap.gpuFieldsRead = false;
+    const RowFormatCache notYet = buildRowFormatCache(snap);
+    expectUnavailable(notYet.npuPercent, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    expectUnavailable(notYet.npuMemory, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+}
+
+TEST(ProcessRowFormatTest, JoinEnginesSeparatesThemWithCommas)
+{
+    EXPECT_EQ(ProcessRowFormat::joinEngines({}), "");
+    EXPECT_EQ(ProcessRowFormat::joinEngines({"Compute"}), "Compute");
+    EXPECT_EQ(ProcessRowFormat::joinEngines({"3D", "Compute", "Copy"}), "3D, Compute, Copy");
+}
+
 TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 {
-    // The per-column cell renderers (#1382) draw Status, Publisher, Type and the GPU text columns
+    // The per-column cell renderers (#1382) draw Status, Publisher, Container, Type and the GPU text columns
     // from the entry alone, so it carries whether this system can fill them (#1210).
     const RowFormatCache all = buildRowFormatCache(makeSnapshot());
     EXPECT_TRUE(all.statusSupported);
     EXPECT_TRUE(all.publisherSupported);
+    EXPECT_TRUE(all.containerSupported);
     EXPECT_TRUE(all.processTypeSupported);
+    EXPECT_TRUE(all.architectureSupported);
     EXPECT_TRUE(all.gpuSupported);
 
     ProcessRowFormat::RowFormatOptions linuxLike;
     linuxLike.hasPublisher = false;
     linuxLike.hasProcessType = false;
     linuxLike.hasPerProcessGpu = false;
+    linuxLike.hasArchitecture = false; // A probe that reads none (#2394)
     const RowFormatCache some = buildRowFormatCache(makeSnapshot(), linuxLike);
+    EXPECT_FALSE(some.architectureSupported);
     EXPECT_TRUE(some.statusSupported);
     EXPECT_FALSE(some.publisherSupported);
     EXPECT_FALSE(some.processTypeSupported);
     EXPECT_FALSE(some.gpuSupported);
+    EXPECT_TRUE(some.containerSupported);
+
+    ProcessRowFormat::RowFormatOptions windowsLike;
+    windowsLike.hasContainer = false;
+    windowsLike.hasServices = false;
+    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).containerSupported);
+    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).servicesSupported);
+    EXPECT_TRUE(all.servicesSupported);
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
@@ -616,6 +694,38 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithou
     EXPECT_EQ(fmt.fontId, newFontToken);
 }
 
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheNeverSharesCellsBetweenProcessesWithACollidingKey)
+{
+    // Two live processes whose uniqueKey hash collides (#2115), drawn in the same frame: the second
+    // row must show its own cells, not the ones the first row built for this generation and font.
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    constexpr std::uint64_t COLLIDING_KEY = 0xC011;
+    ProcessSnapshot first = makeSnapshot();
+    first.uniqueKey = COLLIDING_KEY;
+    first.pid = 895;
+    first.startTimeTicks = 7;
+    first.cpuPercent = 12.0;
+    ProcessSnapshot second = makeSnapshot();
+    second.uniqueKey = COLLIDING_KEY;
+    second.pid = 896;
+    second.startTimeTicks = 7;
+    second.cpuPercent = 87.0;
+
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, first, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "12.0%");
+    const RowFormatCache& secondFmt = getOrBuildRowFormatCache(cache, second, /*generation=*/1, /*fontId=*/0);
+    EXPECT_EQ(secondFmt.cpuPercent.text, "87.0%");
+    EXPECT_EQ(secondFmt.pid, 896);
+
+    // The same PID with another start time is another process too (a reused PID).
+    ProcessSnapshot reused = second;
+    reused.startTimeTicks = 8;
+    reused.cpuPercent = 3.0;
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, reused, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "3.0%");
+
+    // And the first one, drawn again in the next frame, is back to its own cells.
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, first, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "12.0%");
+}
+
 // =============================================================================
 // Free-text cell widths (#1141)
 // =============================================================================
@@ -667,7 +777,8 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
                               &fresh.gpuEnginesWidth,
                               &fresh.gpuDevicesWidth,
                               &fresh.publisherWidth,
-                              &fresh.processTypeWidth})
+                              &fresh.processTypeWidth,
+                              &fresh.architectureWidth})
     {
         EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
     }
@@ -715,6 +826,13 @@ TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
     EXPECT_EQ(fmt.resident.unit(), " MiB");
     EXPECT_FALSE(fmt.ioRead.hasUnit());
     EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
+}
+
+TEST(ProcessRowFormatTest, ServicesTooltipHeadingCountsTheServices)
+{
+    // #1880: the Services cell's tooltip lists the names under this line.
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(1), "1 service");
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(3), "3 services");
 }
 
 } // namespace

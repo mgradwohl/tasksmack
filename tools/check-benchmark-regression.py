@@ -5,7 +5,7 @@ tools/check-benchmark-regression.py — Compare benchmark results against a base
 Usage:
     python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
         --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
-        [--min-abs-delta-ns 1.0]
+        [--min-abs-delta-ns 1.0] [--threshold-overrides perf-data/linux-ci-thresholds.json]
 
 Exit codes:
     0  No matched benchmark exceeds both the threshold and the floor, and coverage meets --min-coverage
@@ -34,6 +34,19 @@ coverage, in the numerator or the denominator. The GPU benchmarks do this on a m
 GPU, such as the CI runner, instead of timing an empty probe (#1420). A benchmark that failed
 (SkipWithError(), "error_occurred": true) on either side still counts against coverage, even if
 the other side skipped on purpose.
+
+--threshold-overrides names a JSON file of per-benchmark thresholds that replace --threshold for
+the benchmarks it lists (#2336). It is opt-in: without it every benchmark uses --threshold. The
+file is an object with a "thresholds" object mapping each exact benchmark name (its run_name) to
+an object holding "threshold" (a percentage, like --threshold) and a non-empty "reason":
+
+    {"thresholds": {"BM_ProcessModel_GetSnapshots": {"threshold": 60, "reason": "allocator-bound"}}}
+
+It is for the few benchmarks whose speed depends on the hosted-runner class far more than the
+rest's does. The allocator-bound full-snapshot copy is one: on runners that are fast at
+arithmetic but slow at memory it sits just under --threshold with no code change, so one global
+threshold either fails at random on it or has to loosen for every benchmark. An entry for a
+benchmark the baseline does not have is reported and otherwise ignored.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -66,15 +79,32 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
     if not isinstance(data, dict) or not isinstance(data.get("benchmarks"), list):
         raise ValueError("expected a JSON object containing a 'benchmarks' array")
 
+    # tools/bench.sh keeps every repetition (#1424): per-repetition rows share the median row's
+    # run_name, so the median always wins over them regardless of row order. A benchmark run
+    # without repetitions has no aggregates, and its single iteration row is used instead.
+    # A failed measurement (errored()) on any row beats both, in either order: a median computed
+    # from the repetitions that did succeed must not hide one that failed (#1445 review), so the
+    # benchmark still counts against coverage.
     result: dict[str, dict] = {}
+    medians: set[str] = set()
+    errors: set[str] = set()
     for bm in data["benchmarks"]:
         if not isinstance(bm, dict):
             raise ValueError("each entry in 'benchmarks' must be a JSON object")
         aggregate_name = bm.get("aggregate_name")
+        name = bm.get("run_name") or bm.get("name", "")
+        if not name or name in errors:
+            continue
+        if errored(bm):
+            result[name] = bm
+            errors.add(name)
+            continue
         if aggregate_name and aggregate_name != "median":
             continue
-        name = bm.get("run_name") or bm.get("name", "")
-        if name:
+        if aggregate_name == "median":
+            result[name] = bm
+            medians.add(name)
+        elif name not in medians:
             result[name] = bm
     return result
 
@@ -127,6 +157,37 @@ def is_valid_time(value: object) -> bool:
     except (TypeError, ValueError):
         return False
     return math.isfinite(value) and value >= 0
+
+
+def load_threshold_overrides(path: Path) -> dict[str, float]:
+    """Return the per-benchmark thresholds (percent) in a --threshold-overrides file.
+
+    Raises ValueError for anything but the documented shape: a threshold that is not a finite,
+    non-negative number (a NaN would silently pass every comparison, as with --threshold), or an
+    entry with no reason, since an override nobody can explain is one nobody can safely remove.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("thresholds"), dict):
+        raise ValueError("expected a JSON object containing a 'thresholds' object")
+    overrides: dict[str, float] = {}
+    for name, entry in data["thresholds"].items():
+        if not name:
+            raise ValueError("an override has an empty benchmark name")
+        if not isinstance(entry, dict):
+            raise ValueError(f"{name}: expected an object with 'threshold' and 'reason'")
+        threshold = entry.get("threshold")
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(threshold)
+            or threshold < 0
+        ):
+            raise ValueError(f"{name}: 'threshold' must be a finite number >= 0, not {threshold!r}")
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"{name}: 'reason' must be a non-empty string")
+        overrides[name] = float(threshold)
+    return overrides
 
 
 def finite_percentage(min_value: float, max_value: float | None = None):
@@ -183,6 +244,15 @@ def main() -> int:
             "regression, whatever its percentage (default: 1.0; 0 disables)"
         ),
     )
+    parser.add_argument(
+        "--threshold-overrides",
+        type=Path,
+        default=None,
+        help=(
+            "JSON file of per-benchmark thresholds that replace --threshold for the benchmarks "
+            "it names (default: none, every benchmark uses --threshold)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.baseline.exists():
@@ -199,6 +269,23 @@ def main() -> int:
         print(f"ERROR: invalid benchmark input: {exc}", file=sys.stderr)
         return 2
 
+    overrides: dict[str, float] = {}
+    if args.threshold_overrides is not None:
+        if not args.threshold_overrides.exists():
+            print(f"ERROR: threshold overrides file not found: {args.threshold_overrides}", file=sys.stderr)
+            return 2
+        try:
+            overrides = load_threshold_overrides(args.threshold_overrides)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"ERROR: invalid threshold overrides: {exc}", file=sys.stderr)
+            return 2
+
+    def threshold_for(name: str) -> float:
+        return overrides.get(name, args.threshold)
+
+    def own_threshold_note(name: str) -> str:
+        return f"  [threshold {overrides[name]:.1f}%]" if name in overrides else ""
+
     if not baseline:
         print("ERROR: baseline file contains no usable benchmarks.", file=sys.stderr)
         return 2
@@ -210,6 +297,11 @@ def main() -> int:
     print(f"Regression threshold: {args.threshold:.1f}%")
     print(f"Absolute noise floor: {args.min_abs_delta_ns:.2f}ns")
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
+    if overrides:
+        print(f"Per-benchmark thresholds ({len(overrides)}, from {args.threshold_overrides}):")
+        for name, threshold in sorted(overrides.items()):
+            note = "" if name in baseline else "  (not in baseline, ignored)"
+            print(f"   {name}: {threshold:.1f}%{note}")
     print()
 
     # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is nothing
@@ -299,7 +391,7 @@ def main() -> int:
 
         abs_delta_ns = cur_time_normalized - base_time_normalized
 
-        if pct_change > args.threshold:
+        if pct_change > threshold_for(name):
             row = (name, base_time, base_unit, cur_time, cur_unit, pct_change)
             if abs_delta_ns > args.min_abs_delta_ns:
                 regressions.append(row)
@@ -348,19 +440,21 @@ def main() -> int:
 
     # ── Report over-threshold changes inside the absolute noise floor ─────────
     if below_floor:
-        print(f"Over {args.threshold:.1f}% but within the {args.min_abs_delta_ns:.2f}ns noise floor "
-              f"({len(below_floor)}, not regressions):")
+        own = " (or their own threshold)" if overrides else ""
+        print(f"Over {args.threshold:.1f}%{own} but within the "
+              f"{args.min_abs_delta_ns:.2f}ns noise floor ({len(below_floor)}, not regressions):")
         for name, base, base_unit, cur, cur_unit, pct in sorted(below_floor, key=lambda x: -x[5]):
-            print(f"   {name}: {base:.2f}{base_unit} -> {cur:.2f}{cur_unit}  ({pct:+.1f}%)")
+            print(f"   {name}: {base:.2f}{base_unit} -> {cur:.2f}{cur_unit}  ({pct:+.1f}%){own_threshold_note(name)}")
         print()
 
     # ── Report regressions ────────────────────────────────────────────────────
     if regressions:
         print(f"Regressions ({len(regressions)}) - exceeded {args.threshold:.1f}% threshold:")
         for name, base, base_unit, cur, cur_unit, pct in sorted(regressions, key=lambda x: -x[5]):
-            print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%)")
+            print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%){own_threshold_note(name)}")
         print()
-        print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%.")
+        override_note = " (or their own threshold)" if any(name in overrides for name, *_ in regressions) else ""
+        print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%{override_note}.")
         return 1
 
     # ── Coverage gate ─────────────────────────────────────────────────────────
@@ -378,8 +472,9 @@ def main() -> int:
 
     floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""
     skip_note = f" ({skipped_baseline} skipped on purpose, not counted)" if skipped_baseline else ""
-    print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold and the {args.min_abs_delta_ns:.2f}ns "
-          f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%{skip_note}.")
+    override_note = f" ({len(overrides)} with their own)" if overrides else ""
+    print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold{override_note} and the "
+          f"{args.min_abs_delta_ns:.2f}ns floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%{skip_note}.")
     return 0
 
 

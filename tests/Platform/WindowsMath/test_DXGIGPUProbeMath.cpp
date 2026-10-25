@@ -14,6 +14,8 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -243,6 +245,105 @@ TEST(ClassifyIntegratedTest, ASoftwareAdapterIsNeverIntegrated)
     constexpr uint32_t SOFTWARE_FLAG = 2;
     EXPECT_FALSE(classifyIntegrated(true, 0x1414, SOFTWARE_FLAG, 0));
     EXPECT_FALSE(classifyIntegrated(std::nullopt, 0x5143, SOFTWARE_FLAG, 0));
+}
+
+// ==========================================================================
+// DXCore compute accelerators (#1799)
+// ==========================================================================
+
+DXCoreAdapterRecord dxcoreRecord(uint32_t luidLowPart, bool npu, bool computeAccelerator)
+{
+    DXCoreAdapterRecord record;
+    record.luidLowPart = luidLowPart;
+    record.npu = npu;
+    record.computeAccelerator = computeAccelerator;
+    record.description = "Adapter " + std::to_string(luidLowPart);
+    return record;
+}
+
+TEST(AcceleratorKindTest, IsAnNpuThenAComputeAcceleratorThenNone)
+{
+    EXPECT_EQ(acceleratorKind(dxcoreRecord(1, true, false)), DeviceKind::Npu);
+    EXPECT_EQ(acceleratorKind(dxcoreRecord(1, false, true)), DeviceKind::ComputeAccelerator);
+    EXPECT_EQ(acceleratorKind(dxcoreRecord(1, true, true)), DeviceKind::Npu) << "An NPU is a compute accelerator too";
+    EXPECT_EQ(acceleratorKind(dxcoreRecord(1, false, false)), std::nullopt);
+}
+
+// DXCore's NPU and compute-accelerator lists: the Intel AI Boost NPU and a compute accelerator are
+// listed; an adapter DXGI already lists (a GPU that DXCore also calls a compute accelerator) is not,
+// nor is a software one, nor one with neither attribute. One in both lists is listed once.
+TEST(SelectAcceleratorAdaptersTest, ListsTheAcceleratorsDXGIDoesNot)
+{
+    constexpr uint32_t LUID_IGPU = 0x17C33;
+    constexpr uint32_t LUID_NPU = 0x18103;
+    constexpr uint32_t LUID_ACCELERATOR = 0x300;
+    DXCoreAdapterRecord software = dxcoreRecord(0x400, false, true);
+    software.isHardware = false;
+    const DXCoreAdapterRecord acceleratorAgain = dxcoreRecord(LUID_ACCELERATOR, true, false);
+    const std::vector<DXCoreAdapterRecord> records{
+        dxcoreRecord(LUID_NPU, true, false),
+        dxcoreRecord(LUID_IGPU, false, true),
+        dxcoreRecord(LUID_ACCELERATOR, false, true),
+        software,
+        dxcoreRecord(0x500, false, false),
+        acceleratorAgain,
+    };
+
+    const auto selected = selectAcceleratorAdapters(records, {adapterLuidKey(0, LUID_IGPU)});
+
+    ASSERT_EQ(selected.size(), 2U);
+    EXPECT_EQ(selected[0].luidLowPart, LUID_NPU);
+    EXPECT_EQ(acceleratorKind(selected[0]), DeviceKind::Npu);
+    EXPECT_EQ(selected[1].luidLowPart, LUID_ACCELERATOR);
+    EXPECT_TRUE(selected[1].npu && selected[1].computeAccelerator) << "Both lists' attributes";
+    EXPECT_TRUE(selectAcceleratorAdapters({}, {}).empty());
+}
+
+TEST(SelectAcceleratorAdaptersTest, MatchesTheWholeLuid)
+{
+    DXCoreAdapterRecord high = dxcoreRecord(0x100, true, false);
+    high.luidHighPart = 1;
+    EXPECT_EQ(selectAcceleratorAdapters({high}, {adapterLuidKey(0, 0x100)}).size(), 1U) << "Another LUID's low part only";
+    EXPECT_TRUE(selectAcceleratorAdapters({high}, {adapterLuidKey(1, 0x100)}).empty());
+}
+
+// An NPU without memory of its own (Intel AI Boost: 0 dedicated, ~18 GB shared) counts its shared
+// segment; an accelerator with dedicated memory counts that.
+TEST(AcceleratorMemoryTest, AnAcceleratorWithoutDedicatedMemoryCountsShared)
+{
+    constexpr uint64_t SHARED = 18361ULL << 20U;
+    EXPECT_TRUE(acceleratorMemoryIsShared(0));
+    EXPECT_EQ(acceleratorMemoryTotalBytes(0, SHARED), SHARED);
+    EXPECT_FALSE(acceleratorMemoryIsShared(8ULL << 30U));
+    EXPECT_EQ(acceleratorMemoryTotalBytes(8ULL << 30U, SHARED), 8ULL << 30U);
+}
+
+// =============================================================================
+// luidFromPdhFormat: the LUID back out of GPUInfo::luidId (#2586)
+// =============================================================================
+
+TEST(LuidFromPdhFormatTest, RoundTripsLuidToPdhFormat)
+{
+    using Parts = std::pair<std::uint32_t, std::uint32_t>;
+    const auto parts = [](std::uint32_t high, std::uint32_t low)
+    {
+        return std::optional<Parts>{Parts{high, low}};
+    };
+    EXPECT_EQ(luidFromPdhFormat(luidToPdhFormat(0x00000001U, 0x0000F78EU)), parts(0x00000001U, 0x0000F78EU));
+    EXPECT_EQ(luidFromPdhFormat("GPU_0xFFFFFFFF_0x00000000"), parts(0xFFFFFFFFU, 0U));
+    EXPECT_EQ(luidFromPdhFormat("GPU_0x00000000_0x0000d3a0"), parts(0U, 0xD3A0U)) << "Hex digits in either case";
+}
+
+TEST(LuidFromPdhFormatTest, RejectsAnyOtherShape)
+{
+    EXPECT_FALSE(luidFromPdhFormat("").has_value());
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000_0x0000").has_value()) << "Short low part";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000_0x0000D3A00").has_value()) << "Long low part";
+    EXPECT_FALSE(luidFromPdhFormat("LUID_0x00000000_0x0000D3A0").has_value()) << "The LUID-named adapter id, not luidId";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x0000000G_0x0000D3A0").has_value()) << "Not a hex digit";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x00000000-0x0000D3A0").has_value()) << "Wrong separator";
+    EXPECT_FALSE(luidFromPdhFormat("GPU_0x-0000000_0x0000D3A0").has_value()) << "A sign is not a digit";
+    EXPECT_FALSE(luidFromPdhFormat("PCI_01:00.0_10DE:2684").has_value()) << "An adapter id";
 }
 
 } // namespace

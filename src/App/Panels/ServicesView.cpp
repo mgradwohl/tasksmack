@@ -1,0 +1,457 @@
+#include "ServicesView.h"
+
+#include "App/Panels/ProcessIconView.h"
+#include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/ServiceActionsView.h"
+#include "Domain/ProcessIconCache.h"
+#include "Domain/ServiceModel.h"
+#include "Platform/AsciiCase.h"
+#include "Platform/IServiceProbe.h"
+#include "UI/CellText.h"
+#include "UI/EmptyState.h"
+#include "UI/FrameOutline.h"
+#include "UI/IconsFontAwesome6.h"
+#include "UI/Theme.h"
+
+#include <imgui.h>
+// imgui_stdlib.h extends imgui.h's API for std::string, so it follows it.
+#include <algorithm>
+#include <compare>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <misc/cpp/imgui_stdlib.h>
+
+namespace App
+{
+
+namespace
+{
+
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
+
+using Platform::compareIgnoreCase;
+using Platform::containsIgnoreCase;
+
+[[nodiscard]] std::strong_ordering compareBy(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b, ServiceColumn column)
+{
+    switch (column)
+    {
+    case ServiceColumn::DisplayName:
+        return compareIgnoreCase(a.displayName, b.displayName);
+    case ServiceColumn::State:
+        return serviceStateSortRank(a.state) <=> serviceStateSortRank(b.state);
+    case ServiceColumn::StartType:
+        return compareIgnoreCase(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
+    case ServiceColumn::Pid:
+        return a.pid <=> b.pid;
+    case ServiceColumn::Account:
+        return compareIgnoreCase(a.account, b.account);
+    case ServiceColumn::Name:
+    default:
+        return compareIgnoreCase(a.name, b.name);
+    }
+}
+
+/// The name a service is listed by: its display name, or its service name when it has none.
+[[nodiscard]] std::string_view listedName(const Platform::ServiceInfo& service) noexcept
+{
+    return service.displayName.empty() ? std::string_view(service.name) : std::string_view(service.displayName);
+}
+
+/// The State column's order within a state (#1599): by display name, case-insensitively, then by the
+/// service name (case-insensitive, then exact), so two services never compare equal by name alone.
+[[nodiscard]] std::strong_ordering compareByListedName(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
+{
+    if (const std::strong_ordering order = compareIgnoreCase(listedName(a), listedName(b)); order != 0)
+    {
+        return order;
+    }
+    if (const std::strong_ordering order = compareIgnoreCase(a.name, b.name); order != 0)
+    {
+        return order;
+    }
+    return a.name <=> b.name;
+}
+
+/// The listed name, the service name (when it differs: the Name cell may be cut short, #1920), the
+/// description, command line and group, as the row's tooltip.
+void renderServiceTooltip(const Platform::ServiceInfo& service)
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0F);
+    const std::string_view listed = listedName(service);
+    ImGui::TextUnformatted(listed.data(), listed.data() + listed.size());
+    if (listed != service.name)
+    {
+        ImGui::TextColored(scheme.textMuted, "Service name: %s", service.name.c_str());
+    }
+    if (!service.description.empty())
+    {
+        ImGui::TextColored(scheme.textMuted, "%s", service.description.c_str());
+    }
+    if (!service.binaryPath.empty())
+    {
+        ImGui::Text("Command: %s", service.binaryPath.c_str());
+    }
+    if (!service.group.empty())
+    {
+        ImGui::Text("Group: %s", service.group.c_str());
+    }
+    if (!service.serviceType.empty())
+    {
+        ImGui::Text("Type: %s", service.serviceType.c_str());
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+/// Rebuilds the rows only when what they are built from changed: at most once per sample, sort or
+/// filter edit, never every frame (#580).
+void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesViewState& state)
+{
+    if (state.iconKeysVersion != publication.version || state.iconKeys.size() != publication.services.size())
+    {
+        state.iconKeys.clear();
+        state.iconKeys.reserve(publication.services.size());
+        std::size_t index = 0;
+        while (index < publication.services.size())
+        {
+            state.iconKeys.push_back(Domain::iconFileKey(serviceIconPath(publication.services[index])));
+            ++index;
+        }
+        state.iconKeysVersion = publication.version;
+    }
+    if (state.rowsVersion == publication.version && state.rowsFilter == state.filter && state.rowsColumn == state.sortColumn &&
+        state.rowsAscending == state.ascending)
+    {
+        return;
+    }
+    state.rows = buildServiceRows(publication.services, state.filter, state.sortColumn, state.ascending);
+    state.rowsVersion = publication.version;
+    state.rowsFilter = state.filter;
+    state.rowsColumn = state.sortColumn;
+    state.rowsAscending = state.ascending;
+}
+
+} // namespace
+
+std::string_view serviceStateLabel(Platform::ServiceState state) noexcept
+{
+    using enum Platform::ServiceState;
+    switch (state)
+    {
+    case Stopped:
+        return "Stopped";
+    case StartPending:
+        return "Starting";
+    case StopPending:
+        return "Stopping";
+    case Running:
+        return "Running";
+    case ContinuePending:
+        return "Resuming";
+    case PausePending:
+        return "Pausing";
+    case Paused:
+        return "Paused";
+    case Unknown:
+    default:
+        return "Unknown";
+    }
+}
+
+std::uint8_t serviceStateSortRank(Platform::ServiceState state) noexcept
+{
+    using enum Platform::ServiceState;
+    switch (state)
+    {
+    case Running:
+        return 0;
+    case StartPending:
+        return 1;
+    case ContinuePending:
+        return 2;
+    case PausePending:
+        return 3;
+    case Paused:
+        return 4;
+    case StopPending:
+        return 5;
+    case Stopped:
+        return 6;
+    case Unknown:
+    default:
+        return 7;
+    }
+}
+
+std::string_view serviceStartTypeLabel(Platform::ServiceStartType startType) noexcept
+{
+    using enum Platform::ServiceStartType;
+    switch (startType)
+    {
+    case Automatic:
+        return "Automatic";
+    case AutomaticDelayed:
+        return "Automatic (delayed)";
+    case Manual:
+        return "Manual";
+    case Disabled:
+        return "Disabled";
+    case Boot:
+        return "Boot";
+    case System:
+        return "System";
+    case Unknown:
+    default:
+        return "";
+    }
+}
+
+ImVec4 serviceStateColor(Platform::ServiceState state, const UI::ColorScheme& scheme) noexcept
+{
+    using enum Platform::ServiceState;
+    switch (state)
+    {
+    case Running:
+        return scheme.statusRunning;
+    case StartPending:
+    case StopPending:
+    case ContinuePending:
+    case PausePending:
+        return scheme.statusDiskSleep;
+    case Paused:
+        return scheme.statusStopped;
+    case Stopped:
+    case Unknown:
+    default:
+        return scheme.statusSleeping;
+    }
+}
+
+std::string_view serviceIconPath(const Platform::ServiceInfo& service) noexcept
+{
+    constexpr std::string_view SHARED_HOST = "svchost.exe";
+    const std::string_view path = service.executablePath;
+    const std::size_t separator = path.find_last_of("\\/");
+    // Built from a pointer and a length, not substr(), which may throw.
+    const std::string_view fileName =
+        (separator == std::string_view::npos) ? path : std::string_view(path.data() + separator + 1, path.size() - separator - 1);
+    return Platform::equalsIgnoreCase(fileName, SHARED_HOST) ? std::string_view{} : path;
+}
+
+std::vector<std::size_t>
+buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_view filter, ServiceColumn column, bool ascending)
+{
+    std::vector<std::size_t> rows;
+    rows.reserve(services.size());
+    for (std::size_t i = 0; i < services.size(); ++i)
+    {
+        if (containsIgnoreCase(services[i].name, filter) || containsIgnoreCase(services[i].displayName, filter))
+        {
+            rows.push_back(i);
+        }
+    }
+    std::ranges::stable_sort(rows,
+                             [&](std::size_t a, std::size_t b)
+                             {
+                                 const std::strong_ordering order = compareBy(services[a], services[b], column);
+                                 if (order != 0)
+                                 {
+                                     return ascending ? (order < 0) : (order > 0);
+                                 }
+                                 // Within one state the names stay A to Z in either direction (#1599);
+                                 // only the order of the states reverses.
+                                 return column == ServiceColumn::State && compareByListedName(services[a], services[b]) < 0;
+                             });
+    return rows;
+}
+
+ServicesViewContent renderServicesView(const Domain::ServicePublication* publication,
+                                       const Platform::ServiceCapabilities& capabilities,
+                                       ServicesViewState& state,
+                                       ServiceActionsView* actions,
+                                       ProcessIconView* icons)
+{
+    if (!capabilities.canEnumerate)
+    {
+        // The probe's reason: the platform has no service list yet, or the service manager refused.
+        // Built once: the reason is fixed when the probe is made.
+        if (state.unavailableHeading.empty())
+        {
+            state.unavailableHeading =
+                std::string(ICON_FA_GEARS "  ") +
+                (capabilities.unavailableReason.empty() ? std::string("Services aren't available") : capabilities.unavailableReason);
+        }
+        UI::Widgets::renderEmptyState(state.unavailableHeading.c_str());
+        return ServicesViewContent::Unsupported;
+    }
+    if (publication == nullptr || publication->version == 0)
+    {
+        UI::Widgets::renderEmptyState(ICON_FA_GEARS "  Reading services...");
+        return ServicesViewContent::Loading;
+    }
+    if (publication->stale && publication->services.empty())
+    {
+        // Never read successfully: say why instead of showing an empty table as if there were none.
+        UI::Widgets::renderEmptyState(ICON_FA_GEARS "  Couldn't read the services", publication->failureReason.c_str());
+        return ServicesViewContent::ReadFailed;
+    }
+
+    const auto& scheme = UI::Theme::get().scheme();
+    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
+        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+    }
+    ImGui::PopStyleColor();
+    rebuildRowsIfStale(*publication, state);
+    ImGui::SameLine();
+    ImGui::TextColored(scheme.textMuted, "%zu of %zu services", state.rows.size(), publication->services.size());
+    const ServicesViewContent content = publication->stale ? ServicesViewContent::StaleTable : ServicesViewContent::Table;
+    if (publication->stale)
+    {
+        // The rows are the last good read; the latest one failed.
+        ImGui::TextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: %s", publication->failureReason.c_str());
+    }
+    if (actions != nullptr && actions->supported())
+    {
+        // Looked up only while a row is selected, by name, so a re-sort or a new sample keeps it; the
+        // list is a few hundred services at most.
+        const Platform::ServiceInfo* selected = nullptr;
+        if (!state.selectedName.empty())
+        {
+            const auto found = std::ranges::find(publication->services, state.selectedName, &Platform::ServiceInfo::name);
+            selected = (found != publication->services.end()) ? &*found : nullptr;
+        }
+        actions->renderActionBar(selected);
+        actions->renderResultLine();
+    }
+
+    constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
+                                            ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
+                                            ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+                                            ImGuiTableFlags_SizingFixedFit;
+    if (!ImGui::BeginTable("##ServicesTable", 6, TABLE_FLAGS))
+    {
+        return content;
+    }
+    const float em = ImGui::GetFontSize();
+    ImGui::TableSetupScrollFreeze(1, 1);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(ServiceColumn::Name));
+    ImGui::TableSetupColumn("Display name", ImGuiTableColumnFlags_None, em * 20.0F, static_cast<ImGuiID>(ServiceColumn::DisplayName));
+    ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_DefaultSort, em * 6.0F, static_cast<ImGuiID>(ServiceColumn::State));
+    ImGui::TableSetupColumn("Start type", ImGuiTableColumnFlags_None, em * 9.0F, static_cast<ImGuiID>(ServiceColumn::StartType));
+    ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_None, em * 4.0F, static_cast<ImGuiID>(ServiceColumn::Pid));
+    // Hidden by default where the platform can't say (#2006): a column of blanks otherwise. The header's
+    // menu still offers it. Windows and Linux (systemd's User=, #2590) both fill it.
+    ImGui::TableSetupColumn("Account",
+                            capabilities.hasAccount ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide,
+                            em * 14.0F,
+                            static_cast<ImGuiID>(ServiceColumn::Account));
+    ImGui::TableHeadersRow();
+
+    if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs != nullptr && specs->SpecsDirty)
+    {
+        if (specs->SpecsCount > 0)
+        {
+            state.sortColumn = static_cast<ServiceColumn>(specs->Specs[0].ColumnUserID);
+            state.ascending = specs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
+        }
+        specs->SpecsDirty = false;
+    }
+
+    rebuildRowsIfStale(*publication, state);
+
+    // The visible rows only: only they look up icons (#1800).
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(state.rows.size()));
+    // A row asked to be shown (#1886) is drawn even while clipped, so it can scroll itself into view.
+    int scrollToRow = -1;
+    if (state.scrollToSelected && !state.selectedName.empty())
+    {
+        for (std::size_t row = 0; row < state.rows.size(); ++row)
+        {
+            if (publication->services[state.rows[row]].name == state.selectedName)
+            {
+                scrollToRow = static_cast<int>(row);
+                clipper.IncludeItemByIndex(scrollToRow);
+                break;
+            }
+        }
+    }
+    while (clipper.Step())
+    {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
+        {
+            const std::size_t index = state.rows[static_cast<std::size_t>(row)];
+            const auto& service = publication->services[index];
+            ImGui::TableNextRow();
+            // Keyed by the service, not the row: a re-sort or a new sample must not move an open row
+            // menu onto another service.
+            ImGui::PushID(service.name.c_str());
+
+            ImGui::TableNextColumn();
+            if (icons != nullptr)
+            {
+                // The service's program's icon, or a gear for svchost's and those without one.
+                icons->drawFileInline(state.iconKeys[index], serviceIconPath(service), service.name, ProcessIconView::SERVICE_GLYPH);
+            }
+            // The selectable spans the row with no label of its own: the name is drawn after it, cut
+            // short with an ellipsis when the column is too narrow (#1920).
+            if (ImGui::Selectable("##row", state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
+                ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            {
+                state.selectedName = service.name;
+            }
+            if (row == scrollToRow)
+            {
+                ImGui::SetScrollHereY(0.5F);
+                state.scrollToSelected = false;
+            }
+            const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
+            if (actions != nullptr)
+            {
+                actions->renderContextMenu(service);
+            }
+            ImGui::SameLine(0.0F, 0.0F);
+            // The row's tooltip carries the full name.
+            static_cast<void>(UI::Widgets::cellText(service.name, {.clippedTooltip = false}));
+            // A clipped cell's own tooltip (its full text) stands in for the row's while it shows.
+            bool cellTooltip = false;
+            ImGui::TableNextColumn();
+            cellTooltip |= UI::Widgets::cellText(service.displayName).tooltipShown;
+            ImGui::TableNextColumn();
+            ImGui::PushStyleColor(ImGuiCol_Text, serviceStateColor(service.state, scheme));
+            cellTooltip |= UI::Widgets::cellText(serviceStateLabel(service.state)).tooltipShown;
+            ImGui::PopStyleColor();
+            ImGui::TableNextColumn();
+            cellTooltip |= UI::Widgets::cellText(serviceStartTypeLabel(service.startType)).tooltipShown;
+            ImGui::TableNextColumn();
+            if (service.pid != 0)
+            {
+                ImGui::Text("%u", service.pid);
+            }
+            ImGui::TableNextColumn();
+            cellTooltip |= UI::Widgets::cellText(service.account).tooltipShown;
+            if (rowHovered && !cellTooltip)
+            {
+                renderServiceTooltip(service);
+            }
+
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndTable();
+    return content;
+}
+
+} // namespace App

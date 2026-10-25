@@ -2,10 +2,25 @@
 # Must be included after Options.cmake and before Dependencies.cmake so global
 # flags (coverage, hardening, compiler launcher) apply to third-party builds too.
 
-# Windows: Configure MSVC runtime library linkage for Clang
+# Windows: Configure MSVC runtime library linkage for Clang.
+# Debug keeps the DLL runtime (/MDd). Every other configuration links the CRT and C++ runtime
+# statically (/MT): the release .zip ships just TaskSmack.exe, and with the DLL runtime a PC
+# without the Visual C++ Redistributable failed to start it ("MSVCP140.dll was not found", #1398).
+# Set here, before Dependencies.cmake, so SDL3, FreeType, ImGui, googletest and every other
+# FetchContent target are compiled against the same runtime (CMAKE_POLICY_DEFAULT_CMP0091 makes
+# that hold for dependencies whose cmake_minimum_required predates the policy).
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    # Use dynamic MSVC runtime (/MD for Release, /MDd for Debug)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
+endif()
+
+# Windows clang Debug builds: global type hashes in the CodeView debug info (-gcodeview-ghash), which
+# lld-link then merges in parallel when writing the PDB (/DEBUG:GHASH). Debugging is unchanged; the
+# objects get a .debug$H section. Set before Dependencies.cmake so third-party objects carry the
+# hashes too. CI's Windows debug build turns it on (#1875).
+if(TASKSMACK_ENABLE_GHASH AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options("$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:C,CXX>>:-gcodeview-ghash>")
+    add_link_options("$<$<CONFIG:Debug>:LINKER:/DEBUG:GHASH>")
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -116,6 +131,34 @@ function(tasksmack_apply_default_warnings target_name)
     endif()
 endfunction()
 
+# Text encoding (#1648): every TaskSmack-owned target reads its sources as UTF-8 and stores its
+# narrow string literals as UTF-8, whatever the build machine's code page; Windows targets also
+# define UNICODE/_UNICODE, so an unsuffixed Win32 macro (CreateFile, LoadImage, ...) resolves to
+# its W function and passing it a narrow string fails to compile. Per target, never global:
+# FetchContent dependencies (SDL, imgui, glad, freetype, ...) keep their own settings.
+#
+# clang-cl/MSVC: /utf-8 sets both the source and the execution charset. clang/gcc: the source
+# charset is -finput-charset; clang accepts -fexec-charset only as UTF-8 (its only execution
+# charset), and gcc accepts it too, so it's checked rather than assumed. C and C++ only: the same
+# target also compiles the Windows .rc file, whose compiler takes neither flag.
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" OR (MSVC AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT))
+    set(TASKSMACK_TEXT_ENCODING_FLAGS /utf-8)
+else()
+    include(CheckCXXCompilerFlag)
+    set(TASKSMACK_TEXT_ENCODING_FLAGS -finput-charset=UTF-8)
+    check_cxx_compiler_flag(-fexec-charset=UTF-8 TASKSMACK_HAS_FEXEC_CHARSET_UTF8)
+    if(TASKSMACK_HAS_FEXEC_CHARSET_UTF8)
+        list(APPEND TASKSMACK_TEXT_ENCODING_FLAGS -fexec-charset=UTF-8)
+    endif()
+endif()
+
+function(tasksmack_apply_text_encoding target)
+    target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:${TASKSMACK_TEXT_ENCODING_FLAGS}>")
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE UNICODE _UNICODE)
+    endif()
+endfunction()
+
 if(TASKSMACK_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported)
@@ -188,13 +231,21 @@ if(TASKSMACK_MARCH)
     message(STATUS "Target microarchitecture: -march=${TASKSMACK_MARCH} (TASKSMACK_MARCH override)")
 endif()
 
+# Linux Release builds (the release, release-compatible, optimized, benchmark and pgo-* presets;
+# `release` is what the .deb/.tar.gz are built from) link libc++ and libc++abi statically
+# (TASKSMACK_STATIC_LIBCXX). The apt.llvm.org clang-23 build imports libc++ symbols that the distro
+# libc++1 on Ubuntu 24.04 (LLVM 18) doesn't have, e.g. std::__1::__hash_memory, so a .deb that
+# depended on the system libc++1 failed to start on a stock system (#1398). Clang's
+# -static-libstdc++ applies to whichever C++ library -stdlib picks, so with -stdlib=libc++ it
+# links libc++.a (which pulls in libc++abi.a); `readelf -d` then lists no libc++*.so. Debug,
+# RelWithDebInfo and the sanitizer presets keep the shared libc++: MSan needs an instrumented
+# libc++, and the other sanitizers' interceptors are only exercised against the shared one.
 function(tasksmack_apply_linux_toolchain target)
     if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE -stdlib=libc++ -pthread)
-        if(_ts_linker_flag)
-            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
-        else()
-            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
+        if(TASKSMACK_STATIC_LIBCXX)
+            target_link_options(${target} PRIVATE -static-libstdc++)
         endif()
     endif()
 endfunction()
@@ -227,3 +278,29 @@ if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
         message(STATUS "Security hardening flags enabled (Windows release)")
     endif()
 endif()
+
+# Extra hardening for a target that runs as root on Linux: tasksmack-helper (#2640). A small, closed
+# target, so it takes flags the UI binary isn't ready for, on top of the release flags above:
+#   -Wl,-z,relro,-z,now: full RELRO, every symbol bound at load, so the GOT is read-only (lld's default
+#                        is partial RELRO with lazy binding), in every build type
+#   -fstack-clash-protection: probe each stack page, so a large allocation can't jump the guard page
+#   -fcf-protection=full (x86-64) / -mbranch-protection=standard (AArch64): CET IBT+SHSTK or BTI+PAC
+#   -D_FORTIFY_SOURCE=3: also checks sizes known only at run time (needs optimization: release only)
+#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks
+function(tasksmack_apply_privileged_hardening target)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        return()
+    endif()
+    target_link_options(${target} PRIVATE -Wl,-z,relro,-z,now)
+    target_compile_options(${target} PRIVATE -fstack-clash-protection)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        target_compile_options(${target} PRIVATE -fcf-protection=full)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        target_compile_options(${target} PRIVATE -mbranch-protection=standard)
+    endif()
+    target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+    if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+        # After the directory-wide -D_FORTIFY_SOURCE=2 above, so it replaces it
+        target_compile_options(${target} PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
+    endif()
+endfunction()

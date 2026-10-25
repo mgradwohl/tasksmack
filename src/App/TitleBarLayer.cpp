@@ -1,16 +1,18 @@
 #include "TitleBarLayer.h"
 
 #include "App/TitleBarGeometry.h"
+#include "App/TitleBarView.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
-#include "Core/EnvUtils.h"
+#include "Core/EnvRead.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/Utf8Path.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
+#include "Core/WindowGeometry.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
@@ -19,6 +21,7 @@
 
 #include <chrono>
 #include <format>
+#include <optional>
 #include <ratio>
 #include <tuple>
 #include <utility>
@@ -32,21 +35,6 @@
 
 namespace App
 {
-
-// How far the icon is inset from the bar's full height, as a fraction of that height.
-constexpr float TITLE_BAR_ICON_INSET_RATIO = 0.06F;
-
-// Window control button width as a multiple of the bar height. Keeps the controls' aspect stable
-// instead of pinning them to a pixel width that is too small on a HiDPI display.
-constexpr float TITLE_BAR_BUTTON_ASPECT = 1.15F;
-
-// Left margin before the icon, and the gap between icon and title text, as fractions of the bar
-// height. Reproduce the previous 8px and 12px at the default density.
-constexpr float TITLE_BAR_EDGE_MARGIN_RATIO = 0.20F;
-constexpr float TITLE_BAR_TITLE_GAP_RATIO = 0.29F;
-
-// Gap separating the window controls from the app buttons, as a fraction of the bar height.
-constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
 
 // The title bar is chrome and is sized from display density only -- never from the application's
 // Font Size setting. See the note at the top of TitleBarGeometry.h for why, including the hit-test
@@ -66,54 +54,6 @@ namespace
 // without linking this file - see #769. The resize-perf-tracing env-var check below now
 // reuses Core::isEnvFlagEnabled() instead of its own duplicate case-insensitive parser.
 
-// Code points of the title-bar control glyphs, needed to look their ink boxes up in the baked icon
-// font. They must stay in step with the matching ICON_FA_* strings in IconsFontAwesome6.h.
-constexpr ImWchar CHROME_GLYPH_WINDOW_MINIMIZE = 0xF2D1;
-constexpr ImWchar CHROME_GLYPH_XMARK = 0xF00D;
-
-// Draw one chrome glyph over a title-bar button, sized so its ink matches the control glyphs beside
-// it and centred on that ink rather than on its text line box.
-//
-// window-minimize is the reference because it is the one control glyph the bar always shows at the
-// same size: it spans the full em of ink width, as window-maximize, window-restore and
-// circle-question do, and unlike the maximize button it never swaps glyph with the window state.
-// See computeMatchedGlyphSize() for why the match is made on width rather than height.
-//
-// ImGui::Button centres a label by its line box, which is right only while every glyph sits the
-// same way inside its em box. fa-xmark does not, so left as a button label its X comes out both
-// smaller and higher than its neighbours. The baked glyph carries its
-// ink rectangle in X0/Y0..X1/Y1 relative to the text layout position, so both corrections are read
-// from the font itself and neither needs a constant here that a change of icon font would stale.
-//
-// A no-op when the chrome icon font is missing; the caller falls back to a plain button label.
-void drawChromeGlyphMatched(
-    ImFont* font, float chromeIconPx, const char* text, ImWchar codepoint, const ImVec2& rectMin, const ImVec2& rectMax)
-{
-    ImFontBaked* baked = (font != nullptr) ? font->GetFontBaked(chromeIconPx) : nullptr;
-    if (baked == nullptr)
-    {
-        return;
-    }
-    const ImFontGlyph* reference = baked->FindGlyphNoFallback(CHROME_GLYPH_WINDOW_MINIMIZE);
-    const ImFontGlyph* atBaseSize = baked->FindGlyphNoFallback(codepoint);
-    if (reference == nullptr || atBaseSize == nullptr)
-    {
-        return;
-    }
-
-    const float matchedPx = computeMatchedGlyphSize(chromeIconPx, reference->X1 - reference->X0, atBaseSize->X1 - atBaseSize->X0);
-    ImFontBaked* matchedBaked = font->GetFontBaked(matchedPx);
-    const ImFontGlyph* glyph = (matchedBaked != nullptr) ? matchedBaked->FindGlyphNoFallback(codepoint) : nullptr;
-    if (glyph == nullptr)
-    {
-        return;
-    }
-
-    const ImVec2 center((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F);
-    const ImVec2 pos(center.x - ((glyph->X0 + glyph->X1) * 0.5F), center.y - ((glyph->Y0 + glyph->Y1) * 0.5F));
-    ImGui::GetWindowDrawList()->AddText(font, matchedPx, pos, ImGui::GetColorU32(ImGuiCol_Text), text);
-}
-
 // Shared resize border thickness -- must stay in sync between hit-test and cursor detection, so
 // both ask here. Scaled with the display like the title bar itself; see
 // computeResizeBorderThickness(). Valid outside an ImGui frame, which SDL's hit-test callback needs.
@@ -121,8 +61,6 @@ void drawChromeGlyphMatched(
 {
     return computeResizeBorderThickness(UI::Theme::get().displayScale());
 }
-
-constexpr double RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0 / 20.0;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
 // When traceEnabled is false the call reduces to a branch and a direct callable invocation.
@@ -164,69 +102,34 @@ template<typename Fn> struct ScopeExit
     Fn m_Fn;
 };
 
-// Hit-test callback:
-// - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
-// - X11/XWayland: NORMAL for title bar and controls so SDL delivers mouse button events to the
-//   app and drag is handled client-side (matches Windows); RESIZE_* for window edges so the WM
-//   handles native resize.
-// - Native Wayland: same RESIZE_* border handling, but the title-bar drag area itself returns
-//   DRAGGABLE (compositor-managed drag, since client-side SDL_SetWindowPosition() doesn't work
-//   there -- #744). SDL consumes the button-down event entirely for any non-NORMAL hit-test
-//   result, so this file's onSDLEvent()-driven click/drag/double-click handling never runs for
-//   that area on native Wayland -- only the compositor sees the press. Buttons stay NORMAL on
-//   every backend so DRAGGABLE never consumes their clicks.
-SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
+// Hit-test callback, installed on the window by setupHitTest(). The decision is
+// TitleBarLayer::hitTest() -- computeWindowHitTestAt() over the geometry the bar drew with and the
+// backend's policy (Core::VideoBackend::usesSystemDrag()/usesSystemResize()) -- so what the OS asks
+// here and what a test asks are one function. Per backend:
+// - Windows (#2716): the empty title bar answers DRAGGABLE, which SDL turns into HTCAPTION, so
+//   Windows runs the move itself: Aero Snap to a screen edge, the snap preview, drag-to-the-top to
+//   maximize and a double-click to maximize all come from that loop. The borders stay NORMAL and the
+//   resize is client-side (updateResize()): the OS resize loop is modal inside SDL's event pump, and
+//   nothing would be drawn until the button came up. A client-side maximized window (#1208) is a
+//   normal window to the OS, so its title bar stays NORMAL too and the drag that restores it under
+//   the pointer stays client-side (#2715).
+// - X11/XWayland: NORMAL for the title bar, so SDL delivers the press and the drag is client-side;
+//   RESIZE_* for the borders, so the window manager resizes.
+// - Native Wayland: RESIZE_* for the borders and DRAGGABLE for the empty title bar (compositor
+//   drag; client-side SDL_SetWindowPosition() doesn't work there -- #744).
+// SDL consumes the button-down event entirely for any non-NORMAL answer, so this file's
+// onSDLEvent()-driven click/drag/double-click handling never runs for that area: only the OS or
+// compositor sees the press. Buttons stay NORMAL on every backend so DRAGGABLE never consumes
+// their clicks (#750).
+// NOLINTNEXTLINE(misc-const-correctness) - SDL_HitTest's signature
+SDL_HitTestResult hitTestCallback(SDL_Window* /*sdlWindow*/, const SDL_Point* area, void* data)
 {
-#ifdef _WIN32
-    (void) sdlWindow;
-    (void) area;
-    (void) data;
-    // Always return NORMAL so SDL does not enter native modal move/resize loops
-    // that pause rendering. Drag/resize is handled in TitleBarLayer::onSDLEvent.
-    return SDL_HITTEST_NORMAL;
-#else
-    auto* layer = static_cast<TitleBarLayer*>(data);
+    const auto* layer = static_cast<const TitleBarLayer*>(data);
     if (layer == nullptr || area == nullptr)
     {
         return SDL_HITTEST_NORMAL;
     }
-
-    const auto x = static_cast<float>(area->x);
-    const auto y = static_cast<float>(area->y);
-    const float titleBarHeight = TitleBarLayer::height();
-
-    int windowWidth = 0;
-    int windowHeight = 0;
-    if (!SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight))
-    {
-        spdlog::error("SDL_GetWindowSize failed in hitTestCallback: {}", SDL_GetError());
-        return SDL_HITTEST_NORMAL;
-    }
-
-    const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
-
-    // The actual decision tree lives in computeWindowHitTest() (TitleBarGeometry.h), pure and
-    // header-only so its ordering -- buttons must be excluded before any resize-border check,
-    // since a button can sit within RESIZE_BORDER_THICKNESS of a window edge -- is directly
-    // unit-testable without live SDL_Window/TitleBarLayer state (see #750 review). On native
-    // Wayland the empty drag area hands off to the compositor (#744): client-side
-    // SDL_SetWindowPosition() during a drag doesn't work there, and since SDL consumes the
-    // button-down event entirely for any non-NORMAL result, this file's onSDLEvent()-driven
-    // click/drag/double-click handling never runs for that area there -- only the compositor
-    // sees the press, which means double-click-to-maximize doesn't fire from the title bar on
-    // native Wayland (the maximize button remains available). X11/XWayland/Windows stay NORMAL
-    // so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for double-click
-    // maximize/restore detection there.
-    return computeWindowHitTest(x,
-                                y,
-                                windowWidth,
-                                windowHeight,
-                                titleBarHeight,
-                                resizeBorderThickness(),
-                                isMaximized,
-                                layer->isPointInControlArea(x, y),
-                                Core::VideoBackend::isWayland());
-#endif
+    return layer->hitTest(static_cast<float>(area->x), static_cast<float>(area->y));
 }
 
 } // namespace
@@ -252,32 +155,17 @@ void TitleBarLayer::onAttach()
     // Must match renderTitleBar()'s drawing exactly, or the click targets drift away from the
     // painted buttons -- both derive from the same helper for that reason.
     const float titleBarHeight = height();
-    const float buttonWidth = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
-    const auto rightX = static_cast<float>(windowWidth);
-
-    // Right to left: Close, Maximize, Minimize, (gap), Settings, Help
-    float buttonX = rightX - buttonWidth;
-    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO; // Separator before the app buttons
-    buttonX -= buttonWidth;
-    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
+    m_ButtonLayout = computeTitleBarButtonLayout(static_cast<float>(windowWidth),
+                                                 computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT),
+                                                 titleBarHeight,
+                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
 
     // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
     // only knows the framebuffer scale from the first frame on (#1169).
 
-    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
+    m_TraceEnabled = Core::resizePerfTraceRequested();
 
-    // Set up hit test for window dragging
+    // Hit testing: who runs a title-bar drag and a border resize (see hitTestCallback).
     setupHitTest();
     createSystemCursors();
 }
@@ -294,7 +182,7 @@ void TitleBarLayer::loadIconTexture(const int pixelSize)
     }
     else
     {
-        spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
+        spdlog::warn("Failed to load title bar icon from {}", Core::pathToUtf8(iconPath));
     }
 }
 
@@ -368,13 +256,8 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
             spdlog::info("Alt+Space detected (Alt pressed with Space), opening system menu");
             m_ShowSystemMenu = true;
         }
-        // Case 3: F10 - standard menu activation key (works on all platforms)
-        else if (keyEvent.key == SDLK_F10 && !altPressed && !ctrlPressed)
-        {
-            spdlog::info("F10 detected, opening system menu");
-            m_ShowSystemMenu = true;
-        }
-        // Case 4: Ctrl+Space - alternative shortcut
+        // F10 no longer opens this menu: it is the htop-style Quit key (ShellLayer, #170).
+        // Case 3: Ctrl+Space - alternative shortcut
         else if (keyEvent.key == SDLK_SPACE && ctrlPressed && !altPressed)
         {
             spdlog::info("Ctrl+Space detected, opening system menu");
@@ -382,13 +265,14 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-    // On Windows and X11/XWayland, the title bar drag area returns SDL_HITTEST_NORMAL
-    // (see hitTestCallback), so SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here
-    // via SDL's built-in clicks field for double-click detection and the existing
-    // client-side drag/resize interaction for window movement. On native Wayland the drag
-    // area returns SDL_HITTEST_DRAGGABLE instead, so SDL consumes the button-down there and
-    // this handler never runs for that area -- drag and double-click-to-maximize are the
-    // compositor's responsibility on that backend (see hitTestCallback and #744).
+    // Where the hit test answers SDL_HITTEST_NORMAL (see hitTestCallback: the title bar on
+    // X11/XWayland and on a client-side maximized window on Windows, the borders on Windows),
+    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here via SDL's built-in clicks field
+    // for double-click detection and the client-side drag/resize interaction for window movement.
+    // Where it answers DRAGGABLE or RESIZE_* (the title bar on native Wayland, #744, and on a
+    // normal window on Windows, #2716; the borders off Windows), SDL consumes the button-down and
+    // this handler never runs for that area: the drag, the resize and a double-click to maximize
+    // are the OS's or the compositor's there.
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -412,16 +296,39 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
-    // Called from the mouse-move hot path (updateResizeCursor(), hitTestCallback()) - test
-    // each bound directly rather than building a std::array<ButtonBounds, 6> copy per call.
-    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointInBounds(x, y, m_HelpBounds) ||
-           computeIsPointInBounds(x, y, m_SettingsBounds) || computeIsPointInBounds(x, y, m_MinimizeBounds) ||
-           computeIsPointInBounds(x, y, m_MaximizeBounds) || computeIsPointInBounds(x, y, m_CloseBounds);
+    // The same decision the hit-test callback makes over the same geometry: the buttons and the
+    // icon, less the top-right resize corner the Close button's slot reaches into (#2882).
+    return computeIsPointInControlArea(x, y, hitTestInput());
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
 {
     return computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, resizeBorderThickness());
+}
+
+auto TitleBarLayer::hitTestInput() const -> WindowHitTestInput
+{
+    const Core::Window& window = Core::Application::get().getWindow();
+    const auto [windowWidth, windowHeight] = window.getSize();
+    // The window's own answer, not SDL_WINDOW_MAXIMIZED: a client-side maximize (Windows, #1208; X11
+    // without EWMH maximize, #1339) never sets that flag, and its edges would stay resize handles
+    // nobody serves (#2497). SDL calls the hit test from its event pump, on the main thread.
+    const bool isMaximized = window.isMaximized();
+    return {.windowWidth = windowWidth,
+            .windowHeight = windowHeight,
+            .titleBarHeightPx = height(),
+            .resizeBorderPx = resizeBorderThickness(),
+            .buttons = m_ButtonLayout,
+            .icon = m_IconBounds,
+            .isMaximized = isMaximized,
+            .systemDrag = computeSystemDragApplies(
+                Core::VideoBackend::usesSystemDrag(), Core::VideoBackend::supportsClientSideMaximize(), isMaximized),
+            .systemResize = Core::VideoBackend::usesSystemResize()};
+}
+
+auto TitleBarLayer::hitTest(const float x, const float y) const -> SDL_HitTestResult
+{
+    return computeWindowHitTestAt(x, y, hitTestInput());
 }
 
 void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
@@ -471,7 +378,7 @@ void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
 
 void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
 {
-    auto& window = Core::Application::get().getWindow();
+    const auto& window = Core::Application::get().getWindow();
     SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
@@ -508,54 +415,23 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     if (edge != ResizeEdge::None)
     {
         m_InteractionMode = InteractionMode::Resize;
-        m_Resize.edge = edge;
-        m_Resize.startMouseGlobalX = globalMouseX;
-        m_Resize.startMouseGlobalY = globalMouseY;
-        m_Resize.startWindowX = windowOriginX;
-        m_Resize.startWindowY = windowOriginY;
-        m_Resize.startWindowWidth = windowWidth;
-        m_Resize.startWindowHeight = windowHeight;
-        m_Resize.lastAppliedX = windowOriginX;
-        m_Resize.lastAppliedY = windowOriginY;
-        m_Resize.lastAppliedWidth = windowWidth;
-        m_Resize.lastAppliedHeight = windowHeight;
-        m_Resize.hasPendingCommit = false;
-        m_Resize.pendingWidth = windowWidth;
-        m_Resize.pendingHeight = windowHeight;
-        m_Resize.lastSizeCommitTime = Core::Application::getTime();
+        m_RestoreSettle.stop();
+        m_Resize.begin(edge,
+                       globalMouseX,
+                       globalMouseY,
+                       {.x = windowOriginX, .y = windowOriginY, .width = windowWidth, .height = windowHeight},
+                       Core::Application::getTime());
         return;
     }
 
     if (mouseY <= height())
     {
-        if (isMaximized)
-        {
-            // Don't restore yet — defer restore until the pointer has actually moved
-            // past the drag threshold so a bare click doesn't unmaximize the window.
-            m_Drag.pendingRestore = true;
-            m_Drag.maximizedWindowX = windowOriginX;
-            m_Drag.maximizedWindowWidth = windowWidth;
-            m_InteractionMode = InteractionMode::Drag;
-            m_Drag.startMouseGlobalX = globalMouseX;
-            m_Drag.startMouseGlobalY = globalMouseY;
-            // Placeholder positions replaced once restore actually happens.
-            m_Drag.startWindowX = windowOriginX;
-            m_Drag.startWindowY = windowOriginY;
-            m_Drag.lastAppliedX = windowOriginX;
-            m_Drag.lastAppliedY = windowOriginY;
-            m_Resize.edge = ResizeEdge::None;
-        }
-        else
-        {
-            m_InteractionMode = InteractionMode::Drag;
-            m_Drag.startMouseGlobalX = globalMouseX;
-            m_Drag.startMouseGlobalY = globalMouseY;
-            m_Drag.startWindowX = windowOriginX;
-            m_Drag.startWindowY = windowOriginY;
-            m_Drag.lastAppliedX = windowOriginX;
-            m_Drag.lastAppliedY = windowOriginY;
-            m_Resize.edge = ResizeEdge::None;
-        }
+        // On a maximized window the restore waits until the pointer has actually moved past the drag
+        // threshold, so a bare click doesn't unmaximize the window.
+        m_InteractionMode = InteractionMode::Drag;
+        m_RestoreSettle.stop();
+        m_Drag.begin(globalMouseX, globalMouseY, windowOriginX, windowOriginY, isMaximized, windowWidth);
+        m_Resize = {};
     }
 }
 
@@ -566,7 +442,7 @@ auto TitleBarLayer::queryMouseState() -> std::tuple<int, int, SDL_MouseButtonFla
         // Native Wayland: SDL_GetGlobalMouseState() is unreliable there, so use the window-local
         // query for both position and button mask -- the button mask stays accurate as long as
         // the pointer is over this window, which holds while a drag/resize we started is active.
-        auto& window = Core::Application::get().getWindow();
+        const auto& window = Core::Application::get().getWindow();
         const auto [windowOriginX, windowOriginY] = window.getPosition();
         float localX = 0.0F;
         float localY = 0.0F;
@@ -595,6 +471,12 @@ void TitleBarLayer::updateWindowInteraction()
 {
     if (m_InteractionMode == InteractionMode::None)
     {
+        if (m_RestoreSettle.active())
+        {
+            // A quick drag off a maximize can end before the window manager's late restore lands.
+            double setPositionMs = 0.0;
+            settleRestore(Core::Application::get().getWindow(), setPositionMs);
+        }
         return;
     }
 
@@ -634,7 +516,7 @@ void TitleBarLayer::updateWindowInteraction()
             spdlog::info("ResizePerfTitleBarSlowUpdate: mode={} edge={} total={:.3f} ms mouse={:.3f} ms restore={:.3f} ms setPos={:.3f} ms "
                          "setSize={:.3f} ms raiseResizeEvent={:.3f} ms",
                          mode,
-                         static_cast<int>(m_Resize.edge),
+                         static_cast<int>(m_Resize.edge()),
                          totalMs,
                          mouseStateMs,
                          restoreMs,
@@ -649,7 +531,13 @@ void TitleBarLayer::updateWindowInteraction()
     SDL_MouseButtonFlags mouseButtons = 0U;
     int globalMouseX = 0;
     int globalMouseY = 0;
-    timedOp(m_TraceEnabled, mouseStateMs, [&] { std::tie(globalMouseX, globalMouseY, mouseButtons) = queryMouseState(); });
+    timedOp(m_TraceEnabled,
+            mouseStateMs,
+            [&]
+            {
+                std::tie(globalMouseX, globalMouseY, mouseButtons) =
+                    m_MouseStateQueryForTesting ? m_MouseStateQueryForTesting() : queryMouseState();
+            });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -671,149 +559,110 @@ void TitleBarLayer::updateWindowInteraction()
 
 void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
 {
-    const int dx = mx - m_Drag.startMouseGlobalX;
-    const int dy = my - m_Drag.startMouseGlobalY;
-
-    if (m_Drag.pendingRestore)
+    const DragTracker::Step step = m_Drag.step(mx, my);
+    switch (step.kind)
     {
-        // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
-        // any direction so a bare click on the title bar does not unmaximize.
-        constexpr int DRAG_THRESHOLD = 5;
-        if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
-        {
-            return;
-        }
-        // Threshold crossed — restore and rebase the drag origin.
+    case DragTracker::Step::Kind::None:
+        // A moving pointer moves the window itself; a still one may need it moved back.
+        settleRestore(window, setPositionMs);
+        break;
+    case DragTracker::Step::Kind::Restore:
+    {
+        // Threshold crossed: restore, and carry on the drag from where the restored window lands.
+        // Where it would have restored to, which an X11 window manager may still move it to (#2761).
+        const std::optional<Core::WindowGeometry::Rect> staleRestore = window.getNormalGeometry();
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
-        const auto [restoredX, restoredY] = window.getPosition();
-        const auto [restoredWidth, restoredHeight] = window.getSize();
-        const int adjustedX =
-            computeRestoreFromMaximizedDragX(m_Drag.startMouseGlobalX, m_Drag.maximizedWindowX, m_Drag.maximizedWindowWidth, restoredWidth);
-        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
+        // Only the restored width is used: the saved restore position is replaced by one that keeps the
+        // pointer at the spot on the title bar it pressed, across and down (#2715).
+        const int restoredWidth = window.getSize().first;
+        const auto [adjustedX, adjustedY] = m_Drag.rebaseAfterRestore(restoredWidth, mx, my);
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, adjustedY); });
+        // X11 only: elsewhere the restore is synchronous, or (native Wayland) the compositor drags.
+        if (staleRestore.has_value() && (Core::VideoBackend::isX11() || Core::VideoBackend::isXWaylandFallback()))
+        {
+            m_RestoreSettle.start(adjustedX, adjustedY, staleRestore->x, staleRestore->y, Core::Application::getTime());
+        }
         Core::Application::get().signalWindowGeometryChanged();
-        m_Drag.startWindowX = adjustedX;
-        m_Drag.startWindowY = restoredY;
-        m_Drag.lastAppliedX = adjustedX;
-        m_Drag.lastAppliedY = restoredY;
-        m_Drag.pendingRestore = false;
-        (void) restoredX;
-        (void) restoredHeight;
+        break;
+    }
+    case DragTracker::Step::Kind::Move:
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(step.x, step.y); });
+        m_RestoreSettle.retarget(step.x, step.y);
+        Core::Application::get().signalWindowGeometryChanged();
+        break;
+    }
+}
+
+void TitleBarLayer::settleRestore(Core::Window& window, double& setPositionMs)
+{
+    if (!m_RestoreSettle.active())
+    {
         return;
     }
-
-    const int targetX = m_Drag.startWindowX + dx;
-    const int targetY = m_Drag.startWindowY + dy;
-    if (targetX != m_Drag.lastAppliedX || targetY != m_Drag.lastAppliedY)
+    if (!window.isNormalNow())
     {
-        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
+        m_RestoreSettle.stop();
+        return;
+    }
+    const auto [liveX, liveY] = window.getPosition();
+    if (const auto back = m_RestoreSettle.check(liveX, liveY, Core::Application::getTime()); back.has_value())
+    {
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(back->first, back->second); });
         Core::Application::get().signalWindowGeometryChanged();
-        m_Drag.lastAppliedX = targetX;
-        m_Drag.lastAppliedY = targetY;
     }
 }
 
 void TitleBarLayer::updateResize(
     const int mx, const int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs)
 {
-    const int dx = mx - m_Resize.startMouseGlobalX;
-    const int dy = my - m_Resize.startMouseGlobalY;
-
-    const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(m_Resize.edge,
-                                                                         m_Resize.startWindowX,
-                                                                         m_Resize.startWindowY,
-                                                                         m_Resize.startWindowWidth,
-                                                                         m_Resize.startWindowHeight,
-                                                                         dx,
-                                                                         dy,
-                                                                         m_MinimumSize.width,
-                                                                         m_MinimumSize.height);
-
-    const bool positionChanged = (newX != m_Resize.lastAppliedX) || (newY != m_Resize.lastAppliedY);
-    const bool sizeChanged = (newWidth != m_Resize.lastAppliedWidth) || (newHeight != m_Resize.lastAppliedHeight);
-    const double now = Core::Application::getTime();
-    bool sizeCommitApplied = false;
-
-    if (positionChanged)
+    // The minimum SDL holds the window to, not the wanted one: on a side the window is still smaller
+    // than the wanted minimum, the drag keeps the window's size there rather than jumping it (#1945).
+    const auto [minimumWidth, minimumHeight] = window.getMinimumSize();
+    const ResizeTracker::Step step = m_Resize.step(mx, my, minimumWidth, minimumHeight, Core::Application::getTime());
+    if (step.move)
     {
-        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(step.x, step.y); });
         Core::Application::get().signalWindowGeometryChanged();
-        m_Resize.lastAppliedX = newX;
-        m_Resize.lastAppliedY = newY;
     }
-    if (sizeChanged)
+    if (!step.commitSize)
     {
-        const bool commitIntervalElapsed = (now - m_Resize.lastSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
-        if (commitIntervalElapsed)
-        {
-            timedOp(m_TraceEnabled,
-                    setSizeMs,
-                    [&]
-                    {
-                        Core::traceResizePerfSDL(Core::ResizePerfOperation::SizeCommit,
-                                                 newWidth,
-                                                 newHeight,
-                                                 [&] { return SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
-                    });
-            Core::Application::get().signalWindowGeometryChanged();
-            m_Resize.lastAppliedWidth = newWidth;
-            m_Resize.lastAppliedHeight = newHeight;
-            m_Resize.lastSizeCommitTime = now;
-            m_Resize.hasPendingCommit = false;
-            sizeCommitApplied = true;
-        }
-        else
-        {
-            m_Resize.hasPendingCommit = true;
-            m_Resize.pendingWidth = newWidth;
-            m_Resize.pendingHeight = newHeight;
-        }
+        return;
     }
-    else if (m_Resize.hasPendingCommit)
-    {
-        // sizeChanged is false here: the current desired size already matches the last
-        // committed size, meaning the user dragged back to the committed geometry.
-        // The pending commit is now stale — applying it would jump the window to an
-        // intermediate size the user no longer wants — so cancel it immediately.
-        m_Resize.hasPendingCommit = false;
-    }
+    timedOp(m_TraceEnabled,
+            setSizeMs,
+            [&]
+            {
+                Core::traceResizePerfSDL(Core::ResizePerfOperation::SizeCommit,
+                                         step.width,
+                                         step.height,
+                                         [&] { return SDL_SetWindowSize(window.getHandle(), step.width, step.height); });
+            });
+    Core::Application::get().signalWindowGeometryChanged();
 
-    if (sizeCommitApplied)
+    // Coalesce immediate resize events to avoid flooding the event bus during edge/corner drags. SDL
+    // will still emit pixel-size events, so this path only provides low-latency updates for
+    // interactive drag.
+    int pixelW = 0;
+    int pixelH = 0;
+    SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
+    if (m_Resize.takeResizeEvent(pixelW, pixelH, Core::Application::getTime()))
     {
-        // Coalesce immediate resize events to avoid flooding the event bus
-        // during edge/corner drags. SDL will still emit pixel-size events,
-        // so this path only provides low-latency updates for interactive drag.
-        int pixelW = 0;
-        int pixelH = 0;
-        SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-        constexpr double MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0 / 120.0;
-        const double resizeEventNow = Core::Application::getTime();
-        const bool pixelSizeChanged = (pixelW != m_Resize.lastImmediatePixelW) || (pixelH != m_Resize.lastImmediatePixelH);
-        const bool intervalElapsed = (resizeEventNow - m_Resize.lastImmediateEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
-        if (pixelSizeChanged && intervalElapsed)
-        {
-            m_Resize.lastImmediatePixelW = pixelW;
-            m_Resize.lastImmediatePixelH = pixelH;
-            m_Resize.lastImmediateEventTime = resizeEventNow;
-            Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-            timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
-        }
+        Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
+        timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
     }
 }
 
 void TitleBarLayer::endWindowInteraction()
 {
-    if (m_InteractionMode == InteractionMode::Resize && m_Resize.hasPendingCommit)
+    if (const std::optional<std::pair<int, int>> pending = m_Resize.pendingSize();
+        m_InteractionMode == InteractionMode::Resize && pending.has_value())
     {
-        auto& window = Core::Application::get().getWindow();
-        SDL_Window* sdlWindow = window.getHandle();
-        if (sdlWindow != nullptr)
+        if (SDL_Window* sdlWindow = Core::Application::get().getWindow().getHandle(); sdlWindow != nullptr)
         {
-            Core::traceResizePerfSDL(Core::ResizePerfOperation::FinalSizeCommit,
-                                     m_Resize.pendingWidth,
-                                     m_Resize.pendingHeight,
-                                     [&] { return SDL_SetWindowSize(sdlWindow, m_Resize.pendingWidth, m_Resize.pendingHeight); });
+            const auto [width, height] = *pending;
+            Core::traceResizePerfSDL(
+                Core::ResizePerfOperation::FinalSizeCommit, width, height, [&] { return SDL_SetWindowSize(sdlWindow, width, height); });
         }
-        // m_Resize will be zeroed below
     }
 
     m_Drag = {};
@@ -914,7 +763,7 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 
 void TitleBarLayer::updateResizeCursor()
 {
-    auto& window = Core::Application::get().getWindow();
+    const auto& window = Core::Application::get().getWindow();
     const SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
@@ -1014,7 +863,7 @@ void TitleBarLayer::updateResizeCursor()
         }
     }
 
-    const auto update = computeResizeCursorUpdate(isInteracting, m_Resize.edge, focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
+    const auto update = computeResizeCursorUpdate(isInteracting, m_Resize.edge(), focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
     if (update.updateCachedEdge)
     {
         m_CachedHoverEdge = update.resolvedEdge;
@@ -1037,371 +886,148 @@ void TitleBarLayer::setupHitTest()
 
 void TitleBarLayer::renderTitleBar()
 {
-    const auto& scheme = UI::Theme::get().scheme();
     auto& window = Core::Application::get().getWindow();
     const auto [windowWidth, windowHeight] = window.getSize();
-
     const float titleBarHeight = height();
-    // Set up window for title bar - no padding, no scrolling, fixed position
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(windowWidth), titleBarHeight));
-
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
-                                   ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, scheme.titleBgActive);
-
-    ImGui::Begin("##TitleBar", nullptr, flags);
-
-    // Icon (left side) - clickable for system menu
-    // Size: title bar height minus 2px border on top and bottom
-    const float ICON_SIZE = computeTitleBarIconSize(titleBarHeight, titleBarHeight * TITLE_BAR_ICON_INSET_RATIO);
-    const float centerY = titleBarHeight * 0.5F;
-    const float iconY = centerY - (ICON_SIZE * 0.5F);
-    // Left margin and the gap after the icon, proportional to the bar so they hold at any density.
-    const float iconX = titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
 
     // The bundled icon nearest above the drawn size in framebuffer pixels; after a display-scale
     // change that is another file (#1169). Loading between NewFrame() and Render() is fine: the
     // texture is only sampled when the frame is drawn.
-    if (const int wantedPx = selectIconPixelSize(ICON_SIZE * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
+    if (const int wantedPx =
+            selectIconPixelSize(TitleBarView::iconSize(titleBarHeight) * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
         wantedPx != m_IconTexturePx)
     {
         loadIconTexture(wantedPx);
     }
 
-    if (m_IconTexture.valid())
+    const TitleBarView::Output drawn = TitleBarView::render({.windowWidth = static_cast<float>(windowWidth),
+                                                             .windowHeight = static_cast<float>(windowHeight),
+                                                             .barHeight = titleBarHeight,
+                                                             .maximized = window.isMaximized(),
+                                                             .resizeBorderPx = resizeBorderThickness(),
+                                                             .icon = &m_IconTexture,
+                                                             .openSystemMenu = std::exchange(m_ShowSystemMenu, false)});
+    // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
+    // drag area and where a right-click opens the system menu.
+    m_ButtonLayout = drawn.layout;
+    if (drawn.iconDrawn)
     {
-        ImGui::SetCursorPos(ImVec2(iconX, iconY));
+        m_IconBounds = drawn.iconBounds;
+    }
+    updateMinimumWindowSize(drawn.contentWidth);
 
-        // Make icon clickable with invisible button.
-        // We use titleBgActive with zero alpha rather than a literal ImVec4(0,0,0,0) so that
-        // if ImGui ever composites the RGB channel even at alpha=0, we still blend with
-        // the actual title bar background color rather than black.
-        ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.titleBgActive, 0.0F));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
-        if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
-        {
+    switch (drawn.action)
+    {
+    case TitleBarView::Action::IconClicked:
 #ifdef _WIN32
-            // Show native Windows system menu
-            auto* sdlWindow = Core::Application::get().getWindow().getHandle();
-            SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
-            auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-
-            if (hwnd != nullptr)
-            {
-                HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
-                if (systemMenu != nullptr)
-                {
-                    // Get cursor position for menu display
-                    POINT pt;
-                    GetCursorPos(&pt);
-
-                    // Track the menu command
-                    int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
-                    if (cmd != 0)
-                    {
-                        PostMessage(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
-                    }
-                }
-            }
-#else
-            // Use custom system menu on Linux
-            m_ShowSystemMenu = true;
+        showNativeSystemMenu(); // LCOV_EXCL_LINE - opens the modal native system menu, which a test can't dismiss (#2039)
 #endif
-        }
-        ImGui::PopStyleColor(3);
-
-        // Draw icon over the invisible button
-        ImGui::SetCursorPos(ImVec2(iconX, iconY));
-        ImGui::Image(m_IconTexture.textureId(), ImVec2(ICON_SIZE, ICON_SIZE));
-
-        // Track icon bounds for right-click detection
-        m_IconBounds = {.minX = iconX, .maxX = iconX + ICON_SIZE, .minY = iconY, .maxY = iconY + ICON_SIZE};
-    }
-
-    // Title text using Sixtyfour font - centered vertically
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(iconX + ICON_SIZE + (titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO));
-
-    // Get the font to use and center the text vertically
-    ImFont* titleFont = UI::Theme::get().titleFont();
-    if (titleFont != nullptr)
+        break; // Linux: the view opened its own menu
+    case TitleBarView::Action::Close:
+        window.requestClose();
+        break;
+    case TitleBarView::Action::Maximize:
+        window.maximize();
+        break;
+    case TitleBarView::Action::Restore:
+        window.restore();
+        break;
+    case TitleBarView::Action::Minimize:
+        window.minimize();
+        break;
+    case TitleBarView::Action::Settings:
     {
-        ImGui::PushFont(titleFont);
+        Core::OpenSettingsEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
     }
-
-    // Now get the font size after pushing (ImGui::GetFontSize() returns current font size)
-    const float fontSize = ImGui::GetFontSize();
-    const float titleY = centerY - (fontSize * 0.5F);
-    ImGui::SetCursorPosY(titleY);
-
-    ImGui::TextColored(scheme.textPrimary, "TaskSmack");
-    const float wordmarkWidth = ImGui::GetItemRectSize().x;
-
-    if (titleFont != nullptr)
+    case TitleBarView::Action::Help:
     {
-        ImGui::PopFont();
+        Core::OpenHelpEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
     }
+    case TitleBarView::Action::About:
+    {
+        Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case TitleBarView::Action::None:
+        break;
+    }
+}
 
-    // Right side buttons
-    const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
-
+void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
+{
     // The window may not be made narrower than what this bar or the panels below it have to show
     // (#1207), or shorter than the panels' content (#1278) or the base minimum at this display scale. Derived from the sizes just used for
     // drawing, so it cannot drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set the scaled base
     // minimum at attach; this widens it to cover the bar.
+    auto& window = Core::Application::get().getWindow();
+    const float displayScale = UI::Theme::get().displayScale();
     const WindowMinimumSize desiredMinimumSize =
-        computeMinimumWindowSize(UI::Theme::get().displayScale(),
-                                 computeTitleBarContentWidth(iconX,
-                                                             ICON_SIZE,
-                                                             titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
-                                                             wordmarkWidth,
-                                                             BUTTON_WIDTH,
-                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
-                                 m_ContentMinimumWidthPx,
-                                 m_ContentMinimumHeightPx);
+        computeMinimumWindowSize(displayScale, contentWidth, m_ContentMinimumWidthPx, m_ContentMinimumHeightPx);
+    // Without what the tabs measured: the part that moves only with the font, the scale or the
+    // display, and may grow the window (#1945).
+    const WindowMinimumSize desiredGrowMinimumSize =
+        computeMinimumWindowSize(displayScale, contentWidth, m_ContentMinimumWidthPx, m_ContentEstimatedHeightPx);
     // Held inside the current display's usable bounds, or a large font on a small display would
     // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
     // when the wanted minimum or the display changes.
     const SDL_DisplayID displayId = window.getDisplayId();
-    if (desiredMinimumSize != m_DesiredMinimumSize || displayId != m_MinimumSizeDisplayId)
+    if (desiredMinimumSize != m_DesiredMinimumSize || desiredGrowMinimumSize != m_DesiredGrowMinimumSize ||
+        displayId != m_MinimumSizeDisplayId)
     {
         m_DesiredMinimumSize = desiredMinimumSize;
+        m_DesiredGrowMinimumSize = desiredGrowMinimumSize;
         m_MinimumSizeDisplayId = displayId;
         const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
         const WindowMinimumSize minimumSize = capMinimumToUsable(desiredMinimumSize, usableWidth, usableHeight);
-        if (minimumSize != m_MinimumSize)
+        const WindowMinimumSize growMinimumSize = capMinimumToUsable(desiredGrowMinimumSize, usableWidth, usableHeight);
+        // Grows the window at startup and when the font, the scale or the display moved the minimum;
+        // keeps its size when a tab's measurement alone did (#1945).
+        const Core::WindowGeometry::MinimumSizeChange change = minimumSizeChangeFor(m_GrowMinimumSize, growMinimumSize);
+        if (minimumSize != m_MinimumSize || change == Core::WindowGeometry::MinimumSizeChange::AllowGrow)
         {
             m_MinimumSize = minimumSize;
-            if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
+            m_GrowMinimumSize = growMinimumSize;
+            // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+            static_cast<void>(window.setMinimumSize(minimumSize.width, minimumSize.height, change));
+        }
+    }
+}
+
+#ifdef _WIN32
+// LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until the user picks or dismisses (#2039)
+void TitleBarLayer::showNativeSystemMenu()
+{
+    // Show native Windows system menu
+    auto* sdlWindow = Core::Application::get().getWindow().getHandle();
+    SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
+    auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+
+    if (hwnd != nullptr)
+    {
+        HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
+        if (systemMenu != nullptr)
+        {
+            // Get cursor position for menu display
+            POINT pt;
+            GetCursorPos(&pt);
+
+            // Track the menu command
+            int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+            if (cmd != 0)
             {
-                spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
+                PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
             }
         }
     }
-    const float BUTTON_HEIGHT = titleBarHeight;
-    const auto rightX = static_cast<float>(windowWidth);
-
-    // Window control buttons (right to left: Close, Maximize, Minimize)
-    // titleBgActive with zero alpha gives a transparent resting state; if ImGui ever composites
-    // the RGB channel at alpha=0, we blend against the actual title bar background color.
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.titleBgActive, 0.0F));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
-
-    // These controls draw Font Awesome glyphs, which are merged into every body font at that font's
-    // size. Left under the globally pushed body font they grew and shrank with the Font Size setting
-    // inside their now-fixed boxes, so the chrome was only half independent of it. The dedicated
-    // fixed-size icon font keeps them proportional to the bar instead.
-    ImFont* chromeIcons = UI::Theme::get().chromeIconFont();
-    const bool pushedChromeIcons = chromeIcons != nullptr;
-    if (pushedChromeIcons)
-    {
-        ImGui::PushFont(chromeIcons);
-    }
-
-    // Close button (hover/active colors from theme)
-    float buttonX = rightX - BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.closeButtonHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.closeButtonActive);
-    // The X is drawn over an unlabelled button rather than passed as that button's label: fa-xmark
-    // fills much less of its em box than the icons beside it, so it needs both its own font size
-    // and centring on its ink, neither of which a button label can express. The labelled form is
-    // the fallback for when the chrome icon font failed to load.
-    const char* closeLabel = (chromeIcons != nullptr) ? "##Close" : ICON_FA_XMARK "##Close";
-    if (ImGui::Button(closeLabel, ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
-    {
-        window.requestClose();
-    }
-    drawChromeGlyphMatched(chromeIcons,
-                           UI::Theme::get().chromeIconFontSizePx(),
-                           ICON_FA_XMARK,
-                           CHROME_GLYPH_XMARK,
-                           ImGui::GetItemRectMin(),
-                           ImGui::GetItemRectMax());
-    ImGui::PopStyleColor(2);
-    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
-
-    // Maximize/Restore button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    const bool isMaximized = window.isMaximized();
-    if (ImGui::Button(isMaximized ? ICON_FA_WINDOW_RESTORE "##Restore" : ICON_FA_WINDOW_MAXIMIZE "##Maximize",
-                      ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
-    {
-        if (isMaximized)
-        {
-            window.restore();
-        }
-        else
-        {
-            window.maximize();
-        }
-    }
-    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
-
-    // Minimize button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_WINDOW_MINIMIZE "##Minimize", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
-    {
-        window.minimize();
-    }
-    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
-
-    // Separator -- same ratio as the hit-bounds pass, so the two stay aligned.
-    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO;
-
-    // Settings button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_GEAR "##Settings", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
-    {
-        Core::OpenSettingsEvent event;
-        Core::Application::get().raiseEvent(event);
-    }
-    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
-
-    // Help button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_CIRCLE_QUESTION "##Help", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
-    {
-        Core::OpenAboutEvent event;
-        Core::Application::get().raiseEvent(event);
-    }
-    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
-
-    if (pushedChromeIcons)
-    {
-        ImGui::PopFont();
-    }
-    ImGui::PopStyleColor(3); // Button colors
-    ImGui::PopStyleVar(2);   // Frame padding, item spacing
-
-    // Alt+Space is handled in onSDLEvent() for reliable capture
-
-    // Handle system menu popup (must be within the window context)
-    if (m_ShowSystemMenu)
-    {
-        ImGui::OpenPopup("##SystemMenu");
-        m_ShowSystemMenu = false;
-    }
-
-    // Render the system menu popup
-    renderSystemMenu();
-
-    ImGui::End();
-
-    if (!window.isMaximized())
-    {
-        constexpr float BORDER_THICKNESS = 1.0F;
-        ImDrawList* drawList = ImGui::GetForegroundDrawList();
-        drawList->AddRect(ImVec2(0.0F, 0.0F),
-                          ImVec2(static_cast<float>(windowWidth), static_cast<float>(windowHeight)),
-                          ImGui::ColorConvertFloat4ToU32(scheme.border),
-                          0.0F,
-                          ImDrawFlags_None,
-                          BORDER_THICKNESS);
-    }
-
-    ImGui::PopStyleColor(); // WindowBg
-    ImGui::PopStyleVar(2);  // WindowPadding, WindowBorderSize
 }
+// LCOV_EXCL_STOP
+#endif
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static) - Intentionally non-static for OOP consistency
-void TitleBarLayer::renderSystemMenu()
-{
-    auto& window = Core::Application::get().getWindow();
-    const bool isMaximized = window.isMaximized();
-
-    // Set position for the popup (below the icon)
-    const float titleBarHeight = height();
-    // Under the icon, which sits at this same fraction of the bar height from the left edge.
-    ImGui::SetNextWindowPos(ImVec2(titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO, titleBarHeight), ImGuiCond_Appearing);
-
-    if (ImGui::BeginPopup("##SystemMenu"))
-    {
-        // Restore (only enabled when maximized)
-        if (isMaximized)
-        {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore"))
-            {
-                window.restore();
-            }
-        }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore");
-            ImGui::EndDisabled();
-        }
-
-        // Move (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Move mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move"));
-        }
-
-        // Size (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_EXPAND "  Size");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Size mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_EXPAND "  Size"));
-        }
-
-        // Minimize
-        if (ImGui::MenuItem(ICON_FA_WINDOW_MINIMIZE "  Minimize"))
-        {
-            window.minimize();
-        }
-
-        // Maximize (only enabled when not maximized)
-        if (!isMaximized)
-        {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize"))
-            {
-                window.maximize();
-            }
-        }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize");
-            ImGui::EndDisabled();
-        }
-
-        ImGui::Separator();
-
-        // Close with shortcut hint
-        if (ImGui::MenuItem(ICON_FA_XMARK "  Close", "Alt+F4"))
-        {
-            window.requestClose();
-        }
-
-        ImGui::EndPopup();
-    }
-}
 
 } // namespace App

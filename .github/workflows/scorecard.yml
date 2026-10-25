@@ -1,11 +1,19 @@
 name: OpenSSF Scorecard
 
+# Weekly (plus branch-protection changes and manual runs), not on every push to main (#1406).
+# Scorecard's SAST check counts a commit on main as checked only once the PR it came from has a
+# *completed* `CodeQL` check run (app github-advanced-security, conclusion success or neutral) on its
+# head, and it evaluates that when Scorecard runs, not when the PR merged (ossf/scorecard
+# checks/raw/sast.go). A push-triggered run starts seconds after the merge, so a PR merged while its
+# CodeQL run was still going scored "29 of 30 commits checked" (#1405) until the next push, which is
+# why a wait-for-CodeQL job used to sit in front of every push run. A scheduled run looks at the same
+# last 30 commits, normally hours or days after the newest one merged, when every PR's CodeQL result
+# has landed, so the race (and the up-to-55-minute wait) goes away. Only the badge's refresh rate
+# changes: weekly instead of per merge.
 on:
   branch_protection_rule:
   schedule:
     - cron: '30 5 * * 1'
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -25,20 +33,20 @@ jobs:
           persist-credentials: false
 
       - name: Run analysis
-        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: scorecard-results
           path: results.sarif
-          retention-days: 14
+          retention-days: 5
 
       - name: Upload to code-scanning
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           sarif_file: results.sarif

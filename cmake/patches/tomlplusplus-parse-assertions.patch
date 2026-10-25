@@ -1,0 +1,186 @@
+toml++: report malformed values that reach the parser's assertions instead of assuming they can't happen
+
+Each change replaces a TOML_ASSERT_ASSUME in parse_value() or the date/time parsers that malformed
+input can break, or that only the caller's dispatch keeps true. Debug builds abort on the assert();
+NDEBUG builds turn it into __builtin_assume(), which is undefined behaviour. With the patch,
+toml::parse throws toml::parse_error (or returns a failed parse_result without exceptions), as it
+does for any other malformed input.
+
+1. TaskSmack #1388: parse_value() opened with TOML_ASSERT_ASSUME(!is_value_terminator(*cp)), but
+   the cursor can sit on a terminator there: the '}' in 'm=[}' (an array closed with the wrong
+   bracket). This raises the parser's normal error instead, with the same message the key-value
+   path already uses ("expected value, saw '}'").
+
+2. TaskSmack #1659: parse_value()'s scan() lambda asserted the same thing on entry. A date
+   followed by a space and a digit ('YYYY-MM-DD 1', possibly a space-separated date-time) re-runs
+   scan() one character past that digit, which can be a terminator: the second ' ' in
+   'h=2000-02-1a 1 1', the newline in 'h=2000-02-01 1\n', the ']' in 'h=[2000-02-01 1]'. scan()
+   now returns without scanning, as it already did at end-of-file, so the caller backs up to the
+   10-character date and parses only that. The date parser rejects '2000-02-1a', and a valid date
+   leaves ' 1 ...' behind, which the key-value and array paths reject.
+
+3. TaskSmack #2427: parse_time() asserted that it starts on a digit. parse_value() picks
+   parse_date_time() from the traits of the whole token (a '-', a ':' and a 't'/'T' anywhere in
+   it), so nothing checks the character after the 'T'/'t' separator, and parse_date_time() hands
+   it straight to parse_time(): the 'h' in 'h=0200-02-10thexxxxxxxxxxWq\x7f:t', the 'x' in
+   'a=2000-02-10Tx:', the '+' in 'a=2000-02-10T+1:'. parse_time() now reports "expected 2-digit
+   hour". parse_date() and parse_date_time() made the same assumption; parse_value()'s dispatch
+   does guarantee a digit there today, but they now report "expected 4-digit year" instead of
+   assuming it, so a future caller can't turn a malformed value into UB. The rest of the date,
+   time and offset parsing already checks every character through consume_digit_sequence().
+
+Base: marzer/tomlplusplus 1e8829b793b66ad17011732a146b8077d379b011 (the GIT_TAG in
+cmake/Dependencies.cmake). Patches the split headers under include/ (what TaskSmack compiles
+against) and the generated single header toml.hpp alike. Applied by FetchContent's PATCH_COMMAND
+through cmake/patches/ApplyPatch.cmake, which skips it when it is already applied. Drop this file
+once upstream fixes all of these assertions (still present in upstream master, 1e8829b, as of
+2026-10-17).
+
+diff --git a/include/toml++/impl/parser.inl b/include/toml++/impl/parser.inl
+--- a/include/toml++/impl/parser.inl
++++ b/include/toml++/impl/parser.inl
+@@ -2294,9 +2294,12 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("date"sv);
+ 
++			// the dispatch in parse_value() only gets here on a digit, but don't assume it (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 4-digit year, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			// "YYYY"
+ 			uint32_t digits[4];
+ 			if (!consume_digit_sequence(digits, 4u))
+@@ -2348,9 +2351,13 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("time"sv);
+ 
++			// parse_date_time() calls this on whatever follows the 'T'/'t'/' ' separator, a non-digit in
++			// malformed input ('a=2000-02-10Tx:'): report it instead of assuming it can't happen (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 2-digit hour, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			static constexpr size_t max_digits = 64; // far more than necessary but needed to allow fractional
+ 													 // millisecond truncation per the spec
+ 			uint32_t digits[max_digits];
+@@ -2436,9 +2443,12 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("date-time"sv);
+ 
++			// the dispatch in parse_value() only gets here on a digit, but don't assume it (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 4-digit year, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			// "YYYY-MM-DD"
+ 			auto date = parse_date(true);
+ 			set_error_and_return_if_eof({});
+@@ -2552,9 +2562,13 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 			push_parse_scope("value"sv);
+ 
++			// a value terminator here (e.g. the '}' in 'a=[}') is malformed input, not a broken precondition:
++			// report it instead of assuming it can't happen (TOML_ASSERT_ASSUME is UB under NDEBUG)
++			if TOML_UNLIKELY(is_value_terminator(*cp))
++				set_error_and_return_default("expected value, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			const depth_counter_scope depth_counter{ nested_values };
+ 			if TOML_UNLIKELY(nested_values > max_nested_values)
+ 				set_error_and_return_default("exceeded maximum nested value depth of "sv,
+@@ -2637,9 +2651,10 @@ TOML_IMPL_NAMESPACE_START
+ 				bool eof_while_scanning = false;
+ 				const auto scan			= [&]() noexcept(!TOML_COMPILER_HAS_EXCEPTIONS)
+ 				{
+-					if (is_eof())
++					// the date-time rescan below can start on a terminator (the second ' ' in 'a=2000-02-01 1 1'):
++					// nothing to scan, so stop instead of assuming it can't happen (UB under NDEBUG)
++					if (is_eof() || is_value_terminator(*cp))
+ 						return;
+-					TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 
+ 					do
+ 					{
+diff --git a/toml.hpp b/toml.hpp
+--- a/toml.hpp
++++ b/toml.hpp
+@@ -14877,9 +14877,12 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("date"sv);
+ 
++			// the dispatch in parse_value() only gets here on a digit, but don't assume it (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 4-digit year, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			// "YYYY"
+ 			uint32_t digits[4];
+ 			if (!consume_digit_sequence(digits, 4u))
+@@ -14931,9 +14934,13 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("time"sv);
+ 
++			// parse_date_time() calls this on whatever follows the 'T'/'t'/' ' separator, a non-digit in
++			// malformed input ('a=2000-02-10Tx:'): report it instead of assuming it can't happen (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 2-digit hour, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			static constexpr size_t max_digits = 64; // far more than necessary but needed to allow fractional
+ 													 // millisecond truncation per the spec
+ 			uint32_t digits[max_digits];
+@@ -15019,9 +15026,12 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(is_decimal_digit(*cp));
+ 			push_parse_scope("date-time"sv);
+ 
++			// the dispatch in parse_value() only gets here on a digit, but don't assume it (UB under NDEBUG)
++			if TOML_UNLIKELY(!is_decimal_digit(*cp))
++				set_error_and_return_default("expected 4-digit year, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			// "YYYY-MM-DD"
+ 			auto date = parse_date(true);
+ 			set_error_and_return_if_eof({});
+@@ -15135,9 +15145,13 @@ TOML_IMPL_NAMESPACE_START
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 			push_parse_scope("value"sv);
+ 
++			// a value terminator here (e.g. the '}' in 'a=[}') is malformed input, not a broken precondition:
++			// report it instead of assuming it can't happen (TOML_ASSERT_ASSUME is UB under NDEBUG)
++			if TOML_UNLIKELY(is_value_terminator(*cp))
++				set_error_and_return_default("expected value, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			const depth_counter_scope depth_counter{ nested_values };
+ 			if TOML_UNLIKELY(nested_values > max_nested_values)
+ 				set_error_and_return_default("exceeded maximum nested value depth of "sv,
+@@ -15219,9 +15233,10 @@ TOML_IMPL_NAMESPACE_START
+ 				bool eof_while_scanning = false;
+ 				const auto scan			= [&]() noexcept(!TOML_COMPILER_HAS_EXCEPTIONS)
+ 				{
+-					if (is_eof())
++					// the date-time rescan below can start on a terminator (the second ' ' in 'a=2000-02-01 1 1'):
++					// nothing to scan, so stop instead of assuming it can't happen (UB under NDEBUG)
++					if (is_eof() || is_value_terminator(*cp))
+ 						return;
+-					TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 
+ 					do
+ 					{

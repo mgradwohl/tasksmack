@@ -1,6 +1,6 @@
 /// @file test_ProcessActionHelpers.cpp
 /// @brief Mock-IProcessActions integration tests for App::Detail::dispatchProcessAction() and
-/// formatActionResultMessage(), extracted from ProcessDetailsPanel::dispatchConfirmedAction().
+/// formatActionResultMessage(), which Process Details' and the Processes table's actions run.
 ///
 /// This is the "integration tests for process actions (with mock IProcessActions)" item from
 /// #415. ProcessDetailsPanel.cpp itself is not linked into TaskSmackTests - it pulls in real
@@ -194,8 +194,8 @@ TEST(ProcessActionHelpersTest, FailureIsFlaggedWhateverItsWording)
 
 TEST(ProcessActionHelpersTest, DispatchThenFormatEndToEnd)
 {
-    // Exercises the exact two-call sequence ProcessDetailsPanel::dispatchConfirmedAction() runs,
-    // end to end against a mock, without needing to link ProcessDetailsPanel.cpp itself.
+    // Exercises the two-call sequence ProcessActionsView and ProcessesPanel run (dispatch, then
+    // format), end to end against a mock, without needing to link ProcessDetailsPanel.cpp itself.
     TestMocks::MockProcessActions mock;
     mock.setStopResult(Platform::ProcessActionResult::error("Operation not permitted"));
 

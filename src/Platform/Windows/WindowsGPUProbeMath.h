@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/AsciiCase.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/PDHGPUProbe.h"
@@ -14,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -41,7 +43,7 @@ namespace Platform
         }
         else
         {
-            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            normalized += Platform::foldAscii(c);
             lastWasSpace = false;
         }
     }
@@ -237,9 +239,9 @@ namespace Platform
 }
 
 /// The id of the DXGI adapter each mapped NVML device is, keyed by the NVML device's own id (its
-/// UUID), from a mapDXGIToNVML() mapping. NVML's per-process counters carry it, so they name the
-/// same GPU as the DXGI adapter matched to the device by PCI location -- not "GPU{nvmlIndex}", which
-/// in NVML's numbering could be another adapter's id (#1091, #1317). An unmapped device has no entry.
+/// UUID), from a mapDXGIToNVML() mapping, so a PDH reading for an adapter can be traced to its NVML
+/// device (nvmlDevicesToLeaveIdle(), excludeIdleNVMLMemory()) by PCI location rather than by
+/// NVML's own numbering, which isn't DXGI's (#1091, #1265). An unmapped device has no entry.
 [[nodiscard]] inline std::unordered_map<std::string, std::string>
 nvmlDeviceAdapterIds(const std::vector<GPUInfo>& dxgiGPUs,
                      const std::vector<GPUInfo>& nvmlGPUs,
@@ -384,9 +386,14 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
         dxgiCounter.gpuClockAvailable = nvmlCounter.gpuClockAvailable;
-        dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
+        // The video engines' utilization (#1485): DXGI has none, so NVML's reading -- or its gap,
+        // when the read failed, the query is missing or the GPU is asleep -- is the adapter's.
+        dxgiCounter.encoderUtilPercent = nvmlCounter.encoderUtilPercent;
+        dxgiCounter.encoderAvailable = nvmlCounter.encoderAvailable;
+        dxgiCounter.decoderUtilPercent = nvmlCounter.decoderUtilPercent;
+        dxgiCounter.decoderAvailable = nvmlCounter.decoderAvailable;
 
         // Otherwise PDH's merge supplies utilization, as for every other adapter (#1264). Without
         // PDH: NVML's when this sample's read succeeded, even if it's 0 (valid at idle). When it
@@ -626,6 +633,102 @@ inline void excludeIdleNVMLMemory(std::unordered_set<std::string>& nvmlMemoryIds
     }
     std::ranges::sort(fingerprint);
     return fingerprint;
+}
+
+/// The LUIDs ("GPU_0x{High}_0x{Low}", GPUInfo::luidId) of the adapters TaskSmack lists -- its GPUs,
+/// and the NPUs and compute accelerators DXCore enumerates (#1799) -- the ones per-process PDH samples
+/// are kept for (#1826).
+[[nodiscard]] inline std::unordered_set<std::string> listedAdapterLuids(const std::vector<GPUInfo>& adapters)
+{
+    std::unordered_set<std::string> luids;
+    for (const auto& adapter : adapters)
+    {
+        if (!adapter.luidId.empty())
+        {
+            luids.insert(adapter.luidId);
+        }
+    }
+    return luids;
+}
+
+/// Each listed adapter's kind by its LUID (GPUInfo::luidId), which is all a per-process PDH sample
+/// names its adapter by: an NPU's engine type is "Compute", like a GPU's compute engine (#1799).
+[[nodiscard]] inline std::unordered_map<std::string, DeviceKind> adapterKindsByLuid(const std::vector<GPUInfo>& adapters)
+{
+    std::unordered_map<std::string, DeviceKind> kinds;
+    for (const auto& adapter : adapters)
+    {
+        if (!adapter.luidId.empty())
+        {
+            kinds[adapter.luidId] = adapter.kind;
+        }
+    }
+    return kinds;
+}
+
+/// Tag each per-process sample with its adapter's kind (#1799), so Domain counts a process's samples
+/// on an NPU or compute accelerator as its NPU figures and never in its GPU ones. A sample whose LUID
+/// isn't in @p kindsByLuid stays a GPU's: separateOtherAdapterUsage() has already moved every sample of
+/// an unlisted adapter out.
+inline void tagProcessCounterKinds(std::vector<ProcessGPUCounters>& counters,
+                                   const std::unordered_map<std::string, DeviceKind>& kindsByLuid)
+{
+    std::size_t index = 0;
+    while (index < counters.size())
+    {
+        ProcessGPUCounters& counter = counters[index];
+        const auto kind = kindsByLuid.find(counter.gpuId);
+        counter.kind = kind != kindsByLuid.end() ? kind->second : DeviceKind::Gpu;
+        ++index;
+    }
+}
+
+/// Move the per-process samples of adapters TaskSmack doesn't list out of @p counters (#1826). PDH's
+/// "GPU Engine" and "GPU Process Memory" have instances for every WDDM and MCDM adapter: the GPUs,
+/// the NPU (an MCDM compute-only adapter, whose engine type is "Compute", so only its LUID tells it
+/// from a GPU's compute engine), other compute accelerators, and the Basic Render Driver DXGI lists
+/// but TaskSmack skips. Left in, an unlisted adapter's were folded into a process's GPU % and GPU
+/// memory, and named by their raw "GPU_0x..." id in the GPU Device column.
+///
+/// They are kept apart rather than dropped. The listed adapters' samples -- an enumerated NPU's
+/// included, which tagProcessCounterKinds() then marks as such (#1799) -- stay in @p counters,
+/// unchanged and in order.
+///
+/// @param counters Per-process samples, keyed by "GPU_<luid>" (PDHGPUProbe's gpuId format)
+/// @param listedLuids listedAdapterLuids() of the last enumeration
+/// @return The samples moved out, one per process and adapter, keyed by the adapter's LUID
+[[nodiscard]] inline std::vector<OtherAdapterProcessUsage> separateOtherAdapterUsage(std::vector<ProcessGPUCounters>& counters,
+                                                                                     const std::unordered_set<std::string>& listedLuids)
+{
+    std::vector<OtherAdapterProcessUsage> other;
+    std::size_t kept = 0;
+    std::size_t index = 0;
+    while (index < counters.size())
+    {
+        ProcessGPUCounters& counter = counters[index];
+        if (listedLuids.contains(counter.gpuId))
+        {
+            if (kept != index)
+            {
+                counters[kept] = std::move(counter);
+            }
+            ++kept;
+        }
+        else
+        {
+            other.push_back(OtherAdapterProcessUsage{
+                .pid = counter.pid,
+                .adapterLuid = std::move(counter.gpuId),
+                .utilPercent = counter.gpuUtilPercent,
+                .dedicatedMemoryBytes = counter.gpuMemoryBytes,
+                .sharedMemoryBytes = counter.gpuSharedMemoryBytes,
+                .activeEngines = std::move(counter.activeEngines),
+            });
+        }
+        ++index;
+    }
+    counters.resize(kept);
+    return other;
 }
 
 } // namespace Platform

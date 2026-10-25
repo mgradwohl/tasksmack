@@ -78,6 +78,14 @@ TEST(IconEncodingTest, IconsUsedByCodePointMatchTheirMacros)
     EXPECT_EQ(decodeSingleCodePoint(ICON_FA_HOUSE), 0xF015U);
 }
 
+// The "Trace system calls (strace)" button in the Overview tab's Actions block (ProcessActionsBlock, #182).
+TEST(IconEncodingTest, TerminalIsTheTerminalGlyphInsideTheBakedRange)
+{
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_TERMINAL), 0xF120U);
+    EXPECT_GE(decodeSingleCodePoint(ICON_FA_TERMINAL), ICON_MIN_FA);
+    EXPECT_LE(decodeSingleCodePoint(ICON_FA_TERMINAL), ICON_MAX_FA);
+}
+
 // Every icon must fall in the range the font atlas is asked to bake, or it renders as "?".
 TEST(IconEncodingTest, NetworkIconsAreInsideTheBakedRange)
 {
@@ -98,6 +106,22 @@ TEST(IconEncodingTest, ProcessTableIconsAreTheirGlyphsInsideTheBakedRange)
     EXPECT_EQ(decodeSingleCodePoint(ICON_FA_SITEMAP), 0xF0E8U);
     EXPECT_EQ(decodeSingleCodePoint(ICON_FA_ROTATE_LEFT), 0xF2EAU);
     for (const char* icon : {ICON_FA_CARET_RIGHT, ICON_FA_CARET_DOWN, ICON_FA_TABLE_COLUMNS, ICON_FA_SITEMAP, ICON_FA_ROTATE_LEFT})
+    {
+        const std::uint32_t codePoint = decodeSingleCodePoint(icon);
+        EXPECT_GE(codePoint, ICON_MIN_FA);
+        EXPECT_LE(codePoint, ICON_MAX_FA);
+    }
+}
+
+// The filter box, status bar, priority Apply and Settings footer icons (#977).
+TEST(IconEncodingTest, ControlIconsAreTheirGlyphsInsideTheBakedRange)
+{
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_CHECK), 0xF00CU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_FLOPPY_DISK), 0xF0C7U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_MAGNIFYING_GLASS), 0xF002U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_LIST), 0xF03AU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_ARROWS_ROTATE), 0xF021U);
+    for (const char* icon : {ICON_FA_CHECK, ICON_FA_FLOPPY_DISK, ICON_FA_MAGNIFYING_GLASS, ICON_FA_LIST, ICON_FA_ARROWS_ROTATE})
     {
         const std::uint32_t codePoint = decodeSingleCodePoint(icon);
         EXPECT_GE(codePoint, ICON_MIN_FA);

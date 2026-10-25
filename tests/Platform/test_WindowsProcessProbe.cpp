@@ -7,7 +7,10 @@
 
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessMachine.h"
+#include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 #include "Platform/Windows/WindowsTcpRows.h"
@@ -16,13 +19,18 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <iostream>
+#include <latch>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // clang-format off
@@ -33,6 +41,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h> // K32GetProcessMemoryInfo
 // clang-format on
 
 namespace Platform
@@ -50,20 +59,18 @@ constexpr int CPU_WORK_INNER_LOOP = 10'000'000;
 
 TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsProcessProbe probe; });
+    EXPECT_NO_THROW({ const WindowsProcessProbe probe; });
 }
 
-TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInvented)
+TEST(WindowsProcessProbeTest, PowerIsClaimedOnlyWithAPackageEnergyReadingAndNoEnergyIsInvented)
 {
     // Power used to be "available" whenever AC status was known, and was a fabricated 1 J per
-    // sample shared out by CPU time (#1028). Shared memory was never filled (#1035). Neither is
-    // claimed now, and no process carries energy.
+    // sample shared out by CPU time (#1028). Now it is the EMI energy meters' package counter (#2587),
+    // claimed only where one exists, and read raw by readPackageEnergy() for Domain to share out:
+    // enumerate() itself never carries energy.
     WindowsProcessProbe probe;
-    const auto caps = probe.capabilities();
-    EXPECT_FALSE(caps.hasPowerUsage);
-    EXPECT_FALSE(caps.hasSharedMemory);
     // SYSTEM_PROCESS_INFORMATION's PageFaultCount is a 32-bit ULONG that wraps (#1184).
-    EXPECT_EQ(caps.pageFaultCountBits, 32U);
+    EXPECT_EQ(probe.capabilities().pageFaultCountBits, 32U);
 
     for (int sample = 0; sample < 2; ++sample)
     {
@@ -72,11 +79,23 @@ TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInve
             EXPECT_EQ(proc.energyMicrojoules, 0ULL) << proc.name;
         }
     }
+
+    // The meters are opened on a worker, so the claim can turn true during this test, but only
+    // ever false -> true: a claim read first implies a reading read after, and a reading read first
+    // implies a claim read after. Whether this host has an EMI package channel is its own affair.
+    if (probe.capabilities().hasPowerUsage)
+    {
+        EXPECT_TRUE(probe.readPackageEnergy().has_value());
+    }
+    if (probe.readPackageEnergy().has_value())
+    {
+        EXPECT_TRUE(probe.capabilities().hasPowerUsage);
+    }
 }
 
 TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasUserSystemTime);
@@ -92,6 +111,23 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasPublisher);
     EXPECT_TRUE(caps.hasProcessType);
     EXPECT_TRUE(caps.hasGdiObjects);
+
+    // Shared is the shareable working set (#2583); it was never filled before (#1035).
+    EXPECT_TRUE(caps.hasSharedMemory);
+}
+
+TEST(WindowsProcessProbeTest, OwnProcessReportsItsShareableWorkingSet)
+{
+    // This test binary maps ntdll, kernel32 and the C runtime, whose code pages are shareable, so its
+    // working set has a shareable part (#2583): Shared is WorkingSetSize less Memory, the private
+    // working set.
+    WindowsProcessProbe probe;
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    ASSERT_NE(it, processes.end());
+    EXPECT_GT(it->sharedBytes, 0ULL);
+    EXPECT_GT(it->rssBytes, 0ULL);
 }
 
 TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
@@ -99,7 +135,7 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
     // hasReducedPrivileges should be false when EStats is available (admin) or when
     // EStats failed for a non-privilege reason (unsupported API). It should only be
     // true when non-admin AND EStats was specifically denied due to admin requirement.
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
 
     // Network counters and reduced-privileges are mutually exclusive:
@@ -248,13 +284,13 @@ TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     EXPECT_EQ(probe.ticksPerSecond(), 10'000'000L);
 }
 
 TEST(WindowsProcessProbeTest, TotalCpuTimeIsPositiveAndMonotonic)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
 
     const uint64_t time1 = probe.totalCpuTime();
     EXPECT_GT(time1, 0ULL);
@@ -272,7 +308,7 @@ TEST(WindowsProcessProbeTest, TotalCpuTimeIsPositiveAndMonotonic)
 
 TEST(WindowsProcessProbeTest, SystemTotalMemoryIsPositive)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const uint64_t totalMem = probe.systemTotalMemory();
 
     EXPECT_GT(totalMem, 128ULL * 1024ULL * 1024ULL);
@@ -291,8 +327,8 @@ TEST(WindowsProcessProbeTest, EnumerateFindsOurOwnProcess)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 
@@ -331,7 +367,7 @@ TEST(WindowsProcessProbeTest, ProcessNamesAreNonEmpty)
     int processesWithNames = 0;
     for (const auto& proc : processes)
     {
-        if (proc.name.size() > 0)
+        if (!proc.name.empty())
         {
             ++processesWithNames;
         }
@@ -497,6 +533,72 @@ TEST(WindowsProcessProbeTest, PriorityChangeShowsOnTheNextSample)
     EXPECT_EQ(ourNice(), priorityClassToNice(originalClass));
 }
 
+TEST(WindowsProcessProbeTest, AChildInEfficiencyModeShowsItAndAPlainOneDoesNot)
+{
+    // #2312: the status was read with the telemetry information class (refused) and took the
+    // IsBackground flag for Efficiency Mode. Two disposable children, held suspended so they run
+    // nothing, one switched to EcoQoS as Task Manager's Efficiency Mode does.
+    const auto startChild = []
+    {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION child{};
+        std::wstring commandLine = L"cmd.exe /c exit 0";
+        if (CreateProcessW(nullptr,
+                           commandLine.data(),
+                           nullptr,
+                           nullptr,
+                           FALSE,
+                           CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                           nullptr,
+                           nullptr,
+                           &startup,
+                           &child) == 0)
+        {
+            return PROCESS_INFORMATION{};
+        }
+        return child;
+    };
+    const auto stopChild = [](const PROCESS_INFORMATION& child)
+    {
+        if (child.hProcess != nullptr)
+        {
+            TerminateProcess(child.hProcess, 0);
+            CloseHandle(child.hThread);
+            CloseHandle(child.hProcess);
+        }
+    };
+
+    const PROCESS_INFORMATION eco = startChild();
+    const PROCESS_INFORMATION plain = startChild();
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    const bool ecoSet =
+        eco.hProcess != nullptr && SetProcessInformation(eco.hProcess, ProcessPowerThrottling, &state, sizeof(state)) != FALSE;
+    const DWORD setError = ecoSet ? DWORD{0} : GetLastError();
+
+    WindowsProcessProbe probe;
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto statusOf = [&processes](const PROCESS_INFORMATION& child) -> std::optional<std::string>
+    {
+        const auto it = std::ranges::find(processes, static_cast<std::int32_t>(child.dwProcessId), &ProcessCounters::pid);
+        return it != processes.end() ? std::optional<std::string>(it->status) : std::nullopt;
+    };
+    const std::optional<std::string> ecoStatus = statusOf(eco);
+    const std::optional<std::string> plainStatus = statusOf(plain);
+    stopChild(eco);
+    stopChild(plain);
+
+    ASSERT_NE(eco.hProcess, nullptr);
+    ASSERT_NE(plain.hProcess, nullptr);
+    ASSERT_TRUE(ecoSet) << "SetProcessInformation(ProcessPowerThrottling) failed: " << setError;
+    EXPECT_EQ(ecoStatus, "Efficiency Mode");
+    ASSERT_TRUE(plainStatus.has_value());
+    EXPECT_NE(*plainStatus, "Efficiency Mode");
+}
+
 // =============================================================================
 // Consistency Tests
 // =============================================================================
@@ -519,11 +621,11 @@ TEST(WindowsProcessProbeTest, MultipleEnumerationsAreConsistent)
 TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
 {
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -547,11 +649,11 @@ TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
 TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 {
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -585,11 +687,11 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     // on every enumerate() call — these are no longer TTL-cached. Force deterministic
     // changes between samples and verify the very next snapshot reflects them.
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -601,11 +703,11 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     EXPECT_GT(before.pageFaultCount, 0ULL);
     EXPECT_GT(before.threadCount, 0);
 
-    // Open a batch of event handles and reserve a large virtual region. A TTL-cached
+    // Open a batch of event handles and commit a large virtual region. A TTL-cached
     // implementation would keep serving the stale pre-change values here. RAII guard
     // ensures cleanup even if an ASSERT aborts the test mid-setup.
     constexpr int EXTRA_HANDLES = 64;
-    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB reserve
+    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB commit (Virtual is the commit size, #1184)
     struct ScopedResources
     {
         std::vector<HANDLE> events;
@@ -636,16 +738,139 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
         ASSERT_NE(event, nullptr);
         resources.events.push_back(event);
     }
-    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
+    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     ASSERT_NE(resources.reservation, nullptr);
 
     const auto after = findOurProcess(probe.enumerate());
 
     // Allow slack for unrelated handle churn in the test process, but the next sample
-    // must observe most of the new handles and the full reservation immediately.
+    // must observe most of the new handles and the full commit immediately.
     EXPECT_GE(after.handleCount, before.handleCount + (EXTRA_HANDLES / 2)) << "handle count must be refreshed every sample, not TTL-cached";
     EXPECT_GE(after.virtualBytes, before.virtualBytes + (EXTRA_VIRTUAL_BYTES / 2))
         << "virtual size must be refreshed every sample, not TTL-cached";
+}
+
+namespace
+{
+/// Our own process in a fresh sample from `probe`, or a pid-0 entry if it is missing.
+[[nodiscard]] ProcessCounters sampleOurProcess(WindowsProcessProbe& probe)
+{
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    return it != processes.end() ? *it : ProcessCounters{};
+}
+
+/// Releases a VirtualAlloc region, or unmaps a view and closes its section, whatever an ASSERT does.
+struct ScopedMemory
+{
+    void* region = nullptr;
+    void* view = nullptr;
+    HANDLE section = nullptr;
+
+    ScopedMemory() = default;
+    ScopedMemory(const ScopedMemory&) = delete;
+    ScopedMemory& operator=(const ScopedMemory&) = delete;
+    ScopedMemory(ScopedMemory&&) = delete;
+    ScopedMemory& operator=(ScopedMemory&&) = delete;
+    ~ScopedMemory()
+    {
+        if (region != nullptr)
+        {
+            VirtualFree(region, 0, MEM_RELEASE);
+        }
+        if (view != nullptr)
+        {
+            UnmapViewOfFile(view);
+        }
+        if (section != nullptr)
+        {
+            CloseHandle(section);
+        }
+    }
+};
+
+constexpr std::uint64_t TEST_MIB = 1024ULL * 1024ULL;
+} // namespace
+
+TEST(WindowsProcessProbeTest, VirtualIsTheCommitSizeAndLeavesReservationsOut)
+{
+    // Virtual used to be VirtualSize, which counts reserved address space: terabytes for a process
+    // using Control Flow Guard, where Task Manager's Commit size shows what is committed (#1184).
+    WindowsProcessProbe probe;
+    const ProcessCounters before = sampleOurProcess(probe);
+    ASSERT_NE(before.pid, 0);
+
+    constexpr std::uint64_t RESERVATION_BYTES = 64ULL * 1024ULL * TEST_MIB; // 64 GiB, never committed
+    ScopedMemory reservation;
+    reservation.region = VirtualAlloc(nullptr, static_cast<SIZE_T>(RESERVATION_BYTES), MEM_RESERVE, PAGE_NOACCESS);
+    ASSERT_NE(reservation.region, nullptr);
+
+    const ProcessCounters after = sampleOurProcess(probe);
+    ASSERT_NE(after.pid, 0);
+    EXPECT_LT(after.virtualBytes, before.virtualBytes + (RESERVATION_BYTES / 2)) << "a reservation is not committed memory";
+
+    // And Virtual is what GetProcessMemoryInfo calls PrivateUsage, give or take the test's own churn
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the documented way to pass the _EX struct
+    ASSERT_NE(K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)), 0);
+    const std::uint64_t privateUsage = pmc.PrivateUsage;
+    const std::uint64_t slack = 64 * TEST_MIB;
+    EXPECT_LE(after.virtualBytes, privateUsage + slack);
+    EXPECT_GE(after.virtualBytes + slack, privateUsage);
+}
+
+TEST(WindowsProcessProbeTest, MemoryIsThePrivateWorkingSetAndLeavesSharedPagesOut)
+{
+    // Memory used to be the whole working set, which counts shared pages (DLLs, mapped files) in
+    // every process that maps them; Task Manager's default Memory column is the private working set
+    // (#1184). Touching every page of a shared section grows the working set but not the private one.
+    WindowsProcessProbe probe;
+    constexpr std::uint64_t SHARED_BYTES = 256 * TEST_MIB;
+    ScopedMemory shared;
+    shared.section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(SHARED_BYTES), nullptr);
+    ASSERT_NE(shared.section, nullptr);
+    shared.view = MapViewOfFile(shared.section, FILE_MAP_WRITE, 0, 0, static_cast<SIZE_T>(SHARED_BYTES));
+    ASSERT_NE(shared.view, nullptr);
+    std::memset(shared.view, 0x5A, static_cast<std::size_t>(SHARED_BYTES));
+
+    const ProcessCounters ours = sampleOurProcess(probe);
+    ASSERT_NE(ours.pid, 0);
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    ASSERT_NE(K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)), 0);
+    const std::uint64_t workingSet = pmc.WorkingSetSize;
+    ASSERT_GE(workingSet, SHARED_BYTES) << "the touched shared pages should be in the working set";
+    EXPECT_GT(ours.rssBytes, 0U);
+    EXPECT_LE(ours.rssBytes + (SHARED_BYTES / 2), workingSet) << "Memory must leave the shared section's pages out";
+}
+
+TEST(WindowsProcessProbeTest, NeitherPrivateNorSwapIsClaimed)
+{
+    // #1879: Windows' private bytes (PrivatePageCount, GetProcessMemoryInfo's PrivateUsage) are the commit
+    // size, already the Virtual column, and Windows has no per-process swap figure. Neither is claimed,
+    // and no process carries either.
+    WindowsProcessProbe probe;
+    const ProcessCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPrivateBytes);
+    EXPECT_FALSE(caps.hasSwapBytes);
+    const auto processes = probe.enumerate();
+    ASSERT_FALSE(processes.empty());
+    for (const auto& proc : processes)
+    {
+        EXPECT_EQ(proc.privateBytes, 0U) << proc.name;
+        EXPECT_EQ(proc.swapBytes, 0U) << proc.name;
+    }
+}
+
+TEST(WindowsProcessProbeTest, UdpIsNeverClaimed)
+{
+    // Windows has no user-mode per-process UDP byte counters; TCP EStats is all there is (#1258)
+    WindowsProcessProbe probe;
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters);
+    (void) probe.enumerate();
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters);
 }
 
 TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
@@ -656,22 +881,22 @@ TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const auto idle = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    const auto idle = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 0; });
     ASSERT_NE(idle, processes.end());
     EXPECT_EQ(idle->name, "[System Process]");
 
-    const auto system = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    const auto system = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system, processes.end());
     EXPECT_FALSE(system->name.empty());
 
     // A second sample must report identical names — the cached-name/fallback path
     // may not degrade or change once details refresh TTLs kick in.
     const auto second = probe.enumerate();
-    const auto idle2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    const auto idle2 = std::ranges::find_if(second, [](const ProcessCounters& p) { return p.pid == 0; });
     ASSERT_NE(idle2, second.end());
     EXPECT_EQ(idle2->name, idle->name);
 
-    const auto system2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    const auto system2 = std::ranges::find_if(second, [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system2, second.end());
     EXPECT_EQ(system2->name, system->name);
 }
@@ -713,54 +938,54 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 
 TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
 {
-    std::atomic<int> successCount{0};
-    std::atomic<bool> running{true};
-    constexpr int TARGET_SUCCESSES = 4; // Ensure each thread completes at least one iteration
+    // Several probes enumerating at the same time must not throw, crash or come back empty, and every
+    // thread must finish its work. Each thread does a fixed number of enumerations and the counts are
+    // checked after joining, so a slow or oversubscribed runner only makes the test take longer; it has
+    // no wall-clock deadline to miss (#2259). A real hang is caught by the suite's ctest TIMEOUT.
+    constexpr std::size_t THREAD_COUNT = 4;
+    constexpr int ITERATIONS_PER_THREAD = 2;
 
-    auto enumerateTask = [&]()
+    std::array<int, THREAD_COUNT> successes{};
+    std::array<int, THREAD_COUNT> exceptions{};
+
+    // Every thread builds its probe first, then they all start enumerating together, so the
+    // enumerations overlap rather than running one after another as the threads happen to start.
+    std::latch startTogether{static_cast<std::ptrdiff_t>(THREAD_COUNT)};
+
     {
-        WindowsProcessProbe probe;
-        while (running)
+        std::vector<std::jthread> threads;
+        threads.reserve(THREAD_COUNT);
+        for (std::size_t i = 0; i < THREAD_COUNT; ++i)
         {
-            try
-            {
-                const auto processes = probe.enumerate();
-                if (!processes.empty())
+            // Each thread writes only its own slot; join() publishes the writes to this thread.
+            threads.emplace_back(
+                [&startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
                 {
-                    ++successCount;
-                }
-            }
-            catch (...)
-            {
-                // Enumeration should not throw
-                FAIL() << "Enumeration threw an exception";
-            }
+                    WindowsProcessProbe probe;
+                    startTogether.arrive_and_wait();
+                    for (int iteration = 0; iteration < ITERATIONS_PER_THREAD; ++iteration)
+                    {
+                        try
+                        {
+                            if (!probe.enumerate().empty())
+                            {
+                                ++success;
+                            }
+                        }
+                        catch (...)
+                        {
+                            ++thrown;
+                        }
+                    }
+                });
         }
-    };
+    } // jthreads join here
 
-    // Start multiple threads enumerating concurrently
-    std::vector<std::thread> threads;
-    for (int i = 0; i < 4; ++i)
+    for (std::size_t i = 0; i < THREAD_COUNT; ++i)
     {
-        threads.emplace_back(enumerateTask);
+        EXPECT_EQ(exceptions.at(i), 0) << "thread " << i << ": enumerate() threw";
+        EXPECT_EQ(successes.at(i), ITERATIONS_PER_THREAD) << "thread " << i << ": not every enumeration returned processes";
     }
-
-    // Wait until we reach the target success count or timeout (500ms to handle heavily-loaded CI agents)
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-    while (std::chrono::steady_clock::now() < deadline && successCount.load() < TARGET_SUCCESSES)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    running = false;
-
-    for (auto& t : threads)
-    {
-        t.join();
-    }
-
-    // Each thread should have completed at least one successful enumeration
-    EXPECT_GE(successCount.load(), TARGET_SUCCESSES)
-        << "Expected at least " << TARGET_SUCCESSES << " successful enumerations, got " << successCount.load();
 }
 
 // =============================================================================
@@ -772,8 +997,8 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 
@@ -811,8 +1036,8 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.
     // If the probe can open it and read version resources, the publisher must be
     // "Microsoft Corporation" — this verifies that VarFileInfo\Translation lookup works.
-    const auto svchostIt = std::find_if(
-        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
+    const auto svchostIt =
+        std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
 
     if (svchostIt != processes.end())
     {
@@ -823,7 +1048,7 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     else
     {
         // Fallback: at least one process should have a publisher
-        const auto anyIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+        const auto anyIt = std::ranges::find_if(processes, [](const ProcessCounters& p) { return !p.publisher.empty(); });
         EXPECT_NE(anyIt, processes.end()) << "At least one process should have a publisher field populated; "
                                           << "if svchost.exe was inaccessible this may indicate a permissions issue";
     }
@@ -858,8 +1083,8 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
     // and will therefore be classified as "App". The invariant we can reliably
     // assert is that no accessible svchost.exe is a "Background Process" —
     // the path heuristic must recognise it as a system binary.
-    const auto svchostIt = std::find_if(
-        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
+    const auto svchostIt =
+        std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
 
     // Every Windows system has at least one accessible svchost.exe instance.
     ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
@@ -874,8 +1099,8 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 
@@ -997,6 +1222,210 @@ TEST(EStatsConnectionKeyTest, OwnerRowsGiveTheSameKeyEveryRead)
     EXPECT_EQ(endpoints6.remoteScopeId, 12U);
 }
 
+// ---------------------------------------------------------------------------
+// readEStatsRow (#1418): SetPerTcpConnectionEStats once per connection, not every sample
+// ---------------------------------------------------------------------------
+
+/// What the fake Set/Get EStats functions return and how often they were called.
+struct FakeEStats
+{
+    int setCalls = 0;
+    int getCalls = 0;
+    DWORD setStatus = NO_ERROR;
+    DWORD getStatus = NO_ERROR;
+    ULONG64 bytesOut = 100;
+    ULONG64 bytesIn = 200;
+    // TCP_ESTATS_DATA_RW_v0::EnableCollection as Get reports it. A successful Set turns it on;
+    // tests turn it off to stand in for another tool, or a new connection on a reused 4-tuple.
+    BOOLEAN collectionEnabled = TRUE;
+};
+
+FakeEStats& fakeEStats()
+{
+    static FakeEStats state;
+    return state;
+}
+
+DWORD WINAPI fakeSetPerTcpConnectionEStats(
+    PMIB_TCPROW /*row*/, TCP_ESTATS_TYPE /*type*/, PUCHAR /*rw*/, ULONG /*rwVersion*/, ULONG /*rwSize*/, ULONG /*offset*/)
+{
+    ++fakeEStats().setCalls;
+    if (fakeEStats().setStatus == NO_ERROR)
+    {
+        fakeEStats().collectionEnabled = TRUE;
+    }
+    return fakeEStats().setStatus;
+}
+
+DWORD WINAPI fakeGetPerTcpConnectionEStats(PMIB_TCPROW /*row*/,
+                                           TCP_ESTATS_TYPE /*type*/,
+                                           PUCHAR rw,
+                                           ULONG /*rwVersion*/,
+                                           ULONG rwSize,
+                                           PUCHAR /*ros*/,
+                                           ULONG /*rosVersion*/,
+                                           ULONG /*rosSize*/,
+                                           PUCHAR rod,
+                                           ULONG /*rodVersion*/,
+                                           ULONG rodSize)
+{
+    ++fakeEStats().getCalls;
+    if (fakeEStats().getStatus == NO_ERROR && rod != nullptr && rodSize >= sizeof(TCP_ESTATS_DATA_ROD_v0))
+    {
+        TCP_ESTATS_DATA_ROD_v0 data{};
+        data.DataBytesOut = fakeEStats().bytesOut;
+        data.DataBytesIn = fakeEStats().bytesIn;
+        std::memcpy(rod, &data, sizeof(data));
+    }
+    if (fakeEStats().getStatus == NO_ERROR && rw != nullptr && rwSize >= sizeof(TCP_ESTATS_DATA_RW_v0))
+    {
+        TCP_ESTATS_DATA_RW_v0 state{};
+        state.EnableCollection = fakeEStats().collectionEnabled;
+        std::memcpy(rw, &state, sizeof(state));
+    }
+    return fakeEStats().getStatus;
+}
+
+/// One sample's walk over @p keys (each an ESTABLISHED IPv4 connection) through readEStatsRow().
+EStatsSampleCounts walkFakeSample(EStatsEnableTracker& tracker,
+                                  std::initializer_list<std::uint64_t> keys,
+                                  std::vector<EStatsConnectionRead>* readsOut = nullptr)
+{
+    std::vector<EStatsConnectionRead> reads;
+    EStatsSampleCounts counts;
+    for (const std::uint64_t key : keys)
+    {
+        MIB_TCPROW row{};
+        readEStatsRow(
+            row, key, 42, TCP_STATE_ESTABLISHED, &fakeSetPerTcpConnectionEStats, &fakeGetPerTcpConnectionEStats, tracker, reads, counts);
+    }
+    tracker.endSample(true);
+    if (readsOut != nullptr)
+    {
+        *readsOut = std::move(reads);
+    }
+    return counts;
+}
+
+TEST(ReadEStatsRowTest, EachConnectionIsEnabledOnceAcrossSamples)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+
+    const EStatsSampleCounts first = walkFakeSample(tracker, {1, 2, 3});
+    EXPECT_EQ(fakeEStats().setCalls, 3);
+    EXPECT_EQ(first.enabled, 3U);
+    EXPECT_EQ(classifyEStatsProbe(first), EStatsProbeResult::Available);
+
+    for (int sample = 0; sample < 4; ++sample)
+    {
+        const EStatsSampleCounts later = walkFakeSample(tracker, {1, 2, 3});
+        EXPECT_EQ(later.enabled, 0U);
+        EXPECT_EQ(later.alreadyEnabled, 3U);
+        EXPECT_EQ(later.saneReads, 3U);
+        EXPECT_EQ(classifyEStatsProbe(later), EStatsProbeResult::Available);
+    }
+    EXPECT_EQ(fakeEStats().setCalls, 3); // Not 15: no re-enable once enabled
+    EXPECT_EQ(fakeEStats().getCalls, 15);
+
+    // A new connection is enabled; a closed one is pruned and enabled again if it comes back.
+    (void) walkFakeSample(tracker, {1, 2, 4});
+    EXPECT_EQ(fakeEStats().setCalls, 4);
+    (void) walkFakeSample(tracker, {1, 2, 3, 4});
+    EXPECT_EQ(fakeEStats().setCalls, 5);
+}
+
+TEST(ReadEStatsRowTest, DeniedEnableIsRetriedAndStillReported)
+{
+    // #1161 / #1358: every sample's enable denial must still reach the tallies.
+    fakeEStats() = FakeEStats{};
+    fakeEStats().setStatus = ERROR_ACCESS_DENIED;
+    EStatsEnableTracker tracker;
+    for (int sample = 1; sample <= 3; ++sample)
+    {
+        const EStatsSampleCounts counts = walkFakeSample(tracker, {1, 2});
+        EXPECT_EQ(fakeEStats().setCalls, 2 * sample);
+        EXPECT_EQ(counts.accessDenied, 2U);
+        EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
+    }
+}
+
+TEST(ReadEStatsRowTest, FailedReadReEnablesNextSample)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+    (void) walkFakeSample(tracker, {1});
+    ASSERT_EQ(fakeEStats().setCalls, 1);
+
+    fakeEStats().getStatus = ERROR_NOT_FOUND;
+    (void) walkFakeSample(tracker, {1});
+    EXPECT_EQ(fakeEStats().setCalls, 1); // Known going in: read without an enable
+
+    fakeEStats().getStatus = NO_ERROR;
+    (void) walkFakeSample(tracker, {1});
+    EXPECT_EQ(fakeEStats().setCalls, 2); // The failed read forgot it: enabled again
+}
+
+TEST(ReadEStatsRowTest, CollectionOffReadIsUnreadableAndReEnabled)
+{
+    // A successful Get whose RW reports collection off has undefined counters (#1418, Copilot on
+    // #1452): another tool turned collection off on a connection we enabled, or a new connection
+    // took a remembered 4-tuple. Plausible non-zero counters must not be published or keep the
+    // connection remembered.
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+    (void) walkFakeSample(tracker, {1});
+    ASSERT_EQ(fakeEStats().setCalls, 1);
+    ASSERT_FALSE(tracker.needsEnable(1));
+
+    fakeEStats().collectionEnabled = FALSE;
+    fakeEStats().bytesOut = 5'000;
+    fakeEStats().bytesIn = 7'000;
+    std::vector<EStatsConnectionRead> reads;
+    const EStatsSampleCounts off = walkFakeSample(tracker, {1}, &reads);
+    EXPECT_EQ(fakeEStats().setCalls, 1); // Remembered going in: read without an enable
+    ASSERT_EQ(reads.size(), 1U);
+    EXPECT_EQ(reads.front().outcome, EStatsRowOutcome::CollectionOff);
+    const auto samples = buildSocketTrafficSamples(reads);
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_FALSE(samples.front().readable); // Kept as a connection, its counters not published
+    EXPECT_EQ(off.collectionOff, 1U);
+    EXPECT_EQ(off.saneReads, 0U);
+    EXPECT_EQ(off.accessDenied, 0U);
+    EXPECT_EQ(classifyEStatsProbe(off), EStatsProbeResult::Undetermined);
+    EXPECT_TRUE(tracker.needsEnable(1));
+
+    // The next sample enables it again, with a real enable status, and reads it.
+    const EStatsSampleCounts next = walkFakeSample(tracker, {1}, &reads);
+    EXPECT_EQ(fakeEStats().setCalls, 2);
+    EXPECT_EQ(next.enabled, 1U);
+    EXPECT_EQ(next.saneReads, 1U);
+    EXPECT_EQ(reads.front().outcome, EStatsRowOutcome::Accumulated);
+    EXPECT_FALSE(tracker.needsEnable(1));
+}
+
+TEST(ReadEStatsRowTest, NoSetFunctionReadsWithoutEnabling)
+{
+    fakeEStats() = FakeEStats{};
+    EStatsEnableTracker tracker;
+    std::vector<EStatsConnectionRead> reads;
+    EStatsSampleCounts counts;
+    MIB_TCPROW row{};
+    readEStatsRow(row,
+                  1,
+                  42,
+                  TCP_STATE_ESTABLISHED,
+                  static_cast<DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG)>(nullptr),
+                  &fakeGetPerTcpConnectionEStats,
+                  tracker,
+                  reads,
+                  counts);
+    EXPECT_EQ(fakeEStats().setCalls, 0);
+    EXPECT_EQ(counts.alreadyEnabled, 0U);
+    EXPECT_EQ(counts.saneReads, 1U);
+    EXPECT_TRUE(tracker.needsEnable(1));
+}
+
 TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)
 {
     // Per-process network bytes come from readSocketTraffic() through Domain's accumulator (#1256);
@@ -1017,6 +1446,100 @@ TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)
     {
         EXPECT_NE(socket.key, 0U);
     }
+}
+
+// =============================================================================
+// Architecture (#2394)
+// =============================================================================
+
+/// The architecture every process the probe reads runs as, counted ("ARM64: 120, x64 (emulated): 3"),
+/// for the test's log and its XML report: what a runner's processes really show.
+[[nodiscard]] std::string architectureSummary(const std::vector<ProcessCounters>& processes)
+{
+    std::map<std::string, int> counts;
+    for (const ProcessCounters& process : processes)
+    {
+        ++counts[process.architecture.empty() ? std::string("(unread)") : process.architecture];
+    }
+    std::string summary;
+    for (const auto& [architecture, count] : counts)
+    {
+        summary += (summary.empty() ? "" : ", ") + architecture + ": " + std::to_string(count);
+    }
+    return summary;
+}
+
+TEST(WindowsProcessProbeTest, OurProcessRunsAsTheArchitectureItWasBuiltFor)
+{
+    WindowsProcessProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasArchitecture);
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto ours = std::ranges::find(processes, static_cast<std::int32_t>(GetCurrentProcessId()), &ProcessCounters::pid);
+    ASSERT_NE(ours, processes.end());
+
+#if defined(_M_ARM64) || defined(__aarch64__)
+    constexpr std::uint16_t BUILT_FOR = MachineMath::MACHINE_ARM64;
+#else
+    constexpr std::uint16_t BUILT_FOR = MachineMath::MACHINE_AMD64;
+#endif
+    const std::uint16_t native = Windows::nativeMachine();
+    EXPECT_NE(native, MachineMath::MACHINE_UNKNOWN);
+    EXPECT_EQ(Windows::processMachine(GetCurrentProcess()), BUILT_FOR);
+    EXPECT_EQ(ours->architecture, MachineMath::windowsArchitectureLabel(BUILT_FOR, native));
+    if (native == BUILT_FOR)
+    {
+        EXPECT_EQ(ours->architecture, (BUILT_FOR == MachineMath::MACHINE_ARM64) ? "ARM64" : "x64");
+    }
+    else
+    {
+        EXPECT_EQ(ours->architecture, "x64 (emulated)"); // The x64 build on Windows on ARM
+    }
+
+    const std::string summary = architectureSummary(processes);
+    std::cout << "This process: " << ours->architecture << "\nEvery process: " << summary << '\n';
+    ::testing::Test::RecordProperty("own_architecture", ours->architecture);
+    ::testing::Test::RecordProperty("architectures", summary);
+}
+
+TEST(WindowsProcessProbeTest, AThirtyTwoBitProcessIsWow64OnX64AndEmulatedOnArm64)
+{
+    // A 32-bit x86 ping from SysWOW64, which holds x86 programs on x64 and ARM64 Windows alike.
+    std::wstring wow64Folder(MAX_PATH, L'\0');
+    const UINT length = GetSystemWow64DirectoryW(wow64Folder.data(), static_cast<UINT>(wow64Folder.size()));
+    if (length == 0 || length >= wow64Folder.size())
+    {
+        GTEST_SKIP() << "This Windows has no WOW64";
+    }
+    wow64Folder.resize(length);
+    std::wstring commandLine = L"\"" + wow64Folder + L"\\PING.EXE\" -n 30 127.0.0.1";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child) == 0)
+    {
+        GTEST_SKIP() << "No 32-bit ping to start (error " << GetLastError() << ")";
+    }
+    const Windows::UniqueHandle childProcess(child.hProcess);
+    const Windows::UniqueHandle childThread(child.hThread);
+
+    WindowsProcessProbe probe;
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    TerminateProcess(childProcess.get(), 0); // Only the child this test started
+    WaitForSingleObject(childProcess.get(), 5000);
+
+    const auto ping = std::ranges::find(processes, static_cast<std::int32_t>(child.dwProcessId), &ProcessCounters::pid);
+    ASSERT_NE(ping, processes.end());
+    const std::uint16_t native = Windows::nativeMachine();
+    if (native == MachineMath::MACHINE_AMD64)
+    {
+        EXPECT_EQ(ping->architecture, "x86 (WOW64)");
+    }
+    else if (native == MachineMath::MACHINE_ARM64)
+    {
+        EXPECT_EQ(ping->architecture, "x86 (emulated)");
+    }
+    std::cout << "32-bit ping: " << ping->architecture << '\n';
+    ::testing::Test::RecordProperty("wow64_ping_architecture", ping->architecture);
 }
 
 } // namespace

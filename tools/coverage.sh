@@ -55,6 +55,7 @@ COVERAGE_DIR="${PROJECT_ROOT}/coverage"
 # Find llvm tools using common.sh functions
 LLVM_PROFDATA="$(find_llvm_tool llvm-profdata)"
 LLVM_COV="$(find_llvm_tool llvm-cov)"
+LLVM_OBJCOPY="$(find_llvm_tool llvm-objcopy)"
 
 if [[ -z "$LLVM_PROFDATA" ]]; then
     echo "Error: llvm-profdata not found. Install LLVM tools." >&2
@@ -92,20 +93,34 @@ export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
 
 # Set LD_LIBRARY_PATH so dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6")
 # resolve to the mock shared libraries. CTest sets this automatically via the
-# gtest_discover_tests ENVIRONMENT_MODIFICATION test property, but this script runs the binary directly.
+# ENVIRONMENT_MODIFICATION test property (tests/CMakeLists.txt), but this script runs the binary directly.
 export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# Run the test executable directly to capture coverage
-./tests/TaskSmackTests
+# Run the test executables directly to capture coverage. TaskSmackThemeTests links the real
+# UI/Theme.cpp, which TaskSmackTests replaces with a stub (#1547); TaskSmackAppTests is built from the
+# app's own objects, for the layers that need the whole app on a display (#1395). A failing suite still
+# gets its coverage reported, so the failure can be diagnosed from the report, but the script exits
+# non-zero at the end (#2251). Keep in sync with tools/coverage.ps1.
+FAILED_SUITES=()
+for suite in TaskSmackTests TaskSmackThemeTests TaskSmackAppTests; do
+    suite_status=0
+    "./tests/${suite}" || suite_status=$?
+    if [[ $suite_status -ne 0 ]]; then
+        echo "Warning: ${suite} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
+        FAILED_SUITES+=("$suite")
+    fi
+done
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
 $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"
 
-# Files excluded from coverage: generated/third-party paths and test sources only. ImGui panel code
+# Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
+# test-support headers the tests include, #1395). ImGui panel code
 # (Widgets.h, the panel headers) is deliberately NOT excluded any more (#1131): untested code has
-# to count against the total.
-COV_IGNORE_REGEX='.*/(build|_deps|tests|\.cache)/.*'
+# to count against the total. tools/coverage.ps1 also drops LCOV_EXCL-marked lines, which mark only
+# Windows-only code (#2039); this script honours no markers, so every Linux line counts.
+COV_IGNORE_REGEX='.*/(build|_deps|tests|benchmarks|\.cache)/.*'
 
 # llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests
 # alone the ~27% of src/ that is never linked into the tests (panels, layers, Theme.cpp,
@@ -117,7 +132,7 @@ if [[ ! -x "$APP_BINARY" ]]; then
     echo "Error: ${APP_BINARY} not found; without it the report would only count files linked into TaskSmackTests." >&2
     exit 1
 fi
-COV_OBJECTS=("${BUILD_DIR}/tests/TaskSmackTests" -object "$APP_BINARY")
+COV_OBJECTS=("${BUILD_DIR}/tests/TaskSmackTests" -object "${BUILD_DIR}/tests/TaskSmackThemeTests" -object "${BUILD_DIR}/tests/TaskSmackAppTests" -object "$APP_BINARY")
 
 # Step 4: Generate HTML report
 echo "==> Generating HTML report..."
@@ -148,6 +163,23 @@ $LLVM_COV report \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -ignore-filename-regex="${COV_IGNORE_REGEX}"
 
+# llvm-cov warns above that a couple of hundred functions "have mismatched data". They are clang's
+# unused-function placeholders, which carry no counts, so nothing is lost; this confirms that every
+# mismatch is one, and warns (without failing the run) if a real record ever mismatches (#1544).
+echo ""
+echo "==> Checking mismatched functions..."
+if [[ -z "$LLVM_OBJCOPY" ]]; then
+    echo "Warning: llvm-objcopy not found; skipping the mismatched-functions check." >&2
+elif ! "$PYTHON_EXE" -I -X utf8 "${SCRIPT_DIR}/coverage-mismatches.py" \
+    --profdata "${BUILD_DIR}/default.profdata" \
+    --llvm-profdata "$LLVM_PROFDATA" \
+    --llvm-objcopy "$LLVM_OBJCOPY" \
+    "${BUILD_DIR}/tests/TaskSmackTests" "${BUILD_DIR}/tests/TaskSmackThemeTests" "${BUILD_DIR}/tests/TaskSmackAppTests" "$APP_BINARY"; then
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        echo "::warning title=Coverage::Some functions' coverage is missing from the report: a real record mismatched (see tools/coverage-mismatches.py, #1544)"
+    fi
+fi
+
 echo ""
 echo "HTML report generated at: ${COVERAGE_DIR}/index.html"
 
@@ -158,4 +190,9 @@ if $OPEN_REPORT; then
     elif command -v open &> /dev/null; then
         open "${COVERAGE_DIR}/index.html"
     fi
+fi
+
+if [[ ${#FAILED_SUITES[@]} -gt 0 ]]; then
+    echo "Error: test failures in: ${FAILED_SUITES[*]}. The coverage report was still generated." >&2
+    exit 1
 fi

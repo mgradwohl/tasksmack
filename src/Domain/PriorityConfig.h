@@ -33,6 +33,26 @@ template<std::integral T> [[nodiscard]] constexpr T clampNice(T value)
     return std::clamp(value, static_cast<T>(MIN_NICE), static_cast<T>(MAX_NICE));
 }
 
+// Linux I/O priority levels within the Realtime and Best-effort classes (ioprio_set(2)): 0 is the
+// highest priority, 7 the lowest (#803).
+inline constexpr int32_t MIN_IO_LEVEL = 0;
+inline constexpr int32_t MAX_IO_LEVEL = 7;
+// Nice values per derived I/O level: the 40 nice values map onto the 8 levels.
+inline constexpr int32_t NICE_PER_IO_LEVEL = 5;
+
+/// Clamp an I/O priority level to the valid range (0 to 7)
+template<std::integral T> [[nodiscard]] constexpr T clampIoLevel(T value)
+{
+    return std::clamp(value, static_cast<T>(MIN_IO_LEVEL), static_cast<T>(MAX_IO_LEVEL));
+}
+
+/// The best-effort level the kernel uses for a process whose I/O class was never set: derived from
+/// its nice value, (nice + 20) / 5, so nice 0 is level 4 (ioprio_set(2), NOTES).
+[[nodiscard]] constexpr int32_t ioLevelForNice(int32_t nice)
+{
+    return (clampNice(nice) - MIN_NICE) / NICE_PER_IO_LEVEL;
+}
+
 /// Get human-readable priority label for a nice value
 /// @param nice Unix nice value (-20 to 19)
 /// @return Priority label ("High", "Above Normal", "Normal", "Below Normal", "Idle")
@@ -134,6 +154,43 @@ inline constexpr std::array<std::string_view, 6> PROCESS_PRIORITY_LABELS = {
         return PriorityClass::BelowNormal;
     }
     return PriorityClass::Idle;
+}
+
+/// The nice value that stands for a Windows priority class (#1204, #2168): what the Windows probe
+/// reports for it (Platform::priorityClassToNice()) and what Process Details passes to setPriority()
+/// to select it. The one table both use. Each sits in the middle of the class's getPriorityLabel()
+/// bucket, never on a threshold: -5 and -10 used to stand for Above Normal and High, but those are
+/// where getPriorityLabel() and Platform::niceToPriorityClass() start the next class down, so Above
+/// Normal was shown as Normal and High as Above Normal. Realtime has no bucket of its own; MIN_NICE
+/// keeps it distinct from High (the UI names it from that value) and still labels and sets it as
+/// High. None, a class not read, is Normal.
+[[nodiscard]] constexpr int32_t classNice(PriorityClass priorityClass) noexcept
+{
+    switch (priorityClass)
+    {
+    case PriorityClass::Idle:
+        return MAX_NICE;
+    case PriorityClass::BelowNormal:
+        return 10;
+    case PriorityClass::AboveNormal:
+        return -7;
+    case PriorityClass::High:
+        return -15;
+    case PriorityClass::Realtime:
+        return MIN_NICE;
+    case PriorityClass::Normal:
+    case PriorityClass::None:
+    default:
+        return NORMAL_NICE;
+    }
+}
+
+/// The class a nice value from classNice() stands for: its inverse for every class but None.
+/// Realtime is MIN_NICE, which no other class reports; every other value is the class whose
+/// getPriorityLabel() bucket it falls in (priorityClassForNice()).
+[[nodiscard]] constexpr PriorityClass classFromNice(int32_t nice) noexcept
+{
+    return nice <= MIN_NICE ? PriorityClass::Realtime : priorityClassForNice(nice);
 }
 
 /// Sort key for a process's priority, smallest = highest priority, as nice orders: by class first

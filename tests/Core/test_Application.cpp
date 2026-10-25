@@ -24,6 +24,7 @@
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
 #include "Core/WindowEvents.h"
+#include "Core/WindowSizeTestUtils.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -32,11 +33,14 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -44,9 +48,51 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+// Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after calling
+// signalWindowGeometryChanged(), which is noexcept and has no other observable effect.
+// It also reads the idle-wait seam (#1446), so it comes before the test layers that use it.
+// Declared directly in namespace Core (not inside the anonymous namespace below) so the
+// `friend struct ApplicationTestAccessor;` declaration in Application.h resolves to this
+// exact type. Same pattern as NVMLGPUProbeTestAccessor in test_WindowsNVMLGPUProbe.cpp.
+namespace Core
+{
+struct ApplicationTestAccessor
+{
+    [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
+    {
+        return app.m_WindowGeometryChangedThisFrame;
+    }
+
+    [[nodiscard]] static bool closeRequestAccepted(Application& app)
+    {
+        return app.closeRequestAccepted();
+    }
+
+    /// Idle waits run() has done so far (#1446).
+    [[nodiscard]] static std::uint64_t idleWaitCount(const Application& app)
+    {
+        return app.m_IdleWaitCount;
+    }
+
+    /// Whether the last idle wait ended on an event rather than its timeout (#1446).
+    [[nodiscard]] static bool lastIdleWaitWoke(const Application& app)
+    {
+        return app.m_LastIdleWaitWoke;
+    }
+
+    /// Whether the last idle wait timed out, but the poll after it found an event already queued
+    /// (#1450).
+    [[nodiscard]] static bool lastIdleWaitPolledEvent(const Application& app)
+    {
+        return app.m_LastIdleWaitPolledEvent;
+    }
+};
+} // namespace Core
 
 namespace
 {
@@ -55,21 +101,9 @@ namespace
 bool detectDisplay()
 {
 #ifdef _WIN32
-    // Check for CI environment - GitHub Actions sets CI=true
-    char* ciEnv = nullptr;
-    size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    bool isCI = (ciEnv != nullptr && std::string(ciEnv) == "true");
-    free(ciEnv);
-
-    if (isCI)
-    {
-        // Windows CI runners are typically headless
-        return false;
-    }
-    // Local Windows development usually has a display, but it must also offer a GL 3.3 core context:
-    // construction failures are fatal once a display is detected (#1132).
-    return TestSupport::probeGLCapability();
+    // A GL 3.3 core context on the desktop, CI included (#2134): construction failures are fatal
+    // once a display is detected (#1132).
+    return TestSupport::detectWindowsDisplay();
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check
@@ -183,7 +217,7 @@ class EventTrackingLayer : public Core::Layer
 
     void onEvent(Core::Event& event) override
     {
-        receivedEventNames.push_back(event.getName());
+        receivedEventNames.emplace_back(event.getName());
         if (m_DispatchLog != nullptr)
         {
             m_DispatchLog->push_back(getName());
@@ -297,7 +331,13 @@ class CloseRequestingLayer : public Core::Layer
 class SdlEventPushingLayer : public Core::Layer
 {
   public:
-    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter) : Layer("SdlEventPusher"), m_EventType(eventType), m_StopAfter(stopAfter)
+    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter)
+        : SdlEventPushingLayer(eventType, [stopAfter](int updateCount) { return updateCount >= stopAfter; })
+    {}
+
+    /// Stops the app on the first update for which @p stopWhen(update count) is true.
+    SdlEventPushingLayer(std::uint32_t eventType, std::function<bool(int)> stopWhen)
+        : Layer("SdlEventPusher"), m_EventType(eventType), m_StopWhen(std::move(stopWhen))
     {}
 
     void onUpdate(float /*deltaTime*/) override
@@ -313,7 +353,7 @@ class SdlEventPushingLayer : public Core::Layer
             }
             m_Pushed = SDL_PushEvent(&event);
         }
-        if (m_UpdateCount >= m_StopAfter)
+        if (m_StopWhen(m_UpdateCount))
         {
             Core::Application::get().stop();
         }
@@ -331,38 +371,76 @@ class SdlEventPushingLayer : public Core::Layer
 
   private:
     std::uint32_t m_EventType;
-    int m_StopAfter;
+    std::function<bool(int)> m_StopWhen;
     int m_UpdateCount = 0;
     bool m_Pushed = false;
 };
 
 /// #1409: once the loop has settled into idle pacing, starts an SDL timer that pushes a key-down from
-/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then records, for
-/// every frame (onUpdate), whether it began after the push and whether the key had been dispatched
-/// (onSDLEvent) by then.
+/// SDL's timer thread partway through the idle wait (IDLE_FRAME_SLEEP_MS is 50 ms), then checks that
+/// the first frame (onUpdate) to begin after the push already had the key dispatched (onSDLEvent).
 ///
 /// "After the push" is decided by causality, not timestamps: the timer thread enqueues the event and
-/// sets m_Pushed under m_PushMutex, and onUpdate() reads m_Pushed under the same mutex. A frame that
-/// sees m_Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
+/// sets Pushed under the push-state mutex, and onUpdate() reads Pushed under the same mutex. A frame
+/// that sees Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
 /// the lock first). Comparing SDL_GetTicksNS() stamps instead raced: SDL_PushEvent() can wake the loop
 /// before the push time is read, so the old loop's stale post-wake frame could land just before the
 /// recorded push time, be excluded, and let the test pass on the bug.
+///
+/// Only a push that wakes the idle wait tests #1409 (#1446). Under CPU load the wait can time out
+/// first, two ways:
+/// - The 25 ms timer fires late, after the 50 ms wait has timed out. The loop renders the frame it
+///   was due to render, and the key is left for the next drain. That is correct, but the frame
+///   begins after the push without the key.
+/// - The push lands inside the wait, but the wait does not wake. On X11 and Wayland, SDL wakes a
+///   wait from another thread with a message that goes through the display server. Under load that
+///   message can arrive after the timeout (traced: push 30 ms into a 49 ms wait, no wake). The poll
+///   after a timed-out wait (#1450) finds the key and the loop treats it as a wake. Such an attempt
+///   is not counted, since the wait did not wake, but its first frame must still have the key
+///   (polledAttemptsWithoutKey()); FramePacingTest covers #1450 deterministically.
+///
+/// So an attempt counts only if the loop says the push woke the wait: by the first frame after the
+/// push, run() did an idle wait after arming, and the last one ended on an event, not its timeout
+/// (the ApplicationTestAccessor idle-wait seam). No other event may have been dispatched since
+/// arming, so that event was the key. Timing can't decide this: input pacing can delay a woken
+/// frame past any cutoff, and a late arming frame can make a timed-out one look early. An excluded
+/// attempt lets its key drain, then waits for a fresh quiet settle before arming again; the test
+/// fails if none counts.
+///
+/// The old loop (SDL_WaitEventTimeout(nullptr, ...), then render) still fails a counted attempt:
+/// the push wakes its wait, and the frame it renders straight away has not drained the key.
+///
+/// Teardown (#1502): on X11, SDL_PushEvent() wakes the wait with an XSendEvent() to the window, so a
+/// push that runs while ~Application() destroys the window aborts the process with BadWindow, and
+/// SDL_RemoveTimer() does not wait for a callback already running. onDetach() runs before the window
+/// is destroyed and disarms the timer under the push mutex: the callback pushes only while holding
+/// that mutex and only for the timer still armed, so after onDetach() no push is running or can start.
+/// The push state is static, not in the layer, so a late callback never touches a destroyed layer.
 class KeyDuringIdleWaitLayer : public Core::Layer
 {
   public:
-    /// Run time before the timer starts: past the startup window events and the 0.35 s interaction
-    /// grace their resize starts (INTERACTION_REDRAW_GRACE_SECONDS), during which frames come from the
-    /// move/resize redraw path before the wait rather than from the idle path after it.
+    /// Quiet run time before each attempt: no event other than the key in this long, which is past
+    /// the startup window events and the 0.35 s interaction grace a resize or move starts
+    /// (INTERACTION_REDRAW_GRACE_SECONDS). Inside the grace, frames come from the move/resize redraw
+    /// path before the wait rather than from the idle path after it.
     static constexpr std::uint64_t SETTLE_NS = 1'000'000'000;
     /// Into the 50 ms idle wait that follows the frame which starts the timer.
     static constexpr Uint32 PUSH_DELAY_MS = 25;
-    /// Frames to keep running after the push; and the fallback stop if the push never happens.
+    /// Attempts before the test fails for want of one whose push woke the wait. With every core busy
+    /// twice over, up to about 1 in 8 attempts was excluded, so 5 in a row are vanishingly rare.
+    static constexpr int MAX_ATTEMPTS = 5;
+    /// Frames to keep running after the counted frame; and the fallback stop.
     static constexpr int UPDATES_AFTER_PUSH = 3;
-    static constexpr int MAX_UPDATES = 200;
+    static constexpr int MAX_UPDATES = 600;
     static constexpr SDL_Keycode KEY = SDLK_F13;
 
     KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
-    {}
+    {
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        state.ArmedTimer = 0;
+        state.Pushed = false;
+    }
 
     KeyDuringIdleWaitLayer(const KeyDuringIdleWaitLayer&) = delete;
     KeyDuringIdleWaitLayer& operator=(const KeyDuringIdleWaitLayer&) = delete;
@@ -371,10 +449,13 @@ class KeyDuringIdleWaitLayer : public Core::Layer
 
     ~KeyDuringIdleWaitLayer() override
     {
-        if (m_Timer != 0)
-        {
-            SDL_RemoveTimer(m_Timer);
-        }
+        disarm();
+    }
+
+    void onDetach() override
+    {
+        // Before ~Application() destroys the window (#1502).
+        disarm();
     }
 
     void onSDLEvent(SDL_Event* event) override
@@ -383,75 +464,195 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         {
             m_KeyDispatched = true;
         }
+        else
+        {
+            ++m_OtherEvents;
+        }
     }
 
     void onUpdate(float /*deltaTime*/) override
     {
-        bool pushed = false;
-        {
-            const std::scoped_lock lock(m_PushMutex);
-            pushed = m_Pushed;
-        }
+        const bool pushed = KeyDuringIdleWaitLayer::pushed();
         const std::uint64_t nowNs = SDL_GetTicksNS();
-        if (m_Frames.empty())
+        const auto& app = Core::Application::get();
+        const std::uint64_t idleWaits = Core::ApplicationTestAccessor::idleWaitCount(app);
+        const bool lastWaitWoke = Core::ApplicationTestAccessor::lastIdleWaitWoke(app);
+        // This frame follows an idle wait that timed out: the loop is in plain idle pacing.
+        const bool idlePaced = idleWaits > m_IdleWaitsSeen && !lastWaitWoke;
+        m_IdleWaitsSeen = idleWaits;
+        if (m_Updates == 0 || m_OtherEvents != m_OtherEventsSeen)
         {
-            m_FirstFrameNs = nowNs;
+            m_OtherEventsSeen = m_OtherEvents;
+            m_QuietSinceNs = nowNs;
         }
-        m_Frames.push_back({.afterPush = pushed, .keyDispatched = m_KeyDispatched});
-        const auto updates = static_cast<int>(m_Frames.size());
-        if (m_Timer == 0 && (nowNs - m_FirstFrameNs) >= SETTLE_NS)
+        ++m_Updates;
+
+        switch (m_Phase)
         {
-            m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+        case Phase::Settling:
+            if ((nowNs - m_QuietSinceNs) >= SETTLE_NS && idlePaced)
+            {
+                arm(idleWaits);
+            }
+            break;
+        case Phase::Armed:
+            // The first frame that began after the push.
+            if (pushed)
+            {
+                if (idleWaits > m_IdleWaitsAtArm && lastWaitWoke && m_OtherEvents == m_OtherEventsAtArm)
+                {
+                    m_FirstFrameAfterPushHadKey = m_KeyDispatched;
+                    m_DoneAtUpdate = m_Updates;
+                    m_Phase = Phase::Done;
+                }
+                else
+                {
+                    // A timed-out wait whose poll found the key (#1450): not counted, but the key
+                    // must already have been dispatched, as for a wake.
+                    if (idleWaits > m_IdleWaitsAtArm && Core::ApplicationTestAccessor::lastIdleWaitPolledEvent(app) &&
+                        m_OtherEvents == m_OtherEventsAtArm && !m_KeyDispatched)
+                    {
+                        ++m_PolledAttemptsWithoutKey;
+                    }
+                    m_Phase = Phase::Draining;
+                }
+            }
+            break;
+        case Phase::Draining:
+            // Excluded attempt: once its key is dispatched, settle again or give up.
+            if (m_KeyDispatched)
+            {
+                m_QuietSinceNs = nowNs;
+                m_DoneAtUpdate = m_Updates;
+                m_Phase = m_Attempts < MAX_ATTEMPTS ? Phase::Settling : Phase::Done;
+            }
+            break;
+        case Phase::Done:
+            break;
         }
-        if (pushed && m_FramesAtPush < 0)
-        {
-            m_FramesAtPush = updates;
-        }
-        if ((m_FramesAtPush >= 0 && updates >= m_FramesAtPush + UPDATES_AFTER_PUSH) || updates >= MAX_UPDATES)
+
+        if ((m_Phase == Phase::Done && m_Updates >= m_DoneAtUpdate + UPDATES_AFTER_PUSH) || m_Updates >= MAX_UPDATES)
         {
             Core::Application::get().stop();
         }
     }
 
-    struct Frame
+    /// Whether the first frame after a push that woke the idle wait had the key dispatched; empty if
+    /// no push woke it.
+    [[nodiscard]] std::optional<bool> firstFrameAfterPushHadKey() const
     {
-        /// onUpdate() saw the push: the frame began after the key was enqueued.
-        bool afterPush = false;
-        bool keyDispatched = false;
-    };
-
-    [[nodiscard]] const std::vector<Frame>& frames() const
-    {
-        return m_Frames;
+        return m_FirstFrameAfterPushHadKey;
     }
 
-    [[nodiscard]] bool pushed() const
+    [[nodiscard]] int attempts() const
     {
-        const std::scoped_lock lock(m_PushMutex);
-        return m_Pushed;
+        return m_Attempts;
+    }
+
+    /// Excluded attempts whose idle wait timed out with the key queued, found by the poll after it,
+    /// whose first frame after the push still lacked the key (#1450). Must stay 0.
+    [[nodiscard]] int polledAttemptsWithoutKey() const
+    {
+        return m_PolledAttemptsWithoutKey;
+    }
+
+    [[nodiscard]] static bool pushed()
+    {
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        return state.Pushed;
     }
 
   private:
-    static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
+    enum class Phase : std::uint8_t
     {
-        auto* self = static_cast<KeyDuringIdleWaitLayer*>(userdata);
+        Settling, // waiting for a quiet, idle-paced loop
+        Armed,    // timer started; waiting for the first frame after its push
+        Draining, // excluded attempt; waiting for its key before settling again
+        Done,
+    };
+
+    /// Shared with the timer thread. Static, so a callback still running after the layer is gone
+    /// (SDL_RemoveTimer() does not wait for it) touches no freed memory.
+    struct PushState
+    {
+        std::mutex Mutex;
+        SDL_TimerID ArmedTimer = 0; // the one timer allowed to push; 0 once disarmed
+        bool Pushed = false;
+    };
+
+    static PushState& pushState()
+    {
+        static PushState state;
+        return state;
+    }
+
+    /// Stops any further push. Taking the mutex waits out a push in progress; a callback that has not
+    /// taken it yet finds its timer disarmed and does nothing.
+    void disarm()
+    {
+        {
+            PushState& state = pushState();
+            const std::scoped_lock lock(state.Mutex);
+            state.ArmedTimer = 0;
+        }
+        if (m_Timer != 0)
+        {
+            SDL_RemoveTimer(m_Timer);
+            m_Timer = 0;
+        }
+    }
+
+    /// Starts an attempt: resets the per-attempt state and starts the timer.
+    void arm(std::uint64_t idleWaits)
+    {
+        m_KeyDispatched = false;
+        m_OtherEventsAtArm = m_OtherEvents;
+        m_IdleWaitsAtArm = idleWaits;
+        ++m_Attempts;
+        m_Phase = Phase::Armed;
+        // The previous attempt's one-shot timer has fired; removing it again is a harmless no-op.
+        disarm();
+        PushState& state = pushState();
+        // Held across SDL_AddTimer() so the callback, which takes it first, sees its own timer armed.
+        const std::scoped_lock lock(state.Mutex);
+        state.Pushed = false;
+        m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, nullptr);
+        state.ArmedTimer = m_Timer;
+    }
+
+    static Uint32 pushKey(void* /*userdata*/, SDL_TimerID timerId, Uint32 /*interval*/)
+    {
         SDL_Event event{};
         event.type = SDL_EVENT_KEY_DOWN;
         event.key.key = KEY;
         event.key.down = true;
         // Enqueue and record under one lock: a frame whose onUpdate() runs after the enqueue blocks
-        // until m_Pushed is set, so it can't be mistaken for a frame from before the push.
-        const std::scoped_lock lock(self->m_PushMutex);
-        self->m_Pushed = SDL_PushEvent(&event);
+        // until Pushed is set, so it can't be mistaken for a frame from before the push. The push
+        // (and its X11 wake-up) also finishes before disarm() can return (#1502).
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        if (timerId != state.ArmedTimer)
+        {
+            return 0; // disarmed: the layer is being torn down, or this is a stale timer
+        }
+        state.Pushed = SDL_PushEvent(&event);
         return 0; // one shot
     }
 
-    std::vector<Frame> m_Frames;
-    std::uint64_t m_FirstFrameNs = 0;
+    Phase m_Phase = Phase::Settling;
+    int m_Updates = 0;
+    int m_DoneAtUpdate = 0;
+    int m_Attempts = 0;
+    int m_PolledAttemptsWithoutKey = 0;
+    std::uint64_t m_QuietSinceNs = 0;
+    std::uint64_t m_IdleWaitsSeen = 0;
+    std::uint64_t m_IdleWaitsAtArm = 0;
+    int m_OtherEvents = 0;
+    int m_OtherEventsSeen = 0;
+    int m_OtherEventsAtArm = 0;
     bool m_KeyDispatched = false;
-    mutable std::mutex m_PushMutex;
-    bool m_Pushed = false; // guarded by m_PushMutex
-    int m_FramesAtPush = -1;
+    std::optional<bool> m_FirstFrameAfterPushHadKey;
     SDL_TimerID m_Timer = 0;
 };
 
@@ -496,27 +697,6 @@ void ThrowingOnAttachLayer::onDetach()
 
 } // namespace
 
-// Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after calling
-// signalWindowGeometryChanged(), which is noexcept and has no other observable effect.
-// Declared directly in namespace Core (not inside the anonymous namespace above) so the
-// `friend struct ApplicationTestAccessor;` declaration in Application.h resolves to this
-// exact type. Same pattern as NVMLGPUProbeTestAccessor in test_WindowsNVMLGPUProbe.cpp.
-namespace Core
-{
-struct ApplicationTestAccessor
-{
-    [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
-    {
-        return app.m_WindowGeometryChangedThisFrame;
-    }
-
-    [[nodiscard]] static bool closeRequestAccepted(Application& app)
-    {
-        return app.closeRequestAccepted();
-    }
-};
-} // namespace Core
-
 // =============================================================================
 // Construction and Initialization Tests
 // =============================================================================
@@ -533,7 +713,7 @@ TEST(ApplicationTest, ConstructWithDefaultSpec)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -557,9 +737,13 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const auto& window = app.getWindow();
+        if (!TestSupport::waitForWindowSize(window, 800, 600) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 800, 600);
+        }
         EXPECT_EQ(window.getWidth(), 800);
         EXPECT_EQ(window.getHeight(), 600);
     }
@@ -581,7 +765,7 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -756,14 +940,32 @@ TEST(ApplicationTest, CloseRequestedRaisesOneVetoableWindowCloseEvent)
     {
         Core::Application app(spec);
         const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
-        constexpr int STOP_AFTER = 5;
-        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_WINDOW_CLOSE_REQUESTED, STOP_AFTER);
+        // Stop on what the test is about, not a fixed frame count: the loop drains events within an
+        // 8 ms budget per frame (#1410), so under a loaded parallel run the pushed close request
+        // could still be queued at a fixed frame 5 and the app stopped before it was dispatched
+        // (#1556). Run until it has been dispatched, then SETTLE_FRAMES more so a duplicate (#1150)
+        // would still be seen. FRAME_CAP only guards against a hang.
+        constexpr int SETTLE_FRAMES = 10;
+        constexpr int FRAME_CAP = 600;
+        int dispatchedAt = 0;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(
+            SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+            [&vetoer, &dispatchedAt](int updateCount)
+            {
+                if (dispatchedAt == 0 && vetoer.closeEventsSeen() > 0)
+                {
+                    dispatchedAt = updateCount;
+                }
+                return (dispatchedAt != 0 && updateCount >= dispatchedAt + SETTLE_FRAMES) || updateCount >= FRAME_CAP;
+            });
 
         app.run();
 
         ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        ASSERT_NE(dispatchedAt, 0) << "the close request was never dispatched in " << FRAME_CAP << " frames";
         EXPECT_EQ(vetoer.closeEventsSeen(), 1);
-        EXPECT_EQ(pusher.updateCount(), STOP_AFTER);
+        // The veto kept the app running until the test's own stop.
+        EXPECT_EQ(pusher.updateCount(), dispatchedAt + SETTLE_FRAMES);
     }
     catch (const std::exception& e)
     {
@@ -823,11 +1025,15 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
 
         app.run();
 
-        ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
-        const auto& frames = layer.frames();
-        const auto firstAfterPush = std::ranges::find_if(frames, &KeyDuringIdleWaitLayer::Frame::afterPush);
-        ASSERT_NE(firstAfterPush, frames.end()) << "no frame started after the key was pushed";
-        EXPECT_TRUE(firstAfterPush->keyDispatched) << "the first frame after the wake rendered before the waking key was dispatched";
+        ASSERT_TRUE(KeyDuringIdleWaitLayer::pushed()) << "the timer never pushed the key: " << SDL_GetError();
+        EXPECT_EQ(layer.polledAttemptsWithoutKey(), 0)
+            << "an idle wait timed out with the key queued, and the frame after it rendered without the key (#1450)";
+        const std::optional<bool> firstFrameHadKey = layer.firstFrameAfterPushHadKey();
+        ASSERT_TRUE(firstFrameHadKey.has_value())
+            << "none of " << layer.attempts() << " pushes woke the idle wait: each wait timed out first, "
+            << "or other events were dispatched during the attempt";
+        EXPECT_TRUE(firstFrameHadKey.value_or(false))
+            << "the first frame after the wake rendered before the waking key was dispatched (attempt " << layer.attempts() << ")";
     }
     catch (const std::exception& e)
     {
@@ -859,6 +1065,156 @@ TEST(ApplicationTest, PushMultipleLayers)
     {
         FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
+}
+
+// =============================================================================
+// Headless Application Tests (#880): no display needed, so these always run
+// =============================================================================
+
+TEST(ApplicationHeadlessTest, ConstructsWithoutAWindow)
+{
+    Core::ApplicationSpecification spec;
+    spec.Name = "HeadlessTest";
+    spec.Headless = true;
+
+    const Core::Application app(spec);
+    EXPECT_EQ(&Core::Application::get(), &app);
+    EXPECT_FALSE(app.hasWindow());
+    EXPECT_THROW(static_cast<void>(app.getWindow()), std::logic_error);
+}
+
+TEST(ApplicationHeadlessTest, RunNeedsAWindow)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+
+    Core::Application app(spec);
+    EXPECT_THROW(app.run(), std::logic_error);
+}
+
+namespace
+{
+
+/// Counts what a headless application hands its layers (#880), into counters that outlive it.
+struct HeadlessLayerCounts
+{
+    int attached = 0;
+    int events = 0;
+    int detached = 0;
+};
+
+class HeadlessCountingLayer : public Core::Layer
+{
+  public:
+    explicit HeadlessCountingLayer(HeadlessLayerCounts& counts) : Layer("HeadlessCountingLayer"), m_Counts(counts)
+    {}
+
+    void onAttach() override
+    {
+        ++m_Counts.attached;
+    }
+
+    void onDetach() override
+    {
+        ++m_Counts.detached;
+    }
+
+    void onEvent(Core::Event& /*event*/) override
+    {
+        ++m_Counts.events;
+    }
+
+  private:
+    HeadlessLayerCounts& m_Counts;
+};
+
+} // namespace
+
+TEST(ApplicationHeadlessTest, LayersAttachReceiveEventsAndDetach)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    HeadlessLayerCounts counts;
+    {
+        Core::Application app(spec);
+        app.pushLayer<HeadlessCountingLayer>(counts);
+        EXPECT_EQ(counts.attached, 1);
+
+        Core::WindowCloseEvent event;
+        app.raiseEvent(event);
+        EXPECT_EQ(counts.events, 1);
+
+        app.detachAllLayers();
+        EXPECT_EQ(counts.detached, 1);
+    }
+    EXPECT_EQ(counts.detached, 1); // Not detached a second time by the destructor
+}
+
+namespace
+{
+
+/// A layer whose onEvent() throws something that is not a std::exception (#1395).
+class ThrowingNonStdLayer : public Core::Layer
+{
+  public:
+    ThrowingNonStdLayer() : Layer("ThrowingNonStdLayer")
+    {}
+
+    void onEvent(Core::Event& /*event*/) override
+    {
+        throw 42; // NOLINT(hicpp-exception-baseclass) - what is under test: a throw no std::exception handler catches
+    }
+};
+
+} // namespace
+
+TEST(ApplicationHeadlessTest, ALayerThrowingANonStdExceptionDoesNotStopTheOthers)
+{
+    // #1395: guardLayerCall()'s catch (...) -- logged as an unknown exception, the next layer still runs.
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    HeadlessLayerCounts counts;
+    Core::Application app(spec);
+    app.pushLayer<HeadlessCountingLayer>(counts);
+    app.pushLayer<ThrowingNonStdLayer>();
+    Core::WindowCloseEvent event;
+    EXPECT_NO_THROW(app.raiseEvent(event));
+    EXPECT_EQ(counts.events, 1);
+    app.detachAllLayers();
+}
+
+TEST(ApplicationHeadlessTest, InvalidWindowDimensionsFallBackToTheDefaults)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    spec.Width = 0;
+    spec.Height = -5;
+    const Core::Application app(spec);
+    EXPECT_FALSE(app.hasWindow());
+}
+
+TEST(ApplicationHeadlessTest, ResizePerfTracingCanBeTurnedOnFromTheEnvironment)
+{
+    // TASKSMACK_TRACE_RESIZE_PERF: the trace's clock anchor is logged at construction.
+    ASSERT_EQ(SDL_setenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF", "1", 1), 0);
+    {
+        Core::ApplicationSpecification spec;
+        spec.Headless = true;
+        const Core::Application app(spec);
+        EXPECT_EQ(&Core::Application::get(), &app);
+    }
+    SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF");
+}
+
+TEST(ApplicationHeadlessTest, SetInstanceRefusesASecondOwnedInstance)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    auto first = std::make_unique<Core::Application>(spec);
+    auto second = std::make_unique<Core::Application>(spec);
+    Core::Application::setInstance(std::move(first));
+    EXPECT_THROW(Core::Application::setInstance(std::move(second)), std::logic_error);
+    Core::Application::setInstance(nullptr);
 }
 
 // =============================================================================
@@ -1108,6 +1464,30 @@ TEST(AnimationRequestTest, MotionRateKeepsMovementUnderHalfAPixelPerFrame)
     EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 10.0);
 }
 
+TEST(AnimationRequestTest, EasingRateKeepsStepsUnderTheEasingTolerance)
+{
+    // #2626: an ease (a NowBar's fill, a rescaling axis) may step MAX_EASING_PIXELS_PER_FRAME a frame.
+    // 80 px/s is the fastest ease the 20 fps idle path covers; anything slower asks for no more.
+    constexpr double IDLE = 20.0;
+    constexpr double MAX = 60.0;
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(80.0), IDLE);
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForEasing(30.0), IDLE, MAX), 0.0);
+    // At half a pixel a frame the same 30 px/s settle asked for 60 fps: the idle-fps regression.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForMotion(30.0), IDLE, MAX), MAX);
+    // A fast ease still gets the full animation rate.
+    EXPECT_DOUBLE_EQ(Core::FramePacing::computeAnimationRate(Core::AnimationRequest::framesPerSecondForEasing(400.0), IDLE, MAX), MAX);
+    // The tolerance is a parameter of the motion rate; a non-positive one asks for nothing.
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0, 4.0), 7.5);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForMotion(30.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::framesPerSecondForEasing(std::numeric_limits<double>::quiet_NaN()), 0.0);
+    EXPECT_EQ(Core::AnimationRequest::framesPerSecondForEasing(std::numeric_limits<double>::infinity()),
+              std::numeric_limits<double>::infinity());
+    static_cast<void>(Core::AnimationRequest::consume());
+    Core::AnimationRequest::requestForEasing(100.0);
+    EXPECT_DOUBLE_EQ(Core::AnimationRequest::consume(), 25.0);
+}
+
 TEST(FramePacingTest, IsWithinInteractionGrace)
 {
     EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0, 1.5));
@@ -1341,6 +1721,208 @@ TEST(FramePacingTest, KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake)
     EXPECT_TRUE(framesShowingKey.back()) << "the first frame after the wake must reflect the key";
 }
 
+// #843: an input event restarts the input redraw grace; a drain without one leaves the deadline alone.
+TEST(FramePacingTest, InputRestartsTheInputGraceAndOtherDrainsLeaveIt)
+{
+    using Core::FramePacing::computeInputRedrawUntil;
+    constexpr double GRACE = 0.2;
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.0, 1, 0.0, GRACE), 10.2);
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.0, 3, 0.0, GRACE), 10.2) << "several events in one drain: one deadline";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.05, 0, 10.2, GRACE), 10.2) << "no input: the running grace stands";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(10.15, 1, 10.2, GRACE), 10.35) << "more input extends it from now";
+    EXPECT_DOUBLE_EQ(computeInputRedrawUntil(30.0, 0, 10.2, GRACE), 10.2) << "an expired deadline stays expired";
+}
+
+// #843: the loop's pacing decisions in order, over the frames after one wheel event. The frame the
+// event wakes is paced as input (#1153) as before; the frames that follow, in which ImGui finishes
+// reacting (a popup drawn the frame after it opens, a tab's content the frame after the click), now
+// stay at the input rate through the grace instead of dropping to the idle wait, and the idle wait
+// resumes once it ends. A hidden window takes the idle path throughout (#1125).
+TEST(FramePacingTest, InputKeepsTheFullFrameRateThroughItsGraceThenIdles)
+{
+    constexpr double GRACE = 0.2;
+    constexpr double IDLE_FPS = 20.0;
+    constexpr double MAX_FPS = 60.0;
+    constexpr double NO_MOTION = 0.0; // nothing on screen asked for animation frames
+    double inputRedrawUntil = 0.0;
+
+    // One Application::run() iteration's pacing: the frame-rate cap for the regular frame, 0 = idle wait.
+    const auto paceFrame = [&](double nowSeconds, std::uint32_t inputEvents, bool hadEvents, bool isHidden)
+    {
+        inputRedrawUntil = Core::FramePacing::computeInputRedrawUntil(nowSeconds, inputEvents, inputRedrawUntil, GRACE);
+        const bool inputGraceActive = Core::FramePacing::isWithinInteractionGrace(nowSeconds, inputRedrawUntil);
+        const double animationFps = Core::FramePacing::computeAnimationRate(NO_MOTION, IDLE_FPS, MAX_FPS);
+        return Core::FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FPS);
+    };
+
+    EXPECT_DOUBLE_EQ(paceFrame(1.0, 0, false, false), 0.0) << "idle before any input";
+    EXPECT_DOUBLE_EQ(paceFrame(1.05, 1, true, false), MAX_FPS) << "the wheel event's own frame";
+    EXPECT_DOUBLE_EQ(paceFrame(1.07, 0, false, false), MAX_FPS) << "the follow-up frame: used to be the 50 ms idle wait";
+    EXPECT_DOUBLE_EQ(paceFrame(1.20, 0, false, false), MAX_FPS) << "still inside the grace";
+    EXPECT_DOUBLE_EQ(paceFrame(1.25, 0, false, false), 0.0) << "the grace ended: back to the idle wait";
+
+    EXPECT_DOUBLE_EQ(paceFrame(2.0, 1, true, true), 0.0) << "hidden: no paced frames even for input (#1125)";
+    EXPECT_DOUBLE_EQ(paceFrame(2.05, 0, false, true), 0.0) << "hidden: nor through the grace";
+    EXPECT_DOUBLE_EQ(paceFrame(2.10, 0, false, false), MAX_FPS) << "shown again inside the grace: the input frames resume";
+}
+
+// #843: the grace paces input frames; it is not a move/resize interaction, so it never toggles vsync.
+TEST(FramePacingTest, InputGraceIsNotAMoveResizeInteraction)
+{
+    // Input alone: no resize this drain, no resize grace, no resize event -> not interacting, whatever
+    // the input grace says, so computeVsyncTransition() sees no interaction start.
+    EXPECT_FALSE(Core::FramePacing::computeIsInteracting(false, false, 0));
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(false, false, true, false), Core::FramePacing::VsyncTransition::NoChange);
+}
+
+// #1450: waitForIdleEvent() polls once after a wait that times out, and only
+// then.
+TEST(FramePacingTest, IdleWaitPollsOnceAfterATimeout)
+{
+    struct Case
+    {
+        const char* name;
+        bool waitWakes;
+        bool eventQueuedAfterTimeout;
+        Core::FramePacing::IdleWaitOutcome expected;
+        int expectedPolls;
+    };
+    using enum Core::FramePacing::IdleWaitOutcome;
+    const std::array<Case, 4> cases{{
+        {.name = "woken", .waitWakes = true, .eventQueuedAfterTimeout = false, .expected = Woke, .expectedPolls = 0},
+        {.name = "woken, more queued", .waitWakes = true, .eventQueuedAfterTimeout = true, .expected = Woke, .expectedPolls = 0},
+        {.name = "timed out, queue empty", .waitWakes = false, .eventQueuedAfterTimeout = false, .expected = TimedOut, .expectedPolls = 1},
+        {.name = "timed out, event queued",
+         .waitWakes = false,
+         .eventQueuedAfterTimeout = true,
+         .expected = PolledAfterTimeout,
+         .expectedPolls = 1},
+    }};
+    for (const auto& testCase : cases)
+    {
+        SCOPED_TRACE(testCase.name);
+        constexpr int WAKE = 1;
+        constexpr int QUEUED = 2;
+        int event = 0;
+        int polls = 0;
+        const auto outcome = Core::FramePacing::waitForIdleEvent(
+            event,
+            [&](int& out)
+            {
+                if (testCase.waitWakes)
+                {
+                    out = WAKE;
+                }
+                return testCase.waitWakes;
+            },
+            [&](int& out)
+            {
+                ++polls;
+                if (testCase.eventQueuedAfterTimeout)
+                {
+                    out = QUEUED;
+                }
+                return testCase.eventQueuedAfterTimeout;
+            });
+        EXPECT_EQ(outcome, testCase.expected);
+        EXPECT_EQ(polls, testCase.expectedPolls);
+        if (outcome == Woke)
+        {
+            EXPECT_EQ(event, WAKE);
+        }
+        else if (outcome == PolledAfterTimeout)
+        {
+            EXPECT_EQ(event, QUEUED);
+        }
+    }
+}
+
+// #1450: the loop's ordering (drain, idle wait, render) as in
+// KeyDuringIdleWaitShowsInTheFirstFrameAfterTheWake, with the idle wait going
+// through waitForIdleEvent() and a fake wait that times out while the key is
+// queued: on X11 and Wayland a push from another thread can reach the queue
+// without its wake reaching the wait in time. The frame after that wait must
+// already show the key; it used to render without it, and the key was handled
+// one frame later.
+TEST(FramePacingTest, KeyQueuedDuringATimedOutIdleWaitShowsInTheNextFrame)
+{
+    constexpr int KEY = 1;
+    std::vector<int> queue;             // events not yet taken off the queue
+    std::optional<int> idleWakeEvent;   // the event the idle wait took off the queue
+    bool keyHandled = false;            // the UI state the key changes
+    std::vector<bool> framesShowingKey; // one entry per rendered frame
+    int idleWaits = 0;
+
+    const auto pollQueue = [&](int& event)
+    {
+        if (queue.empty())
+        {
+            return false;
+        }
+        event = queue.front();
+        queue.erase(queue.begin());
+        return true;
+    };
+
+    // One Application::run() iteration; @p keyQueuedWithoutWake pushes the key
+    // during the idle wait, which still runs to its timeout.
+    const auto iterate = [&](bool keyQueuedWithoutWake)
+    {
+        const auto pollAndDispatch = [&]
+        {
+            int event = 0;
+            if (idleWakeEvent.has_value())
+            {
+                event = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!pollQueue(event))
+            {
+                return false;
+            }
+            keyHandled = keyHandled || (event == KEY);
+            return true;
+        };
+        const auto drain = Core::FramePacing::drainEventsWithinBudget(pollAndDispatch, [] { return 0.0; }, 8.0);
+        if (drain.eventCount == 0)
+        {
+            ++idleWaits;
+            int wakeEvent = 0;
+            const auto outcome = Core::FramePacing::waitForIdleEvent(
+                wakeEvent,
+                [&](int& /*event*/)
+                {
+                    if (keyQueuedWithoutWake)
+                    {
+                        queue.push_back(KEY); // queued, but the wake never reaches the wait
+                    }
+                    return false; // timed out
+                },
+                pollQueue);
+            if (outcome != Core::FramePacing::IdleWaitOutcome::TimedOut)
+            {
+                idleWakeEvent = wakeEvent;
+            }
+        }
+        if (Core::FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), false, false))
+        {
+            framesShowingKey.push_back(keyHandled);
+        }
+    };
+
+    iterate(false); // an idle frame before the key
+    ASSERT_EQ(framesShowingKey.size(), 1U);
+    EXPECT_FALSE(framesShowingKey.back());
+
+    iterate(true);  // the key is queued during this iteration's idle wait, which
+                    // times out
+    iterate(false); // drains the key, then renders
+    EXPECT_EQ(idleWaits, 2) << "the drain that takes the key must not wait again before rendering";
+    ASSERT_GE(framesShowingKey.size(), 2U);
+    EXPECT_TRUE(framesShowingKey[1]) << "the first frame after the timed-out wait must reflect the queued key";
+    EXPECT_EQ(framesShowingKey.size(), 2U) << "a polled event skips one render, like a wake, and no more";
+}
+
 TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
 {
     EXPECT_TRUE(Core::FramePacing::computeShouldSleepWhenIdle(false, true));
@@ -1465,6 +2047,7 @@ TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollin
 {
     Core::ResizePerfTraceStats stats;
     stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.inputEvents += 2;
     stats.recordFrame(true, 1.0, 2.0, 0.5, 3.0);
 
     stats.resetIntervalCounters();
@@ -1472,6 +2055,7 @@ TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollin
     EXPECT_EQ(stats.eventBatches, 0U);
     EXPECT_EQ(stats.frames, 0U);
     EXPECT_EQ(stats.resizeFrames, 0U);
+    EXPECT_EQ(stats.inputEvents, 0U) << "inputEvents is a per-interval count (#843)";
     EXPECT_DOUBLE_EQ(stats.drainMs, 0.0);
     EXPECT_DOUBLE_EQ(stats.updateMs, 0.0);
     EXPECT_DOUBLE_EQ(stats.maxDrainMs, 0.0);
@@ -1854,7 +2438,7 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const double time1 = Core::Application::getTime();
         const double time2 = Core::Application::getTime();
@@ -1880,7 +2464,7 @@ TEST(ApplicationTest, GetTimeIsConsistent)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const double time1 = Core::Application::getTime();
         const double time2 = Core::Application::getTime();
@@ -1912,9 +2496,13 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const auto& window = app.getWindow();
+        if (!TestSupport::waitForWindowSize(window, 640, 480) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << TestSupport::sizeNotAppliedMessage(window, 640, 480);
+        }
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
     }
@@ -1936,7 +2524,7 @@ TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_FALSE(app.isInteractionRedrawActive());
     }
     catch (const std::exception& e)
@@ -2284,9 +2872,9 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
         Core::Application::setInstance(std::move(app));
 
         // Calling get() multiple times should always return the same instance
-        Core::Application& ref1 = Core::Application::get();
-        Core::Application& ref2 = Core::Application::get();
-        Core::Application& ref3 = Core::Application::get();
+        const Core::Application& ref1 = Core::Application::get();
+        const Core::Application& ref2 = Core::Application::get();
+        const Core::Application& ref3 = Core::Application::get();
 
         EXPECT_EQ(&ref1, &ref2);
         EXPECT_EQ(&ref2, &ref3);
@@ -2335,7 +2923,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     spec.Name = "FailureTest";
 
     // Construction must throw because SDL_Init will reject the invalid driver.
-    EXPECT_THROW({ Core::Application failedApp(spec); }, std::exception);
+    EXPECT_THROW({ const Core::Application failedApp(spec); }, std::exception);
 
     // After the failed construction the singleton must be cleared;
     // Application::get() must throw rather than returning a dangling reference.
@@ -2361,7 +2949,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     // and the singleton must point at the new instance — no dangling state from above.
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -2440,7 +3028,7 @@ TEST(ApplicationTest, PathsReturnsValidPathService)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         const Core::PathService& paths = app.paths();
 
         // Both dirs must be non-empty, absolute paths — the same guarantee PathService
@@ -2594,4 +3182,82 @@ TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
     {
         FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
+}
+
+namespace
+{
+/// Drives the loop through what resize tracing reports (#1395): a programmatic resize (an interaction
+/// window), an onUpdate() over the slow-frame threshold, then stops.
+class ResizeTraceDriverLayer : public Core::Layer
+{
+  public:
+    ResizeTraceDriverLayer() : Layer("ResizeTraceDriver")
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_Updates;
+        if (m_Updates == 3)
+        {
+            Core::Application::get().getWindow().setSize(800, 600);
+        }
+        else if (m_Updates == 6)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150)); // over the 100 ms slow-frame threshold
+        }
+        else if (m_Updates >= 30)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+    }
+
+  private:
+    int m_Updates = 0;
+};
+} // namespace
+
+TEST(ApplicationTest, ResizePerfTracingFollowsTheLoopThroughAResizeAndASlowLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    std::ostringstream output;
+    const std::shared_ptr<spdlog::logger> previousLogger = spdlog::default_logger();
+    auto logger = std::make_shared<spdlog::logger>("resize-trace-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(output));
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(std::move(logger));
+    // Read once, when the Application is constructed.
+    ASSERT_EQ(SDL_setenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF", "1", 1), 0);
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "ResizeTraceTest";
+    spec.VSync = false;
+    try
+    {
+        Core::Application app(spec);
+        static_cast<void>(SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF"));
+        app.pushLayer<ResizeTraceDriverLayer>();
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        static_cast<void>(SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF"));
+        spdlog::set_default_logger(previousLogger);
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    spdlog::set_default_logger(previousLogger);
+
+    const std::string log = output.str();
+    EXPECT_TRUE(log.contains("Resize performance tracing enabled")) << log;
+    EXPECT_TRUE(log.contains("ResizePerfAnchor:")) << log;    // the clock anchor, at start and shutdown
+    EXPECT_TRUE(log.contains("ResizePerfSlowFrame:")) << log; // the 150 ms onUpdate()
+    EXPECT_TRUE(log.contains("ResizePerfSlowLayer[update]: rank=1 layer='ResizeTraceDriver'")) << log; // named as the slow layer
+    EXPECT_TRUE(log.contains("ResizePerf[shutdown]")) << log;                                          // the final summary
 }

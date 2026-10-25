@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/LocaleSetup.h"
 #include "Domain/Numeric.h"
 
 #include <algorithm>
@@ -24,81 +25,171 @@
 namespace UI::Format
 {
 
-/// The global locale's decimal point, the one std::format's "L" specs print, so the table's aligned
-/// cells read "1,5 MB" beside a tooltip's "1,5 MB" in a comma-decimal locale (#1202); '.' in the
-/// "C" locale. Not cached: read once per call from std::locale() (a reference-count bump, no
-/// allocation), so it always agrees with the "L" formatters even if the global locale changes.
-[[nodiscard]] inline auto getLocaleDecimalPoint() noexcept -> char
-{
-    try
-    {
-        return std::use_facet<std::numpunct<char>>(std::locale()).decimal_point();
-    }
-    catch (...)
-    {
-        return '.';
-    }
-}
-
 // ============================================================================
-// Allocation-free localized fixed-point formatting (#1334)
+// The display locale's punctuation (#1648, slice E)
 // ============================================================================
 
-/// The global locale's numeric punctuation, as std::format's "L" specs apply it to a number.
-struct NumericPunctuation
-{
-    char decimalPoint = '.';
-    char thousandsSep = ',';
-    std::string grouping; // numpunct::grouping(): empty for no separators ("C" locale)
-};
+/// How displayed numbers are punctuated: the decimal mark, the digit grouping and the thousands
+/// separator (UTF-8, so fr-FR's narrow no-break space U+202F is whole).
+using NumericPunctuation = Core::LocaleSetup::NumberPunctuation;
 
-/// The global locale's punctuation, cached per thread and re-read whenever the global locale is
-/// replaced (the test suites switch it; TaskSmack sets it once at startup). Checking costs one
-/// std::locale() copy and a pointer compare, against the locale lookup, facet calls and grouping
-/// string std::format("{:L}") pays on every call.
+namespace Detail
+{
+/// The punctuation every formatter here reads: the classic locale's ('.', no grouping) until
+/// setDisplayPunctuation(). A plain variable rather than a std::locale, read without a lookup, a
+/// copy or a lock, since these formatters run for every cell and axis tick every frame.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - set once at startup (and by tests), then only read
+inline NumericPunctuation displayPunctuation{};
+} // namespace Detail
+
+/// The display punctuation: the user's locale's (Core::LocaleSetup::userNumberPunctuation()) once
+/// main() has set it, never the global C++ locale's, which keeps the classic numeric facets so
+/// streams and parsing stay locale-independent.
 [[nodiscard]] inline auto numericPunctuation() noexcept -> const NumericPunctuation&
 {
-    // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
-    thread_local std::locale cachedLocale = std::locale::classic();
-    thread_local NumericPunctuation cached{.decimalPoint = '.', .thousandsSep = ',', .grouping = {}};
-    // NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
-    try
-    {
-        const std::locale current;
-        if (current != cachedLocale)
-        {
-            // Build the new value first and commit the key last, so a throw leaves the old pair intact.
-            const auto& facet = std::use_facet<std::numpunct<char>>(current);
-            NumericPunctuation fresh{
-                .decimalPoint = facet.decimal_point(), .thousandsSep = facet.thousands_sep(), .grouping = facet.grouping()};
-            cached = std::move(fresh);
-            cachedLocale = current;
-        }
-        return cached;
-    }
-    catch (...)
-    {
-        return cached; // The last punctuation read (the "C" locale's until one is read successfully)
-    }
+    return Detail::displayPunctuation;
 }
 
-/// The global locale's thousands separator as std::format("{:L}") inserts it, or '\0' when the locale
-/// has no grouping (the "C" locale), so none is inserted. Reads the per-thread punctuation cache above,
-/// so it follows the current global locale: a thread that formatted before the locale was set, or a
-/// locale change at run time, no longer leaves the fast byte-alignment path on a stale separator
-/// (#1366). Once the cache is warm this costs one std::locale() copy and a pointer compare.
-[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
+/// Sets the display punctuation. main() calls it once, before any other thread starts; tests use
+/// ScopedDisplayPunctuation. Not thread-safe: nothing may be formatting meanwhile.
+inline void setDisplayPunctuation(NumericPunctuation punctuation) noexcept
 {
-    const NumericPunctuation& punct = numericPunctuation();
-    return punct.grouping.empty() ? '\0' : punct.thousandsSep;
+    Detail::displayPunctuation = std::move(punctuation);
 }
 
-/// Writes `value` with `decimals` fraction digits into [out, out + capacity), exactly as
-/// std::format("{:.{}Lf}", value, decimals) prints it with the global locale: its decimal point,
-/// and its thousands separator placed by its grouping. No allocation and no locale lookup per call,
-/// which is what made every chart axis tick about twice as slow once the axes went localized (#1334).
-/// Returns the length written, or 0 if it doesn't fit, `value` isn't finite, or `decimals` is outside
-/// 0-9; the caller then falls back to std::format, so the output never differs from it.
+/// Formats with @p punctuation for one scope and restores the previous punctuation after it (tests
+/// and benchmarks).
+class ScopedDisplayPunctuation
+{
+  public:
+    explicit ScopedDisplayPunctuation(NumericPunctuation punctuation) : m_Previous(numericPunctuation())
+    {
+        setDisplayPunctuation(std::move(punctuation));
+    }
+    ~ScopedDisplayPunctuation()
+    {
+        setDisplayPunctuation(std::move(m_Previous));
+    }
+    ScopedDisplayPunctuation(const ScopedDisplayPunctuation&) = delete;
+    ScopedDisplayPunctuation& operator=(const ScopedDisplayPunctuation&) = delete;
+    ScopedDisplayPunctuation(ScopedDisplayPunctuation&&) = delete;
+    ScopedDisplayPunctuation& operator=(ScopedDisplayPunctuation&&) = delete;
+
+  private:
+    NumericPunctuation m_Previous;
+};
+
+/// The display decimal mark: '.' in en-US, ',' in de-DE and fr-FR.
+[[nodiscard]] inline auto getLocaleDecimalPoint() noexcept -> char
+{
+    return numericPunctuation().decimalPoint;
+}
+
+// ============================================================================
+// Allocation-free localized formatting (#1334)
+// ============================================================================
+
+namespace Detail
+{
+/// Writes the `count` integer digits at `digits` through `put` (a callable taking a char), with
+/// `punct`'s thousands separator where its grouping puts one: numpunct grouping gives the group
+/// sizes from the right, its last entry repeating; a size <= 0 or CHAR_MAX ends grouping.
+template<typename Put>
+inline void putGroupedDigits(const char* digits, std::size_t count, const NumericPunctuation& punct, Put& put) noexcept
+{
+    // No grouping (the classic locale): the digits as they are. The common case, and the one every
+    // fast table cell takes, so it does nothing else -- #1704 measured a 2.5 KB scratch array zeroed
+    // here on every call as +46% on the full process row.
+    if (punct.grouping.empty() || punct.thousandsSep.empty())
+    {
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            put(digits[i]);
+        }
+        return;
+    }
+
+    // Separator positions, as the count of integer digits to their right: the grouping's running sums
+    // ("\3\2" -> 3, 5), then every `repeat` digits past the last while its last size repeats (7, 9,
+    // ...). A size <= 0 or CHAR_MAX ends grouping there, with no repeat.
+    std::array<std::size_t, 8> fixed{}; // numpunct groupings have one to three sizes
+    std::size_t fixedCount = 0;
+    std::size_t last = 0;
+    std::size_t repeat = 0;
+    for (std::size_t g = 0; g < punct.grouping.size() && fixedCount < fixed.size(); ++g)
+    {
+        const char size = punct.grouping[g];
+        if (size <= 0 || size == std::numeric_limits<char>::max())
+        {
+            repeat = 0;
+            break;
+        }
+        last += static_cast<std::size_t>(static_cast<unsigned char>(size));
+        fixed[fixedCount++] = last;
+        repeat = static_cast<std::size_t>(static_cast<unsigned char>(size));
+    }
+    const auto isCut = [&](std::size_t toTheRight) noexcept
+    {
+        for (std::size_t f = 0; f < fixedCount; ++f)
+        {
+            if (fixed[f] == toTheRight)
+            {
+                return true;
+            }
+        }
+        return repeat > 0 && toTheRight > last && (toTheRight - last) % repeat == 0;
+    };
+
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        put(digits[i]);
+        const std::size_t toTheRight = count - i - 1;
+        if (toTheRight > 0 && isCut(toTheRight))
+        {
+            for (const char c : punct.thousandsSep)
+            {
+                put(c);
+            }
+        }
+    }
+}
+} // namespace Detail
+
+/// Writes the integer `value` into [out, out + capacity) with the display thousands separator
+/// ("1,234,567" in en-US, "1.234.567" in de-DE, "1\u202F234\u202F567" in fr-FR). No allocation.
+/// Returns the length written, or 0 if it doesn't fit.
+template<std::integral T> [[nodiscard]] inline auto formatIntLocalizedTo(char* out, std::size_t capacity, T value) noexcept -> std::size_t
+{
+    std::array<char, 48> digits{}; // Any 64-bit integer and its sign
+    const auto [digitsEnd, error] = std::to_chars(digits.data(), digits.data() + digits.size(), value);
+    if (error != std::errc{})
+    {
+        return 0;
+    }
+    std::size_t length = 0;
+    const auto put = [out, capacity, &length](char c) noexcept
+    {
+        if (length < capacity)
+        {
+            out[length] = c;
+        }
+        ++length;
+    };
+    const char* first = digits.data();
+    if (*first == '-')
+    {
+        put('-');
+        ++first;
+    }
+    Detail::putGroupedDigits(first, static_cast<std::size_t>(digitsEnd - first), numericPunctuation(), put);
+    return length <= capacity ? length : 0;
+}
+
+/// Writes `value` with `decimals` fraction digits into [out, out + capacity) with the display
+/// punctuation: std::format("{:.{}f}", value, decimals)'s digits and rounding, with the display
+/// decimal mark, and the thousands separator placed by its grouping. No allocation and no locale
+/// lookup per call: every chart axis tick goes through here (#1334). Returns the length written, or
+/// 0 if it doesn't fit, `value` isn't finite, or `decimals` is outside 0-9.
 [[nodiscard]] inline auto formatFixedLocalizedTo(char* out, std::size_t capacity, double value, int decimals) noexcept -> std::size_t
 {
     constexpr int MAX_DECIMALS = 9;
@@ -133,41 +224,7 @@ struct NumericPunctuation
     }
     const char* const textEnd = digitsEnd;
     const char* integerEnd = std::find(first, textEnd, '.');
-    const auto integerDigits = static_cast<std::size_t>(integerEnd - first);
-
-    // Separator positions, as the count of integer digits to their right: numpunct grouping gives
-    // the group sizes from the right, its last entry repeating; a size <= 0 or CHAR_MAX ends grouping.
-    std::array<std::size_t, 320> cuts{};
-    std::size_t cutCount = 0;
-    if (!punct.grouping.empty())
-    {
-        std::size_t position = 0;
-        for (std::size_t group = 0; cutCount < cuts.size(); ++group)
-        {
-            const char size = punct.grouping[std::min(group, punct.grouping.size() - 1)];
-            if (size <= 0 || size == std::numeric_limits<char>::max())
-            {
-                break;
-            }
-            position += static_cast<std::size_t>(size);
-            if (position >= integerDigits)
-            {
-                break;
-            }
-            cuts[cutCount++] = position;
-        }
-    }
-
-    for (std::size_t i = 0; i < integerDigits; ++i)
-    {
-        put(first[i]);
-        const std::size_t toTheRight = integerDigits - i - 1;
-        if (cutCount > 0 && toTheRight == cuts[cutCount - 1])
-        {
-            put(punct.thousandsSep);
-            --cutCount;
-        }
-    }
+    Detail::putGroupedDigits(first, static_cast<std::size_t>(integerEnd - first), punct, put);
     if (integerEnd != textEnd)
     {
         put(punct.decimalPoint);
@@ -193,8 +250,9 @@ inline void appendText(char* out, std::size_t capacity, std::size_t& length, std
     }
 }
 
-/// std::format("{:.{}Lf}{}", value, decimals, suffix) through formatFixedLocalizedTo(): the same
-/// text, built in a stack buffer instead of through std::format's locale-aware path (#1334).
+/// `value` with `decimals` fraction digits and the display punctuation, then `suffix`
+/// (formatFixedLocalizedTo()), built in a stack buffer. A value too long for it gets a heap buffer;
+/// a non-finite value prints as std::format does ("inf", "nan").
 [[nodiscard]] inline auto formatFixedLocalized(double value, int decimals, std::string_view suffix) -> std::string
 {
     std::array<char, 64> buffer{};
@@ -207,69 +265,46 @@ inline void appendText(char* out, std::size_t capacity, std::size_t& length, std
             return {buffer.data(), length};
         }
     }
-    return std::format("{:.{}Lf}{}", value, decimals, suffix);
+    if (std::isfinite(value) && decimals >= 0 && decimals <= 9)
+    {
+        // Up to 309 integer digits, a separator (at most a few bytes each) between each group, the sign,
+        // the decimal mark and nine decimals.
+        std::string text(4096, '\0');
+        length = formatFixedLocalizedTo(text.data(), text.size(), value, decimals);
+        if (length > 0)
+        {
+            text.resize(length);
+            text.append(suffix);
+            return text;
+        }
+    }
+    return std::format("{:.{}f}{}", value, decimals, suffix);
 }
 
-[[nodiscard]] inline auto toIntSaturated(long value) -> int
+/// `text` (a number std::format printed without "L", such as "{:g}") with its '.' replaced by the
+/// display decimal mark.
+[[nodiscard]] inline auto withLocaleDecimalPoint(std::string text) -> std::string
 {
-    if (!std::in_range<int>(value))
-    {
-        return std::numeric_limits<int>::max();
-    }
-    return static_cast<int>(value); // Safe: checked by std::in_range
+    std::ranges::replace(text, '.', getLocaleDecimalPoint());
+    return text;
 }
 
-template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent) -> int
+/// The integer `value` with the display thousands separator (formatIntLocalizedTo()).
+template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) -> std::string
 {
-    // NaN (a sample with no reading) would survive std::max and reach std::lround, whose result
-    // is unspecified for it -- "-2,147,483,648%" in practice (#1148). Infinity likewise.
-    if (!(percent > static_cast<T>(0))) // Also catches NaN
+    std::array<char, 64> buffer{};
+    if (const std::size_t length = formatIntLocalizedTo(buffer.data(), buffer.size(), value); length > 0)
     {
-        return 0;
+        return {buffer.data(), length};
     }
-    // Saturate before rounding: std::lround is unspecified outside long's range, which is only
-    // 32 bits on Windows, so a huge finite value (or infinity) must not reach it (#1227 review).
-    constexpr auto INT_LIMIT = static_cast<double>(std::numeric_limits<int>::max());
-    if (static_cast<double>(percent) >= INT_LIMIT)
-    {
-        return std::numeric_limits<int>::max();
-    }
-    return toIntSaturated(std::lround(static_cast<double>(percent)));
-}
-
-/// "42%", or "N/A" for NaN, which marks a sample with no reading.
-template<std::floating_point T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    if (std::isnan(percent))
-    {
-        return "N/A";
-    }
-    return std::format("{:L}%", percentToInt(percent));
-}
-
-template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
-{
-    return std::format("{:L}%", percent);
+    std::string text(1024, '\0'); // A locale with one-digit groups and long separators
+    text.resize(formatIntLocalizedTo(text.data(), text.size(), value));
+    return text;
 }
 
 [[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
     return std::format("{}", value);
-}
-
-template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) -> std::string
-{
-    return std::format("{:L}", value);
-}
-
-[[nodiscard]] inline auto formatUIntLocalized(std::uint64_t value) -> std::string
-{
-    return formatIntLocalized(value);
-}
-
-[[nodiscard]] inline auto formatDoubleLocalized(double value, int decimals) -> std::string
-{
-    return std::format("{:.{}Lf}", value, decimals);
 }
 
 template<std::integral T> [[nodiscard]] inline auto formatCountWithLabel(T value, std::string_view label) -> std::string
@@ -303,6 +338,21 @@ enum class DurationStyle : std::uint8_t
     Compact,
 };
 
+namespace Detail
+{
+/// std::format() for a short result, built in a local buffer and copied into the string: std::format
+/// itself reserves room for its arguments' estimated width, which with MSVC's library is past the
+/// short-string buffer, so even "5m" cost a heap allocation. A history chart's time axis formats its
+/// tick labels every frame (formatAxisTimeAgo()), so that was one allocation per tick per chart per
+/// frame (#843). A result longer than the buffer is cut there; callers' results are far shorter.
+template<typename... Args> [[nodiscard]] std::string formatShort(std::format_string<Args...> fmt, Args&&... args)
+{
+    std::array<char, 32> buffer{};
+    const auto result = std::format_to_n(buffer.data(), static_cast<std::ptrdiff_t>(buffer.size()), fmt, std::forward<Args>(args)...);
+    return {buffer.data(), static_cast<std::size_t>(result.out - buffer.data())};
+}
+} // namespace Detail
+
 /// A duration in the app's one grammar (#1202): "45s", "2m 05s", "1h 02m", "3d 04h" -- the two
 /// largest units, the second padded to two digits, rounded to the nearest second first. Negative
 /// durations are shown by their size and NaN as "N/A". Used for CPU Time, uptime and the history
@@ -323,13 +373,13 @@ enum class DurationStyle : std::uint8_t
     {
         if (style == DurationStyle::Compact && minor == 0)
         {
-            return std::format("{}{}", major, majorUnit);
+            return Detail::formatShort("{}{}", major, majorUnit);
         }
-        return std::format("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
+        return Detail::formatShort("{}{} {:02}{}", major, majorUnit, minor, minorUnit);
     };
     if (total < MINUTE)
     {
-        return std::format("{}s", total);
+        return Detail::formatShort("{}s", total);
     }
     if (total < HOUR)
     {
@@ -340,16 +390,6 @@ enum class DurationStyle : std::uint8_t
         return twoParts(total / HOUR, 'h', (total % HOUR) / MINUTE, 'm');
     }
     return twoParts(total / DAY, 'd', (total % DAY) / HOUR, 'h');
-}
-
-/// "Up: 3d 04h", the system uptime in formatDuration()'s grammar; empty for 0 (not known).
-[[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
-{
-    if (seconds == 0)
-    {
-        return {};
-    }
-    return "Up: " + formatDuration(static_cast<double>(seconds));
 }
 
 /// Format Unix epoch timestamp to human-readable local date/time.
@@ -582,7 +622,7 @@ inline constexpr std::size_t BYTE_TEXT_CAPACITY = 64;
         return {buffer.data(), length};
     }
     const double value = roundHalfAwayFromZero(bytes / unit.scale, unit.decimals);
-    return std::format("{:.{}Lf} {}", value, unit.decimals, unit.suffix);
+    return formatFixedLocalized(value, unit.decimals, std::format(" {}", unit.suffix));
 }
 
 [[nodiscard]] inline auto formatBytes(double bytes) -> std::string
@@ -644,10 +684,10 @@ struct AlignedPercentParts
 
 /// Zero-allocation version of AlignedNumericParts for byte value rendering.
 /// Uses a fixed internal buffer and returns string_views into it.
-/// Buffer sized for: sign + 20 digits + 6 separators + decimal point + null = 29 chars
+/// Buffer sized for: 20 digits + 6 three-byte separators (fr-FR's U+202F) + decimal point + null = 40 chars
 struct AlignedBytesParts
 {
-    static constexpr std::size_t BUFFER_SIZE = 32; // Enough for any int64_t with separators
+    static constexpr std::size_t BUFFER_SIZE = 48; // Any int64_t with multibyte separators
     std::array<char, BUFFER_SIZE> buffer{};        // Internal storage for whole part
     std::size_t wholePartLen = 0;                  // Length of whole part in buffer
     char decimalDigit = '0';                       // Single char: '0'-'9'
@@ -706,49 +746,15 @@ struct AlignedBytesParts
     }
 
     AlignedBytesParts parts;
-    std::size_t pos = 0;
 
-    // Convert integer to string using std::to_chars (fast, no allocation)
-    // Then insert thousand separators
-    std::array<char, 24> digitBuf{}; // Enough for int64_t
-    auto [endPtr, ec] = std::to_chars(digitBuf.data(), digitBuf.data() + digitBuf.size(), wholeValue);
-    if (ec != std::errc{})
+    // The whole part with the display thousands separator, leaving room for the decimal point and
+    // the terminator (no allocation). A locale whose separators don't fit gets the bare digits.
+    constexpr std::size_t WHOLE_CAPACITY = AlignedBytesParts::BUFFER_SIZE - 2;
+    std::size_t pos = formatIntLocalizedTo(parts.buffer.data(), WHOLE_CAPACITY, wholeValue);
+    if (pos == 0)
     {
-        // Fallback: return a safe default if conversion fails (should never happen)
-        digitBuf[0] = '0';
-        endPtr = digitBuf.data() + 1;
-    }
-    assert(ec == std::errc{} && "std::to_chars failed unexpectedly");
-    const auto numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
-
-    // Get locale separator ('\0' means no separators, e.g., C locale)
-    const char sep = getLocaleThousandSep();
-
-    // Max buffer usage (by design): at most 20 digits + 6 separators + 1 decimal + 1 null = 28 < BUFFER_SIZE(32)
-    // Invariant: numDigits must never exceed 20; if it does, that indicates a logic bug upstream.
-    // The assert enforces this invariant in debug builds, while the runtime clamp provides
-    // defense-in-depth in release builds (where asserts are disabled) to prevent buffer overflow.
-    assert(numDigits <= 20 && "Unexpected number of digits in byte value");
-    const std::size_t safeNumDigits = std::min(numDigits, std::size_t{20});
-
-    // Insert digits with thousand separators (if separator is enabled)
-    // For numDigits=6 (e.g., 123456), a separator is inserted before digit index 3, yielding "123,456"
-    // Pattern: effectively a separator after every 3 digits when scanning from the left
-    // firstGroupSize: number of digits before the first separator (1-3)
-    // Use safeNumDigits to ensure consistency with the loop constraint
-    const std::size_t firstGroupSize = ((safeNumDigits - 1) % 3) + 1;
-
-    for (std::size_t i = 0; i < safeNumDigits; ++i)
-    {
-        // Add separator before this digit if:
-        // 1. sep != '\0' (locale has grouping enabled)
-        // 2. We're past the first group
-        // 3. We're at a group boundary
-        if (sep != '\0' && i >= firstGroupSize && (i - firstGroupSize) % 3 == 0)
-        {
-            parts.buffer[pos++] = sep;
-        }
-        parts.buffer[pos++] = digitBuf[i];
+        const auto [endPtr, ec] = std::to_chars(parts.buffer.data(), parts.buffer.data() + WHOLE_CAPACITY, wholeValue);
+        pos = (ec == std::errc{}) ? static_cast<std::size_t>(endPtr - parts.buffer.data()) : 0;
     }
 
     // Add decimal point (unit.decimals is always 1 for byte units)
@@ -756,7 +762,7 @@ struct AlignedBytesParts
     assert(pos + 2 <= AlignedBytesParts::BUFFER_SIZE && "Buffer overflow in splitBytesForAlignmentFast");
     if (unit.decimals > 0)
     {
-        parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatBytes()'s "L" spec prints it (#1202)
+        parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatBytes() prints it (#1202)
     }
     parts.buffer[pos] = '\0';
 
@@ -798,24 +804,16 @@ struct AlignedBytesParts
         }
 
         // Whole part includes the locale's decimal point, as formatBytes() prints it (#1202)
-        parts.wholePart = std::format("{:L}{}", wholeValue, getLocaleDecimalPoint());
+        parts.wholePart = formatIntLocalized(wholeValue) + getLocaleDecimalPoint();
         // Single digit for fractional part
         parts.decimalPart = std::format("{}", fractionalDigit);
     }
     else
     {
-        parts.wholePart = std::format("{:L}", wholeValue);
+        parts.wholePart = formatIntLocalized(wholeValue);
     }
 
     parts.unitPart = std::format(" {}", unit.suffix);
-    return parts;
-}
-
-/// Split a bytes-per-second value into parts for decimal-aligned rendering
-[[nodiscard]] inline auto splitBytesPerSecForAlignment(double bytesPerSec, ByteUnit unit) -> AlignedNumericParts
-{
-    auto parts = splitBytesForAlignment(bytesPerSec, unit);
-    parts.unitPart = std::format(" {}/s", unit.suffix);
     return parts;
 }
 
@@ -864,7 +862,7 @@ struct AlignedBytesParts
     {
         parts.buffer[pos++] = static_cast<char>('0' + wholeValue);
     }
-    parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatPercent()'s "L" spec prints it (#1202)
+    parts.buffer[pos++] = getLocaleDecimalPoint(); // As formatPercent() prints it (#1202)
     parts.buffer[pos] = '\0';                      // Null terminate
 
     parts.wholePart = std::string_view(parts.buffer.data(), pos);
@@ -875,7 +873,7 @@ struct AlignedBytesParts
 
 /// "0.6%", one decimal, exactly as the Processes table shows a process's CPU and memory percents
 /// (the same splitPercentForAlignment() rounding and locale decimal point), or "N/A" for NaN. A
-/// process's share of the machine is usually under a few percent, where percentCompact() rounded it
+/// process's share of the machine is usually under a few percent, which a whole-percent format rounded
 /// to "0%" or "1%" (#1195).
 [[nodiscard]] inline auto percentOneDecimal(double percent) -> std::string
 {
@@ -895,7 +893,7 @@ struct AlignedBytesParts
 {
     if (watts <= 0.0)
     {
-        return {.wholePart = std::format("0{}", getLocaleDecimalPoint()), .decimalPart = "0", .unitPart = " W"};
+        return {.wholePart = std::string{'0', getLocaleDecimalPoint()}, .decimalPart = "0", .unitPart = " W"};
     }
 
     const double absWatts = std::abs(watts);
@@ -930,7 +928,7 @@ struct AlignedBytesParts
 
     AlignedNumericParts parts;
     // Whole part includes the locale's decimal point, as formatWatts() prints it (#1202)
-    parts.wholePart = std::format("{:L}{}", wholeValue, getLocaleDecimalPoint());
+    parts.wholePart = formatIntLocalized(wholeValue) + getLocaleDecimalPoint();
     // Single digit for fractional part
     parts.decimalPart = std::format("{}", fractionalDigit);
     parts.unitPart = std::format(" {}", unitSuffix);
@@ -941,13 +939,13 @@ struct AlignedBytesParts
 {
     if (value >= 1'000'000.0)
     {
-        return std::format("{:.1Lf}M/s", value / 1'000'000.0);
+        return formatFixedLocalized(value / 1'000'000.0, 1, "M/s");
     }
     if (value >= 1'000.0)
     {
-        return std::format("{:.1Lf}K/s", value / 1'000.0);
+        return formatFixedLocalized(value / 1'000.0, 1, "K/s");
     }
-    return std::format("{:.1Lf}/s", value);
+    return formatFixedLocalized(value, 1, "/s");
 }
 
 /// " (16 logical processors @ 3.70 GHz)", or " (16 logical processors)" without a clock, for the
@@ -958,7 +956,7 @@ struct AlignedBytesParts
     const char* noun = (logicalProcessors == 1) ? "logical processor" : "logical processors";
     if (freqMHz > 0.0)
     {
-        return std::format(" ({} {} @ {:.2f} GHz)", logicalProcessors, noun, freqMHz / 1000.0);
+        return std::format(" ({} {} @ {})", logicalProcessors, noun, formatFixedLocalized(freqMHz / 1000.0, 2, " GHz"));
     }
     return std::format(" ({} {})", logicalProcessors, noun);
 }
@@ -1014,12 +1012,6 @@ struct AlignedBytesParts
         }
     }
     return result.empty() ? std::string("-") : result;
-}
-
-/// formatCpuAffinity() of a 64-bit mask, bit N = processor N.
-[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
-{
-    return formatCpuAffinity(std::span<const std::uint64_t>(&mask, 1));
 }
 
 // ============================================================================
@@ -1080,7 +1072,7 @@ struct AlignedBytesParts
 /// A whole-number percent (battery health), "87%".
 template<std::integral T> [[nodiscard]] inline auto formatPercent(T percent) -> std::string
 {
-    return std::format("{:L}%", percent);
+    return formatIntLocalized(percent) + '%';
 }
 
 /// "3.2 GiB / 16.0 GiB (20%)": used and total in the one unit the larger of them calls for.

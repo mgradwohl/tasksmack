@@ -5,7 +5,7 @@ name: Renovate
 # (cmake/Dependencies.cmake, tests/CMakeLists.txt, benchmarks/CMakeLists.txt) and the full
 # build/dev toolchain -- LLVM (11 files: every CI workflow that runs a compiler or clang-tooling
 # step, both setup-llvm actions, and both dev-box scripts), Python interpreter (4 files),
-# CMake/Ninja/ccache dev-box pins, the Windows CI's exact Chocolatey ninja/ccache pins, and (via
+# CMake/Ninja/ccache dev-box pins, and (via
 # Renovate's native pre-commit manager) .pre-commit-config.yaml's own hook-tool pins -- see #89
 # and #798 for the full audit and rationale. Dependabot already handles GitHub Actions and Python
 # packages (requirements*.txt) weekly on Mondays; osv-scanner.yml already scans all of these for
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       dryRun:
-        description: 'Dry run mode (log what would happen without opening/updating PRs)'
+        description: 'Dry run mode: disabled = real run (opens/updates PRs); extract/lookup/full only log what would happen'
         type: choice
         options: ['disabled', 'extract', 'lookup', 'full']
         default: 'disabled'
@@ -70,14 +70,38 @@ jobs:
             exit 1
           fi
 
+      - name: Select dry-run mode
+        # Renovate's dryRun accepts only 'extract', 'lookup' or 'full'; unset means a real run. The
+        # 'disabled' choice above is this workflow's own label for "real run" and must never reach
+        # Renovate: passing RENOVATE_DRY_RUN=disabled still made every run a dry run, so scheduled
+        # runs went green while never opening a PR or the Dependency Dashboard (#2527). Export the
+        # variable (via GITHUB_ENV, which the Renovate action forwards to its container) only for an
+        # explicit dry-run dispatch, and fail on anything unexpected rather than guess. inputs.* is
+        # only populated for workflow_dispatch; the && short-circuits to '' on scheduled runs, which
+        # is the real-run case.
+        env:
+          DRY_RUN_INPUT: ${{ (github.event_name == 'workflow_dispatch' && inputs.dryRun) || '' }}
+        run: |
+          case "${DRY_RUN_INPUT}" in
+            '' | disabled)
+              echo "Renovate real run: dependency PRs and the Dependency Dashboard get created/updated."
+              ;;
+            extract | lookup | full)
+              echo "RENOVATE_DRY_RUN=${DRY_RUN_INPUT}" >> "${GITHUB_ENV}"
+              echo "Renovate dry run (${DRY_RUN_INPUT}): nothing gets pushed."
+              ;;
+            *)
+              echo "::error::Unknown dryRun input '${DRY_RUN_INPUT}' (expected disabled, extract, lookup or full)."
+              exit 1
+              ;;
+          esac
+
       - name: Self-hosted Renovate
-        uses: renovatebot/github-action@6d26fcf0275dc65624cbc3d51fe78bc773f98321 # v46.3.6
+        uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9 # v46.3.8
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_PLATFORM: github
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
-          # inputs.* is only populated for workflow_dispatch runs; this workflow also runs on
-          # schedule, where referencing inputs.dryRun directly risks undefined-context behavior.
-          # The && short-circuits before inputs.dryRun is ever evaluated on non-dispatch triggers.
-          RENOVATE_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dryRun) || 'disabled' }}
+          # RENOVATE_DRY_RUN is deliberately not set here: the "Select dry-run mode" step above
+          # exports it only for an explicit extract/lookup/full dispatch (#2527).
           LOG_LEVEL: info

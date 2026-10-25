@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -212,6 +213,8 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_memory_total_get)(std::uint32_t, rsmi_memory_type_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_ave_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
+    // Newer ROCm SMI only; optional (#2464).
+    rsmi_status_t (*rsmi_dev_current_socket_power_get)(std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     // rsmi_frequencies_t's layout depends on the library version: see frequenciesLayout.
     rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
@@ -219,6 +222,20 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
+
+    /// The device's power draw in microwatts: its average power, else (#2464) its current socket power, for a
+    /// card or kernel that has only the latter (amdgpu's power1_input without power1_average, reportedly some
+    /// RDNA3 cards and APUs). Only a definitive "not supported" falls back; a busy device stays busy.
+    [[nodiscard]] rsmi_status_t readPower(std::uint32_t device, std::uint64_t* microWatts) const
+    {
+        const rsmi_status_t average = rsmi_dev_power_ave_get(device, 0, microWatts);
+        if (rsmi_dev_current_socket_power_get == nullptr ||
+            (average != RSMI_STATUS_NOT_SUPPORTED && average != RSMI_STATUS_NOT_FOUND && average != RSMI_STATUS_NOT_YET_IMPLEMENTED))
+        {
+            return average;
+        }
+        return rsmi_dev_current_socket_power_get(device, microWatts);
+    }
 
     // Which rsmi_frequencies_t layout to try first for the loaded library; set in loadROCmSMI().
     ROCmGPUProbeMath::FrequenciesLayout frequenciesLayout = ROCmGPUProbeMath::FrequenciesLayout::V6;
@@ -310,6 +327,7 @@ bool ROCmGPUProbe::Impl::loadSymbols()
     LOAD_ROCM_FUNC(rsmi_dev_fan_speed_get);
     LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_fan_speed_max_get);
     LOAD_ROCM_FUNC_OPTIONAL(rsmi_version_get);
+    LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_current_socket_power_get);
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
@@ -508,6 +526,23 @@ bool ROCmGPUProbe::isAvailable() const
     return m_Impl && m_Impl->initialized;
 }
 
+std::vector<std::pair<std::string, std::string>> ROCmGPUProbe::gpuIdsByPciAddress() const
+{
+    std::vector<std::pair<std::string, std::string>> ids;
+    if (!isAvailable())
+    {
+        return ids;
+    }
+    for (std::size_t i = 0; i < m_Impl->sysfsPaths.size() && i < m_Impl->deviceIds.size(); ++i)
+    {
+        if (!m_Impl->sysfsPaths[i].empty())
+        {
+            ids.emplace_back(std::filesystem::path(m_Impl->sysfsPaths[i]).filename().string(), m_Impl->deviceIds[i]);
+        }
+    }
+    return ids;
+}
+
 std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
@@ -536,12 +571,10 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         info.driverVersion = "ROCm";
 
         // Which sensors this device actually reports (#1112): capabilities() covers ROCm SMI as a
-        // whole, but e.g. an APU or a passively cooled card has no fan, and older parts have no
-        // junction sensor. Only a definitive answer (not supported, not found, not implemented) means
-        // the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the
-        // session, since the answer is kept (#1111). Found once per device: a sleeping GPU isn't woken
-        // to find out (#1117), so until it is seen awake the probe's capabilities apply to it, and
-        // rescanGPUs() asks for a re-enumeration then (#1289).
+        // whole, but e.g. an APU or a passively cooled card has no fan. Only a definitive answer (not supported, not found, not
+        // implemented) means the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the session, since the
+        // answer is kept (#1111). Found once per device: a sleeping GPU isn't woken to find out (#1117), so until it is seen awake the
+        // probe's capabilities apply to it, and rescanGPUs() asks for a re-enumeration then (#1289).
         auto& deviceSensors = m_Impl->sensors[deviceIdx];
         if (!deviceSensors.has_value() && !m_Impl->asleep(deviceIdx))
         {
@@ -553,10 +586,8 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             std::int64_t probeTemp = 0;
             sensors.hasTemperature =
                 supported(m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_EDGE, RSMI_TEMP_CURRENT, &probeTemp));
-            sensors.hasHotspotTemp =
-                supported(m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_JUNCTION, RSMI_TEMP_CURRENT, &probeTemp));
             std::uint64_t probePower = 0;
-            sensors.hasPowerMetrics = supported(m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &probePower));
+            sensors.hasPowerMetrics = supported(m_Impl->readPower(deviceIdx, &probePower));
             ROCmGPUProbeMath::RsmiFrequenciesBuffer probeFreq;
             const rsmi_status_t freqResult = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_SYS, asFrequencies(probeFreq));
             // Only a definitive answer removes the clock. A sample that came back but can't be decoded
@@ -660,21 +691,9 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.temperatureAvailable = false;
         }
 
-        // Hotspot temperature (junction temperature)
-        std::int64_t hotspotMilliC = 0;
-        result = m_Impl->rsmi_dev_temp_metric_get(deviceIdx, RSMI_TEMP_TYPE_JUNCTION, RSMI_TEMP_CURRENT, &hotspotMilliC);
-        if (result == RSMI_STATUS_SUCCESS)
-        {
-            counter.hotspotTempC = static_cast<std::int32_t>(hotspotMilliC / 1000);
-        }
-        else
-        {
-            counter.hotspotTempC = -1; // Not available
-        }
-
-        // Power draw (average power in microwatts)
+        // Power draw in microwatts: average power, else current socket power (#2464)
         std::uint64_t powerMicroW = 0;
-        result = m_Impl->rsmi_dev_power_ave_get(deviceIdx, 0, &powerMicroW);
+        result = m_Impl->readPower(deviceIdx, &powerMicroW);
         if (result == RSMI_STATUS_SUCCESS)
         {
             counter.powerDrawWatts = static_cast<double>(powerMicroW) / 1000000.0; // Convert µW to W
@@ -705,20 +724,11 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.gpuClockAvailable = false;
         }
 
-        // Memory clock speed
-        ROCmGPUProbeMath::RsmiFrequenciesBuffer memFreq;
-        result = m_Impl->rsmi_dev_gpu_clk_freq_get(deviceIdx, RSMI_CLK_TYPE_MEM, asFrequencies(memFreq));
-        if (const auto hz = ROCmGPUProbeMath::currentFrequencyHz(memFreq, m_Impl->frequenciesLayout);
-            result == RSMI_STATUS_SUCCESS && hz.has_value())
-        {
-            counter.memoryClockMHz = static_cast<std::uint32_t>(*hz / 1000000); // Convert Hz to MHz
-        }
-
         // Fan speed (sensor 0). rsmi_dev_fan_speed_get() returns a raw value relative to
         // RSMI_MAX_FAN_SPEED, not RPM (rsmi_dev_fan_rpms_get() is the RPM query, a different
         // function) -- see #734. Store both raw numbers unconverted; Domain (GPUModel)
         // normalizes them to a percentage, consistent with how it derives memoryUsedPercent
-        // and powerUtilPercent from other raw counter pairs. The max-speed query is loaded
+        // from a raw counter pair. The max-speed query is loaded
         // optionally (LOAD_ROCM_FUNC_OPTIONAL): older/partial ROCm SMI builds that lack it just
         // don't report fan speed, rather than losing the whole probe.
         if (m_Impl->rsmi_dev_fan_speed_max_get != nullptr)
@@ -740,13 +750,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             }
         }
 
-        // PCIe throughput: Not directly available via ROCm SMI
-        // Would need to read from sysfs (/sys/class/drm/card*/device/pcie_bw)
-        counter.pcieTxBytes = 0;
-        counter.pcieRxBytes = 0;
-
         // Engine utilization: Not available via ROCm SMI
-        counter.computeUtilPercent = 0.0;
         counter.encoderUtilPercent = 0.0;
         counter.decoderUtilPercent = 0.0;
 
@@ -810,13 +814,11 @@ GPUCapabilities ROCmGPUProbe::capabilities() const
 
     // ROCm SMI provides system-level metrics
     caps.hasTemperature = true;
-    caps.hasHotspotTemp = true; // Junction temperature available
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
     // Only advertised when the optional max-speed symbol loaded (see readGPUCounters()) --
     // without it we can't normalize the raw ROCm reading to a percentage, so nothing is reported.
     caps.hasFanSpeed = m_Impl->rsmi_dev_fan_speed_max_get != nullptr;
-    caps.hasPCIeMetrics = false;       // Not directly available via ROCm SMI
     caps.hasEngineUtilization = false; // Not available
     caps.hasPerProcessMetrics = false; // Major limitation: no per-process data
     caps.hasPerProcessUtilization = false;

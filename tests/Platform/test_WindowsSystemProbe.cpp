@@ -4,15 +4,36 @@
 /// The pure helpers (WindowsSystemProbeMath.h) are tested on every platform in
 /// WindowsMath/test_WindowsSystemProbeMath.cpp.
 
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
+#include "Platform/Windows/CpuBaseClock.h"
+#include "Platform/Windows/ProcessorPerformanceCounter.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
 
 namespace Platform
 {
@@ -28,12 +49,12 @@ namespace
 
 TEST(WindowsSystemProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsSystemProbe probe; });
+    EXPECT_NO_THROW({ const WindowsSystemProbe probe; });
 }
 
 TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsSystemProbe probe;
+    const WindowsSystemProbe probe;
     const auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasPerCoreCpu);
@@ -41,11 +62,412 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSwap);
     EXPECT_TRUE(caps.hasUptime);
     EXPECT_FALSE(caps.hasLoadAvg);
+    EXPECT_TRUE(caps.hasVirtualizationInfo);         // #809
+    EXPECT_TRUE(caps.hasVirtualizationSecurityInfo); // VBS and memory integrity rows (#809, #2592)
+}
+
+TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)
+{
+    // GetLogicalProcessorInformationEx works for any user on any supported Windows (#809)
+    WindowsSystemProbe probe;
+    const auto counters = probe.read();
+    const auto& cpu = counters.cpuDetails;
+    ASSERT_TRUE(cpu.sockets.has_value());
+    ASSERT_TRUE(cpu.physicalCores.has_value());
+    ASSERT_TRUE(cpu.logicalProcessors.has_value());
+    const std::size_t sockets = cpu.sockets.value_or(0);
+    const std::size_t cores = cpu.physicalCores.value_or(0);
+    const std::size_t logical = cpu.logicalProcessors.value_or(0);
+    EXPECT_GE(sockets, 1U);
+    EXPECT_GE(cores, sockets);
+    EXPECT_GE(logical, cores);
+    EXPECT_LE(logical, cores * 2); // At most two hardware threads a core
+    // The same processors the per-core counters are sampled from (the active ones)
+    EXPECT_EQ(logical, counters.cpuCoreCount);
+    // A Hyper-V guest may report no cache records, so caches are checked only where present
+    for (const auto& cache : {cpu.l1CacheBytes, cpu.l2CacheBytes, cpu.l3CacheBytes})
+    {
+        if (cache.has_value())
+        {
+            EXPECT_GT(cache.value_or(0), 0U);
+        }
+    }
+    // A hybrid split, where there is one, accounts for every core
+    EXPECT_EQ(cpu.performanceCores.has_value(), cpu.efficiencyCores.has_value());
+    // Per-processor classes exactly where the CPU is hybrid, one per sampled processor
+    EXPECT_EQ(cpu.performanceCores.has_value(), !cpu.efficiencyClassByCoreId.empty());
+    EXPECT_EQ(std::ranges::count_if(cpu.efficiencyClassByCoreId, [](std::uint8_t c) { return c != UNKNOWN_EFFICIENCY_CLASS; }),
+              cpu.efficiencyClassByCoreId.empty() ? 0 : static_cast<std::ptrdiff_t>(logical));
+    if (cpu.performanceCores.has_value())
+    {
+        EXPECT_EQ(cpu.performanceCores.value_or(0) + cpu.efficiencyCores.value_or(0), cores);
+    }
+    // Virtualization facts are read without elevation; at least the processor-feature flags are known
+    EXPECT_TRUE(cpu.virtualizationFirmwareEnabled.has_value());
+    EXPECT_TRUE(cpu.slatSupported.has_value());
+}
+
+TEST(WindowsSystemProbeTest, CpuDetailsBaseSpeedIsTheRatedMaxMhzNotTheRegistryClock)
+{
+    // Base speed is powrprof's rated MaxMhz (#1530), whatever base clock the probe was given; without
+    // MaxMhz it is unknown rather than the registry's ~MHz, which is not the nominal base everywhere.
+    const std::uint64_t ratedMHz = readNominalCpuBaseMHz(&CallNtPowerInformation, 0);
+    WindowsSystemProbe probe(3686, nullptr);
+    const auto baseSpeed = probe.read().cpuDetails.baseSpeedMHz;
+    EXPECT_EQ(baseSpeed.has_value(), ratedMHz > 0);
+    EXPECT_EQ(baseSpeed.value_or(0), ratedMHz);
+}
+
+namespace
+{
+/// A fake pdh.dll for the current-clock tests (#1184): what each call returns, and what was called.
+struct FakePdh
+{
+    double percent = 100.0;
+    PDH_STATUS openStatus = ERROR_SUCCESS;
+    PDH_STATUS addStatus = ERROR_SUCCESS;
+    PDH_STATUS collectStatus = ERROR_SUCCESS;
+    PDH_STATUS formatStatus = ERROR_SUCCESS;
+    DWORD counterStatus = PDH_CSTATUS_VALID_DATA;
+    bool addThrows = false;
+    int closes = 0;
+};
+FakePdh g_FakePdh; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fakes are plain function pointers
+
+// Any non-null handle will do; the fakes never dereference it
+const PDH_HQUERY FAKE_QUERY = &g_FakePdh;
+const PDH_HCOUNTER FAKE_COUNTER = &g_FakePdh.percent;
+
+PDH_STATUS WINAPI fakeOpenQuery(LPCWSTR /*source*/, DWORD_PTR /*userData*/, PDH_HQUERY* query)
+{
+    *query = FAKE_QUERY;
+    return g_FakePdh.openStatus;
+}
+
+PDH_STATUS WINAPI fakeAddEnglishCounter(PDH_HQUERY /*query*/, LPCWSTR /*path*/, DWORD_PTR /*userData*/, PDH_HCOUNTER* counter)
+{
+    *counter = FAKE_COUNTER;
+    if (g_FakePdh.addThrows)
+    {
+        throw std::runtime_error("fake PdhAddEnglishCounter threw");
+    }
+    return g_FakePdh.addStatus;
+}
+
+PDH_STATUS WINAPI fakeCollectQueryData(PDH_HQUERY /*query*/)
+{
+    return g_FakePdh.collectStatus;
+}
+
+PDH_STATUS WINAPI fakeGetFormattedCounterValue(PDH_HCOUNTER /*counter*/, DWORD format, LPDWORD /*type*/, PPDH_FMT_COUNTERVALUE value)
+{
+    value->CStatus = g_FakePdh.counterStatus;
+    // As real PDH does, a percentage is capped at 100 unless PDH_FMT_NOCAP100 asks otherwise
+    const double reading = ((format & PDH_FMT_NOCAP100) != 0) ? g_FakePdh.percent : std::min(g_FakePdh.percent, 100.0);
+    value->doubleValue = reading; // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE's member
+    return g_FakePdh.formatStatus;
+}
+
+PDH_STATUS WINAPI fakeCloseQuery(PDH_HQUERY /*query*/)
+{
+    ++g_FakePdh.closes;
+    return ERROR_SUCCESS;
+}
+
+constexpr PdhFunctions FAKE_PDH_FUNCTIONS{
+    .openQuery = &fakeOpenQuery,
+    .addEnglishCounter = &fakeAddEnglishCounter,
+    .collectQueryData = &fakeCollectQueryData,
+    .getFormattedCounterValue = &fakeGetFormattedCounterValue,
+    .closeQuery = &fakeCloseQuery,
+};
+
+constexpr std::uint64_t FAKE_BASE_MHZ = 3000;
+
+/// Resets the fake pdh.dll before each test, so one test's failure mode doesn't leak into the next.
+class WindowsSystemProbeCpuClockTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        g_FakePdh = FakePdh{};
+    }
+};
+} // namespace
+
+TEST_F(WindowsSystemProbeCpuClockTest, ClockFollowsProcessorPerformance)
+{
+    // The registry's ~MHz alone (the old figure) read 3000 for both of these.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 75.0; // Power saving
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2250U);
+    g_FakePdh.percent = 130.0; // Turbo
+    EXPECT_EQ(probe.read().cpuFreqMHz, 3900U);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, TurboReadsAboveTheBaseClock)
+{
+    // PDH caps a percentage at 100 unless asked not to; a capped turbo reading would read the base clock.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 150.0;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 4500U);
+}
+
+namespace
+{
+/// A system DLL this process has not loaded, loaded now so its release can be observed (it is unloaded
+/// again exactly when its only reference is freed); empty if every candidate is already loaded. The
+/// fakes never call into it: it only stands in for pdh.dll's module, which the test process may hold.
+[[nodiscard]] std::pair<const wchar_t*, Windows::UniqueModule> loadUnusedSystemDll()
+{
+    for (const wchar_t* name : {L"wtsapi32.dll", L"msimg32.dll", L"dciman32.dll", L"mprapi.dll", L"pdh.dll"})
+    {
+        if (GetModuleHandleW(name) == nullptr)
+        {
+            Windows::UniqueModule module(LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+            if (module != nullptr)
+            {
+                return {name, std::move(module)};
+            }
+        }
+    }
+    return {nullptr, Windows::UniqueModule{}};
+}
+} // namespace
+
+TEST_F(WindowsSystemProbeCpuClockTest, ThrowWhileOpeningClosesTheQueryAndFreesTheModule)
+{
+    // Every resource open() acquired is released when a call after it throws: the opened query and the
+    // module the functions came from.
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.addThrows = true;
+    EXPECT_THROW((void) ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), std::runtime_error);
+    EXPECT_EQ(g_FakePdh.closes, 1) << "the opened query is closed";
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, FailedOpenFreesTheModule)
+{
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.openStatus = static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    EXPECT_EQ(ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), nullptr);
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, NoCounterGivesTheBaseClock)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, nullptr);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, CounterThatCannotBeOpenedGivesTheBaseClock)
+{
+    g_FakePdh.openStatus = static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    EXPECT_EQ(ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS), nullptr);
+
+    g_FakePdh = FakePdh{};
+    g_FakePdh.addStatus = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_COUNTER);
+    auto counter = ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS);
+    EXPECT_EQ(counter, nullptr);
+    EXPECT_EQ(g_FakePdh.closes, 1) << "the opened query is closed when its counter can't be added";
+
+    PdhFunctions missingExport = FAKE_PDH_FUNCTIONS;
+    missingExport.getFormattedCounterValue = nullptr;
+    EXPECT_EQ(ProcessorPerformanceCounter::open(missingExport), nullptr);
+
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, std::move(counter));
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, FailedReadingGivesTheBaseClock)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 75.0;
+
+    g_FakePdh.collectStatus = static_cast<PDH_STATUS>(PDH_NO_DATA);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.collectStatus = ERROR_SUCCESS;
+    g_FakePdh.formatStatus = static_cast<PDH_STATUS>(PDH_INVALID_DATA);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.formatStatus = ERROR_SUCCESS;
+    g_FakePdh.counterStatus = PDH_CSTATUS_INVALID_DATA;
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.counterStatus = PDH_CSTATUS_VALID_DATA;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2250U) << "a good reading after failures is used again";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, QueryIsClosedWithTheProbe)
+{
+    {
+        const WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    }
+    EXPECT_EQ(g_FakePdh.closes, 1);
+}
+
+TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
+{
+    // The real pdh.dll on this machine (#1184): the rated base (#1530) scaled by "% Processor Performance"
+    // stays within the range turbo and power saving can take it, and never reads 0 once a base is known.
+    // ~MHz gates the test only as proof that the machine reports a clock at all.
+    // The fakes above prove the reading is used; this checks the real counter path end to end.
+    DWORD baseMHz = 0;
+    DWORD dataSize = sizeof(baseMHz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &baseMHz,
+                     &dataSize) != ERROR_SUCCESS ||
+        baseMHz == 0)
+    {
+        GTEST_SKIP() << "no ~MHz base clock in the registry";
+    }
+
+    WindowsSystemProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasCpuFreq);
+    (void) probe.read();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const auto counters = probe.read();
+    EXPECT_GT(counters.cpuFreqMHz, 0U);
+    EXPECT_LE(counters.cpuFreqMHz, std::uint64_t{baseMHz} * 10U);
+}
+
+namespace
+{
+/// A fake CallNtPowerInformation for the rated-base tests (#1530): what it returns, and what it was asked.
+struct FakePower
+{
+    LONG status = 0;
+    // MaxMhz per processor, repeated to fill the caller's buffer: a P/E/LP-E hybrid's mix by default
+    std::array<ULONG, 3> maxMhzPattern{1500, 700, 2000};
+    POWER_INFORMATION_LEVEL level = SystemPowerPolicyAc;
+    PVOID inputBuffer = &level; // Overwritten with what the caller passed
+    ULONG outputLength = 0;
+    int calls = 0;
+};
+FakePower g_FakePower; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fake is a plain function pointer
+
+LONG WINAPI fakeCallNtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG /*inputLength*/, PVOID output, ULONG outputLength)
+{
+    ++g_FakePower.calls;
+    g_FakePower.level = level;
+    g_FakePower.inputBuffer = input;
+    g_FakePower.outputLength = outputLength;
+    if (g_FakePower.status != 0)
+    {
+        return g_FakePower.status;
+    }
+    auto* entries = static_cast<ProcessorPowerInformation*>(output);
+    const std::size_t count = outputLength / sizeof(ProcessorPowerInformation);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ULONG mhz = g_FakePower.maxMhzPattern[i % g_FakePower.maxMhzPattern.size()];
+        ProcessorPowerInformation& entry = entries[i];
+        entry.number = static_cast<ULONG>(i);
+        entry.maxMhz = mhz;
+        entry.currentMhz = mhz;
+        entry.mhzLimit = mhz;
+        entry.maxIdleState = 0;
+        entry.currentIdleState = 0;
+    }
+    return 0;
+}
+
+constexpr std::uint64_t FAKE_REGISTRY_MHZ = 3686; // A Core Ultra 7 255H's ~MHz, well above its 2000 MHz rated base
+
+/// Resets the fake CallNtPowerInformation before each test.
+class WindowsSystemProbeBaseClockTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        g_FakePower = FakePower{};
+    }
+};
+} // namespace
+
+TEST_F(WindowsSystemProbeBaseClockTest, HybridProcessorsGiveTheHighestRatedBase)
+{
+    if (GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS) < g_FakePower.maxMhzPattern.size())
+    {
+        GTEST_SKIP() << "too few processors for the whole hybrid pattern to be read";
+    }
+    WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(probe.baseCpuMHz(), 2000U);
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2000U) << "with no counter the probe reports the rated base, not ~MHz";
+
+    // Asked for the processor table, with no input and room for whole entries
+    EXPECT_EQ(g_FakePower.level, ProcessorInformation);
+    EXPECT_EQ(g_FakePower.inputBuffer, nullptr);
+    EXPECT_GE(g_FakePower.outputLength, sizeof(ProcessorPowerInformation));
+    EXPECT_EQ(g_FakePower.outputLength % sizeof(ProcessorPowerInformation), 0U);
+}
+
+TEST_F(WindowsSystemProbeBaseClockTest, FailedCallGivesTheRegistryClock)
+{
+    g_FakePower.status = static_cast<LONG>(0xC0000022L); // STATUS_ACCESS_DENIED
+    const WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(g_FakePower.calls, 1);
+    EXPECT_EQ(probe.baseCpuMHz(), FAKE_REGISTRY_MHZ);
+}
+
+TEST_F(WindowsSystemProbeBaseClockTest, ZeroRatedBaseGivesTheRegistryClock)
+{
+    g_FakePower.maxMhzPattern = {0, 0, 0};
+    const WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(g_FakePower.calls, 1);
+    EXPECT_EQ(probe.baseCpuMHz(), FAKE_REGISTRY_MHZ);
+}
+
+TEST(WindowsSystemProbeTest, BaseClockIsThisMachinesHighestRatedMaxMhz)
+{
+    // The real powrprof on this machine (#1530): the default probe's base is the highest MaxMhz a direct
+    // CallNtPowerInformation reports, not the registry's ~MHz where the two differ (as on hybrid parts).
+    std::vector<ProcessorPowerInformation> info(std::max<DWORD>(GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS), 1));
+    if (CallNtPowerInformation(
+            ProcessorInformation, nullptr, 0, info.data(), static_cast<ULONG>(info.size() * sizeof(ProcessorPowerInformation))) != 0)
+    {
+        GTEST_SKIP() << "CallNtPowerInformation(ProcessorInformation) failed here";
+    }
+    const ULONG highest = std::ranges::max(info, {}, &ProcessorPowerInformation::maxMhz).maxMhz;
+    if (highest == 0)
+    {
+        GTEST_SKIP() << "no rated MaxMhz on this machine";
+    }
+
+    const WindowsSystemProbe probe;
+    EXPECT_EQ(probe.baseCpuMHz(), std::uint64_t{highest});
+
+    DWORD registryMHz = 0;
+    DWORD dataSize = sizeof(registryMHz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &registryMHz,
+                     &dataSize) == ERROR_SUCCESS &&
+        registryMHz != highest)
+    {
+        EXPECT_NE(probe.baseCpuMHz(), std::uint64_t{registryMHz}) << "~MHz is only the fallback";
+    }
 }
 
 TEST(WindowsSystemProbeTest, TicksPerSecondMatchesFileTime)
 {
-    WindowsSystemProbe probe;
+    const WindowsSystemProbe probe;
     EXPECT_EQ(probe.ticksPerSecond(), 10'000'000L);
 }
 
@@ -111,6 +533,22 @@ TEST(WindowsSystemProbeTest, CachedIsReportedAndWithinRam)
 
     EXPECT_GT(counters.memory.cachedBytes, 0ULL);
     EXPECT_LE(counters.memory.cachedBytes, counters.memory.totalBytes);
+}
+
+TEST(WindowsSystemProbeTest, CommitChargeIsReportedWithinItsLimitAndPeak)
+{
+    // Commit charge for the Memory chart's value strip, from the GetPerformanceInfo call the cache
+    // figure already makes (#1627). A running system has something committed; the limit covers RAM
+    // (less what the kernel keeps) plus page files, and the peak is never below what is committed now.
+    WindowsSystemProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasCommitCharge);
+    const auto counters = probe.read();
+
+    ASSERT_TRUE(counters.memory.hasCommitCharge);
+    EXPECT_GT(counters.memory.commitChargeBytes, 0ULL);
+    EXPECT_LE(counters.memory.commitChargeBytes, counters.memory.commitLimitBytes);
+    EXPECT_GE(counters.memory.commitLimitBytes, counters.memory.totalBytes / 2);
+    EXPECT_GE(counters.memory.commitPeakBytes, counters.memory.commitChargeBytes);
 }
 
 TEST(WindowsSystemProbeTest, PerCoreActiveTimeDoesNotExceedKernelPlusUser)

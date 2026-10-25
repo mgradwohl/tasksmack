@@ -7,6 +7,7 @@
 #include <toml++/toml.hpp>
 
 #include <filesystem>
+#include <optional>
 
 namespace App
 {
@@ -133,6 +134,80 @@ TEST(UserConfigHelpersTest, IsValidConfigDirRejectsEmptyPath)
     // Empty path is not absolute.
     EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("")));
 }
+
+#ifndef _WIN32
+// ========== configDirectoryFrom (#1891): the XDG config directory ==========
+// POSIX paths only: the function decides the Linux directory (Windows uses %APPDATA%).
+
+using App::UserConfigHelpers::configDirectoryFrom;
+
+/// A passwd lookup that must not happen: $HOME was set.
+[[nodiscard]] std::optional<std::filesystem::path> noPasswdLookup()
+{
+    ADD_FAILURE() << "the passwd entry was read although $HOME is set";
+    return std::nullopt;
+}
+
+TEST(UserConfigHelpersTest, ConfigDirectoryIsXdgConfigHomesWhenItIsSafe)
+{
+    const auto choice = configDirectoryFrom("/home/u/.xdg", "/home/u", noPasswdLookup, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/home/u/.xdg/tasksmack"));
+    EXPECT_TRUE(choice.warning.empty());
+    // Normalized: a "." or a "dir/.." that stays inside is fine.
+    EXPECT_EQ(configDirectoryFrom("/home/u/./x/../.xdg", "/home/u", noPasswdLookup, "/cwd").directory,
+              std::filesystem::path("/home/u/.xdg/tasksmack"));
+}
+
+TEST(UserConfigHelpersTest, AnUnsafeXdgConfigHomeFallsBackToHomesConfigWithAWarning)
+{
+    // Relative: it would follow the current directory.
+    auto choice = configDirectoryFrom("relative/xdg", "/home/u", noPasswdLookup, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/home/u/.config/tasksmack"));
+    EXPECT_TRUE(choice.warning.contains("Ignoring unsafe config directory")) << choice.warning;
+    // Climbing out of the root with "..": still a "..", so not safe either.
+    choice = configDirectoryFrom("../../etc", "/home/u", noPasswdLookup, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/home/u/.config/tasksmack"));
+    EXPECT_FALSE(choice.warning.empty());
+}
+
+TEST(UserConfigHelpersTest, WithoutXdgConfigHomeTheHomeConfigIsUsed)
+{
+    const auto choice = configDirectoryFrom(std::nullopt, "/home/u", noPasswdLookup, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/home/u/.config/tasksmack"));
+    EXPECT_TRUE(choice.warning.empty());
+}
+
+TEST(UserConfigHelpersTest, WithoutHomeThePasswdEntryThenTheCurrentDirectoryIsUsed)
+{
+    int lookups = 0;
+    const auto passwd = [&lookups]() -> std::optional<std::filesystem::path>
+    {
+        ++lookups;
+        return std::filesystem::path("/var/lib/u");
+    };
+    EXPECT_EQ(configDirectoryFrom(std::nullopt, std::nullopt, passwd, "/cwd").directory,
+              std::filesystem::path("/var/lib/u/.config/tasksmack"));
+    EXPECT_EQ(lookups, 1);
+    // No passwd entry either: the current directory, as the last resort (absolute, so no warning).
+    const auto none = []
+    {
+        return std::optional<std::filesystem::path>{};
+    };
+    const auto choice = configDirectoryFrom(std::nullopt, std::nullopt, none, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/cwd"));
+    EXPECT_TRUE(choice.warning.empty());
+    // And a safe XDG directory still wins over all of them.
+    EXPECT_EQ(configDirectoryFrom("/x", std::nullopt, none, "/cwd").directory, std::filesystem::path("/x/tasksmack"));
+}
+
+TEST(UserConfigHelpersTest, ARelativeHomeFallsBackToTheCurrentDirectoryWithAWarning)
+{
+    // $HOME relative (misconfigured): its .config isn't safe to write, nor is an XDG directory judged against it.
+    const auto choice = configDirectoryFrom("/home/u/.xdg", "relative-home", noPasswdLookup, "/cwd");
+    EXPECT_EQ(choice.directory, std::filesystem::path("/cwd"));
+    EXPECT_TRUE(choice.warning.contains("not absolute")) << choice.warning;
+}
+#endif
 
 } // namespace
 } // namespace App

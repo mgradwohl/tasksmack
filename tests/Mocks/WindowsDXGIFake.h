@@ -15,6 +15,7 @@
 #include "Platform/Windows/ComPtr.h"
 #include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -37,6 +38,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi.h>
+#include <dxcore_interface.h>
 #pragma clang diagnostic pop
 // clang-format on
 
@@ -45,22 +47,58 @@ namespace Platform
 namespace DXGIFake
 {
 
-/// One fake adapter: its descriptor, and the PCI location the fake D3DKMT reports for its LUID.
+/// What the fake D3DKMT answers an adapter's perf-data queries with (#2586): the adapter perf data
+/// itself, the caps (the fan maximum) unless capsOk is false, and node 0's perf data (the engine
+/// clock) unless nodeOk is false. An adapter without one fails the perf-data query, as a driver
+/// older than WDDM 2.4 does.
+struct FakeAdapterPerf
+{
+    std::uint32_t temperatureDeciCelsius = 0;
+    std::uint32_t fanRpm = 0;
+    std::uint32_t powerTenthsPercent = 0;
+    std::uint64_t memoryFrequencyHz = 0;
+    std::uint64_t maxMemoryFrequencyHz = 0;
+    std::uint32_t maxFanRpm = 0;
+    bool capsOk = true;
+    std::uint64_t engineFrequencyHz = 0;
+    std::uint64_t maxEngineFrequencyHz = 0;
+    bool nodeOk = true;
+};
+
+/// One fake adapter: its descriptor, the PCI location the fake D3DKMT reports for its LUID, and the
+/// perf data it answers with (none: the query fails).
 struct FakeAdapter
 {
     DXGI_ADAPTER_DESC1 desc{};
+    std::optional<PciLocation> pciLocation;
+    std::optional<FakeAdapterPerf> perf;
+};
+
+/// One fake DXCore adapter of the NPU or compute-accelerator lists (#1799), and the PCI location the
+/// fake D3DKMT reports for its LUID.
+struct FakeAccelerator
+{
+    DXCoreAdapterRecord record;
     std::optional<PciLocation> pciLocation;
 };
 
 struct FakeDXGIState
 {
     std::vector<FakeAdapter> adapters;
+    // What the fake DXCore lists: installed only by DXGIGPUProbeTestAccessor::useFakeAccelerators().
+    std::vector<FakeAccelerator> accelerators;
+    int acceleratorListings = 0;
     // Bumped whenever the adapter set changes: a factory made before is no longer current.
     int generation = 0;
     int factoriesCreated = 0;
     bool failFactoryCreation = false;
+    // EnumAdapters1 succeeds at this index but hands back no adapter (a misbehaving driver stack).
+    std::optional<UINT> nullAdapterAt;
     // Kernel adapters opened, so a test can see a per-LUID decision being made again.
     int adapterOpens = 0;
+    // Perf-data queries (KMTQAITYPE_ADAPTERPERFDATA) answered or refused, so a test can see that a
+    // sleeping adapter wasn't asked (#2586).
+    int perfQueries = 0;
     // Open kernel adapter handles: handle - 1 indexes this, giving the LUID it was opened for.
     std::vector<LUID> openedLuids;
 };
@@ -248,6 +286,11 @@ class FakeDXGIFactory final : public IDXGIFactory1
             *adapter = nullptr;
             return DXGI_ERROR_NOT_FOUND;
         }
+        if (dxgiState().nullAdapterAt == index)
+        {
+            *adapter = nullptr;
+            return S_OK;
+        }
         *adapter = new FakeDXGIAdapter(m_Adapters[index]);
         return S_OK;
     }
@@ -280,9 +323,63 @@ inline ComPtr<IDXGIFactory1> createFakeFactory()
     return factory;
 }
 
-inline const FakeAdapter* adapterWithLuid(const LUID& luid)
+/// A fake compute accelerator (#1799): what DXCore reports for it, at @p pciLocation.
+inline FakeAccelerator makeAccelerator(const char* name,
+                                       std::uint32_t vendorId,
+                                       std::uint32_t deviceId,
+                                       std::uint32_t luidLowPart,
+                                       std::optional<PciLocation> pciLocation,
+                                       bool npu = true)
+{
+    FakeAccelerator accelerator;
+    accelerator.record.luidLowPart = luidLowPart;
+    accelerator.record.npu = npu;
+    accelerator.record.computeAccelerator = !npu;
+    accelerator.record.description = name;
+    accelerator.record.vendorId = vendorId;
+    accelerator.record.deviceId = deviceId;
+    accelerator.record.sharedSystemMemory = 16ULL << 30U;
+    accelerator.pciLocation = pciLocation;
+    return accelerator;
+}
+
+/// What the fake DXCore lists: every fake accelerator's record.
+inline std::vector<DXCoreAdapterRecord> listFakeAccelerators()
+{
+    ++dxgiState().acceleratorListings;
+    std::vector<DXCoreAdapterRecord> records;
+    for (const auto& accelerator : dxgiState().accelerators)
+    {
+        records.push_back(accelerator.record);
+    }
+    return records;
+}
+
+/// The PCI location the fake D3DKMT knows for an adapter or accelerator with this LUID, or null
+/// when it knows no adapter with it (the location itself may be unset).
+inline const std::optional<PciLocation>* locationWithLuid(const LUID& luid)
 {
     for (const auto& adapter : dxgiState().adapters)
+    {
+        if (adapter.desc.AdapterLuid.LowPart == luid.LowPart && adapter.desc.AdapterLuid.HighPart == luid.HighPart)
+        {
+            return &adapter.pciLocation;
+        }
+    }
+    for (const auto& accelerator : dxgiState().accelerators)
+    {
+        if (accelerator.record.luidLowPart == luid.LowPart && accelerator.record.luidHighPart == static_cast<std::uint32_t>(luid.HighPart))
+        {
+            return &accelerator.pciLocation;
+        }
+    }
+    return nullptr;
+}
+
+/// The fake DXGI adapter with this LUID, or null for an accelerator or an unknown LUID.
+inline FakeAdapter* adapterWithLuid(const LUID& luid)
+{
+    for (auto& adapter : dxgiState().adapters)
     {
         if (adapter.desc.AdapterLuid.LowPart == luid.LowPart && adapter.desc.AdapterLuid.HighPart == luid.HighPart)
         {
@@ -296,7 +393,7 @@ constexpr NTSTATUS FAKE_STATUS_INVALID_PARAMETER = static_cast<NTSTATUS>(0xC0000
 
 inline NTSTATUS APIENTRY fakeOpenAdapterFromLuid(const D3DKMT_OPENADAPTERFROMLUID* open)
 {
-    if (adapterWithLuid(open->AdapterLuid) == nullptr)
+    if (locationWithLuid(open->AdapterLuid) == nullptr)
     {
         return FAKE_STATUS_INVALID_PARAMETER;
     }
@@ -315,21 +412,21 @@ inline NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* que
     {
         return FAKE_STATUS_INVALID_PARAMETER;
     }
-    const FakeAdapter* adapter = adapterWithLuid(opened[query->hAdapter - 1]);
-    if (adapter == nullptr)
+    const std::optional<PciLocation>* location = locationWithLuid(opened[query->hAdapter - 1]);
+    if (location == nullptr)
     {
         return FAKE_STATUS_INVALID_PARAMETER;
     }
     if (query->Type == KMTQAITYPE_ADAPTERADDRESS && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERADDRESS))
     {
-        if (!adapter->pciLocation.has_value())
+        if (!location->has_value())
         {
             return FAKE_STATUS_INVALID_PARAMETER;
         }
         auto* address = static_cast<D3DKMT_ADAPTERADDRESS*>(query->pPrivateDriverData);
-        address->BusNumber = adapter->pciLocation->bus;
-        address->DeviceNumber = adapter->pciLocation->device;
-        address->FunctionNumber = adapter->pciLocation->function.value_or(0);
+        address->BusNumber = (*location)->bus;
+        address->DeviceNumber = (*location)->device;
+        address->FunctionNumber = (*location)->function.value_or(0);
         return 0;
     }
     if (query->Type == KMTQAITYPE_ADAPTERTYPE && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERTYPE))
@@ -339,12 +436,65 @@ inline NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* que
         static_cast<D3DKMT_ADAPTERTYPE*>(query->pPrivateDriverData)->Value = 0;
         return 0;
     }
+    // The perf-data queries (#2586): answered from the adapter's FakeAdapterPerf, refused without one
+    // (an accelerator, or a driver that reports none), each for its own struct's size only.
+    const FakeAdapter* adapter = adapterWithLuid(opened[query->hAdapter - 1]);
+    const std::optional<FakeAdapterPerf>& perf = adapter != nullptr ? adapter->perf : std::optional<FakeAdapterPerf>{};
+    if (query->Type == KMTQAITYPE_ADAPTERPERFDATA)
+    {
+        ++dxgiState().perfQueries;
+        if (!perf.has_value() || query->PrivateDriverDataSize != sizeof(D3DKMT_ADAPTER_PERFDATA))
+        {
+            return FAKE_STATUS_INVALID_PARAMETER;
+        }
+        auto* data = static_cast<D3DKMT_ADAPTER_PERFDATA*>(query->pPrivateDriverData);
+        data->Temperature = perf->temperatureDeciCelsius;
+        data->FanRPM = perf->fanRpm;
+        data->Power = perf->powerTenthsPercent;
+        data->MemoryFrequency = perf->memoryFrequencyHz;
+        data->MaxMemoryFrequency = perf->maxMemoryFrequencyHz;
+        return 0;
+    }
+    if (query->Type == KMTQAITYPE_ADAPTERPERFDATA_CAPS)
+    {
+        if (!perf.has_value() || !perf->capsOk || query->PrivateDriverDataSize != sizeof(D3DKMT_ADAPTER_PERFDATACAPS))
+        {
+            return FAKE_STATUS_INVALID_PARAMETER;
+        }
+        static_cast<D3DKMT_ADAPTER_PERFDATACAPS*>(query->pPrivateDriverData)->MaxFanRPM = perf->maxFanRpm;
+        return 0;
+    }
+    if (query->Type == KMTQAITYPE_NODEPERFDATA)
+    {
+        if (!perf.has_value() || !perf->nodeOk || query->PrivateDriverDataSize != sizeof(D3DKMT_NODE_PERFDATA))
+        {
+            return FAKE_STATUS_INVALID_PARAMETER;
+        }
+        auto* node = static_cast<D3DKMT_NODE_PERFDATA*>(query->pPrivateDriverData);
+        if (node->NodeOrdinal != 0)
+        {
+            return FAKE_STATUS_INVALID_PARAMETER; // The fake has one engine node, the 3D engine
+        }
+        node->Frequency = perf->engineFrequencyHz;
+        node->MaxFrequency = perf->maxEngineFrequencyHz;
+        return 0;
+    }
     return FAKE_STATUS_INVALID_PARAMETER;
 }
 
 inline NTSTATUS APIENTRY fakeCloseAdapter(const D3DKMT_CLOSEADAPTER* /*close*/)
 {
     return 0;
+}
+
+/// The fake D3DKMT calls as a D3DKMTAdapterFunctions, for a probe's seam.
+inline D3DKMTAdapterFunctions fakeD3DKMTFunctions()
+{
+    return D3DKMTAdapterFunctions{
+        .openAdapterFromLuid = fakeOpenAdapterFromLuid,
+        .queryAdapterInfo = fakeQueryAdapterInfo,
+        .closeAdapter = fakeCloseAdapter,
+    };
 }
 
 } // namespace DXGIFake
@@ -370,6 +520,36 @@ struct DXGIGPUProbeTestAccessor
         probe.m_IntegratedByLuid.clear();
         probe.m_IdByLuid.clear();
         probe.m_Initialized = probe.initialize();
+    }
+
+    /// Lists the fake accelerators (DXGIFake::FakeDXGIState::accelerators) as DXCore's NPUs and
+    /// compute accelerators, in place of this machine's (#1799). Call after useFakes().
+    static void useFakeAccelerators(DXGIGPUProbe& probe)
+    {
+        probe.m_ListAccelerators = DXGIFake::listFakeAccelerators;
+        probe.m_AcceleratorLuids.reset();
+    }
+
+    /// Makes the DXCore factory again, as a full rescan does: false once useFakes() unloaded dxcore.dll.
+    static bool createDXCoreFactory(DXGIGPUProbe& probe)
+    {
+        return probe.createDXCoreFactory();
+    }
+
+    /// Puts @p factory where dxcore.dll's adapter factory goes (a fake from tests/Mocks/WindowsDXCoreFake.h,
+    /// #2039): DXCore then classifies the adapters it knows and lists the accelerators. Call after
+    /// useFakes(); a rescan keeps it, since useFakes() left no dxcore.dll to make another from.
+    static void useDXCoreFactory(DXGIGPUProbe& probe, ComPtr<IDXCoreAdapterFactory> factory)
+    {
+        probe.m_DXCoreFactory = std::move(factory);
+        probe.m_IntegratedByLuid.clear();
+    }
+
+    /// Puts @p module where dxcore.dll goes; the probe frees it with dxcore.dll's handle, so pass one
+    /// loaded for it. A module without DXCoreCreateAdapterFactory makes every factory creation fail.
+    static void useDXCoreModule(DXGIGPUProbe& probe, void* module)
+    {
+        probe.m_DXCoreModule = module;
     }
 };
 

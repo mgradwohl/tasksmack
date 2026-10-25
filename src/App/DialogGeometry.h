@@ -19,23 +19,60 @@ namespace App
 /// tests assert each one still reproduces the pixel size named in its comment.
 inline constexpr float REFERENCE_EM_PX = 32.0F / 3.0F;
 
-// ---- About box (#935) ----
+// ---- About box (#935, redesigned #1490) ----
 
-/// Margin around the dialog's contents. Replaces a 24pt value converted through a hardcoded
-/// 96.0F / 72.0F and scaled by io.FontGlobalScale.
-inline constexpr float ABOUT_MARGIN_EM = 3.0F; // 32px at REFERENCE_EM_PX
+/// Margin around the dialog's contents. Was 3 em (a 24pt value once converted through a hardcoded
+/// 96.0F / 72.0F); halved in the compact redesign so the margin no longer dwarfs the content (#1490).
+inline constexpr float ABOUT_MARGIN_EM = 1.5F; // 16px at REFERENCE_EM_PX
 
-/// Longest edge of the application icon.
-inline constexpr float ABOUT_ICON_EM = 9.0F; // 96px
+/// Longest edge of the application icon. Was 9 em (96px), taller than the name, version and tagline
+/// beside it; now about their height (#1490).
+inline constexpr float ABOUT_ICON_EM = 6.0F; // 64px
+
+/// Gap between the icon and the text beside it.
+inline constexpr float ABOUT_HEADER_GAP_EM = 1.5F; // 16px
+
+/// Narrowest the text beside the icon may be (or the title's width, if wider) before the header
+/// stacks the icon above the text instead (#1490 review).
+inline constexpr float ABOUT_HEADER_MIN_TEXT_EM = 12.0F; // 128px
+
+/// Authored width of the dialog, applied every frame so its wrapped text has a fixed width to wrap
+/// to. It used to auto-fit, and the shortcut table's wrapped text (since moved to Help, #172) fed
+/// back into the fit, widening the dialog a little every frame until it filled most of the window
+/// (#1490).
+inline constexpr float ABOUT_WIDTH_EM = 36.0F; // 384px
+
+/// Tallest the dialog may be, as a share of the window's height. Its contents scroll inside it past
+/// that, rather than the dialog growing to the shared 90 % cap and covering the app (#1490).
+inline constexpr float ABOUT_MAX_HEIGHT_FRACTION = 0.7F;
 
 /// Floor on the OK button's width.
 inline constexpr float ABOUT_BUTTON_MIN_EM = 11.25F; // 120px
 
+// ---- Help window (#172) ----
+
+/// Width the Help window first opens at; the user may resize it, and it keeps that for the session.
+inline constexpr float HELP_WIDTH_EM = 60.0F; // 640px
+
+/// Height it first opens at, as a share of the window's height.
+inline constexpr float HELP_HEIGHT_FRACTION = 0.75F;
+
+/// Smallest the user may make it.
+inline constexpr float HELP_MIN_WIDTH_EM = 24.0F;  // 256px
+inline constexpr float HELP_MIN_HEIGHT_EM = 16.0F; // 171px
+
 // ---- Elevation notice (#937) ----
 
-/// Authored width of the notice. Unlike the About box, which auto-fits, this width is applied every
-/// frame the popup is open -- see ElevationNoticeLayer for why that distinction matters.
+/// Widest the notice may be. It fits itself to its text between ELEVATION_MIN_WIDTH_EM and this
+/// (#1601): the long Linux text wraps at this width, the short Windows text shrinks. Where the text
+/// wraps, the width moves by up to a word either side of this so no paragraph ends in a lone word
+/// (#1986; UI::DialogMetrics::computeOrphanFreeWrapWidth()). Like the About
+/// box (#1490), the width is applied every frame the popup is open -- see ElevationNoticeLayer for
+/// why that distinction matters.
 inline constexpr float ELEVATION_WIDTH_EM = 45.0F; // 480px
+/// Narrowest the notice may fit itself to when its text is short (#1601): still room for the title
+/// and the OK button.
+inline constexpr float ELEVATION_MIN_WIDTH_EM = 22.5F; // 240px
 
 /// Floor on the OK button's width.
 inline constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // 100px

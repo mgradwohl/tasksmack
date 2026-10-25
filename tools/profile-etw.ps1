@@ -26,9 +26,15 @@
             either wait for it to be closed manually (default) or record for a fixed window
             and close it automatically (-DurationSeconds). The capture fails, without printing
             TRACE=, if the app exits during warm-up, exits before a -DurationSeconds window ends,
-            or is closed with a nonzero exit code (#1186).
+            or is closed with a nonzero exit code (#1186). The app runs with its own fresh, temporary
+            TASKSMACK_CONFIG_DIR (see -UseUserConfig).
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
     resize - separated normal-user app / elevated collector diagnostic capture (#882).
+.PARAMETER Timestamp
+    app/bench modes: the timestamp in the artifact names (etw-<mode>-<Timestamp>.etl and so on).
+    Defaults to the current time, yyyyMMdd-HHmmss; when an earlier capture already used that name
+    (two runs in the same second), -2, -3, ... is appended. An explicit -Timestamp that an earlier
+    capture in the output directory already used fails instead of overwriting its artifacts.
 .PARAMETER Phase
     resize mode only: Prepare snapshots binaries, Collect records ETW in a separate elevated
     terminal, App launches normally with stdout/stderr, Save asks a -Buffering Ring collector to
@@ -53,6 +59,13 @@
     warm-up).
 .PARAMETER MainWindowTimeoutSeconds
     app mode: how long warm-up waits for the main window before warning and continuing. Default 60.
+.PARAMETER UseUserConfig
+    app mode: run the app with the config it would use on its own (your config.toml, or an inherited
+    TASKSMACK_CONFIG_DIR) instead of a fresh temporary config directory (#2250). By default each
+    capture gets its own empty TASKSMACK_CONFIG_DIR, removed afterwards: the app starts from default
+    settings, cannot rewrite yours, and is not stopped by the single-instance lock of a TaskSmack you
+    already have open. With -UseUserConfig the capture refuses to start while a TaskSmack is running,
+    and an app that exits because another instance holds the lock fails the capture.
 .PARAMETER SkipTrace
     app mode: dry run of the launch/warm-up/monitor logic without WPR, the elevated collector or a
     UAC prompt. Nothing is recorded; the manifest is written and the run fails or succeeds as a
@@ -71,7 +84,7 @@
 .PARAMETER BenchmarkFilter
     Google Benchmark filter used when Mode=bench. Defaults to a curated set covering every
     probe/model refresh path (Process/System/GPU/Storage/Disk) plus the PDH per-process GPU
-    path and core History container operations - deliberately excludes MemoryGrowth-style
+    path and core HistoryBuffer ring operations - deliberately excludes MemoryGrowth-style
     benchmarks (measure allocation, not CPU hotspots) and the pure-algorithmic Format/Numeric
     micro-benchmarks (better suited to bench.ps1's regression tracking than ETW correlation).
     Pass '.*' to profile the entire benchmark suite instead.
@@ -148,11 +161,13 @@ param(
 
     [switch]$SkipTrace,
 
+    [switch]$UseUserConfig,
+
     # Internal (tests): run this executable instead of the preset's TaskSmack.exe, with a hidden
     # window.
     [string]$TargetPath,
 
-    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|History_(Push|RandomAccess|SequentialAccess|CopyTo))$',
+    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|HistoryBuffer_(Push|RandomAccess|SequentialAccess|CopyTo))$',
 
     [int]$BenchmarkRepetitions = 5,
 
@@ -192,6 +207,7 @@ if ($Mode -eq 'resize') {
 }
 
 . (Join-Path $scriptDir 'profile-etw-common.ps1')
+Initialize-TokenInfoType # before any trace starts, so the compile is not recorded in it
 # Absolute before anything is created or passed on (see Resolve-CaptureOutputDirectory).
 $perfDir = Resolve-CaptureOutputDirectory -OutputDirectory $OutputDirectory -RepoRoot $repoRoot
 
@@ -200,22 +216,31 @@ if ([string]::IsNullOrWhiteSpace($Preset)) {
     $Preset = if ($Mode -eq 'app') { 'win-release' } else { 'win-benchmark' }
 }
 if ($SkipTrace -and $Mode -ne 'app') { throw '-SkipTrace is supported in app mode only.' }
-if ($Mode -ne 'app' -and ($IncludeStartup -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
-    throw '-WarmupSeconds and -IncludeStartup apply to app mode only.'
+if ($Mode -ne 'app' -and ($IncludeStartup -or $UseUserConfig -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
+    throw '-WarmupSeconds, -IncludeStartup and -UseUserConfig apply to app mode only.'
 }
 
-if (-not $Timestamp) {
+$timestampGiven = -not [string]::IsNullOrEmpty($Timestamp)
+if (-not $timestampGiven) {
     $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 }
 
 # An elevated-target capture is a different scenario, so its artifacts are named apart (#872).
 $prefix = if ($Mode -eq 'app') { 'etw-app' } else { 'etw-bench' }
 if ($ElevatedTarget) { $prefix = "$prefix-elevated" }
-$tracePath = Join-Path $perfDir "$prefix-$Timestamp.etl"
-$childLogPath = Join-Path $perfDir "$prefix-child-$Timestamp.log"
-$launcherLogPath = Join-Path $perfDir "$prefix-launch-$Timestamp.log"
-$benchJsonPath = Join-Path $perfDir "$prefix-$Timestamp.json"
-$manifestPath = Join-Path $perfDir "$prefix-$Timestamp.manifest.json"
+
+function Use-CaptureTimestamp {
+    # Points the artifact paths at the current $Timestamp; called again once the orchestrator has
+    # claimed its names (Request-CaptureTimestamp, #2254).
+    $paths = Get-CaptureArtifactPath -Directory $perfDir -Prefix $prefix -Timestamp $Timestamp
+    $script:tracePath = $paths.Trace
+    $script:childLogPath = $paths.ChildLog
+    $script:launcherLogPath = $paths.LauncherLog
+    $script:benchJsonPath = $paths.BenchJson
+    $script:manifestPath = $paths.Manifest
+    $script:controlDir = $paths.Control
+}
+Use-CaptureTimestamp
 
 $binaryName = if ($Mode -eq 'app') { 'TaskSmack.exe' } else { 'TaskSmackBenchmarks.exe' }
 $buildDir = Join-Path $repoRoot "build/$Preset"
@@ -287,7 +312,7 @@ function Invoke-ProfileTarget {
         $windowStyle = if ($TargetPath) { 'Hidden' } else { 'Normal' }
         return Invoke-AppCapture -BinaryPath $binaryPath -StartTrace $StartTrace -StopTrace $StopTrace `
             -DurationSeconds $DurationSeconds -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup `
-            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle
+            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig
     }
     $result = [ordered]@{
         Binary         = $binaryPath
@@ -504,6 +529,23 @@ if (-not $SkipTrace) { $null = Ensure-Tool 'wpr' }
 Ensure-Binary $wprProfilePath
 Ensure-Binary $binaryPath
 
+# With the user's own config, a TaskSmack already open holds the single-instance lock, so the
+# launched one would only show its "already running" box (#2250). Refuse before any elevation. The
+# default, a fresh config directory per capture, has a lock of its own and needs no such check.
+if ($Mode -eq 'app' -and $UseUserConfig) {
+    $running = @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($binaryPath)) -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        throw "-UseUserConfig: $([IO.Path]::GetFileName($binaryPath)) is already running (PID $(($running | ForEach-Object Id) -join ', ')). It would hold the single-instance lock, so the profiled copy would only show its 'already running' message. Close it first, or drop -UseUserConfig to profile with a fresh config directory."
+    }
+}
+
+# Claim this capture's names before anything is written (#2254): a run with the same -Timestamp, or
+# a second run started in the same second, would otherwise overwrite an earlier run's trace, logs and
+# manifest. A generated timestamp gets -2, -3, ... appended when taken; an explicit -Timestamp fails.
+# The child roles are passed the claimed timestamp and write under it.
+$Timestamp = Request-CaptureTimestamp -Directory $perfDir -Prefix $prefix -Timestamp $Timestamp -Exact:$timestampGiven
+Use-CaptureTimestamp
+
 # ── Dry run (-SkipTrace): the app lifecycle and its failure checks, with nothing recorded ────
 if ($SkipTrace) {
     Write-Warning '-SkipTrace: dry run. No WPR session is started and nothing is recorded.'
@@ -533,6 +575,7 @@ if ($ElevatedTarget) {
     if ($Mode -eq 'app') {
         $argList += @('-WarmupSeconds', "$WarmupSeconds", '-MainWindowTimeoutSeconds', "$MainWindowTimeoutSeconds")
         if ($IncludeStartup) { $argList += '-IncludeStartup' }
+        if ($UseUserConfig) { $argList += '-UseUserConfig' }
     }
     "LAUNCH=$hostExe $($argList -join ' ')" | Set-Content -Path $launcherLogPath -Encoding utf8
     if (Test-IsAdministrator) {
@@ -549,10 +592,11 @@ if ($ElevatedTarget) {
     }
 }
 else {
-    $controlDir = Join-Path $perfDir "$prefix-control-$Timestamp"
-    # Never reuse one: a failed run leaves its directory behind, and its stale
-    # collector-started/stop-requested markers would let the target start before this run's WPR
-    # session does, or stop the collector at once. Same rule as the resize run directory.
+    # Never reuse a control directory ($controlDir, set with the other artifact paths): a failed run
+    # leaves its directory behind, and its stale collector-started/stop-requested markers would let
+    # the target start before this run's WPR session does, or stop the collector at once. Same rule
+    # as the resize run directory. Request-CaptureTimestamp already skipped a name whose directory
+    # exists; this is the last check before it is created.
     if (Test-Path -LiteralPath $controlDir) {
         throw "Capture control directory already exists: $controlDir. It is left by an earlier run with -Timestamp $Timestamp; pass a different -Timestamp, or delete the directory once that run is no longer needed."
     }
@@ -627,6 +671,9 @@ $missingArtifacts = @()
 foreach ($artifact in @($childLogPath, $tracePath, $manifestPath)) {
     if (-not (Test-Path -LiteralPath $artifact)) { $missingArtifacts += $artifact }
 }
+# The manifest exists from the start, empty, as this run's claim on its names (#2254): it counts only
+# once the capture has written it.
+if ((Test-Path -LiteralPath $manifestPath) -and (Get-Item -LiteralPath $manifestPath).Length -eq 0) { $missingArtifacts += $manifestPath }
 if (($Mode -eq 'bench') -and (-not (Test-Path -LiteralPath $benchJsonPath))) {
     $missingArtifacts += $benchJsonPath
 }

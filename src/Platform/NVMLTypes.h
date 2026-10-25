@@ -103,13 +103,25 @@ struct nvmlUtilization_t
     unsigned int memory;
 };
 
+/// One sample nvmlDeviceGetProcessUtilization writes (#2589): a process's share of the GPU's SMs, memory
+/// interface and video engines over the driver's sampling period, in percent, at timeStamp (microseconds).
+struct nvmlProcessUtilizationSample_t
+{
+    unsigned int pid;
+    unsigned long long timeStamp;
+    unsigned int smUtil;
+    unsigned int memUtil;
+    unsigned int encUtil;
+    unsigned int decUtil;
+};
+
 /// Opaque element type of the array nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}
 /// write (#1306). Which struct each entry is depends on the symbol: the legacy unversioned export
 /// writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte nvmlProcessInfo_v2_t ones
 /// (#1092, #1313), parsed by size in NVMLRunningProcesses.h. The library declares the parameter as
 /// a pointer to that struct; any object pointer has the same ABI, so callers that size the entries
 /// at run time pass their byte buffer through this one incomplete type. Every definition of these
-/// entry points that a probe may call (the test mock and Windows fake included) must declare its
+/// entry points that a probe may call (the test mock included) must declare its
 /// third parameter as nvmlProcessInfoEntries*, so the call matches the callee's declared type
 /// (UBSan -fsanitize=function checks it).
 struct nvmlProcessInfoEntries;

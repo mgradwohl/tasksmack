@@ -1,16 +1,15 @@
 #pragma once
 
-// This header exposes process-action dispatch helper functions for testing and
-// internal use. These were extracted from ProcessDetailsPanel::dispatchConfirmedAction()
-// (and the private ProcessAction enum/actionVerb() it depended on) to give the
-// mocked-IProcessActions integration tests requested in #415 a testable, pure entry
-// point instead of poking at ProcessDetailsPanel's private members.
+// The process actions' pure helpers: the ProcessAction enum, its verbs and labels, the confirm
+// dialog's title and body, and the dispatch to IProcessActions and its result message, so the
+// mocked-IProcessActions tests (#415) reach them without ProcessDetailsPanel's private members.
 
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -51,6 +50,56 @@ enum class ProcessAction : std::uint8_t
         break;
     }
     return "";
+}
+
+/// How long a result line offering "Authenticate and retry" stays up: long enough to read it and decide (#2308).
+inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
+
+/// @p action on @p target as an administrator would redo it (#2308): "Authenticate and retry" after a
+/// permission refusal. Nullopt for None.
+[[nodiscard]] inline std::optional<Platform::AuthorizedAction> authorizedActionFor(ProcessAction action,
+                                                                                   const Platform::ProcessTarget& target)
+{
+    using Kind = Platform::AuthorizedAction::Kind;
+    Platform::AuthorizedAction authorized;
+    authorized.target = target;
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        authorized.kind = Kind::Terminate;
+        return authorized;
+    case ProcessAction::Kill:
+        authorized.kind = Kind::Kill;
+        return authorized;
+    case ProcessAction::Stop:
+        authorized.kind = Kind::Stop;
+        return authorized;
+    case ProcessAction::Resume:
+        authorized.kind = Kind::Resume;
+        return authorized;
+    case ProcessAction::None:
+        break;
+    }
+    return std::nullopt;
+}
+
+/// The action as the result line says it while it runs (#2305): "Terminating", "Suspending".
+[[nodiscard]] inline const char* actionProgressLabel(ProcessAction action)
+{
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        return "Terminating";
+    case ProcessAction::Kill:
+        return "Killing";
+    case ProcessAction::Stop:
+        return "Suspending";
+    case ProcessAction::Resume:
+        return "Resuming";
+    case ProcessAction::None:
+        break;
+    }
+    return "Acting on";
 }
 
 /// The action's name as its button, the confirm dialog's title and its confirm button show it:

@@ -1,13 +1,16 @@
 #include "PathService.h"
 
+#include "ConfigDirOverride.h"
 #include "PathServiceMath.h"
 #include "Platform/Factory.h"
 #include "Platform/IPathProvider.h"
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 
 namespace Core
 {
@@ -28,17 +31,20 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
 
 } // namespace
 
-PathService::PathService(std::unique_ptr<Platform::IPathProvider> provider)
+PathService::PathService(std::unique_ptr<Platform::IPathProvider> provider) : PathService(std::move(provider), std::nullopt)
+{}
+
+PathService::PathService(std::unique_ptr<Platform::IPathProvider> provider, const std::optional<std::filesystem::path>& configDirOverride)
 {
     if (!provider)
     {
         throw std::invalid_argument("PathService: provider must not be null");
     }
     m_ExecutableDir = toAbsolute(provider->getExecutableDir());
-    m_UserConfigDir = toAbsolute(provider->getUserConfigDir());
+    m_UserConfigDir = toAbsolute(ConfigDirOverride::resolve(configDirOverride, provider->getUserConfigDir()));
 }
 
-PathService::PathService() : PathService(Platform::makePathProvider())
+PathService::PathService() : PathService(Platform::makePathProvider(), ConfigDirOverride::active())
 {}
 
 const std::filesystem::path& PathService::executableDir() const noexcept

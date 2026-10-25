@@ -3,8 +3,8 @@
 // Pure tree-indent sizing extracted from ProcessesPanel::renderProcessRow() (#906), so the rule
 // that keeps the expand/collapse control reachable can be unit-tested directly instead of only
 // indirectly through a live ImGui context. See CONTRIBUTING.md's "extract the pure decision logic
-// into a small header" pattern (also used by ProcessTreeFlatten.h, AdaptiveIntervalUtils.h,
-// TitleBarGeometry.h). This computes widths only -- it makes no ImGui calls -- so there is no
+// into a small header" pattern (also used by ProcessTreeFlatten.h, TitleBarGeometry.h). This
+// computes widths only -- it makes no ImGui calls -- so there is no
 // live-context blocker to testing it.
 
 #include <algorithm>
@@ -27,12 +27,12 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
 /// Indent to apply to a tree row's Name cell, clamped so the expander and a minimum slice of the
 /// name always stay inside the cell.
 ///
-/// The Name column is fixed-width, and ProcessesPanel widens it by the deepest indent in the tree
-/// (see m_MaxTreeDepth) so text room at every depth matches a flat list's. That widening is not
-/// guaranteed, though: ImGui persists a user-dragged column width in its ini and then ignores the
-/// width passed to TableSetupColumn(). Left unclamped, a user who narrows this column would push
-/// the expand/collapse button out of its cell and be unable to toggle deep parents at all -- so the
-/// indent yields to the controls rather than the other way round.
+/// The Name column is fixed-width (tree view widens it once, see treeViewNameWidth()), and ImGui
+/// persists a user-dragged column width in its ini and then ignores the width passed to
+/// TableSetupColumn(). Left unclamped, a user who narrows this column would push the
+/// expand/collapse button out of its cell and be unable to toggle deep parents at all -- so the
+/// indent yields to the controls rather than the other way round. With the step from
+/// uniformIndentPerLevel() it never has to: that step already fits the deepest row.
 ///
 /// @param depth          Tree depth of the row; 0 is a root.
 /// @param indentPerLevel Pixels of indent per level.
@@ -50,6 +50,33 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
     // the expander keeps whatever room there is rather than being pushed out entirely.
     const float allowed = std::max(0.0F, cellWidth - reservedWidth);
     return std::min(requested, allowed);
+}
+
+/// The indent per level every row of the tree shares (#838): @p indentPerLevel, or, when the deepest
+/// row would then push its expander and name reservation out of the cell, the same smaller step at
+/// every level. clampedIndent() alone stopped each over-deep row at one x, so depths 7, 8 and 9 lined
+/// up, a child sat level with its parent, and the guide lines missed their parents' carets.
+///
+/// @param maxDepth  The deepest row in the tree (ProcessTreeRowsCache::maxDepth()); 0 for no indent.
+[[nodiscard]] constexpr float uniformIndentPerLevel(float indentPerLevel, int maxDepth, float cellWidth, float reservedWidth) noexcept
+{
+    if (indentPerLevel <= 0.0F)
+    {
+        return 0.0F;
+    }
+    if (maxDepth <= 0)
+    {
+        return indentPerLevel;
+    }
+    const float allowed = std::max(0.0F, cellWidth - reservedWidth);
+    return std::min(indentPerLevel, allowed / static_cast<float>(maxDepth));
+}
+
+/// Where the guide line of tree level @p level (an ancestor's depth) runs, from the start of the Name
+/// cell (#838): through the middle of that ancestor's expander slot, so each line drops from a caret.
+[[nodiscard]] constexpr float guideLineX(int level, float indentPerLevel, float expanderWidth) noexcept
+{
+    return (indentPerLevel * static_cast<float>(level)) + (expanderWidth * 0.5F);
 }
 
 /// Name column width tree view asks for, in ems: twice the list's default (11.25 em, 120px at the

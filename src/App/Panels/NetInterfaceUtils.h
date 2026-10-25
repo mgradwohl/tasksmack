@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Domain/SystemSnapshot.h"
+#include "Platform/SystemTypes.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -108,49 +110,144 @@ namespace App::NetInterfaceUtils
     return !iface.isVirtualKnown && hasVirtualInterfaceName(iface);
 }
 
-/// Check if an interface is Bluetooth (usually not useful for throughput monitoring)
+/// Whether the interface is a Bluetooth link (usually not useful for throughput monitoring): the
+/// platform's link kind (#2568), or its name where the platform couldn't say.
 [[nodiscard]] inline bool isBluetoothInterface(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
 {
+    if (iface.kind == Platform::NetInterfaceKind::Bluetooth)
+    {
+        return true;
+    }
     const auto& name = iface.name;
     const auto& displayName = iface.displayName;
 
     return name.contains("Bluetooth") || displayName.contains("Bluetooth") || name.contains("bluetooth") || name.contains("bnep");
 }
 
-/// Determine the interface type icon based on name patterns
-[[nodiscard]] inline const char* getInterfaceTypeIcon(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+/// What the Interface Status table's Type column shows for an interface (#2568).
+enum class InterfaceType : std::uint8_t
+{
+    Loopback,
+    WiFi,
+    Cellular,
+    Ethernet,
+    Bluetooth,
+    Virtual, ///< Virtual adapters, VPNs and tunnels: the cloud.
+    Other,   ///< Anything else, or a name that says nothing: the generic network icon.
+    Count,   ///< Not a type: how many there are, for INTERFACE_TYPE_ICONS.
+};
+
+inline constexpr std::size_t INTERFACE_TYPE_COUNT = static_cast<std::size_t>(InterfaceType::Count);
+
+namespace Detail
+{
+/// The type an interface's name suggests, for one whose link kind the platform couldn't report.
+[[nodiscard]] inline InterfaceType interfaceTypeFromName(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
 {
     const auto& name = iface.name;
     const auto& displayName = iface.displayName;
+    const auto either = [&name, &displayName](std::string_view text)
+    {
+        return name.contains(text) || displayName.contains(text);
+    };
+    if (name.starts_with("wl") || name.starts_with("wifi") || either("Wi-Fi") || either("WiFi") || either("Wireless"))
+    {
+        return InterfaceType::WiFi;
+    }
+    if (name.starts_with("wwan") || either("Cellular") || either("Mobile Broadband"))
+    {
+        return InterfaceType::Cellular;
+    }
+    if (name.starts_with("eth") || name.starts_with("en") || either("Ethernet"))
+    {
+        return InterfaceType::Ethernet;
+    }
+    return InterfaceType::Other;
+}
+} // namespace Detail
 
-    // Check for Bluetooth first
+/// The Type column's type for an interface (#2568): Bluetooth, then loopback, then virtual (the
+/// platform's isVirtual flag; see isVirtualInterface()), then the link kind the platform reports --
+/// Windows from its ifType and physical medium, Linux from its ARPHRD type, DEVTYPE and wireless
+/// directory -- and the interface's name only where the platform couldn't classify it. It used to
+/// go by the name alone, so a Bluetooth PAN link or a vEthernet adapter showed the wired icon.
+[[nodiscard]] inline InterfaceType interfaceType(const Domain::SystemSnapshot::InterfaceSnapshot& iface)
+{
+    using Platform::NetInterfaceKind;
     if (isBluetoothInterface(iface))
     {
-        return ICON_FA_BLUETOOTH;
+        return InterfaceType::Bluetooth;
     }
-
-    // WiFi detection
-    if (name.starts_with("wl") || name.contains("Wi-Fi") || name.contains("WiFi") || name.contains("Wireless") ||
-        displayName.contains("Wi-Fi") || displayName.contains("WiFi") || displayName.contains("Wireless"))
+    const bool nameIsLoopback = iface.name == "lo" || iface.name.contains("Loopback") || iface.name.contains("loopback");
+    if (iface.kind == NetInterfaceKind::Loopback || (iface.kind == NetInterfaceKind::Unknown && nameIsLoopback))
     {
-        return ICON_FA_WIFI;
+        return InterfaceType::Loopback;
     }
-
-    // Virtual/cloud interfaces
     if (isVirtualInterface(iface))
     {
-        return ICON_FA_CLOUD;
+        return InterfaceType::Virtual;
     }
-
-    // Loopback/localhost
-    if (name == "lo" || name.contains("Loopback"))
+    switch (iface.kind)
     {
-        return ICON_FA_HOUSE;
+    case NetInterfaceKind::Ethernet:
+        return InterfaceType::Ethernet;
+    case NetInterfaceKind::WiFi:
+        return InterfaceType::WiFi;
+    case NetInterfaceKind::Cellular:
+        return InterfaceType::Cellular;
+    case NetInterfaceKind::Tunnel:
+        return InterfaceType::Virtual;
+    case NetInterfaceKind::Other:
+        return InterfaceType::Other;
+    case NetInterfaceKind::Bluetooth: // isBluetoothInterface() answered above
+    case NetInterfaceKind::Loopback:  // as did the loopback check
+    case NetInterfaceKind::Unknown:
+        break;
     }
-
-    // Default to ethernet
-    return ICON_FA_ETHERNET;
+    return Detail::interfaceTypeFromName(iface);
 }
+
+/// The Type column's icon for a type.
+[[nodiscard]] constexpr const char* interfaceTypeIcon(InterfaceType type) noexcept
+{
+    switch (type)
+    {
+    case InterfaceType::Loopback:
+        return ICON_FA_HOUSE;
+    case InterfaceType::WiFi:
+        return ICON_FA_WIFI;
+    case InterfaceType::Cellular:
+        return ICON_FA_SIGNAL;
+    case InterfaceType::Ethernet:
+        return ICON_FA_ETHERNET;
+    case InterfaceType::Bluetooth:
+        return ICON_FA_BLUETOOTH;
+    case InterfaceType::Virtual:
+        return ICON_FA_CLOUD;
+    case InterfaceType::Other:
+        return ICON_FA_NETWORK_WIRED;
+    case InterfaceType::Count:
+        break;
+    }
+    return ICON_FA_NETWORK_WIRED;
+}
+
+namespace Detail
+{
+/// interfaceTypeIcon() for the InterfaceType of each index, in order.
+template<std::size_t... Indices>
+[[nodiscard]] constexpr std::array<const char*, sizeof...(Indices)> interfaceTypeIcons(std::index_sequence<Indices...> /*indices*/) noexcept
+{
+    return {interfaceTypeIcon(static_cast<InterfaceType>(Indices))...};
+}
+} // namespace Detail
+
+/// Every icon interfaceTypeIcon() can return, one per InterfaceType in declaration order, so the
+/// Type column can be sized for the widest. Built from interfaceTypeIcon() rather than listed again:
+/// a hand-written list had drifted from the switch once (#966) and nothing tied them since (#2776).
+inline constexpr std::array<const char*, INTERFACE_TYPE_COUNT> INTERFACE_TYPE_ICONS =
+    Detail::interfaceTypeIcons(std::make_index_sequence<INTERFACE_TYPE_COUNT>{});
+static_assert(INTERFACE_TYPE_ICONS.size() == static_cast<std::size_t>(InterfaceType::Count));
 
 /// Sort interfaces: Up first, then by activity, then by speed, then alphabetically
 [[nodiscard]] inline std::vector<Domain::SystemSnapshot::InterfaceSnapshot>

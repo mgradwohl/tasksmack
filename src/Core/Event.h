@@ -1,7 +1,7 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
-#include <string>
 
 namespace Core
 {
@@ -20,7 +20,11 @@ enum class EventType : uint8_t
     ActiveTabChanged,
     OpenSettings,
     OpenAbout,
-    OpenElevationNotice
+    OpenHelp,
+    OpenElevationNotice,
+    UdpEventTraceChanged,
+    ShowService,
+    CloseDialog
 };
 
 /// Macro to implement event type boilerplate
@@ -62,10 +66,6 @@ class Event
 
     [[nodiscard]] virtual auto getEventType() const -> EventType = 0;
     [[nodiscard]] virtual auto getName() const -> const char* = 0;
-    [[nodiscard]] virtual auto toString() const -> std::string
-    {
-        return getName();
-    }
 
   private:
     bool m_Handled = false;

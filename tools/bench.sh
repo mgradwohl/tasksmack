@@ -3,37 +3,76 @@
 #
 # Usage:
 #   ./tools/bench.sh [preset] [-- <extra args>]
+#   ./tools/bench.sh -h | --help              # print this help
 #
 # preset defaults to 'benchmark'.
-# Produces JSON output at perf-data/<preset>-<timestamp>.json.
+# Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
+# the same second already wrote that name; a user or host name in the preset becomes "user" /
+# "host" in the file names), holding every repetition plus the
+# mean/median/stddev/cv aggregates, and a provenance sidecar at
+# perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
+# args, anonymized machine class; written by tools/bench-manifest.py, see CONTRIBUTING.md
+# "Benchmark Output"). On success the last line is RESULT=<result file path>, for scripts to read.
+#
+# Environment overrides (used by the script tests):
+#   TASKSMACK_BENCH_BIN      benchmark binary (default build/<preset>/bin/TaskSmackBenchmarks); a
+#                            relative path or bare name is relative to the current directory and
+#                            is never looked up on PATH
+#   TASKSMACK_BENCH_OUT_DIR  output directory (default perf-data/)
+#
+# Exits with the benchmark binary's own exit code if it fails or crashes; any partial output is
+# still redacted (or deleted when it cannot be) and the manifest records the exit code. An extra
+# --benchmark_out or --benchmark_out_format argument is refused with exit code 2. Needs Python
+# 3.14+ (the project .venv, or python3 on PATH: find_python in tools/common.sh).
 #
 # Examples:
 #   ./tools/bench.sh                          # benchmark preset, default flags
 #   ./tools/bench.sh debug                    # debug preset (slower, useful for profiling)
 #   ./tools/bench.sh -- --benchmark_filter=ProcessModel
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
+#
+# Compare a run against the baseline:
+#   python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
+#       --current perf-data/benchmark-<timestamp>.json
 
 set -euo pipefail
+# An inherited CDPATH would make the `cd`s below search it, and print where they went, inside the
+# command substitutions that resolve paths (#1445 review).
+unset CDPATH
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+# -h / --help as the first argument prints the header above, as Get-Help does for bench.ps1
+# (#2254). After a preset or "--" it is a benchmark argument, as before.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+    exit 0
+fi
+
+# find_python (#2254).
+# shellcheck source=tools/common.sh
+source "${SCRIPT_DIR}/common.sh"
 
 # ---------- defaults ---------------------------------------------------------
 PRESET="${1:-benchmark}"
 if [[ "${PRESET}" == "--" ]]; then
     PRESET="benchmark"
     shift
+elif [[ "${PRESET}" == --* ]]; then
+    # A benchmark flag with no preset before it (./tools/bench.sh --benchmark_filter=Foo): it stays
+    # with the extra args and the default preset is used, as in bench.ps1.
+    PRESET="benchmark"
 elif [[ $# -gt 0 && "${1}" != "--" ]]; then
     shift
 fi
 # Drop optional "--" separator before extra args
 if [[ $# -gt 0 && "${1}" == "--" ]]; then shift; fi
 
-OUT_DIR="${REPO_ROOT}/perf-data"
+OUT_DIR="${TASKSMACK_BENCH_OUT_DIR:-${REPO_ROOT}/perf-data}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-OUT_FILE="${OUT_DIR}/${PRESET}-${TIMESTAMP}.json"
 
-BENCH_BIN="${REPO_ROOT}/build/${PRESET}/bin/TaskSmackBenchmarks"
+BENCH_BIN="${TASKSMACK_BENCH_BIN:-${REPO_ROOT}/build/${PRESET}/bin/TaskSmackBenchmarks}"
 
 # ---------- sanity checks ----------------------------------------------------
 if [[ ! -f "${BENCH_BIN}" ]]; then
@@ -41,33 +80,110 @@ if [[ ! -f "${BENCH_BIN}" ]]; then
     echo "Build first:  cmake --build --preset ${PRESET}"
     exit 1
 fi
+# One absolute path for the check above, the manifest's hash and build lookup, and the launch: a
+# relative TASKSMACK_BENCH_BIN (a bare name included) means the file relative to the current
+# directory, as the check reads it -- never a same-named program found on PATH (#1445 review).
+BENCH_BIN="$(cd -- "$(dirname -- "${BENCH_BIN}")" && pwd)/$(basename -- "${BENCH_BIN}")"
+
+# The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
+# extra one would write somewhere the redaction and the manifest never look.
+for arg in "$@"; do
+    if [[ "${arg}" =~ ^--benchmark_out(_format)?(=|$) ]]; then
+        echo "'${arg}' is not allowed: bench.sh sets the benchmark output file and format itself." >&2
+        echo "Set TASKSMACK_BENCH_OUT_DIR to choose where results are written." >&2
+        exit 2
+    fi
+done
+
+# The interpreter the build uses (#2254): the project .venv first, then python3.14 / python3 /
+# python on PATH, each only when it is Python 3.14+ -- never a bare python3 that skips the .venv or,
+# under Git Bash, is the Microsoft Store stub. Found before anything is written.
+if ! PY="$(find_python)"; then
+    echo "Python 3.14 or newer not found (the project .venv, or python3 on PATH); bench.sh needs it to write the manifest and redact the results." >&2
+    exit 1
+fi
 
 mkdir -p "${OUT_DIR}"
+
+# The Python helpers read and write UTF-8 whatever the locale (#1648); an explicit PYTHONUTF8 wins.
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+
+# The preset part of the output file names (#1445 review): a user or host name in the preset
+# becomes "user" / "host", so neither the files nor the manifest's result_file and --benchmark_out
+# carry it (tools/bench-manifest.py hide_name_identity).
+PRESET_STEM="$("${PY}" "${SCRIPT_DIR}/bench-manifest.py" --preset-stem "${PRESET}")"
+
+# Claim the result name before the benchmark starts, atomically (noclobber opens with O_EXCL, so
+# the redirect fails if the file exists), so two runs in the same second -- concurrent ones too --
+# never share a name: the later one gets -2, -3, ... A name whose manifest is left from an earlier
+# run is skipped as well. The manifest name follows the claimed result name. Kept in step with the
+# claim in bench.ps1.
+claim_output() {
+    (set -o noclobber && : >"$1") 2>/dev/null
+}
+STEM="${PRESET_STEM}-${TIMESTAMP}"
+SUFFIX=2
+until [[ ! -e "${OUT_DIR}/${STEM}.manifest.json" ]] && claim_output "${OUT_DIR}/${STEM}.json"; do
+    if [[ ! -e "${OUT_DIR}/${STEM}.json" && ! -e "${OUT_DIR}/${STEM}.manifest.json" ]]; then
+        echo "Cannot create '${OUT_DIR}/${STEM}.json'." >&2
+        exit 1
+    fi
+    STEM="${PRESET_STEM}-${TIMESTAMP}-${SUFFIX}"
+    SUFFIX=$((SUFFIX + 1))
+done
+OUT_FILE="${OUT_DIR}/${STEM}.json"
+MANIFEST_FILE="${OUT_DIR}/${STEM}.manifest.json"
 
 # ---------- run ---------------------------------------------------------------
 # Flags chosen for statistical consistency:
 #   --benchmark_repetitions=10    → 10 independent runs per benchmark
 #   --benchmark_min_time=0.5s     → minimum wall time before rep finishes
-#   --benchmark_report_aggregates_only → emit mean/median/stddev, not raw reps
 #   --benchmark_display_aggregates_only → clean terminal output
+# --benchmark_report_aggregates_only is deliberately NOT passed: the JSON file keeps every
+# repetition (so the distribution can be re-analysed) plus the mean/median/stddev/cv aggregate
+# rows that tools/check-benchmark-regression.py compares.
+BENCH_ARGS=(
+    --benchmark_repetitions=10
+    --benchmark_min_time=0.5s
+    --benchmark_display_aggregates_only=true
+    --benchmark_out="${OUT_FILE}"
+    --benchmark_out_format=json
+    "$@"
+)
+
 echo "Running benchmarks (preset=${PRESET}) → ${OUT_FILE}"
 echo "Binary: ${BENCH_BIN}"
 echo
 
-"${BENCH_BIN}" \
-    --benchmark_repetitions=10 \
-    --benchmark_min_time=0.5s \
-    --benchmark_report_aggregates_only=true \
-    --benchmark_display_aggregates_only=true \
-    --benchmark_out="${OUT_FILE}" \
-    --benchmark_out_format=json \
-    "$@"
+# Provenance is captured before the benchmark starts (#1445 review): git state, build
+# configuration and the binary's hash describe what was launched, even if the checkout, the build
+# or the binary changes during the run. Only the exit code is added afterwards. The manifest is
+# finalized before the result is redacted. Python is already a build prerequisite (GLAD loader
+# generation). A manifest failure is held until the result has been redacted, then fails the
+# script.
+MANIFEST_EXIT=0
+"${PY}" "${SCRIPT_DIR}/bench-manifest.py" \
+    --manifest "${MANIFEST_FILE}" \
+    --result "${OUT_FILE}" \
+    --binary "${BENCH_BIN}" \
+    --preset "${PRESET}" \
+    --repo-root "${REPO_ROOT}" \
+    -- "${BENCH_ARGS[@]}" || MANIFEST_EXIT=$?
+
+# Capture the exit code instead of letting `set -e` abort here, so a failed run's partial output
+# is still redacted (or deleted) before the script fails (#1423).
+BENCH_EXIT=0
+"${BENCH_BIN}" "${BENCH_ARGS[@]}" || BENCH_EXIT=$?
+
+if [[ ${MANIFEST_EXIT} -eq 0 ]]; then
+    "${PY}" "${SCRIPT_DIR}/bench-manifest.py" --manifest "${MANIFEST_FILE}" --finalize \
+        --exit-code "${BENCH_EXIT}" || MANIFEST_EXIT=$?
+fi
 
 # Redact machine-identifying context so results are safe to commit (repo convention:
-# host_name "redacted", bare executable name). Fails closed under `set -e`: if
-# redaction fails, the script aborts before reporting the results as ready to use.
-# python3 is already a build prerequisite (GLAD loader generation).
-python3 - "${OUT_FILE}" <<'PY'
+# host_name "redacted", bare executable name).
+redact_result() {
+    "${PY}" - "${OUT_FILE}" <<'PY'
 import json
 import pathlib
 import sys
@@ -79,8 +195,37 @@ context["host_name"] = "redacted"
 context["executable"] = pathlib.PurePath(context.get("executable", "")).name or "TaskSmackBenchmarks"
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
+}
+
+if [[ ${BENCH_EXIT} -ne 0 ]]; then
+    # A failed or crashed run may have left a partial JSON file holding the host name: redact it
+    # if it parses, otherwise delete it, then fail with the benchmark's own exit code.
+    if [[ -f "${OUT_FILE}" ]] && ! redact_result 2>/dev/null; then
+        rm -f "${OUT_FILE}"
+        echo "Deleted unparseable partial benchmark output '${OUT_FILE}' (it could not be redacted)." >&2
+    fi
+    echo "Benchmark binary exited with code ${BENCH_EXIT}; results in '${OUT_FILE}' are not usable. Manifest: ${MANIFEST_FILE}" >&2
+    exit "${BENCH_EXIT}"
+fi
+
+# Output that cannot be redacted (empty or truncated JSON despite exit code 0) may still hold the
+# host name, so it is deleted rather than left behind, and the script fails.
+if ! redact_result; then
+    rm -f "${OUT_FILE}"
+    echo "Benchmark output '${OUT_FILE}' could not be redacted and was deleted." >&2
+    exit 1
+fi
+
+if [[ ${MANIFEST_EXIT} -ne 0 ]]; then
+    echo "Writing the provenance manifest '${MANIFEST_FILE}' failed (exit ${MANIFEST_EXIT})." >&2
+    exit "${MANIFEST_EXIT}"
+fi
 
 echo
 echo "Results written to: ${OUT_FILE}"
-echo "Compare two runs with Google Benchmark's compare.py:"
-echo "  python -m google_benchmark.compare perf-data/linux-baseline.json ${OUT_FILE}"
+echo "Provenance manifest: ${MANIFEST_FILE}"
+echo "Compare against a baseline (median per benchmark, regressions over the threshold fail):"
+echo "  python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current ${OUT_FILE}"
+# Machine-readable result path, printed only on success (as the profile-* scripts print TRACE=):
+# heavy-checks.yml reads it instead of guessing from a glob that also matches the manifest (#2249).
+echo "RESULT=${OUT_FILE}"

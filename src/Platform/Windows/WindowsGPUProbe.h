@@ -2,8 +2,11 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/Windows/WindowsDriverNodes.h"
 
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -14,13 +17,18 @@
 namespace Platform
 {
 
+class DisplayDevicePower;
 class DXGIGPUProbe;
 class NVMLGPUProbe;
 class PDHGPUProbe;
+struct D3DKMTAdapterFunctions;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// - DXGI: Basic GPU enumeration (all vendors)
-/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan) and VRAM
+/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan, video encoder/decoder) and VRAM
+/// - D3DKMT adapter perf data: temperature, clock and fan for the GPUs NVML doesn't cover (AMD,
+///   Intel, Qualcomm, or NVIDIA without NVML), from the kernel graphics adapter, the figures Task
+///   Manager draws (#2586, D3DKMTAdapterPerfData.h). NVML is preferred where it has the adapter.
 /// - PDH: adapter and per-process GPU utilization, and memory, via Performance Counters (all
 ///   vendors, NVIDIA included, so every adapter's % means what Task Manager's does, #1264)
 ///
@@ -29,6 +37,12 @@ class PDHGPUProbe;
 /// changed, re-matches NVML devices to adapters by PCI location (#1241) and rebuilds the LUID maps
 /// PDH's figures are matched by. NVML itself restarts after a lost GPU, and a quick rescan reports a
 /// GPU asleep at enumeration that has woken, so it gets its own sensors (#1294).
+///
+/// The NPUs and other MCDM compute accelerators, which DXGI never lists, come from DXCore
+/// (DXGIGPUProbe::enumerateAccelerators()) and are listed after the GPUs with their DeviceKind
+/// (#1799). They share the GPUs' PDH figures by LUID -- adapter utilization and memory, and
+/// per-process samples, which are tagged with the adapter's kind -- and have no sensors. Every
+/// adapter's driver version is read from its PnP device node.
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -55,6 +69,13 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
     [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
+    /// The last readProcessGPUCounters()'s per-process samples of adapters not listed: the Basic
+    /// Render Driver, or an NPU or other compute accelerator DXCore couldn't enumerate (an older
+    /// Windows), one per process and adapter LUID (#1826). readProcessGPUCounters() leaves them out of
+    /// every figure; an enumerated NPU's samples are returned by it instead, tagged with their kind
+    /// (#1799). Call it under the same serialization as readProcessGPUCounters() (GPUModel's probe lock).
+    [[nodiscard]] std::vector<OtherAdapterProcessUsage> otherAdapterUsage() const;
+
   private:
     // Test-only: swaps in sub-probes backed by fakes (test_WindowsGPURescan.cpp).
     friend struct WindowsGPUProbeTestAccessor;
@@ -68,6 +89,19 @@ class WindowsGPUProbe : public IGPUProbe
                                                                         bool takeUtilization,
                                                                         const std::unordered_set<std::string>& idleDevices);
     void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
+
+    /// Decide, at enumeration, which of @p gpus (DXGI's, in enumeration order) get their sensors from
+    /// D3DKMT adapter perf data (#2586): every GPU without an NVML device, by one reading each
+    /// (AdapterPerfDataMath.h's adapterPerfSensorCapabilities()), which sets its sensorCapabilities
+    /// and lists it in m_PerfAdapters. A GPU asleep now isn't read -- the query could wake it -- and
+    /// goes to m_PerfAsleepAtEnumeration with no sensors, for a quick rescan to report once it wakes.
+    void assignAdapterPerfSensors(std::vector<GPUInfo>& gpus);
+    /// Read each m_PerfAdapters adapter's perf data this sample and fill its counter's temperature,
+    /// clock and fan; a failed read, or an adapter asleep now (left alone, and marked suspended), is a
+    /// gap for each of its sensors.
+    void mergeAdapterPerfSensors(std::vector<GPUCounters>& counters);
+    /// Whether the GPU at @p location is asleep (m_IsAsleep); false without a location.
+    [[nodiscard]] bool isAdapterAsleep(const std::optional<PciLocation>& location) const;
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
@@ -92,9 +126,27 @@ class WindowsGPUProbe : public IGPUProbe
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
 
-    // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
-    // use is the shared or the dedicated segment. Built during enumerateGPUs().
+    // The LUIDs of the adapters listed at the last enumeration (listedAdapterLuids()): the GPUs, and
+    // the NPUs and compute accelerators DXCore found (#1799). Rebuilt with m_DXGIIdToLuidId, so a
+    // rescan or hot-plug updates it. Per-process PDH samples of any other adapter -- the Basic Render
+    // Driver, or an accelerator DXCore couldn't enumerate -- go to m_OtherAdapterUsage rather than
+    // being counted as GPU work (#1826); before the first enumeration no adapter is listed, so every
+    // sample goes there.
+    std::unordered_set<std::string> m_ListedAdapterLuids;
+
+    // Each listed adapter's kind by LUID, which per-process samples are tagged with (#1799)
+    std::unordered_map<std::string, DeviceKind> m_AdapterKindByLuid;
+
+    // The last readProcessGPUCounters()'s samples of adapters not in m_ListedAdapterLuids (#1826)
+    std::vector<OtherAdapterProcessUsage> m_OtherAdapterUsage;
+
+    // Map adapter id to whether its memory figures count its shared segment (an integrated GPU, or
+    // an NPU without memory of its own) rather than dedicated memory. Built during enumerateGPUs().
     std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
+
+    // Reads the PnP device nodes every adapter's driver version comes from (#1799): SetupAPI's PCI
+    // devices in production, a fake in tests.
+    std::vector<WindowsGraphics::DriverNode> (*m_ListDriverNodes)() = nullptr;
 
     // The NVIDIA adapters at the last enumeration (nvidiaAdapterFingerprint()); unset before the
     // first. A change (an NVIDIA GPU added or removed, re-created under a new LUID by a driver update
@@ -114,6 +166,29 @@ class WindowsGPUProbe : public IGPUProbe
     // nvmlDevicesToLeaveIdle()).
     std::unordered_map<std::string, double> m_LastPDHUtilization;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_NVMLLastRead;
+
+    // The kernel adapter calls the perf-data reads make (#2586): gdi32's exports, or fakes in tests.
+    std::unique_ptr<D3DKMTAdapterFunctions> m_PerfFunctions;
+    // Whether a GPU is asleep, from the PnP manager's record of its power state, so a sleeping
+    // AMD or Intel dGPU is never woken by a perf-data query (#1265): m_DevicePower's answer in
+    // production, a fake in tests.
+    std::shared_ptr<DisplayDevicePower> m_DevicePower;
+    std::function<bool(const PciLocation&)> m_IsAsleep;
+
+    /// One adapter whose sensors come from D3DKMT adapter perf data: the LUID its kernel adapter is
+    /// opened by, where it sits (for the sleep check) and which sensors it reported at enumeration.
+    struct PerfAdapter
+    {
+        std::uint32_t luidHighPart = 0;
+        std::uint32_t luidLowPart = 0;
+        std::optional<PciLocation> pciLocation;
+        GPUCapabilities sensors{};
+    };
+    // By adapter id (GPUInfo::id), rebuilt by every enumerateGPUs().
+    std::unordered_map<std::string, PerfAdapter> m_PerfAdapters;
+    // The adapters asleep at the last enumeration, whose sensor set is still unknown, by id: a quick
+    // rescan reports a change once one is awake, so the enumeration that follows reads it (#1289).
+    std::unordered_map<std::string, PciLocation> m_PerfAsleepAtEnumeration;
 };
 
 } // namespace Platform

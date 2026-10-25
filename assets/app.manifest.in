@@ -13,6 +13,10 @@
 
       <!-- Avoid path-length surprises on modern Windows -->
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+
+      <!-- UTF-8 process code page (Windows 10 1903+, #1648): GetACP() is 65001, so the CRT, the
+           "A" APIs, narrow std::filesystem::path/fstream/getenv and argv all take UTF-8. -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
     </windowsSettings>
   </application>
 

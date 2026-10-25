@@ -30,9 +30,11 @@ if (-not $ClangFormat) {
     Write-Error "clang-format not found. Set LLVM_ROOT or add clang-format to PATH."
     exit 1
 }
+Write-LlvmVersionSkewWarning -ToolPath $ClangFormat -Name 'clang-format'
 
 # Find all source files
-$files = Get-ChildItem -Path (Join-Path $ProjectRoot "src"), (Join-Path $ProjectRoot "tests") -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
+$searchDirs = Get-FormatSourceDir -Root $ProjectRoot
+$files = Get-ChildItem -Path $searchDirs -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
          Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
 
 $failed = 0
@@ -42,7 +44,7 @@ foreach ($file in $files) {
     if ($ShowDetails) {
         Write-Host "Checking: $($file.Name)"
     }
-    $result = & $ClangFormat --dry-run --Werror $file.FullName 2>&1
+    $null = & $ClangFormat --dry-run --Werror $file.FullName 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAIL: $($file.FullName)" -ForegroundColor Red
         $failed++

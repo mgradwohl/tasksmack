@@ -33,7 +33,6 @@ struct RenderContext
 
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation
@@ -74,6 +73,6 @@ void renderStorageSection(RenderContext& ctx);
 /// @param targetWrite Current write bytes per second
 /// @param deltaTimeSeconds Time since last update
 /// @param ctx Render context containing smoothed value pointers
-void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx);
+void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, const RenderContext& ctx);
 
 } // namespace App::StorageSection

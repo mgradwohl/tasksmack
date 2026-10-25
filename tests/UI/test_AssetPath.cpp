@@ -5,11 +5,14 @@
 
 #include <gtest/gtest.h>
 
-#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <optional>
-#include <string_view>
 #include <system_error>
+
+#ifndef _WIN32
+#include <cstdlib> // std::getenv(), in the Linux display check
+#endif
 
 namespace UI
 {
@@ -21,19 +24,9 @@ namespace
 bool detectDisplay()
 {
 #ifdef _WIN32
-    char* ciEnv = nullptr;
-    std::size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc; must free with free()
-    free(ciEnv);
-    if (isCI)
-    {
-        return false;
-    }
-    // A display must also offer a GL 3.3 core context: construction failures are fatal once a display
-    // is detected (#1132).
-    return TestSupport::probeGLCapability();
+    // A GL 3.3 core context on the desktop, CI included (#2134): construction failures are fatal
+    // once a display is detected (#1132).
+    return TestSupport::detectWindowsDisplay();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");

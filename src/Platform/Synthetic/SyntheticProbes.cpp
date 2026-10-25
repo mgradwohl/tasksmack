@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <memory>
 #include <utility>
@@ -120,6 +121,18 @@ ProcessActionResult SyntheticProcessActions::resume(const ProcessTarget& target)
 ProcessActionResult SyntheticProcessActions::setPriority(const ProcessTarget& target, [[maybe_unused]] std::int32_t nice)
 {
     return refuse(target);
+}
+
+ProcessActionResult SyntheticProcessActions::setIoPriority(const ProcessTarget& target,
+                                                           [[maybe_unused]] IoPriorityClass ioClass,
+                                                           [[maybe_unused]] std::int32_t level)
+{
+    return refuse(target);
+}
+
+IoPriorityReadResult SyntheticProcessActions::getIoPriority(const ProcessTarget& target)
+{
+    return std::unexpected(refuse(target).errorMessage);
 }
 
 } // namespace Platform::Synthetic

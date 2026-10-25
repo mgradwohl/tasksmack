@@ -1,6 +1,7 @@
 #include "AssetPath.h"
 
 #include "Core/Application.h"
+#include "Core/Utf8Path.h"
 
 // version.h provides TASKSMACK_PROJECT_NAME_LOWER, which is set by CMake from
 // ${PROJECT_NAME_LOWER} — the same variable used in the install() destination.
@@ -56,13 +57,13 @@ std::filesystem::path selectAssetsDir(const std::filesystem::path& exeDir,
     {
         if (probeExists(candidate))
         {
-            spdlog::debug("Assets directory found: {}", candidate.string());
+            spdlog::debug("Assets directory found: {}", Core::pathToUtf8(candidate));
             return candidate;
         }
     }
 
     const std::filesystem::path fallback = exeDir / "assets";
-    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", fallback.string());
+    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", Core::pathToUtf8(fallback));
     return fallback;
 }
 

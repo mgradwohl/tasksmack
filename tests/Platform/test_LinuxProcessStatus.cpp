@@ -16,18 +16,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include <grp.h>
 #include <pwd.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -265,7 +268,10 @@ TEST(UserNameLookupTest, LargeEntryIsRetriedWithABiggerBuffer)
         {
             return ERANGE;
         }
-        std::strcpy(buffer, "ldap-user");
+        constexpr std::string_view NAME = "ldap-user";
+        const std::span<char> room(buffer, size);
+        std::ranges::copy(NAME, room.begin());
+        room[NAME.size()] = '\0';
         entry->pw_name = buffer;
         entry->pw_uid = uid;
         *result = entry;
@@ -276,6 +282,39 @@ TEST(UserNameLookupTest, LargeEntryIsRetriedWithABiggerBuffer)
     EXPECT_EQ(calls, 3U); // 1 KiB, 2 KiB, then 4 KiB
 }
 
+// #2499: several fields read from one entry (SessionUser's account) get the same growing buffer.
+TEST(UserNameLookupTest, AWholeEntryIsReadWithAGrowingBuffer)
+{
+    constexpr std::size_t NEEDED = 16384;
+    std::size_t calls = 0;
+    const auto fakeGetpwuidR = [&calls](uid_t uid, passwd* entry, char* buffer, std::size_t size, passwd** result) -> int
+    {
+        ++calls;
+        *result = nullptr;
+        if (size < NEEDED)
+        {
+            return ERANGE;
+        }
+        constexpr std::string_view VALUE = "/home/ldap-user";
+        std::ranges::copy(VALUE, buffer);
+        buffer[VALUE.size()] = '\0'; // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - getpwuid_r's C buffer
+        entry->pw_dir = buffer;
+        entry->pw_gid = 4321;
+        entry->pw_uid = uid;
+        *result = entry;
+        return 0;
+    };
+    const std::optional<std::pair<std::string, gid_t>> read =
+        UserNameLookupDetail::lookUpEntry<passwd>(uid_t{1000},
+                                                  fakeGetpwuidR,
+                                                  [](const passwd& entry) -> std::optional<std::pair<std::string, gid_t>>
+                                                  { return std::pair{std::string(entry.pw_dir), entry.pw_gid}; });
+    ASSERT_TRUE(read.has_value());
+    EXPECT_EQ(read.value_or(std::pair<std::string, gid_t>{}).first, "/home/ldap-user");
+    EXPECT_EQ(read.value_or(std::pair<std::string, gid_t>{}).second, 4321U);
+    EXPECT_EQ(calls, 5U); // 1, 2, 4, 8, then 16 KiB: past SessionUser's old fixed 4 KiB
+}
+
 TEST(UserNameLookupTest, UnknownUidIsNullopt)
 {
     const auto noSuchUser = [](uid_t, passwd*, char*, std::size_t, passwd** result) -> int
@@ -284,6 +323,94 @@ TEST(UserNameLookupTest, UnknownUidIsNullopt)
         return 0;
     };
     EXPECT_FALSE(lookUpUserName(4242, noSuchUser).has_value());
+}
+
+// #2197: the home directory comes from the same entry, which need not be named after the login.
+TEST(UserNameLookupTest, HomeDirectoryIsTheEntrysPwDir)
+{
+    const auto fakeGetpwuidR = [](uid_t uid, passwd* entry, char* buffer, std::size_t size, passwd** result) -> int
+    {
+        constexpr std::string_view NAME = "alice";
+        constexpr std::string_view HOME = "/home/bob";
+        *result = nullptr;
+        if (size < NAME.size() + HOME.size() + 2)
+        {
+            return ERANGE;
+        }
+        const std::span<char> room(buffer, size);
+        std::ranges::copy(NAME, room.begin());
+        room[NAME.size()] = '\0';
+        std::ranges::copy(HOME, room.begin() + static_cast<std::ptrdiff_t>(NAME.size() + 1));
+        room[NAME.size() + 1 + HOME.size()] = '\0';
+        entry->pw_name = buffer;
+        entry->pw_dir = &room[NAME.size() + 1];
+        entry->pw_uid = uid;
+        *result = entry;
+        return 0;
+    };
+    EXPECT_EQ(lookUpUserName(1000, fakeGetpwuidR), "alice");
+    EXPECT_EQ(lookUpHomeDirectory(1000, fakeGetpwuidR), "/home/bob");
+
+    const auto noHome = [](uid_t, passwd* entry, char*, std::size_t, passwd** result) -> int
+    {
+        entry->pw_dir = nullptr;
+        *result = entry;
+        return 0;
+    };
+    EXPECT_FALSE(lookUpHomeDirectory(1000, noHome).has_value());
+}
+
+// #2416: the by-name lookups the crash read makes, reentrant (getpwnam_r/getgrnam_r), since System
+// Information's read and the crash history's worker can both make them at once.
+TEST(UserNameLookupTest, ByNameLookupsGrowTheBufferAndReturnTheIds)
+{
+    constexpr std::size_t NEEDED = 2048;
+    std::size_t userCalls = 0;
+    const auto fakeGetpwnamR = [&userCalls](const char* name, passwd* entry, char* /*buffer*/, std::size_t size, passwd** result) -> int
+    {
+        ++userCalls;
+        *result = nullptr;
+        if (size < NEEDED)
+        {
+            return ERANGE;
+        }
+        if (std::string_view(name) != "systemd-coredump")
+        {
+            return 0; // no such user
+        }
+        entry->pw_uid = 997;
+        *result = entry;
+        return 0;
+    };
+    EXPECT_EQ(lookUpUserId("systemd-coredump", fakeGetpwnamR), std::optional<uid_t>{997});
+    EXPECT_EQ(userCalls, 2U); // 1 KiB, then 2 KiB
+    EXPECT_FALSE(lookUpUserId("nobody-here", fakeGetpwnamR).has_value());
+
+    const auto fakeGetgrnamR = [](const char* name, group* entry, char* /*buffer*/, std::size_t /*size*/, group** result) -> int
+    {
+        *result = nullptr;
+        if (std::string_view(name) == "adm")
+        {
+            entry->gr_gid = 4;
+            *result = entry;
+        }
+        return 0;
+    };
+    EXPECT_EQ(lookUpGroupId("adm", fakeGetgrnamR), std::optional<gid_t>{4});
+    EXPECT_FALSE(lookUpGroupId("wheel", fakeGetgrnamR).has_value());
+
+    const auto failing = [](const char* /*name*/, group* /*entry*/, char* /*buffer*/, std::size_t /*size*/, group** result) -> int
+    {
+        *result = nullptr;
+        return EIO;
+    };
+    EXPECT_FALSE(lookUpGroupId("adm", failing).has_value());
+}
+
+TEST(UserNameLookupTest, ByNameLookupsReadThisSystemsRootEntries)
+{
+    EXPECT_EQ(lookUpUserId("root", ::getpwnam_r), std::optional<uid_t>{0});
+    EXPECT_EQ(lookUpGroupId("root", ::getgrnam_r), std::optional<gid_t>{0});
 }
 
 // reniceThreads (#1104/#1228 review): the pass bookkeeping, with /proc and setpriority faked.

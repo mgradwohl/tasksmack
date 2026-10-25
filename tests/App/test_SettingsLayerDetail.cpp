@@ -4,6 +4,7 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 
@@ -15,70 +16,40 @@ namespace
 {
 
 // ========================================
-// Font Size Index Tests
+// Option index lookup (optionIndexOf, which replaced the find*Index helpers in #1221)
 // ========================================
 
-TEST(SettingsLayerDetailTest, FindFontSizeIndexReturnsCorrectIndices)
+TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryFontSizeToItsOption)
 {
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::Small), 0U);
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::Medium), 1U);
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::Large), 2U);
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::ExtraLarge), 3U);
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::Huge), 4U);
-    EXPECT_EQ(findFontSizeIndex(UI::FontSize::EvenHuger), 5U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Small, &FontSizeOption::value), 0U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value), 1U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Large, &FontSizeOption::value), 2U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::ExtraLarge, &FontSizeOption::value), 3U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::Huge, &FontSizeOption::value), 4U);
+    EXPECT_EQ(optionIndexOf(FONT_SIZE_OPTIONS, UI::FontSize::EvenHuger, &FontSizeOption::value), 5U);
+    EXPECT_FALSE(optionIndexOf(FONT_SIZE_OPTIONS, static_cast<UI::FontSize>(999), &FontSizeOption::value).has_value());
 }
 
-TEST(SettingsLayerDetailTest, FindFontSizeIndexReturnsDefaultForInvalid)
+TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryRefreshRateToItsOption)
 {
-    // Cast an invalid value to FontSize
-    const auto invalidSize = static_cast<UI::FontSize>(999);
-    // Default should be 1 (Medium)
-    EXPECT_EQ(findFontSizeIndex(invalidSize), 1U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 100, &RefreshRateOption::valueMs), 0U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 250, &RefreshRateOption::valueMs), 1U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 500, &RefreshRateOption::valueMs), 2U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 1000, &RefreshRateOption::valueMs), 3U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 2000, &RefreshRateOption::valueMs), 4U);
+    EXPECT_EQ(optionIndexOf(REFRESH_RATE_OPTIONS, 5000, &RefreshRateOption::valueMs), 5U);
+    EXPECT_FALSE(optionIndexOf(REFRESH_RATE_OPTIONS, 0, &RefreshRateOption::valueMs).has_value());
+    EXPECT_FALSE(optionIndexOf(REFRESH_RATE_OPTIONS, -1, &RefreshRateOption::valueMs).has_value());
 }
 
-// ========================================
-// Refresh Rate Index Tests
-// ========================================
-
-TEST(SettingsLayerDetailTest, FindRefreshRateIndexReturnsCorrectIndices)
+TEST(SettingsLayerDetailTest, OptionIndexOfMapsEveryHistoryDurationToItsOption)
 {
-    EXPECT_EQ(findRefreshRateIndex(100), 0U);
-    EXPECT_EQ(findRefreshRateIndex(250), 1U);
-    EXPECT_EQ(findRefreshRateIndex(500), 2U);
-    EXPECT_EQ(findRefreshRateIndex(1000), 3U);
-    EXPECT_EQ(findRefreshRateIndex(2000), 4U);
-    EXPECT_EQ(findRefreshRateIndex(5000), 5U);
-}
-
-TEST(SettingsLayerDetailTest, FindRefreshRateIndexReturnsDefaultForInvalid)
-{
-    // Invalid values should return default index 3 (1 second)
-    EXPECT_EQ(findRefreshRateIndex(0), 3U);
-    EXPECT_EQ(findRefreshRateIndex(999), 3U);
-    EXPECT_EQ(findRefreshRateIndex(-1), 3U);
-    EXPECT_EQ(findRefreshRateIndex(10000), 3U);
-}
-
-// ========================================
-// History Duration Index Tests
-// ========================================
-
-TEST(SettingsLayerDetailTest, FindHistoryIndexReturnsCorrectIndices)
-{
-    EXPECT_EQ(findHistoryIndex(60), 0U);  // 1 minute
-    EXPECT_EQ(findHistoryIndex(120), 1U); // 2 minutes
-    EXPECT_EQ(findHistoryIndex(300), 2U); // 5 minutes
-    EXPECT_EQ(findHistoryIndex(600), 3U); // 10 minutes
-}
-
-TEST(SettingsLayerDetailTest, FindHistoryIndexReturnsDefaultForInvalid)
-{
-    // Invalid values should return default index 2 (5 minutes)
-    EXPECT_EQ(findHistoryIndex(0), 2U);
-    EXPECT_EQ(findHistoryIndex(30), 2U);
-    EXPECT_EQ(findHistoryIndex(90), 2U);
-    EXPECT_EQ(findHistoryIndex(1000), 2U);
-    EXPECT_EQ(findHistoryIndex(-1), 2U);
+    EXPECT_EQ(optionIndexOf(HISTORY_OPTIONS, 60, &HistoryOption::valueSeconds), 0U);
+    EXPECT_EQ(optionIndexOf(HISTORY_OPTIONS, 120, &HistoryOption::valueSeconds), 1U);
+    EXPECT_EQ(optionIndexOf(HISTORY_OPTIONS, 300, &HistoryOption::valueSeconds), 2U);
+    EXPECT_EQ(optionIndexOf(HISTORY_OPTIONS, 600, &HistoryOption::valueSeconds), 3U);
+    EXPECT_FALSE(optionIndexOf(HISTORY_OPTIONS, 0, &HistoryOption::valueSeconds).has_value());
+    EXPECT_FALSE(optionIndexOf(HISTORY_OPTIONS, -1, &HistoryOption::valueSeconds).has_value());
 }
 
 // ========================================

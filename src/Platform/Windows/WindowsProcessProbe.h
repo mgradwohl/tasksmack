@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -24,10 +25,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -42,19 +46,116 @@
 #include <mstcpip.h>
 // clang-format on
 
+#include "WindowsEnergyMeter.h"
+#include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
+
 namespace Platform
 {
+
+/// The Win32/NT calls WindowsProcessProbe makes (#1718): the system's by default
+/// (WindowsProcessProbe::systemFunctions()), fakes in tests, so the EStats network counters,
+/// processor-group affinity and per-process detail reads, and their failures, can be tested
+/// without elevation, a multi-group machine or a process that refuses them. Grouped by area.
+/// Every member must be set, except those noted as nullable.
+struct WindowsProcessProbeFunctions
+{
+    /// iphlpapi.dll's TCP EStats exports. Any may be null: without the IPv4 pair network counters
+    /// are off; without the IPv6 pair (#1100) only IPv4 connections are walked.
+    struct TcpEStats
+    {
+        using GetFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+        using SetFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+        using Get6Fn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+        using Set6Fn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+
+        GetFn getPerTcpConnectionEStats = nullptr;
+        SetFn setPerTcpConnectionEStats = nullptr;
+        Get6Fn getPerTcp6ConnectionEStats = nullptr;
+        Set6Fn setPerTcp6ConnectionEStats = nullptr;
+    };
+
+    struct Network
+    {
+        /// Resolve the EStats exports, loading iphlpapi.dll into @p ownedModule (freed with the
+        /// probe) if no one has loaded it. Called only when elevated.
+        TcpEStats (*loadTcpEStats)(Windows::UniqueModule& ownedModule) = nullptr;
+        DWORD(WINAPI* getExtendedTcpTable)(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG) = nullptr;
+    } network;
+
+    struct System
+    {
+        Windows::NtQuerySystemInformationFn ntQuerySystemInformation = nullptr; // Nullable: nothing is enumerated
+        WORD(WINAPI* getMaximumProcessorGroupCount)() = nullptr;
+        DWORD(WINAPI* getMaximumProcessorCount)(WORD) = nullptr;
+        BOOL(WINAPI* getLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,
+                                                       PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+                                                       PDWORD) = nullptr;
+        std::uint32_t (*windowsBuildNumber)() = nullptr; // 0 if unknown
+        /// The detail caches' clock (steady_clock::now()), so tests can hold time still or move it on
+        /// rather than depend on how fast they run (#2054).
+        std::chrono::steady_clock::time_point (*steadyNow)() = nullptr;
+        /// The machine Windows runs as (Windows::nativeMachine()), read once at construction, against which
+        /// a process's architecture is emulated or not (#2394). Nullable: every process's is then named alone.
+        std::uint16_t (*nativeMachine)() = nullptr;
+    } system;
+
+    struct Token
+    {
+        BOOL(WINAPI* openProcessToken)(HANDLE, DWORD, PHANDLE) = nullptr;
+        BOOL(WINAPI* getTokenInformation)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD) = nullptr;
+        BOOL(WINAPI* lookupAccountSidW)(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PSID_NAME_USE) = nullptr;
+    } token;
+
+    struct Process
+    {
+        HANDLE(WINAPI* openProcess)(DWORD, BOOL, DWORD) = nullptr;
+        DWORD(WINAPI* getPriorityClass)(HANDLE) = nullptr;
+        BOOL(WINAPI* queryFullProcessImageNameW)(HANDLE, DWORD, LPWSTR, PDWORD) = nullptr;
+        /// ntdll's NtQueryInformationProcess, its class passed as a ULONG. Nullable: status and
+        /// command line are then not read.
+        LONG(NTAPI* ntQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG) = nullptr;
+        /// GetProcessInformation: the power-throttling state behind Efficiency Mode (#2312).
+        BOOL(WINAPI* getProcessInformation)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD) = nullptr;
+        DWORD(WINAPI* getGuiResources)(HANDLE, DWORD) = nullptr;
+        BOOL(WINAPI* getProcessAffinityMask)(HANDLE, PDWORD_PTR, PDWORD_PTR) = nullptr;
+        BOOL(WINAPI* getProcessGroupAffinity)(HANDLE, PUSHORT, PUSHORT) = nullptr;
+        DWORD(WINAPI* getProcessId)(HANDLE) = nullptr;
+        HANDLE(WINAPI* openThread)(DWORD, BOOL, DWORD) = nullptr;
+        DWORD(WINAPI* getProcessIdOfThread)(HANDLE) = nullptr;
+        BOOL(WINAPI* getThreadGroupAffinity)(HANDLE, PGROUP_AFFINITY) = nullptr;
+        /// The machine a process runs as (Windows::processMachine(): ProcessMachineTypeInfo, else
+        /// IsWow64Process2), read once per process for its architecture (#2394). Nullable: not read.
+        std::uint16_t (*processMachine)(HANDLE) = nullptr;
+    } process;
+
+    /// The EMI energy meter device calls behind per-process power (#2587), opened on the probe's
+    /// one-shot opener thread. Nullable (nullopt): no energy meter is looked for, and power is not
+    /// claimed, so a test's fake probe starts no thread and touches no device.
+    std::optional<Windows::EnergyMeterFunctions> energyMeter = std::nullopt;
+};
 
 /// Windows implementation of IProcessProbe.
 /// Uses a single bulk NtQuerySystemInformation(SystemProcessInformation) snapshot per sample
 /// (PIDs, names, CPU times, memory, I/O, handle/thread counts, thread states), plus TTL-cached
 /// per-process details (owner, command line, publisher, classification, priority) refreshed via
 /// short-lived handles.
+/// Per-process power (#2587) is the CPU packages' energy from the EMI energy meters
+/// (WindowsEnergyMeter.h), read raw each sample by readPackageEnergy() and shared out by CPU time
+/// in Domain, as Linux's RAPL counter is. The meters are enumerated and opened once, on the
+/// ts-emi-open worker started at construction (SetupAPI can stall on a slow ACPI call, so never on
+/// the thread that builds the probe); hasPowerUsage turns true once it finds a package channel, and
+/// stays false where there is none.
 class WindowsProcessProbe : public IProcessProbe
 {
   public:
     WindowsProcessProbe();
+    /// Make every Win32/NT call through @p functions rather than the system's (tests, #1718).
+    explicit WindowsProcessProbe(const WindowsProcessProbeFunctions& functions);
     ~WindowsProcessProbe() override;
+
+    /// The real calls: the Win32 APIs themselves, and ntdll's exports resolved once.
+    [[nodiscard]] static WindowsProcessProbeFunctions systemFunctions();
 
     WindowsProcessProbe(const WindowsProcessProbe&) = delete;
     WindowsProcessProbe& operator=(const WindowsProcessProbe&) = delete;
@@ -66,15 +167,33 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
-    /// Keeps no per-connection state between calls: a connection whose EStats read fails is
-    /// reported unreadable and Domain keeps its baseline (#1256). The only state it updates is the
-    /// one-time EStats verification (#1161, verifyEStats()), whose inconclusive-sample streak
-    /// assumes one caller at a time: ProcessModel::refresh() is the only caller, under its sampling
-    /// lock. Concurrent calls stay data-race-free (atomics), but each would extend the streak.
+    /// Keeps no per-connection traffic state between calls: a connection whose EStats read fails
+    /// is reported unreadable and Domain keeps its baseline (#1256). It updates the set of
+    /// connections whose EStats collection it already enabled (#1418, m_EStatsEnabled, under
+    /// m_EStatsEnableMutex) and the one-time EStats verification (#1161, verifyEStats()), whose
+    /// inconclusive-sample streak assumes one caller at a time: ProcessModel::refresh() is the only
+    /// caller, under its sampling lock. Concurrent calls stay data-race-free (atomics and the
+    /// mutex), but each would extend the streak.
+    /// While the opt-in UDP collector (#1492) delivers, a complete reading also carries each
+    /// process's UDP bytes as one synthetic connection (EtwNet::appendUdpSamples()).
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
+    /// The CPU packages' cumulative energy from the EMI meters (#2587), with the busy CPU ticks read
+    /// alongside, or nullopt while no package channel is open (none found, or the opener still running).
+    /// A read that fails (a meter gone) is a reading with no energy, so the interval reads as 0 W and
+    /// the baseline restarts, as on Linux; it is logged once, not per sample.
+    [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
+
+    /// The opt-in UDP collector (#1492), which App starts and stops; may be null.
+    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
+
   private:
-    bool m_IsElevated = false; // Process token elevation, queried once at construction (constant for the process lifetime)
+    /// The UDP collector, if one is set (#1492).
+    [[nodiscard]] std::shared_ptr<IUdpTrafficCollector> udpCollector() const;
+
+    WindowsProcessProbeFunctions m_Fns; // Every Win32/NT call below goes through these (#1718)
+    bool m_IsElevated = false;          // Process token elevation, queried once at construction (constant for the process lifetime)
+    std::uint16_t m_NativeMachine = 0;  // The machine Windows runs as (IMAGE_FILE_MACHINE_*), read once at construction (#2394)
     // The network flags can flip after construction when the first real sample proves EStats
     // unusable (#1161). readSocketTraffic()'s const EStats walk writes them and capabilities() may read
     // them from another thread, hence mutable atomics.
@@ -84,24 +203,23 @@ class WindowsProcessProbe : public IProcessProbe
     mutable std::atomic<bool> m_EStatsVerified{false}; // A real sample has classified EStats (no more checks)
     std::chrono::milliseconds m_LightDetailTTL{1000};  // Default; tuned by total physical RAM in constructor
     std::chrono::milliseconds m_HeavyDetailTTL{5000};  // Default; tuned by total physical RAM in constructor
-    HMODULE m_IphlpModule = nullptr;                   // Non-null only when loaded by this class (must be freed in destructor)
+    Windows::UniqueModule m_IphlpModule;               // Non-null only when this class loaded iphlpapi.dll (freed on destruction)
 
     // Samples in a row whose established EStats reads were only NOT_FOUND / garbage (#1161)
     mutable std::atomic<std::size_t> m_EStatsInconclusiveSamples{0};
 
-    // EStats function signatures
-    using GetPerTcpConnectionEStatsFn =
-        DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
-    using SetPerTcpConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
-    // IPv6 twins (#1100): same shape, MIB_TCP6ROW instead of MIB_TCPROW
-    using GetPerTcp6ConnectionEStatsFn =
-        DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
-    using SetPerTcp6ConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+    // Connections whose EStats collection is already enabled, so each is enabled once rather than
+    // every sample (#1418). readSocketTraffic() is const and documented safe to call concurrently,
+    // so the tracker is mutable and guarded: one lock covers both table walks and the prune.
+    mutable std::mutex m_EStatsEnableMutex;
+    mutable EStatsEnableTracker m_EStatsEnabled; // Guarded by m_EStatsEnableMutex
 
-    GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
-    SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
-    GetPerTcp6ConnectionEStatsFn m_GetPerTcp6ConnectionEStats = nullptr; // Null if unresolved: IPv6 is then skipped
-    SetPerTcp6ConnectionEStatsFn m_SetPerTcp6ConnectionEStats = nullptr;
+    // Resolved by detectNetworkCounters(). A null IPv6 pair skips IPv6 (#1100).
+    WindowsProcessProbeFunctions::TcpEStats m_EStats;
+
+    // The opt-in UDP collector (#1492): set from the App thread, read on the sampler's.
+    mutable std::mutex m_UdpCollectorMutex;
+    std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // Guarded by m_UdpCollectorMutex
 
     struct DetailCacheKey
     {
@@ -129,6 +247,8 @@ class WindowsProcessProbe : public IProcessProbe
         std::string status;
         std::string publisher;
         std::string processType;
+        std::string architecture;                   // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
+        bool architectureRead = false;              // Whether architecture above was read (with the first handle opened)
         std::optional<std::int32_t> gdiObjectCount; // GetGuiResources (light TTL, #1156)
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         CpuAffinity cpuAffinity;       // readCpuAffinity() (heavy TTL)
@@ -163,6 +283,9 @@ class WindowsProcessProbe : public IProcessProbe
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
+    /// The system-wide CPU time spent running processes (kernel less idle, plus user), in FILETIME
+    /// ticks: the energy attribution's share denominator (#2587). nullopt if GetSystemTimes failed.
+    [[nodiscard]] static std::optional<std::uint64_t> readBusyCpuTicks();
     // The highest total totalCpuTime() has returned, so it never steps backwards (#1303).
     mutable std::atomic<std::uint64_t> m_HighestTotalCpuTime{0};
 
@@ -176,8 +299,12 @@ class WindowsProcessProbe : public IProcessProbe
     /// reads and tallying the Set/Get results into counts (debug line and #1161 detection).
     /// Returns false if the table could not be read this time: the walk is then incomplete
     /// (#1256). A family whose EStats functions are unavailable is not walked and returns true.
-    [[nodiscard]] bool collectTcp4Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
-    [[nodiscard]] bool collectTcp6Reads(std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
+    /// @param enabled The enable tracker (#1418), passed in so the caller's m_EStatsEnableMutex
+    ///                lock visibly covers every use of it.
+    [[nodiscard]] bool
+    collectTcp4Reads(EStatsEnableTracker& enabled, std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
+    [[nodiscard]] bool
+    collectTcp6Reads(EStatsEnableTracker& enabled, std::vector<EStatsConnectionRead>& reads, EStatsSampleCounts& counts) const;
 
     /// Log the periodic EStats debug line and, until a real sample has, decide whether EStats
     /// works (#1161). Returns false if this sample proved it unusable (network counters now off).
@@ -194,6 +321,16 @@ class WindowsProcessProbe : public IProcessProbe
     std::chrono::steady_clock::time_point m_NextActiveMasksRead;
     bool m_ThreadsMaySpanGroups = true;      // threadsMaySpanGroups() for this Windows build
     std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
+
+    // The EMI package energy meters (#2587). The opener thread stores the opened meter under the
+    // mutex and then raises m_HasPackageEnergy; readPackageEnergy() (const, on the sampler thread)
+    // reads under the same mutex, so both are mutable. capabilities() reads only the atomic.
+    mutable std::mutex m_EnergyMeterMutex;
+    mutable Windows::EnergyMeter m_EnergyMeter;           // Guarded by m_EnergyMeterMutex
+    mutable std::vector<std::uint64_t> m_PackageEnergyUj; // Guarded by m_EnergyMeterMutex; reused scratch
+    mutable std::atomic<bool> m_HasPackageEnergy{false};
+    mutable std::atomic<bool> m_PackageEnergyReadFailed{false}; // A failed measurement read was logged
+    std::jthread m_EnergyMeterOpener;                           // Last: joined first, while the meter and the mutex are alive
 };
 
 } // namespace Platform

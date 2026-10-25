@@ -1,0 +1,189 @@
+name: Main Health
+
+# Keeps one tracking issue per branch (label `ci-red-main`, title "CI: <branch> is red") open while
+# any watched workflow's latest finished run on that branch failed, and closes it once they are all
+# green again (#1406). Main used to stay red for days without anyone noticing: benchmark-regression
+# Oct 2-5, Sanitizers asan-ubsan from Oct 8 (#1541). Each active release/* branch is tracked the
+# same way (#2741): a run on it judges that branch, and a manual dispatch re-reads main and every
+# release/* branch. workflow_run always runs this file from the default branch, with this file's
+# permissions.
+on:
+  workflow_run:
+    # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
+    # dispatch, so one failed dispatch would stay its latest main run and keep the issue red forever.
+    # CI's nightly schedule runs the same full clang-tidy and is watched as CI.
+    workflows: [CI, CodeQL Security Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit, ARM64]
+    types: [completed]
+    branches: [main, 'release/**']
+  workflow_dispatch:
+
+# Each run re-reads every watched workflow, so queued runs can collapse into the newest one.
+concurrency:
+  group: main-health
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  track:
+    name: Track red branches
+    # Only the branch's own runs (push, schedule, dispatch on main or a release branch); a PR from a
+    # branch named "main" in a fork would also match `branches:` above.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.conclusion != 'cancelled' &&
+       github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          LABEL: ci-red-main
+          # workflow file|display name
+          WATCHED: |-
+            ci.yml|CI
+            codeql.yml|CodeQL Security Analysis
+            sanitizers.yml|Sanitizers
+            heavy-checks.yml|Heavy Checks
+            osv-scanner.yml|OSV Dependency Scan
+            pre-commit.yml|Pre-commit
+            arm64.yml|ARM64
+          # Jobs that only some runs of one event execute (#2313): workflow file|display name|event|job id.
+          # CI's unity build runs only on the Sunday schedule, so the weekday nightly that follows a red
+          # Sunday skips it and passes; these are judged by the latest run that actually ran the job.
+          WATCHED_JOBS: |-
+            ci.yml|CI|schedule|build-linux-unity
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_NAME: ${{ github.event.workflow_run.name }}
+          TRIGGER_URL: ${{ github.event.workflow_run.html_url }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # Fills `red` with a line per watched workflow (or job) whose latest finished run on the
+          # branch failed. tests/tools/test_workflow_run_steps.py runs this function on its own.
+          judge_branch() {
+            local branch="$1"
+            red=""
+
+            # The latest *finished* run of each watched workflow on the branch, per event, ignoring
+            # cancelled and skipped runs. Push and schedule runs are tracked apart (#2131): several jobs
+            # run only on the nightly schedule (CI's Windows release and unity builds and full clang-tidy,
+            # Heavy Checks' sanitizers), so a later push run that skips them would otherwise pass for the
+            # whole workflow and close the issue while the nightly failure is still there. A workflow is
+            # red while either its latest push run or its latest schedule run failed. Manual dispatches
+            # are left out, like Static Analysis above: one failed dispatch would stay red forever. A
+            # release branch has push runs only (schedules run on the default branch).
+            while IFS='|' read -r file name; do
+              [[ -n "$file" ]] || continue
+              for event in push schedule; do
+                latest=$(gh api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=10" \
+                  --jq '[.workflow_runs[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0]
+                        | select(. != null) | "\(.conclusion)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
+                [[ -n "$latest" ]] || continue
+                IFS='|' read -r conclusion url sha created <<<"$latest"
+                echo "$name ($event): $conclusion ($sha, $url)"
+                if [[ "$conclusion" != 'success' && "$conclusion" != 'neutral' ]]; then
+                  red+="- **${name}** (${event}): \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
+                fi
+              done
+            done <<<"$WATCHED"
+
+            # A job that only some runs execute (#2313) keeps the result of the latest run in which it
+            # actually ran: runs that skipped or cancelled it neither clear nor set it. A reusable-workflow
+            # job is listed as "<job id> / <inner name>" when it ran and as "<job id>" when skipped. 20
+            # runs reach back about three weeks of nightlies; if none ran the job, nothing changes.
+            while IFS='|' read -r file name event job; do
+              [[ -n "$file" ]] || continue
+              while IFS='|' read -r run_id url sha created; do
+                [[ -n "$run_id" ]] || continue
+                conclusion=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" </dev/null \
+                  --jq "[.jobs[] | select(.name == \"$job\" or (.name | startswith(\"$job / \")))
+                         | .conclusion | select(. != null and . != \"skipped\" and . != \"cancelled\")]
+                        | if length == 0 then empty
+                          else (map(select(. != \"success\" and . != \"neutral\")) | first // \"success\") end")
+                [[ -n "$conclusion" ]] || continue
+                echo "$name ($job): $conclusion ($sha, $url)"
+                if [[ "$conclusion" != 'success' ]]; then
+                  red+="- **${name}** (${job}): \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
+                fi
+                break
+              done < <(gh api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=20" \
+                --jq '.workflow_runs[] | "\(.id)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
+            done <<<"$WATCHED_JOBS"
+          }
+
+          # Opens, updates or closes the branch's tracking issue from `red`.
+          update_issue() {
+            local branch="$1"
+            local title="CI: $branch is red"
+            # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
+            local issue
+            issue=$(gh api "repos/$REPO/issues?labels=$LABEL&state=open&per_page=50" \
+              --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+            local run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
+
+            if [[ -z "$red" ]]; then
+              if [[ -n "$issue" ]]; then
+                gh api "repos/$REPO/issues/$issue/comments" --silent \
+                  -f body="\`$branch\` is green again: the latest finished push and nightly runs of every watched workflow on \`$branch\` passed (closed by ${run_link})."
+                gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f state=closed -f state_reason=completed
+                echo "Closed #$issue."
+              else
+                echo "$branch is green; no tracking issue open."
+              fi
+              return 0
+            fi
+
+            local body="One or more workflows are failing on \`$branch\`. This issue is maintained by \`.github/workflows/main-health.yml\` (#1406): it is rewritten after every watched run on \`$branch\` and closed automatically once all of them pass again.
+
+          **Currently red** (latest finished, non-cancelled push or nightly run on \`$branch\`, or for a job listed by name, the latest run that ran it):
+
+          ${red}
+          File a separate bug for each root cause and link it here. Last updated by ${run_link}."
+
+            if [[ -z "$issue" ]]; then
+              gh api "repos/$REPO/labels" --silent -f name="$LABEL" -f color=B60205 \
+                -f description="Tracking issue: a workflow is failing on main or a release branch (main-health.yml)" 2>/dev/null || true
+              issue=$(gh api "repos/$REPO/issues" -f title="$title" -f body="$body" -f "labels[]=$LABEL" --jq .number)
+              echo "Opened #$issue."
+              return 0
+            fi
+
+            # Comment only when a workflow turns red that the issue didn't already list, so a workflow
+            # that stays red across several merges doesn't add a comment per merge.
+            local previous
+            previous=$(gh api "repos/$REPO/issues/$issue" --jq .body)
+            gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f body="$body"
+            if [[ "${TRIGGER_CONCLUSION:-}" == 'failure' || "${TRIGGER_CONCLUSION:-}" == 'timed_out' ]] &&
+               ! grep -qF -- "- **${TRIGGER_NAME}** (" <<<"$previous"; then
+              gh api "repos/$REPO/issues/$issue/comments" --silent \
+                -f body="**${TRIGGER_NAME}** turned red: ${TRIGGER_CONCLUSION} on \`${TRIGGER_SHA:0:8}\`: ${TRIGGER_URL}"
+            fi
+            echo "Updated #$issue."
+          }
+
+          # A watched run judges its own branch; a manual dispatch re-reads main and every release/*
+          # branch that exists.
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            mapfile -t branches < <({ echo main; gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name | select(startswith("release/"))'; })
+          else
+            branches=("$TRIGGER_BRANCH")
+          fi
+          for branch in "${branches[@]}"; do
+            echo "::group::$branch"
+            judge_branch "$branch"
+            update_issue "$branch"
+            echo "::endgroup::"
+          done
