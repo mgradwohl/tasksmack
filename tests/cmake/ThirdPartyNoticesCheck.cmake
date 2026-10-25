@@ -5,6 +5,11 @@
 
 include("${TS_SOURCE_DIR}/cmake/ThirdPartyNotices.cmake")
 set(CMAKE_SOURCE_DIR "${TS_SOURCE_DIR}")
+# The toml++ notice names the patch Dependencies.cmake sets (#2779), which a -P script doesn't include.
+set(TASKSMACK_TOMLPLUSPLUS_PATCH "${TS_SOURCE_DIR}/cmake/patches/tomlplusplus-parse-assertions.patch")
+if(NOT EXISTS "${TASKSMACK_TOMLPLUSPLUS_PATCH}")
+    message(FATAL_ERROR "toml++ patch not found where Dependencies.cmake names it: ${TASKSMACK_TOMLPLUSPLUS_PATCH}")
+endif()
 file(MAKE_DIRECTORY "${TS_WORK_DIR}")
 
 if(TS_CASE STREQUAL "real")
