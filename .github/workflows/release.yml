@@ -653,11 +653,14 @@ jobs:
           }
 
       - name: Sign in to Azure (OIDC)
+        # A tenant-level sign-in: the app's only role is Artifact Signing Certificate Profile Signer on the
+        # signing account, which doesn't make the subscription visible to it, so a subscription sign-in
+        # fails with "No subscriptions found". Signing needs only the Code Signing data-plane token (#2302).
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Sign with Azure Artifact Signing
         # SHA-256 file digests and an RFC 3161 SHA-256 timestamp from Microsoft's timestamp service:

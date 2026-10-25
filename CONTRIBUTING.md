@@ -2955,7 +2955,7 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 | Certificate profile | `tasksmack-release` (Public Trust) |
 | Expected signer CN | `Matt Gradwohl` (`WINDOWS_EXPECTED_SIGNER` in `release.yml`, `TASKSMACK_EXPECTED_SIGNER` in CMake) |
 | GitHub environment | `release-signing`: admits `v*` tags and the `main`, `release/*` and `candidate/*` branches |
-| Sign-in | GitHub OIDC; the environment's `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
+| Sign-in | GitHub OIDC; a tenant-level sign-in (`allow-no-subscriptions`); the environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
 
 **When it signs.** `SIGNING_ENABLED` at the top of `release.yml` is true exactly when the run may
 enter `release-signing`: every tag run, and dry runs dispatched from `main`, `release/*` or
