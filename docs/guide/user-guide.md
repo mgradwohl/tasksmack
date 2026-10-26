@@ -100,8 +100,10 @@ Building from source lets you target other microarchitectures instead:
 | Preset | Target microarchitecture | Minimum CPU |
 |--------|--------------------------|-------------|
 | `release` / `win-release` | Default compiler optimizations | Any x86-64 |
-| `release-compatible` / `win-release-compatible` | x86-64-v2 | 2009+ (Core i3/i5/i7, Athlon II) |
+| `release-compatible` / `win-release-compatible` | x86-64-v2 (SSSE3, SSE4.1, SSE4.2, POPCNT) | Intel Nehalem (first-generation Core i3/i5/i7) and later / AMD Bulldozer (FX) and later, and Jaguar-based chips |
 | `optimized` / `win-optimized` | x86-64-v3 (AVX2) | Intel Haswell 2013+ / AMD Excavator 2015+ |
+
+x86-64-v2 needs SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT and CMPXCHG16B. Some CPUs from the same era lack part of that set, such as AMD's Athlon II and Phenom II (which have SSE4a, not SSSE3 or SSE4.1/4.2) and Intel's Core 2, so check the CPU's feature flags rather than its age or brand: on Linux, `/lib64/ld-linux-x86-64.so.2 --help` (glibc 2.33 or newer) lists `x86-64-v2 (supported, searched)` when the CPU qualifies. A CPU without them uses the plain `release` / `win-release` preset, which targets the baseline x86-64.
 
 See [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#cpu-compatibility) for build instructions. An "Illegal instruction" crash on launch from an `optimized` build means the CPU has no AVX2; see the [FAQ](faq.md#illegal-instruction-error-on-launch).
 

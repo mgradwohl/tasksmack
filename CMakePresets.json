@@ -114,7 +114,7 @@
         {
             "name": "release-compatible",
             "displayName": "Release (Compatible)",
-            "description": "Release build compatible with older CPUs (x86-64-v2, 2009+)",
+            "description": "Release build compatible with older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs)",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -313,7 +313,7 @@
         {
             "name": "win-release-compatible",
             "displayName": "Windows Release (Compatible)",
-            "description": "Release build compatible with older CPUs (x86-64-v2, 2009+)",
+            "description": "Release build compatible with older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs)",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-release-compatible",
             "cacheVariables": {
