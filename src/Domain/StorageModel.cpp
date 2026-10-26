@@ -210,6 +210,18 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
         state.hasPrev = true;
     }
 
+    // A disk missing from this sample has no baseline any more (#2995): whatever appears under its name next
+    // may be another device (a replacement USB disk, say) whose counters started elsewhere, so it is seeded
+    // afresh, a gap, rather than measured against the removed disk's. Its history stays for the window.
+    for (auto& [deviceName, state] : diskStates)
+    {
+        if (!seen.contains(deviceName))
+        {
+            state.hasPrev = false;
+            state.isSeedTransition = false;
+        }
+    }
+
     // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()). Each
     // device name is in snapshot.disks once, so no disk is added twice.
     bool anyRates = false;
