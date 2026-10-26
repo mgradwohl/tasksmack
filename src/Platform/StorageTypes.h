@@ -25,6 +25,11 @@ struct DiskCounters
     // Device info (may not be available on all platforms)
     uint64_t sectorSize = 512;    // Sector size in bytes (typically 512 or 4096)
     bool isPhysicalDevice = true; // False for loop devices, partitions on some systems
+
+    // Whether the I/O counters above were read from the device. False when the probe can list the
+    // device but not read its counters (Windows' logical-drive fallback, #2994): they are zeros, not a
+    // measurement, so the Domain records no rates for it -- a gap, not 0 B/s.
+    bool hasIoCounters = true;
 };
 
 /// Aggregate counters for all disks combined.

@@ -910,6 +910,48 @@ TEST(StorageModelTest, SeedSampleIsAGapNotAFalseZero)
     EXPECT_DOUBLE_EQ(totals[2], 2000.0 * 512.0);
 }
 
+TEST(StorageModelTest, CountersTheProbeCouldNotReadAreAGapNotAnIdleDisk)
+{
+    // #2994: Windows' logical-drive fallback lists the fixed drives with zero counters it never read.
+    // They used to plot 0 B/s, measured, however busy the disk was; their history is a gap, and the
+    // first counters read afterwards are a fresh baseline, not a delta from those zeros.
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* mockProbe = probe.get();
+    Platform::SystemDiskCounters counters;
+    counters.disks.push_back({.deviceName = "C:", .sectorSize = 512, .hasIoCounters = false});
+    mockProbe->setNextCounters(counters);
+
+    Domain::StorageModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
+    model.sampleAt(start + std::chrono::seconds(1));
+    model.sampleAt(start + std::chrono::seconds(2));
+
+    const auto unread = model.publication()->snapshot;
+    ASSERT_EQ(unread.disks.size(), 1U);
+    EXPECT_FALSE(unread.disks[0].hasRates);
+    EXPECT_FALSE(unread.totalsMeasured);
+
+    counters.disks[0].hasIoCounters = true;
+    counters.disks[0].readSectors = 1'000'000;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(3)); // The first real read: a baseline
+    counters.disks[0].readSectors += 2000;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(4));
+
+    const auto history = model.publication()->perDiskHistory;
+    ASSERT_EQ(history.size(), 1U);
+    ASSERT_EQ(history[0].readBytesPerSec.size(), 5U);
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[i])) << i;
+        EXPECT_TRUE(std::isnan(model.publication()->totalReadHistory[i])) << i;
+    }
+    EXPECT_DOUBLE_EQ(history[0].readBytesPerSec[4], 2000.0 * 512.0);
+    EXPECT_DOUBLE_EQ(model.publication()->totalReadHistory[4], 2000.0 * 512.0);
+}
+
 TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)
 {
     // #1291: a reinitialised or re-registered device counter can jump by a disk's lifetime bytes in
