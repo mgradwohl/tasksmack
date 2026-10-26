@@ -1283,6 +1283,35 @@ TEST(PkexecBrokerTest, TheHelperListsTheProcessesTaskSmackDoesntSee)
     EXPECT_TRUE(found->cmdline.has_value());
 }
 
+// #2728: the helper's service actions go over the system bus it opened before its sandbox; under the
+// enforcing filter, systemd still answers through it (here: no such unit), and a name that isn't a
+// service's is refused before anything is sent.
+TEST(PkexecBrokerTest, TheHelperActsOnServicesOverTheBusItHeldBeforeItsSandbox)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto start = [&broker](std::string unit)
+    {
+        const auto response = broker.call(
+            Broker::ServiceActionRequest{.action = ServiceAction::Start, .unit = std::move(unit), .startType = {}}, std::stop_token{});
+        EXPECT_TRUE(response.has_value()) << response.error();
+        return response.has_value() && std::holds_alternative<Broker::ServiceActionReply>(*response)
+                 ? std::get<Broker::ServiceActionReply>(*response).result
+                 : ServiceActionResult::failed("no ServiceActionReply");
+    };
+    const ServiceActionResult badName = start("../etc/passwd.service");
+    EXPECT_FALSE(badName.ok);
+    EXPECT_EQ(badName.message, "Not a service's unit name");
+
+    const ServiceActionResult missing = start("tasksmack-test-no-such-unit.service");
+    EXPECT_FALSE(missing.ok);
+    if (std::filesystem::is_directory("/run/systemd/system"))
+    {
+        EXPECT_NE(missing.message, "The helper couldn't reach systemd") << "the held bus should answer under the sandbox";
+        EXPECT_FALSE(missing.message.empty());
+    }
+}
+
 TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)
 {
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);

@@ -17,6 +17,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
@@ -33,6 +34,8 @@
 #include "Platform/Linux/LinuxProcessOpenFilesReader.h"
 #include "Platform/Linux/MemoryRollupRead.h"
 #include "Platform/Linux/ProcessCountersRead.h"
+#include "Platform/Linux/SystemdActions.h"
+#include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdJournal.h"
 #include "Platform/PlatformConfig.h"
 
@@ -46,6 +49,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -102,6 +106,52 @@ constexpr int EXIT_UNTRUSTED_PEER = 3;
     return uid;
 }
 
+/// Opens and keeps the system bus for service actions (#2728) where systemd is the init system; false
+/// when it isn't, or the bus couldn't be reached (or opened at all), so service actions then say so.
+[[nodiscard]] bool holdSystemBus() noexcept
+{
+    try
+    {
+        std::error_code ec;
+        return std::filesystem::is_directory("/run/systemd/system", ec) && !Platform::SystemdBus::holdSystemBusForActions().has_value();
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+/// @p request done over the held system bus (#2728), when @p busHeld and its unit is a service's name.
+[[nodiscard]] Platform::ServiceActionResult serviceAction(const Platform::Broker::ServiceActionRequest& request, bool busHeld)
+{
+    using Platform::ServiceActionResult;
+    if (!busHeld)
+    {
+        return ServiceActionResult::failed("The helper couldn't reach systemd");
+    }
+    if (!Platform::SystemdActions::isServiceUnitName(request.unit))
+    {
+        return ServiceActionResult::failed("Not a service's unit name");
+    }
+    const std::stop_token never; // the action is TaskSmack's to cancel, by not waiting for the answer
+    switch (request.action)
+    {
+    case Platform::ServiceAction::Start:
+        return Platform::SystemdBus::startUnit(request.unit, never);
+    case Platform::ServiceAction::Stop:
+        return Platform::SystemdBus::stopUnit(request.unit, never);
+    case Platform::ServiceAction::Restart:
+    {
+        // As LinuxServiceActions::restart(): stop, then start, so running dependents are never taken down.
+        ServiceActionResult stopped = Platform::SystemdBus::stopUnit(request.unit, never);
+        return stopped.ok ? Platform::SystemdBus::startUnit(request.unit, never) : stopped;
+    }
+    case Platform::ServiceAction::SetStartType:
+        return Platform::SystemdBus::setUnitStartType(request.unit, request.startType);
+    }
+    return ServiceActionResult::failed("Not a service action");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -123,6 +173,10 @@ int main(int argc, char** argv)
         std::fputs("tasksmack-helper: stdin isn't a socket from the process that started this, as its user\n", stderr);
         return EXIT_UNTRUSTED_PEER;
     }
+    // The system bus, opened while still root and before the sandbox, which allows no new socket (#2728):
+    // service actions go over this one connection as root, so systemd asks for no password. Only where
+    // systemd is the init system; without it, service actions say so.
+    const bool systemBusHeld = holdSystemBus();
     // Before any request, reader or thread: keep only what the protocol needs of root (#2640).
     if (Platform::HelperPrivileges::dropToKeptCapabilities(Platform::HelperPrivileges::NOBODY) ==
         Platform::HelperPrivileges::DropResult::Failed)
@@ -171,6 +225,9 @@ int main(int argc, char** argv)
             // The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
             .hiddenProcesses = [](std::span<const std::int32_t> visiblePids)
             { return Platform::Linux::listHiddenProcessesAt("/proc", visiblePids); },
+            // Services started, stopped or given a start type, over the bus held above (#2728)
+            .serviceAction = [systemBusHeld](const Platform::Broker::ServiceActionRequest& request)
+            { return serviceAction(request, systemBusHeld); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
             // Every user's crashes: the journal and core files as root (#2310)

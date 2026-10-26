@@ -7,6 +7,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 
 #include <exception>
 #include <expected>
@@ -194,6 +195,23 @@ namespace
     }
 }
 
+/// A service action (#2728): a helper without the reader (Windows') answers with an error.
+[[nodiscard]] Broker::Response handleServiceAction(const Broker::ServiceActionRequest& request, const Readers& readers)
+{
+    if (!readers.serviceAction)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't act on services"};
+    }
+    try
+    {
+        return Broker::ServiceActionReply{.result = readers.serviceAction(request)};
+    }
+    catch (const std::exception& error)
+    {
+        return Broker::ServiceActionReply{.result = ServiceActionResult::failed(std::string("The service action failed: ") + error.what())};
+    }
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -287,6 +305,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::HiddenProcessesRequest>(&request))
     {
         return handleHiddenProcesses(*read, readers);
+    }
+    if (const auto* service = std::get_if<Broker::ServiceActionRequest>(&request))
+    {
+        return handleServiceAction(*service, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {

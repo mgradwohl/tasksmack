@@ -1310,7 +1310,9 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::CrashesRequest{}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ProcessCountersRequest{.targets = {TARGET}}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::HiddenProcessesRequest{.visiblePids = {TARGET.pid}}));
-    static_assert(std::variant_size_v<Broker::Request> == 14, "a new request kind: add it above");
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::ServiceActionRequest{}));
+    EXPECT_FALSE(BrokerPipeServer::isActionWindowsDoes(Broker::ServiceActionRequest{})) << "an ErrorReply";
+    static_assert(std::variant_size_v<Broker::Request> == 15, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)
