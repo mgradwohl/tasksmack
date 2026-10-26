@@ -3,7 +3,9 @@
 /// adapter list's linked lists (unicast addresses, gateways, DNS servers) walked, address, prefix and MAC
 /// formatting, the loopback adapter left out, the default gateway of the lowest metric, DNS servers
 /// collected from the up adapters without repeats or Windows' fec0 placeholders, DHCP, a list that grows
-/// between the size answer and the copy, the list failing or empty; then the Wi-Fi connection decoded
+/// between the size answer and the copy, the list failing or empty; against a fake GetIpForwardTable2, the
+/// default gateway of the cheapest default route, interface plus route metric, for IPv4 and IPv6, several
+/// on one interface, none usable, and the table unreadable (#2996); then the Wi-Fi connection decoded
 /// (network name, quality, RSSI, PHY, band, channel, rates), the location-access denial, the channel
 /// alone, no wlanapi.dll, the service not running, and every WLAN answer freed; without the Wi-Fi details
 /// asked for, none of the location-gated calls made (#1782). Plus one read of this machine through the
@@ -186,6 +188,10 @@ struct FakeState
     ULONG bssFrequencyKhz = 5'180'000;
     bool bssListFails = false;
 
+    std::vector<MIB_IPFORWARD_ROW2> routes; ///< The route table, both families
+    DWORD routeStatus = NO_ERROR;           ///< GetIpForwardTable2's answer when not NO_ERROR
+    int routeReads = 0;                     ///< GetIpForwardTable2 calls
+
     std::map<WLAN_INTF_OPCODE, int> queries; ///< WlanQueryInterface calls, by opcode
     int bssLists = 0;                        ///< WlanGetNetworkBssList calls
 
@@ -333,6 +339,58 @@ VOID WINAPI fakeFree(PVOID memory)
     std::free(memory); // NOLINT(cppcoreguidelines-no-malloc)
 }
 
+/// The routes of @p family as a FreeMibTable-able table, as GetIpForwardTable2 answers: ERROR_NOT_FOUND
+/// for none.
+DWORD WINAPI fakeGetIpForwardTable2(ADDRESS_FAMILY family, PMIB_IPFORWARD_TABLE2* table)
+{
+    ++g_State.routeReads;
+    if (g_State.routeStatus != NO_ERROR)
+    {
+        return g_State.routeStatus;
+    }
+    std::vector<MIB_IPFORWARD_ROW2> rows;
+    const auto ofFamily = [family](const MIB_IPFORWARD_ROW2& row)
+    {
+        return row.DestinationPrefix.Prefix.si_family == family; // NOLINT(cppcoreguidelines-pro-type-union-access) - the shared tag
+    };
+    std::ranges::copy_if(g_State.routes, std::back_inserter(rows), ofFamily);
+    if (rows.empty())
+    {
+        return ERROR_NOT_FOUND;
+    }
+    const std::size_t bytes = sizeof(MIB_IPFORWARD_TABLE2) + ((rows.size() - 1) * sizeof(MIB_IPFORWARD_ROW2));
+    MIB_IPFORWARD_TABLE2 head{}; // NOLINT(bugprone-invalid-enum-default-initialization) - zeroed like the real table
+    head.NumEntries = static_cast<ULONG>(rows.size());
+    auto* value = static_cast<PMIB_IPFORWARD_TABLE2>(allocate(head, bytes));
+    std::memcpy(&value->Table[0], rows.data(), rows.size() * sizeof(MIB_IPFORWARD_ROW2));
+    *table = value;
+    return NO_ERROR;
+}
+
+/// A route through the interface @p luid to @p nextHop ("0.0.0.0" or "::" for on-link), a default route
+/// unless @p prefixLength says otherwise.
+[[nodiscard]] MIB_IPFORWARD_ROW2 route(std::uint64_t luid, const char* nextHop, ULONG metric, UINT8 prefixLength = 0)
+{
+    MIB_IPFORWARD_ROW2 row{}; // NOLINT(bugprone-invalid-enum-default-initialization) - zeroed like the real table
+    const bool v6 = std::strchr(nextHop, ':') != nullptr;
+    row.InterfaceLuid.Value = luid;
+    row.DestinationPrefix.PrefixLength = prefixLength;
+    row.Metric = metric;
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - si_family says which member is set
+    row.DestinationPrefix.Prefix.si_family = v6 ? AF_INET6 : AF_INET;
+    row.NextHop.si_family = v6 ? AF_INET6 : AF_INET;
+    if (v6)
+    {
+        EXPECT_EQ(inet_pton(AF_INET6, nextHop, &row.NextHop.Ipv6.sin6_addr), 1) << nextHop;
+    }
+    else
+    {
+        EXPECT_EQ(inet_pton(AF_INET, nextHop, &row.NextHop.Ipv4.sin_addr), 1) << nextHop;
+    }
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    return row;
+}
+
 constexpr std::uint64_t FAKE_NOW = 1'760'000'000;
 
 /// The reads that ask for the location-gated Wi-Fi details, as after "Show Wi-Fi details" (#1782).
@@ -355,6 +413,15 @@ std::uint64_t fakeNow()
         .wlanFreeMemory = &fakeFree,
         .nowUnix = &fakeNow,
     };
+}
+
+/// fakeFunctions() with the fake route table (#2996); fakeFunctions() alone has none, as when it can't be read.
+[[nodiscard]] Functions fakeFunctionsWithRoutes()
+{
+    Functions fns = fakeFunctions();
+    fns.getIpForwardTable2 = &fakeGetIpForwardTable2;
+    fns.freeMibTable = &fakeFree;
+    return fns;
 }
 
 [[nodiscard]] const NetworkAdapter* find(const NetworkAdaptersInfo& info, const std::string& name)
@@ -505,6 +572,169 @@ TEST_F(WindowsNetworkAdaptersTest, LowestMetricGatewayDnsFromUpAdaptersAndDhcp)
     EXPECT_FALSE(find(info, "VPN")->dhcpEnabled.has_value()) << "IPv4 not enabled: DHCP isn't known";
 }
 
+TEST_F(WindowsNetworkAdaptersTest, RouteMetricsReverseTheInterfaceOrderV4)
+{
+    FakeAdapter vpn(L"VPN", "{BBBBBBBB-0000-0000-0000-000000000003}");
+    vpn.raw().Luid.Value = 3;
+    vpn.raw().Ipv4Metric = 5;
+    vpn.gateway("10.8.0.1");
+    FakeAdapter lan(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    lan.raw().Luid.Value = 2;
+    lan.raw().Ipv4Metric = 25;
+    lan.gateway("192.168.0.1");
+    FakeAdapter down(L"Bluetooth Network Connection", "{CCCCCCCC-0000-0000-0000-000000000004}");
+    down.raw().Luid.Value = 4;
+    down.raw().OperStatus = IfOperStatusDown;
+    down.raw().Ipv4Metric = 1;
+    down.gateway("172.16.0.1");
+    g_State.adapters = {&lan, &down, &vpn};
+    g_State.routes = {
+        route(3, "10.8.0.1", 100),  // 5 + 100 = 105
+        route(3, "10.8.0.1", 0, 8), // 10.0.0.0/8: not a default route
+        route(2, "192.168.0.1", 0), // 25 + 0 = 25: the cheapest
+        route(4, "172.16.0.1", 0),  // through a down adapter
+        route(99, "192.0.2.1", 0),  // through an interface not listed
+    };
+
+    NetworkAdaptersInfo byInterface;
+    readNetworkAdapters(byInterface, fakeFunctions(), WITH_DETAILS);
+    EXPECT_EQ(byInterface.gatewayV4Adapter, "VPN") << "the interface metric alone picks the VPN";
+
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctionsWithRoutes(), WITH_DETAILS);
+    EXPECT_EQ(info.gatewayV4, "192.168.0.1") << "the route's metric plus the interface's: 25 beats 105";
+    EXPECT_EQ(info.gatewayV4Adapter, "Ethernet");
+    EXPECT_TRUE(info.gatewayV6.empty()) << "no IPv6 route at all";
+    EXPECT_TRUE(info.gatewayV6Adapter.empty());
+    EXPECT_EQ(g_State.routeReads, 2) << "one table per family";
+    const NetworkAdapter* tunnel = find(info, "VPN");
+    ASSERT_NE(tunnel, nullptr);
+    EXPECT_EQ(tunnel->gateways, (std::vector<std::string>{"10.8.0.1"})) << "each adapter's own gateways are unchanged";
+}
+
+TEST_F(WindowsNetworkAdaptersTest, RouteMetricsReverseTheInterfaceOrderV6)
+{
+    FakeAdapter lan(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    lan.raw().Luid.Value = 2;
+    lan.raw().Ipv4Metric = 15;
+    lan.raw().Ipv6Metric = 15;
+    lan.gateway("192.168.0.1");
+    lan.gateway("fe80::1");
+    FakeAdapter wifi(L"Wi-Fi", "{DDDDDDDD-0000-0000-0000-000000000005}");
+    wifi.raw().Luid.Value = 5;
+    wifi.raw().Ipv6Metric = 45;
+    wifi.gateway("fe80::2");
+    g_State.adapters = {&lan, &wifi};
+    g_State.routes = {
+        route(2, "192.168.0.1", 0),
+        route(2, "fe80::1", 256), // 15 + 256 = 271
+        route(5, "::", 0),        // on-link: no gateway to show
+        route(5, "fe80::2", 0),   // 45 + 0 = 45: the cheapest
+    };
+
+    NetworkAdaptersInfo byInterface;
+    readNetworkAdapters(byInterface, fakeFunctions(), WITH_DETAILS);
+    EXPECT_EQ(byInterface.gatewayV6, "fe80::1") << "the interface metric alone picks the Ethernet";
+
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctionsWithRoutes(), WITH_DETAILS);
+    EXPECT_EQ(info.gatewayV6, "fe80::2") << "45 beats 271";
+    EXPECT_EQ(info.gatewayV6Adapter, "Wi-Fi");
+    EXPECT_EQ(info.gatewayV4, "192.168.0.1");
+    EXPECT_EQ(info.gatewayV4Adapter, "Ethernet");
+    const NetworkAdapter* ethernet = find(info, "Ethernet");
+    ASSERT_NE(ethernet, nullptr);
+    EXPECT_EQ(ethernet->gateways, (std::vector<std::string>{"192.168.0.1", "fe80::1"}));
+}
+
+TEST_F(WindowsNetworkAdaptersTest, TheCheapestOfSeveralGatewaysOnOneInterface)
+{
+    FakeAdapter lan(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    lan.raw().Luid.Value = 2;
+    lan.raw().Ipv4Metric = 25;
+    lan.gateway("192.168.0.1");
+    lan.gateway("192.168.0.254");
+    g_State.adapters = {&lan};
+    g_State.routes = {
+        route(2, "192.168.0.1", 50),
+        route(2, "0.0.0.0", 0),        // on-link: no gateway to show
+        route(2, "192.168.0.254", 10), // the cheapest
+        route(2, "192.168.0.253", 10), // as cheap, listed later
+    };
+
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctionsWithRoutes(), WITH_DETAILS);
+    EXPECT_EQ(info.gatewayV4, "192.168.0.254") << "the cheapest route's next hop, not the adapter's first gateway";
+    EXPECT_EQ(info.gatewayV4Adapter, "Ethernet");
+    ASSERT_EQ(info.adapters.size(), 1U);
+    EXPECT_EQ(info.adapters[0].gateways, (std::vector<std::string>{"192.168.0.1", "192.168.0.254"}));
+}
+
+TEST_F(WindowsNetworkAdaptersTest, NoUsableDefaultRouteMeansNoDefaultGateway)
+{
+    FakeAdapter lan(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    lan.raw().Luid.Value = 2;
+    lan.gateway("192.168.0.1");
+    lan.gateway("fe80::1");
+    FakeAdapter down(L"Bluetooth Network Connection", "{CCCCCCCC-0000-0000-0000-000000000004}");
+    down.raw().Luid.Value = 4;
+    down.raw().OperStatus = IfOperStatusDown;
+    down.gateway("172.16.0.1");
+    g_State.adapters = {&lan, &down};
+    // No IPv6 route at all, and no IPv4 default route with a next hop through an up adapter.
+    g_State.routes = {
+        route(2, "192.168.0.1", 0, 24), // 192.168.0.0/24: not a default route
+        route(2, "0.0.0.0", 0),         // on-link
+        route(4, "172.16.0.1", 0),      // through a down adapter
+    };
+
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctionsWithRoutes(), WITH_DETAILS);
+    EXPECT_TRUE(info.gatewayV4.empty()) << "the table was read: no gateway is made up from the adapters'";
+    EXPECT_TRUE(info.gatewayV4Adapter.empty());
+    EXPECT_TRUE(info.gatewayV6.empty());
+    EXPECT_TRUE(info.gatewayV6Adapter.empty());
+    const NetworkAdapter* ethernet = find(info, "Ethernet");
+    ASSERT_NE(ethernet, nullptr);
+    EXPECT_EQ(ethernet->gateways, (std::vector<std::string>{"192.168.0.1", "fe80::1"}));
+}
+
+TEST_F(WindowsNetworkAdaptersTest, RouteTableReadFailureFallsBackToTheInterfaceMetric)
+{
+    FakeAdapter vpn(L"VPN", "{BBBBBBBB-0000-0000-0000-000000000003}");
+    vpn.raw().Luid.Value = 3;
+    vpn.raw().Ipv4Metric = 5;
+    vpn.raw().Ipv6Metric = 5;
+    vpn.gateway("10.8.0.1");
+    vpn.gateway("fd00::1");
+    FakeAdapter lan(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    lan.raw().Luid.Value = 2;
+    lan.raw().Ipv4Metric = 25;
+    lan.raw().Ipv6Metric = 25;
+    lan.gateway("192.168.0.1");
+    lan.gateway("fe80::1");
+    g_State.adapters = {&lan, &vpn};
+    g_State.routes = {route(3, "10.8.0.1", 100), route(2, "192.168.0.1", 0)}; // would pick the Ethernet
+    g_State.routeStatus = ERROR_NOT_SUPPORTED;
+
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctionsWithRoutes(), WITH_DETAILS);
+    EXPECT_EQ(g_State.routeReads, 2);
+    EXPECT_EQ(info.gatewayV4, "10.8.0.1") << "the up adapter with the lowest interface metric";
+    EXPECT_EQ(info.gatewayV4Adapter, "VPN");
+    EXPECT_EQ(info.gatewayV6, "fd00::1");
+    EXPECT_EQ(info.gatewayV6Adapter, "VPN");
+
+    // Without FreeMibTable the table isn't asked for at all.
+    g_State.routeReads = 0;
+    g_State.routeStatus = NO_ERROR;
+    Functions noFree = fakeFunctionsWithRoutes();
+    noFree.freeMibTable = nullptr;
+    NetworkAdaptersInfo unfreeable;
+    readNetworkAdapters(unfreeable, noFree, WITH_DETAILS);
+    EXPECT_EQ(g_State.routeReads, 0);
+    EXPECT_EQ(unfreeable.gatewayV4Adapter, "VPN");
+}
 TEST_F(WindowsNetworkAdaptersTest, ListGrowsThenFailsOrIsEmpty)
 {
     FakeAdapter ethernet(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
@@ -766,6 +996,7 @@ TEST(WindowsNetworkAdaptersReal, ReadsThisMachine)
     readNetworkAdapters(info, systemFunctions(), /*includeWifiDetails=*/false);
     EXPECT_TRUE(info.available);
     EXPECT_TRUE(info.listed) << "GetAdaptersAddresses works on every Windows machine";
+    bool anyGatewayV4 = false;
     for (const NetworkAdapter& adapter : info.adapters)
     {
         EXPECT_FALSE(adapter.name.empty());
@@ -774,7 +1005,15 @@ TEST(WindowsNetworkAdaptersReal, ReadsThisMachine)
             EXPECT_FALSE(address.address.empty());
             EXPECT_LE(address.prefix, address.v6 ? 128U : 32U);
         }
+        const auto isV4 = [](const std::string& gateway)
+        {
+            return gateway.find(':') == std::string::npos;
+        };
+        anyGatewayV4 = anyGatewayV4 || (adapter.up && std::ranges::any_of(adapter.gateways, isV4));
     }
+    // The routes are matched to the adapters (#2996): an up adapter's IPv4 gateway is a default route's.
+    EXPECT_EQ(info.gatewayV4.empty(), !anyGatewayV4) << info.gatewayV4;
+    EXPECT_EQ(info.gatewayV4.empty(), info.gatewayV4Adapter.empty());
 }
 
 } // namespace
