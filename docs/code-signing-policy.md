@@ -30,7 +30,8 @@ checks out no code and builds nothing, then takes both `.zip`s, signs and timest
 `TaskSmackHelper.exe` from each through Azure Artifact Signing, and writes them back into their `.zip`s, leaving
 everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the `release-signing`
 environment; no password or client secret exists. The workflow then checks both signatures in each `.zip`
-(`Get-AuthenticodeSignature`: valid, the expected signer, timestamped) before the `.zip`s are hashed, signed with
+(`Get-AuthenticodeSignature`: valid, the expected signer, a certificate Microsoft's ID Verified code-signing CA
+issued with Artifact Signing's extended key usage, timestamped) before the `.zip`s are hashed, signed with
 Sigstore and published. The details are in
 [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#windows-code-signing).
 
