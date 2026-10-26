@@ -200,6 +200,12 @@ void ShellLayer::onAttach()
     m_PendingPrivilegeNotice = UserConfig::get().settings().showPrivilegeNotice && !SelectOverride::testHookActive();
 }
 
+bool ShellLayer::isAdministratorSession(const Platform::ProcessCapabilities& capabilities) const
+{
+    const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
+    return held || (!capabilities.hasReducedPrivileges && Synthetic::activeScenario() == nullptr);
+}
+
 void ShellLayer::updateSystemTabLabel()
 {
     const std::string& hostname = m_SystemMetricsPanel.hostname();
@@ -451,8 +457,7 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         if (m_ProcessesPanel.firstSnapshotAdopted())
         {
-            const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
-            const bool administrator = !m_ProcessesPanel.processCapabilities().hasReducedPrivileges || held;
+            const bool administrator = isAdministratorSession(m_ProcessesPanel.processCapabilities());
             if (m_TitleSaysAdministrator != administrator)
             {
                 m_TitleSaysAdministrator = administrator;
@@ -852,9 +857,7 @@ void ShellLayer::renderStatusBar() const
     std::optional<StatusBarView::AccessChip> access;
     if constexpr (AccessChoice::HOST == AccessChoice::AccessPlatform::Linux)
     {
-        const bool held = m_AccessBroker != nullptr && m_AccessBroker->heldForSession();
-        access =
-            (!capabilities.hasReducedPrivileges || held) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
+        access = isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
     }
     const StatusBarView::Action action = StatusBarView::render({
         .access = access,
