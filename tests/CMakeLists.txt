@@ -201,6 +201,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(IwyuShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
+# Stub binaries; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME ProfileHeapShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_profile_heap_sh.py)
+    set_tests_properties(ProfileHeapShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript
