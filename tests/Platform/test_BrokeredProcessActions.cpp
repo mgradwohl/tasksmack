@@ -444,15 +444,14 @@ TEST(BrokeredProcessProbeTest, TheHelpersSocketInodesAttributeConnectionsTheProb
     broker->setAnswer(
         [](const Broker::Request&)
         {
-            return Broker::Response{Broker::ProcessCountersReply{
-                .entries = {Broker::ProcessCountersEntry{.target = TARGET,
-                                                         .handleCountRead = true,
-                                                         .handleCount = 5,
-                                                         .ioRead = false,
-                                                         .readBytes = 0,
-                                                         .writeBytes = 0,
-                                                         .socketsRead = true,
-                                                         .socketInodes = {INODE}}}}};
+            return Broker::Response{Broker::ProcessCountersReply{.entries = {Broker::ProcessCountersEntry{.target = TARGET,
+                                                                                                          .handleCountRead = true,
+                                                                                                          .handleCount = 5,
+                                                                                                          .ioRead = false,
+                                                                                                          .readBytes = 0,
+                                                                                                          .writeBytes = 0,
+                                                                                                          .socketsRead = true,
+                                                                                                          .socketInodes = {INODE}}}}};
         });
     auto owned = std::make_unique<TestMocks::MockProcessProbe>();
     ProcessCapabilities caps;

@@ -1237,7 +1237,8 @@ TEST(PkexecBrokerTest, TheHelperReadsProcessCountersAndLeavesOutAStaleTarget)
     PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
     ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
     const ProcessTarget stale{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
-    const auto response = broker.call(Broker::ProcessCountersRequest{.targets = {child.target(), stale}, .withSockets = true}, std::stop_token{});
+    const auto response =
+        broker.call(Broker::ProcessCountersRequest{.targets = {child.target(), stale}, .withSockets = true}, std::stop_token{});
     ASSERT_TRUE(response.has_value()) << response.error();
     ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(*response));
     const auto& entries = std::get<Broker::ProcessCountersReply>(*response).entries;

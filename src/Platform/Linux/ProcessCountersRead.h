@@ -29,9 +29,8 @@ namespace Platform::Linux
 /// @p target's counters, read under @p procRoot ("/proc"): each figure with whether it was read, and with
 /// @p withSockets its sockets' inodes from every /proc/<pid>/fd link, which the sampler pairs with the
 /// socket dump to attribute its connections. nullopt when the process is gone or its PID now names another.
-[[nodiscard]] inline std::optional<Broker::ProcessCountersEntry> readProcessCountersAt(const std::filesystem::path& procRoot,
-                                                                                       const ProcessTarget& target,
-                                                                                       bool withSockets)
+[[nodiscard]] inline std::optional<Broker::ProcessCountersEntry>
+readProcessCountersAt(const std::filesystem::path& procRoot, const ProcessTarget& target, bool withSockets)
 {
     if (target.pid <= 0)
     {

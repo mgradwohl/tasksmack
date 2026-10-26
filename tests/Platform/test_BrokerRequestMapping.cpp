@@ -237,8 +237,8 @@ TEST(BrokerRequestMappingTest, AProcessCountersRequestReadsEachTargetAndLeavesOu
         }
         return Broker::ProcessCountersEntry{.target = target, .handleCountRead = true, .handleCount = 4};
     };
-    const Broker::Response response =
-        BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET, gone, throwing}, .withSockets = true}, actions, readers);
+    const Broker::Response response = BrokerServer::handleRequest(
+        Broker::ProcessCountersRequest{.targets = {TARGET, gone, throwing}, .withSockets = true}, actions, readers);
     ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(response));
     const auto& entries = std::get<Broker::ProcessCountersReply>(response).entries;
     ASSERT_EQ(entries.size(), 1U);

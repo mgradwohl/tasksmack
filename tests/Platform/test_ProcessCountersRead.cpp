@@ -4,9 +4,9 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/Linux/PosixGuards.h"
 #include "Platform/Linux/ProcIoParser.h"
 #include "Platform/Linux/ProcParsing.h"
-#include "Platform/Linux/PosixGuards.h"
 #include "Platform/Linux/ProcessCountersRead.h"
 
 #include <gtest/gtest.h>

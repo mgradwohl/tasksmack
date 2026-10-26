@@ -473,8 +473,8 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
                           m_Inner->capabilities().hasNetworkCounters;
     for (const ProcessCounters& process : counters)
     {
-        const bool refused = !process.handleCountAvailable || !process.ioCountersAvailable ||
-                             (request.withSockets && !process.networkCountersAvailable);
+        const bool refused =
+            !process.handleCountAvailable || !process.ioCountersAvailable || (request.withSockets && !process.networkCountersAvailable);
         if (refused && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
         {
             request.targets.push_back({.pid = process.pid, .startTimeTicks = process.startTimeTicks});
@@ -486,7 +486,8 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
         const std::scoped_lock lock(m_SocketOwnersMutex);
         for (ProcessCounters& process : counters)
         {
-            if (const auto read = m_SocketsReadFor.find(process.pid); read != m_SocketsReadFor.end() && read->second == process.startTimeTicks)
+            if (const auto read = m_SocketsReadFor.find(process.pid);
+                read != m_SocketsReadFor.end() && read->second == process.startTimeTicks)
             {
                 process.networkCountersAvailable = true;
             }
