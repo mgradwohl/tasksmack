@@ -68,9 +68,11 @@ struct RenderContext
 /// @param ctx Render context containing model and smoothed values
 void renderStorageSection(RenderContext& ctx);
 
-/// Update smoothed disk I/O values for external callers (e.g., Overview tab).
-/// @param targetRead Current read bytes per second
-/// @param targetWrite Current write bytes per second
+/// Update smoothed disk I/O values for external callers (e.g., Overview tab). A target of NaN is no
+/// reading (#3025): the smoothed value becomes NaN, shown as N/A, and the first reading after it
+/// starts afresh rather than easing from a value before the gap.
+/// @param targetRead Current read bytes per second, or NaN when unmeasured
+/// @param targetWrite Current write bytes per second, or NaN when unmeasured
 /// @param deltaTimeSeconds Time since last update
 /// @param ctx Render context containing smoothed value pointers
 void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx);

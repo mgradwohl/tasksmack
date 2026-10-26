@@ -731,6 +731,7 @@ TEST(StorageSmoothingTest, FirstSampleStartsAtTheTargetThenEases)
     disk.deviceName = name;
     disk.readBytesPerSec = read;
     disk.writeBytesPerSec = write;
+    disk.hasRates = true; // a measured sample; a test of an unmeasured one clears it
     return disk;
 }
 
@@ -753,6 +754,7 @@ TEST_F(SystemSectionsRenderTest, StorageWithOneDiskDrawsTheAggregateChart)
     publication.perDiskHistory.push_back(diskHistory("sda", 4096.0, 1024.0));
     publication.snapshot.totalReadBytesPerSec = 4096.0;
     publication.snapshot.totalWriteBytesPerSec = 1024.0;
+    publication.snapshot.totalsMeasured = true;
     double read = 0.0;
     double write = 0.0;
     bool initialized = false;
@@ -780,6 +782,96 @@ TEST_F(SystemSectionsRenderTest, StorageWithOneDiskDrawsTheAggregateChart)
     EXPECT_EQ(text.find("by Device"), std::string::npos) << text; // not the per-disk grid
     EXPECT_NE(text.find(UI::Format::formatBytesPerSec(4096.0)), std::string::npos) << text;
     EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+TEST(StorageSmoothingTest, NoReadingIsNaNAndTheNextReadingStartsAfresh)
+{
+    double read = 100.0;
+    double write = 200.0;
+    bool initialized = true;
+    StorageSection::RenderContext ctx{.refreshInterval = REFRESH,
+                                      .smoothedReadBytesPerSec = &read,
+                                      .smoothedWriteBytesPerSec = &write,
+                                      .smoothedInitialized = &initialized};
+    constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
+
+    // #3025: an unmeasured total is no reading, not a 0 the bar would ease down to.
+    StorageSection::updateSmoothedDiskIO(NO_READING, NO_READING, 0.1F, ctx);
+    EXPECT_TRUE(std::isnan(read));
+    EXPECT_TRUE(std::isnan(write));
+
+    // The first reading after it is shown as is, not eased from a value before the gap.
+    StorageSection::updateSmoothedDiskIO(4096.0, 1024.0, 0.1F, ctx);
+    EXPECT_DOUBLE_EQ(read, 4096.0);
+    EXPECT_DOUBLE_EQ(write, 1024.0);
+}
+
+TEST_F(SystemSectionsRenderTest, StorageAggregateBarsShowUnmeasuredTotalsAsNA)
+{
+    // #3025: totals the Domain marks unmeasured (a seed sample, a counter glitch, a probe that read no
+    // counters) hold 0 in the snapshot; the bars show N/A, as the chart's gap and tooltip do, not 0 B/s.
+    constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
+    Domain::StoragePublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.totalReadHistory = viewOf(constant(NO_READING));
+    publication.totalWriteHistory = viewOf(constant(NO_READING));
+    publication.perDiskHistory.push_back(diskHistory("sda", NO_READING, NO_READING));
+    publication.snapshot.totalReadBytesPerSec = 0.0;
+    publication.snapshot.totalWriteBytesPerSec = 0.0;
+    publication.snapshot.totalsMeasured = false;
+    double read = 4096.0;
+    double write = 1024.0;
+    bool initialized = true;
+    StorageSection::RenderContext ctx{.publication = &publication,
+                                      .smoothedReadBytesPerSec = &read,
+                                      .smoothedWriteBytesPerSec = &write,
+                                      .smoothedInitialized = &initialized};
+    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_TRUE(std::isnan(read)) << "no reading, not 0";
+    EXPECT_TRUE(std::isnan(write)) << "no reading, not 0";
+    std::string text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_NE(text.find("N/A"), std::string::npos) << text;
+
+    // A measured sample shows its rate again, starting afresh from it.
+    publication.snapshot.totalReadBytesPerSec = 8192.0;
+    publication.snapshot.totalWriteBytesPerSec = 512.0;
+    publication.snapshot.totalsMeasured = true;
+    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_DOUBLE_EQ(read, 8192.0);
+    EXPECT_DOUBLE_EQ(write, 512.0);
+    text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_NE(text.find(UI::Format::formatBytesPerSec(8192.0)), std::string::npos) << text;
+    EXPECT_EQ(text.find("N/A"), std::string::npos) << text;
+}
+
+TEST_F(SystemSectionsRenderTest, StorageGridShowsADiskWithUnmeasuredRatesAsNA)
+{
+    // #3025: a disk in the latest sample whose rates are unmeasured (hasRates false: its first sample,
+    // a rejected glitch, a probe that read no counters) reads 0 there; its bars show N/A, not 0 B/s,
+    // and its smoothing starts afresh. A measured disk beside it still shows its rate.
+    Domain::StoragePublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.perDiskHistory.push_back(diskHistory("nvme0n1", 8192.0, 512.0));
+    publication.perDiskHistory.push_back(diskHistory("sdb", 100.0, 200.0));
+    publication.snapshot.disks.push_back(diskSample("nvme0n1", 8192.0, 512.0));
+    Domain::DiskSnapshot unmeasured = diskSample("sdb", 0.0, 0.0);
+    unmeasured.hasRates = false;
+    publication.snapshot.disks.push_back(unmeasured);
+
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates> perDisk;
+    perDisk["sdb"] = StorageSection::SmoothedDiskRates{.readBytesPerSec = 5.0, .writeBytesPerSec = 5.0, .initialized = true};
+    StorageSection::RenderContext ctx{.publication = &publication, .refreshInterval = REFRESH, .smoothedPerDisk = &perDisk};
+    const std::string text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
+
+    ASSERT_TRUE(StorageSection::usesDiskGrid(&publication));
+    EXPECT_NE(text.find("N/A"), std::string::npos) << text;
+    EXPECT_NE(text.find(UI::Format::formatBytesPerSec(8192.0)), std::string::npos) << text;
+    ASSERT_TRUE(perDisk.contains("sdb"));
+    EXPECT_FALSE(perDisk.at("sdb").initialized);
+    ASSERT_TRUE(perDisk.contains("nvme0n1"));
+    EXPECT_TRUE(perDisk.at("nvme0n1").initialized);
+    EXPECT_DOUBLE_EQ(perDisk.at("nvme0n1").readBytesPerSec, 8192.0);
+    EXPECT_DOUBLE_EQ(perDisk.at("nvme0n1").writeBytesPerSec, 512.0);
 }
 
 TEST_F(SystemSectionsRenderTest, StorageGridDrawsOneCellPerDiskAndTracksTheirSmoothing)
@@ -1455,6 +1547,39 @@ TEST_F(SystemSectionsRenderTest, ADiskMissingFromTheSampleHasUnavailableBars)
         runFrame([&] { StorageSection::renderStorageSection(ctx); });
         ASSERT_TRUE(StorageSection::usesDiskGrid(&publication));
         if (sampled)
+        {
+            EXPECT_EQ(hatchVertices(), 0);
+        }
+        else
+        {
+            EXPECT_GT(hatchVertices(), 0);
+        }
+    }
+}
+
+// #3025: the single-disk chart's bars for totals the Domain marks unmeasured are hatched N/A bars, as
+// a missing disk's are in the grid; measured idle totals are zero bars.
+TEST_F(SystemSectionsRenderTest, AnUnmeasuredDiskTotalHasUnavailableBars)
+{
+    for (const bool measured : {true, false})
+    {
+        Domain::StoragePublication publication;
+        publication.timestamps = viewOf(timestampsToNow());
+        publication.totalReadHistory = viewOf(constant(0.0));
+        publication.totalWriteHistory = viewOf(constant(0.0));
+        publication.perDiskHistory.push_back(diskHistory("sda", 0.0, 0.0));
+        publication.snapshot.totalsMeasured = measured;
+        double read = 0.0;
+        double write = 0.0;
+        bool initialized = false;
+        StorageSection::RenderContext ctx{.publication = &publication,
+                                          .smoothedReadBytesPerSec = &read,
+                                          .smoothedWriteBytesPerSec = &write,
+                                          .smoothedInitialized = &initialized};
+        runFrame([&] { StorageSection::renderStorageSection(ctx); });
+        runFrame([&] { StorageSection::renderStorageSection(ctx); });
+        ASSERT_FALSE(StorageSection::usesDiskGrid(&publication));
+        if (measured)
         {
             EXPECT_EQ(hatchVertices(), 0);
         }
