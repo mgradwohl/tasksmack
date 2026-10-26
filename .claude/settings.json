@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if ! command -v jq >/dev/null 2>&1; then echo 'Warning: jq not found; clang-format hook skipped' >&2; exit 0; fi; jq -r '.tool_input.file_path // .tool_response.filePath // empty' | tr -d '\\r' | { read -r f; if [ -n \"$f\" ] && printf '%s' \"$f\" | grep -qE '\\.(cpp|h|hpp|cc|cxx)$'; then if command -v clang-format >/dev/null 2>&1; then clang-format -i \"$f\"; else echo \"Warning: clang-format not found; skipped formatting $f\" >&2; fi; fi; } || true"
+            "command": "if ! command -v jq >/dev/null 2>&1; then echo 'Warning: jq not found; clang-format hook skipped' >&2; exit 0; fi; jq -r '.tool_input.file_path // .tool_response.filePath // empty' | tr -d '\\r' | { read -r f; if [ -n \"$f\" ] && printf '%s' \"$f\" | grep -qE '\\.(cpp|h|hpp|cc|cxx)$'; then if command -v pre-commit >/dev/null 2>&1 && (cd \"$(dirname \"$f\")\" && git rev-parse --show-toplevel >/dev/null 2>&1); then (cd \"$(cd \"$(dirname \"$f\")\" && git rev-parse --show-toplevel)\" && pre-commit run clang-format --files \"$f\" >/dev/null 2>&1) || true; elif command -v clang-format >/dev/null 2>&1; then echo 'Warning: pre-commit not found; formatted with the PATH clang-format, which may differ from CI' >&2; clang-format -i \"$f\"; else echo \"Warning: clang-format not found; skipped formatting $f\" >&2; fi; fi; } || true"
           }
         ]
       }
