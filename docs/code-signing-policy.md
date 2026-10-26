@@ -1,46 +1,45 @@
 # Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+Code signing by [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly
+Trusted Signing), with a Public Trust certificate issued to the maintainer's validated identity.
 
-TaskSmack's Windows release binaries are signed with an Authenticode certificate issued to SignPath Foundation
-through its free program for open-source projects. Windows shows **SignPath Foundation** as the publisher of a
-signed TaskSmack binary, for example in the User Account Control prompt and in the file's Properties >
-Digital Signatures tab.
+TaskSmack's Windows release binaries are signed with an Authenticode certificate whose subject is
+`CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`. Windows shows **Matt Gradwohl** as the publisher of
+a signed TaskSmack binary, for example in the User Account Control prompt and in the file's Properties >
+Digital Signatures tab. The certificates are short-lived (about three days) and Microsoft rotates them, so a
+signature is identified by that subject, not by a certificate thumbprint, and every signature carries a
+timestamp that keeps it valid after its certificate expires.
 
-Signing is being set up ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). The release workflow's
-signing path is in place but switched off, by the repository variable `SIGNPATH_SIGNING_ENABLED`, until the
-SignPath Foundation approves the project: its OSS programme includes the GitHub.com trusted build system the
-workflow submits through. While it's off, the Windows `.zip` is unsigned and doesn't contain the helper, which
-never ships unsigned. Once the Foundation approves, the maintainer adds the GitHub.com trusted build system and a
-`release-signing` policy in SignPath, then sets `SIGNPATH_SIGNING_ENABLED` to `true`. A dry run then signs with a
-self-signed SignPath **test** certificate, "TaskSmack Test Signing (untrusted)", which Windows doesn't trust, to
-prove the pipeline, before releases switch to the Foundation certificate. Releases published before then are
-not Authenticode-signed.
+Releases from v0.9.1 are signed ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)). Releases up to
+v0.9.0 are not Authenticode-signed, and their Windows `.zip`s don't contain the helper, which never ships
+unsigned.
 
 ## What is signed
 
-- **`TaskSmack.exe`**, the application in the Windows x64 `.zip` on the
+- **`TaskSmack.exe`**, the application in the Windows x64 and ARM64 `.zip`s on the
   [releases page](https://github.com/mgradwohl/tasksmack/releases).
 - **`TaskSmackHelper.exe`**, the TaskSmack helper ([#2181](https://github.com/mgradwohl/tasksmack/issues/2181)),
   beside it in the same `.zip`. The helper ships only signed: the release workflow refuses to publish a `.zip`
-  whose two executables aren't both validly signed and timestamped by the expected signer with one certificate.
-- Not yet: the Windows ARM64 `.zip`, which ships without the helper and unsigned for now.
+  whose two executables aren't both validly signed and timestamped by the expected signer.
+- Not yet: an NSIS installer, which isn't built yet.
 
 ## How signing works
 
-The release workflow builds and packages the Windows x64 `.zip` on a GitHub-hosted runner, then a separate job
-that checks out no code and builds nothing submits that `.zip` to SignPath. SignPath signs and timestamps
-`TaskSmack.exe` and `TaskSmackHelper.exe` inside it and returns it. The workflow then checks both signatures
-(`Get-AuthenticodeSignature`: valid, the expected signer, timestamped, one certificate) before the `.zip` is
-hashed, signed with Sigstore and published. The details are in
+The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner. A separate job, which
+checks out no code and builds nothing, then takes both `.zip`s, signs and timestamps `TaskSmack.exe` and
+`TaskSmackHelper.exe` from each through Azure Artifact Signing, and writes them back into their `.zip`s, leaving
+everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the `release-signing`
+environment; no password or client secret exists. The workflow then checks both signatures in each `.zip`
+(`Get-AuthenticodeSignature`: valid, the expected signer, timestamped) before the `.zip`s are hashed, signed with
+Sigstore and published. The details are in
 [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#windows-code-signing).
 
 Only binaries built from this repository's source by the project's GitHub Actions release workflow
 ([`.github/workflows/release.yml`](https://github.com/mgradwohl/tasksmack/blob/main/.github/workflows/release.yml)),
-running on GitHub-hosted runners, are submitted for signing. Nothing built on a developer's machine, in a fork,
-or by a pull request's CI run is signed. Rehearsal runs of the release workflow (`dry_run`) are signed only
-with the untrusted test certificate, never with the SignPath Foundation certificate; once that certificate is
-in use, it signs only real release runs for a `v*.*.*` tag.
+running on GitHub-hosted runners, are signed. Nothing built on a developer's machine, in a fork, or by a pull
+request's CI run is signed. The `release-signing` environment admits only release runs for a `v*` tag and
+rehearsal runs (`dry_run`) dispatched from the `main`, `release/*` or `candidate/*` branches; a rehearsal signs
+with the same certificate but publishes nothing.
 
 The third-party libraries TaskSmack uses are compiled from source and linked statically into
 `TaskSmack.exe`. TaskSmack does not sign binaries published by other projects; if a release ever ships one, it
@@ -68,11 +67,10 @@ Sigstore; see [Verifying a Release](guide/user-guide.md#verifying-a-release).
   [AGENTS.md](https://github.com/mgradwohl/tasksmack/blob/main/AGENTS.md). Changes to the GitHub Actions
   workflows, including the release workflow, need the maintainer's explicit confirmation before they are
   pushed.
-- **Approvers.** mgradwohl approves every signing request for the SignPath Foundation certificate in SignPath
-  by hand; the release workflow waits for that approval. Requests for the untrusted test certificate need no
-  approval.
+- **Approvers.** mgradwohl holds the Azure Artifact Signing account and its identity validation, controls which
+  refs the `release-signing` environment admits, and alone pushes release tags.
 
-All team members use multi-factor authentication for both GitHub and SignPath.
+All team members use multi-factor authentication for both GitHub and Azure.
 
 ## Privacy policy
 

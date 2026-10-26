@@ -122,11 +122,10 @@ signed UAC prompt would then hand it administrator rights. So a portable copy un
 into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
 the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
 
-The helper ships only in the Authenticode-signed x64 `.zip`
+The helper ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
-publisher. Signing is still being set up, so until it is in place no release `.zip` carries the helper.
-The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers neither
-button. If TaskSmack is already running as
+publisher, **Matt Gradwohl**. No earlier release `.zip` includes it, nor does any unsigned build; without
+it, TaskSmack offers neither button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 
 ---
