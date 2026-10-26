@@ -25,12 +25,22 @@ option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent cache dire
 option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
 # Windows: whether the .zip and the NSIS installer carry TaskSmackHelper.exe, the elevated helper (#2550).
 # Only for Authenticode-signed builds (#2302): packaging then refuses a helper or TaskSmack.exe that
-# isn't validly signed by one signer (cmake/VerifyWindowsSignatures.cmake). Off, the packages are as
+# isn't validly signed by one Artifact Signing signer (cmake/VerifyWindowsSignatures.cmake). Off, the packages are as
 # before and TaskSmack offers no "Retry as administrator"; `cmake --install` installs it either way.
 option(TASKSMACK_PACKAGE_WINDOWS_HELPER "Windows: package TaskSmackHelper.exe (Authenticode-signed builds only)" OFF)
 # The publisher the gate requires: the signer certificate's common name, as UAC shows it (#2302: the Azure
 # Artifact Signing certificate profile's subject; docs/code-signing-policy.md).
 set(TASKSMACK_EXPECTED_SIGNER "Matt Gradwohl" CACHE STRING "Windows: the common name TaskSmackHelper.exe's signer must have to be packaged")
+# And that it's an Azure Artifact Signing certificate, not a test or internal one that also says CN=Matt Gradwohl
+# (#2990): the signer certificate's issuer and one of its extended key usages, as PowerShell -like wildcards.
+# Artifact Signing's certificates rotate every few days and its issuing CA rolls over now and then, so these
+# match what stays the same: today's issuer is "CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation,
+# C=US", and every certificate carries Artifact Signing's 1.3.6.1.4.1.311.97.* usages beside Code Signing.
+# Empty means the default; cmake/VerifyWindowsSignatures.cmake has the same defaults.
+set(TASKSMACK_EXPECTED_ISSUER "CN=Microsoft ID Verified CS [AE]OC CA [0-9][0-9], O=Microsoft Corporation, C=US" CACHE STRING
+    "Windows: a -like pattern the issuer of TaskSmackHelper.exe's signer certificate must match to be packaged")
+set(TASKSMACK_EXPECTED_EKU "1.3.6.1.4.1.311.97.*" CACHE STRING
+    "Windows: a -like pattern one extended key usage of TaskSmackHelper.exe's signer certificate must match to be packaged")
 # A pipeline that signs the packaged .zip instead of the build's executables (#2302: release.yml's sign-windows
 # signs the executables inside the .zip): CPack then packages the helper unsigned in the .zip, without the gate,
 # and the pipeline must run cmake/VerifyWindowsSignatures.cmake on the signed .zip's contents before publishing

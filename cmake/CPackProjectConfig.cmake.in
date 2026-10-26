@@ -15,8 +15,9 @@ endif()
 # Windows: the .zip and the NSIS installer also package TaskSmackHelper.exe (the "windows_helper"
 # component; #2550), only when TASKSMACK_PACKAGE_WINDOWS_HELPER is on, for an Authenticode-signed build
 # (#2302). Before anything is packaged, VerifyWindowsSignatures.cmake refuses a TaskSmack.exe or helper
-# that isn't validly signed, timestamped, by TASKSMACK_EXPECTED_SIGNER, so an unsigned or wrongly
-# signed helper can't ship by mistake. With TASKSMACK_SIGN_AFTER_PACKAGING the .zip is signed after
+# that isn't validly signed, timestamped, by TASKSMACK_EXPECTED_SIGNER with a certificate whose issuer
+# and extended key usage match TASKSMACK_EXPECTED_ISSUER and TASKSMACK_EXPECTED_EKU (Azure Artifact
+# Signing's, #2990), so an unsigned or wrongly signed helper can't ship by mistake. With TASKSMACK_SIGN_AFTER_PACKAGING the .zip is signed after
 # it's packaged (release.yml's sign-windows signs the executables inside it, #2302), so the .zip is packaged
 # unsigned and the same check runs on the signed .zip's contents instead, before anything is published
 # (release.yml's validate-windows-package). The NSIS installer can't be signed inside afterwards, so it
@@ -29,5 +30,7 @@ if(@TASKSMACK_PACKAGES_WINDOWS_HELPER@ AND (CPACK_GENERATOR STREQUAL "ZIP" OR CP
     else()
         set(CPACK_PRE_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/VerifyWindowsSignatures.cmake")
         set(TASKSMACK_EXPECTED_SIGNER "@TASKSMACK_EXPECTED_SIGNER@")
+        set(TASKSMACK_EXPECTED_ISSUER "@TASKSMACK_EXPECTED_ISSUER@")
+        set(TASKSMACK_EXPECTED_EKU "@TASKSMACK_EXPECTED_EKU@")
     endif()
 endif()
