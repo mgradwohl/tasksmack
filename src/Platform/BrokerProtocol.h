@@ -28,6 +28,8 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -51,7 +53,8 @@ namespace Platform::Broker
 /// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728). 4: ReadProcessCounters (#2728).
 /// 5: ReadProcessCounters can also ask for each process's socket inodes, for network attribution (#2728).
 /// 6: ListHiddenProcesses, the /proc/<pid> files of processes hidepid hides from TaskSmack (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 6;
+/// 7: ServiceAction, a systemd unit started, stopped or given a start type over the helper's bus (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 7;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -85,6 +88,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetPriority = 17,
     SetIoPriority = 18,
     SetAffinity = 19,
+    ServiceAction = 20,         ///< Start, stop or restart a service, or set its start type (#2728)
     ReadEnvironment = 32,       ///< Another user's process's environment, for Process Details (#2309)
     ReadModules = 33,           ///< Its loaded modules (#2309)
     ReadOpenFiles = 34,         ///< Its open files (#2309)
@@ -104,6 +108,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     CrashesResult = 55,         ///< The answer to ReadCrashes
     ProcessCountersResult = 56, ///< The answer to ReadProcessCounters
     HiddenProcessesResult = 57, ///< The answer to ListHiddenProcesses
+    ServiceActionResult = 58,   ///< The answer to ServiceAction
     Error = 63,                 ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -305,6 +310,30 @@ struct ProcessCountersReply
     friend bool operator==(const ProcessCountersReply&, const ProcessCountersReply&) = default;
 };
 
+/// Start, stop or restart the service @c unit, or set its start type (#2728): what Linux's helper does as root
+/// over the system bus connection it opened before its sandbox, so systemd asks for no password. @c unit
+/// is a unit name the helper checks (a .service, systemd's characters, at most 255 bytes); @c startType is
+/// SetStartType's.
+struct ServiceActionRequest
+{
+    ServiceAction action = ServiceAction::Start;
+    std::string unit;
+    ServiceStartType startType = ServiceStartType::Unknown;
+    friend bool operator==(const ServiceActionRequest&, const ServiceActionRequest&) = default;
+};
+
+/// The answer to ServiceActionRequest: the action's result, as TaskSmack's own call would have given it.
+struct ServiceActionReply
+{
+    ServiceActionResult result;
+    friend bool operator==(const ServiceActionReply& left, const ServiceActionReply& right)
+    {
+        return left.result.ok == right.result.ok && left.result.message == right.result.message &&
+               left.result.cancelled == right.result.cancelled && left.result.needsAuthorization == right.result.needsAuthorization &&
+               left.result.authorizationUnavailable == right.result.authorizationUnavailable;
+    }
+};
+
 /// List the processes hidepid hides from TaskSmack (#2728): every process the helper sees whose PID isn't in
 /// @c visiblePids (the ones TaskSmack's own listing found), as the text of a fixed set of its /proc/<pid>
 /// files, which TaskSmack parses as it parses its own. At most MAX_VISIBLE_PIDS.
@@ -465,7 +494,8 @@ using Request = std::variant<Hello,
                              FirmwareFileRequest,
                              CrashesRequest,
                              ProcessCountersRequest,
-                             HiddenProcessesRequest>;
+                             HiddenProcessesRequest,
+                             ServiceActionRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -477,7 +507,8 @@ using Response = std::variant<HelloReply,
                               FirmwareFileReply,
                               CrashesReply,
                               ProcessCountersReply,
-                              HiddenProcessesReply>;
+                              HiddenProcessesReply,
+                              ServiceActionReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -812,6 +843,13 @@ template<typename Message>
             writer.target(counters->targets[i]);
         }
     }
+    else if (const auto* service = std::get_if<ServiceActionRequest>(&request))
+    {
+        kind = MessageKind::ServiceAction;
+        writer.u8(static_cast<std::uint8_t>(service->action));
+        writer.text(service->unit);
+        writer.u8(static_cast<std::uint8_t>(service->startType));
+    }
     else if (const auto* hidden = std::get_if<HiddenProcessesRequest>(&request))
     {
         kind = MessageKind::ListHiddenProcesses;
@@ -939,6 +977,24 @@ namespace Detail
     return request;
 }
 
+/// A ServiceAction payload: the action (refused past SetStartType), the unit, and the start type (refused
+/// past System).
+[[nodiscard]] inline ServiceActionRequest decodeServiceActionRequest(Reader& reader)
+{
+    ServiceActionRequest request;
+    const std::uint8_t action = reader.u8();
+    request.unit = reader.text();
+    const std::uint8_t startType = reader.u8();
+    if (action > static_cast<std::uint8_t>(ServiceAction::SetStartType) || startType > static_cast<std::uint8_t>(ServiceStartType::System))
+    {
+        reader.fail();
+        return request;
+    }
+    request.action = static_cast<ServiceAction>(action);
+    request.startType = static_cast<ServiceStartType>(startType);
+    return request;
+}
+
 /// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
 [[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
 {
@@ -1013,6 +1069,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, Detail::decodeProcessCountersRequest(reader));
     case MessageKind::ListHiddenProcesses:
         return Detail::finish<Request>(reader, id, Detail::decodeHiddenProcessesRequest(reader));
+    case MessageKind::ServiceAction:
+        return Detail::finish<Request>(reader, id, Detail::decodeServiceActionRequest(reader));
     case MessageKind::ReadFirmwareFile:
         return Detail::finish<Request>(reader, id, Detail::decodeFirmwareFileRequest(reader));
     case MessageKind::ReadCrashes:
@@ -1028,6 +1086,7 @@ namespace Detail
     case MessageKind::CrashesResult:
     case MessageKind::ProcessCountersResult:
     case MessageKind::HiddenProcessesResult:
+    case MessageKind::ServiceActionResult:
     case MessageKind::Error:
         break;
     }
@@ -1205,6 +1264,15 @@ namespace Detail
                 }
             }
         }
+    }
+    else if (const auto* service = std::get_if<ServiceActionReply>(&response))
+    {
+        kind = MessageKind::ServiceActionResult;
+        // Flags (1: ok, 2: cancelled, 4: needs authorization, 8: authorization unavailable), then the message.
+        const ServiceActionResult& outcome = service->result;
+        writer.u8(static_cast<std::uint8_t>((outcome.ok ? 1U : 0U) | (outcome.cancelled ? 2U : 0U) |
+                                            (outcome.needsAuthorization ? 4U : 0U) | (outcome.authorizationUnavailable ? 8U : 0U)));
+        writer.text(outcome.message);
     }
     else if (const auto* hidden = std::get_if<HiddenProcessesReply>(&response))
     {
@@ -1524,6 +1592,23 @@ namespace Detail
     return reply;
 }
 
+/// A ServiceActionResult's payload: the flags (refused past their four bits), then the message.
+[[nodiscard]] inline ServiceActionReply decodeServiceActionReply(Reader& reader)
+{
+    ServiceActionReply reply;
+    const std::uint8_t flags = reader.u8();
+    if (flags > 15U)
+    {
+        reader.fail();
+    }
+    reply.result.ok = (flags & 1U) != 0;
+    reply.result.cancelled = (flags & 2U) != 0;
+    reply.result.needsAuthorization = (flags & 4U) != 0;
+    reply.result.authorizationUnavailable = (flags & 8U) != 0;
+    reply.result.message = reader.text();
+    return reply;
+}
+
 /// A HiddenProcessesResult's payload: truncated, the count (refused past MAX_HIDDEN_PROCESSES), then each
 /// process's target, its texts, and the command line's flag (0 or 1) before its text.
 [[nodiscard]] inline HiddenProcessesReply decodeHiddenProcessesReply(Reader& reader)
@@ -1704,6 +1789,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeProcessCountersReply(reader));
     case MessageKind::HiddenProcessesResult:
         return Detail::finish<Response>(reader, id, Detail::decodeHiddenProcessesReply(reader));
+    case MessageKind::ServiceActionResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeServiceActionReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1718,6 +1805,7 @@ namespace Detail
     case MessageKind::ReadCrashes:
     case MessageKind::ReadProcessCounters:
     case MessageKind::ListHiddenProcesses:
+    case MessageKind::ServiceAction:
         break;
     }
     return std::unexpected("Not a response");

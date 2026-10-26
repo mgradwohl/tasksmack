@@ -41,6 +41,7 @@ HELLO_PAYLOADS = {
     4: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters added (#2728)
     5: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters can ask for sockets (#2728)
     6: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ListHiddenProcesses added (#2728)
+    7: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ServiceAction added (#2728)
 }
 
 

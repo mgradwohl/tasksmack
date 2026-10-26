@@ -15,6 +15,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <cstdint>
@@ -44,6 +45,10 @@ struct Readers
     /// isn't among the visible PIDs given.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::HiddenProcessesReply(std::span<const std::int32_t>)> hiddenProcesses{};
+    /// A service started, stopped, restarted or given a start type (#2728): Linux's helper, as root over the
+    /// system bus it opened before its sandbox. The reader checks the unit name.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<ServiceActionResult(const Broker::ServiceActionRequest&)> serviceAction{};
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};

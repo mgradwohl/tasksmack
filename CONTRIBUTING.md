@@ -2537,7 +2537,9 @@ What a package contains, and what it depends on (#1398):
   Authenticode-signed builds (#2302). Packaging then runs `cmake/VerifyWindowsSignatures.cmake` first,
   which refuses unless `TaskSmack.exe` and the helper both have valid, timestamped signatures from a
   certificate whose common name is `TASKSMACK_EXPECTED_SIGNER` (default `Matt Gradwohl`, the Azure
-  Artifact Signing profile's subject, #2302), the same subject for both.
+  Artifact Signing profile's subject, #2302), the same subject for both, and whose issuer and
+  extended key usage match `TASKSMACK_EXPECTED_ISSUER` and `TASKSMACK_EXPECTED_EKU` (by default
+  Artifact Signing's, so a self-signed test certificate with the same name doesn't pass; #2990).
   Off (the default), unsigned dev builds package as before, without the helper. Sign both
   executables in `build/<preset>/bin` after building and before `cpack`, or, as the release does,
   sign the packaged `.zip` instead: `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` moves the check off the
@@ -2988,6 +2990,8 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 | Artifact Signing account | `tasksmacksigning` (endpoint `https://wus2.codesigning.azure.net`) |
 | Certificate profile | `tasksmack-release` (Public Trust) |
 | Expected signer CN | `Matt Gradwohl` (`WINDOWS_EXPECTED_SIGNER` in `release.yml`, `TASKSMACK_EXPECTED_SIGNER` in CMake) |
+| Expected issuer | `CN=Microsoft ID Verified CS ?OC CA ??, O=Microsoft Corporation, C=US` in spirit: an `AOC` or `EOC` CA with a two-digit number, matched with `-like` (`TASKSMACK_EXPECTED_ISSUER`, whose exact default is in cmake/Options.cmake; #2990). The certificates seen so far: `CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US` |
+| Expected extended key usage | `1.3.6.1.4.1.311.97.*`, a `-like` pattern (`TASKSMACK_EXPECTED_EKU`; #2990). The certificates carry `1.3.6.1.4.1.311.97.1.0`, Code Signing (`1.3.6.1.5.5.7.3.3`) and the identity validation's own `1.3.6.1.4.1.311.97.<id>` |
 | GitHub environment | `release-signing`: admits `v*` tags and the `main` and `release/*` branches |
 | Sign-in | GitHub OIDC; a tenant-level sign-in (`allow-no-subscriptions`); the environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
 
@@ -3017,13 +3021,17 @@ With signing on, `release.yml` does this:
    writes each signed executable back over its own entry in its `.zip`, checks that nothing else in
    the `.zip` changed, and uploads the signed `.zip`s as `windows-packages-<arch>`.
 3. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
-   signed `.zip`'s extracted contents: both executables `Valid`, signed by `Matt Gradwohl`,
-   timestamped, and by the same subject. Only then can `create-release` hash, Sigstore-sign and
-   publish them, so an unsigned or wrongly signed helper can't be published.
+   signed `.zip`'s extracted contents: both executables `Valid`, signed by `Matt Gradwohl` with a
+   certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
+   key usage, timestamped, and by the same subject. Only then can `create-release` hash,
+   Sigstore-sign and publish them, so an unsigned or wrongly signed helper can't be published.
 
 Artifact Signing certificates last about three days and rotate, so every check matches the signer's
-common name, never a thumbprint or serial number; the timestamp is what keeps a signature valid once
-its certificate expires.
+common name, the issuer's name and the extended key usage, never a thumbprint or serial number; the
+timestamp is what keeps a signature valid once its certificate expires. The issuer and usage are
+what tell an Artifact Signing certificate from a self-signed or internal one that also says
+`CN=Matt Gradwohl` and that the machine trusts (#2990). The issuer pattern takes any two-digit CA
+number, so a rollover from CA 04 to the next still passes.
 
 To check a run's signatures, download its `windows-packages-<arch>` artifact (or the dry run's
 `release-assets-dry-run`), extract the `.zip` and run

@@ -123,6 +123,19 @@ bool onNativeWayland()
 #endif
 }
 
+/// Whether the native Wayland compositor these tests run under maximizes when asked: tools/wayland-matrix.sh
+/// sets TASKSMACK_COMPOSITOR_MAXIMIZES=1 under labwc, which does; sway, a tiling compositor, never does.
+bool compositorMaximizes()
+{
+#ifdef _WIN32
+    return false; // no Wayland there
+#else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
+    const char* maximizes = std::getenv("TASKSMACK_COMPOSITOR_MAXIMIZES");
+    return maximizes != nullptr && std::string_view(maximizes) == "1";
+#endif
+}
+
 /// Why a client-side drag test doesn't run on native Wayland.
 constexpr const char* COMPOSITOR_DRAGS =
     "native Wayland: the compositor runs title-bar drags, border resizes and maximize (#744), so injected "
@@ -360,7 +373,7 @@ TEST_F(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     EXPECT_EQ(observed.help, 1);
     EXPECT_EQ(observed.about, 1);
     // On native Wayland, Maximize asks the compositor, which may decline (sway, a tiling compositor, does).
-    if (!onNativeWayland())
+    if (!onNativeWayland() || compositorMaximizes())
     {
         EXPECT_TRUE(observed.maximizedAfterMaximize);
         EXPECT_FALSE(observed.maximizedAfterRestore);

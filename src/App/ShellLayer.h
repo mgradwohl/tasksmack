@@ -12,6 +12,7 @@
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/IPrivilegedBroker.h"
+#include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellPanels.h"
@@ -163,6 +164,10 @@ class ShellLayer : public Core::Layer
     bool m_AccessBrokerResolved = false;
     /// The window title last set (#2728): whether it says "(Administrator)", nullopt before the first.
     std::optional<bool> m_TitleSaysAdministrator;
+    /// Whether the title and the access chip say Administrator (#2728): the helper is held for the session,
+    /// or nothing is limited on a real machine. A synthetic run never is (#3004): its probe limits nothing
+    /// because its machine is a stand-in, and its process actions are all refused.
+    [[nodiscard]] bool isAdministratorSession(const Platform::ProcessCapabilities& capabilities) const;
 
     // Display scale the base minimum window size was last set for. With native decorations nothing
     // else sets the minimum, so it is re-applied when the scale changes (#943).

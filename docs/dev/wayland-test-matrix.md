@@ -323,6 +323,14 @@ bar and the borders), so the client-side drag and resize tests skip there and sa
 maximize at all, so Maximize's own checks need a stacking one (labwc). `UiScenarioTest` needs
 `TASKSMACK_SYNTHETIC=processes=120,seed=2711`, as CTest sets it.
 
+`tools/wayland-matrix.sh` runs all of it on a headless sway and a headless labwc, and adds what only a real
+pointer can check: a title-bar drag and a right-edge resize (through `tools/wayland/virtual-pointer.c`, since a
+headless seat has no pointer device for clients, and `wlrctl`'s lives for one command), a second output at scale
+1.5 that the window moves onto and that is then unplugged under it, the size saved on a close the compositor
+asks for and restored on the next start, and, on labwc, Maximize and Restore (`TASKSMACK_COMPOSITOR_MAXIMIZES=1`).
+It needs sway, labwc, wayland-scanner, libwayland-dev and a C compiler; labwc starts Xwayland, so where
+`/tmp/.X11-unix` isn't sticky (WSLg) the script gives labwc its own in an unprivileged mount namespace.
+
 ## Known Limitations / Future Work
 
 - **Native Wayland:** Title-bar dragging is delegated to the compositor via `SDL_HITTEST_DRAGGABLE` (see #744); as a consequence, double-click-to-maximize does not fire from the title bar there (the maximize button remains available). Users who hit compositor-specific drag/resize quirks can switch to native window decorations via Settings > Advanced > "Use native window decorations instead of the custom title bar" (see #745; native Wayland only, takes effect on next launch).

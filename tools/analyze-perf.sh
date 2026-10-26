@@ -5,6 +5,11 @@
 #   ./tools/analyze-perf.sh <perf.data> [--top <n>] [--skip-flamegraph]
 #                                        [--flamegraph-pl <path>]
 #                                        [--stackcollapse-pl <path>]
+#                                        [--allow-unresolved]
+#
+# A report whose TaskSmack functions are all bare addresses is an analysis failure (exit 3), not a summary:
+# typically a perf built without libelf/DWARF (WSL's), which can't read the binaries' symbols (#2977).
+# --allow-unresolved keeps such an address-only report (with a warning) for whoever wants it anyway.
 #
 # Outputs:
 #   <basename>-report.txt           — perf report --stdio top-N functions
@@ -39,7 +44,7 @@ DATA_FILE="${1:-}"
 shift || true
 
 if [[ -z "${DATA_FILE}" ]]; then
-    echo "Usage: $0 <perf.data> [--top <n>] [--skip-flamegraph] [--flamegraph-pl <path>] [--stackcollapse-pl <path>]" >&2
+    echo "Usage: $0 <perf.data> [--top <n>] [--skip-flamegraph] [--flamegraph-pl <path>] [--stackcollapse-pl <path>] [--allow-unresolved]" >&2
     exit 1
 fi
 
@@ -47,6 +52,7 @@ TOP=20
 SKIP_FLAMEGRAPH=0
 FLAMEGRAPH_PL=""
 STACKCOLLAPSE_PL=""
+ALLOW_UNRESOLVED=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --skip-flamegraph)  SKIP_FLAMEGRAPH=1;     shift   ;;
         --flamegraph-pl)    [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; FLAMEGRAPH_PL="$2";    shift 2 ;;
         --stackcollapse-pl) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; STACKCOLLAPSE_PL="$2"; shift 2 ;;
+        --allow-unresolved) ALLOW_UNRESOLVED=1;    shift   ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -149,6 +156,42 @@ head -n $(( TOP * 10 + 50 )) "${FULL_REPORT}" > "${REPORT_FILE}"
 
 info "Report: ${REPORT_FILE}"
 
+# ── symbol resolution ─────────────────────────────────────────────────────────
+# A row: "  8.94%  comm  dso  [.]  symbol". User-space rows ([.]) whose symbol is a bare address weren't
+# resolved; TaskSmack's own binaries (its executables and test/benchmark programs) are the ones that matter,
+# so a system library's unresolved rows only warn (#2977).
+read -r APP_ROWS APP_UNRESOLVED SYSTEM_UNRESOLVED < <(awk '
+    $1 ~ /^[0-9]+\.[0-9]+%$/ && $4 == "[.]" {
+        app = ($3 ~ /^TaskSmack/)
+        unresolved = ($5 ~ /^0x[0-9a-fA-F]+$/)
+        if (app) { rows++; if (unresolved) appUnresolved++ }
+        else if (unresolved) systemUnresolved++
+    }
+    END { printf "%d %d %d\n", rows, appUnresolved, systemUnresolved }' "${FULL_REPORT}")
+explain_missing_symbols() {
+    echo "  perf couldn't name TaskSmack's functions: they show as bare addresses." >&2
+    echo "  This perf's symbol support (perf version --build-options):" >&2
+    perf version --build-options 2>/dev/null | grep -E 'libelf|dwarf|libunwind' | sed 's/^/    /' >&2 || true
+    echo "  A perf built without libelf/DWARF (WSL's, for one) can't read symbols: use a distribution perf that has" >&2
+    echo "  them, or symbolize the addresses with llvm-symbolizer against the binary." >&2
+}
+if (( APP_ROWS > 0 && APP_UNRESOLVED == APP_ROWS )); then
+    if [[ "${ALLOW_UNRESOLVED}" -eq 0 ]]; then
+        echo "" >&2
+        echo "ERROR: all ${APP_ROWS} of TaskSmack's sampled functions are unresolved addresses; not an analysis." >&2
+        explain_missing_symbols
+        echo "  Re-run with --allow-unresolved to keep the address-only report anyway: ${REPORT_FILE}" >&2
+        exit 3
+    fi
+    echo "WARNING: all ${APP_ROWS} of TaskSmack's sampled functions are unresolved addresses (--allow-unresolved)." >&2
+    explain_missing_symbols
+elif (( APP_UNRESOLVED > 0 )); then
+    echo "WARNING: ${APP_UNRESOLVED} of TaskSmack's ${APP_ROWS} sampled functions are unresolved addresses." >&2
+fi
+if (( SYSTEM_UNRESOLVED > 0 )); then
+    info "Note: ${SYSTEM_UNRESOLVED} system-library rows have no symbols (their debug symbols aren't installed)."
+fi
+
 # ── flamegraph ────────────────────────────────────────────────────────────────
 FLAMEGRAPH_GENERATED=0
 
@@ -187,10 +230,17 @@ fi
     fi
     echo ""
     echo "Top ${TOP} functions (self CPU):"
-    grep -E "^[[:space:]]+[0-9]+\.[0-9]+%" "${REPORT_FILE}" \
-        | grep -v "\[k\]" \
-        | head -n "${TOP}" \
-        || echo "(No symbols found)"
+    # grep's status, not head's: the fallback ran only when the pipeline failed, which head never did.
+    TOP_ROWS="$(grep -E "^[[:space:]]+[0-9]+\.[0-9]+%" "${REPORT_FILE}" | grep -v "\[k\]" | head -n "${TOP}" || true)"
+    if [[ -n "${TOP_ROWS}" ]]; then
+        echo "${TOP_ROWS}"
+    else
+        echo "(No user-space functions sampled)"
+    fi
+    if (( APP_UNRESOLVED > 0 )); then
+        echo ""
+        echo "Unresolved: ${APP_UNRESOLVED} of TaskSmack's ${APP_ROWS} sampled functions are bare addresses."
+    fi
 } > "${SUMMARY_FILE}"
 
 cat "${SUMMARY_FILE}"

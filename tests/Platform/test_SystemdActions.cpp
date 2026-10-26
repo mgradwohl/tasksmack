@@ -149,6 +149,24 @@ TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
 
 // ========== LinuxServiceActions: where it can act ==========
 
+// #2728: what tasksmack-helper accepts as a unit to act on as root.
+TEST(SystemdActionsTest, OnlyAServicesUnitNameMayGoThroughTheHelper)
+{
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("cron.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("getty@tty1.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("systemd-fsck@dev-disk-by\\x2duuid-1234.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("dbus-org.freedesktop.Avahi:x.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(".service")) << "nothing before the suffix";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("cron.socket")) << "another kind of unit";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("cron")) << "no suffix";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("../etc/passwd.service")) << "a path";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("a b.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("--force.service")) << "an option";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(".hidden.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(std::string(248, 'a') + ".service")) << "past 255 bytes";
+    EXPECT_TRUE(SystemdActions::isServiceUnitName(std::string(247, 'a') + ".service")) << "255 bytes";
+}
+
 TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStart)
 {
     const TestSupport::ScopedTempDir root("ts_service_actions_root");

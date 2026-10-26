@@ -608,22 +608,20 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     // --- Build Process Tree Hierarchy ---
     {
-        std::unordered_map<std::int32_t, std::size_t> pidToIndex;
-        pidToIndex.reserve(newSnapshots.size());
-        for (std::size_t i = 0; i < newSnapshots.size(); ++i)
-        {
-            pidToIndex[newSnapshots[i].pid] = i;
-        }
+        // The writer's reusable PID -> row table (#2981): a stable process set rebuilds it in the
+        // slots it already has, where a fresh std::unordered_map allocated a node per process. A PID
+        // listed twice maps to its last row, as that map's operator[] assignment did.
+        m_PidIndex.rebuild(newSnapshots, &ProcessSnapshot::pid);
 
         for (std::size_t i = 0; i < newSnapshots.size(); ++i)
         {
             const std::int32_t parentPid = newSnapshots[i].parentPid;
             if (parentPid > 0)
             {
-                auto parentIt = pidToIndex.find(parentPid);
-                if (parentIt != pidToIndex.end() && parentIt->second != i)
+                const std::size_t parentRow = m_PidIndex.find(parentPid);
+                if (parentRow != PidIndex::NOT_FOUND && parentRow != i)
                 {
-                    // Guard against PID reuse: pidToIndex maps parentPid to whichever *currently
+                    // Guard against PID reuse: m_PidIndex maps parentPid to whichever *currently
                     // running* process now holds that PID, which may no longer be the process that
                     // actually forked this child if the original parent has since exited and the PID
                     // was recycled by an unrelated process between the two /proc reads that produced
@@ -631,12 +629,12 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                     // candidates that started later. startTimeTicks is 0 when a probe couldn't
                     // determine start time; skip the check rather than drop a legitimate link when
                     // that data isn't available.
-                    const std::uint64_t candidateParentStart = counters[parentIt->second].startTimeTicks;
+                    const std::uint64_t candidateParentStart = counters[parentRow].startTimeTicks;
                     const std::uint64_t childStart = counters[i].startTimeTicks;
                     const bool startTimesKnown = candidateParentStart != 0 && childStart != 0;
                     if (!startTimesKnown || candidateParentStart <= childStart)
                     {
-                        newSnapshots[parentIt->second].childrenIndices.push_back(i);
+                        newSnapshots[parentRow].childrenIndices.push_back(i);
                     }
                 }
             }
