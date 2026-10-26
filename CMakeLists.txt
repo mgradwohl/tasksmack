@@ -826,6 +826,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
+        src/Platform/Linux/SystemdUnitActions.cpp # service actions over the bus it holds (#2728)
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
     tasksmack_apply_linux_toolchain(tasksmack-helper)

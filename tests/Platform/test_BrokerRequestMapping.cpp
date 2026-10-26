@@ -276,6 +276,33 @@ TEST(BrokerRequestMappingTest, AHiddenProcessesRequestGoesToItsReaderWithTheVisi
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions)));
 }
 
+TEST(BrokerRequestMappingTest, AServiceActionGoesToItsReaderAndAThrowIsAFailedResult)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    Broker::ServiceActionRequest seen;
+    readers.serviceAction = [&seen](const Broker::ServiceActionRequest& request)
+    {
+        seen = request;
+        return ServiceActionResult::succeeded();
+    };
+    const Broker::ServiceActionRequest stop{.action = ServiceAction::Stop, .unit = "cron.service", .startType = ServiceStartType::Unknown};
+    const Broker::Response response = BrokerServer::handleRequest(stop, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(response));
+    EXPECT_TRUE(std::get<Broker::ServiceActionReply>(response).result.ok);
+    EXPECT_EQ(seen, stop);
+
+    readers.serviceAction = [](const Broker::ServiceActionRequest&) -> ServiceActionResult
+    {
+        throw std::runtime_error("boom");
+    };
+    const Broker::Response threw = BrokerServer::handleRequest(stop, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(threw));
+    EXPECT_FALSE(std::get<Broker::ServiceActionReply>(threw).result.ok);
+    // A helper without the reader (Windows') answers with an error.
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(stop, actions)));
+}
+
 // --- #2417: what the helper does when a read or an action throws -------------------------------------
 
 /// Readers whose every read throws, for handleRequest()'s no-throw promise.

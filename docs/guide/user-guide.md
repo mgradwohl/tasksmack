@@ -23,6 +23,8 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
+The Linux packages are built on Ubuntu 24.04 and need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. An older distribution, such as Ubuntu 22.04, Debian 12 or RHEL 9, can't run them (the `.deb` won't install, and the `.tar.gz`'s program won't start), but TaskSmack builds from source there: see [System Requirements](#operating-system).
+
 Each package comes in two architectures. Pick the one that matches your computer:
 
 | Architecture | Linux | Windows |
@@ -102,6 +104,7 @@ than a mirror, and if the problem persists, report it per
 ### Operating System
 
 - **Linux:** kernel **5.10 or newer**. TaskSmack's process actions use pidfds (`pidfd_open`, Linux 5.3), and the privileged helper keeps `CAP_SYS_NICE` but not `CAP_SYS_ADMIN`. Linux 5.10 is the first kernel that lets `CAP_SYS_NICE` alone set the Realtime I/O class. Current distributions all ship 5.10 or newer: Debian 11 and later, Ubuntu 22.04 and later (Ubuntu 20.04 with its HWE kernel), RHEL, AlmaLinux and Rocky 9 and later, and current Fedora, Arch and openSUSE. Some metrics need a newer kernel still, and say so where they're described (Intel's NPU counter needs 6.11, for example).
+- **Linux, the prebuilt packages:** the `.deb` and `.tar.gz` on the Releases page are built on Ubuntu 24.04, so they also need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. The `.deb` depends on `libc6 (>= 2.38)`, and the program needs `GLIBC_2.38`. On a distribution with an older glibc that still meets the kernel floor (Ubuntu 22.04, Debian 11 or 12, RHEL 9), build TaskSmack from source instead: [CONTRIBUTING.md's Quick Start](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#quick-start).
 - **Windows:** Windows 10 version 1903 or later.
 
 ### Graphics
