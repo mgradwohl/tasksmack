@@ -17,7 +17,7 @@ endif()
 include(cmake/RCCompiler.cmake)
 
 # Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
-project(TaskSmack VERSION 0.9.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.9.1 LANGUAGES C CXX)
 
 # 64-bit targets only (x64, ARM64): nothing builds, tests or ships 32-bit, and the code no longer
 # carries 32-bit branches (#2214). Fail here, before any dependency is configured, rather than
