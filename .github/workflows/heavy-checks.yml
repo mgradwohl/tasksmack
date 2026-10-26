@@ -181,7 +181,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Also after a failed test or coverage-floor step (#2985): the job still fails, but a report that was
+      # generated reaches Codecov, so its history shows the measurement that failed. Not on a cancelled
+      # run, or when no report was written.
       - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && hashFiles('coverage/coverage.lcov') != '' }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -320,7 +324,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Also after a failed test or coverage-floor step (#2985): the job still fails, but a report that was
+      # generated reaches Codecov, so its history shows the measurement that failed. Not on a cancelled
+      # run, or when no report was written.
       - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && hashFiles('coverage/coverage.lcov') != '' }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

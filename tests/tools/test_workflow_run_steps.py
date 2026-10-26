@@ -625,5 +625,21 @@ class CodeqlSourceFilterTests(unittest.TestCase):
         self.assertIn("no SARIF file in sarif-results/", result.stdout)
 
 
+
+class HeavyChecksCodecovUploadTests(unittest.TestCase):
+    """Heavy Checks uploads coverage to Codecov after a failed test or floor step too (#2985)."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    CONDITION = "${{ !cancelled() && hashFiles('coverage/coverage.lcov') != '' }}"
+
+    def test_both_uploads_run_after_a_failed_step_when_a_report_exists(self):
+        for job in ("coverage", "win-coverage"):
+            with self.subTest(job=job):
+                step = find_step(self.WORKFLOW, "Upload coverage to Codecov", job=job)
+                # Without an `if:`, the implicit success() skipped the upload once the test or
+                # coverage-floor step had failed, so Codecov kept an older measurement.
+                self.assertEqual(step.condition, self.CONDITION)
+
+
 if __name__ == "__main__":
     unittest.main()
