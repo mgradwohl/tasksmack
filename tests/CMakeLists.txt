@@ -261,7 +261,13 @@ add_test(NAME StartupWiringScript
 if(TASKSMACK_BASH)
     add_test(NAME WorkflowRunStepsScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py)
-    set_tests_properties(WorkflowRunStepsScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+    set_tests_properties(WorkflowRunStepsScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
+        # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
+        # (#2054) and gets their second attempt on windows-11-arm (#2832, #2991).
+        RESOURCE_LOCK pwsh-script-tests
+        LABELS pwsh-script
+        TIMEOUT 120)
 endif()
 
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
