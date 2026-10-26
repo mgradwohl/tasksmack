@@ -72,6 +72,25 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
     [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
 
+    /// The /proc/<pid> files a process's record is built from, as text (#2728): what tasksmack-helper reads
+    /// of a process hidepid hides from TaskSmack, which can't open any of them itself.
+    // NOLINTBEGIN(readability-redundant-member-init) - {} lets designated initializers omit a field without a warning
+    struct ProcFileTexts
+    {
+        std::string stat{};
+        std::string statm{};
+        std::string status{};
+        std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
+        std::string io{};                     ///< Empty when unreadable: its I/O is then unavailable
+        std::string cgroup{};
+    };
+    // NOLINTEND(readability-redundant-member-init)
+
+    /// @p pid's record from @p files alone, through the same parsers as enumerate(): nullopt when its stat
+    /// doesn't parse. What the files can't say is left unknown: its FD count and network counters (the
+    /// helper's counters read supplies those) and its architecture.
+    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const;
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
@@ -262,13 +281,20 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Parse the stat file in the /proc/[pid] directory `pidDirFd` is open on, for process `pid`.
     [[nodiscard]] bool parseProcessStat(int pidDirFd, int32_t pid, ProcessCounters& counters) const;
+    /// The stat file's text applied to `counters` for process `pid`; false when it doesn't parse.
+    [[nodiscard]] bool applyStat(std::string_view stat, int32_t pid, ProcessCounters& counters) const;
 
     /// Parse /proc/[pid]/statm (through `pidDirFd`) for memory info
     void parseProcessStatm(int pidDirFd, ProcessCounters& counters) const;
+    /// The statm file's text applied to `counters` (empty: unchanged).
+    void applyStatm(std::string_view statm, ProcessCounters& counters) const;
 
     /// Parse /proc/[pid]/status (through `pidDirFd`) for owner (UID) info and CPU affinity
     /// (Cpus_allowed_list). The affinity is ANDed with `onlineCpus` when that is known (see readOnlineCpus()).
     static void parseProcessStatus(int pidDirFd, int32_t pid, ProcessCounters& counters, const std::optional<CpuAffinity>& onlineCpus);
+    /// The status file's text applied to `counters`: the owner, peak RSS (after statm), private and swapped
+    /// memory, and the CPU affinity ANDed with `onlineCpus`. A line the text cuts off is ignored.
+    static void applyStatus(std::string_view text, ProcessCounters& counters, const std::optional<CpuAffinity>& onlineCpus);
 
     /// The online CPUs, from <cpuSysfsRoot>/online, or nullopt if it can't be read or parsed (#1384).
     [[nodiscard]] static std::optional<CpuAffinity> readOnlineCpus(const std::filesystem::path& cpuSysfsRoot);
@@ -291,6 +317,8 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse /proc/[pid]/io (through `pidDirFd`) for I/O counters (requires permissions); unreadable
     /// sets ioCountersAvailable = false
     static void parseProcessIo(int pidDirFd, ProcessCounters& counters);
+    /// The io file's text applied to `counters`: empty or unparsable sets ioCountersAvailable = false.
+    static void applyIo(std::string_view ioText, ProcessCounters& counters);
 
     /// Count file descriptors in /proc/[pid]/fd, through `pidDirFd`. Unreadable (permissions) sets
     /// handleCountAvailable and networkCountersAvailable = false: neither the count nor the process's
@@ -332,6 +360,11 @@ class LinuxProcessProbe : public IProcessProbe
     /// distinct set of cgroups (`factsByCgroup`): processes sharing a cgroup share the answer.
     static void
     readCgroupFacts(int pidDirFd, const std::filesystem::path& cgroupRoot, FactsByCgroup& factsByCgroup, ProcessCounters& counters);
+    /// The same, from the cgroup file's text (empty: unchanged).
+    static void applyCgroupFacts(std::string_view cgroups,
+                                 const std::filesystem::path& cgroupRoot,
+                                 FactsByCgroup& factsByCgroup,
+                                 ProcessCounters& counters);
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;

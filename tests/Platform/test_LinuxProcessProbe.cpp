@@ -1377,6 +1377,88 @@ TEST(LinuxProcessProbeTest, AnEmptyCmdlineIsAKernelThreadShownInBrackets)
     EXPECT_EQ(commandOf(5252), "/usr/bin/app --flag");
 }
 
+// #2728: a process hidepid hides from TaskSmack arrives as the helper's text of its /proc/<pid> files;
+// processFromFiles() builds the record enumerate() would have built from them, field for field.
+TEST(LinuxProcessProbeTest, ARecordFromTheFilesTextIsTheOneEnumerateBuilds)
+{
+    ScopedTempDir proc("ts_test_proc_from_files");
+    const LinuxProcessProbe::ProcFileTexts files{
+        .stat = "6161 (worker) S 1 6161 6161 0 -1 4194304 7 0 2 0 120 30 0 0 20 5 3 0 4242 104857600 512 "
+                "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+        .statm = "25600 600 200 0 0 0 0\n",
+        .status = "Name:\tworker\nUid:\t0\t0\t0\t0\nVmHWM:\t   4096 kB\nRssAnon:\t   1024 kB\nVmSwap:\t      8 kB\n"
+                  "Cpus_allowed_list:\t0\n",
+        .cmdline = std::string("/usr/libexec/worker\0--serve\0", 28),
+        .io = "rchar: 1\nwchar: 2\nsyscr: 3\nsyscw: 4\nread_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n",
+        .cgroup = "0::/system.slice/worker.service\n",
+    };
+    const auto dir = proc.path / "6161";
+    writeFile(dir / "stat", files.stat);
+    writeFile(dir / "statm", files.statm);
+    writeFile(dir / "status", files.status);
+    writeFile(dir / "cmdline", *files.cmdline);
+    writeFile(dir / "io", files.io);
+    writeFile(dir / "cgroup", files.cgroup);
+    writeFile(proc.path / "self" / "io", files.io); // so enumerate() reads I/O at all
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto enumerated = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 6161; });
+    ASSERT_NE(enumerated, processes.end());
+
+    const std::optional<ProcessCounters> built = probe.processFromFiles(6161, files);
+    ASSERT_TRUE(built.has_value());
+    EXPECT_EQ(built->name, enumerated->name);
+    EXPECT_EQ(built->command, "/usr/libexec/worker --serve");
+    EXPECT_EQ(built->command, enumerated->command);
+    EXPECT_EQ(built->user, enumerated->user);
+    EXPECT_EQ(built->parentPid, enumerated->parentPid);
+    EXPECT_EQ(built->state, enumerated->state);
+    EXPECT_EQ(built->startTimeTicks, enumerated->startTimeTicks);
+    EXPECT_EQ(built->startTimeEpoch, enumerated->startTimeEpoch);
+    EXPECT_EQ(built->userTime, enumerated->userTime);
+    EXPECT_EQ(built->systemTime, enumerated->systemTime);
+    EXPECT_EQ(built->nice, enumerated->nice);
+    EXPECT_EQ(built->threadCount, enumerated->threadCount);
+    EXPECT_EQ(built->pageFaultCount, enumerated->pageFaultCount);
+    EXPECT_EQ(built->virtualBytes, enumerated->virtualBytes);
+    EXPECT_EQ(built->rssBytes, enumerated->rssBytes);
+    EXPECT_EQ(built->sharedBytes, enumerated->sharedBytes);
+    EXPECT_EQ(built->peakRssBytes, enumerated->peakRssBytes);
+    EXPECT_EQ(built->privateBytes, enumerated->privateBytes);
+    EXPECT_EQ(built->swapBytes, enumerated->swapBytes);
+    EXPECT_EQ(built->cpuAffinity, enumerated->cpuAffinity);
+    EXPECT_TRUE(built->ioCountersAvailable);
+    EXPECT_EQ(built->readBytes, enumerated->readBytes);
+    EXPECT_EQ(built->writeBytes, enumerated->writeBytes);
+    EXPECT_EQ(built->services, enumerated->services);
+    EXPECT_EQ(built->container, enumerated->container);
+    EXPECT_EQ(built->status, enumerated->status);
+    // What the files can't say: the helper's counters read fills the FD count and network counters in.
+    EXPECT_FALSE(built->handleCountAvailable);
+    EXPECT_FALSE(built->networkCountersAvailable);
+}
+
+TEST(LinuxProcessProbeTest, ARecordFromFilesNeedsItsStatAndTreatsAZombieOrAnUnreadCommandLineAsEnumerateDoes)
+{
+    const LinuxProcessProbe probe(std::filesystem::temp_directory_path());
+    EXPECT_FALSE(probe.processFromFiles(6161, {}).has_value()) << "no stat, no record";
+    EXPECT_FALSE(probe.processFromFiles(0, {.stat = "0 (x) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0\n"}).has_value());
+
+    const std::string zombieStat = "6262 (gone) Z 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 77 0 0\n";
+    const auto zombie = probe.processFromFiles(6262, {.stat = zombieStat, .cmdline = std::string{}});
+    ASSERT_TRUE(zombie.has_value());
+    EXPECT_EQ(zombie->command, "gone <defunct>") << "not the kernel-thread label an empty cmdline would give";
+
+    const std::string stat = "6363 (app) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 88 0 0\n";
+    const auto unread = probe.processFromFiles(6363, {.stat = stat, .cmdline = std::nullopt});
+    ASSERT_TRUE(unread.has_value());
+    EXPECT_TRUE(unread->command.empty()) << "unread: not called a kernel thread";
+    const auto kernelThread = probe.processFromFiles(6363, {.stat = stat, .cmdline = std::string{}});
+    ASSERT_TRUE(kernelThread.has_value());
+    EXPECT_EQ(kernelThread->command, "[app]");
+    EXPECT_FALSE(kernelThread->ioCountersAvailable) << "no io text: its I/O is unknown, not 0";
+}
+
 void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
 {
     const auto dir = procRoot / "4242";

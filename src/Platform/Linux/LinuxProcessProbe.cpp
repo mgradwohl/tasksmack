@@ -564,14 +564,14 @@ bool LinuxProcessProbe::parseProcessStat(int pidDirFd, int32_t pid, ProcessCount
     // ~22 numeric fields are at most ~462 bytes total.
     std::array<char, 1024> buf{};
     const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
-    if (len == 0)
-    {
-        return false;
-    }
+    return len != 0 && applyStat(std::string_view(buf.data(), len), pid, counters);
+}
 
+bool LinuxProcessProbe::applyStat(std::string_view stat, int32_t pid, ProcessCounters& counters) const
+{
     // One parser for the format (#1183): the start time read here is the one the identity check
     // before a process action (#973) and socket attribution (#1336) read.
-    const auto fields = ProcParsing::parseStatFields(std::string_view(buf.data(), len));
+    const auto fields = ProcParsing::parseStatFields(stat);
     if (!fields.has_value())
     {
         return false;
@@ -620,13 +620,17 @@ void LinuxProcessProbe::parseProcessStatm(int pidDirFd, ProcessCounters& counter
 
     std::array<char, 128> buf{};
     const std::size_t len = readProcFileOnceAt(pidDirFd, "statm", buf.data(), buf.size());
-    if (len == 0)
+    applyStatm(std::string_view(buf.data(), len), counters);
+}
+
+void LinuxProcessProbe::applyStatm(std::string_view statm, ProcessCounters& counters) const
+{
+    if (statm.empty())
     {
         return;
     }
-
-    const char* q = buf.data();
-    const char* const end = buf.data() + len;
+    const char* q = statm.data();
+    const char* const end = statm.data() + statm.size();
     uint64_t size = 0;
     uint64_t resident = 0;
     uint64_t shared = 0;
@@ -690,12 +694,8 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
     {
         return;
     }
-    constexpr std::string_view UID_PREFIX = "Uid:";
     constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
-    constexpr std::string_view RSS_ANON_PREFIX = "RssAnon:";
-    constexpr std::string_view VM_SWAP_PREFIX = "VmSwap:";
     constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
-    constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
     std::string_view text(buf.data(), len);
     std::vector<char> fullStatus;
@@ -722,6 +722,17 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
                           BUF_SIZE);
         }
     }
+    applyStatus(text, counters, onlineCpus);
+}
+
+void LinuxProcessProbe::applyStatus(std::string_view text, ProcessCounters& counters, const std::optional<CpuAffinity>& onlineCpus)
+{
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view RSS_ANON_PREFIX = "RssAnon:";
+    constexpr std::string_view VM_SWAP_PREFIX = "VmSwap:";
+    constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
     bool haveUid = false;
     bool havePeakRss = false;
@@ -1049,21 +1060,47 @@ void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
     constexpr std::size_t BUF_SIZE = 512;
     std::array<char, BUF_SIZE> buf{};
     const std::size_t len = readProcFileOnceAt(pidDirFd, "io", buf.data(), BUF_SIZE);
-    if (len == 0)
-    {
-        // Common case: insufficient permissions
-        counters.ioCountersAvailable = false;
-        return;
-    }
+    applyIo(std::string_view(buf.data(), len), counters); // empty, commonly, for want of permission
+}
 
+void LinuxProcessProbe::applyIo(std::string_view ioText, ProcessCounters& counters)
+{
     // read_bytes and write_bytes, parsed as tasksmack-helper parses them for other users' processes (#2728).
-    const std::optional<Linux::ProcIoParser::ProcIo> io = Linux::ProcIoParser::parse(std::string_view(buf.data(), len));
+    const std::optional<Linux::ProcIoParser::ProcIo> io = Linux::ProcIoParser::parse(ioText);
     counters.ioCountersAvailable = io.has_value();
     if (io.has_value())
     {
         counters.readBytes = io->readBytes;
         counters.writeBytes = io->writeBytes;
     }
+}
+
+std::optional<ProcessCounters> LinuxProcessProbe::processFromFiles(std::int32_t pid, const ProcFileTexts& files) const
+{
+    ProcessCounters counters{};
+    if (pid <= 0 || !applyStat(files.stat, pid, counters))
+    {
+        return std::nullopt;
+    }
+    applyStatm(files.statm, counters);
+    applyStatus(files.status, counters, readOnlineCpus(m_CpuSysfsRoot));
+    // As readProcessCommand(), without its cache: a zombie is <defunct>, an unread command line leaves the
+    // command empty rather than calling it a kernel thread.
+    if (counters.state == 'Z')
+    {
+        counters.command = counters.name + " <defunct>";
+    }
+    else if (files.cmdline.has_value())
+    {
+        applyCmdline(counters, std::vector<char>(files.cmdline->begin(), files.cmdline->end()));
+    }
+    // Only the helper's counters read can list its fds, and its sockets: unknown until that fills them.
+    counters.handleCountAvailable = false;
+    counters.networkCountersAvailable = false;
+    applyIo(files.io, counters);
+    FactsByCgroup factsByCgroup;
+    applyCgroupFacts(files.cgroup, m_CgroupRoot, factsByCgroup, counters);
+    return counters;
 }
 
 bool LinuxProcessProbe::inAnotherNetworkNamespace(int pidDirFd) const
@@ -1145,6 +1182,14 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         fullContents = ProcParsing::readProcFileFullAt(pidDirFd, "cgroup");
         cgroups = std::string_view(fullContents.data(), fullContents.size());
     }
+    applyCgroupFacts(cgroups, cgroupRoot, factsByCgroup, counters);
+}
+
+void LinuxProcessProbe::applyCgroupFacts(std::string_view cgroups,
+                                         const std::filesystem::path& cgroupRoot,
+                                         FactsByCgroup& factsByCgroup,
+                                         ProcessCounters& counters)
+{
     if (cgroups.empty())
     {
         return;
