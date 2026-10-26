@@ -30,7 +30,11 @@ class Bus
     Bus() = default;
     ~Bus()
     {
-        if (m_Bus != nullptr)
+        if (m_Bus != nullptr && m_Borrowed)
+        {
+            sd_bus_unref(m_Bus); // another Bus owns the connection: leave it open
+        }
+        else if (m_Bus != nullptr)
         {
             sd_bus_flush_close_unref(m_Bus);
         }
@@ -48,9 +52,16 @@ class Bus
     {
         return m_Bus;
     }
+    /// Uses @p bus, a connection another Bus owns, without closing it here (#2728). Call on an empty Bus.
+    void borrow(sd_bus* bus) noexcept
+    {
+        m_Bus = sd_bus_ref(bus);
+        m_Borrowed = true;
+    }
 
   private:
     sd_bus* m_Bus = nullptr;
+    bool m_Borrowed = false;
 };
 
 /// Opens @p bus on the system bus with CALL_TIMEOUT_USEC on every call; sd_bus_open_system()'s result.

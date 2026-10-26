@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <chrono>
+#include <cstdint>
 #include <expected>
 #include <stop_token>
 #include <string>
@@ -62,12 +63,21 @@ class IPrivilegedBroker
     /// what "Authenticate to read" is for. False where every elevation runs as another account and the
     /// helper then reads only the user's own processes (a standard user's Windows TaskSmack, whose UAC
     /// prompt asks for an administrator's password): the readers then don't offer a prompt that can't
-    /// help. Actions are offered either way. Known before the helper starts, and it can only turn false
+    /// help. Actions are offered either way. Known before the helper starts, and it can turn false
     /// after: on Windows, once a helper that was expected to run as the user answers a read saying it
-    /// doesn't (#2769). Ask each time, don't cache it.
+    /// doesn't (#2769), until a new helper starts (#2993). Ask each time, don't cache it.
     [[nodiscard]] virtual bool readsOtherUsers() const noexcept
     {
         return true;
+    }
+
+    /// How many helper sessions connect() has started (#2993): one more each time it starts a helper and
+    /// that helper answers the handshake, so an answer can be told from a later helper's, which may run
+    /// as another account (each UAC prompt is answered afresh). Cheap and non-blocking, for the UI
+    /// thread. The default, 0 for good, is for transports that don't count them.
+    [[nodiscard]] virtual std::uint64_t sessionsStarted() const noexcept
+    {
+        return 0;
     }
 
     /// Sends @p request and waits for its response, for at most the transport's bounded wait or until

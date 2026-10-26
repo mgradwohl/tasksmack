@@ -70,7 +70,8 @@ void SystemInfoModel::read(const std::stop_token& stopToken)
         }
     }
     // The helper can take "Authenticate to read" back during the reads above, once it has shown it runs
-    // as another account (Windows, #2769): from this read on the page stops offering it.
+    // as another account (Windows, #2769): from this read on the page stops offering it, until a read
+    // after a new helper has started finds it offered again (#2993).
     m_CanReadAuthorized.store(m_Probe->canReadAuthorized(), std::memory_order_relaxed);
     if (m_CrashHistory && m_Capabilities.hasOs)
     {

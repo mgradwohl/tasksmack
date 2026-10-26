@@ -207,7 +207,21 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
         // mark the next sample as a seed transition to prevent rate spikes.
         state.isSeedTransition = !state.hasPrev;
 
-        state.hasPrev = true;
+        // Counters the probe couldn't read are no baseline: the next real ones are a seed, not a
+        // delta from zeros (#2994).
+        state.hasPrev = diskCounters.hasIoCounters;
+    }
+
+    // A disk missing from this sample has no baseline any more (#2995): whatever appears under its name next
+    // may be another device (a replacement USB disk, say) whose counters started elsewhere, so it is seeded
+    // afresh, a gap, rather than measured against the removed disk's. Its history stays for the window.
+    for (auto& [deviceName, state] : diskStates)
+    {
+        if (!seen.contains(deviceName))
+        {
+            state.hasPrev = false;
+            state.isSeedTransition = false;
+        }
     }
 
     // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()). Each
@@ -445,9 +459,10 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     snap.totalReadOps = current.readsCompleted;
     snap.totalWriteOps = current.writesCompleted;
 
-    if (!state.hasPrev)
+    if (!state.hasPrev || !current.hasIoCounters)
     {
-        // First sample, can't compute rates yet.
+        // First sample, can't compute rates yet; or the probe listed the disk without reading its
+        // counters (#2994), whose zeros are no reading: a gap, not an idle disk.
         return snap;
     }
 

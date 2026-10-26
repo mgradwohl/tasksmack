@@ -7,9 +7,12 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 
 #include <exception>
 #include <expected>
+#include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -148,6 +151,69 @@ namespace
     }
 }
 
+/// Many processes' FD counts and I/O bytes (#2728): an entry for each target its reader still finds, in order.
+[[nodiscard]] Broker::Response handleProcessCounters(const Broker::ProcessCountersRequest& read, const Readers& readers)
+{
+    if (!readers.processCounters)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't read process counters"};
+    }
+    Broker::ProcessCountersReply reply;
+    reply.entries.reserve(read.targets.size());
+    for (const ProcessTarget& target : read.targets)
+    {
+        try
+        {
+            if (std::optional<Broker::ProcessCountersEntry> entry = readers.processCounters(target, read.withSockets))
+            {
+                reply.entries.push_back(std::move(*entry));
+            }
+        }
+        catch (...)
+        {
+            continue; // that one process is left out; the others' counters still go back
+        }
+    }
+    return reply;
+}
+
+/// The processes hidepid hides from TaskSmack (#2728). A helper without the reader answers with an error,
+/// which TaskSmack takes as "this helper never lists them" and doesn't ask again. A reader that throws
+/// lists none this time, marked truncated, so the next refresh asks again (#3032): one failed read, a
+/// process gone mid-walk or a failed allocation, isn't the helper lacking the reader.
+[[nodiscard]] Broker::Response handleHiddenProcesses(const Broker::HiddenProcessesRequest& read, const Readers& readers)
+{
+    if (!readers.hiddenProcesses)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list hidden processes"};
+    }
+    try
+    {
+        return readers.hiddenProcesses(read.visiblePids);
+    }
+    catch (...)
+    {
+        return Broker::HiddenProcessesReply{.processes = {}, .truncated = true};
+    }
+}
+
+/// A service action (#2728): a helper without the reader (Windows') answers with an error.
+[[nodiscard]] Broker::Response handleServiceAction(const Broker::ServiceActionRequest& request, const Readers& readers)
+{
+    if (!readers.serviceAction)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't act on services"};
+    }
+    try
+    {
+        return Broker::ServiceActionReply{.result = readers.serviceAction(request)};
+    }
+    catch (const std::exception& error)
+    {
+        return Broker::ServiceActionReply{.result = ServiceActionResult::failed(std::string("The service action failed: ") + error.what())};
+    }
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -233,6 +299,18 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::FirmwareFileRequest>(&request))
     {
         return handleFirmwareFile(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::ProcessCountersRequest>(&request))
+    {
+        return handleProcessCounters(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::HiddenProcessesRequest>(&request))
+    {
+        return handleHiddenProcesses(*read, readers);
+    }
+    if (const auto* service = std::get_if<Broker::ServiceActionRequest>(&request))
+    {
+        return handleServiceAction(*service, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {

@@ -14,6 +14,13 @@
 # Run it from a normal PowerShell 7 terminal: the installers ask for administrator approval (UAC)
 # themselves. It sets LLVM_ROOT to C:\Program Files\LLVM, machine-wide from an elevated terminal and
 # for the current user otherwise.
+#
+# LLVM (#3041): it leaves exactly one LLVM, of the major .pre-commit-config.yaml pins, in
+# C:\Program Files\LLVM. It reads the LLVM installer registrations from the uninstall registry keys.
+# None: it installs the pin. All of them the pinned major (any minor, any number of side-by-side MSIs):
+# it leaves them. Any other major: it uninstalls every registration (msiexec /x for an MSI, the NSIS
+# uninstaller with /S), installs the pin, and checks clang --version. It stops with an error, rather
+# than warning and finishing, when any of that fails. -DryRun prints the uninstall and install commands.
 
 [CmdletBinding()]
 param(
@@ -66,6 +73,13 @@ $requestedLlvmMajor = if ($LlvmVersion -match '^(\d+)') { [int]$Matches[1] } els
 if ($SupportedLlvmMajor -and $requestedLlvmMajor -ne $SupportedLlvmMajor) {
     throw "TaskSmack presets currently require LLVM $SupportedLlvmMajor; received -LlvmVersion $LlvmVersion."
 }
+# The major the LLVM step leaves installed (Install-PinnedLlvm), and where: the win-* presets build
+# with $env:LLVM_ROOT, which this script points at $LlvmDir.
+$LlvmTargetMajor = if ($SupportedLlvmMajor) { $SupportedLlvmMajor } else { $requestedLlvmMajor }
+if (-not $LlvmTargetMajor) {
+    throw "-LlvmVersion $LlvmVersion doesn't start with a major version, and .pre-commit-config.yaml doesn't pin one."
+}
+$LlvmDir = "C:\Program Files\LLVM"
 
 # winget exit codes (https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md)
 # that mean the package is already there, so a re-run of this script doesn't throw on them:
@@ -169,6 +183,222 @@ function Install-WinGetPackage {
     else {
         Write-Host "  $Id installed (the pin was $Version); run pwsh tools/check-prereqs.ps1 to see which version is in use."
     }
+}
+
+# ── LLVM: exactly one install, of the pinned major (#3041) ───────────────────────────────────────
+# winget can't move an LLVM to another major: `winget install --version <pin>` over another version
+# answers 0x8A15010D, which Invoke-WinGet only warns about, so setup used to finish on the old major.
+# The installer type changes between majors too (22's is NSIS, 23's an MSI), and LLVM's MSIs install
+# side by side, each registered with InstallLocation C:\Program Files\LLVM: the last one installed
+# wins on disk, and uninstalling any one of them can remove files the others share. So the LLVM step
+# reads every registration, removes them all when any is another major, installs the pin, and checks
+# the clang that results.
+
+# The uninstall keys Settings > Apps lists, machine-wide (64- and 32-bit) and per user.
+$LlvmUninstallKeys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+)
+
+# Every installer registration of an LLVM in $LlvmDir, read-only from the uninstall keys: its
+# version and major, its MSI product code (none for the NSIS .exe), its uninstall commands and its
+# key. winget list shows only the rows it matches to LLVM.LLVM, and Get-WinGetInstalledVersion reads
+# only the first; the registry has them all. One registered elsewhere (a 32-bit LLVM in Program
+# Files (x86)) is left out: it isn't the LLVM the presets build with.
+function Get-InstalledLlvm {
+    $dir = $LlvmDir.TrimEnd('\')
+    foreach ($root in $LlvmUninstallKeys) {
+        foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $item = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if (-not $item) { continue }
+            $properties = $item.PSObject.Properties
+            $value = { param($Name) if ($properties[$Name]) { "$($properties[$Name].Value)".Trim() } else { '' } }
+            if ((& $value 'DisplayName') -notmatch '^LLVM(\s+v?\d[\d.]*)?$') { continue }
+            $location = (& $value 'InstallLocation').TrimEnd('\')
+            if ($location -and $location -ne $dir) { continue }
+            $version = & $value 'DisplayVersion'
+            $isMsi = (& $value 'WindowsInstaller') -eq '1' -and $key.PSChildName -match '^\{[0-9A-Fa-f-]{36}\}$'
+            [pscustomobject]@{
+                Version              = $version
+                Major                = if ($version -match '^(\d+)') { [int]$Matches[1] } else { $null }
+                ProductCode          = if ($isMsi) { $key.PSChildName } else { $null }
+                UninstallString      = & $value 'UninstallString'
+                QuietUninstallString = & $value 'QuietUninstallString'
+                Key                  = $key.PSPath
+            }
+        }
+    }
+}
+
+# The LLVM major of $LlvmDir\bin\clang.exe, or $null when it isn't there or can't say.
+function Get-LlvmClangMajor {
+    $clang = Join-Path $LlvmDir 'bin\clang.exe'
+    if (-not (Test-Path -LiteralPath $clang)) {
+        return $null
+    }
+    try {
+        return Get-LlvmToolMajorVersion -ToolPath $clang
+    }
+    catch {
+        return $null
+    }
+}
+
+# What the LLVM step does, from the registrations Get-InstalledLlvm found, the pinned major and the
+# major of the clang in $LlvmDir\bin ($null when there's none). Returns @{ Action; Remove; Note }:
+#   Install  nothing is registered: install the pin (over an unregistered LLVM in $LlvmDir, if any).
+#   Keep     every registration and that clang are the pinned major: nothing to do, whatever the
+#            minor. Several registrations (side-by-side MSIs) are left alone, with a note.
+#   Replace  a registration or the clang is another major, or no version can be read: uninstall
+#            every registration (Remove), then install the pin. All of them, not only the other
+#            majors': they share $LlvmDir, so removing one can take files the others still list.
+function Get-LlvmInstallPlan {
+    param(
+        [object[]]$Installed = @(),
+        [Parameter(Mandatory)][int]$PinnedMajor,
+        [Nullable[int]]$ClangMajor
+    )
+    $Installed = @($Installed)
+    if ($Installed.Count -eq 0) {
+        if ($ClangMajor -eq $PinnedMajor) {
+            return [pscustomobject]@{ Action = 'Keep'; Remove = @(); Note = "LLVM $PinnedMajor is in $LlvmDir without an installer registration." }
+        }
+        $note = if ($null -ne $ClangMajor) { "LLVM $ClangMajor is in $LlvmDir without an installer registration; installing LLVM $PinnedMajor over it." } else { $null }
+        return [pscustomobject]@{ Action = 'Install'; Remove = @(); Note = $note }
+    }
+    $versions = ($Installed | ForEach-Object { if ($_.Version) { $_.Version } else { '(no version)' } }) -join ', '
+    $otherMajors = @($Installed | Where-Object { $_.Major -ne $PinnedMajor })
+    if ($otherMajors.Count -eq 0 -and $ClangMajor -eq $PinnedMajor) {
+        $note = if ($Installed.Count -gt 1) {
+            "$($Installed.Count) installer registrations of LLVM $PinnedMajor ($versions) share $LlvmDir; leaving them. Uninstalling one of them can remove files the others share."
+        }
+        else { $null }
+        return [pscustomobject]@{ Action = 'Keep'; Remove = @(); Note = $note }
+    }
+    $reasons = @()
+    if ($otherMajors.Count -gt 0) {
+        $reasons += "LLVM $(($otherMajors | ForEach-Object { if ($_.Version) { $_.Version } else { '(no version)' } }) -join ', ') is registered"
+    }
+    if ($ClangMajor -ne $PinnedMajor) {
+        $reasons += if ($null -eq $ClangMajor) { "there's no clang.exe in $LlvmDir\bin" } else { "$LlvmDir\bin\clang.exe is LLVM $ClangMajor" }
+    }
+    return [pscustomobject]@{
+        Action = 'Replace'
+        Remove = $Installed
+        Note   = "$($reasons -join ' and '), but the presets build with LLVM $PinnedMajor; uninstalling every LLVM registration ($versions), then installing LLVM $PinnedMajor."
+    }
+}
+
+# The command that uninstalls one registration without questions, as @{ FilePath; ArgumentList }:
+# msiexec /x for an MSI, else the registration's QuietUninstallString, else its UninstallString
+# with NSIS's /S. msiexec gets /passive (a progress bar), not /quiet: under /passive a per-machine
+# MSI asks for administrator approval (UAC) itself, as the installers here do; under /quiet it fails.
+function Get-LlvmUninstallCommand {
+    param([Parameter(Mandatory)][object]$Registration)
+    if ($Registration.ProductCode) {
+        return @{ FilePath = 'msiexec.exe'; ArgumentList = "/x $($Registration.ProductCode) /passive /norestart" }
+    }
+    $line = $Registration.QuietUninstallString
+    $silent = ''
+    if (-not $line) {
+        $line = $Registration.UninstallString
+        $silent = '/S'
+    }
+    if ($line -match '^\s*"([^"]+)"\s*(.*)$' -or $line -match '^\s*(.+?\.exe)(?:\s+(.*))?$') {
+        return @{ FilePath = $Matches[1]; ArgumentList = ("$($Matches[2]) $silent").Trim() }
+    }
+    throw "LLVM $($Registration.Version) has no usable uninstall command in $($Registration.Key). Uninstall it from Settings > Apps, then rerun this script."
+}
+
+# Uninstall one LLVM registration, or print the command under -DryRun. The uninstaller asks for
+# administrator approval itself. A declined prompt, a failing exit code, or a registration still
+# there $TimeoutSeconds after the uninstaller exits stops the script. The wait is there because an
+# NSIS uninstaller hands off to a copy of itself in %TEMP% and exits at once.
+function Invoke-LlvmUninstall {
+    param(
+        [Parameter(Mandatory)][object]$Registration,
+        [int]$TimeoutSeconds = 600
+    )
+    $command = Get-LlvmUninstallCommand -Registration $Registration
+    $shown = "$($command.FilePath) $($command.ArgumentList)".Trim()
+    if ($DryRun) {
+        Write-Host "[dry-run] $shown"
+        return
+    }
+    Write-Host "  Uninstalling LLVM $($Registration.Version): $shown"
+    $retry = 'Uninstall LLVM from Settings > Apps, then rerun this script.'
+    $start = @{ FilePath = $command.FilePath; Wait = $true; PassThru = $true }
+    if ($command.ArgumentList) {
+        $start.ArgumentList = $command.ArgumentList
+    }
+    try {
+        $process = Start-Process @start
+    }
+    catch {
+        throw "Uninstalling LLVM $($Registration.Version) didn't start ($($_.Exception.Message)): $shown. $retry"
+    }
+    # msiexec: 1605 the product isn't installed (already gone); 1641 and 3010 a restart finishes it.
+    $exitCode = $process.ExitCode
+    if (@(0, 1605, 1641, 3010) -notcontains $exitCode -or ($exitCode -ne 0 -and -not $Registration.ProductCode)) {
+        throw "Uninstalling LLVM $($Registration.Version) failed with exit code $exitCode`: $shown. $retry"
+    }
+    if ($exitCode -in 1641, 3010) {
+        Write-Warning "Windows needs a restart to finish uninstalling LLVM $($Registration.Version) (msiexec $exitCode)."
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (Test-Path -LiteralPath $Registration.Key) {
+        if ((Get-Date) -ge $deadline) {
+            throw "LLVM $($Registration.Version) is still registered $TimeoutSeconds s after its uninstaller exited ($shown). $retry"
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
+# The LLVM step: leave exactly one LLVM, of the pinned major, in $LlvmDir (Get-LlvmInstallPlan says
+# how), and stop the script when that can't be done: an uninstall or the install fails, or the clang
+# in $LlvmDir\bin isn't the pinned major afterwards. -DryRun prints each command instead.
+function Install-PinnedLlvm {
+    [CmdletBinding()]
+    param()
+    $byVersion = { $parsed = $null; if ([version]::TryParse($_.Version, [ref]$parsed)) { $parsed } else { [version]'0.0' } }
+    $installed = @(Get-InstalledLlvm | Sort-Object -Property Major, $byVersion)
+    $clangMajor = Get-LlvmClangMajor
+    foreach ($registration in $installed) {
+        $kind = if ($registration.ProductCode) { "MSI $($registration.ProductCode)" } else { 'NSIS .exe' }
+        Write-Host "  Registered: LLVM $($registration.Version) ($kind)"
+    }
+    if ($null -ne $clangMajor) {
+        Write-Host "  $LlvmDir\bin\clang.exe is LLVM $clangMajor"
+    }
+    $plan = Get-LlvmInstallPlan -Installed $installed -PinnedMajor $LlvmTargetMajor -ClangMajor $clangMajor
+    if ($plan.Note) {
+        Write-Host "  $($plan.Note)"
+    }
+    if ($plan.Action -eq 'Keep') {
+        Write-Host "  LLVM $LlvmTargetMajor is already installed; leaving it."
+        return
+    }
+    foreach ($registration in $plan.Remove) {
+        Invoke-LlvmUninstall -Registration $registration
+    }
+    try {
+        Install-WinGetPackage -Id LLVM.LLVM -Version $LlvmVersion
+    }
+    catch {
+        throw "Installing LLVM $LlvmVersion failed: $($_.Exception.Message)"
+    }
+    $check = "$LlvmDir\bin\clang.exe --version"
+    if ($DryRun) {
+        Write-Host "[dry-run] $check (must report LLVM $LlvmTargetMajor)"
+        return
+    }
+    $after = Get-LlvmClangMajor
+    if ($after -ne $LlvmTargetMajor) {
+        $found = if ($null -eq $after) { 'no LLVM version (missing, or it does not run)' } else { "LLVM $after" }
+        throw "After installing LLVM $LlvmVersion, $check reports $found, not LLVM $LlvmTargetMajor. Uninstall every LLVM from Settings > Apps, then rerun this script."
+    }
+    Write-Host "  $LlvmDir\bin\clang.exe is LLVM $after."
 }
 
 function Resolve-Python {
@@ -336,12 +566,12 @@ if (-not $DryRun) {
 
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "==> Installing LLVM $LlvmVersion..."
-Install-WinGetPackage -Id LLVM.LLVM -Version $LlvmVersion
+Write-Host "==> LLVM $LlvmVersion (one install of LLVM $LlvmTargetMajor in $LlvmDir)..."
+Install-PinnedLlvm
 
 Write-Host ""
 Write-Host "==> Setting LLVM_ROOT environment variable..."
-$llvmPath = "C:\Program Files\LLVM"
+$llvmPath = $LlvmDir
 # A machine-wide variable needs an elevated shell; without one, set it for the current user instead
 # of failing here, after LLVM is installed but before the Python packages.
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(

@@ -179,13 +179,88 @@ try {
     # objects, for the layers that need the whole app on a display (#1395). Keep in sync with
     # tools/coverage.sh. A failing suite still gets its coverage reported, so the failure can be
     # diagnosed from the report, but the script exits non-zero at the end (#2251).
-    foreach ($suite in "TaskSmackTests", "TaskSmackThemeTests", "TaskSmackAppTests") {
-        & "$BuildDir\tests\$suite.exe"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "$suite failed (exit code $LASTEXITCODE); generating the coverage report, then failing."
-            $failedSuites.Add($suite)
+    #
+    # The UI scenarios (#2711) run on a synthetic machine: tests/CMakeLists.txt gives UiScenarioTest
+    # TASKSMACK_SYNTHETIC, which the app reads once per process, so they get a run of their own here with
+    # the same value, as under CTest, and the rest of TaskSmackAppTests runs without it (#2927).
+    $syntheticMatch = Select-String -Path (Join-Path $ProjectRoot "tests\CMakeLists.txt") `
+        -Pattern 'UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=([^"]*)"' | Select-Object -First 1
+    if ($null -eq $syntheticMatch) {
+        Write-Error "No UiScenarioTest TASKSMACK_SYNTHETIC in tests/CMakeLists.txt; keep this script in step with it."
+        exit 1
+    }
+    $uiScenarioSynthetic = $syntheticMatch.Matches[0].Groups[1].Value
+    # Each run: the suite, its gtest filter and its TASKSMACK_SYNTHETIC (either may be empty).
+    $runs = @(
+        @{ Suite = "TaskSmackTests"; Filter = ""; Synthetic = "" },
+        @{ Suite = "TaskSmackThemeTests"; Filter = ""; Synthetic = "" },
+        @{ Suite = "TaskSmackAppTests"; Filter = "-UiScenarioTest.*"; Synthetic = "" },
+        @{ Suite = "TaskSmackAppTests"; Filter = "UiScenarioTest.*"; Synthetic = $uiScenarioSynthetic }
+    )
+    foreach ($run in $runs) {
+        $suite = $run.Suite
+        $label = if ($run.Filter) { "$suite ($($run.Filter))" } else { $suite }
+        # Built up, not returned from an if: PowerShell unwraps a one-element array returned from an
+        # expression into a string, and splatting that passed no filter at all (#2927).
+        $arguments = [System.Collections.Generic.List[string]]::new()
+        if ($run.Filter) { $arguments.Add("--gtest_filter=$($run.Filter)") }
+        if ($run.Synthetic) { $env:TASKSMACK_SYNTHETIC = $run.Synthetic }
+        try {
+            & "$BuildDir\tests\$suite.exe" $arguments.ToArray()
+            $suiteExit = $LASTEXITCODE
+        }
+        finally {
+            Remove-Item Env:TASKSMACK_SYNTHETIC -ErrorAction SilentlyContinue
+        }
+        if ($suiteExit -ne 0) {
+            Write-Warning "$label failed (exit code $suiteExit); generating the coverage report, then failing."
+            $failedSuites.Add($label)
         }
     }
+
+    # The application itself, once (#2965), as tools/coverage.sh does: a fresh config directory, the
+    # synthetic machine and a screenshot request that closes it as Close would; it must exit 0, write a
+    # PNG and save its config. Its profile lands beside the tests' (LLVM_PROFILE_FILE's %p).
+    # A runner with no GPU has only GDI Generic's OpenGL 1.1: .github/actions/setup-mesa-llvmpipe copies Mesa's
+    # software driver beside the tests (copy-to) and exports MESA_DLL_DIR; the application needs it beside
+    # bin\TaskSmack.exe too (a build tree, never the source tree).
+    if ($env:MESA_DLL_DIR -and (Test-Path -LiteralPath $env:MESA_DLL_DIR)) {
+        Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination "$BuildDir\bin" -Force
+    }
+    $appSmokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tasksmack-coverage-app-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $appSmokeDir | Out-Null
+    $frame = Join-Path $appSmokeDir "frame.png"
+    $env:TASKSMACK_CONFIG_DIR = Join-Path $appSmokeDir "config"
+    $env:TASKSMACK_SYNTHETIC = $uiScenarioSynthetic
+    $env:TASKSMACK_SCREENSHOT = "$frame;after=5"
+    $appProblem = ""
+    try {
+        $app = Start-Process -FilePath "$BuildDir\bin\TaskSmack.exe" -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $appSmokeDir "app.log") -RedirectStandardError (Join-Path $appSmokeDir "app.err.log")
+        if (-not $app.WaitForExit(120000)) {
+            $app.Kill()
+            $appProblem = "it didn't exit within 120 s"
+        } elseif ($app.ExitCode -ne 0) {
+            $appProblem = "exit code $($app.ExitCode)"
+        }
+    }
+    finally {
+        Remove-Item Env:TASKSMACK_CONFIG_DIR, Env:TASKSMACK_SYNTHETIC, Env:TASKSMACK_SCREENSHOT -ErrorAction SilentlyContinue
+    }
+    if (-not $appProblem) {
+        $magic = if (Test-Path $frame) { [System.IO.File]::ReadAllBytes($frame) | Select-Object -First 8 } else { @() }
+        if (($magic -join ',') -ne '137,80,78,71,13,10,26,10') {
+            $appProblem = "no PNG at $frame"
+        } elseif (-not (Select-String -Path (Join-Path $appSmokeDir "config\config.toml") -Pattern '^config_version = ' -Quiet -ErrorAction SilentlyContinue)) {
+            $appProblem = "no saved config.toml"
+        }
+    }
+    if ($appProblem) {
+        Write-Warning "The TaskSmack smoke run failed ($appProblem); its log:"
+        Get-Content (Join-Path $appSmokeDir "app.log"), (Join-Path $appSmokeDir "app.err.log") -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+        $failedSuites.Add("TaskSmack (the application)")
+    }
+    Remove-Item -Recurse -Force $appSmokeDir -ErrorAction SilentlyContinue
 
     # Step 3: Merge profraw files
     Write-Host "==> Merging coverage data..."

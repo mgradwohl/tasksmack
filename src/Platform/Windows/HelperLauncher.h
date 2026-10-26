@@ -24,7 +24,9 @@
 // first told from TaskSmack's token (readsOtherUsers()), and then learned from the helper itself
 // (LearnedReadsBroker, #2769): a helper that answers a read with BrokerHelper::OTHER_USERS_READ_REFUSED
 // runs as another account than TaskSmack's user, so from that reply on no reader offers the prompt
-// again while this TaskSmack runs.
+// again until a new helper starts, whose prompt may be answered with the user's own account (#2993).
+// Under Administrator Protection (administratorProtection()) every elevation is another account, so
+// there the reply holds while this TaskSmack runs.
 
 #ifdef _WIN32
 // clang-format off
@@ -46,7 +48,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <stop_token>
 #include <string>
@@ -122,41 +126,86 @@ availability(bool elevated, const std::wstring& ownImage, BrokerHelper::Self::In
 /// readsOtherUsers() for this process's token: false when it can't be read.
 [[nodiscard]] bool readsOtherUsers() noexcept;
 
+/// UAC's TypeOfAdminApprovalMode policy value for Admin Approval Mode with Windows 11's Administrator
+/// Protection (1 is the legacy mode; the value is absent where it was never set).
+inline constexpr DWORD ADMINISTRATOR_PROTECTION_MODE = 2;
+
+/// Whether Windows 11's Administrator Protection is on (#2993): UAC's TypeOfAdminApprovalMode policy,
+/// under HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System, is
+/// ADMINISTRATOR_PROTECTION_MODE. Every elevation then runs as a separate, system-managed administrator
+/// account, never as the user. False when the value is absent or can't be read. One registry read: the
+/// factory asks it once, at construction.
+[[nodiscard]] bool administratorProtection() noexcept;
+
 /// The words a read refused by a helper that runs as another account carries (#2769), in place of the
 /// helper's own (BrokerHelper::OTHER_USERS_READ_REFUSED): why it was refused, and that "Read as
-/// administrator" won't be offered again.
+/// administrator" isn't offered again until a new helper starts (#2993).
 inline constexpr std::string_view OTHER_USERS_READS_UNAVAILABLE =
     "The administrator account that approved the prompt isn't yours, so the administrator helper can't read other users' "
-    "processes for you; \"Read as administrator\" won't be offered again until TaskSmack is restarted";
+    "processes for you; \"Read as administrator\" isn't offered again until another prompt, such as Retry as "
+    "administrator's, starts a new helper";
+
+/// OTHER_USERS_READS_UNAVAILABLE's place under Administrator Protection (#2993), where every prompt is
+/// answered with another account: "Read as administrator" won't be offered again while TaskSmack runs.
+inline constexpr std::string_view ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE =
+    "Administrator Protection runs the administrator helper as a separate administrator account, never as yours, so it "
+    "can't read other users' processes for you; \"Read as administrator\" won't be offered again until TaskSmack is "
+    "restarted";
+
+/// How long a LearnedReadsBroker keeps a helper's refusal (#2993).
+enum class RefusalLasts : std::uint8_t
+{
+    ForItsHelper,  ///< Until a new helper session starts: each UAC prompt may be answered with another account.
+    ForTheProcess, ///< While TaskSmack runs: Administrator Protection, where every elevation is another account.
+};
 
 /// TaskSmack's PipeBroker, with readsOtherUsers() learned from the helper's own answers (#2769). It
 /// starts as the inner broker's, told from the token; a reply that says the helper reads only
 /// TaskSmack's user's own processes (BrokerHelper::OTHER_USERS_READ_REFUSED, from a process read or a
-/// system-wide one) makes it false for the rest of this process's life, and that reply, which the user
-/// sees once, carries OTHER_USERS_READS_UNAVAILABLE instead. Nothing makes it true again: the helper's
-/// account is the elevation's, which doesn't change while TaskSmack runs. Everything else is the inner
-/// broker's as it is. Thread-safe as the inner broker is: the learned answer is one atomic, read by the
-/// UI thread and set by whichever worker made the call.
+/// system-wide one) makes it false, and that reply, which the user sees once, carries
+/// OTHER_USERS_READS_UNAVAILABLE (ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE for ForTheProcess)
+/// instead. How long it stays false is @p lasts (#2993):
+///   - RefusalLasts::ForItsHelper: the lesson belongs to the helper session that refused, as the inner
+///     broker's sessionsStarted() counts them. It holds while that helper runs, and after it exits
+///     until connect() starts another, whose UAC prompt may have been answered with the user's own
+///     account (a credentials prompt is answered afresh each time): from then on it is the token's
+///     again, until that helper refuses too. A transport that doesn't count its sessions keeps it for
+///     good.
+///   - RefusalLasts::ForTheProcess: for the rest of this process's life, since every elevation runs as
+///     another account and no later prompt changes that.
+/// Everything else is the inner broker's as it is. Thread-safe as the inner broker is: the lesson is one
+/// atomic, the session that refused, stored (release) by whichever worker made the call and loaded
+/// (acquire) by the UI thread before it loads the inner broker's count, so the count it compares is
+/// never older than the one the lesson was taken at.
 class LearnedReadsBroker final : public IPrivilegedBroker
 {
   public:
     /// @throws std::invalid_argument when @p inner is null.
-    explicit LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner);
+    explicit LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner, RefusalLasts lasts = RefusalLasts::ForItsHelper);
 
     [[nodiscard]] bool connected() const noexcept override;
     [[nodiscard]] std::expected<void, std::string> connect(const std::stop_token& stopToken) override;
     [[nodiscard]] bool readsOtherUsers() const noexcept override;
+    [[nodiscard]] std::uint64_t sessionsStarted() const noexcept override;
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                     const std::stop_token& stopToken) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
                                                                           std::chrono::milliseconds timeout) override;
 
   private:
-    /// Takes the lesson from @p response, if it is the helper's refusal, and rewords it.
+    /// Takes the lesson from @p response, if it is the helper's refusal, and rewords it. The refusal is
+    /// taken as the session's that sessionsStarted() counts after the call: the one that answered, or,
+    /// when that one ended and another began as the reply came back, the newer one, which then doesn't
+    /// offer the prompt either until a third starts. Never an older session's.
     void learnFrom(std::expected<Broker::Response, std::string>& response);
 
+    /// m_RefusedIn before any refusal.
+    static constexpr std::uint64_t NOT_REFUSED = std::numeric_limits<std::uint64_t>::max();
+
     std::unique_ptr<IPrivilegedBroker> m_Inner;
-    std::atomic<bool> m_ReadsOtherUsers;
+    bool m_ExpectedReadsOtherUsers = false; // the inner broker's readsOtherUsers() at construction, told from the token
+    RefusalLasts m_Lasts = RefusalLasts::ForItsHelper;
+    std::atomic<std::uint64_t> m_RefusedIn{NOT_REFUSED}; // the inner broker's sessionsStarted() at the latest refusal
 };
 
 } // namespace Platform::Windows::HelperLauncher

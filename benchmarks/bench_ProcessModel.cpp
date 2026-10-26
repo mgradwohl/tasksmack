@@ -12,8 +12,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -67,6 +70,61 @@ static void BM_ProcessModel_Refresh(benchmark::State& state)
     BenchmarkUtils::reportMemoryDelta(state, memTracker);
 }
 BENCHMARK(BM_ProcessModel_Refresh);
+
+// The rest of a refresh() besides enumerate() (#2982): what ProcessModel::refresh() asks the probe for
+// each sample after it -- the total CPU time, the per-connection network reading, the package energy
+// and the capabilities, twice -- on this machine's real probe.
+static void BM_ProcessProbe_RefreshExtras(benchmark::State& state)
+{
+    const auto probe = Platform::makeProcessProbe();
+    (void) probe->enumerate();
+
+    for (auto _ : state)
+    {
+        benchmark::DoNotOptimize(probe->capabilities());
+        benchmark::DoNotOptimize(probe->totalCpuTime());
+        auto traffic = probe->readSocketTraffic();
+        benchmark::DoNotOptimize(traffic);
+        benchmark::DoNotOptimize(probe->capabilities());
+        auto energy = probe->readPackageEnergy();
+        benchmark::DoNotOptimize(energy);
+    }
+}
+BENCHMARK(BM_ProcessProbe_RefreshExtras)->Unit(benchmark::kMicrosecond);
+
+// Domain alone (#2982): ProcessModel's snapshot build (per-process deltas, rates and the published
+// vector) over one real enumerate() of this machine, its real names and command lines, without the
+// probe. Each sample moves the model's clock on 1 s and every process's CPU time on a little, so the
+// rates are computed as a 1 s refresh would compute them.
+static void BM_ProcessModel_UpdateCapturedCounters(benchmark::State& state)
+{
+    auto probe = Platform::makeProcessProbe();
+    auto counters = probe->enumerate();
+    std::uint64_t totalCpuTime = probe->totalCpuTime();
+    const auto now = std::make_shared<Domain::ProcessModel::Clock::time_point>(Domain::ProcessModel::Clock::now());
+    Domain::ProcessModel model(std::move(probe), [now] { return *now; });
+
+    const auto sampleOnce = [&]
+    {
+        for (std::size_t i = 0; i < counters.size(); ++i)
+        {
+            counters[i].userTime += i % 3;
+            counters[i].systemTime += i % 2;
+        }
+        totalCpuTime += 10'000'000;
+        *now += std::chrono::seconds(1);
+        model.updateFromCounters(counters, totalCpuTime);
+    };
+    sampleOnce(); // Seeds the previous counters, so the timed samples compute deltas
+
+    for (auto _ : state)
+    {
+        sampleOnce();
+        benchmark::DoNotOptimize(model.processCount());
+    }
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(model.processCount()));
+}
+BENCHMARK(BM_ProcessModel_UpdateCapturedCounters)->Unit(benchmark::kMicrosecond);
 
 // Benchmark snapshot access (read-only, should be very fast)
 static void BM_ProcessModel_GetSnapshots(benchmark::State& state)

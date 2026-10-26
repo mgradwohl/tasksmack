@@ -231,7 +231,9 @@ Output render(const Input& input)
     const float titleY = centerY - (fontSize * 0.5F);
     ImGui::SetCursorPosY(titleY);
 
-    ImGui::TextColored(scheme.textPrimary, "TaskSmack");
+    ImGui::PushStyleColor(ImGuiCol_Text, scheme.textPrimary);
+    ImGui::TextUnformatted(input.title.data(), input.title.data() + input.title.size());
+    ImGui::PopStyleColor();
     const float wordmarkWidth = ImGui::GetItemRectSize().x;
 
     if (titleFont != nullptr)

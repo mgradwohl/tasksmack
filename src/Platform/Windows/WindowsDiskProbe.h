@@ -30,6 +30,9 @@ struct WindowsDiskProbeFunctions
     /// PhysicalDisk instance enumeration
     struct Pdh
     {
+        /// Resolves the PhysicalDisk object's name in the system's language (#2994): PdhEnumObjectItemsW
+        /// takes the localized name, so the English one fails on a localized Windows.
+        PDH_STATUS(WINAPI* lookupPerfNameByIndexW)(LPCWSTR, DWORD, LPWSTR, LPDWORD) = nullptr;
         PDH_STATUS(WINAPI* enumObjectsW)(LPCWSTR, LPCWSTR, PZZWSTR, LPDWORD, DWORD, BOOL) = nullptr;
         PDH_STATUS(WINAPI* enumObjectItemsW)(LPCWSTR, LPCWSTR, LPCWSTR, PZZWSTR, LPDWORD, PZZWSTR, LPDWORD, DWORD, DWORD) = nullptr;
     } pdh;

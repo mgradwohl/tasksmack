@@ -31,7 +31,7 @@ updates:
           - "github/codeql-action*"
 
   # Python dependencies (requirements.txt, requirements-glad.txt, requirements-icons.txt,
-  # requirements-dev-tools.txt -- see #856/#857/#858)
+  # requirements-dev-tools.txt -- see #856/#857/#858 -- and requirements-docs-site.txt, #2967)
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

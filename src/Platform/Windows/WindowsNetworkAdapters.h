@@ -6,9 +6,13 @@
 //      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS
 //      servers, search domains (the DNS suffix, then the adapter's suffix search list), and whether
 //      IPv4 comes from DHCP, from which server and until when. The loopback adapter is left out. The
-//      section's default gateways are those of the up adapter with the lowest route metric that has
-//      one; its DNS servers and search domains, those of the up adapters, without repeats.
-//   2. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
+//      section's DNS servers and search domains are those of the up adapters, without repeats.
+//   2. GetIpForwardTable2, once for IPv4 and once for IPv6 (#2996): the section's default gateway is the
+//      next hop of the cheapest default route (0.0.0.0/0, ::/0) through an up adapter, ranked as Windows
+//      ranks them, by the route's metric plus its interface's metric (the adapter's Ipv4Metric or
+//      Ipv6Metric). A table that can't be read leaves the choice to the interface metric alone: the
+//      first gateway of the up adapter with the lowest one.
+//   3. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
 //      Service): per Wi-Fi interface its current connection (network name, signal quality, PHY type and
 //      link rates), the RSSI, and the channel's centre frequency from the cached BSS list, else the
 //      channel number alone. Windows 11 24H2 and later refuse the connection and the BSS list unless
@@ -54,11 +58,15 @@ namespace Platform::WindowsNetworkAdapters
 {
 
 /// The calls readNetworkAdapters() makes. getAdaptersAddresses must be set; the WLAN calls are null when
-/// wlanapi.dll (or one of its exports) is missing, and the Wi-Fi connection is then not read.
+/// wlanapi.dll (or one of its exports) is missing, and the Wi-Fi connection is then not read. Without the
+/// route-table calls, the default gateway is chosen by the interface metric alone.
 struct Functions
 {
-    // NOLINTBEGIN(misc-include-cleaner) - the WLAN types come from wlanapi.h's sub-headers
+    // NOLINTBEGIN(misc-include-cleaner) - the WLAN and route types come from the umbrella headers' sub-headers
     ULONG(WINAPI* getAdaptersAddresses)(ULONG family, ULONG flags, PVOID reserved, PIP_ADAPTER_ADDRESSES addresses, PULONG size) = nullptr;
+    /// GetIpForwardTable2 and FreeMibTable, which frees its table.
+    DWORD(WINAPI* getIpForwardTable2)(ADDRESS_FAMILY family, PMIB_IPFORWARD_TABLE2* table) = nullptr;
+    VOID(WINAPI* freeMibTable)(PVOID memory) = nullptr;
     DWORD(WINAPI* wlanOpenHandle)(DWORD clientVersion, PVOID reserved, PDWORD negotiatedVersion, PHANDLE client) = nullptr;
     DWORD(WINAPI* wlanCloseHandle)(HANDLE client, PVOID reserved) = nullptr;
     DWORD(WINAPI* wlanEnumInterfaces)(HANDLE client, PVOID reserved, PWLAN_INTERFACE_INFO_LIST* list) = nullptr;
@@ -84,8 +92,8 @@ struct Functions
     // NOLINTEND(misc-include-cleaner)
 };
 
-/// The real table: iphlpapi's GetAdaptersAddresses, and wlanapi.dll's exports when it loads (once per
-/// process, from System32).
+/// The real table: iphlpapi's GetAdaptersAddresses, GetIpForwardTable2 and FreeMibTable, and wlanapi.dll's
+/// exports when it loads (once per process, from System32).
 [[nodiscard]] Functions systemFunctions();
 
 /// Every adapter through @p fns into @p info (available, listed, adapters sorted by name, the default

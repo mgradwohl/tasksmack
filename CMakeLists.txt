@@ -227,6 +227,7 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadName.cpp
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
+    src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
@@ -259,6 +260,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
+    src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types; tasksmack-helper links it too (#2728)
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
     src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)
@@ -435,6 +437,7 @@ set(TASKSMACK_HEADERS
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
     src/Domain/LruMap.h
+    src/Domain/PidIndex.h
     src/Domain/ProcessIconCache.h
     src/UI/IconTextureCache.h
     src/App/Panels/ProcessIconView.h
@@ -825,6 +828,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         src/Platform/Linux/NetlinkSocketStats.cpp
         src/Platform/Linux/SystemdJournal.cpp # every user's crashes for System Information (#2310)
+        src/Platform/Linux/SystemdUnitActions.cpp # service actions over the bus it holds (#2728)
     )
     target_compile_features(tasksmack-helper PRIVATE cxx_std_23)
     tasksmack_apply_linux_toolchain(tasksmack-helper)

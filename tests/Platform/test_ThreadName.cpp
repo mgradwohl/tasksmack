@@ -73,6 +73,7 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::SECURITY_READ_THREAD_NAME,
         Platform::OPEN_FILES_NAMER_THREAD_NAME,
         Platform::SYSTEM_INFO_READ_THREAD_NAME,
+        Platform::REPORT_SAVE_THREAD_NAME,
         Platform::CRASH_HISTORY_READ_THREAD_NAME,
         Platform::BATTERY_READ_THREAD_NAME,
         Platform::UDP_TRACE_THREAD_NAME,

@@ -89,6 +89,12 @@ if(WIN32)
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
+        # The Authenticode gate's decision (cmake/VerifyWindowsSignatures.cmake): only an Artifact
+        # Signing certificate passes, not a trusted self-signed CN=Matt Gradwohl one (#2990). The
+        # certificates are made in memory; nothing is signed, stored or trusted.
+        add_test(NAME VerifyWindowsSignaturesScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-verify-windows-signatures.ps1)
+        set_tests_properties(VerifyWindowsSignaturesScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}")
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -105,14 +111,16 @@ if(WIN32)
         # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript SetupDevScript PROPERTIES RESOURCE_LOCK pwsh-script-tests LABELS pwsh-script)
+            CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript PROPERTIES RESOURCE_LOCK pwsh-script-tests
+            LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            PROPERTIES TIMEOUT 120)
+            VerifyWindowsSignaturesScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript and SetupDevScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript and "
+                        "VerifyWindowsSignaturesScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
     # executables are refused, by name, before anything could be packaged.
@@ -201,6 +209,30 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(IwyuShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/md-link-audit.sh, the docs-hygiene link check: code spans and fenced blocks aren't links (#3001), and
+# a root-absolute link under docs/ resolves from docs/ (#2953). Linux, as its CI job is.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME MdLinkAuditScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py)
+    set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+
+# tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
+# Stub binaries; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME ProfileHeapShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_profile_heap_sh.py)
+    set_tests_properties(ProfileHeapShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
+# tools/analyze-perf.sh fails, rather than summarizing, when every TaskSmack function it sampled is an
+# unresolved address (#2977). A stub perf; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME AnalyzePerfShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_analyze_perf_sh.py)
+    set_tests_properties(AnalyzePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript
@@ -254,13 +286,21 @@ add_test(NAME CheckUtf8Script
 add_test(NAME StartupWiringScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_startup_wiring.py)
 
-# The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532) and
-# main-health.yml's per-job check (#2313), read from the workflows and run with bash against stubs
-# (#2478). The Main Health cases also need jq on bash's PATH and are skipped without it.
+# The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532),
+# main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952) and
+# codeql.yml's src/ filter (#2992), read from the workflows and run with bash (pwsh for release.yml's)
+# against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
+# the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
     add_test(NAME WorkflowRunStepsScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py)
-    set_tests_properties(WorkflowRunStepsScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+    set_tests_properties(WorkflowRunStepsScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
+        # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
+        # (#2054) and gets their second attempt on windows-11-arm (#2832, #2991).
+        RESOURCE_LOCK pwsh-script-tests
+        LABELS pwsh-script
+        TIMEOUT 120)
 endif()
 
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
@@ -289,6 +329,7 @@ set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestRes
 set(COMMON_TEST_SOURCES
     test_main.cpp
     Benchmarks/test_AllocationCounter.cpp
+    Benchmarks/test_ProcessTreeFixture.cpp
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
@@ -336,6 +377,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
+    Domain/test_PidIndex.cpp
     Domain/test_ProcessIconCache.cpp
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp
@@ -448,6 +490,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
+    Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
     Platform/test_BrokeredSystemInfoProbe.cpp
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
@@ -645,6 +688,8 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_Nl80211.cpp  # Wi-Fi rates and standard from nl80211 (#2591)
+    Platform/test_ProcessCountersRead.cpp  # FD counts and I/O the helper reads for the sampler (#2728)
+    Platform/test_HiddenProcessesRead.cpp  # the processes hidepid hides, as the helper lists them (#2728)
     Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
@@ -878,6 +923,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
@@ -923,7 +969,7 @@ endif()
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
-    ${CMAKE_SOURCE_DIR}/benchmarks  # For AllocationCounter.h (std-only; no Google Benchmark dependency)
+    ${CMAKE_SOURCE_DIR}/benchmarks  # For AllocationCounter.h and ProcessTreeFixture.h (no Google Benchmark dependency)
     ${CMAKE_BINARY_DIR}/generated  # For generated version.h
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends

@@ -23,6 +23,8 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
+The Linux packages are built on Ubuntu 24.04 and need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. An older distribution, such as Ubuntu 22.04, Debian 12 or RHEL 9, can't run them (the `.deb` won't install, and the `.tar.gz`'s program won't start), but TaskSmack builds from source there: see [System Requirements](#operating-system).
+
 Each package comes in two architectures. Pick the one that matches your computer:
 
 | Architecture | Linux | Windows |
@@ -34,7 +36,7 @@ On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → Sy
 
 On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
 
-On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed x64 `.zip`, once signing is in place ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); until then no release `.zip` includes it. The ARM64 `.zip` doesn't include it either, so it never offers them. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
+On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release `.zip` includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
 ### Verifying a Release
 
@@ -72,8 +74,25 @@ Replace the filename with whichever asset you downloaded. The two `--certificate
 verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
 from any other source fails to verify. A successful check prints `Verified OK`.
 
-If a release asset has **no matching `.bundle` file**, or either `gh attestation verify` or
-`cosign verify-blob` **fails**, do not trust that asset — treat it as potentially tampered with.
+**The Windows executables' Authenticode signature** (releases from v0.9.1): `TaskSmack.exe` and
+`TaskSmackHelper.exe` in each Windows `.zip` are also signed with Authenticode, so Windows itself can
+check them, and the User Account Control prompt names their publisher, **Matt Gradwohl**. After
+extracting the `.zip`, run this in PowerShell from the extracted folder:
+
+```powershell
+Get-AuthenticodeSignature .\TaskSmack.exe, .\TaskSmackHelper.exe |
+  Format-List Path, Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } },
+    @{ n = 'Timestamp'; e = { $_.TimeStamperCertificate.Subject } }
+```
+
+Each file should show `Status : Valid`, a signer starting `CN=Matt Gradwohl`, and a timestamp. The
+signing certificates last only a few days and are renewed automatically, so the certificate itself
+changes from release to release; check the signer's name, not its thumbprint. A new release may
+still get a SmartScreen warning until it has built up download reputation.
+
+If a release asset has **no matching `.bundle` file**, either `gh attestation verify` or
+`cosign verify-blob` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
+do not trust that asset — treat it as potentially tampered with.
 Re-download from the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather
 than a mirror, and if the problem persists, report it per
 [SECURITY.md](https://github.com/mgradwohl/tasksmack/blob/main/SECURITY.md).
@@ -85,6 +104,7 @@ than a mirror, and if the problem persists, report it per
 ### Operating System
 
 - **Linux:** kernel **5.10 or newer**. TaskSmack's process actions use pidfds (`pidfd_open`, Linux 5.3), and the privileged helper keeps `CAP_SYS_NICE` but not `CAP_SYS_ADMIN`. Linux 5.10 is the first kernel that lets `CAP_SYS_NICE` alone set the Realtime I/O class. Current distributions all ship 5.10 or newer: Debian 11 and later, Ubuntu 22.04 and later (Ubuntu 20.04 with its HWE kernel), RHEL, AlmaLinux and Rocky 9 and later, and current Fedora, Arch and openSUSE. Some metrics need a newer kernel still, and say so where they're described (Intel's NPU counter needs 6.11, for example).
+- **Linux, the prebuilt packages:** the `.deb` and `.tar.gz` on the Releases page are built on Ubuntu 24.04, so they also need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. The `.deb` depends on `libc6 (>= 2.38)`, and the program needs `GLIBC_2.38`. On a distribution with an older glibc that still meets the kernel floor (Ubuntu 22.04, Debian 11 or 12, RHEL 9), build TaskSmack from source instead: [CONTRIBUTING.md's Quick Start](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#quick-start).
 - **Windows:** Windows 10 version 1903 or later.
 
 ### Graphics
@@ -100,8 +120,10 @@ Building from source lets you target other microarchitectures instead:
 | Preset | Target microarchitecture | Minimum CPU |
 |--------|--------------------------|-------------|
 | `release` / `win-release` | Default compiler optimizations | Any x86-64 |
-| `release-compatible` / `win-release-compatible` | x86-64-v2 | 2009+ (Core i3/i5/i7, Athlon II) |
+| `release-compatible` / `win-release-compatible` | x86-64-v2 (SSSE3, SSE4.1, SSE4.2, POPCNT) | Intel Nehalem (first-generation Core i3/i5/i7) and later / AMD Bulldozer (FX) and later, and Jaguar-based chips |
 | `optimized` / `win-optimized` | x86-64-v3 (AVX2) | Intel Haswell 2013+ / AMD Excavator 2015+ |
+
+x86-64-v2 needs SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT and CMPXCHG16B. Some CPUs from the same era lack part of that set, such as AMD's Athlon II and Phenom II (which have SSE4a, not SSSE3 or SSE4.1/4.2) and Intel's Core 2, so check the CPU's feature flags rather than its age or brand: on Linux, `/lib64/ld-linux-x86-64.so.2 --help` (glibc 2.33 or newer) lists `x86-64-v2 (supported, searched)` when the CPU qualifies. A CPU without them uses the plain `release` / `win-release` preset, which targets the baseline x86-64.
 
 See [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#cpu-compatibility) for build instructions. An "Illegal instruction" crash on launch from an `optimized` build means the CPU has no AVX2; see the [FAQ](faq.md#illegal-instruction-error-on-launch).
 
@@ -485,6 +507,7 @@ The **Services** tab lists the system's services (Windows' Service Control Manag
     - **Startup type:** Automatic enables the unit file, Manual disables it, and Disabled masks it (a disabled systemd unit can still be started by hand or by another unit, which is Windows' Manual; masking is what stops that). Choosing Automatic or Manual for a masked service unmasks it first. A unit with no `[Install]` section can't be made Automatic, and says so ("This service has no [Install] section, so it can't start at boot; other units or a user start it"). systemd is then reloaded, as `systemctl` does. There is no Automatic (delayed) on Linux, so the menu leaves it out.
     - Stopping a service that running units depend on (`RequiredBy`, `BoundBy`, or units that are `PartOf=` or `Requisite=` it) is refused, naming them, as on Windows: systemd would stop them too.
     - The units a Linux machine can't run well without (`dbus`, `dbus-broker`, `systemd-logind`, `systemd-journald`, `systemd-udevd`, `polkit`, the display manager such as `gdm` or `sddm`, `NetworkManager`, `systemd-networkd`, `systemd-resolved` and `ssh`/`sshd`), and every user's systemd manager (`user@1000.service`, which runs that user's services and, on GNOME, the desktop shell, so stopping it ends their session) and runtime directory (`user-runtime-dir@1000.service`) get the stronger warning, and setting one that starts at boot to **Manual** asks first, as on Windows.
+    - With the `.deb` (or an `.rpm` you build yourself) installed, **Authenticate and retry** starts TaskSmack's helper instead: one password, after which every service action goes through the helper -- as root, over the system bus connection it opened before dropping root, so systemd asks for nothing more -- while the helper runs (the session, after **Authenticate for this session**, or a few minutes otherwise). The helper accepts only a service's unit name and the five actions.
     - Without root, systemd asks polkit. An action polkit would allow with your password is first refused with "Requires administrator" and an **Authenticate and retry** button: only that button lets polkit show its password prompt, and only for that one action (a restart's stop and start, or a startup-type change's few steps, share one prompt while polkit remembers it). A dismissed prompt reports "Authentication was canceled or refused". TaskSmack waits up to two minutes for the prompt to be answered, and stops waiting at once if you close the Services tab or TaskSmack. Without a polkit agent in the session (WSL, a headless or minimal desktop) nothing can show the prompt: the retry reports "No authentication agent is running to ask for the password" and isn't offered again until TaskSmack restarts. Running TaskSmack as root, or a polkit rule that allows the actions, works without any prompt.
 
 ### Startup

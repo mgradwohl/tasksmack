@@ -12,6 +12,8 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
@@ -21,6 +23,7 @@
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
+#include "Platform/Linux/SystemdBus.h"
 
 #include <gtest/gtest.h>
 
@@ -28,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -760,6 +764,25 @@ TEST(BrokerSocketTest, APipeIsNotASeqPacketSocket)
     ::close(fds[1]);
 }
 
+// A service action outlasts the helper's own waits (#3029): a restart is a stop and then a start, each
+// waiting up to UnitWait's timeout for the state change, around bus calls of up to CALL_TIMEOUT_USEC
+// each. Anything else keeps the short wait.
+TEST(PkexecBrokerTest, AServiceActionWaitsLongerThanTheHelperCanTake)
+{
+    using std::chrono::microseconds;
+    constexpr std::chrono::milliseconds UNIT_WAIT = SystemdBus::UnitWait{}.timeout;
+    constexpr microseconds BUS_CALL{SystemdBus::CALL_TIMEOUT_USEC};
+    // Per state change: the unit's lookup and the action's call, the wait, and its last state and job reads.
+    constexpr auto PER_CHANGE = UNIT_WAIT + 4 * BUS_CALL;
+
+    const Broker::Request restart =
+        Broker::ServiceActionRequest{.action = ServiceAction::Restart, .unit = "foo.service", .startType = ServiceStartType::Unknown};
+    EXPECT_GT(PkexecBroker::callTimeoutFor(restart), 2 * PER_CHANGE);
+    EXPECT_EQ(PkexecBroker::callTimeoutFor(Broker::SignalRequest{.target = {}, .signal = Broker::Signal::Kill}),
+              PkexecBroker::CALL_TIMEOUT);
+    EXPECT_EQ(PkexecBroker::callTimeoutFor(Broker::MemoryRollupRequest{.target = {}}), PkexecBroker::CALL_TIMEOUT);
+}
+
 #ifdef TASKSMACK_HELPER_PATH
 
 // NOLINTBEGIN(misc-include-cleaner) - include-cleaner lacks mappings for <sys/wait.h>'s WNOHANG and W* macros
@@ -1226,6 +1249,89 @@ TEST(PkexecBrokerTest, TheHelperReadsAProcesssPssAndUss)
     }
     ASSERT_TRUE(rollup.has_value());
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
+}
+
+// #2728: the sampler's batch of refused FD counts and I/O, through the real helper; a target whose start
+// time doesn't match is left out.
+TEST(PkexecBrokerTest, TheHelperReadsProcessCountersAndLeavesOutAStaleTarget)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const ProcessTarget stale{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    const auto response =
+        broker.call(Broker::ProcessCountersRequest{.targets = {child.target(), stale}, .withSockets = true}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(*response));
+    const auto& entries = std::get<Broker::ProcessCountersReply>(*response).entries;
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries.front().target, child.target());
+    EXPECT_TRUE(entries.front().handleCountRead);
+    EXPECT_GT(entries.front().handleCount, 0) << "its stdin, stdout and stderr at least";
+    // A kernel without task I/O accounting (WSL's) has no /proc/[pid]/io to read.
+    EXPECT_EQ(entries.front().ioRead, std::filesystem::exists("/proc/self/io"));
+    EXPECT_TRUE(entries.front().socketsRead) << "every fd link read, under the enforcing seccomp filter";
+}
+
+// #2728: given every PID but its child's as visible, the helper lists the child alone, under its
+// enforcing seccomp filter, with its start time and its files' text.
+TEST(PkexecBrokerTest, TheHelperListsTheProcessesTaskSmackDoesntSee)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    std::vector<std::int32_t> visible;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        std::int32_t pid = 0;
+        if (std::from_chars(name.data(), name.data() + name.size(), pid).ec == std::errc{} && pid != child.target().pid)
+        {
+            visible.push_back(pid);
+        }
+    }
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::HiddenProcessesRequest{.visiblePids = visible}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(*response));
+    const auto& processes = std::get<Broker::HiddenProcessesReply>(*response).processes;
+    // Processes started since the listing above come back too; the child must be among them.
+    const auto found =
+        std::ranges::find_if(processes, [&child](const Broker::HiddenProcess& p) { return p.target.pid == child.target().pid; });
+    ASSERT_NE(found, processes.end());
+    EXPECT_EQ(found->target, child.target());
+    EXPECT_FALSE(found->status.empty());
+    EXPECT_TRUE(found->cmdline.has_value());
+}
+
+// #2728: the helper's service actions go over the system bus it opened before its sandbox; under the
+// enforcing filter, systemd still answers through it (here: no such unit), and a name that isn't a
+// service's is refused before anything is sent.
+TEST(PkexecBrokerTest, TheHelperActsOnServicesOverTheBusItHeldBeforeItsSandbox)
+{
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto start = [&broker](std::string unit)
+    {
+        const auto response = broker.call(
+            Broker::ServiceActionRequest{.action = ServiceAction::Start, .unit = std::move(unit), .startType = {}}, std::stop_token{});
+        EXPECT_TRUE(response.has_value()) << response.error();
+        return response.has_value() && std::holds_alternative<Broker::ServiceActionReply>(*response)
+                 ? std::get<Broker::ServiceActionReply>(*response).result
+                 : ServiceActionResult::failed("no ServiceActionReply");
+    };
+    const ServiceActionResult badName = start("../etc/passwd.service");
+    EXPECT_FALSE(badName.ok);
+    EXPECT_EQ(badName.message, "Not a service's unit name");
+
+    const ServiceActionResult missing = start("tasksmack-test-no-such-unit.service");
+    EXPECT_FALSE(missing.ok);
+    if (std::filesystem::is_directory("/run/systemd/system"))
+    {
+        EXPECT_NE(missing.message, "The helper couldn't reach systemd") << "the held bus should answer under the sandbox";
+        EXPECT_FALSE(missing.message.empty());
+    }
 }
 
 TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)

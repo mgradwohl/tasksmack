@@ -101,15 +101,55 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 # app's own objects, for the layers that need the whole app on a display (#1395). A failing suite still
 # gets its coverage reported, so the failure can be diagnosed from the report, but the script exits
 # non-zero at the end (#2251). Keep in sync with tools/coverage.ps1.
+#
+# The UI scenarios (#2711) run on a synthetic machine: tests/CMakeLists.txt gives UiScenarioTest
+# TASKSMACK_SYNTHETIC, which the app reads once per process, so they get a run of their own here with
+# the same value, as under CTest, and the rest of TaskSmackAppTests runs without it (#2927).
+UI_SCENARIO_SYNTHETIC="$(sed -n 's/.*UiScenarioTest ENVIRONMENT "TASKSMACK_SYNTHETIC=\([^"]*\)".*/\1/p' "${PROJECT_ROOT}/tests/CMakeLists.txt")"
+if [[ -z "$UI_SCENARIO_SYNTHETIC" ]]; then
+    echo "Error: no UiScenarioTest TASKSMACK_SYNTHETIC in tests/CMakeLists.txt; keep this script in step with it." >&2
+    exit 1
+fi
 FAILED_SUITES=()
-for suite in TaskSmackTests TaskSmackThemeTests TaskSmackAppTests; do
+# Each run: the suite, then its gtest filter and environment (either may be empty).
+for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScenarioTest.*|" \
+    "TaskSmackAppTests|UiScenarioTest.*|TASKSMACK_SYNTHETIC=${UI_SCENARIO_SYNTHETIC}"; do
+    IFS='|' read -r suite filter run_env <<<"$run"
+    command=(env)
+    [[ -n "$run_env" ]] && command+=("$run_env")
+    command+=("./tests/${suite}")
+    [[ -n "$filter" ]] && command+=("--gtest_filter=${filter}")
     suite_status=0
-    "./tests/${suite}" || suite_status=$?
+    "${command[@]}" || suite_status=$?
     if [[ $suite_status -ne 0 ]]; then
-        echo "Warning: ${suite} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
-        FAILED_SUITES+=("$suite")
+        echo "Warning: ${suite}${filter:+ (${filter})} failed (exit code ${suite_status}); generating the coverage report, then failing." >&2
+        FAILED_SUITES+=("${suite}${filter:+ (${filter})}")
     fi
 done
+
+# The application itself, once (#2965): the tests never enter main.cpp's runApp(), so its startup, layer
+# composition and teardown went uncounted. A fresh config directory, the synthetic machine and a screenshot
+# request that closes it as Close would (TASKSMACK_SCREENSHOT, as the release smoke checks use): it must
+# exit 0, write a PNG and save its config. Its profile lands beside the tests' (LLVM_PROFILE_FILE's %p).
+APP_SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-coverage-app.XXXXXX")"
+app_status=0
+env TASKSMACK_CONFIG_DIR="${APP_SMOKE_DIR}/config" TASKSMACK_SYNTHETIC="${UI_SCENARIO_SYNTHETIC}" \
+    TASKSMACK_SCREENSHOT="${APP_SMOKE_DIR}/frame.png;after=5" \
+    timeout 120 "${BUILD_DIR}/bin/TaskSmack" >"${APP_SMOKE_DIR}/app.log" 2>&1 || app_status=$?
+app_problem=""
+if [[ $app_status -ne 0 ]]; then
+    app_problem="exit code ${app_status}"
+elif [[ "$(head -c 8 "${APP_SMOKE_DIR}/frame.png" 2>/dev/null | od -An -tx1 | tr -d ' \n')" != "89504e470d0a1a0a" ]]; then
+    app_problem="no PNG at ${APP_SMOKE_DIR}/frame.png"
+elif ! grep -q '^config_version = ' "${APP_SMOKE_DIR}/config/config.toml" 2>/dev/null; then
+    app_problem="no saved config.toml"
+fi
+if [[ -n "$app_problem" ]]; then
+    echo "Warning: the TaskSmack smoke run failed (${app_problem}); its log:" >&2
+    tail -n 40 "${APP_SMOKE_DIR}/app.log" >&2 || true
+    FAILED_SUITES+=("TaskSmack (the application)")
+fi
+rm -rf "${APP_SMOKE_DIR}"
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."

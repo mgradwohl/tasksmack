@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -65,17 +66,17 @@ namespace
 /// Whether @p response is a read the helper refused because it runs as another account than
 /// TaskSmack's user (BrokerHelper::readsOnlyOwnProcesses()): a process read, or a system-wide one
 /// answered with an ErrorReply, that carries BrokerHelper::OTHER_USERS_READ_REFUSED. Its words are then
-/// replaced by OTHER_USERS_READS_UNAVAILABLE. An environment or memory rollup refused the same way
-/// carries no words, so it teaches nothing: both are refused the same way for other reasons too.
-[[nodiscard]] bool refusedForAnotherAccount(Broker::Response& response)
+/// replaced by @p explanation. An environment or memory rollup refused the same way carries no words,
+/// so it teaches nothing: both are refused the same way for other reasons too.
+[[nodiscard]] bool refusedForAnotherAccount(Broker::Response& response, std::string_view explanation)
 {
-    const auto reworded = [](std::string& words)
+    const auto reworded = [explanation](std::string& words)
     {
         if (words != BrokerHelper::OTHER_USERS_READ_REFUSED)
         {
             return false;
         }
-        words = OTHER_USERS_READS_UNAVAILABLE;
+        words = explanation;
         return true;
     };
     if (auto* const modules = std::get_if<Broker::ModulesReply>(&response))
@@ -256,13 +257,31 @@ bool readsOtherUsers() noexcept
     return readsOtherUsers(type);
 }
 
-LearnedReadsBroker::LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner) : m_Inner(std::move(inner)), m_ReadsOtherUsers(false)
+bool administratorProtection() noexcept
+{
+    DWORD mode = 0;
+    DWORD size = sizeof(mode);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                     L"TypeOfAdminApprovalMode",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &mode,
+                     &size) != ERROR_SUCCESS)
+    {
+        return false;
+    }
+    return mode == ADMINISTRATOR_PROTECTION_MODE;
+}
+
+LearnedReadsBroker::LearnedReadsBroker(std::unique_ptr<IPrivilegedBroker> inner, RefusalLasts lasts)
+    : m_Inner(std::move(inner)), m_Lasts(lasts)
 {
     if (m_Inner == nullptr)
     {
         throw std::invalid_argument("LearnedReadsBroker requires a broker");
     }
-    m_ReadsOtherUsers.store(m_Inner->readsOtherUsers(), std::memory_order_relaxed);
+    m_ExpectedReadsOtherUsers = m_Inner->readsOtherUsers();
 }
 
 bool LearnedReadsBroker::connected() const noexcept
@@ -277,7 +296,25 @@ std::expected<void, std::string> LearnedReadsBroker::connect(const std::stop_tok
 
 bool LearnedReadsBroker::readsOtherUsers() const noexcept
 {
-    return m_ReadsOtherUsers.load(std::memory_order_relaxed);
+    // Acquire, before the count is loaded: the count is then never older than the one the refusal
+    // was taken at, so the session that refused never reads as one that came after it.
+    const std::uint64_t refusedIn = m_RefusedIn.load(std::memory_order_acquire);
+    if (refusedIn == NOT_REFUSED)
+    {
+        return m_ExpectedReadsOtherUsers;
+    }
+    if (m_Lasts == RefusalLasts::ForTheProcess)
+    {
+        return false;
+    }
+    // The helper that refused, still running or gone with none started since: still no. A newer
+    // helper's prompt was answered afresh, so it is the token's again until that one refuses too.
+    return m_ExpectedReadsOtherUsers && m_Inner->sessionsStarted() != refusedIn;
+}
+
+std::uint64_t LearnedReadsBroker::sessionsStarted() const noexcept
+{
+    return m_Inner->sessionsStarted();
 }
 
 std::expected<Broker::Response, std::string> LearnedReadsBroker::call(const Broker::Request& request, const std::stop_token& stopToken)
@@ -297,15 +334,35 @@ std::expected<Broker::Response, std::string> LearnedReadsBroker::callIfIdle(cons
 
 void LearnedReadsBroker::learnFrom(std::expected<Broker::Response, std::string>& response)
 {
-    if (!response.has_value() || !refusedForAnotherAccount(*response))
+    const std::string_view explanation =
+        m_Lasts == RefusalLasts::ForTheProcess ? ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE : OTHER_USERS_READS_UNAVAILABLE;
+    if (!response.has_value() || !refusedForAnotherAccount(*response, explanation))
     {
         return;
     }
-    // The elevation's account doesn't change while TaskSmack runs: learned once, for good.
-    if (m_ReadsOtherUsers.exchange(false, std::memory_order_relaxed))
+    // Counted after the reply: the session that answered, or a newer one, never an older one, since a
+    // session is counted before any call can reach it (PipeBroker::connectWithin()).
+    const std::uint64_t session = m_Inner->sessionsStarted();
+    std::uint64_t seen = m_RefusedIn.load(std::memory_order_relaxed);
+    // The newest session's refusal stands: calls answered by two helpers may come back in either order.
+    while (seen == NOT_REFUSED || seen < session)
     {
-        spdlog::info("The administrator helper runs as another account than TaskSmack's user, so it reads only the user's own "
-                     "processes: \"Read as administrator\" isn't offered again this session (#2769)");
+        if (m_RefusedIn.compare_exchange_weak(seen, session, std::memory_order_release, std::memory_order_relaxed))
+        {
+            if (m_Lasts == RefusalLasts::ForTheProcess)
+            {
+                spdlog::info("Under Administrator Protection the administrator helper runs as another account than TaskSmack's "
+                             "user, so it reads only the user's own processes: \"Read as administrator\" isn't offered again "
+                             "while TaskSmack runs (#2769, #2993)");
+            }
+            else
+            {
+                spdlog::info("The administrator helper runs as another account than TaskSmack's user, so it reads only the user's "
+                             "own processes: \"Read as administrator\" isn't offered again until a new helper starts (#2769, "
+                             "#2993)");
+            }
+            return;
+        }
     }
 }
 

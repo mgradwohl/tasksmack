@@ -159,6 +159,21 @@ fi
 
 [[ -x "${BINARY}" ]] || die "Binary not found or not executable: ${BINARY}. Build with: cmake --build --preset ${PRESET}"
 
+# A filter that matches no benchmark still exits 0 from Google Benchmark, and heaptrack would then record
+# only its startup and registration as if it were the workload (#2987): refuse before capturing anything.
+if [[ "${MODE}" = "bench" ]]; then
+    # As profile-perf.sh: the names on stdout, one per line; Google Benchmark's complaint on stderr.
+    BENCH_LIST_ERR="$(mktemp)"
+    BENCH_LIST_STATUS=0
+    BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>"${BENCH_LIST_ERR}")" || BENCH_LIST_STATUS=$?
+    BENCH_LIST_ERRORS="$(cat "${BENCH_LIST_ERR}")"
+    rm -f "${BENCH_LIST_ERR}"
+    [[ "${BENCH_LIST_STATUS}" -eq 0 ]] || die "Failed to list benchmarks from ${BINARY} (exit ${BENCH_LIST_STATUS}): ${BENCH_LIST_ERRORS}"
+    if [[ "$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)" -eq 0 ]]; then
+        die "--bench-filter '${BENCH_FILTER}' matches no benchmarks, so a capture would hold only benchmark startup. Run '${BINARY} --benchmark_list_tests=true' to see valid names."
+    fi
+fi
+
 # ── config isolation (#2250) ──────────────────────────────────────────────────
 if [[ "${MODE}" = "app" ]]; then
     if [[ "${USE_USER_CONFIG}" -eq 1 ]]; then

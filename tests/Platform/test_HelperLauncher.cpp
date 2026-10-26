@@ -586,13 +586,20 @@ class InProcessSession
         {
             m_Thread = std::jthread(
                 // NOLINTNEXTLINE(bugprone-exception-escape) - a test's helper thread: what escapes it ends the run, as a failed test should
-                [this, pipeName](const std::stop_token& stopToken)
+                [this, pipeName, helperUser = m_HelperUser](const std::stop_token& stopToken)
                 {
                     // How it ended isn't the tests' concern: the broker closing the pipe ends it.
-                    static_cast<void>(BrokerHelper::serveParent(self(), m_User, m_HelperUser, pipeName, m_Handler, WAIT, WAIT, stopToken));
+                    static_cast<void>(BrokerHelper::serveParent(self(), m_User, helperUser, pipeName, m_Handler, WAIT, WAIT, stopToken));
                 });
             return ownProcess();
         };
+    }
+
+    /// The account the next helper started runs as, as the next UAC prompt's answer decides (#2993).
+    /// Each session keeps its own copy, so call it between sessions, before the connect that starts one.
+    void setHelperUser(BrokerPipe::Sid helperUser)
+    {
+        m_HelperUser = std::move(helperUser);
     }
 
   private:
@@ -632,7 +639,7 @@ class InProcessSession
 // A split-token administrator whose elevation runs as another account (Windows 11's Administrator
 // Protection, or a credentials prompt answered with another administrator's account): the token says
 // the helper reads other users' processes, the helper's first refusal says it doesn't, and that answer
-// is kept, so "Read as administrator" isn't offered again this session.
+// is kept for that helper, so "Read as administrator" isn't offered again while it runs.
 TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministratorBack)
 {
     if (const auto why = brokerRefusesThisUser())
@@ -653,7 +660,7 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     const Broker::ModulesReply refused = modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}));
     EXPECT_EQ(refused.result.status, ModulesReadStatus::Failed);
     EXPECT_EQ(refused.result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
-    EXPECT_FALSE(broker.readsOtherUsers()) << "learned: no more \"Read as administrator\" this session";
+    EXPECT_FALSE(broker.readsOtherUsers()) << "learned: no more \"Read as administrator\" from this helper";
 
     // The helper is still there, and this user's own processes still read through it; that gives
     // nothing back.
@@ -680,10 +687,65 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     EXPECT_EQ(std::get<Broker::ErrorReply>(*firmware).message, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
     EXPECT_FALSE(broker.readsOtherUsers());
 
-    // The lesson is this broker's, for this process's life: another TaskSmack's starts afresh.
+    // The lesson is this broker's: another TaskSmack's starts afresh.
     const HelperLauncher::LearnedReadsBroker fresh(
         std::make_unique<PipeBroker>(neverCalled(), HelperLauncher::readsOtherUsers(TokenElevationTypeLimited)));
     EXPECT_TRUE(fresh.readsOtherUsers());
+}
+
+// A credentials prompt is answered afresh each time (#2993): the refusal belongs to the helper that gave
+// it. It holds while that helper runs and after it has gone, until PipeBroker starts another; that one
+// is the token's again, keeps reading when its prompt was answered with the user's own account, and
+// takes "Read as administrator" back again when it was another's.
+TEST(HelperLauncherTest, ANewHelperIsExpectedToReadOtherUsersAgain)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    InProcessSession session(anotherAccount(), answeringReads());
+    auto pipe = std::make_unique<PipeBroker>(session.launcher(), HelperLauncher::readsOtherUsers(TokenElevationTypeLimited));
+    PipeBroker& helper = *pipe;
+    HelperLauncher::LearnedReadsBroker broker(std::move(pipe));
+    EXPECT_EQ(broker.sessionsStarted(), 0U);
+    auto connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 1U);
+    EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
+              HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    // connect() while that helper runs is the same session, and keeps the lesson.
+    connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 1U);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    // The helper is gone, and none has started since: still no.
+    helper.disconnect();
+    EXPECT_FALSE(broker.connected());
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    // The next prompt, answered with the user's own account: a new session, the token's again, and it reads.
+    session.setHelperUser(ownSid());
+    connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 2U);
+    EXPECT_TRUE(broker.readsOtherUsers());
+    const Broker::ModulesReply theirs = modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}));
+    EXPECT_EQ(theirs.result.status, ModulesReadStatus::Ok) << theirs.result.detail;
+    EXPECT_TRUE(broker.readsOtherUsers());
+
+    // And the one after, answered with another account again: learned again, from that helper.
+    helper.disconnect();
+    session.setHelperUser(anotherAccount());
+    connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 3U);
+    EXPECT_TRUE(broker.readsOtherUsers());
+    EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
+              HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
 }
 
 // A split-token administrator whose elevation runs as them: the session is theirs, every process reads,
@@ -717,7 +779,7 @@ TEST(HelperLauncherTest, AHelperRunningAsTaskSmacksUserKeepsReadAsAdministrator)
 
 // Only the helper's own refusal teaches: not a transport failure, an action, a read refused without
 // words (the environment's, the memory rollup's) or one that failed in other words; and nothing after
-// gives the lesson back.
+// gives the lesson back while no new helper starts.
 TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
 {
     auto fake = std::make_unique<Mocks::FakeBroker>();
@@ -761,12 +823,115 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
     EXPECT_EQ(inner.requests().size(), 7U) << "every call reached the helper";
 }
 
-// A standard user's helper never offered reads (#2550): the broker starts as told, and stays so.
+/// The helper's refusal of another account's process: what a helper that runs as another account
+/// answers a modules read with (BrokerHelper::OTHER_USERS_READ_REFUSED).
+[[nodiscard]] Broker::Response refusedRead()
+{
+    return Broker::ModulesReply{
+        .result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED)}};
+}
+
+/// A modules read that succeeds.
+[[nodiscard]] Broker::Response answeredRead()
+{
+    return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}};
+}
+
+// The refusal belongs to the helper session that gave it (#2993): within that session it holds, through
+// reads that then succeed, a connect() to the helper that is still running, the helper exiting and a
+// prompt dismissed after; the next helper started is the token's again, and its own refusal is learned
+// again, for it.
+TEST(HelperLauncherTest, ARefusalLastsUntilANewHelperStarts)
+{
+    auto fake = std::make_unique<Mocks::FakeBroker>();
+    Mocks::FakeBroker& inner = *fake;
+    HelperLauncher::LearnedReadsBroker broker(std::move(fake));
+    ASSERT_TRUE(broker.readsOtherUsers());
+    EXPECT_EQ(broker.sessionsStarted(), 0U);
+
+    inner.setAnswer([](const Broker::Request&) { return refusedRead(); });
+    EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
+              HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    inner.setAnswer([](const Broker::Request&) { return answeredRead(); });
+    EXPECT_TRUE(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}).has_value());
+    EXPECT_FALSE(broker.readsOtherUsers()) << "a read that then succeeds gives nothing back";
+    auto connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 0U) << "connected already: the same helper";
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    // The helper exits, and no new one starts: a dismissed prompt is no new session.
+    inner.setConnected(false);
+    EXPECT_FALSE(broker.readsOtherUsers());
+    inner.setConnectFailure(std::string(HelperLauncher::PROMPT_DISMISSED));
+    EXPECT_FALSE(broker.connect({}).has_value());
+    EXPECT_EQ(broker.sessionsStarted(), 0U);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    // A new helper: its prompt was answered afresh, so it is expected to read other users' processes.
+    inner.setConnectFailure({});
+    connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 1U);
+    EXPECT_TRUE(broker.readsOtherUsers());
+    EXPECT_TRUE(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}).has_value());
+    EXPECT_TRUE(broker.readsOtherUsers());
+
+    // That one refuses too, through callIfIdle(): learned again, for it.
+    inner.setAnswer([](const Broker::Request&) { return refusedRead(); });
+    EXPECT_EQ(modulesReply(broker.callIfIdle(Broker::ModulesRequest{.target = THEIRS}, WAIT)).result.detail,
+              HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
+    inner.setConnected(false);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 2U);
+    EXPECT_TRUE(broker.readsOtherUsers());
+}
+
+// Under Administrator Protection every elevation runs as another account (#2993), so the first refusal
+// holds while TaskSmack runs, through new helpers too, and says so.
+TEST(HelperLauncherTest, UnderAdministratorProtectionARefusalLastsWhileTaskSmackRuns)
+{
+    auto fake = std::make_unique<Mocks::FakeBroker>();
+    Mocks::FakeBroker& inner = *fake;
+    HelperLauncher::LearnedReadsBroker broker(std::move(fake), HelperLauncher::RefusalLasts::ForTheProcess);
+    ASSERT_TRUE(broker.readsOtherUsers()) << "told from the token until the helper says otherwise";
+
+    inner.setAnswer([](const Broker::Request&) { return refusedRead(); });
+    EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
+              HelperLauncher::ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    inner.setConnected(false);
+    const auto connected = broker.connect({});
+    ASSERT_TRUE(connected.has_value()) << connected.error();
+    EXPECT_EQ(broker.sessionsStarted(), 1U);
+    EXPECT_FALSE(broker.readsOtherUsers()) << "a new helper runs as another account too";
+    EXPECT_EQ(modulesReply(broker.call(Broker::ModulesRequest{.target = THEIRS}, {})).result.detail,
+              HelperLauncher::ADMINISTRATOR_PROTECTION_READS_UNAVAILABLE);
+    EXPECT_FALSE(broker.readsOtherUsers());
+}
+
+// A standard user's helper never offered reads (#2550): the broker starts as told, and stays so, through
+// a refusal and the new helper after it.
 TEST(HelperLauncherTest, AStandardUsersBrokerNeverOffersReads)
 {
     auto fake = std::make_unique<Mocks::FakeBroker>();
+    Mocks::FakeBroker& inner = *fake;
     fake->setReadsOtherUsers(HelperLauncher::readsOtherUsers(TokenElevationTypeDefault));
-    const HelperLauncher::LearnedReadsBroker broker(std::move(fake));
+    HelperLauncher::LearnedReadsBroker broker(std::move(fake));
+    EXPECT_FALSE(broker.readsOtherUsers());
+
+    inner.setAnswer([](const Broker::Request&) { return refusedRead(); });
+    EXPECT_TRUE(broker.call(Broker::ModulesRequest{.target = THEIRS}, {}).has_value());
+    inner.setConnected(false);
+    ASSERT_TRUE(broker.connect({}).has_value());
+    EXPECT_EQ(broker.sessionsStarted(), 1U);
     EXPECT_FALSE(broker.readsOtherUsers());
 }
 

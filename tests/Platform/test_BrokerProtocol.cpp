@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,10 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
     EXPECT_EQ(roundTrip(Request{Hello{.forSession = true}}), Request{Hello{.forSession = true}});
+    const Request counters = ProcessCountersRequest{.targets = {TARGET, ProcessTarget{.pid = 7, .startTimeTicks = 9}}};
+    EXPECT_EQ(roundTrip(counters), counters);
+    const Request withSockets = ProcessCountersRequest{.targets = {TARGET}, .withSockets = true};
+    EXPECT_EQ(roundTrip(withSockets), withSockets);
     for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
@@ -106,6 +111,138 @@ TEST(BrokerProtocolTest, TheFrameIsLittleEndianWithItsLengthVersionKindAndId)
     EXPECT_EQ(bytes[6], static_cast<std::uint8_t>(MessageKind::Hello));
     EXPECT_EQ(bytes[8], 0x04U); // request id, little-endian
     EXPECT_EQ(bytes[11], 0x01U);
+}
+
+TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
+{
+    const Response reply = ProcessCountersReply{
+        .entries = {
+            ProcessCountersEntry{
+                .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 123456, .writeBytes = 7890},
+            ProcessCountersEntry{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 3},
+            ProcessCountersEntry{.target = {.pid = 8, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {11, 12}},
+            ProcessCountersEntry{.target = {.pid = 9, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {}},
+        }};
+    EXPECT_EQ(roundTrip(reply), reply);
+    EXPECT_EQ(roundTrip(Response{ProcessCountersReply{}}), Response{ProcessCountersReply{}});
+
+    // A count past MAX_COUNTER_TARGETS is refused before any target is read.
+    std::vector<std::uint8_t> request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
+    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_COUNTER_TARGETS) + 1;
+    std::memcpy(request.data() + 4 + HEADER_BYTES + 1, &tooMany, sizeof(tooMany)); // after withSockets
+    EXPECT_FALSE(decodeRequest(request).has_value());
+    // withSockets is one byte of zero or one.
+    request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
+    request.at(4 + HEADER_BYTES) = 2;
+    EXPECT_FALSE(decodeRequest(request).has_value());
+
+    // An entry's flags byte has three bits; any other is refused.
+    std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
+    const std::size_t firstFlags = 4 + HEADER_BYTES + 4 + 4 + 8;
+    ASSERT_EQ(bytes.at(firstFlags), 3U);
+    bytes.at(firstFlags) = 8;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+    // Socket inodes without the sockets bit are refused: the first entry, given one.
+    bytes = encodeResponse(1, reply);
+    const std::size_t firstInodeCount = firstFlags + 1 + 4 + 8 + 8;
+    ASSERT_EQ(bytes.at(firstInodeCount), 0U);
+    bytes.at(firstInodeCount) = 1;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
+// #2728: the processes hidepid hides, as their /proc files' text.
+TEST(BrokerProtocolTest, HiddenProcessesRoundTripAndRefuseTooManyOrAStrayCommandLine)
+{
+    const Request request = HiddenProcessesRequest{.visiblePids = {1, 2, 4242}};
+    EXPECT_EQ(roundTrip(request), request);
+    EXPECT_EQ(roundTrip(Request{HiddenProcessesRequest{}}), Request{HiddenProcessesRequest{}});
+
+    const Response reply = HiddenProcessesReply{
+        .processes = {HiddenProcess{.target = TARGET,
+                                    .stat = "4242 (sshd) S 1 ...",
+                                    .statm = "1 2 3 0 0 0 0",
+                                    .status = "Name:\tsshd\nUid:\t0\t0\t0\t0\n",
+                                    .cmdline = std::string("sshd: alice\0", 12),
+                                    .io = "read_bytes: 1\nwrite_bytes: 2\n",
+                                    .cgroup = "0::/system.slice/ssh.service\n"},
+                      HiddenProcess{.target = {.pid = 7, .startTimeTicks = 9}, .stat = "7 (k) S 2", .cmdline = std::nullopt}},
+        .truncated = true};
+    EXPECT_EQ(roundTrip(reply), reply);
+
+    // A count past MAX_VISIBLE_PIDS is refused before any PID is read.
+    std::vector<std::uint8_t> bytes = encodeRequest(1, request);
+    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_VISIBLE_PIDS) + 1;
+    std::memcpy(bytes.data() + 4 + HEADER_BYTES, &tooMany, sizeof(tooMany));
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    // A command line the flag says wasn't read is refused: the flag set to 0 with the text still there.
+    const Response unread = HiddenProcessesReply{.processes = {HiddenProcess{.target = TARGET, .cmdline = std::string("x")}}};
+    std::vector<std::uint8_t> response = encodeResponse(1, unread);
+    const std::size_t cmdlineFlag = 4 + HEADER_BYTES + 1 + 4 + 4 + 8 + (3 * 4);
+    ASSERT_EQ(response.at(cmdlineFlag), 1U);
+    response.at(cmdlineFlag) = 0;
+    EXPECT_FALSE(decodeResponse(response).has_value());
+}
+
+// #2728: a service action and its result.
+TEST(BrokerProtocolTest, ServiceActionsRoundTripAndRefuseAnUnknownActionStartTypeOrFlag)
+{
+    for (const ServiceAction action : {ServiceAction::Start, ServiceAction::Stop, ServiceAction::Restart, ServiceAction::SetStartType})
+    {
+        const Request request = ServiceActionRequest{.action = action, .unit = "cron.service", .startType = ServiceStartType::Disabled};
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    ServiceActionResult refused = ServiceActionResult::failed("Requires administrator");
+    refused.needsAuthorization = true;
+    const Response reply = ServiceActionReply{.result = refused};
+    EXPECT_EQ(roundTrip(reply), reply);
+    EXPECT_EQ(roundTrip(Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}}),
+              Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}});
+
+    // An action past SetStartType, or a start type past System, is refused.
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
+    bytes.at(4 + HEADER_BYTES) = static_cast<std::uint8_t>(ServiceAction::SetStartType) + 1;
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
+    bytes.back() = static_cast<std::uint8_t>(ServiceStartType::System) + 1;
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    // The reply's flags have four bits; any other is refused.
+    std::vector<std::uint8_t> answer = encodeResponse(1, reply);
+    answer.at(4 + HEADER_BYTES) = 16;
+    EXPECT_FALSE(decodeResponse(answer).has_value());
+}
+
+TEST(BrokerProtocolTest, HiddenProcessesPastAFrameAreCutAndSaySo)
+{
+    // Big enough that a frame holds fewer than all: each process takes its texts at MAX_STRING_BYTES.
+    const std::string big(MAX_STRING_BYTES, 'x');
+    HiddenProcessesReply many;
+    for (std::int32_t pid = 1; pid <= 60; ++pid) // about 192 KiB each: some 42 fit in 8 MiB
+    {
+        many.processes.push_back(HiddenProcess{.target = {.pid = pid, .startTimeTicks = 1}, .stat = big, .statm = big, .status = big});
+    }
+    const Response decoded = roundTrip(Response{many});
+    ASSERT_TRUE(std::holds_alternative<HiddenProcessesReply>(decoded));
+    const auto& cut = std::get<HiddenProcessesReply>(decoded);
+    EXPECT_LT(cut.processes.size(), many.processes.size());
+    EXPECT_FALSE(cut.processes.empty());
+    EXPECT_TRUE(cut.truncated);
+}
+
+TEST(BrokerProtocolTest, AnEntryWhoseSocketsWouldPassTheCapGoesWithoutThem)
+{
+    ProcessCountersEntry many{.target = TARGET, .socketsRead = true};
+    many.socketInodes.resize(MAX_COUNTER_SOCKET_INODES - 1, 5);
+    ProcessCountersEntry past{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 2, .socketsRead = true};
+    past.socketInodes = {1, 2};
+    const Response decoded = roundTrip(Response{ProcessCountersReply{.entries = {many, past}}});
+    ASSERT_TRUE(std::holds_alternative<ProcessCountersReply>(decoded));
+    const auto& entries = std::get<ProcessCountersReply>(decoded).entries;
+    ASSERT_EQ(entries.size(), 2U);
+    EXPECT_EQ(entries[0].socketInodes.size(), MAX_COUNTER_SOCKET_INODES - 1);
+    EXPECT_FALSE(entries[1].socketsRead) << "two more would pass MAX_COUNTER_SOCKET_INODES";
+    EXPECT_TRUE(entries[1].socketInodes.empty());
+    EXPECT_EQ(entries[1].handleCount, 2) << "the rest of it still goes";
 }
 
 TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)
@@ -642,6 +779,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetPriority,
                                    MessageKind::SetIoPriority,
                                    MessageKind::SetAffinity,
+                                   MessageKind::ServiceAction,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
@@ -649,6 +787,8 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ReadMemoryRollup,
                                    MessageKind::ReadFirmwareFile,
                                    MessageKind::ReadCrashes,
+                                   MessageKind::ReadProcessCounters,
+                                   MessageKind::ListHiddenProcesses,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
@@ -657,6 +797,9 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::MemoryRollupResult,
                                    MessageKind::FirmwareFileResult,
                                    MessageKind::CrashesResult,
+                                   MessageKind::ProcessCountersResult,
+                                   MessageKind::HiddenProcessesResult,
+                                   MessageKind::ServiceActionResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);

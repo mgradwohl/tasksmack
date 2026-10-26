@@ -303,6 +303,34 @@ export SDL_VIDEODRIVER=x11
 # and results from this run don't test XWayland at all.
 ```
 
+### Headless sway (native Wayland, no desktop needed) (#2724)
+
+The on-display tests run on native Wayland under a headless sway, here or in a container:
+
+```bash
+R=/run/user/$(id -u)/tsway   # keep it short: wayland-1 must fit a 108-byte socket path
+mkdir -p "$R" && chmod 700 "$R"
+printf 'xwayland disable\noutput HEADLESS-1 resolution 1920x1080\n' > /tmp/sway-headless.conf
+env -u WAYLAND_DISPLAY -u DISPLAY XDG_RUNTIME_DIR="$R" WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+    WLR_RENDERER=pixman sway -c /tmp/sway-headless.conf &
+env -u DISPLAY XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY=wayland-1 SDL_VIDEODRIVER=wayland \
+    TASKSMACK_REQUIRE_DISPLAY=1 ./build/debug/tests/TaskSmackAppTests --gtest_filter='-UiScenarioTest.*'
+```
+
+On native Wayland the compositor runs title-bar drags, border resizes and maximize (the hit test hands it the
+bar and the borders), so the client-side drag and resize tests skip there and say why;
+`TheHitTestCallbackAnswersForTheRealWindow` checks the hand-off instead. sway is a tiling compositor and doesn't
+maximize at all, so Maximize's own checks need a stacking one (labwc). `UiScenarioTest` needs
+`TASKSMACK_SYNTHETIC=processes=120,seed=2711`, as CTest sets it.
+
+`tools/wayland-matrix.sh` runs all of it on a headless sway and a headless labwc, and adds what only a real
+pointer can check: a title-bar drag and a right-edge resize (through `tools/wayland/virtual-pointer.c`, since a
+headless seat has no pointer device for clients, and `wlrctl`'s lives for one command), a second output at scale
+1.5 that the window moves onto and that is then unplugged under it, the size saved on a close the compositor
+asks for and restored on the next start, and, on labwc, Maximize and Restore (`TASKSMACK_COMPOSITOR_MAXIMIZES=1`).
+It needs sway, labwc, wayland-scanner, libwayland-dev and a C compiler; labwc starts Xwayland, so where
+`/tmp/.X11-unix` isn't sticky (WSLg) the script gives labwc its own in an unprivileged mount namespace.
+
 ## Known Limitations / Future Work
 
 - **Native Wayland:** Title-bar dragging is delegated to the compositor via `SDL_HITTEST_DRAGGABLE` (see #744); as a consequence, double-click-to-maximize does not fire from the title bar there (the maximize button remains available). Users who hit compositor-specific drag/resize quirks can switch to native window decorations via Settings > Advanced > "Use native window decorations instead of the custom title bar" (see #745; native Wayland only, takes effect on next launch).

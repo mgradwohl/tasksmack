@@ -1,3 +1,4 @@
+#include "Core/GraphicsHostInfo.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
@@ -13,9 +14,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -106,6 +109,37 @@ bool displaySmallerThan(const Window& window, int width, int height)
     SDL_Rect bounds{};
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window.getHandle());
     return display != 0 && SDL_GetDisplayBounds(display, &bounds) && (bounds.w < width || bounds.h < height);
+}
+
+// Frees the array SDL_GetDisplays() returns.
+struct SdlFree
+{
+    void operator()(SDL_DisplayID* ids) const noexcept
+    {
+        SDL_free(ids);
+    }
+};
+
+using DisplayIds = std::unique_ptr<SDL_DisplayID, SdlFree>;
+
+// The rate a display mode advertises: its exact rational rate when SDL has one (59.94 Hz is
+// 60000/1001), else the float rate SDL rounds it to, which SDL leaves at 0 when it doesn't know.
+double advertisedRefreshHz(const SDL_DisplayMode& mode)
+{
+    if (mode.refresh_rate_numerator > 0 && mode.refresh_rate_denominator > 0)
+    {
+        return static_cast<double>(mode.refresh_rate_numerator) / static_cast<double>(mode.refresh_rate_denominator);
+    }
+    return static_cast<double>(mode.refresh_rate);
+}
+
+// What SDL says about a display mode's rate, for a failure message.
+std::string describeRefresh(const SDL_DisplayMode& mode)
+{
+    std::ostringstream text;
+    text << "refresh_rate_numerator=" << mode.refresh_rate_numerator << " refresh_rate_denominator=" << mode.refresh_rate_denominator
+         << " refresh_rate=" << mode.refresh_rate;
+    return text.str();
 }
 
 // Fixture that mirrors the Application constructor/destructor SDL lifecycle.
@@ -836,6 +870,171 @@ TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
         const auto [width, height] = window.getSize();
         EXPECT_LE(width, fitted.w);
         EXPECT_LE(height, fitted.h);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
+    }
+}
+
+// queryGraphicsHostInfo() reports the live SDL environment (#2966): SDL's video driver, every display
+// SDL enumerates in SDL's order, and each display's bounds and current mode, the logical bounds kept
+// apart from the mode's pixel size. Nothing here assumes how many displays there are, their sizes or
+// rates, HDR, or the backend: every expectation is read from SDL on the same machine.
+TEST_F(WindowTest, QueryGraphicsHostInfoReportsSDLsDriverAndDisplays)
+{
+    try
+    {
+        const Window window(
+            WindowSpecification{.Title = "GraphicsHostInfoTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const GraphicsHostInfo info = window.queryGraphicsHostInfo();
+
+        // The OpenGL strings captured when the window made its context come along.
+        EXPECT_FALSE(info.glVersion.empty());
+        EXPECT_FALSE(info.glRenderer.empty());
+
+        const char* driver = SDL_GetCurrentVideoDriver();
+        ASSERT_NE(driver, nullptr) << "No current SDL video driver with a window open";
+        EXPECT_EQ(info.videoDriver, driver);
+
+        int count = 0;
+        const DisplayIds ids(SDL_GetDisplays(&count));
+        ASSERT_NE(ids, nullptr) << "SDL_GetDisplays failed with a window open: " << SDL_GetError();
+        ASSERT_GT(count, 0);
+        ASSERT_EQ(info.displays.size(), static_cast<std::size_t>(count));
+
+        const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+        ASSERT_NE(primary, 0U) << "SDL_GetPrimaryDisplay failed: " << SDL_GetError();
+        std::size_t primaries = 0;
+        const std::span<const SDL_DisplayID> sdlDisplays(ids.get(), static_cast<std::size_t>(count));
+        for (std::size_t i = 0; i < sdlDisplays.size(); ++i)
+        {
+            const SDL_DisplayID id = sdlDisplays[i];
+            const DisplayInfo& display = info.displays[i];
+            SCOPED_TRACE(::testing::Message() << "display " << i << " (SDL id " << id << ", \"" << display.name << "\")");
+
+            // The same display in the same place: DisplayInfo has no ID, so its name stands in.
+            const char* name = SDL_GetDisplayName(id);
+            EXPECT_EQ(display.name, name != nullptr ? name : "");
+
+            // x/y/width/height are SDL's display bounds, in window coordinates.
+            SDL_Rect bounds{};
+            if (SDL_GetDisplayBounds(id, &bounds))
+            {
+                EXPECT_EQ(display.x, bounds.x);
+                EXPECT_EQ(display.y, bounds.y);
+                EXPECT_EQ(display.width, bounds.w);
+                EXPECT_EQ(display.height, bounds.h);
+                EXPECT_GT(display.width, 0);
+                EXPECT_GT(display.height, 0);
+            }
+            else
+            {
+                ADD_FAILURE() << "SDL_GetDisplayBounds failed for an enumerated display: " << SDL_GetError();
+            }
+
+            // pixelWidth/pixelHeight are the current mode's size converted to pixels by its pixel density
+            // (SDL treats a density of 0 as 1), and refreshHz is the rate that mode advertises.
+            if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(id); mode != nullptr)
+            {
+                SCOPED_TRACE(::testing::Message() << "mode " << mode->w << "x" << mode->h << " pixel_density=" << mode->pixel_density << " "
+                                                  << describeRefresh(*mode));
+                const float density = mode->pixel_density > 0.0F ? mode->pixel_density : 1.0F;
+                EXPECT_EQ(display.pixelWidth, static_cast<int>(std::lround(static_cast<float>(mode->w) * density)));
+                EXPECT_EQ(display.pixelHeight, static_cast<int>(std::lround(static_cast<float>(mode->h) * density)));
+                EXPECT_GT(display.pixelWidth, 0);
+                EXPECT_GT(display.pixelHeight, 0);
+                // The same expression in the same order, so the doubles are identical.
+                EXPECT_DOUBLE_EQ(display.refreshHz, advertisedRefreshHz(*mode));
+                EXPECT_TRUE(std::isfinite(display.refreshHz));
+                EXPECT_GE(display.refreshHz, 0.0);
+            }
+            else
+            {
+                // No mode: the pixel size and rate stay "unknown".
+                EXPECT_EQ(display.pixelWidth, 0);
+                EXPECT_EQ(display.pixelHeight, 0);
+                EXPECT_DOUBLE_EQ(display.refreshHz, 0.0);
+            }
+
+            EXPECT_FLOAT_EQ(display.contentScale, SDL_GetDisplayContentScale(id));
+            EXPECT_TRUE(std::isfinite(display.contentScale));
+            EXPECT_GT(display.contentScale, 0.0F);
+
+            EXPECT_EQ(display.hdrEnabled,
+                      SDL_GetBooleanProperty(SDL_GetDisplayProperties(id), SDL_PROP_DISPLAY_HDR_ENABLED_BOOLEAN, false));
+
+            EXPECT_EQ(display.primary, id == primary);
+            if (display.primary)
+            {
+                ++primaries;
+            }
+        }
+        // SDL's primary display is one of those it enumerates, and the only one flagged.
+        EXPECT_EQ(primaries, 1U);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
+    }
+}
+
+// getDisplayRefreshRate() is the rate the window's display's current mode advertises (#2966): the exact
+// numerator/denominator when SDL supplies them, else SDL's float rate, and 0 (unknown) when SDL has no
+// mode. It agrees with what queryGraphicsHostInfo() reports for the same display. No rate is assumed.
+TEST_F(WindowTest, GetDisplayRefreshRateIsTheRateTheWindowsDisplayModeAdvertises)
+{
+    try
+    {
+        const Window window(
+            WindowSpecification{.Title = "DisplayRefreshRateTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const double rate = window.getDisplayRefreshRate();
+        EXPECT_TRUE(std::isfinite(rate));
+        EXPECT_GE(rate, 0.0);
+
+        const SDL_DisplayID displayId = SDL_GetDisplayForWindow(window.getHandle());
+        ASSERT_NE(displayId, 0U) << "The window is on no display: " << SDL_GetError();
+
+        const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(displayId);
+        if (mode == nullptr)
+        {
+            EXPECT_DOUBLE_EQ(rate, 0.0) << "SDL has no current mode for the window's display: " << SDL_GetError();
+        }
+        else
+        {
+            SCOPED_TRACE(describeRefresh(*mode));
+            if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0)
+            {
+                // The rational rate, not the float SDL rounds it to. The production code divides the same
+                // two values as doubles, so the results are identical.
+                EXPECT_DOUBLE_EQ(rate,
+                                 static_cast<double>(mode->refresh_rate_numerator) / static_cast<double>(mode->refresh_rate_denominator));
+            }
+            else
+            {
+                EXPECT_DOUBLE_EQ(rate, static_cast<double>(mode->refresh_rate));
+            }
+        }
+
+        // The System Information page's rate for this display is the same number.
+        int count = 0;
+        const DisplayIds ids(SDL_GetDisplays(&count));
+        ASSERT_NE(ids, nullptr) << "SDL_GetDisplays failed with a window open: " << SDL_GetError();
+        const std::span<const SDL_DisplayID> sdlDisplays(ids.get(), static_cast<std::size_t>(std::max(count, 0)));
+        const auto found = std::ranges::find(sdlDisplays, displayId);
+        ASSERT_NE(found, sdlDisplays.end()) << "The window's display " << displayId << " is not among SDL's displays";
+        const auto index = static_cast<std::size_t>(std::distance(sdlDisplays.begin(), found));
+        const GraphicsHostInfo info = window.queryGraphicsHostInfo();
+        ASSERT_LT(index, info.displays.size());
+        EXPECT_DOUBLE_EQ(info.displays[index].refreshHz, rate);
     }
     catch (const std::exception& e)
     {

@@ -389,6 +389,216 @@ TEST(BrokeredProcessProbeTest, ARefusedMemoryRollupIsReadThroughARunningHelper)
     EXPECT_EQ(broker->connectCount(), 0);
 }
 
+/// A process as the probe read it: @p readable says whether its FD count and I/O were.
+[[nodiscard]] ProcessCounters countersOf(const ProcessTarget& target, bool readable)
+{
+    ProcessCounters counters;
+    counters.pid = target.pid;
+    counters.startTimeTicks = target.startTimeTicks;
+    counters.handleCount = readable ? 10 : 0;
+    counters.handleCountAvailable = readable;
+    counters.ioCountersAvailable = readable;
+    return counters;
+}
+
+TEST(BrokeredProcessProbeTest, RefusedFdCountsAndIoAreReadThroughARunningHelperInOneCall)
+{
+    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
+    const ProcessTarget gone{.pid = 98, .startTimeTicks = 2};
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            return Broker::Response{Broker::ProcessCountersReply{
+                .entries = {Broker::ProcessCountersEntry{
+                    .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 1000, .writeBytes = 2000}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    owned->setCounters({countersOf(mine, true), countersOf(TARGET, false), countersOf(gone, false)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET, gone}}}));
+    EXPECT_EQ(broker->idleCallCount(), 1) << "the sampler never queues behind another call";
+    ASSERT_EQ(counters.size(), 3U);
+    EXPECT_EQ(counters[0].handleCount, 10) << "read in-process, left alone";
+    EXPECT_TRUE(counters[1].handleCountAvailable);
+    EXPECT_EQ(counters[1].handleCount, 57);
+    EXPECT_TRUE(counters[1].ioCountersAvailable);
+    EXPECT_EQ(counters[1].writeBytes, 2000U);
+    EXPECT_FALSE(counters[2].handleCountAvailable) << "gone: no entry, still refused";
+
+    broker->setConnected(false); // no helper: nothing asked, nothing prompts
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->connectCount(), 0);
+}
+
+// #2728: another user's sockets, which the probe's inode map can't own without reading its fd links, are
+// attributed from the helper's socket inodes, asked for at the map's cadence rather than every refresh.
+TEST(BrokeredProcessProbeTest, TheHelpersSocketInodesAttributeConnectionsTheProbeLeftUnowned)
+{
+    constexpr std::uint64_t INODE = 4242;
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            return Broker::Response{Broker::ProcessCountersReply{.entries = {Broker::ProcessCountersEntry{.target = TARGET,
+                                                                                                          .handleCountRead = true,
+                                                                                                          .handleCount = 5,
+                                                                                                          .ioRead = false,
+                                                                                                          .readBytes = 0,
+                                                                                                          .writeBytes = 0,
+                                                                                                          .socketsRead = true,
+                                                                                                          .socketInodes = {INODE}}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    owned->setCapabilities(caps);
+    ProcessCounters listed = countersOf(TARGET, true); // its FDs listed and its I/O read, but not its links
+    listed.networkCountersAvailable = false;
+    owned->setCounters({listed});
+    SocketTrafficReading traffic;
+    traffic.sampleTimeNs = 1;
+    traffic.sockets = {SocketTrafficSample{.key = INODE, .pid = 0, .bytesReceived = 10, .bytesSent = 20},
+                       SocketTrafficSample{.key = INODE + 1, .pid = 0, .bytesReceived = 1, .bytesSent = 1}};
+    owned->setSocketTraffic(traffic);
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    EXPECT_TRUE(probe.readSocketTraffic().sockets.front().pid == 0) << "nothing from the helper yet";
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET}, .withSockets = true}}));
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters.front().networkCountersAvailable);
+    const SocketTrafficReading attributed = probe.readSocketTraffic();
+    ASSERT_EQ(attributed.sockets.size(), 2U);
+    EXPECT_EQ(attributed.sockets[0].pid, TARGET.pid);
+    EXPECT_EQ(attributed.sockets[0].ownerStartTimeTicks, TARGET.startTimeTicks);
+    EXPECT_EQ(attributed.sockets[1].pid, 0) << "not among the helper's inodes: still unowned";
+
+    // The next refresh, before the map's cadence comes round: nothing else refused, so nothing asked, and
+    // the last read's attribution stands.
+    const std::vector<ProcessCounters> again = probe.enumerate();
+    EXPECT_EQ(broker->requests().size(), 1U);
+    ASSERT_EQ(again.size(), 1U);
+    EXPECT_TRUE(again.front().networkCountersAvailable);
+}
+
+// #2728: when the probe says processes are hidden (hidepid), a running helper lists them, their records are
+// built from the files' text, and the counters read then covers them like any refused process.
+TEST(BrokeredProcessProbeTest, ProcessesHidepidHidesAreListedByTheHelperAndJoinTheList)
+{
+    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
+    const ProcessTarget stale{.pid = 77, .startTimeTicks = 5};
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [&stale](const Broker::Request& request)
+        {
+            if (std::holds_alternative<Broker::HiddenProcessesRequest>(request))
+            {
+                return Broker::Response{
+                    Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"},
+                                                               Broker::HiddenProcess{.target = stale, .stat = "reused"}},
+                                                 .truncated = false}};
+            }
+            return Broker::Response{Broker::ProcessCountersReply{
+                .entries = {Broker::ProcessCountersEntry{.target = TARGET, .handleCountRead = true, .handleCount = 12}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    owned->setCapabilities(caps);
+    owned->setCounters({countersOf(mine, true)});
+    owned->setProcessFromFiles(
+        [&stale](std::int32_t pid, const ProcFileTexts& files) -> std::optional<ProcessCounters>
+        {
+            ProcessCounters built = countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, false);
+            built.name = files.stat;
+            if (files.stat == "reused")
+            {
+                built.startTimeTicks = stale.startTimeTicks + 1; // its PID names another process by now
+            }
+            return built;
+        });
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_GE(broker->requests().size(), 2U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::HiddenProcessesRequest{.visiblePids = {mine.pid}}}));
+    ASSERT_EQ(counters.size(), 2U) << "the hidden process joins; the one whose start time changed doesn't";
+    EXPECT_EQ(counters[1].pid, TARGET.pid);
+    EXPECT_EQ(counters[1].name, "hidden");
+    EXPECT_TRUE(counters[1].handleCountAvailable) << "the counters read covered it";
+    EXPECT_EQ(counters[1].handleCount, 12);
+    EXPECT_EQ(broker->idleCallCount(), static_cast<int>(broker->requests().size())) << "never behind another call";
+}
+
+TEST(BrokeredProcessProbeTest, NothingHiddenOrAHelperThatRefusesMeansNoListing)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    auto* raw = owned.get();
+    owned->setCounters({countersOf(TARGET, true)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+    static_cast<void>(probe.enumerate());
+    EXPECT_TRUE(broker->requests().empty()) << "nothing hidden, nothing refused: nothing asked";
+
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    raw->setCapabilities(caps);
+    static_cast<void>(probe.enumerate());
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U) << "a helper that answers with an error is asked once";
+}
+
+// #3032: a helper whose reader failed once lists none that time, marked truncated, which isn't a refusal:
+// the next refresh asks again and takes what it lists.
+TEST(BrokeredProcessProbeTest, AListingThatFailedOnceIsAskedForAgain)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    bool failed = false;
+    broker->setAnswer(
+        [&failed](const Broker::Request&)
+        {
+            if (!failed)
+            {
+                failed = true;
+                return Broker::Response{Broker::HiddenProcessesReply{.processes = {}, .truncated = true}};
+            }
+            return Broker::Response{
+                Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"}}, .truncated = false}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    owned->setCapabilities(caps);
+    owned->setProcessFromFiles([](std::int32_t pid, const ProcFileTexts& /*files*/) -> std::optional<ProcessCounters>
+                               { return countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, true); });
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    EXPECT_TRUE(probe.enumerate().empty()) << "none listed the first time";
+    const std::vector<ProcessCounters> again = probe.enumerate();
+    EXPECT_EQ(broker->requests().size(), 2U) << "asked again after the failed listing";
+    ASSERT_EQ(again.size(), 1U);
+    EXPECT_EQ(again.front().pid, TARGET.pid);
+}
+
+TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    owned->setCounters({countersOf(TARGET, false)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+    static_cast<void>(probe.enumerate());
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U) << "Windows' helper answers with an error: asked once";
+}
+
 // --- Every action, and every call the decorators only pass on (#2417) --------------------------------
 
 TEST(BrokeredProcessActionsTest, EverySignalRefusedInProcessIsRetriedAsItsOwnRequest)

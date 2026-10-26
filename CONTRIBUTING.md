@@ -19,6 +19,26 @@ To avoid duplication and doc drift, these are the canonical docs:
 
 Avoid copying contributor commands or architecture diagrams into additional Markdown files. Link to the relevant canonical section instead.
 
+### The docs site
+
+`docs/` is also the [Docsify site](https://mgradwohl.github.io/tasksmack/), rendered in the browser
+from `docs/index.html`. CI checks it two ways, both in `ci.yml`'s `docs-hygiene` job:
+
+- `tools/md-link-audit.sh` checks that every Markdown link's and image's target exists in the tree.
+- `tools/docs-site-smoke.py` serves `docs/` under `/tasksmack/`, as GitHub Pages does, and drives it in
+  headless Chromium (#2967). It checks the root URL, a FAQ link and its section, the sidebar,
+  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. Run it after
+  changing `docs/index.html`, the sidebar, or how pages link to each other:
+
+```bash
+python -m pip install --require-hashes -r requirements-docs-site.txt
+python -m playwright install --with-deps --only-shell chromium   # --with-deps needs sudo; drop it once the deps are in
+python tools/docs-site-smoke.py   # --offline skips fetching the latest release page; --headed shows the browser
+```
+
+Link sections as GitHub renders them (`faq.md#why-doesnt-the-network-total-match-the-sum-of-the-interfaces`):
+the site gives each heading GitHub's anchor as well as Docsify's own.
+
 ### C++ API Documentation
 
 JSDoc and language-level docstrings are not C++ conventions. When declaration-level API documentation is useful, use Doxygen-compatible `///` or `/** ... */` comments in headers. Document contracts, ownership, units, thread safety, and platform limitations; do not narrate self-explanatory accessors or repeat implementation details. Repository-level design and workflow guidance belongs in the Markdown sources above.
@@ -93,10 +113,10 @@ Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
 
 The Windows setup installs only what building, testing and running need:
 - Visual Studio 2022 Build Tools with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
-- LLVM 23 (`-LlvmVersion` must stay on the pinned major);
+- LLVM 23 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
 - CMake, Ninja and Python 3.14.
 
-It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), marks tools on an LLVM major other than CI's pinned one with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`) for ETW profiling.
+It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. For LLVM it reads the installer registrations (Settings > Apps) first. An LLVM of the pinned major is left alone, whatever its minor version, and so are several side-by-side LLVM MSIs of that major (it says so). An LLVM of any other major is uninstalled (every registration, with `msiexec /x` for an MSI and the NSIS uninstaller's `/S`), then the pinned version is installed and `clang --version` checked. If any of that fails, the script stops with an error rather than finishing on the wrong LLVM; `-DryRun` prints the uninstall and install commands it would run. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), fails `clang` and `clang++` on an LLVM major other than CI's pinned one, marks the other LLVM tools on another major with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`) for ETW profiling.
 
 ### One-Command Dev Workflow
 
@@ -423,14 +443,14 @@ pwsh tools/clean.ps1      # Windows equivalent (same flags)
 The `optimized` and `win-optimized` presets target the x86-64-v3 microarchitecture, which requires AVX2 support (Haswell 2013+ or Excavator 2015+ CPUs). If you encounter "Illegal instruction" errors, your CPU may not support these instructions.
 
 For broader compatibility, use:
-- `release-compatible` (Linux) or `win-release-compatible` (Windows) for x86-64-v2 (2009+)
-- `release` (Linux) or `win-release` (Windows) for default compiler optimizations
+- `release-compatible` (Linux) or `win-release-compatible` (Windows) for x86-64-v2, which needs SSSE3, SSE4.1, SSE4.2, POPCNT and CMPXCHG16B (Intel Nehalem or later, AMD Bulldozer or later, or AMD Jaguar). AMD Athlon II / Phenom II and Intel Core 2 do not qualify.
+- `release` (Linux) or `win-release` (Windows) for default compiler optimizations, targeting the baseline x86-64 that every x86-64 CPU runs
 
 You can also customize the target microarchitecture by setting the `TASKSMACK_MARCH` CMake variable:
 
 ```bash
 cmake --preset release -DTASKSMACK_MARCH=native  # Optimize for your specific CPU
-cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
+cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target SSE4.2/POPCNT CPUs
 ```
 
 ### Common Presets
@@ -440,7 +460,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
 | `debug` | `win-debug` | Debug symbols, no optimization, security hardening |
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
-| `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2, 2009+) |
+| `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs) |
 | `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped, whole-program vtables (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
@@ -996,6 +1016,20 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 ```
 
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
+
+`tools/clang-tidy.sh` reads its compile database from one of three places (#2898):
+
+- `debug` (the default) or `relwithdebinfo`: `build/<type>`, configured with `cmake --preset <type>` if it
+  isn't yet, the stripped copy written to `build/<type>/clang-tidy-compdb/`.
+- Any other configure preset (`./tools/clang-tidy.sh tsan`, `asan-ubsan`, `release`, ...): the
+  `compile_commands.json` in the binaryDir that `CMakePresets.json` gives the preset. The script never configures
+  it: a missing database is an error that names the `cmake --preset` command to run.
+- `--build-dir DIR`: the `compile_commands.json` in any configured tree.
+
+For a preset other than `debug`/`relwithdebinfo` or a `--build-dir`, the module and PCH flags are stripped into a
+temporary copy that is removed when the run ends, so that tree's own files, including the `compile_commands.json`
+clangd reads, are never touched. Every other option works the same with each, for example
+`./tools/clang-tidy.sh tsan --changed-only`.
 
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
 blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
@@ -2521,9 +2555,11 @@ What a package contains, and what it depends on (#1398):
   (`cmake --install` always installs it, in the `windows_helper` component). The `.zip` and the NSIS
   installer carry it only with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`, which is for
   Authenticode-signed builds (#2302). Packaging then runs `cmake/VerifyWindowsSignatures.cmake` first,
-  which refuses unless `TaskSmack.exe` and the helper both have valid, timestamped signatures with one
-  certificate whose common name is `TASKSMACK_EXPECTED_SIGNER` (default `SignPath Foundation`, #2302's
-  choice).
+  which refuses unless `TaskSmack.exe` and the helper both have valid, timestamped signatures from a
+  certificate whose common name is `TASKSMACK_EXPECTED_SIGNER` (default `Matt Gradwohl`, the Azure
+  Artifact Signing profile's subject, #2302), the same subject for both, and whose issuer and
+  extended key usage match `TASKSMACK_EXPECTED_ISSUER` and `TASKSMACK_EXPECTED_EKU` (by default
+  Artifact Signing's, so a self-signed test certificate with the same name doesn't pass; #2990).
   Off (the default), unsigned dev builds package as before, without the helper. Sign both
   executables in `build/<preset>/bin` after building and before `cpack`, or, as the release does,
   sign the packaged `.zip` instead: `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` moves the check off the
@@ -2792,16 +2828,16 @@ ships, unless the maintainer keeps it for security fixes.
 
 Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` or on the `release/X.Y` branch it names is what
 triggers both an official TaskSmack release (`release.yml`: validates the tag, builds Linux/Windows
-packages for x64 and ARM64, signs every asset with Sigstore and, once enabled, the Windows x64
-`.zip` with Authenticode, and publishes a GitHub Release) and the corresponding `CHANGELOG.md`
+packages for x64 and ARM64, Authenticode-signs the Windows executables, signs every asset with
+Sigstore, and publishes a GitHub Release) and the corresponding `CHANGELOG.md`
 update (`changelog.yml`, tag push only -- it has no `workflow_dispatch` trigger). Both run from the
 workflow files at the tagged commit, so a release branch needs the current `release.yml` and
 `changelog.yml` (backport workflow changes to it like any fix).
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
-tag run (including [Authenticode signing](#windows-code-signing) of the Windows x64 `.zip`, once it's
-switched on), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
+tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s, when
+dispatched from `main` or `release/*`), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
 tests and validates the ARM64 packages as well as the x64 ones. No tag is pushed, so
@@ -2847,7 +2883,9 @@ That single push runs two independent workflows:
   generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
   size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
-  draft and overwrites its assets. The maintainer's approved release notes then replace the
+  draft and overwrites its assets. Then `verify-published-release` downloads the published assets
+  and checks them again (see [Release Artifact Validation](#release-artifact-validation)). The
+  maintainer's approved release notes then replace the
   placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
   Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
   placeholder has.
@@ -2866,11 +2904,11 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 - Linux x64 packages: `TaskSmack-<version>-Linux.tar.gz` and `TaskSmack-<version>-Linux.deb`
 - Linux aarch64 packages: `TaskSmack-<version>-linux-aarch64.tar.gz` and
   `TaskSmack-<version>-linux-aarch64.deb` (from v0.9.0)
-- Windows x64 package: `TaskSmack-<version>-win64.zip`. Once signing is switched on (see
-  [Windows code signing](#windows-code-signing)), it also carries `TaskSmackHelper.exe`, and both
-  executables are Authenticode-signed; until then it is unsigned and has no helper.
+- Windows x64 package: `TaskSmack-<version>-win64.zip`. From v0.9.1 it also carries
+  `TaskSmackHelper.exe`, and both executables are Authenticode-signed by Matt Gradwohl (see
+  [Windows code signing](#windows-code-signing)); v0.9.0 and earlier are unsigned and have no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
-  ARM64EC; not Authenticode-signed yet, and without `TaskSmackHelper.exe`)
+  ARM64EC; signed and carrying `TaskSmackHelper.exe` from v0.9.1, like the x64 one)
 - Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
   `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
   `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
@@ -2902,7 +2940,7 @@ still run, emulated, on the ARM64 runner. Linux installs the
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
 no X server needed). Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout; a
-signed x64 `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
+signed `.zip` must have `TaskSmackHelper.exe` beside it, and an unsigned `.zip` must not carry
 one), checks a signed `.zip`'s Authenticode signatures (see [Windows code signing](#windows-code-signing)) and
 launches the executable directly on the runner's desktop session, with a temporary copy of Mesa's
 llvmpipe beside it (mesa-dist-win on x64, mmozeiko/build-mesa on ARM64; never in the package). Each launch
@@ -2941,63 +2979,88 @@ can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold n
 `usr/bin`, `usr/libexec/tasksmack` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man,polkit-1}`, and the `.zip`
 may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
 
+`verify-published-release` runs after `create-release` and checks what users actually download (#2721),
+on one x64 Linux and one x64 Windows runner. A tag run downloads the published release (`gh release
+download`); a dry run, which publishes nothing, downloads its `release-assets-dry-run` artifact instead,
+so every dry run exercises the job, and where the files come from is the only difference. Each leg
+checks that the download holds exactly the files `create-release` hashed after signing (every asset and
+its `.bundle`, nothing extra), each with the SHA-256 of its `dist/` copy (the job's `sha256sums` output,
+not a rebuild). The Linux leg then runs `cosign verify-blob --bundle` on every asset with the User
+Guide's certificate identity and issuer (a dry run signs from a branch, so it pins the same workflow at
+its own ref), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
+on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
+`validate-linux-package`'s smoke check. The Windows leg checks the `.zip`'s Authenticode signatures
+with `validate-windows-package`'s check once signing is on (until #2302 signs it, the step says it's
+skipped), and relaunches it with that job's smoke check. Both jobs run the same scripts:
+`tools/release-smoke-check.sh`, `tools/release-smoke-check.ps1` and `tools/verify-windows-signatures.ps1`.
+On a tag run the release is already public by then, so a failure can't unpublish it: the job fails the
+run, its step summary names the check that failed, and the maintainer decides what to do about the
+live release.
+
 ### Windows code signing
 
-The Windows x64 `.zip`'s `TaskSmack.exe` and `TaskSmackHelper.exe` are Authenticode-signed through
-[SignPath](https://signpath.io) (#2302; [code signing policy](docs/code-signing-policy.md)), once
-signing is switched on.
+Both Windows `.zip`s' `TaskSmack.exe` and `TaskSmackHelper.exe`, x64 and ARM64, are
+Authenticode-signed through [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
+(#2302; [code signing policy](docs/code-signing-policy.md)). The signer is the maintainer's validated
+identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and SmartScreen name
+**Matt Gradwohl** as the publisher.
 
-**The switch** is the repository variable `SIGNPATH_SIGNING_ENABLED` (Settings > Secrets and
-variables > Actions > Variables). It is unset today: SignPath's free organization doesn't include
-the GitHub.com trusted build system that `sign-windows` logs in through ("Trusted build system is not
-allowed to log into the organization"), and the SignPath Foundation's OSS programme does. Until it's
-`true`, `release.yml` packages the x64 `.zip` as it did before #2302: without `TaskSmackHelper.exe`
-(the helper never ships unsigned), with `sign-windows` skipped (`validate-windows-package` and
-`create-release` accept that skip only while the variable is off), and with no signature check.
-Once the Foundation approves the project:
+| Setting | Value |
+|---|---|
+| Artifact Signing account | `tasksmacksigning` (endpoint `https://wus2.codesigning.azure.net`) |
+| Certificate profile | `tasksmack-release` (Public Trust) |
+| Expected signer CN | `Matt Gradwohl` (`WINDOWS_EXPECTED_SIGNER` in `release.yml`, `TASKSMACK_EXPECTED_SIGNER` in CMake) |
+| Expected issuer | `CN=Microsoft ID Verified CS ?OC CA ??, O=Microsoft Corporation, C=US` in spirit: an `AOC` or `EOC` CA with a two-digit number, matched with `-like` (`TASKSMACK_EXPECTED_ISSUER`, whose exact default is in cmake/Options.cmake; #2990). The certificates seen so far: `CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US` |
+| Expected extended key usage | `1.3.6.1.4.1.311.97.*`, a `-like` pattern (`TASKSMACK_EXPECTED_EKU`; #2990). The certificates carry `1.3.6.1.4.1.311.97.1.0`, Code Signing (`1.3.6.1.5.5.7.3.3`) and the identity validation's own `1.3.6.1.4.1.311.97.<id>` |
+| GitHub environment | `release-signing`: admits `v*` tags and the `main` and `release/*` branches |
+| Sign-in | GitHub OIDC; a tenant-level sign-in (`allow-no-subscriptions`); the environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
 
-1. in SignPath, add the GitHub.com trusted build system to the organization, and add a
-   `release-signing` signing policy with the Foundation certificate and approval required;
-2. set `SIGNPATH_SIGNING_ENABLED` to `true`;
-3. dispatch a dry run (it uses `test-signing`, below) and check its signatures;
-4. change `SIGNPATH_SIGNING_POLICY`'s last `test-signing` to `release-signing` (below).
+**When it signs.** `SIGNING_ENABLED` at the top of `release.yml` is true exactly when the run may
+enter `release-signing`: every tag run, and dry runs dispatched from `main` or `release/*`. Both
+take a reviewed PR to change, so only reviewed code is ever signed (#2988). A dry run from any other
+branch, a PR branch included, packages both `.zip`s as before #2302: without
+`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` skipped
+(`validate-windows-package` and `create-release` accept that skip only then), and with no signature
+check. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
+`SIGNING_ENABLED` would leave unsigned (#2745). A PR branch's dry run proves everything but
+signing. A change to the signing path itself is proven after it merges, by a dry run dispatched
+from `main` (`gh workflow run release.yml --ref main -f dry_run=true`), or from `release/X.Y` once
+its backport PR merges; follow up with a fix PR if that run fails.
 
-With the switch on, `release.yml` does this:
+With signing on, `release.yml` does this:
 
-1. `build-windows` (x64) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
-   `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=<the policy's signer>`,
-   packages the `.zip` with CPack as usual (the helper unsigned, with a CPack warning saying so) and
-   uploads it as the `windows-unsigned-x64` artifact, which `create-release` never downloads.
-2. `sign-windows` (no checkout, no build; the only job that sees the `SIGNPATH_API_TOKEN` secret)
-   submits that artifact to SignPath with `signpath/github-action-submit-signing-request`: project
-   `tasksmack`, artifact configuration `windows-zip` (the `TaskSmack-*.zip` whose top-level
-   `TaskSmack-*` folder holds both executables), organization from the `SIGNPATH_ORGANIZATION_ID`
-   variable. It waits for the request, then uploads the signed `.zip` as `windows-packages-x64`.
-3. `validate-windows-package` (x64) runs `cmake/VerifyWindowsSignatures.cmake` on the signed `.zip`'s
-   extracted contents: both executables `Valid`, signed by the expected common name, timestamped,
-   with one certificate. Only then can `create-release` hash, Sigstore-sign and publish it, so an
-   unsigned or wrongly signed helper can't be published.
+1. `build-windows` (both architectures) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
+   `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=Matt Gradwohl`, packages
+   the `.zip` with CPack as usual (the helper unsigned, with a CPack warning saying so) and uploads
+   it as the `windows-unsigned-<arch>` artifact, which `create-release` never downloads.
+2. `sign-windows` (on `windows-2025`; no checkout, no build; the only job in `release-signing`, and
+   the only one with `id-token: write` apart from `create-release`'s Sigstore signing) downloads both
+   unsigned `.zip`s, extracts the two executables from each, signs in with `azure/login` and signs all
+   four with `azure/artifact-signing-action` (SHA-256 file digest, RFC 3161 SHA-256 timestamp from
+   `http://timestamp.acs.microsoft.com`, every credential type but the Azure CLI's excluded). It then
+   writes each signed executable back over its own entry in its `.zip`, checks that nothing else in
+   the `.zip` changed, and uploads the signed `.zip`s as `windows-packages-<arch>`.
+3. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
+   signed `.zip`'s extracted contents: both executables `Valid`, signed by `Matt Gradwohl` with a
+   certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
+   key usage, timestamped, and by the same subject. Only then can `create-release` hash,
+   Sigstore-sign and publish them, so an unsigned or wrongly signed helper can't be published.
 
-The signing policy is `SIGNPATH_SIGNING_POLICY` at the top of `release.yml`. Today every run,
-dry runs included, uses `test-signing`: SignPath's self-signed test certificate, CN `TaskSmack Test
-Signing (untrusted)`, with no approval. It proves the pipeline, but Windows trusts nothing it signs;
-`validate-windows-package` trusts that self-signed certificate on its ephemeral runner only, before
-checking. Once the SignPath Foundation approves the project, changing that line's last
-`test-signing` to `release-signing` signs tag runs (and `dry_run=false` dispatches) with the
-Foundation certificate, CN `SignPath Foundation`, and each request then waits (up to an hour) for
-the maintainer's approval in SignPath; dry runs stay on `test-signing`.
+Artifact Signing certificates last about three days and rotate, so every check matches the signer's
+common name, the issuer's name and the extended key usage, never a thumbprint or serial number; the
+timestamp is what keeps a signature valid once its certificate expires. The issuer and usage are
+what tell an Artifact Signing certificate from a self-signed or internal one that also says
+`CN=Matt Gradwohl` and that the machine trusts (#2990). The issuer pattern takes any two-digit CA
+number, so a rollover from CA 04 to the next still passes.
 
-To check a run's signatures, download its `windows-packages-x64` artifact (or the dry run's
+To check a run's signatures, download its `windows-packages-<arch>` artifact (or the dry run's
 `release-assets-dry-run`), extract the `.zip` and run
 `Get-AuthenticodeSignature .\TaskSmack-*\TaskSmack*.exe | Format-List Status, StatusMessage,
-SignerCertificate, TimeStamperCertificate`. A `test-signing` signature reads `UnknownError` (an
-untrusted root) on a machine that doesn't trust the test certificate; the signer subject and
-timestamp are still shown.
+SignerCertificate, TimeStamperCertificate`. Each file should read `Valid`, with signer subject
+`CN=Matt Gradwohl, ...` and a timestamp certificate.
 
-The ARM64 `.zip` isn't signed yet and doesn't carry the helper: signing it needs a second SignPath
-artifact configuration for `TaskSmack-*-windows-arm64.zip` and an ARM64 leg in `sign-windows`.
-The NSIS installer #2302 plans needs its executables signed before `cpack` runs (it can't be signed
-inside afterwards) and then the installer itself.
+The NSIS installer #2302 plans isn't built yet: it needs its executables signed before `cpack` runs
+(it can't be signed inside afterwards), then its uninstaller and the installer itself.
 
 ### Release Environment
 
@@ -3051,8 +3114,8 @@ dirty.
 rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH`, once per
 architecture on that architecture's runner, and compare package digests against the corresponding
 `build-linux`/`build-windows` leg's artifact -- a missing
-matching artifact counts as a failure, not a skip. With signing on, Windows x64 compares against
-the **unsigned** `.zip` `build-windows` sent for signing (`windows-unsigned-x64`): an Authenticode signature embeds a
+matching artifact counts as a failure, not a skip. With signing on, each Windows leg compares against
+the **unsigned** `.zip` `build-windows` sent for signing (`windows-unsigned-<arch>`): an Authenticode signature embeds a
 timestamp, so signed release `.zip`s are not byte-reproducible by design. The rebuild is configured
 without `TASKSMACK_PACKAGE_WINDOWS_HELPER`, so its `.zip` lacks `TaskSmackHelper.exe`; the check then
 compares the two `.zip`s file by file and the original's helper against the one the rebuild built. Both are advisory only (`continue-on-error:

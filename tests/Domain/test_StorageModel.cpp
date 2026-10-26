@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -180,6 +181,62 @@ TEST(StorageModelTest, RateUsesInjectedSampleTimeNotWallClockElapsedDuringTest)
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // 2000 sectors * 512 bytes / 2 seconds = 512,000 bytes/sec, exactly -- not approximately.
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 512000.0);
+}
+
+// #2995: a disk that disappears and a different one appearing under its name before the history expires
+// (a replacement USB disk, say) isn't measured against the removed one's counters: the first sample after
+// the absence is a new baseline (no rates, a gap), and rates resume from there.
+TEST(StorageModelTest, ADiskBackAfterAnAbsenceIsSeededAfreshNotMeasuredAgainstTheOldCounters)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+    StorageModel model(std::move(mockProbeOwned));
+    const auto sampleWith = [&](std::optional<std::uint64_t> sdbReadSectors, std::chrono::steady_clock::time_point at)
+    {
+        Platform::SystemDiskCounters counters;
+        Platform::DiskCounters sda;
+        sda.deviceName = "sda";
+        sda.sectorSize = 512;
+        counters.disks.push_back(sda);
+        if (sdbReadSectors.has_value())
+        {
+            Platform::DiskCounters sdb;
+            sdb.deviceName = "sdb";
+            sdb.sectorSize = 512;
+            sdb.readSectors = *sdbReadSectors;
+            counters.disks.push_back(sdb);
+        }
+        mockProbe->setNextCounters(counters);
+        model.sampleAt(at);
+        return model.publication()->snapshot;
+    };
+    const auto findSdb = [](const StorageSnapshot& snapshot) -> std::optional<DiskSnapshot>
+    {
+        for (const DiskSnapshot& disk : snapshot.disks)
+        {
+            if (disk.deviceName == "sdb")
+            {
+                return disk;
+            }
+        }
+        return std::nullopt;
+    };
+
+    const auto start = std::chrono::steady_clock::now();
+    static_cast<void>(sampleWith(1000, start));                                         // the original sdb
+    static_cast<void>(sampleWith(std::nullopt, start + std::chrono::seconds(1)));       // removed
+    const StorageSnapshot replaced = sampleWith(5000, start + std::chrono::seconds(2)); // a different disk
+    const std::optional<DiskSnapshot> first = findSdb(replaced);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_FALSE(first->hasRates) << "not (5000 - 1000) sectors over the 2 s since the old disk";
+    EXPECT_DOUBLE_EQ(first->readBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(replaced.totalReadBytesPerSec, 0.0);
+
+    const StorageSnapshot next = sampleWith(5200, start + std::chrono::seconds(3));
+    const std::optional<DiskSnapshot> second = findSdb(next);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_TRUE(second->hasRates);
+    EXPECT_DOUBLE_EQ(second->readBytesPerSec, 200.0 * 512.0) << "measured from its own first sample";
 }
 
 TEST(StorageModelTest, HistoryGrowsWithSamples)
@@ -908,6 +965,48 @@ TEST(StorageModelTest, SeedSampleIsAGapNotAFalseZero)
     EXPECT_TRUE(std::isnan(totals[0]));
     EXPECT_TRUE(std::isnan(totals[1]));
     EXPECT_DOUBLE_EQ(totals[2], 2000.0 * 512.0);
+}
+
+TEST(StorageModelTest, CountersTheProbeCouldNotReadAreAGapNotAnIdleDisk)
+{
+    // #2994: Windows' logical-drive fallback lists the fixed drives with zero counters it never read.
+    // They used to plot 0 B/s, measured, however busy the disk was; their history is a gap, and the
+    // first counters read afterwards are a fresh baseline, not a delta from those zeros.
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* mockProbe = probe.get();
+    Platform::SystemDiskCounters counters;
+    counters.disks.push_back({.deviceName = "C:", .sectorSize = 512, .hasIoCounters = false});
+    mockProbe->setNextCounters(counters);
+
+    Domain::StorageModel model(std::move(probe));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
+    model.sampleAt(start + std::chrono::seconds(1));
+    model.sampleAt(start + std::chrono::seconds(2));
+
+    const auto unread = model.publication()->snapshot;
+    ASSERT_EQ(unread.disks.size(), 1U);
+    EXPECT_FALSE(unread.disks[0].hasRates);
+    EXPECT_FALSE(unread.totalsMeasured);
+
+    counters.disks[0].hasIoCounters = true;
+    counters.disks[0].readSectors = 1'000'000;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(3)); // The first real read: a baseline
+    counters.disks[0].readSectors += 2000;
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(4));
+
+    const auto history = model.publication()->perDiskHistory;
+    ASSERT_EQ(history.size(), 1U);
+    ASSERT_EQ(history[0].readBytesPerSec.size(), 5U);
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[i])) << i;
+        EXPECT_TRUE(std::isnan(model.publication()->totalReadHistory[i])) << i;
+    }
+    EXPECT_DOUBLE_EQ(history[0].readBytesPerSec[4], 2000.0 * 512.0);
+    EXPECT_DOUBLE_EQ(model.publication()->totalReadHistory[4], 2000.0 * 512.0);
 }
 
 TEST(StorageModelTest, ACounterJumpAboveTheCeilingIsAGapNotASpike)

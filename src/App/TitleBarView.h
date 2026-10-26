@@ -9,6 +9,7 @@
 #include "UI/IconLoader.h"
 
 #include <cstdint>
+#include <string_view>
 
 namespace App
 {
@@ -70,6 +71,8 @@ struct Input
     float resizeBorderPx = 0.0F;
     const UI::Texture* icon = nullptr;
     bool openSystemMenu = false; ///< Open the Linux system menu this frame (Alt+Space)
+    /// The window's title, as the OS shows it: "TaskSmack (Administrator)" in an Administrator session (#2728)
+    std::string_view title = "TaskSmack";
 };
 
 /// What the frame drew, for the layer's hit testing and minimum size.

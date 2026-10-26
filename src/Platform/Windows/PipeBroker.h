@@ -118,6 +118,11 @@ class PipeBroker final : public IPrivilegedBroker
     {
         return m_ReadsOtherUsers;
     }
+    /// One more for each helper connect() starts or adopts and does the handshake with (#2993).
+    [[nodiscard]] std::uint64_t sessionsStarted() const noexcept override
+    {
+        return m_SessionsStarted.load();
+    }
     [[nodiscard]] std::expected<Broker::Response, std::string> call(const Broker::Request& request,
                                                                     const std::stop_token& stopToken) override;
     [[nodiscard]] std::expected<Broker::Response, std::string> callIfIdle(const Broker::Request& request,
@@ -161,9 +166,10 @@ class PipeBroker final : public IPrivilegedBroker
     mutable UniqueHandle m_Pipe;
     mutable UniqueHandle m_Helper;
     std::uint32_t m_NextRequestId = 1;
-    mutable std::uint32_t m_Unanswered = 0;       // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)
-    std::atomic<bool> m_Connecting{false};        // a connect is starting the helper (#2391): callIfIdle() is "busy"
-    mutable std::atomic<bool> m_Connected{false}; // cleared by connected() too, once the helper has gone
+    mutable std::uint32_t m_Unanswered = 0;          // a timed-out callIfIdle() request whose reply is still to come, or 0 (#2406)
+    std::atomic<bool> m_Connecting{false};           // a connect is starting the helper (#2391): callIfIdle() is "busy"
+    mutable std::atomic<bool> m_Connected{false};    // cleared by connected() too, once the helper has gone
+    std::atomic<std::uint64_t> m_SessionsStarted{0}; // raised under m_Mutex just before m_Connected is set (#2993)
 };
 
 } // namespace Platform::Windows

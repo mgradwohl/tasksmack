@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -58,7 +59,8 @@ constexpr std::string_view LOCATION_DENIED =
 struct Listed
 {
     NetworkAdapter adapter;
-    std::string guid; ///< AdapterName, "{...}", to match the WLAN interfaces by
+    std::string guid;       ///< AdapterName, "{...}", to match the WLAN interfaces by
+    std::uint64_t luid = 0; ///< Luid, to match the routes by
     ULONG metricV4 = 0;
     ULONG metricV6 = 0;
     std::vector<std::string> gatewaysV4;
@@ -139,6 +141,7 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter, std::
         suffix = suffix->Next;
     }
     listed.guid = raw.AdapterName == nullptr ? std::string{} : std::string(raw.AdapterName);
+    listed.luid = raw.Luid.Value;
     listed.metricV4 = raw.Ipv4Metric;
     listed.metricV6 = raw.Ipv6Metric;
 
@@ -189,10 +192,109 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter, std::
     return listed;
 }
 
-/// The default gateway of the up adapter with the lowest metric that has one, as (address, adapter).
-template<typename Gateways, typename Metric>
-void pickGateway(const std::vector<Listed>& listed, Gateways gateways, Metric metric, std::string& address, std::string& adapter)
+/// A route's next hop as text ("192.168.1.1", "fe80::1"), without a scope; empty for none (an on-link
+/// route's 0.0.0.0 or ::) or another family.
+[[nodiscard]] std::string formatNextHop(const SOCKADDR_INET& hop)
 {
+    std::array<char, INET6_ADDRSTRLEN> text{};
+    const char* written = nullptr;
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - si_family says which member is set
+    if (hop.si_family == AF_INET && hop.Ipv4.sin_addr.s_addr != 0)
+    {
+        written = inet_ntop(AF_INET, &hop.Ipv4.sin_addr, text.data(), text.size());
+    }
+    else if (hop.si_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&hop.Ipv6.sin6_addr) == FALSE)
+    {
+        written = inet_ntop(AF_INET6, &hop.Ipv6.sin6_addr, text.data(), text.size());
+    }
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    return written == nullptr ? std::string{} : std::string(text.data());
+}
+
+/// The cheapest default route of a family: its next hop and the adapter it leaves by (null for none).
+struct DefaultRoute
+{
+    std::string gateway;
+    const Listed* via = nullptr;
+    std::uint64_t cost = 0; ///< The route's metric plus its interface's
+};
+
+/// The cheapest default route of @p family (0.0.0.0/0 or ::/0) with a next hop, through an up adapter,
+/// ranked as Windows ranks them: the route's metric plus the interface's @p metric (#2996). A tie keeps
+/// the route listed first. nullopt when the route table can't be read; no route (via null) when it holds
+/// no such route.
+template<typename Metric>
+[[nodiscard]] std::optional<DefaultRoute>
+cheapestDefaultRoute(const Functions& fns, ADDRESS_FAMILY family, const std::vector<Listed>& listed, Metric metric)
+{
+    if (fns.getIpForwardTable2 == nullptr || fns.freeMibTable == nullptr)
+    {
+        return std::nullopt;
+    }
+    PMIB_IPFORWARD_TABLE2 raw = nullptr;
+    const DWORD status = fns.getIpForwardTable2(family, &raw);
+    if (status == ERROR_NOT_FOUND)
+    {
+        return DefaultRoute{}; // read, and no route of the family at all
+    }
+    if (status != NO_ERROR || raw == nullptr)
+    {
+        return std::nullopt;
+    }
+    const std::unique_ptr<MIB_IPFORWARD_TABLE2, decltype(fns.freeMibTable)> table(raw, fns.freeMibTable); // FreeMibTable when it goes
+
+    DefaultRoute best;
+    const std::span<const MIB_IPFORWARD_ROW2> rows(&table->Table[0], table->NumEntries);
+    for (const MIB_IPFORWARD_ROW2& row : rows)
+    {
+        if (row.DestinationPrefix.PrefixLength != 0)
+        {
+            continue; // not a default route
+        }
+        const auto match =
+            std::ranges::find_if(listed, [&row](const Listed& entry) { return entry.adapter.up && entry.luid == row.InterfaceLuid.Value; });
+        if (match == listed.end())
+        {
+            continue; // through a down, loopback or unlisted interface
+        }
+        const Listed& via = *match;
+        const std::uint64_t cost = std::uint64_t{row.Metric} + std::uint64_t{via.*metric};
+        if (best.via != nullptr && cost >= best.cost)
+        {
+            continue;
+        }
+        std::string gateway = formatNextHop(row.NextHop);
+        if (!gateway.empty())
+        {
+            best = DefaultRoute{.gateway = std::move(gateway), .via = &via, .cost = cost};
+        }
+    }
+    return best;
+}
+
+/// The default gateway of @p family, as (address, adapter): that of the cheapest default route, or, when
+/// the route table can't be read, the first gateway of the up adapter with the lowest interface metric
+/// that has one.
+template<typename Gateways, typename Metric>
+void pickGateway(const Functions& fns,
+                 ADDRESS_FAMILY family,
+                 const std::vector<Listed>& listed,
+                 Gateways gateways,
+                 Metric metric,
+                 std::string& address,
+                 std::string& adapter)
+{
+    if (const std::optional<DefaultRoute> route = cheapestDefaultRoute(fns, family, listed, metric); route.has_value())
+    {
+        // The table was read, so it decides: with no usable default route, Windows has no default
+        // gateway, and none is made up from the adapters' lists.
+        if (route->via != nullptr)
+        {
+            address = route->gateway;
+            adapter = route->via->adapter.name;
+        }
+        return;
+    }
     const Listed* best = nullptr;
     for (const Listed& entry : listed)
     {
@@ -451,6 +553,16 @@ ULONG WINAPI systemGetAdaptersAddresses(ULONG family, ULONG flags, PVOID reserve
     return GetAdaptersAddresses(family, flags, reserved, addresses, size);
 }
 
+DWORD WINAPI systemGetIpForwardTable2(ADDRESS_FAMILY family, PMIB_IPFORWARD_TABLE2* table)
+{
+    return GetIpForwardTable2(family, table);
+}
+
+VOID WINAPI systemFreeMibTable(PVOID memory)
+{
+    FreeMibTable(memory);
+}
+
 } // namespace
 
 Functions systemFunctions()
@@ -458,7 +570,11 @@ Functions systemFunctions()
     // Loaded once and kept: the read runs again on every Refresh. Missing on Server without the
     // Wireless LAN Service, which leaves the WLAN calls null.
     static const HMODULE wlan = LoadLibraryExW(L"wlanapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    Functions fns{.getAdaptersAddresses = &systemGetAdaptersAddresses};
+    Functions fns{
+        .getAdaptersAddresses = &systemGetAdaptersAddresses,
+        .getIpForwardTable2 = &systemGetIpForwardTable2,
+        .freeMibTable = &systemFreeMibTable,
+    };
     fns.nowUnix = &systemNowUnix;
     if (wlan != nullptr)
     {
@@ -502,8 +618,8 @@ void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns, bool i
         raw = raw->Next;
     }
 
-    pickGateway(listed, &Listed::gatewaysV4, &Listed::metricV4, info.gatewayV4, info.gatewayV4Adapter);
-    pickGateway(listed, &Listed::gatewaysV6, &Listed::metricV6, info.gatewayV6, info.gatewayV6Adapter);
+    pickGateway(fns, AF_INET, listed, &Listed::gatewaysV4, &Listed::metricV4, info.gatewayV4, info.gatewayV4Adapter);
+    pickGateway(fns, AF_INET6, listed, &Listed::gatewaysV6, &Listed::metricV6, info.gatewayV6, info.gatewayV6Adapter);
     collectDns(listed, info);
     readWlan(fns, listed, includeWifiDetails);
 

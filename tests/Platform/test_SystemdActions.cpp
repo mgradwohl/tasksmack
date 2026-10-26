@@ -149,6 +149,24 @@ TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
 
 // ========== LinuxServiceActions: where it can act ==========
 
+// #2728: what tasksmack-helper accepts as a unit to act on as root.
+TEST(SystemdActionsTest, OnlyAServicesUnitNameMayGoThroughTheHelper)
+{
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("cron.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("getty@tty1.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("systemd-fsck@dev-disk-by\\x2duuid-1234.service"));
+    EXPECT_TRUE(SystemdActions::isServiceUnitName("dbus-org.freedesktop.Avahi:x.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(".service")) << "nothing before the suffix";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("cron.socket")) << "another kind of unit";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("cron")) << "no suffix";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("../etc/passwd.service")) << "a path";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("a b.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName("--force.service")) << "an option";
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(".hidden.service"));
+    EXPECT_FALSE(SystemdActions::isServiceUnitName(std::string(248, 'a') + ".service")) << "past 255 bytes";
+    EXPECT_TRUE(SystemdActions::isServiceUnitName(std::string(247, 'a') + ".service")) << "255 bytes";
+}
+
 TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStart)
 {
     const TestSupport::ScopedTempDir root("ts_service_actions_root");
@@ -359,6 +377,24 @@ TEST_F(SystemdActionsFakeTest, AStartIsSentInReplaceModeAndWaitsUntilRunning)
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"}));
+}
+
+// #2728: tasksmack-helper holds one connection, opened before its sandbox, and every action borrows it --
+// without closing it, so the second action still has it.
+TEST_F(SystemdActionsFakeTest, ActionsBorrowTheHeldConnectionAndLeaveItOpen)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_EQ(SystemdBus::holdSystemBusForActions(), std::nullopt);
+    EXPECT_EQ(SystemdBus::holdSystemBusForActions(), std::nullopt) << "holding again keeps the one it has";
+    const std::stop_source stop;
+    const ServiceActionResult first = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    const ServiceActionResult second = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    SystemdBus::releaseHeldSystemBusForTesting();
+    EXPECT_TRUE(first.ok) << first.message;
+    EXPECT_TRUE(second.ok) << second.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace", "StartUnit cron.service replace"}));
 }
 
 // #2123: a oneshot service that ran and succeeded is inactive again when its job is gone: that's a start.

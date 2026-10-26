@@ -66,6 +66,17 @@ class SystemInfoPanel : public Panel
         m_SaveFileDialog = std::move(dialog);
     }
 
+    /// Writes a report's @p contents to the file @p path (UTF-8), replacing it: nullopt once written,
+    /// else why it couldn't be. Runs on the report-save worker (#2986), never on the UI thread.
+    using ReportWriter = std::function<std::optional<std::string>(const std::string& path, const std::string& contents)>;
+
+    /// Test seam (#2986): Save report... writes through @p writer instead of to the file itself. Set
+    /// before a save starts; each save copies it onto its worker.
+    void setReportWriter(ReportWriter writer)
+    {
+        m_ReportWriter = std::move(writer);
+    }
+
     void onAttach() override;
     void onDetach() override;
     void onEvent(Core::Event& event) override;
@@ -78,7 +89,8 @@ class SystemInfoPanel : public Panel
     void finishRead(bool wait);
     /// Save report... (#1866): asks where to save the page as it shows now.
     void startSaveReport();
-    /// Writes the report once the dialog has answered, on the UI thread, and notes how it went.
+    /// Once the dialog has answered, hands the report to the report-save worker (#2986); once that has
+    /// written it (or couldn't), notes how it went. Never touches the file system itself.
     void finishSaveReport();
 
     /// Where the dialog's answer waits for the UI thread: the callback may run on another thread, and
@@ -114,8 +126,18 @@ class SystemInfoPanel : public Panel
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
     SaveFileDialog m_SaveFileDialog; ///< Set by the test seam only
+    ReportWriter m_ReportWriter;     ///< Set by the test seam only
     std::shared_ptr<SaveSlot> m_SaveSlot = std::make_shared<SaveSlot>();
     bool m_SaveShowIdentifiers = false; // Show identifiers when Save report... was clicked
+    /// The Failed result of a save whose worker threw or couldn't start: its note.
+    [[nodiscard]] static std::string failedSave(std::string detail)
+    {
+        return "Couldn't save: " + std::move(detail);
+    }
+    // The report being written, if any (#2986): the free-name checks and the write, on a worker that
+    // owns copies of everything it uses; it hands back the note to show. One at a time: Save report...
+    // stays disabled until it is taken in.
+    BackgroundTask<std::string> m_SaveWrite{Platform::REPORT_SAVE_THREAD_NAME, &failedSave, "unknown error"};
 };
 
 } // namespace App

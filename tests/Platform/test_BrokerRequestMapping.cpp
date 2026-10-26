@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <variant>
 #include <vector>
@@ -215,6 +216,93 @@ TEST(BrokerRequestMappingTest, AMemoryRollupRequestIsReadThroughItsFunction)
     EXPECT_EQ(asked, TARGET);
     EXPECT_TRUE(
         std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::MemoryRollupRequest{.target = TARGET}, actions)));
+}
+
+TEST(BrokerRequestMappingTest, AProcessCountersRequestReadsEachTargetAndLeavesOutTheGoneOrThrowing)
+{
+    TestMocks::MockProcessActions actions;
+    const ProcessTarget gone{.pid = 8, .startTimeTicks = 1};
+    const ProcessTarget throwing{.pid = 9, .startTimeTicks = 1};
+    BrokerServer::Readers readers;
+    bool askedForSockets = false;
+    readers.processCounters = [&](const ProcessTarget& target, bool withSockets) -> std::optional<Broker::ProcessCountersEntry>
+    {
+        askedForSockets = askedForSockets || withSockets;
+        if (target == gone)
+        {
+            return std::nullopt;
+        }
+        if (target == throwing)
+        {
+            throw std::runtime_error("boom");
+        }
+        return Broker::ProcessCountersEntry{.target = target, .handleCountRead = true, .handleCount = 4};
+    };
+    const Broker::Response response = BrokerServer::handleRequest(
+        Broker::ProcessCountersRequest{.targets = {TARGET, gone, throwing}, .withSockets = true}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ProcessCountersReply>(response));
+    const auto& entries = std::get<Broker::ProcessCountersReply>(response).entries;
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries.front().target, TARGET);
+    EXPECT_EQ(entries.front().handleCount, 4);
+    EXPECT_TRUE(askedForSockets) << "the request's withSockets reaches the reader";
+    // A helper without the reader (Windows', which reads every process itself) says so.
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
+        BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET}}, actions)));
+}
+
+TEST(BrokerRequestMappingTest, AHiddenProcessesRequestGoesToItsReaderWithTheVisiblePids)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    std::vector<std::int32_t> seen;
+    readers.hiddenProcesses = [&seen](std::span<const std::int32_t> visible)
+    {
+        seen.assign(visible.begin(), visible.end());
+        return Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "x"}}, .truncated = false};
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{.visiblePids = {1, 2}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(response));
+    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(response).processes.size(), 1U);
+    EXPECT_EQ(seen, (std::vector<std::int32_t>{1, 2}));
+
+    // One that throws lists none this time, marked truncated, so TaskSmack asks again (#3032); only a helper
+    // without the reader (Windows', which has no hidepid) answers with the error that stops it asking.
+    readers.hiddenProcesses = [](std::span<const std::int32_t>) -> Broker::HiddenProcessesReply
+    {
+        throw std::runtime_error("boom");
+    };
+    const Broker::Response thrown = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(thrown));
+    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(thrown), (Broker::HiddenProcessesReply{.processes = {}, .truncated = true}));
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions)));
+}
+
+TEST(BrokerRequestMappingTest, AServiceActionGoesToItsReaderAndAThrowIsAFailedResult)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    Broker::ServiceActionRequest seen;
+    readers.serviceAction = [&seen](const Broker::ServiceActionRequest& request)
+    {
+        seen = request;
+        return ServiceActionResult::succeeded();
+    };
+    const Broker::ServiceActionRequest stop{.action = ServiceAction::Stop, .unit = "cron.service", .startType = ServiceStartType::Unknown};
+    const Broker::Response response = BrokerServer::handleRequest(stop, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(response));
+    EXPECT_TRUE(std::get<Broker::ServiceActionReply>(response).result.ok);
+    EXPECT_EQ(seen, stop);
+
+    readers.serviceAction = [](const Broker::ServiceActionRequest&) -> ServiceActionResult
+    {
+        throw std::runtime_error("boom");
+    };
+    const Broker::Response threw = BrokerServer::handleRequest(stop, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::ServiceActionReply>(threw));
+    EXPECT_FALSE(std::get<Broker::ServiceActionReply>(threw).result.ok);
+    // A helper without the reader (Windows') answers with an error.
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(stop, actions)));
 }
 
 // --- #2417: what the helper does when a read or an action throws -------------------------------------

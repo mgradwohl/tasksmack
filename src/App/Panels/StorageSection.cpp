@@ -296,8 +296,19 @@ void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTime
     const double alpha = computeAlpha(deltaTimeSeconds, ctx.refreshInterval);
 
     const bool initialized = *ctx.smoothedInitialized;
-    *ctx.smoothedReadBytesPerSec = initializeOrSmooth(*ctx.smoothedReadBytesPerSec, targetRead, alpha, initialized);
-    *ctx.smoothedWriteBytesPerSec = initializeOrSmooth(*ctx.smoothedWriteBytesPerSec, targetWrite, alpha, initialized);
+    // A target of NaN is no reading (#3025): the bar holds NaN, shown as N/A, and the first reading
+    // after it starts the bar afresh rather than easing from a value before the gap -- as the network
+    // bars do (updateSmoothedNetwork(), #2129).
+    const auto step = [alpha, initialized](double previous, double target)
+    {
+        if (!std::isfinite(target))
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return initializeOrSmooth(previous, target, alpha, initialized && std::isfinite(previous));
+    };
+    *ctx.smoothedReadBytesPerSec = step(*ctx.smoothedReadBytesPerSec, targetRead);
+    *ctx.smoothedWriteBytesPerSec = step(*ctx.smoothedWriteBytesPerSec, targetWrite);
     *ctx.smoothedInitialized = true;
 }
 
@@ -338,11 +349,16 @@ void renderStorageSection(RenderContext& ctx)
         diskTimes = frameTimeAxis(diskTimestamps, historySize, nowSeconds);
     }
 
-    // Update aggregate smoothed values
-    updateSmoothedDiskIO(diskSnap.totalReadBytesPerSec, diskSnap.totalWriteBytesPerSec, ctx.lastDeltaSeconds, ctx);
+    // Update aggregate smoothed values. Totals the Domain marks unmeasured (a seed sample, a counter
+    // glitch, a probe that read no counters) are no reading, as their history sample is a gap: the
+    // bars show N/A, not the 0 B/s the snapshot holds for them (#3025).
+    const double noReading = std::numeric_limits<double>::quiet_NaN();
+    const double totalRead = diskSnap.totalsMeasured ? diskSnap.totalReadBytesPerSec : noReading;
+    const double totalWrite = diskSnap.totalsMeasured ? diskSnap.totalWriteBytesPerSec : noReading;
+    updateSmoothedDiskIO(totalRead, totalWrite, ctx.lastDeltaSeconds, ctx);
 
-    const double smoothedRead = ctx.smoothedReadBytesPerSec != nullptr ? *ctx.smoothedReadBytesPerSec : diskSnap.totalReadBytesPerSec;
-    const double smoothedWrite = ctx.smoothedWriteBytesPerSec != nullptr ? *ctx.smoothedWriteBytesPerSec : diskSnap.totalWriteBytesPerSec;
+    const double smoothedRead = ctx.smoothedReadBytesPerSec != nullptr ? *ctx.smoothedReadBytesPerSec : totalRead;
+    const double smoothedWrite = ctx.smoothedWriteBytesPerSec != nullptr ? *ctx.smoothedWriteBytesPerSec : totalWrite;
 
     const auto& perDisk = ctx.publication->perDiskHistory;
     const size_t diskCount = perDisk.size();
@@ -404,11 +420,12 @@ void renderStorageSection(RenderContext& ctx)
                 .writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values,
             };
 
-            // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
-            // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
-            // history's order, so the same index is checked first; a scan of its few disks covers a
-            // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
-            // allocation per disk per frame for keys copied from strings already there (#1171).
+            // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample,
+            // or its rates there are unmeasured (hasRates, #3025): renderDiskCell shows N/A, not 0.
+            // The latest sample normally lists the disks in the history's order, so the same index is
+            // checked first; a scan of its few disks covers a disk added or removed since. A name ->
+            // snapshot map rebuilt every frame cost a heap allocation per disk per frame for keys
+            // copied from strings already there (#1171).
             const Domain::DiskSnapshot* latestDisk = nullptr;
             if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
             {
@@ -419,7 +436,7 @@ void renderStorageSection(RenderContext& ctx)
             {
                 latestDisk = &*it;
             }
-            if (latestDisk != nullptr)
+            if (latestDisk != nullptr && latestDisk->hasRates)
             {
                 frame.currentRead = latestDisk->readBytesPerSec;
                 frame.currentWrite = latestDisk->writeBytesPerSec;
@@ -514,16 +531,19 @@ void renderStorageSection(RenderContext& ctx)
                 {smoothedRead, smoothedWrite}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
-        const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
+        // An unmeasured total is NaN: N/A, drawn hatched rather than as a 0 bar (#3025, as #2129).
+        const NowBar readBar{.valueText = UI::Format::formatBytesPerSecOrNA(smoothedRead),
                              .label = READ_LABEL,
                              .tooltipText = {},
-                             .value01 = normalizeToUnitInterval(smoothedRead, diskAxisUpper),
-                             .color = theme.scheme().chartIo};
-        const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(smoothedWrite),
+                             .value01 = std::isfinite(smoothedRead) ? normalizeToUnitInterval(smoothedRead, diskAxisUpper) : 0.0,
+                             .color = theme.scheme().chartIo,
+                             .available = std::isfinite(smoothedRead)};
+        const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecOrNA(smoothedWrite),
                               .label = WRITE_LABEL,
                               .tooltipText = {},
-                              .value01 = normalizeToUnitInterval(smoothedWrite, diskAxisUpper),
-                              .color = theme.scheme().chartIoWrite};
+                              .value01 = std::isfinite(smoothedWrite) ? normalizeToUnitInterval(smoothedWrite, diskAxisUpper) : 0.0,
+                              .color = theme.scheme().chartIoWrite,
+                              .available = std::isfinite(smoothedWrite)};
 
         // Shares the tab's height with the network chart above it (#959).
         const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;

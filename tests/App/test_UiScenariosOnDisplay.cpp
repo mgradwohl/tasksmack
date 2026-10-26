@@ -407,6 +407,7 @@ struct ScenarioOutcome
     std::vector<std::string> captureErrors;
     int captured = 0;
     bool timedOut = false;
+    std::string windowTitle; ///< The window's title when the steps were done
 };
 
 /// Pushed last over the whole shell: waits for the panels' first samples, runs the steps in order,
@@ -501,6 +502,7 @@ class ScenarioDriverLayer : public Core::Layer
     void finish()
     {
         m_Done = true;
+        m_Outcome.windowTitle = Core::Application::get().getWindow().title();
         // The close the title bar's Close makes: every layer's onDetach() runs, ShellLayer's saving config.toml.
         Core::Application::get().getWindow().requestClose();
     }
@@ -948,6 +950,11 @@ TEST_F(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
                                              << " (after: " << (outcome.passed.empty() ? "none" : outcome.passed.back())
                                              << "): " << outcome.failedState;
     EXPECT_EQ(outcome.passed.size(), stepCount);
+#ifndef _WIN32
+    // A synthetic machine is never an Administrator session, whatever it shows (#3004). Linux's title says
+    // which (Windows keeps its own until TaskSmack can restart itself elevated).
+    EXPECT_EQ(outcome.windowTitle, "TaskSmack");
+#endif
     for (const std::string& error : outcome.captureErrors)
     {
         ADD_FAILURE() << "capture failed: " << error;

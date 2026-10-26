@@ -25,6 +25,14 @@ precedence = "override"
 SPDX-FileCopyrightText = "2016-2020 The Inter Project Authors"
 SPDX-License-Identifier = "OFL-1.1"
 
+# wlr-protocols' virtual pointer protocol, for tools/wayland/virtual-pointer.c (#2724), from
+# https://gitlab.freedesktop.org/wlroots/wlr-protocols at 1106a4a1c57562ddd438c547da4c0d6dc150d624
+[[annotations]]
+path = "tools/wayland/wlr-virtual-pointer-unstable-v1.xml"
+precedence = "override"
+SPDX-FileCopyrightText = "2019 Josef Gajdusek"
+SPDX-License-Identifier = "MIT"
+
 # Sixtyfour (https://github.com/jenskutilek/homecomputer-fonts)
 [[annotations]]
 path = "assets/fonts/Sixtyfour.ttf"
