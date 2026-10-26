@@ -37,6 +37,7 @@ endif()
 if(WIN32)
     set(PLATFORM_BENCH_SOURCES
         bench_WindowsPDHGPUProbe.cpp
+        bench_WindowsProcessProbe.cpp
     )
 else()
     set(PLATFORM_BENCH_SOURCES
