@@ -132,7 +132,7 @@ class SystemInfoPanel : public Panel
     /// The Failed result of a save whose worker threw or couldn't start: its note.
     [[nodiscard]] static std::string failedSave(std::string detail)
     {
-        return "Couldn't save: " + detail;
+        return "Couldn't save: " + std::move(detail);
     }
     // The report being written, if any (#2986): the free-name checks and the write, on a worker that
     // owns copies of everything it uses; it hands back the note to show. One at a time: Save report...
