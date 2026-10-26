@@ -9,10 +9,13 @@
 **Fix:** Rebuild with a preset that doesn't require AVX2:
 
 ```bash
-cmake --preset release-compatible   # Linux, x86-64-v2 (2009+ CPUs)
-cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
-# or the plain "release"/"win-release" presets, which use default optimizations
+cmake --preset release-compatible      # Linux, x86-64-v2: needs SSSE3, SSE4.1/4.2 and POPCNT
+cmake --preset win-release-compatible  # Windows, x86-64-v2: needs SSSE3, SSE4.1/4.2 and POPCNT
+cmake --preset release                 # Linux, baseline x86-64: runs on any x86-64 CPU
+cmake --preset win-release             # Windows, baseline x86-64: runs on any x86-64 CPU
 ```
+
+The `release-compatible` presets need an x86-64-v2 CPU: Intel Nehalem (first-generation Core i3/i5/i7) or later, or AMD Bulldozer (FX) or later, or a Jaguar-based chip. Older CPUs, including Intel Core 2 and AMD Athlon II / Phenom II, lack some of those instructions and crash the same way on a `release-compatible` build; use the plain `release` / `win-release` preset there. If a `release-compatible` build is the one that crashes, switch to the plain preset too.
 
 ---
 
@@ -70,7 +73,7 @@ With `CAP_DAC_READ_SEARCH` alone, only FD counts come back. The last two only ma
 
 **Standard or Administrator:** TaskSmack always starts as Standard, running as you. While it isn't root, the startup notice says so and offers **Authenticate for this session...**: one administrator password, after which the helper below reads and acts for TaskSmack until TaskSmack closes, so no further prompts come. The window itself stays yours; its title bar (and the taskbar entry) then reads **TaskSmack (Administrator)**, and the status bar shows **Administrator** with a shield. **Continue as Standard** (or Escape) keeps today's behaviour, and a dismissed or refused password leaves TaskSmack Standard, with a note saying so. Without the helper (the `.tar.gz`, or a source build without the packages), the option is disabled and says to install the `.deb` or `.rpm`. **What does Administrator add?** lists what each session gets. **Don't show this again** hides the notice; TaskSmack still starts as Standard.
 
-**Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do the Processes table's **Handles/FDs**, **I/O Read** and **I/O Write** and System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
+**Acting on another user's process without either:** with the `.deb` (or an `.rpm` you build yourself) installed, an action refused for want of permission (ending, suspending or resuming a process, or changing its priority, I/O priority or CPU affinity) offers **Authenticate and retry** beside its error. It asks for an administrator's password through polkit, then does that one action as the administrator. Likewise, Process Details' **Environment**, **Modules**, **Open files** and **Connections** sections offer **Authenticate to read** when another user's process refuses it. For a few minutes afterwards, refused actions and reads are retried that way without asking again, and in that time PSS and USS on the Memory section also show for other users' processes (otherwise they read "not readable"), as do the Processes table's **Handles/FDs**, **I/O Read**, **I/O Write**, **Net Sent** and **Net Received** and System Information's root-only facts: the serial numbers, the UUID, the SMBIOS version, the memory modules and every user's crashes. Nothing else runs with elevated rights, and the portable `.tar.gz` doesn't include this. While polkit remembers the password (a few minutes), another program you run in the same session could also start TaskSmack's helper without a prompt, as with any action polkit keeps authorized. TaskSmack running as root offers none of this, since it needs no helper.
 
 For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, started through `pkexec` for the polkit action `app.tasksmack.TaskSmack.helper` (defined in `/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`: `auth_admin_keep` for an active local session, `auth_admin` otherwise). `pkexec` starts it as root, but once it has checked its caller it stops being root: it runs as `nobody` (UID and GID 65534, with no supplementary groups) and keeps only the capabilities its requests need (`CAP_KILL`, `CAP_SYS_NICE`, `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, with `no_new_privs` set) under a seccomp filter that refuses writing files, running programs, loading code, tracing processes and opening sockets, serves only the TaskSmack that started it, and exits when that TaskSmack closes it or 5 minutes after it started or last did an action (reads, which TaskSmack repeats on its own timers, don't keep it running). After **Authenticate for this session**, it runs until TaskSmack closes instead.
 
@@ -124,11 +127,10 @@ signed UAC prompt would then hand it administrator rights. So a portable copy un
 into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
 the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
 
-The helper ships only in the Authenticode-signed x64 `.zip`
+The helper ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
-publisher. Signing is still being set up, so until it is in place no release `.zip` carries the helper.
-The ARM64 `.zip` doesn't include it, nor does any unsigned build; without it, TaskSmack offers neither
-button. If TaskSmack is already running as
+publisher, **Matt Gradwohl**. No earlier release `.zip` includes it, nor does any unsigned build; without
+it, TaskSmack offers neither button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 
 ---

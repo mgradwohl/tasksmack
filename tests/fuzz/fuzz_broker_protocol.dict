@@ -1,6 +1,6 @@
 # libFuzzer dictionary for fuzz_broker_protocol (#2643): the protocol version and every message kind,
 # as the little-endian u16s the frame header carries (src/Platform/BrokerProtocol.h).
-version="\x04\x00"
+version="\x05\x00"
 kind_hello="\x01\x00"
 kind_hello_reply="\x02\x00"
 kind_signal="\x10\x00"

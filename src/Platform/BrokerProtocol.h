@@ -39,6 +39,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -48,11 +49,15 @@ namespace Platform::Broker
 /// Bumped on every change to a message's fields: the helper and TaskSmack ship together, and a Hello of
 /// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
 /// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728). 4: ReadProcessCounters (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 4;
+/// 5: ReadProcessCounters can also ask for each process's socket inodes, for network attribution (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 5;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
 inline constexpr std::size_t MAX_COUNTER_TARGETS = std::size_t{1} << 14U;
+/// The most socket inodes one ProcessCountersReply carries, over all its entries (#2728); an entry past it
+/// goes back without its sockets.
+inline constexpr std::size_t MAX_COUNTER_SOCKET_INODES = std::size_t{1} << 18U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
@@ -260,10 +265,12 @@ struct ConnectionsReply
 
 /// Read many processes' FD counts and I/O bytes at once (#2728): the processes the sampler's own read was
 /// refused (other users', without CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE), every refresh, in one round
-/// trip. At most MAX_COUNTER_TARGETS.
+/// trip. At most MAX_COUNTER_TARGETS. With @c withSockets, each entry also lists the process's socket
+/// inodes, which the sampler can't read from another user's /proc/<pid>/fd links to attribute its connections.
 struct ProcessCountersRequest
 {
     std::vector<ProcessTarget> targets;
+    bool withSockets = false;
     friend bool operator==(const ProcessCountersRequest&, const ProcessCountersRequest&) = default;
 };
 
@@ -276,6 +283,10 @@ struct ProcessCountersEntry
     bool ioRead = false; ///< /proc/<pid>/io gave read_bytes and write_bytes
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
+    bool socketsRead = false; ///< Asked for, and every /proc/<pid>/fd link was read
+    /// Its sockets' inodes, when socketsRead
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::vector<std::uint64_t> socketInodes{};
     friend bool operator==(const ProcessCountersEntry&, const ProcessCountersEntry&) = default;
 };
 
@@ -750,6 +761,7 @@ template<typename Message>
     else if (const auto* counters = std::get_if<ProcessCountersRequest>(&request))
     {
         kind = MessageKind::ReadProcessCounters;
+        writer.u8(counters->withSockets ? 1U : 0U);
         const std::size_t count = std::min(counters->targets.size(), MAX_COUNTER_TARGETS);
         writer.u32(static_cast<std::uint32_t>(count));
         for (std::size_t i = 0; i < count; ++i)
@@ -849,10 +861,17 @@ namespace Detail
     return AffinityRequest{.target = target, .cpus = std::move(cpus)};
 }
 
-/// A ReadProcessCounters payload: the count (at most MAX_COUNTER_TARGETS), then the targets.
+/// A ReadProcessCounters payload: whether sockets are wanted (0 or 1), the count (at most
+/// MAX_COUNTER_TARGETS), then the targets.
 [[nodiscard]] inline ProcessCountersRequest decodeProcessCountersRequest(Reader& reader)
 {
     ProcessCountersRequest request;
+    const std::uint8_t withSockets = reader.u8();
+    if (withSockets > 1U)
+    {
+        reader.fail();
+    }
+    request.withSockets = withSockets == 1U;
     const std::uint32_t count = reader.u32();
     if (count > MAX_COUNTER_TARGETS)
     {
@@ -1085,19 +1104,32 @@ namespace Detail
     else if (const auto* counters = std::get_if<ProcessCountersReply>(&response))
     {
         kind = MessageKind::ProcessCountersResult;
-        // An entry: the target, a flags byte (1: the handle count was read, 2: the I/O was), the count and
-        // both byte figures, always sent. MAX_COUNTER_TARGETS of them fit a frame with room to spare.
-        static_assert(MAX_COUNTER_TARGETS * (4 + 8 + 1 + 4 + 8 + 8) <= Detail::listRoom(4));
+        // An entry: the target, a flags byte (1: the handle count was read, 2: the I/O was, 4: the sockets
+        // were), the count, both byte figures, then the socket inodes' count and the inodes. MAX_COUNTER_TARGETS
+        // entries and MAX_COUNTER_SOCKET_INODES inodes between them fit a frame with room to spare; an entry
+        // whose sockets would pass that goes without them.
+        static_assert((MAX_COUNTER_TARGETS * (4 + 8 + 1 + 4 + 8 + 8 + 4)) + (MAX_COUNTER_SOCKET_INODES * 8) <= Detail::listRoom(4));
         const std::size_t count = std::min(counters->entries.size(), MAX_COUNTER_TARGETS);
         writer.u32(static_cast<std::uint32_t>(count));
+        std::size_t inodesLeft = MAX_COUNTER_SOCKET_INODES;
         for (std::size_t i = 0; i < count; ++i)
         {
             const ProcessCountersEntry& entry = counters->entries[i];
+            const bool sockets = entry.socketsRead && entry.socketInodes.size() <= inodesLeft;
             writer.target(entry.target);
-            writer.u8(static_cast<std::uint8_t>((entry.handleCountRead ? 1U : 0U) | (entry.ioRead ? 2U : 0U)));
+            writer.u8(static_cast<std::uint8_t>((entry.handleCountRead ? 1U : 0U) | (entry.ioRead ? 2U : 0U) | (sockets ? 4U : 0U)));
             writer.i32(entry.handleCount);
             writer.u64(entry.readBytes);
             writer.u64(entry.writeBytes);
+            writer.u32(static_cast<std::uint32_t>(sockets ? entry.socketInodes.size() : 0U));
+            if (sockets)
+            {
+                inodesLeft -= entry.socketInodes.size();
+                for (const std::uint64_t inode : entry.socketInodes)
+                {
+                    writer.u64(inode);
+                }
+            }
         }
     }
     else if (const auto* firmware = std::get_if<FirmwareFileReply>(&response))
@@ -1342,7 +1374,8 @@ namespace Detail
 }
 
 /// A ProcessCountersResult's payload: the count (at most MAX_COUNTER_TARGETS), then the entries, each
-/// with a flags byte refused past its two bits.
+/// with a flags byte refused past its three bits, and socket inodes refused without the sockets bit or past
+/// MAX_COUNTER_SOCKET_INODES in all.
 [[nodiscard]] inline ProcessCountersReply decodeProcessCountersReply(Reader& reader)
 {
     ProcessCountersReply reply;
@@ -1353,21 +1386,35 @@ namespace Detail
         return reply;
     }
     reply.entries.reserve(count);
+    std::size_t inodesLeft = MAX_COUNTER_SOCKET_INODES;
     for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
     {
         ProcessCountersEntry entry;
         entry.target = reader.target();
         const std::uint8_t flags = reader.u8();
-        if (flags > 3U)
+        if (flags > 7U)
         {
             reader.fail();
         }
         entry.handleCountRead = (flags & 1U) != 0;
         entry.ioRead = (flags & 2U) != 0;
+        entry.socketsRead = (flags & 4U) != 0;
         entry.handleCount = reader.i32();
         entry.readBytes = reader.u64();
         entry.writeBytes = reader.u64();
-        reply.entries.push_back(entry);
+        const std::uint32_t inodes = reader.u32();
+        if (inodes > inodesLeft || (inodes != 0 && !entry.socketsRead))
+        {
+            reader.fail();
+            break;
+        }
+        inodesLeft -= inodes;
+        entry.socketInodes.reserve(inodes);
+        for (std::uint32_t j = 0; reader.ok() && j < inodes; ++j)
+        {
+            entry.socketInodes.push_back(reader.u64());
+        }
+        reply.entries.push_back(std::move(entry));
     }
     return reply;
 }

@@ -163,9 +163,9 @@ int main(int argc, char** argv)
             .connections = &connections,
             .memoryRollup = [](std::int32_t pid, std::uint64_t startTimeTicks)
             { return Platform::Linux::readMemoryRollupAt("/proc", pid, startTimeTicks); },
-            // Other users' FD counts and I/O bytes, for the sampler (#2728)
-            .processCounters = [](const Platform::ProcessTarget& target)
-            { return Platform::Linux::readProcessCountersAt("/proc", target); },
+            // Other users' FD counts, I/O bytes and socket inodes, for the sampler (#2728)
+            .processCounters = [](const Platform::ProcessTarget& target, bool withSockets)
+            { return Platform::Linux::readProcessCountersAt("/proc", target, withSockets); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
             // Every user's crashes: the journal and core files as root (#2310)

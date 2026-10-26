@@ -4,9 +4,9 @@ name: Main Health
 # any watched workflow's latest finished run on that branch failed, and closes it once they are all
 # green again (#1406). Main used to stay red for days without anyone noticing: benchmark-regression
 # Oct 2-5, Sanitizers asan-ubsan from Oct 8 (#1541). Each active release/* branch is tracked the
-# same way (#2741): a run on it judges that branch, and a manual dispatch re-reads main and every
-# release/* branch. workflow_run always runs this file from the default branch, with this file's
-# permissions.
+# same way (#2741). Every run, whichever branch's workflow triggered it and a manual dispatch alike,
+# re-reads main and every release/* branch (#2951). workflow_run always runs this file from the
+# default branch, with this file's permissions.
 on:
   workflow_run:
     # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
@@ -17,7 +17,9 @@ on:
     branches: [main, 'release/**']
   workflow_dispatch:
 
-# Each run re-reads every watched workflow, so queued runs can collapse into the newest one.
+# Each run re-reads every watched workflow on every tracked branch, so queued runs can collapse into
+# the newest one. GitHub keeps one pending run per group and replaces it when another arrives; the
+# replacing run judges the replaced run's branch too (#2951).
 concurrency:
   group: main-health
   cancel-in-progress: false
@@ -62,7 +64,6 @@ jobs:
           # Sunday skips it and passes; these are judged by the latest run that actually ran the job.
           WATCHED_JOBS: |-
             ci.yml|CI|schedule|build-linux-unity
-          EVENT_NAME: ${{ github.event_name }}
           TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
           TRIGGER_NAME: ${{ github.event.workflow_run.name }}
           TRIGGER_URL: ${{ github.event.workflow_run.html_url }}
@@ -166,7 +167,9 @@ jobs:
             local previous
             previous=$(gh api "repos/$REPO/issues/$issue" --jq .body)
             gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f body="$body"
-            if [[ "${TRIGGER_CONCLUSION:-}" == 'failure' || "${TRIGGER_CONCLUSION:-}" == 'timed_out' ]] &&
+            # The triggering run is one branch's, so only that branch's issue gets the comment (#2951).
+            if [[ "$branch" == "${TRIGGER_BRANCH:-}" ]] &&
+               [[ "${TRIGGER_CONCLUSION:-}" == 'failure' || "${TRIGGER_CONCLUSION:-}" == 'timed_out' ]] &&
                ! grep -qF -- "- **${TRIGGER_NAME}** (" <<<"$previous"; then
               gh api "repos/$REPO/issues/$issue/comments" --silent \
                 -f body="**${TRIGGER_NAME}** turned red: ${TRIGGER_CONCLUSION} on \`${TRIGGER_SHA:0:8}\`: ${TRIGGER_URL}"
@@ -174,13 +177,13 @@ jobs:
             echo "Updated #$issue."
           }
 
-          # A watched run judges its own branch; a manual dispatch re-reads main and every release/*
-          # branch that exists.
-          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
-            mapfile -t branches < <({ echo main; gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name | select(startswith("release/"))'; })
-          else
-            branches=("$TRIGGER_BRANCH")
-          fi
+          # Every run, automatic or dispatched, re-reads main and every release/* branch that exists
+          # (#2951). Judging only the triggering branch lost that branch's update whenever another
+          # branch's run replaced its pending run in the concurrency group above. A failed listing fails
+          # the step (set -e) rather than quietly judging main alone.
+          release_branches=$(gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name | select(startswith("release/"))')
+          branches=(main)
+          [[ -z "$release_branches" ]] || mapfile -t -O 1 branches <<<"$release_branches"
           for branch in "${branches[@]}"; do
             echo "::group::$branch"
             judge_branch "$branch"

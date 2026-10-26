@@ -435,6 +435,58 @@ TEST(BrokeredProcessProbeTest, RefusedFdCountsAndIoAreReadThroughARunningHelperI
     EXPECT_EQ(broker->connectCount(), 0);
 }
 
+// #2728: another user's sockets, which the probe's inode map can't own without reading its fd links, are
+// attributed from the helper's socket inodes, asked for at the map's cadence rather than every refresh.
+TEST(BrokeredProcessProbeTest, TheHelpersSocketInodesAttributeConnectionsTheProbeLeftUnowned)
+{
+    constexpr std::uint64_t INODE = 4242;
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [](const Broker::Request&)
+        {
+            return Broker::Response{Broker::ProcessCountersReply{.entries = {Broker::ProcessCountersEntry{.target = TARGET,
+                                                                                                          .handleCountRead = true,
+                                                                                                          .handleCount = 5,
+                                                                                                          .ioRead = false,
+                                                                                                          .readBytes = 0,
+                                                                                                          .writeBytes = 0,
+                                                                                                          .socketsRead = true,
+                                                                                                          .socketInodes = {INODE}}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.hasNetworkCounters = true;
+    owned->setCapabilities(caps);
+    ProcessCounters listed = countersOf(TARGET, true); // its FDs listed and its I/O read, but not its links
+    listed.networkCountersAvailable = false;
+    owned->setCounters({listed});
+    SocketTrafficReading traffic;
+    traffic.sampleTimeNs = 1;
+    traffic.sockets = {SocketTrafficSample{.key = INODE, .pid = 0, .bytesReceived = 10, .bytesSent = 20},
+                       SocketTrafficSample{.key = INODE + 1, .pid = 0, .bytesReceived = 1, .bytesSent = 1}};
+    owned->setSocketTraffic(traffic);
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    EXPECT_TRUE(probe.readSocketTraffic().sockets.front().pid == 0) << "nothing from the helper yet";
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_EQ(broker->requests().size(), 1U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::ProcessCountersRequest{.targets = {TARGET}, .withSockets = true}}));
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_TRUE(counters.front().networkCountersAvailable);
+    const SocketTrafficReading attributed = probe.readSocketTraffic();
+    ASSERT_EQ(attributed.sockets.size(), 2U);
+    EXPECT_EQ(attributed.sockets[0].pid, TARGET.pid);
+    EXPECT_EQ(attributed.sockets[0].ownerStartTimeTicks, TARGET.startTimeTicks);
+    EXPECT_EQ(attributed.sockets[1].pid, 0) << "not among the helper's inodes: still unowned";
+
+    // The next refresh, before the map's cadence comes round: nothing else refused, so nothing asked, and
+    // the last read's attribution stands.
+    const std::vector<ProcessCounters> again = probe.enumerate();
+    EXPECT_EQ(broker->requests().size(), 1U);
+    ASSERT_EQ(again.size(), 1U);
+    EXPECT_TRUE(again.front().networkCountersAvailable);
+}
+
 TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(true);

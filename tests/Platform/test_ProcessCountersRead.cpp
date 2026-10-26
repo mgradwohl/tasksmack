@@ -4,12 +4,14 @@
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/Linux/PosixGuards.h"
 #include "Platform/Linux/ProcIoParser.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcessCountersRead.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +20,8 @@
 #include <string_view>
 
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace Platform::Linux
@@ -57,20 +61,35 @@ TEST(ProcessCountersReadTest, ReadsItsOwnProcesssFdCountAndIo)
 {
     const ProcessTarget self{.pid = ::getpid(), .startTimeTicks = ownStartTime()};
     ASSERT_NE(self.startTimeTicks, 0U);
-    const std::optional<Broker::ProcessCountersEntry> entry = readProcessCountersAt("/proc", self);
+    const std::optional<Broker::ProcessCountersEntry> entry = readProcessCountersAt("/proc", self, false);
     ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(entry->target, self);
     EXPECT_TRUE(entry->handleCountRead);
     EXPECT_GE(entry->handleCount, 3);
     // A kernel without task I/O accounting (CONFIG_TASK_IO_ACCOUNTING, absent from WSL's) has no io file.
     EXPECT_EQ(entry->ioRead, std::filesystem::exists("/proc/self/io"));
+    EXPECT_FALSE(entry->socketsRead) << "not asked for";
+    EXPECT_TRUE(entry->socketInodes.empty());
+}
+
+TEST(ProcessCountersReadTest, WithSocketsListsTheInodeOfASocketItHolds)
+{
+    const ProcessTarget self{.pid = ::getpid(), .startTimeTicks = ownStartTime()};
+    const Posix::FdGuard socket(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+    ASSERT_GE(socket.get(), 0);
+    struct stat info{};
+    ASSERT_EQ(::fstat(socket.get(), &info), 0);
+    const std::optional<Broker::ProcessCountersEntry> entry = readProcessCountersAt("/proc", self, true);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_TRUE(entry->socketsRead);
+    EXPECT_TRUE(std::ranges::contains(entry->socketInodes, static_cast<std::uint64_t>(info.st_ino)));
 }
 
 TEST(ProcessCountersReadTest, AStartTimeThatDoesntMatchOrAGonePidReadsNothing)
 {
-    EXPECT_FALSE(readProcessCountersAt("/proc", {.pid = ::getpid(), .startTimeTicks = ownStartTime() + 1}).has_value());
-    EXPECT_FALSE(readProcessCountersAt("/proc", {.pid = 0, .startTimeTicks = 0}).has_value());
-    EXPECT_FALSE(readProcessCountersAt("/nonexistent", {.pid = ::getpid(), .startTimeTicks = ownStartTime()}).has_value());
+    EXPECT_FALSE(readProcessCountersAt("/proc", {.pid = ::getpid(), .startTimeTicks = ownStartTime() + 1}, true).has_value());
+    EXPECT_FALSE(readProcessCountersAt("/proc", {.pid = 0, .startTimeTicks = 0}, true).has_value());
+    EXPECT_FALSE(readProcessCountersAt("/nonexistent", {.pid = ::getpid(), .startTimeTicks = ownStartTime()}, true).has_value());
 }
 
 } // namespace

@@ -32,8 +32,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
+#include <unordered_map>
 #include <vector>
 
 namespace Platform
@@ -164,7 +166,9 @@ class BrokeredConnectionsReader final : public IProcessConnectionsReader
 
 /// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
 /// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
-/// I/O bytes the same way, in one ReadProcessCounters (#2728). Everything else is the inner probe's.
+/// I/O bytes the same way, in one ReadProcessCounters (#2728). That request also brings, at the inode map's
+/// cadence, the socket inodes of processes whose /proc/<pid>/fd links were refused, so readSocketTraffic()
+/// attributes their connections too. Everything else is the inner probe's.
 /// There is no prompt here: the figures follow once the user has authenticated for anything else.
 class BrokeredProcessProbe final : public IProcessProbe
 {
@@ -183,14 +187,28 @@ class BrokeredProcessProbe final : public IProcessProbe
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
 
   private:
-    /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread.
+    /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread, and
+    /// when due its socket owners.
     void readRefusedCounters(std::vector<ProcessCounters>& counters);
+
+    /// A process the helper read the socket inodes of: the owner readSocketTraffic() credits.
+    struct SocketOwner
+    {
+        std::int32_t pid = 0;
+        std::uint64_t startTimeTicks = 0;
+    };
 
     std::unique_ptr<IProcessProbe> m_Inner;
     std::shared_ptr<IPrivilegedBroker> m_Broker;
     /// The helper answered ReadProcessCounters with an error (a helper that doesn't read them, as Windows'
     /// doesn't need to): not asked again.
     bool m_CountersRefused = false;
+    /// When the helper last read socket inodes: again every INODE_PID_CACHE_TTL_MS, as the inner map rebuilds.
+    std::chrono::steady_clock::time_point m_SocketsReadAt;
+    /// From the last socket read: each inode's owner, and the processes whose sockets were all read.
+    mutable std::mutex m_SocketOwnersMutex;
+    std::unordered_map<std::uint64_t, SocketOwner> m_SocketOwners;
+    std::unordered_map<std::int32_t, std::uint64_t> m_SocketsReadFor; // PID to start time
 };
 
 /// @p probe decorated with @p broker, or @p probe as it is when there is no broker.

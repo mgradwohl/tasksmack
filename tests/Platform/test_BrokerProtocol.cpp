@@ -70,6 +70,8 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     EXPECT_EQ(roundTrip(Request{Hello{.forSession = true}}), Request{Hello{.forSession = true}});
     const Request counters = ProcessCountersRequest{.targets = {TARGET, ProcessTarget{.pid = 7, .startTimeTicks = 9}}};
     EXPECT_EQ(roundTrip(counters), counters);
+    const Request withSockets = ProcessCountersRequest{.targets = {TARGET}, .withSockets = true};
+    EXPECT_EQ(roundTrip(withSockets), withSockets);
     for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
@@ -118,6 +120,8 @@ TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
             ProcessCountersEntry{
                 .target = TARGET, .handleCountRead = true, .handleCount = 57, .ioRead = true, .readBytes = 123456, .writeBytes = 7890},
             ProcessCountersEntry{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 3},
+            ProcessCountersEntry{.target = {.pid = 8, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {11, 12}},
+            ProcessCountersEntry{.target = {.pid = 9, .startTimeTicks = 9}, .socketsRead = true, .socketInodes = {}},
         }};
     EXPECT_EQ(roundTrip(reply), reply);
     EXPECT_EQ(roundTrip(Response{ProcessCountersReply{}}), Response{ProcessCountersReply{}});
@@ -125,15 +129,41 @@ TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
     // A count past MAX_COUNTER_TARGETS is refused before any target is read.
     std::vector<std::uint8_t> request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
     const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_COUNTER_TARGETS) + 1;
-    std::memcpy(request.data() + 4 + HEADER_BYTES, &tooMany, sizeof(tooMany));
+    std::memcpy(request.data() + 4 + HEADER_BYTES + 1, &tooMany, sizeof(tooMany)); // after withSockets
+    EXPECT_FALSE(decodeRequest(request).has_value());
+    // withSockets is one byte of zero or one.
+    request = encodeRequest(1, Request{ProcessCountersRequest{.targets = {TARGET}}});
+    request.at(4 + HEADER_BYTES) = 2;
     EXPECT_FALSE(decodeRequest(request).has_value());
 
-    // An entry's flags byte has two bits; any other is refused.
+    // An entry's flags byte has three bits; any other is refused.
     std::vector<std::uint8_t> bytes = encodeResponse(1, reply);
     const std::size_t firstFlags = 4 + HEADER_BYTES + 4 + 4 + 8;
     ASSERT_EQ(bytes.at(firstFlags), 3U);
-    bytes.at(firstFlags) = 4;
+    bytes.at(firstFlags) = 8;
     EXPECT_FALSE(decodeResponse(bytes).has_value());
+    // Socket inodes without the sockets bit are refused: the first entry, given one.
+    bytes = encodeResponse(1, reply);
+    const std::size_t firstInodeCount = firstFlags + 1 + 4 + 8 + 8;
+    ASSERT_EQ(bytes.at(firstInodeCount), 0U);
+    bytes.at(firstInodeCount) = 1;
+    EXPECT_FALSE(decodeResponse(bytes).has_value());
+}
+
+TEST(BrokerProtocolTest, AnEntryWhoseSocketsWouldPassTheCapGoesWithoutThem)
+{
+    ProcessCountersEntry many{.target = TARGET, .socketsRead = true};
+    many.socketInodes.resize(MAX_COUNTER_SOCKET_INODES - 1, 5);
+    ProcessCountersEntry past{.target = {.pid = 7, .startTimeTicks = 9}, .handleCountRead = true, .handleCount = 2, .socketsRead = true};
+    past.socketInodes = {1, 2};
+    const Response decoded = roundTrip(Response{ProcessCountersReply{.entries = {many, past}}});
+    ASSERT_TRUE(std::holds_alternative<ProcessCountersReply>(decoded));
+    const auto& entries = std::get<ProcessCountersReply>(decoded).entries;
+    ASSERT_EQ(entries.size(), 2U);
+    EXPECT_EQ(entries[0].socketInodes.size(), MAX_COUNTER_SOCKET_INODES - 1);
+    EXPECT_FALSE(entries[1].socketsRead) << "two more would pass MAX_COUNTER_SOCKET_INODES";
+    EXPECT_TRUE(entries[1].socketInodes.empty());
+    EXPECT_EQ(entries[1].handleCount, 2) << "the rest of it still goes";
 }
 
 TEST(BrokerProtocolTest, AHellosSessionFlagIsOneByteOfZeroOrOne)

@@ -1,5 +1,6 @@
 #include "BrokeredProcessActions.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -19,9 +20,11 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -463,16 +466,36 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
     {
         return;
     }
+    // Sockets at the inner inode-to-PID map's cadence, not every refresh: reading every link is the costly part.
+    const auto now = std::chrono::steady_clock::now();
     Broker::ProcessCountersRequest request;
+    request.withSockets = now - m_SocketsReadAt >= std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS} &&
+                          m_Inner->capabilities().hasNetworkCounters;
     for (const ProcessCounters& process : counters)
     {
-        if ((!process.handleCountAvailable || !process.ioCountersAvailable) && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
+        const bool refused =
+            !process.handleCountAvailable || !process.ioCountersAvailable || (request.withSockets && !process.networkCountersAvailable);
+        if (refused && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
         {
             request.targets.push_back({.pid = process.pid, .startTimeTicks = process.startTimeTicks});
         }
     }
+    // Between socket reads, the last one's processes keep their connections' attribution.
+    const auto keepAttribution = [this, &counters]
+    {
+        const std::scoped_lock lock(m_SocketOwnersMutex);
+        for (ProcessCounters& process : counters)
+        {
+            if (const auto read = m_SocketsReadFor.find(process.pid);
+                read != m_SocketsReadFor.end() && read->second == process.startTimeTicks)
+            {
+                process.networkCountersAvailable = true;
+            }
+        }
+    };
     if (request.targets.empty())
     {
+        keepAttribution();
         return;
     }
     // As the PSS read: on the sampler's thread, never behind another call, and briefly; a skipped read
@@ -481,6 +504,7 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
     const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, COUNTERS_TIMEOUT);
     if (!response.has_value())
     {
+        keepAttribution();
         return;
     }
     if (std::holds_alternative<Broker::ErrorReply>(*response))
@@ -491,8 +515,31 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
     const auto* reply = std::get_if<Broker::ProcessCountersReply>(&*response);
     if (reply == nullptr)
     {
+        keepAttribution();
         return;
     }
+    if (request.withSockets)
+    {
+        m_SocketsReadAt = now;
+        std::unordered_map<std::uint64_t, SocketOwner> owners;
+        std::unordered_map<std::int32_t, std::uint64_t> readFor;
+        for (const Broker::ProcessCountersEntry& entry : reply->entries)
+        {
+            if (!entry.socketsRead)
+            {
+                continue;
+            }
+            readFor.insert_or_assign(entry.target.pid, entry.target.startTimeTicks);
+            for (const std::uint64_t inode : entry.socketInodes)
+            {
+                owners.insert_or_assign(inode, SocketOwner{.pid = entry.target.pid, .startTimeTicks = entry.target.startTimeTicks});
+            }
+        }
+        const std::scoped_lock lock(m_SocketOwnersMutex);
+        m_SocketOwners = std::move(owners);
+        m_SocketsReadFor = std::move(readFor);
+    }
+    keepAttribution();
     // Entries come in the request's order, which is the counters', with gone processes left out.
     auto process = counters.begin();
     for (const Broker::ProcessCountersEntry& entry : reply->entries)
@@ -546,7 +593,26 @@ std::optional<PackageEnergyReading> BrokeredProcessProbe::readPackageEnergy() co
 
 SocketTrafficReading BrokeredProcessProbe::readSocketTraffic() const
 {
-    return m_Inner->readSocketTraffic();
+    SocketTrafficReading reading = m_Inner->readSocketTraffic();
+    // The connections the inner map left unowned, held by processes whose fd links only the helper reads.
+    const std::scoped_lock lock(m_SocketOwnersMutex);
+    if (m_SocketOwners.empty())
+    {
+        return reading;
+    }
+    for (SocketTrafficSample& sample : reading.sockets)
+    {
+        if (sample.pid != 0)
+        {
+            continue;
+        }
+        if (const auto owner = m_SocketOwners.find(sample.key); owner != m_SocketOwners.end())
+        {
+            sample.pid = owner->second.pid;
+            sample.ownerStartTimeTicks = owner->second.startTimeTicks;
+        }
+    }
+    return reading;
 }
 
 MemoryRollupRead BrokeredProcessProbe::readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const

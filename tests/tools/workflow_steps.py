@@ -38,9 +38,30 @@ def _block(lines: list[str], start: int, parent_indent: int) -> tuple[str, int]:
     return "\n".join(line[width:] for line in body), index
 
 
-def find_step(workflow: Path, name: str) -> Step:
-    """The step named `name` in `workflow`; raises LookupError when there is none."""
+def _job_lines(lines: list[str], job: str) -> tuple[int, int]:
+    """The [first, end) line range of the job whose key is `job`; raises LookupError when there is none."""
+    key = re.compile(r"^(\s*)" + re.escape(job) + r":\s*$")
+    for start, line in enumerate(lines):
+        match = key.match(line)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        end = start + 1
+        while end < len(lines) and (
+            not lines[end].strip() or lines[end].lstrip().startswith("#") or _indent(lines[end]) > indent
+        ):
+            end += 1
+        return start + 1, end
+    raise LookupError(f"no job named {job!r}")
+
+
+def find_step(workflow: Path, name: str, job: str | None = None) -> Step:
+    """The step named `name` in `workflow`, only within `job` when given (two jobs can each have a
+    step of the same name); raises LookupError when there is none."""
     lines = workflow.read_text(encoding="utf-8").splitlines()
+    if job is not None:
+        first, last = _job_lines(lines, job)
+        lines = lines[first:last]
     header = re.compile(r"^(\s*)- name:\s*" + re.escape(name) + r"\s*$")
     for start, line in enumerate(lines):
         match = header.match(line)
@@ -82,7 +103,8 @@ def find_step(workflow: Path, name: str) -> Step:
                 continue
             index += 1
         return step
-    raise LookupError(f"{workflow.name} has no step named {name!r}")
+    where = f"{workflow.name}'s {job}" if job is not None else workflow.name
+    raise LookupError(f"{where} has no step named {name!r}")
 
 
 def substitute(text: str, values: dict[str, str]) -> str:
