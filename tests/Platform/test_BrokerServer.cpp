@@ -12,6 +12,8 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/BrokerServer.h"
 #include "Platform/Linux/BrokerSocket.h"
@@ -21,6 +23,7 @@
 #include "Platform/Linux/PkexecBroker.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
+#include "Platform/Linux/SystemdBus.h"
 
 #include <gtest/gtest.h>
 
@@ -759,6 +762,25 @@ TEST(BrokerSocketTest, APipeIsNotASeqPacketSocket)
     EXPECT_FALSE(BrokerSocket::peerCredentials(fds[0]).has_value());
     ::close(fds[0]);
     ::close(fds[1]);
+}
+
+// A service action outlasts the helper's own waits (#3029): a restart is a stop and then a start, each
+// waiting up to UnitWait's timeout for the state change, around bus calls of up to CALL_TIMEOUT_USEC
+// each. Anything else keeps the short wait.
+TEST(PkexecBrokerTest, AServiceActionWaitsLongerThanTheHelperCanTake)
+{
+    using std::chrono::microseconds;
+    constexpr std::chrono::milliseconds UNIT_WAIT = SystemdBus::UnitWait{}.timeout;
+    constexpr microseconds BUS_CALL{SystemdBus::CALL_TIMEOUT_USEC};
+    // Per state change: the unit's lookup and the action's call, the wait, and its last state and job reads.
+    constexpr auto PER_CHANGE = UNIT_WAIT + 4 * BUS_CALL;
+
+    const Broker::Request restart =
+        Broker::ServiceActionRequest{.action = ServiceAction::Restart, .unit = "foo.service", .startType = ServiceStartType::Unknown};
+    EXPECT_GT(PkexecBroker::callTimeoutFor(restart), 2 * PER_CHANGE);
+    EXPECT_EQ(PkexecBroker::callTimeoutFor(Broker::SignalRequest{.target = {}, .signal = Broker::Signal::Kill}),
+              PkexecBroker::CALL_TIMEOUT);
+    EXPECT_EQ(PkexecBroker::callTimeoutFor(Broker::MemoryRollupRequest{.target = {}}), PkexecBroker::CALL_TIMEOUT);
 }
 
 #ifdef TASKSMACK_HELPER_PATH

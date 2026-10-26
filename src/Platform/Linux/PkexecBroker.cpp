@@ -250,6 +250,11 @@ void PkexecBroker::disconnect()
     closeLocked();
 }
 
+std::chrono::seconds PkexecBroker::callTimeoutFor(const Broker::Request& request) noexcept
+{
+    return std::holds_alternative<Broker::ServiceActionRequest>(request) ? SERVICE_ACTION_TIMEOUT : CALL_TIMEOUT;
+}
+
 std::expected<Broker::Response, std::string> PkexecBroker::call(const Broker::Request& request, const std::stop_token& stopToken)
 {
     const std::scoped_lock lock(m_Mutex);
@@ -257,7 +262,7 @@ std::expected<Broker::Response, std::string> PkexecBroker::call(const Broker::Re
     {
         return std::unexpected(std::string("not connected"));
     }
-    auto response = roundTrip(request, CALL_TIMEOUT, stopToken);
+    auto response = roundTrip(request, callTimeoutFor(request), stopToken);
     if (!response.has_value())
     {
         closeLocked(); // a channel that failed once isn't trusted again; connect() starts a fresh helper

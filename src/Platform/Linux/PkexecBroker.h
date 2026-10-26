@@ -41,6 +41,15 @@ class PkexecBroker final : public IPrivilegedBroker
     static constexpr std::chrono::seconds CONNECT_TIMEOUT{120};
     /// How long call() waits for a response once the helper is running.
     static constexpr std::chrono::seconds CALL_TIMEOUT{10};
+    /// How long call() waits for a service action's response (#3029): the helper waits for each state
+    /// change, up to SystemdBus::UnitWait's 10 s around bus calls of up to 2 s each, and a restart is a
+    /// stop and then a start, so under 40 s at worst. A shorter wait reported an action systemd still
+    /// carried out as failed, and ended the session.
+    static constexpr std::chrono::seconds SERVICE_ACTION_TIMEOUT{60};
+
+    /// How long call() waits for @p request's response: SERVICE_ACTION_TIMEOUT for a service action,
+    /// CALL_TIMEOUT for anything else.
+    [[nodiscard]] static std::chrono::seconds callTimeoutFor(const Broker::Request& request) noexcept;
 
     /// @p launcher is the command the helper is started through, "pkexec" in the app; the tests pass
     /// none and run the helper directly. @p helperPath is the helper to start. @p sandbox is what its
