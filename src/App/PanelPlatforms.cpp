@@ -7,8 +7,10 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
-#include "Platform/BrokeredServiceActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
+#ifndef _WIN32
+#include "Platform/BrokeredServiceActions.h" // the services panel's helper decorator: Linux only
+#endif
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
