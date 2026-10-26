@@ -71,7 +71,10 @@ def resolve_target(md_path: pathlib.Path, target: str) -> tuple[pathlib.Path, st
     path_part = urllib.parse.unquote(path_part)
     anchor = urllib.parse.unquote(anchor)
     if path_part.startswith("/"):
-        target_path = repo_root / path_part.lstrip("/")
+        # Under docs/, the docsify site's root is docs/ itself: its sidebar's links are root-absolute
+        # because docsify's relativePath would otherwise resolve them against the page being shown.
+        site_root = docs_root if docs_root.exists() and md_path.resolve().is_relative_to(docs_root) else repo_root
+        target_path = site_root / path_part.lstrip("/")
     else:
         target_path = (md_path.parent / path_part)
     return target_path, anchor
