@@ -39,6 +39,7 @@
 #include <concepts>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -754,11 +755,9 @@ void LinuxProcessProbe::applyStatus(std::string_view text, ProcessCounters& coun
     const char* const end = text.data() + text.size();
     while (p < end && !(haveUid && havePeakRss && havePrivate && haveSwap && haveAffinity))
     {
-        const char* lineEnd = p;
-        while (lineEnd < end && *lineEnd != '\n')
-        {
-            ++lineEnd;
-        }
+        // memchr, not a byte loop: this scan was about a tenth of the sampler's own CPU over many processes (#2980).
+        const auto* newline = static_cast<const char*>(std::memchr(p, '\n', static_cast<std::size_t>(end - p)));
+        const char* const lineEnd = (newline != nullptr) ? newline : end;
         const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
         if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
