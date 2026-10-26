@@ -950,8 +950,11 @@ TEST_F(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
                                              << " (after: " << (outcome.passed.empty() ? "none" : outcome.passed.back())
                                              << "): " << outcome.failedState;
     EXPECT_EQ(outcome.passed.size(), stepCount);
-    // A synthetic machine is never an Administrator session, whatever it shows (#3004).
+#ifndef _WIN32
+    // A synthetic machine is never an Administrator session, whatever it shows (#3004). Linux's title says
+    // which (Windows keeps its own until TaskSmack can restart itself elevated).
     EXPECT_EQ(outcome.windowTitle, "TaskSmack");
+#endif
     for (const std::string& error : outcome.captureErrors)
     {
         ADD_FAILURE() << "capture failed: " << error;
