@@ -35,9 +35,9 @@ TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
 TEST(WindowsGPUProbeTest, BasicOperationsDoNotThrow)
 {
     WindowsGPUProbe probe;
-    EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
-    EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
-    EXPECT_NO_THROW([[maybe_unused]] auto process = probe.readProcessGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto gpus = probe.enumerateGPUs());
+    EXPECT_NO_THROW([[maybe_unused]] const auto counters = probe.readGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto process = probe.readProcessGPUCounters());
 }
 
 // ==========================================================================
@@ -47,7 +47,7 @@ TEST(WindowsGPUProbeTest, BasicOperationsDoNotThrow)
 TEST(WindowsGPUProbeTest, EnumerateGPUsSmokeReturnsWellFormedDataWhenPresent)
 {
     WindowsGPUProbe probe;
-    auto gpus = probe.enumerateGPUs();
+    const auto gpus = probe.enumerateGPUs();
 
     std::unordered_set<std::string> ids;
 
@@ -88,10 +88,10 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersReturnsValidList)
     WindowsGPUProbe probe;
 
     // Enumerate first (required for LUID mapping in counter reading)
-    auto gpus = probe.enumerateGPUs();
+    const auto gpus = probe.enumerateGPUs();
 
     // Now read counters
-    auto counters = probe.readGPUCounters();
+    const auto counters = probe.readGPUCounters();
 
     // Counter list should match GPU list size (or be empty if no GPUs)
     if (gpus.empty())
@@ -116,15 +116,15 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateIsConsistent)
 {
     WindowsGPUProbe probe;
 
-    auto gpus = probe.enumerateGPUs();
-    auto counters1 = probe.readGPUCounters();
-    auto counters2 = probe.readGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+    const auto counters1 = probe.readGPUCounters();
+    const auto counters2 = probe.readGPUCounters();
 
     // Counter list should be consistent
     EXPECT_EQ(counters1.size(), counters2.size()) << "Counter count should be consistent across calls";
 
     // GPUs should remain enumerated
-    auto gpus2 = probe.enumerateGPUs();
+    const auto gpus2 = probe.enumerateGPUs();
     EXPECT_EQ(gpus.size(), gpus2.size()) << "GPU count should not change";
 }
 
@@ -135,7 +135,7 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateIsConsistent)
 TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
 {
     WindowsGPUProbe probe;
-    auto counters = probe.readProcessGPUCounters();
+    const auto counters = probe.readProcessGPUCounters();
 
     // Per-process GPU counters may be empty (no GPU-using processes)
     // or populated if processes are using GPU resources
@@ -216,12 +216,12 @@ TEST(WindowsGPUProbeTest, ProbeStatePersistsBetweenCalls)
     WindowsGPUProbe probe;
 
     // First enumeration
-    auto gpus1 = probe.enumerateGPUs();
-    auto caps1 = probe.capabilities();
+    const auto gpus1 = probe.enumerateGPUs();
+    const auto caps1 = probe.capabilities();
 
     // Second enumeration
-    auto gpus2 = probe.enumerateGPUs();
-    auto caps2 = probe.capabilities();
+    const auto gpus2 = probe.enumerateGPUs();
+    const auto caps2 = probe.capabilities();
 
     // State should be consistent
     EXPECT_EQ(gpus1.size(), gpus2.size());
@@ -233,7 +233,7 @@ TEST(WindowsGPUProbeTest, ProbeStatePersistsBetweenCalls)
 TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
 {
     const WindowsGPUProbe probe;
-    auto caps = probe.capabilities();
+    const auto caps = probe.capabilities();
 
     // The public contract only guarantees stable self-consistency and the
     // per-process/engine-utilization relationship.

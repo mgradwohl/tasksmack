@@ -596,7 +596,7 @@ TEST(WindowsProcessProbeTest, AChildInEfficiencyModeShowsItAndAPlainOneDoesNot)
     ASSERT_TRUE(ecoSet) << "SetProcessInformation(ProcessPowerThrottling) failed: " << setError;
     EXPECT_EQ(ecoStatus, "Efficiency Mode");
     ASSERT_TRUE(plainStatus.has_value());
-    EXPECT_NE(*plainStatus, "Efficiency Mode");
+    EXPECT_NE(plainStatus.value_or(""), "Efficiency Mode");
 }
 
 // =============================================================================
@@ -623,7 +623,7 @@ TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
     WindowsProcessProbe probe;
     const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
-    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    const auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
         const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
@@ -651,7 +651,7 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
     WindowsProcessProbe probe;
     const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
-    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    const auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
         const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
@@ -689,7 +689,7 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     WindowsProcessProbe probe;
     const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
-    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    const auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
         const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
@@ -959,7 +959,7 @@ TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
         {
             // Each thread writes only its own slot; join() publishes the writes to this thread.
             threads.emplace_back(
-                [&startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]()
+                [&startTogether, &success = successes.at(i), &thrown = exceptions.at(i)]
                 {
                     WindowsProcessProbe probe;
                     startTogether.arrive_and_wait();
@@ -1114,7 +1114,7 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
     // Only compare when GetGuiResources itself succeeds (returns non-zero or no error).
     if (expected != 0 || GetLastError() == 0)
     {
-        EXPECT_EQ(static_cast<DWORD>(*it->gdiObjectCount), expected)
+        EXPECT_EQ(static_cast<DWORD>(it->gdiObjectCount.value_or(0)), expected)
             << "GDI object count from probe should match GetGuiResources for the current process";
     }
 }

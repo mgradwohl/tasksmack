@@ -32,11 +32,11 @@ TEST(WindowsNVMLGPUProbeTest, ConstructionDoesNotThrow)
 TEST(WindowsNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 {
     NVMLGPUProbe probe;
-    EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
-    EXPECT_NO_THROW([[maybe_unused]] auto gpus = probe.enumerateGPUs());
-    EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readGPUCounters());
-    EXPECT_NO_THROW([[maybe_unused]] auto process = probe.readProcessGPUCounters());
-    EXPECT_NO_THROW([[maybe_unused]] auto caps = probe.capabilities());
+    EXPECT_NO_THROW([[maybe_unused]] const auto available = probe.isAvailable());
+    EXPECT_NO_THROW([[maybe_unused]] const auto gpus = probe.enumerateGPUs());
+    EXPECT_NO_THROW([[maybe_unused]] const auto counters = probe.readGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto process = probe.readProcessGPUCounters());
+    EXPECT_NO_THROW([[maybe_unused]] const auto caps = probe.capabilities());
 }
 
 // ==========================================================================
@@ -72,7 +72,7 @@ TEST(WindowsNVMLGPUProbeTest, EnumerationBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
-    auto gpus = probe.enumerateGPUs();
+    const auto gpus = probe.enumerateGPUs();
 
     if (!available)
     {
@@ -93,7 +93,7 @@ TEST(WindowsNVMLGPUProbeTest, CounterDataIsWellFormedWhenPresent)
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto gpus = probe.enumerateGPUs();
-    auto counters = probe.readGPUCounters();
+    const auto counters = probe.readGPUCounters();
 
     if (available)
     {
