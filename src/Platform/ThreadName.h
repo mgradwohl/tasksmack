@@ -46,6 +46,9 @@ inline constexpr std::string_view ENVIRONMENT_READ_THREAD_NAME = "ts-env-read";
 inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name";
 /// The worker that reads the System Information page's static facts (#1399), once or on Refresh.
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
+/// The worker that writes the System Information page's "Save report..." file (#2986), one report at a
+/// time, so the free-name checks and the write never run on the UI thread.
+inline constexpr std::string_view REPORT_SAVE_THREAD_NAME = "ts-report-save";
 /// The worker that reads the crash history Process Details shows (#1675), at most once a minute.
 inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-read";
 /// The one-shot worker that reads the battery device's static facts on Windows (#1523, #2731): at most

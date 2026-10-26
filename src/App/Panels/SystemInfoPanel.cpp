@@ -73,6 +73,44 @@ constexpr int MAX_NUMBERED_REPORT_NAMES = 999;
     }
     return {};
 }
+
+/// Writes @p contents to the file @p path, replacing it: nullopt once written, else why it couldn't be.
+[[nodiscard]] std::optional<std::string> writeReportFile(const std::string& path, const std::string& contents)
+{
+    std::ofstream file(Core::utf8ToPath(path), std::ios::binary | std::ios::trunc);
+    if (file)
+    {
+        file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        file.close();
+    }
+    if (!file)
+    {
+        const int error = errno; // this thread's: the worker's own open, write or close
+        return error != 0 ? std::generic_category().message(error) : std::string("write failed");
+    }
+    return std::nullopt;
+}
+
+/// The report-save worker's job (#2986): where to write the report the dialog answered @p chosen for
+/// (freeReportPath()), the write through @p write, and the note that says how it went.
+[[nodiscard]] std::string saveReport(const std::string& chosen,
+                                     const std::string& withExtension,
+                                     const std::string& contents,
+                                     const SystemInfoPanel::ReportWriter& write)
+{
+    const std::string path = freeReportPath(chosen, withExtension);
+    if (path.empty())
+    {
+        return std::format("Couldn't save: {} already exists", withExtension);
+    }
+    if (const std::optional<std::string> failed = write(path, contents))
+    {
+        std::string note = std::format("Couldn't save {}: {}", path, *failed);
+        spdlog::warn("System Information: {}", note);
+        return note;
+    }
+    return path == withExtension ? "Saved to " + path : std::format("Saved to {} ({} already exists)", path, withExtension);
+}
 } // namespace
 
 SystemInfoPanel::SystemInfoPanel() : Panel("System Information")
@@ -84,7 +122,8 @@ SystemInfoPanel::SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystem
 {}
 
 // A read still in flight is waited for by m_Pending's destructor (a BackgroundTask); it holds its
-// own reference to the model.
+// own reference to the model. Likewise a report still being written, by m_SaveWrite's: it owns copies
+// of everything it uses.
 SystemInfoPanel::~SystemInfoPanel() = default;
 
 void SystemInfoPanel::onAttach()
@@ -132,6 +171,8 @@ void SystemInfoPanel::onDetach()
 {
     m_Pending.requestStop(); // a password prompt still up is given up on, not waited out (#2381)
     finishRead(true);        // the one place a read is waited for
+    m_SaveWrite.wait();      // and a report being written (#2986); its note is dropped with the page
+    static_cast<void>(m_SaveWrite.poll());
     m_Snapshot.reset();
     m_Model.reset();
     if (m_SensorSampler)
@@ -212,7 +253,7 @@ void SystemInfoPanel::finishRead(bool wait)
 
 void SystemInfoPanel::startSaveReport()
 {
-    if (m_ViewState.saveDialogOpen || !m_Snapshot || m_Snapshot->version == 0)
+    if (m_ViewState.saveDialogOpen || m_SaveWrite.busy() || !m_Snapshot || m_Snapshot->version == 0)
     {
         return;
     }
@@ -254,46 +295,45 @@ void SystemInfoPanel::finishSaveReport()
         const std::scoped_lock lock(m_SaveSlot->mutex);
         answer.swap(m_SaveSlot->result);
     }
-    if (!answer.has_value())
+    if (answer.has_value())
     {
-        return;
-    }
-    m_ViewState.saveDialogOpen = false;
-    if (answer->path.empty())
-    {
-        if (!answer->error.empty())
+        if (answer->path.empty())
         {
-            m_ViewState.saveNote = "Couldn't show the save dialog: " + answer->error;
+            m_ViewState.saveDialogOpen = false;
+            if (!answer->error.empty())
+            {
+                m_ViewState.saveNote = "Couldn't show the save dialog: " + answer->error;
+            }
+            return; // cancelled
         }
-        return; // cancelled
+        const SystemInfo::ReportFormat format = SystemInfo::reportFormatFor(answer->path, answer->filter);
+        std::string withExtension = SystemInfo::withReportExtension(answer->path, format);
+        // The page as it shows now: the newest read's sections, identifiers as they were at the click.
+        // Formatted here, from what the page already draws; the file system is the worker's (#2986).
+        std::string contents = format == SystemInfo::ReportFormat::Json
+                                 ? SystemInfo::allSectionsJson(m_ViewState.sections, m_SaveShowIdentifiers, m_ViewState.readAtText)
+                                 : SystemInfo::allSectionsText(m_ViewState.sections, m_SaveShowIdentifiers);
+        ReportWriter writer = m_ReportWriter ? m_ReportWriter : ReportWriter(&writeReportFile);
+        // Save report... stays disabled (saveDialogOpen) until the worker's note is taken in below.
+        if (const auto failed =
+                m_SaveWrite.start([chosen = std::move(answer->path),
+                                   withExtension = std::move(withExtension),
+                                   contents = std::move(contents),
+                                   writer = std::move(writer)] { return saveReport(chosen, withExtension, contents, writer); }))
+        {
+            m_ViewState.saveDialogOpen = false;
+            m_ViewState.saveNote = *failed; // no thread to write it on
+            spdlog::warn("System Information: {}", m_ViewState.saveNote);
+            return;
+        }
     }
-    const SystemInfo::ReportFormat format = SystemInfo::reportFormatFor(answer->path, answer->filter);
-    const std::string withExtension = SystemInfo::withReportExtension(answer->path, format);
-    const std::string path = freeReportPath(answer->path, withExtension);
-    if (path.empty())
+    // The worker's note, once it has finished: polled, never waited for (a write that finishes at once
+    // shows this frame).
+    if (std::optional<std::string> note = m_SaveWrite.poll())
     {
-        m_ViewState.saveNote = std::format("Couldn't save: {} already exists", withExtension);
-        return;
+        m_ViewState.saveDialogOpen = false;
+        m_ViewState.saveNote = std::move(*note);
     }
-    // The page as it shows now: the newest read's sections, identifiers as they were at the click.
-    const std::string contents = format == SystemInfo::ReportFormat::Json
-                                   ? SystemInfo::allSectionsJson(m_ViewState.sections, m_SaveShowIdentifiers, m_ViewState.readAtText)
-                                   : SystemInfo::allSectionsText(m_ViewState.sections, m_SaveShowIdentifiers);
-    std::ofstream file(Core::utf8ToPath(path), std::ios::binary | std::ios::trunc);
-    if (file)
-    {
-        file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        file.close();
-    }
-    if (!file)
-    {
-        const int error = errno;
-        m_ViewState.saveNote =
-            std::format("Couldn't save {}: {}", path, error != 0 ? std::generic_category().message(error) : "write failed");
-        spdlog::warn("System Information: {}", m_ViewState.saveNote);
-        return;
-    }
-    m_ViewState.saveNote = path == withExtension ? "Saved to " + path : std::format("Saved to {} ({} already exists)", path, withExtension);
 }
 
 void SystemInfoPanel::renderContent()
@@ -327,7 +367,7 @@ void SystemInfoPanel::renderContent()
         m_SensorPublication = m_Sensors->publication();
     }
     const bool reading = m_Pending.busy();
-    finishSaveReport(); // before drawing, so its note shows this frame
+    finishSaveReport(); // before drawing, so a finished save's note shows this frame
     const SystemInfoViewResult result =
         renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState, m_SensorPublication.get());
     if (result.refreshRequested)

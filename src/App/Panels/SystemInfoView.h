@@ -134,7 +134,8 @@ struct SystemInfoViewState
     /// replaces them, which offers them again if the prompt was dismissed.
     bool authenticateClicked = false;
 
-    /// A save dialog is open (#1866): Save report... is disabled until it closes. Set by the panel.
+    /// A save dialog is open (#1866), or the report it answered for is being written (#2986): Save
+    /// report... is disabled until it closes and the write's note is shown. Set by the panel.
     bool saveDialogOpen = false;
     /// The last Save report's outcome, "Saved to ..." or why it failed, shown after the read time.
     std::string saveNote;

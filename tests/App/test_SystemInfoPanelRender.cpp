@@ -32,6 +32,7 @@
 #include <ios>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -700,18 +701,17 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportWritesTheChosenFormat)
 
     // JSON through the filter, the name typed without an extension. The answer comes from another thread.
     std::thread([&] { asks[0].answer({.path = (dir / "report").string(), .filter = 1, .error = {}}); }).join();
-    std::string text = frame();
     const std::filesystem::path json = dir / "report.json";
+    ASSERT_TRUE(frameUntil("Saved to " + json.string())) << "written on the report-save worker (#2986)";
     ASSERT_TRUE(std::filesystem::exists(json));
     EXPECT_TRUE(slurp(json).contains("\"title\": \"Operating system\"")) << slurp(json);
     EXPECT_TRUE(slurp(json).contains("Fixture Linux 1"));
-    EXPECT_TRUE(text.contains("Saved to " + json.string())) << text;
 
     // Cancelled: nothing written, nothing said.
     click();
     ASSERT_EQ(asks.size(), 2U);
     asks[1].answer({});
-    text = frame();
+    std::string text = frame();
     EXPECT_FALSE(text.contains("Saved to")) << text;
     EXPECT_FALSE(text.contains("Couldn't")) << text;
 
@@ -719,13 +719,12 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportWritesTheChosenFormat)
     click();
     ASSERT_EQ(asks.size(), 3U);
     asks[2].answer({.path = (dir / "report.txt").string(), .filter = -1, .error = {}});
-    static_cast<void>(frame());
+    ASSERT_TRUE(frameUntil("Saved to " + (dir / "report.txt").string()));
     EXPECT_TRUE(slurp(dir / "report.txt").starts_with("Operating system\n")) << slurp(dir / "report.txt");
     click();
     ASSERT_EQ(asks.size(), 4U);
     asks[3].answer({.path = (dir / "missing" / "report.txt").string(), .filter = 0, .error = {}});
-    text = frame();
-    EXPECT_TRUE(text.contains("Couldn't save")) << text;
+    EXPECT_TRUE(frameUntil("Couldn't save " + (dir / "missing" / "report.txt").string()));
 
     // The dialog itself failed.
     click();
@@ -780,10 +779,11 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportNeverReplacesAFileTheDialogDidNotAsk
     click();
     ASSERT_EQ(answers.size(), 1U);
     answers[0]({.path = (dir / "report").string(), .filter = 0, .error = {}});
+    const std::filesystem::path numbered = dir / "report (3).txt";
+    ASSERT_TRUE(frameUntil("Saved to " + numbered.string())) << "the free name is found on the report-save worker (#2986)";
     std::string text = frame();
     EXPECT_EQ(slurp(dir / "report.txt"), "yesterday's report") << "not replaced without being asked";
     EXPECT_EQ(slurp(dir / "report (2).txt"), "an older one");
-    const std::filesystem::path numbered = dir / "report (3).txt";
     ASSERT_TRUE(std::filesystem::exists(numbered));
     EXPECT_TRUE(slurp(numbered).starts_with("Operating system\n")) << slurp(numbered);
     EXPECT_TRUE(text.contains("Saved to " + numbered.string())) << text;
@@ -794,6 +794,7 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportNeverReplacesAFileTheDialogDidNotAsk
     click();
     ASSERT_EQ(answers.size(), 2U);
     answers[1]({.path = (dir / "report.txt").string(), .filter = 1, .error = {}});
+    ASSERT_TRUE(frameUntil("Saved to " + (dir / "report.txt").string()));
     text = frame();
     EXPECT_TRUE(slurp(dir / "report.txt").starts_with("Operating system\n")) << slurp(dir / "report.txt");
     EXPECT_TRUE(text.contains("Saved to " + (dir / "report.txt").string())) << text;
@@ -801,6 +802,99 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportNeverReplacesAFileTheDialogDidNotAsk
 
     std::error_code ignored;
     std::filesystem::remove_all(dir, ignored);
+}
+
+// #2986: the report is written on a worker, never in renderContent(): while a write blocks, every
+// frame returns at once with no note and Save report... refuses a second save; the note shows once the
+// write finishes; and a write that fails still says why.
+TEST_F(SystemInfoPanelRenderTest, SaveReportWritesOffTheUiThread)
+{
+    struct Writes
+    {
+        std::atomic<bool> release{false}; ///< While clear, a write waits: a slow destination.
+        std::atomic<int> started{0};
+        std::mutex mutex;
+        std::thread::id thread;             // guarded by mutex
+        std::string contents;               // guarded by mutex
+        std::optional<std::string> failure; // guarded by mutex; what the next write reports
+    };
+    Writes writes;
+    std::vector<Core::SaveFileCallback> answers;
+    makePanel(true);
+    m_Panel->setSaveFileDialog(
+        [&answers](const std::vector<Core::FileFilter>& /*filters*/, const std::string& /*defaultLocation*/, Core::SaveFileCallback answer)
+        { answers.push_back(std::move(answer)); });
+    m_Panel->setReportWriter(
+        [&writes](const std::string& /*path*/, const std::string& contents) -> std::optional<std::string>
+        {
+            std::optional<std::string> failure;
+            {
+                const std::scoped_lock lock(writes.mutex);
+                writes.thread = std::this_thread::get_id();
+                writes.contents = contents;
+                failure = writes.failure;
+            }
+            ++writes.started;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (!writes.release.load() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return failure;
+        });
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    const ImGuiID save = ImHashStr(ICON_FA_FLOPPY_DISK "  Save report...", 0, window->ID);
+    const auto click = [&]
+    {
+        ImGui::ActivateItemByID(save);
+        static_cast<void>(frame());
+        static_cast<void>(frame());
+    };
+    // Typed with its extension, so no free-name check is needed either; the fake writes nothing.
+    const std::string target = (std::filesystem::temp_directory_path() / "tasksmack_unwritten_report.txt").string();
+
+    click();
+    ASSERT_EQ(answers.size(), 1U);
+    answers[0]({.path = target, .filter = -1, .error = {}});
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (writes.started.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(writes.started.load(), 1);
+    {
+        const std::scoped_lock lock(writes.mutex);
+        EXPECT_NE(writes.thread, std::this_thread::get_id()) << "written on the report-save worker";
+        EXPECT_TRUE(writes.contents.starts_with("Operating system\n")) << writes.contents;
+    }
+    const auto blockedFrom = std::chrono::steady_clock::now();
+    for (int blocked = 0; blocked < 5; ++blocked)
+    {
+        const std::string text = frame();
+        EXPECT_FALSE(text.contains("Saved to")) << text;
+        EXPECT_FALSE(text.contains("Couldn't")) << text;
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - blockedFrom, std::chrono::seconds(2)) << "the frames never waited for the write";
+    click();
+    EXPECT_EQ(answers.size(), 1U) << "a second save is refused while the first is written";
+
+    writes.release = true;
+    EXPECT_TRUE(frameUntil("Saved to " + target));
+
+    // A write that fails says so, with the writer's reason.
+    {
+        const std::scoped_lock lock(writes.mutex);
+        writes.failure = "disk full";
+    }
+    click();
+    ASSERT_EQ(answers.size(), 2U);
+    answers[1]({.path = target, .filter = -1, .error = {}});
+    EXPECT_TRUE(frameUntil("Couldn't save " + target + ": disk full"));
+    EXPECT_EQ(writes.started.load(), 2);
 }
 
 // #1891: a read that throws is reported as failed on the UI thread; no facts are drawn from it.
