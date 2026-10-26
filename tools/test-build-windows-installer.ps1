@@ -33,22 +33,37 @@ exit 0
 '@
 
     $case = 0
+    # The folders above each file, as relative paths ('a\b\c.txt' gives 'a' and 'a\b').
+    function Get-Folders([string[]]$Paths) {
+        @($Paths | ForEach-Object {
+                $parts = $_ -split '\\'
+                for ($i = 1; $i -lt $parts.Count; $i++) { ($parts[0..($i - 1)]) -join '\' }
+            } | Sort-Object -Unique)
+    }
     # A first pass's project folder, a .zip and an uninstaller, as build-windows leaves them; $Files are the
-    # .zip's files and $Deleted the ones project.nsi's uninstaller deletes.
+    # .zip's files and $Deleted the files project.nsi's uninstaller deletes. Its uninstall section has CPack's
+    # shape (from a real project.nsi): a Delete line for every entry of the tree, folders included, in sorted
+    # order, then an RMDir line per folder, deepest first; $Removed overrides the folders RMDir'd.
     function New-Case {
-        param([string[]]$Files, [string[]]$Deleted, [string]$ZipFolder = 'TaskSmack-1.0.0-win64', [string]$UninstallerName = 'Uninstall.exe')
+        param([string[]]$Files, [string[]]$Deleted, [string[]]$Removed, [string]$ZipFolder = 'TaskSmack-1.0.0-win64',
+            [string]$UninstallerName = 'Uninstall.exe')
         $script:case++
         $dir = Join-Path $root "case$script:case"
         $nsis = (Join-Path $dir 'build/dist/_CPack_Packages/win64/NSIS') -replace '\\', '/'
         $project = New-Item -ItemType Directory -Force -Path (Join-Path $dir 'project')
+        $folders = Get-Folders $Deleted
+        if (-not $PSBoundParameters.ContainsKey('Removed')) { $Removed = $folders }
         $lines = @(
             '!define VERSION "1.0.0"',
             "!define INST_DIR `"$nsis/TaskSmack-1.0.0-win64`"",
             "OutFile `"$nsis/TaskSmack-1.0.0-win64.exe`"",
             'Section "Uninstall"'
-        ) + @($Deleted | ForEach-Object { "  Delete `"`$INSTDIR\$_`"" }) + @(
+        ) + @(@($Deleted) + @($folders) | Sort-Object -Unique | ForEach-Object { "  Delete `"`$INSTDIR\$_`"" }) +
+        @(@($Removed) | Sort-Object -Descending | ForEach-Object { "  RMDir `"`$INSTDIR\$_`"" }) + @(
             '  Delete "$INSTDIR\Uninstall.exe"',
+            '  RMDir "$INSTDIR"',
             '  Delete "$SMPROGRAMS\$MUI_TEMP\TaskSmack.lnk"',
+            '  RMDir $MUI_TEMP',
             'SectionEnd'
         )
         Set-Content -LiteralPath (Join-Path $project 'project.nsi') -Value $lines
@@ -74,7 +89,8 @@ exit 0
         [pscustomobject]@{ Code = $LASTEXITCODE; Output = $output }
     }
 
-    $files = @('TaskSmack.exe', 'TaskSmackHelper.exe', 'LICENSE.txt', 'share\tasksmack\assets\themes\a.toml')
+    $files = @('TaskSmack.exe', 'TaskSmackHelper.exe', 'LICENSE.txt', 'share\tasksmack\assets\themes\a.toml',
+        'share\tasksmack\assets\fonts\b.ttf', 'third_party_licenses\SDL3\LICENSE.txt', 'third_party_licenses\THIRD_PARTY_NOTICES.txt')
 
     # The .zip's files, in the folder project.nsi names, packaged with the given uninstaller.
     $c = New-Case -Files $files -Deleted $files
@@ -98,6 +114,14 @@ exit 0
     $r = Invoke-Build (New-Case -Files $files -Deleted ($files + 'gone.txt'))
     Assert-True ($r.Code -eq 1 -and $r.Output -match 'Only in the .zip: none; only deleted: gone\.txt') "A missing file: exit $($r.Code)`n$($r.Output)"
     Write-Host '  A file the uninstaller deletes that the .zip lacks: refused'
+
+    # The folders: each one the uninstaller removes must be one of the .zip's, and each of the .zip's removed.
+    $r = Invoke-Build (New-Case -Files $files -Deleted $files -Removed ((Get-Folders $files) + 'elsewhere'))
+    Assert-True ($r.Code -eq 1 -and $r.Output -match "folders aren't the ones .* Only in the .zip: none; only removed: elsewhere") "A stray RMDir: exit $($r.Code)`n$($r.Output)"
+    Write-Host '  An RMDir of a folder the .zip lacks: refused'
+    $r = Invoke-Build (New-Case -Files $files -Deleted $files -Removed @(Get-Folders $files | Where-Object { $_ -ne 'third_party_licenses\SDL3' }))
+    Assert-True ($r.Code -eq 1 -and $r.Output -match 'Only in the .zip: third_party_licenses\\SDL3; only removed: none') "A folder left behind: exit $($r.Code)`n$($r.Output)"
+    Write-Host '  A folder the uninstaller would leave behind: refused'
 
     # The .zip of another architecture or version.
     $r = Invoke-Build (New-Case -Files $files -Deleted $files -ZipFolder 'TaskSmack-1.0.0-windows-arm64')

@@ -11,8 +11,9 @@
     1. The .zip's top-level folder becomes the folder project.nsi installs from (its INST_DIR, which has
        the same name), so the installer installs exactly the files the .zip holds: with signing on,
        sign-windows' signed .zip.
-    2. Those files must be exactly the ones project.nsi's uninstaller deletes (its Delete "$INSTDIR\..."
-       lines, which CPack wrote from the first pass's files), so an uninstall leaves nothing behind.
+    2. Those files must be exactly the ones project.nsi's uninstaller deletes, and their folders exactly
+       the ones it removes (its Delete and RMDir "$INSTDIR\..." lines, which CPack wrote from the first
+       pass's tree), so an uninstall leaves nothing behind.
     3. makensis builds project.nsi with /DTASKSMACK_UNINSTALLER=<Uninstaller>, which makes its
        !uninstfinalize copy that file over the uninstaller it built: the installer embeds and installs
        the given uninstaller (with signing on, the one sign-windows signed) byte for byte.
@@ -97,17 +98,35 @@ $installed = @(Get-ChildItem -LiteralPath $instDir -Recurse -File -Force |
         ForEach-Object { $_.FullName.Substring($instDir.Length).TrimStart('\') } | Sort-Object)
 Write-Host "$($installed.Count) files from $(Split-Path -Leaf $Zip) in $instDir"
 
-# 2. The uninstaller deletes exactly those files (itself apart).
+# 2. The uninstaller deletes exactly those files (itself apart) and removes exactly their folders. CPack
+# writes a Delete line for every entry of the first pass's tree, folders included, and an RMDir line for
+# each folder, so a Delete line whose path is RMDir'd, or is one of the .zip's folders, names a folder, not a
+# file; the folder check below then holds the folders to account.
 $uninstallName = 'Uninstall.exe'
+$installedDirs = @(Get-ChildItem -LiteralPath $instDir -Recurse -Directory -Force |
+        ForEach-Object { $_.FullName.Substring($instDir.Length).TrimStart('\') } | Sort-Object)
+$removedDirs = @($script | ForEach-Object {
+        if ($_ -match '^\s*RMDir\s+"\$INSTDIR\\(.+)"\s*$') { $Matches[1] }
+    } | Sort-Object)
 $deleted = @($script | ForEach-Object {
         if ($_ -match '^\s*Delete\s+"\$INSTDIR\\(.+)"\s*$') { $Matches[1] }
-    } | Where-Object { $_ -ne $uninstallName -and $_ -ne 'AddRemove.exe' } | Sort-Object)
-$onlyInstalled = @($installed | Where-Object { $deleted -notcontains $_ })
-$onlyDeleted = @($deleted | Where-Object { $installed -notcontains $_ })
-if ($onlyInstalled.Count -or $onlyDeleted.Count) {
+    } | Where-Object { $_ -ne $uninstallName -and $_ -ne 'AddRemove.exe' -and $removedDirs -notcontains $_ -and $installedDirs -notcontains $_ } |
+    Sort-Object)
+function Get-Difference([string[]]$Have, [string[]]$Want) {
+    $only = @($Have | Where-Object { $Want -notcontains $_ })
+    if ($only.Count) { $only -join ', ' } else { 'none' }
+}
+$onlyInstalled = Get-Difference $installed $deleted
+$onlyDeleted = Get-Difference $deleted $installed
+if ($onlyInstalled -ne 'none' -or $onlyDeleted -ne 'none') {
     Fail ("$(Split-Path -Leaf $Zip)'s files aren't the ones project.nsi's uninstaller deletes. Only in the .zip: " +
-        "$(if ($onlyInstalled.Count) { $onlyInstalled -join ', ' } else { 'none' }); only deleted: " +
-        "$(if ($onlyDeleted.Count) { $onlyDeleted -join ', ' } else { 'none' }).")
+        "$onlyInstalled; only deleted: $onlyDeleted.")
+}
+$onlyInstalled = Get-Difference $installedDirs $removedDirs
+$onlyRemoved = Get-Difference $removedDirs $installedDirs
+if ($onlyInstalled -ne 'none' -or $onlyRemoved -ne 'none') {
+    Fail ("$(Split-Path -Leaf $Zip)'s folders aren't the ones project.nsi's uninstaller removes. Only in the .zip: " +
+        "$onlyInstalled; only removed: $onlyRemoved.")
 }
 if ($installed -contains $uninstallName) { Fail "$(Split-Path -Leaf $Zip) holds an $uninstallName of its own." }
 
