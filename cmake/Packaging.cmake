@@ -79,6 +79,8 @@ if(WIN32)
     set(CPACK_NSIS_DISPLAY_NAME "${PROJECT_NAME}")
     set(CPACK_NSIS_HELP_LINK "https://github.com/mgradwohl/tasksmack")
     set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/mgradwohl/tasksmack")
+    # How the uninstaller is built so it can be signed (#2302), and how release.yml builds the installer
+    # it publishes from the signed .zip: cmake/CPackProjectConfig.cmake.in. Needs NSIS 3.08 or later.
 elseif(APPLE)
     list(APPEND CPACK_GENERATOR "DragNDrop")
 elseif(UNIX)

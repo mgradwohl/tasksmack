@@ -2520,9 +2520,11 @@ Supported generators:
 | `TGZ` | All | .tar.gz archive |
 | `DEB` | Linux | Debian .deb package |
 | `RPM` | Linux | Red Hat .rpm package |
-| `NSIS` | Windows | .exe installer |
+| `NSIS` | Windows | .exe installer (needs NSIS 3.08 or later; release.yml pins 3.13 through `.github/actions/setup-nsis`) |
 
-Packages are created in `dist/`.
+Packages are created in `dist/`. The NSIS run also copies the uninstaller it built to `Uninstall.exe` beside
+CPack's `project.nsi` in `dist/_CPack_Packages/<system>/NSIS/` (`cmake/CPackProjectConfig.cmake.in`), so a
+release can sign it; see [Windows code signing](#windows-code-signing).
 
 What a package contains, and what it depends on (#1398):
 
@@ -2566,7 +2568,9 @@ What a package contains, and what it depends on (#1398):
   `.zip`'s CPack run, and `cmake -DTASKSMACK_VERIFY_DIR=<extracted .zip>
   -DTASKSMACK_EXPECTED_SIGNER=<CN> -P cmake/VerifyWindowsSignatures.cmake` must then pass on the
   signed `.zip` before it's published (see [Windows code signing](#windows-code-signing)). The NSIS
-  installer keeps the check either way, since nothing can sign inside it afterwards. The helper serves only an
+  installer CPack then makes is only a first pass, unsigned too: the release builds the one it ships
+  from the signed `.zip` and the signed uninstaller with `tools/build-windows-installer.ps1`, and checks
+  it and what it installs the same way. The helper serves only an
   install its user can't change (`BrokerHelper::checkUnchangeableBy`), so it works from the NSIS
   installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
   its user owns.
@@ -2716,7 +2720,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
-- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip`; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
+- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip` and NSIS installer; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
 - **`changelog.yml`**: For a strict `vMAJOR.MINOR.PATCH` tag, generates its `CHANGELOG.md` section with `git-cliff` from the tag's own branch history and opens one pull request against the tag's release branch and one against `main`, the canonical file (see [Changelog](#changelog)).
 - **`backport.yml`**: On a merged PR carrying a `backport:X.Y` label (or a `/backport` comment on it), cherry-picks it with korthout/backport-action into a `<title> [backport X.Y]` PR against `release/X.Y`, copying the labels and setting the open `vX.Y.*` milestone (#2741; see [Branching Strategy](#branching-strategy)).
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
@@ -2836,7 +2840,7 @@ workflow files at the tagged commit, so a release branch needs the current `rele
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
-tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s, when
+tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s and installers, when
 dispatched from `main` or `release/*`), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
@@ -2909,6 +2913,10 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   [Windows code signing](#windows-code-signing)); v0.9.0 and earlier are unsigned and have no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; signed and carrying `TaskSmackHelper.exe` from v0.9.1, like the x64 one)
+- Windows installers: `TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`
+  (from v0.9.1, #2302) -- NSIS installers of the same files as each `.zip`, per machine into
+  `C:\Program Files\TaskSmack` with a Start menu folder and an `Uninstall.exe`; the installer and the
+  uninstaller are Authenticode-signed like the executables (see [Windows code signing](#windows-code-signing))
 - Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
   `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
   `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
@@ -2924,8 +2932,9 @@ ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/
 from the compiler's target). Each package's build, test, reproducibility check and validation runs
 natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
-`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`.
-`create-release` checks that `dist/` holds exactly these six packages and the two manifests before
+`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`; the
+installers come from `windows-installer-<arch>` (see [Windows code signing](#windows-code-signing)).
+`create-release` checks that `dist/` holds exactly these eight packages and the two manifests before
 signing anything, so a missing or renamed file fails the release.
 
 ### Release Artifact Validation
@@ -2955,7 +2964,15 @@ settings changed in v0.8.0's UI when the fixture was made (theme, font size, ref
 privilege notice, and the User and Threads columns; see `tests/App/fixtures/README.md`).
 On Windows the runs must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
 TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dirs and `%TEMP%`, and the folder
-they ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
+they ran from deletes with no file still locked. Then the installer gets a silent round trip (#2302): with
+signing on, its own signature is checked; `/S` installs it into `C:\Program Files\TaskSmack`, whose files must
+be the `.zip`'s, byte for byte, plus the expected `Uninstall.exe` (the one `sign-windows` signed, or the first
+pass's own with signing off), with an Uninstall registry key and a Start menu shortcut; with signing on, every
+installed `.exe` (`TaskSmack.exe`, `TaskSmackHelper.exe`, `Uninstall.exe`, and no other) passes the same
+signature check as the `.zip`'s; the installed `TaskSmack.exe` runs the same smoke check where it is
+(`release-smoke-check.ps1 -InPlace`, with config dirs of its own and Mesa's DLLs beside it only for the
+launches); and `Uninstall.exe /S` must remove the folder, the Uninstall key and the Start menu entries again.
+Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
@@ -2971,8 +2988,8 @@ and upgrade `tasksmack` in place. Every file the new `.deb` ships must be instal
 and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
-the fixture's settings kept. Windows has no package to upgrade while the `.zip` is portable; an NSIS
-upgrade check waits on the installer (#2302).
+the fixture's settings kept. Windows has no package to upgrade from yet: the `.zip` is portable, and v0.9.1
+publishes the first installer, so an installer upgrade check can follow once a release has one.
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
@@ -2989,9 +3006,9 @@ not a rebuild). The Linux leg then runs `cosign verify-blob --bundle` on every a
 Guide's certificate identity and issuer (a dry run signs from a branch, so it pins the same workflow at
 its own ref), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
 on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
-`validate-linux-package`'s smoke check. The Windows leg checks the `.zip`'s Authenticode signatures
-with `validate-windows-package`'s check once signing is on (until #2302 signs it, the step says it's
-skipped), and relaunches it with that job's smoke check. Both jobs run the same scripts:
+`validate-linux-package`'s smoke check. The Windows leg checks the Authenticode signatures of the `.zip`'s
+executables and of the x64 installer with `validate-windows-package`'s check once signing is on (on a ref
+that doesn't sign, the step says they're skipped), and relaunches the `.zip` with that job's smoke check. Both jobs run the same scripts:
 `tools/release-smoke-check.sh`, `tools/release-smoke-check.ps1` and `tools/verify-windows-signatures.ps1`.
 On a tag run the release is already public by then, so a failure can't unpublish it: the job fails the
 run, its step summary names the check that failed, and the maintainer decides what to do about the
@@ -2999,8 +3016,8 @@ live release.
 
 ### Windows code signing
 
-Both Windows `.zip`s' `TaskSmack.exe` and `TaskSmackHelper.exe`, x64 and ARM64, are
-Authenticode-signed through [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
+Both Windows `.zip`s' `TaskSmack.exe` and `TaskSmackHelper.exe`, x64 and ARM64, both NSIS installers
+and the `Uninstall.exe` each installs are Authenticode-signed through [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
 (#2302; [code signing policy](docs/code-signing-policy.md)). The signer is the maintainer's validated
 identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and SmartScreen name
 **Matt Gradwohl** as the publisher.
@@ -3019,9 +3036,11 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 enter `release-signing`: every tag run, and dry runs dispatched from `main` or `release/*`. Both
 take a reviewed PR to change, so only reviewed code is ever signed (#2988). A dry run from any other
 branch, a PR branch included, packages both `.zip`s as before #2302: without
-`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` skipped
-(`validate-windows-package` and `create-release` accept that skip only then), and with no signature
-check. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
+`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` and
+`sign-windows-installer` skipped (`build-windows-installer`, `validate-windows-package` and
+`create-release` accept those skips only then), and with no signature check. It still builds both
+installers the same way, from the unsigned `.zip`s and the first pass's own uninstallers, and runs
+their install round trip. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
 `SIGNING_ENABLED` would leave unsigned (#2745). A PR branch's dry run proves everything but
 signing. A change to the signing path itself is proven after it merges, by a dry run dispatched
 from `main` (`gh workflow run release.yml --ref main -f dry_run=true`), or from `release/X.Y` once
@@ -3031,20 +3050,40 @@ With signing on, `release.yml` does this:
 
 1. `build-windows` (both architectures) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
    `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=Matt Gradwohl`, packages
-   the `.zip` with CPack as usual (the helper unsigned, with a CPack warning saying so) and uploads
-   it as the `windows-unsigned-<arch>` artifact, which `create-release` never downloads.
-2. `sign-windows` (on `windows-2025`; no checkout, no build; the only job in `release-signing`, and
-   the only one with `id-token: write` apart from `create-release`'s Sigstore signing) downloads both
-   unsigned `.zip`s, extracts the two executables from each, signs in with `azure/login` and signs all
-   four with `azure/artifact-signing-action` (SHA-256 file digest, RFC 3161 SHA-256 timestamp from
-   `http://timestamp.acs.microsoft.com`, every credential type but the Azure CLI's excluded). It then
-   writes each signed executable back over its own entry in its `.zip`, checks that nothing else in
-   the `.zip` changed, and uploads the signed `.zip`s as `windows-packages-<arch>`.
-3. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
+   the `.zip` and the NSIS installer's first pass with CPack (`cpack -G "ZIP;NSIS"`, the helper
+   unsigned, with a CPack warning saying so) and uploads the `.zip` and the uninstaller that first
+   pass copied out (`Uninstall.exe`) as the `windows-unsigned-<arch>` artifact, which `create-release`
+   never downloads. The first pass's `project.nsi`, `NSIS.InstallOptions.ini`, uninstaller and
+   installer go up as `windows-nsis-<arch>`. NSIS is 3.13 from `.github/actions/setup-nsis`, pinned by
+   SHA-256 (`windows-2025` ships none, `windows-11-arm` 3.10).
+2. `sign-windows` (on `windows-2025`; no checkout, no build; in `release-signing`, and with
+   `sign-windows-installer` the only jobs with `id-token: write` apart from `create-release`'s Sigstore
+   signing) downloads both unsigned `.zip`s and uninstallers, extracts the two executables from each
+   `.zip`, signs in with `azure/login` and signs all six files with `azure/artifact-signing-action`
+   (SHA-256 file digest, RFC 3161 SHA-256 timestamp from `http://timestamp.acs.microsoft.com`, every
+   credential type but the Azure CLI's excluded). It then writes each signed executable back over its
+   own entry in its `.zip`, checks that nothing else in the `.zip` changed, and uploads the signed
+   `.zip`s as `windows-packages-<arch>` and the signed uninstallers as `windows-signed-uninstaller-<arch>`.
+3. `build-windows-installer` (both architectures, on the runner its `build-windows` leg ran on, with no
+   signing credential) runs `tools/build-windows-installer.ps1`: the signed `.zip`'s files become the
+   folder the first pass's `project.nsi` installs from (they must be exactly the files its uninstaller
+   deletes), and `makensis /DTASKSMACK_UNINSTALLER=<signed Uninstall.exe>` builds it again. NSIS writes
+   an uninstaller at install time from the installer's own data, so it can't be signed beforehand;
+   `!uninstfinalize` (NSIS 3.08+, in `cmake/CPackProjectConfig.cmake.in`) instead has makensis build it
+   whole and run a command on it, which in the first pass copies it out and here copies the signed one
+   over it, so the installer embeds that file. The installer goes up as
+   `windows-unsigned-installer-<arch>`.
+4. `sign-windows-installer` (like `sign-windows`: `windows-2025`, no checkout, `release-signing`) signs
+   both installers the same way and uploads them as `windows-installer-<arch>`, which `create-release`
+   downloads beside the `.zip`s.
+5. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
    signed `.zip`'s extracted contents: both executables `Valid`, signed by `Matt Gradwohl` with a
    certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
-   key usage, timestamped, and by the same subject. Only then can `create-release` hash,
-   Sigstore-sign and publish them, so an unsigned or wrongly signed helper can't be published.
+   key usage, timestamped, and by the same subject. It runs the same check on the installer, installs
+   it and runs it on `TaskSmack.exe`, `TaskSmackHelper.exe` and `Uninstall.exe` as installed (see
+   [Release Artifact Validation](#release-artifact-validation)). Only then can `create-release` hash,
+   Sigstore-sign and publish them, so an unsigned or wrongly signed helper, installer or uninstaller
+   can't be published.
 
 Artifact Signing certificates last about three days and rotate, so every check matches the signer's
 common name, the issuer's name and the extended key usage, never a thumbprint or serial number; the
@@ -3057,10 +3096,10 @@ To check a run's signatures, download its `windows-packages-<arch>` artifact (or
 `release-assets-dry-run`), extract the `.zip` and run
 `Get-AuthenticodeSignature .\TaskSmack-*\TaskSmack*.exe | Format-List Status, StatusMessage,
 SignerCertificate, TimeStamperCertificate`. Each file should read `Valid`, with signer subject
-`CN=Matt Gradwohl, ...` and a timestamp certificate.
-
-The NSIS installer #2302 plans isn't built yet: it needs its executables signed before `cpack` runs
-(it can't be signed inside afterwards), then its uninstaller and the installer itself.
+`CN=Matt Gradwohl, ...` and a timestamp certificate. `Get-AuthenticodeSignature` checks a downloaded
+installer (`windows-installer-<arch>`) the same way; its uninstaller is checked as installed, by
+`validate-windows-package`. Never run an installer on a development machine just to look: it installs
+for every user and asks for administrator rights.
 
 ### Release Environment
 
@@ -3116,9 +3155,14 @@ architecture on that architecture's runner, and compare package digests against 
 `build-linux`/`build-windows` leg's artifact -- a missing
 matching artifact counts as a failure, not a skip. With signing on, each Windows leg compares against
 the **unsigned** `.zip` `build-windows` sent for signing (`windows-unsigned-<arch>`): an Authenticode signature embeds a
-timestamp, so signed release `.zip`s are not byte-reproducible by design. The rebuild is configured
-without `TASKSMACK_PACKAGE_WINDOWS_HELPER`, so its `.zip` lacks `TaskSmackHelper.exe`; the check then
-compares the two `.zip`s file by file and the original's helper against the one the rebuild built. Both are advisory only (`continue-on-error:
+timestamp, so signed release `.zip`s and installers are not byte-reproducible by design. Each Windows leg
+also compares the NSIS installer's unsigned first pass (`windows-nsis-<arch>`, #2302): the installer that
+ships is built from the same `project.nsi` with the signed files, so a reproducible first pass is what its
+reproducibility rests on, and `SetDateSave off` (`cmake/CPackProjectConfig.cmake.in`) keeps the build's
+file times out of it. The rebuild is configured as `build-windows` is, so with signing on its packages
+carry the unsigned `TaskSmackHelper.exe` too; a `.zip` that differs is compared file by file (a helper only
+the original packages is checked against the one the rebuild built), and an installer that differs
+fails, since it can't be opened to compare. Both are advisory only (`continue-on-error:
 true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning for
 investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism

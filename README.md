@@ -66,13 +66,14 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 |----------|---------|---------|
 | Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
-| Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
+| Windows | `.exe` installer (from v0.9.1) | Run it to install TaskSmack in `C:\Program Files\TaskSmack`, with a Start menu shortcut; remove it from **Settings → Apps** |
+| Windows (portable) | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
 The Linux packages need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on Ubuntu 22.04, Debian 12, RHEL 9 or another older distribution, [build from source](CONTRIBUTING.md#quick-start).
 
-Each package comes for x64 and ARM64. The x64 files are `TaskSmack-<version>-Linux.deb`, `-Linux.tar.gz` and `-win64.zip`; the ARM64 ones are `TaskSmack-<version>-linux-aarch64.deb`, `-linux-aarch64.tar.gz` and `-windows-arm64.zip` (Windows on Arm, such as Snapdragon X PCs).
+Each package comes for x64 and ARM64. The x64 files are `TaskSmack-<version>-Linux.deb`, `-Linux.tar.gz`, `-win64.exe` and `-win64.zip`; the ARM64 ones are `TaskSmack-<version>-linux-aarch64.deb`, `-linux-aarch64.tar.gz`, `-windows-arm64.exe` and `-windows-arm64.zip` (Windows on Arm, such as Snapdragon X PCs).
 
-On Linux, the `.deb` also installs a small privileged helper and its polkit action, which let TaskSmack act on or read another user's process after asking for an administrator's password (**Authenticate and retry**, **Authenticate to read**); the `.tar.gz` doesn't include them. See the [FAQ](docs/guide/faq.md#process-io-fds-or-network-show-na-on-linux). On Windows, the Authenticode-signed `.zip`s (x64 and ARM64, from v0.9.1) carry `TaskSmackHelper.exe` for the same purpose (**Retry as administrator**); see [Acting as an administrator on Windows](docs/guide/faq.md#acting-as-an-administrator-on-windows).
+On Linux, the `.deb` also installs a small privileged helper and its polkit action, which let TaskSmack act on or read another user's process after asking for an administrator's password (**Authenticate and retry**, **Authenticate to read**); the `.tar.gz` doesn't include them. See the [FAQ](docs/guide/faq.md#process-io-fds-or-network-show-na-on-linux). On Windows, the Authenticode-signed installers and `.zip`s (x64 and ARM64, from v0.9.1) carry `TaskSmackHelper.exe` for the same purpose (**Retry as administrator**). It works only from a folder that only an administrator can change, which is where the installer puts TaskSmack; see [Acting as an administrator on Windows](docs/guide/faq.md#acting-as-an-administrator-on-windows).
 
 Published x64 packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 

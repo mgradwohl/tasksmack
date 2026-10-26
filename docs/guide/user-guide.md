@@ -21,7 +21,8 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 |----------|---------|---------|
 | Linux (Debian/Ubuntu) | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
-| Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
+| Windows | `.exe` installer (from v0.9.1) | Run it to install TaskSmack in `C:\Program Files\TaskSmack`, with a Start menu shortcut; remove it from **Settings → Apps** |
+| Windows (portable) | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
 The Linux packages are built on Ubuntu 24.04 and need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. An older distribution, such as Ubuntu 22.04, Debian 12 or RHEL 9, can't run them (the `.deb` won't install, and the `.tar.gz`'s program won't start), but TaskSmack builds from source there: see [System Requirements](#operating-system).
 
@@ -29,18 +30,20 @@ Each package comes in two architectures. Pick the one that matches your computer
 
 | Architecture | Linux | Windows |
 |--------------|-------|---------|
-| x64 (Intel, AMD) | `TaskSmack-<version>-Linux.deb`, `TaskSmack-<version>-Linux.tar.gz` | `TaskSmack-<version>-win64.zip` |
-| ARM64 | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.zip` |
+| x64 (Intel, AMD) | `TaskSmack-<version>-Linux.deb`, `TaskSmack-<version>-Linux.tar.gz` | `TaskSmack-<version>-win64.exe`, `TaskSmack-<version>-win64.zip` |
+| ARM64 | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.exe`, `TaskSmack-<version>-windows-arm64.zip` |
+
+On Windows, the installer (`.exe`) asks for administrator rights, installs TaskSmack for every user in `C:\Program Files\TaskSmack` and adds a TaskSmack folder to the Start menu. To remove it, use **Settings → Apps → Installed apps**, or **Uninstall** in that Start menu folder; your settings, which live in your own profile, stay. `TaskSmack-<version>-win64.exe /S` installs it without any questions. The `.zip` holds the same files and runs from wherever you extract it.
 
 On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → System → About** shows "x64-based processor" or "ARM-based processor". On Windows on Arm, OpenGL comes from Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" (in the Microsoft Store), which many such PCs come with; without it TaskSmack stops at startup with a message naming the OpenGL version it found (see [Graphics](#graphics)).
 
 On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
 
-On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release `.zip` includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
+On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`, where the installer puts it. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed installers and `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
 ### Verifying a Release
 
-Every file on a release (each architecture's `.deb`, `.tar.gz` and `.zip`, the Windows build-inputs
+Every file on a release (each architecture's `.deb`, `.tar.gz`, `.zip` and Windows installer, the Windows build-inputs
 manifests and the source SBOM) is built and published by TaskSmack's `release` GitHub Actions
 workflow, and you can check that a download came from it in two ways. Either one is enough.
 

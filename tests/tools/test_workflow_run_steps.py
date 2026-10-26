@@ -10,8 +10,12 @@
   from fixtures through the step's own jq filters; only the step's `judge_branch` function runs,
   cut before the issue handling that follows it, for main (#2741 tracks release branches the same way).
 - release.yml verify-reproducibility-windows "Compare digests": matching packages pass whatever the
-  build-inputs manifests say, and only differing packages fail (#2952). Run with pwsh the way GitHub's
-  `shell: pwsh` wrapper runs it, against fixture .zips and manifests and the real comparator script.
+  build-inputs manifests say, and only differing packages fail (#2952); an NSIS installer that differs
+  fails too, since it isn't a .zip to open (#2302). Run with pwsh the way GitHub's `shell: pwsh` wrapper
+  runs it, against fixture .zips, installers and manifests and the real comparator script.
+- release.yml create-release "Verify the package set" and build-windows "Stage the installer's first
+  pass": the NSIS installers are part of the exact release set, and the installer's first pass is handed
+  on with exactly one of each file (#2302).
 - codeql.yml "Keep results under src/": a result is kept when any of its locations, code-flow steps
   or related locations is under src/, so a taint flow from src/ into a third-party sink survives;
   only results with no src/ location at all are dropped (#2992).
@@ -522,6 +526,32 @@ class WindowsReproducibilityCompareTests(unittest.TestCase):
         self.assertIn("::warning::Could not compare the build-inputs manifests", result.stdout)
         self.assertIn("All Windows packages are reproducible", result.stdout)
 
+    def installer(self, directory: str, data: bytes) -> None:
+        (self.tmp / directory / "TaskSmack-1.0.0-windows-x64.exe").write_bytes(data)
+
+    def test_identical_installers_pass(self):
+        # #2302: the NSIS installer's first pass is compared beside the .zip.
+        self.installer("original-dist", b"installer")
+        self.installer("dist", b"installer")
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image="image-A")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("All Windows packages are reproducible", result.stdout)
+
+    def test_a_different_installer_fails(self):
+        # An installer can't be opened to compare file by file, so any difference is one.
+        self.installer("original-dist", b"installer")
+        self.installer("dist", b"other installer")
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image="image-A")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("::warning::TaskSmack-1.0.0-windows-x64.exe differs between the two independent builds", result.stdout)
+        self.assertNotIn("All Windows packages are reproducible", result.stdout)
+
+    def test_an_installer_without_an_original_fails(self):
+        self.installer("dist", b"installer")
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image="image-A")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("::warning::No matching original artifact for TaskSmack-1.0.0-windows-x64.exe", result.stdout)
+
     def test_different_packages_fail(self):
         for rebuilt_image, explanation in (
             ("image-A", "::warning::The build inputs match"),
@@ -624,6 +654,110 @@ class CodeqlSourceFilterTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("no SARIF file in sarif-results/", result.stdout)
 
+
+
+class ReleasePackageSetTests(unittest.TestCase):
+    """release.yml create-release "Verify the package set": the NSIS installers are part of the exact set (#2302)."""
+
+    PACKAGES = (
+        "Linux.deb",
+        "Linux.tar.gz",
+        "win64.zip",
+        "win64.exe",
+        "linux-aarch64.deb",
+        "linux-aarch64.tar.gz",
+        "windows-arm64.zip",
+        "windows-arm64.exe",
+        "win64-build-inputs.json",
+        "windows-arm64-build-inputs.json",
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.script = find_step(WORKFLOWS / "release.yml", "Verify the package set", job="create-release").run
+        (self.tmp / "CMakeLists.txt").write_text("project(TaskSmack VERSION 1.2.3 LANGUAGES CXX)\n", encoding="utf-8")
+        (self.tmp / "dist").mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def check(self, suffixes) -> subprocess.CompletedProcess:
+        for suffix in suffixes:
+            (self.tmp / "dist" / f"TaskSmack-1.2.3-{suffix}").write_bytes(b"package")
+        return run_bash(self.script, self.tmp, {})
+
+    def test_the_full_set_passes(self):
+        result = self.check(self.PACKAGES)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("TaskSmack-1.2.3-windows-arm64.exe", result.stdout)
+
+    def test_a_missing_installer_fails(self):
+        for missing in ("win64.exe", "windows-arm64.exe"):
+            with self.subTest(missing=missing):
+                for leftover in (self.tmp / "dist").iterdir():
+                    leftover.unlink()
+                result = self.check([suffix for suffix in self.PACKAGES if suffix != missing])
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"< TaskSmack-1.2.3-{missing}", result.stderr)
+
+
+@unittest.skipUnless(PWSH, "pwsh is not on PATH")
+class StageInstallerFirstPassTests(unittest.TestCase):
+    """release.yml build-windows "Stage the installer's first pass" (#2302): CPack's project, the uninstaller
+    it copied out and the first-pass installer go to nsis-project/, the .zip and the uninstaller to
+    for-signing/, each exactly once."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.script = find_step(WORKFLOWS / "release.yml", "Stage the installer's first pass", job="build-windows").run
+        self.nsis = self.tmp / "dist" / "_CPack_Packages" / "win64" / "NSIS"
+        self.nsis.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def stage(self, *, installer: str = "TaskSmack-1.2.3-win64.exe", uninstaller: bool = True):
+        (self.tmp / "dist" / "TaskSmack-1.2.3-win64.zip").write_bytes(b"zip")
+        (self.tmp / "dist" / installer).write_bytes(b"installer")
+        (self.nsis / "project.nsi").write_text("; project\n", encoding="utf-8")
+        (self.nsis / "NSIS.InstallOptions.ini").write_text("[Settings]\n", encoding="utf-8")
+        if uninstaller:
+            (self.nsis / "Uninstall.exe").write_bytes(b"uninstaller")
+        path = self.tmp / "step.ps1"
+        path.write_text("$ErrorActionPreference = 'stop'\n" + self.script + "\n", encoding="utf-8")
+        return subprocess.run(
+            [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", f". '{path}'"],
+            cwd=self.tmp,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+
+    def names(self, directory: str) -> list[str]:
+        return sorted(child.name for child in (self.tmp / directory).iterdir())
+
+    def test_the_first_pass_is_staged(self):
+        result = self.stage()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.names("nsis-project"),
+            ["NSIS.InstallOptions.ini", "TaskSmack-1.2.3-win64.exe", "Uninstall.exe", "project.nsi"],
+        )
+        self.assertEqual(self.names("for-signing"), ["TaskSmack-1.2.3-win64.zip", "Uninstall.exe"])
+
+    def test_no_copied_out_uninstaller_fails(self):
+        result = self.stage(uninstaller=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Uninstall.exe, found 0", result.stdout + result.stderr)
+
+    def test_an_installer_for_another_package_fails(self):
+        result = self.stage(installer="TaskSmack-1.2.3-windows-arm64.exe")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("named for different packages", result.stdout + result.stderr)
 
 
 class HeavyChecksCodecovUploadTests(unittest.TestCase):

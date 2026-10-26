@@ -27,20 +27,30 @@
 
     Appends a summary to $env:GITHUB_STEP_SUMMARY when it is set, and exits 1 on any failure.
 .PARAMETER PackageRoot
-    The extracted .zip's top-level directory, which holds TaskSmack.exe. Only a copy of it is run.
+    The extracted .zip's top-level directory, which holds TaskSmack.exe. Only a copy of it is run,
+    unless -InPlace.
 .PARAMETER MesaDllDir
     The directory holding Mesa's llvmpipe DLLs (.github/actions/setup-mesa-llvmpipe's dll-dir).
 .PARAMETER Fixture
     The config.toml v0.8.0 saved: tests/App/fixtures/config-v0.8.0.toml.
 .PARAMETER Title
     The heading of the step summary.
+.PARAMETER WorkDir
+    The folder for the copy, the config dirs, the private %TEMP%, logs and screenshots. Give each run its
+    own, so each starts from empty config dirs.
+.PARAMETER InPlace
+    Run TaskSmack.exe where it is, as installed by the NSIS installer (#2302), instead of a copy: the Mesa
+    DLLs go beside it for the launches and are deleted again afterwards (a file they'd overwrite fails the
+    check), and the folder stays, for the uninstaller to remove. The last check is then that those DLLs
+    delete, rather than the whole folder.
 #>
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$MesaDllDir,
     [Parameter(Mandatory)][string]$Fixture,
     [string]$Title = "Windows package smoke check ($env:RUNNER_ARCH)",
-    [string]$WorkDir = (Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }) 'tasksmack-smoke')
+    [string]$WorkDir = (Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }) 'tasksmack-smoke'),
+    [switch]$InPlace
 )
 
 # How long startup may take, and how long after startup the screenshot (and so the quit) comes.
@@ -54,11 +64,22 @@ $env:TASKSMACK_LOG_LEVEL = 'info'
 
 $ErrorActionPreference = 'Stop'
 $work = $WorkDir
-$pkg = Join-Path $work 'pkg'
 $tempDir = Join-Path $work 'temp'
-foreach ($dir in @($pkg, $tempDir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-Copy-Item -Path (Join-Path $PackageRoot '*') -Destination $pkg -Recurse
-Copy-Item -Path (Join-Path $MesaDllDir '*.dll') -Destination $pkg
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+$mesaDlls = @(Get-ChildItem -LiteralPath $MesaDllDir -Filter '*.dll' -File)
+if ($InPlace) {
+  $pkg = (Resolve-Path -LiteralPath $PackageRoot).Path
+  $clashes = @($mesaDlls | Where-Object { Test-Path -LiteralPath (Join-Path $pkg $_.Name) })
+  if ($clashes.Count -gt 0) {
+    Write-Error "$pkg already holds $(($clashes | ForEach-Object Name) -join ', '), which the Mesa DLLs would overwrite."
+    exit 1
+  }
+} else {
+  $pkg = Join-Path $work 'pkg'
+  New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+  Copy-Item -Path (Join-Path $PackageRoot '*') -Destination $pkg -Recurse
+}
+$mesaDlls | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $pkg }
 $exe = Join-Path $pkg 'TaskSmack.exe'
 $Fixture = (Resolve-Path -LiteralPath $Fixture).Path
 # Section, key and the value as TaskSmack writes it.
@@ -216,7 +237,15 @@ if (-not $failure) {
     $failure = "TaskSmack left $($traces.Count) new TaskSmack-named entr$(if ($traces.Count -eq 1) { 'y' } else { 'ies' }) under %APPDATA%/%LOCALAPPDATA%, outside the config dirs and %TEMP%:`n$($traces -join "`n")"
   }
 }
-if (-not $failure) {
+if ($InPlace) {
+  # The Mesa DLLs go even after a failure, so they never stay in an installed copy.
+  try {
+    $mesaDlls | ForEach-Object { Remove-Item -LiteralPath (Join-Path $pkg $_.Name) -Force -ErrorAction Stop }
+    $leftNoTrace = -not $failure
+  } catch {
+    if (-not $failure) { $failure = "The Mesa DLLs beside TaskSmack.exe in $pkg didn't delete after it quit: $($_.Exception.Message)" }
+  }
+} elseif (-not $failure) {
   try {
     Remove-Item -LiteralPath $pkg -Recurse -Force -ErrorAction Stop
     $leftNoTrace = $true
@@ -224,6 +253,7 @@ if (-not $failure) {
     $failure = "The folder TaskSmack.exe ran from ($pkg) didn't delete after it quit: $($_.Exception.Message)"
   }
 }
+$cleanedUp = if ($InPlace) { 'the Mesa DLLs deleted from its folder' } else { 'its folder deleted' }
 
 $summary = @(
   "### $Title",
@@ -231,9 +261,9 @@ $summary = @(
   "- Result: $(if ($failure) { 'FAILED' } else { 'passed' })",
   "- OpenGL renderer: ``$renderer``",
   "- OpenGL version: ``$version``",
-  "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) (temporary copy only, not in the package)",
+  "- Software driver: Mesa llvmpipe from $(if ($env:RUNNER_ARCH -eq 'ARM64') { 'mmozeiko/build-mesa' } else { 'mesa-dist-win' }) ($(if ($InPlace) { 'beside the installed exe for the check only' } else { 'temporary copy only, not in the package' }))",
   "- Quit by itself with config.toml saved, from a fresh config and from v0.8.0's (its settings kept): $(if ($configSaved) { 'yes' } else { 'no' })",
-  "- Left no trace (no new %APPDATA%/%LOCALAPPDATA% entries; its folder deleted): $(if ($leftNoTrace) { 'yes' } else { 'no' })"
+  "- Left no trace (no new %APPDATA%/%LOCALAPPDATA% entries; $cleanedUp): $(if ($leftNoTrace) { 'yes' } else { 'no' })"
 )
 if ($failure) { $summary += "- Failure: $failure" }
 if ($env:GITHUB_STEP_SUMMARY) {
