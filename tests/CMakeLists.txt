@@ -201,6 +201,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(IwyuShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/md-link-audit.sh, the docs-hygiene link check: code spans and fenced blocks aren't links (#3001), and
+# a root-absolute link under docs/ resolves from docs/ (#2953). Linux, as its CI job is.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME MdLinkAuditScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_md_link_audit.py)
+    set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript

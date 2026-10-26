@@ -82,8 +82,53 @@ def resolve_target(md_path: pathlib.Path, target: str) -> tuple[pathlib.Path, st
 
 broken: list[tuple[str, str, int, str, str]] = []
 
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def blank_code_spans(line: str) -> str:
+    """@p line with each inline code span's text (a run of N backticks to the next run of exactly N) as spaces."""
+    out = []
+    i = 0
+    while i < len(line):
+        if line[i] != "`":
+            out.append(line[i])
+            i += 1
+            continue
+        j = i
+        while j < len(line) and line[j] == "`":
+            j += 1
+        run = j - i
+        close = re.compile(r"(?<!`)`{%d}(?!`)" % run).search(line, j)
+        if close is None:
+            out.append(line[i:j])  # an unmatched run is literal backticks
+            i = j
+            continue
+        out.append(" " * (close.end() - i))
+        i = close.end()
+    return "".join(out)
+
+
+def without_code(lines: list[str]) -> list[str]:
+    """@p lines with fenced code blocks emptied and inline code spans blanked: Markdown renders neither as links (#3001)."""
+    out = []
+    fence = ""
+    for line in lines:
+        m = FENCE.match(line)
+        if fence:
+            # A closing fence: the same character, at least as many, and nothing else on the line.
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and line.strip() == m.group(1):
+                fence = ""
+            out.append("")
+        elif m:
+            fence = m.group(1)
+            out.append("")
+        else:
+            out.append(blank_code_spans(line))
+    return out
+
+
 for md in md_files:
-    lines = md.read_text(encoding="utf-8").splitlines()
+    lines = without_code(md.read_text(encoding="utf-8").splitlines())
 
     # Reference definitions: [ref]: target
     ref_defs: dict[str, str] = {}

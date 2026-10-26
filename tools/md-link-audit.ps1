@@ -93,8 +93,57 @@ function Get-AnchorsCached([string]$path) {
 $broken = New-Object 'System.Collections.Generic.List[object]'
 $externalPrefixes = @('http://', 'https://', 'mailto:', 'data:')
 
+# Code isn't scanned for links (#3001): an inline code span's text (a run of N backticks to the next run of
+# exactly N) becomes spaces, and a fenced block's lines become empty. As tools/md-link-audit.sh does.
+function Remove-CodeSpans([string]$line) {
+    $out = New-Object System.Text.StringBuilder
+    $i = 0
+    while ($i -lt $line.Length) {
+        if ($line[$i] -ne '`') {
+            [void]$out.Append($line[$i])
+            $i++
+            continue
+        }
+        $j = $i
+        while ($j -lt $line.Length -and $line[$j] -eq '`') { $j++ }
+        $run = $j - $i
+        $close = [regex]::new("(?<!``)``{$run}(?!``)").Match($line, $j)
+        if (-not $close.Success) {
+            [void]$out.Append($line.Substring($i, $run)) # an unmatched run is literal backticks
+            $i = $j
+            continue
+        }
+        $end = $close.Index + $close.Length
+        [void]$out.Append(' ' * ($end - $i))
+        $i = $end
+    }
+    return $out.ToString()
+}
+
+function Remove-Code([string[]]$lines) {
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    $fence = ''
+    foreach ($line in $lines) {
+        $m = [regex]::Match($line, '^ {0,3}(`{3,}|~{3,})')
+        if ($fence) {
+            # A closing fence: the same character, at least as many, and nothing else on the line.
+            if ($m.Success -and $m.Groups[1].Value[0] -eq $fence[0] -and $m.Groups[1].Value.Length -ge $fence.Length -and
+                $line.Trim() -eq $m.Groups[1].Value) {
+                $fence = ''
+            }
+            $out.Add('')
+        } elseif ($m.Success) {
+            $fence = $m.Groups[1].Value
+            $out.Add('')
+        } else {
+            $out.Add((Remove-CodeSpans $line))
+        }
+    }
+    return ,$out.ToArray()
+}
+
 foreach ($md in $mdFiles) {
-    $lines = Get-Content -LiteralPath $md.FullName
+    $lines = Remove-Code @(Get-Content -LiteralPath $md.FullName)
 
     # Reference definitions: [ref]: target
     $refDefs = @{}
