@@ -9,10 +9,13 @@
   weekly unity build) stays red until a run that ran it passes (#2313). `gh` is a stub that answers
   from fixtures through the step's own jq filters; only the step's `judge_branch` function runs,
   cut before the issue handling that follows it, for main (#2741 tracks release branches the same way).
+- release.yml verify-reproducibility-windows "Compare digests": matching packages pass whatever the
+  build-inputs manifests say, and only differing packages fail (#2952). Run with pwsh the way GitHub's
+  `shell: pwsh` wrapper runs it, against fixture .zips and manifests and the real comparator script.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
-expressions replaced by fixed values, and run with bash. Needs bash; the Main Health cases also
-need jq, and are skipped without it.
+expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
+Main Health cases also need jq, and the reproducibility cases pwsh, and are skipped without them.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,6 +37,7 @@ from workflow_steps import find_step, substitute  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash") or "bash"
+PWSH = shutil.which("pwsh")
 
 
 def posix(path: Path) -> str:
@@ -298,6 +303,98 @@ class MainHealthJobTests(unittest.TestCase):
             ]
         )
         self.assertIn(f"({UNITY})", self.red())
+
+
+@unittest.skipUnless(PWSH, "pwsh is not on PATH")
+class WindowsReproducibilityCompareTests(unittest.TestCase):
+    """#2952: identical packages failed the job when the build-inputs manifests differed, because
+    compare-build-inputs.ps1's exit 1 was still $LASTEXITCODE when the step ended."""
+
+    COMPARATOR = REPO / ".github" / "actions" / "windows-build-inputs" / "compare-build-inputs.ps1"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        step = find_step(WORKFLOWS / "release.yml", "Compare digests", job="verify-reproducibility-windows")
+        self.script = step.run
+        comparator = self.tmp / ".github" / "actions" / "windows-build-inputs" / self.COMPARATOR.name
+        comparator.parent.mkdir(parents=True)
+        shutil.copyfile(self.COMPARATOR, comparator)
+        for directory in ("dist", "original-dist", "build-inputs", "original-build-inputs"):
+            (self.tmp / directory).mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def package(self, directory: str, exe: bytes) -> None:
+        with zipfile.ZipFile(self.tmp / directory / "TaskSmack-1.0.0-windows-x64.zip", "w") as archive:
+            for name, data in (("TaskSmack/bin/TaskSmack.exe", exe), ("TaskSmack/README.md", b"readme\n")):
+                archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 10, 25, 0, 0, 0)), data)
+
+    def manifest(self, directory: str, name: str, runner_image: str | None) -> None:
+        manifest = {"provenance": {}}
+        if runner_image is not None:
+            manifest["inputs"] = {"runner_image": runner_image, "toolset": "14.44"}
+        (self.tmp / directory / f"{name}-build-inputs.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def compare(self, *, same_package: bool, original_image: str | None, rebuilt_image: str | None):
+        self.package("original-dist", b"exe")
+        self.package("dist", b"exe" if same_package else b"other exe")
+        self.manifest("original-build-inputs", "a", original_image)
+        self.manifest("build-inputs", "b", rebuilt_image)
+        # What `shell: pwsh` runs: the step with $ErrorActionPreference set first and the last
+        # native or script exit code returned at the end, dot-sourced by `pwsh -command`, which (as
+        # on GitHub) turns any nonzero exit into 1.
+        path = self.tmp / "step.ps1"
+        path.write_text(
+            "$ErrorActionPreference = 'stop'\n"
+            + self.script
+            + "\nif ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", f". '{path}'"],
+            cwd=self.tmp,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+
+    def test_identical_packages_and_inputs_pass(self):
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image="image-A")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Build inputs match", result.stdout)
+        self.assertIn("All Windows packages are reproducible", result.stdout)
+
+    def test_identical_packages_with_different_inputs_pass(self):
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image="image-B")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("::notice::The packages match although the build inputs differ", result.stdout)
+        self.assertIn("All Windows packages are reproducible", result.stdout)
+
+    def test_identical_packages_with_an_unreadable_manifest_pass(self):
+        # The comparator exits 2; the packages still match.
+        result = self.compare(same_package=True, original_image="image-A", rebuilt_image=None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("::warning::Could not compare the build-inputs manifests", result.stdout)
+        self.assertIn("All Windows packages are reproducible", result.stdout)
+
+    def test_different_packages_fail(self):
+        for rebuilt_image, explanation in (
+            ("image-A", "::warning::The build inputs match"),
+            ("image-B", "::warning::The build inputs differ too"),
+        ):
+            with self.subTest(rebuilt_image=rebuilt_image):
+                for directory in ("dist", "original-dist", "build-inputs", "original-build-inputs"):
+                    for leftover in (self.tmp / directory).iterdir():
+                        leftover.unlink()
+                result = self.compare(same_package=False, original_image="image-A", rebuilt_image=rebuilt_image)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("::warning::TaskSmack/bin/TaskSmack.exe differs", result.stdout)
+                self.assertIn(explanation, result.stdout)
+                self.assertNotIn("All Windows packages are reproducible", result.stdout)
 
 
 if __name__ == "__main__":
