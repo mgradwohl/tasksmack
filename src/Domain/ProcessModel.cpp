@@ -392,6 +392,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     std::vector<Clock::time_point> firstSeen;
     std::shared_ptr<GPUModel> gpuModel;
     std::shared_ptr<const ServiceModel> serviceModel;
+    // The last generation, taken when a process carried over (ProcessCounters::heldOver) needs its row (#3031):
+    // only then, as holding it past its replacement costs every refresh.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> previousSnapshots;
     std::size_t reserveSize = 0;
 
     {
@@ -428,6 +431,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
     const bool hasElapsedForHistory = m_HasPrevSampleTime;
+    const Clock::time_point lastSampleTime = m_PrevSampleTime; // a process carried over from now on was read then (#3031)
     m_PrevSampleTime = currentSampleTime;
     m_HasPrevSampleTime = true;
 
@@ -472,8 +476,31 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
         firstSeen.push_back(state.firstSeen);
 
+        // A process this refresh couldn't read (#3031): its last row again, and its state as it was, so
+        // the next real read is measured against the last real one. Not for a process with no row yet.
+        if (current.heldOver && !inserted && appendHeldOverLocked(current, key, lastSampleTime, previousSnapshots, newSnapshots))
+        {
+            const ProcessSnapshot& heldRef = newSnapshots.back();
+            aggPageFaults += heldRef.pageFaultsPerSec;
+            aggThreads += static_cast<double>(heldRef.threadCount);
+            if (heldRef.handleCountAvailable)
+            {
+                aggHandles += static_cast<double>(heldRef.handleCount);
+            }
+            aggPower += heldRef.powerWatts;
+            continue;
+        }
+
         // --- previous CPU counters (for delta calculation) ---
         const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
+
+        // Read last refresh, as nearly every process was: this refresh's interval. Read before that, because
+        // the refreshes between carried it over (#3031): the interval since that read.
+        RateInterval interval{.totalCpuDelta = totalCpuDelta, .elapsedSeconds = elapsedSeconds, .timeDeltaUs = timeDeltaUs};
+        if (!m_HeldOver.empty())
+        {
+            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime);
+        }
 
         // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
@@ -490,11 +517,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         auto snapshot = computeSnapshot(current,
                                         previous,
-                                        totalCpuDelta,
+                                        interval.totalCpuDelta,
                                         m_SystemTotalMemory,
                                         m_TicksPerSecond,
-                                        elapsedSeconds,
-                                        timeDeltaUs,
+                                        interval.elapsedSeconds,
+                                        interval.timeDeltaUs,
                                         m_Capabilities.pageFaultCountBits);
         snapshot.peakMemoryBytes = state.peakRss;
 
@@ -530,7 +557,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    user's process without root, on Linux -- the rate is unavailable, not a 0 or a jump.
         const bool networkAvailable = current.networkCountersAvailable && (previous == nullptr || previous->networkCountersAvailable);
         const NetworkInterval netInterval =
-            (previous != nullptr && networkAvailable) ? networkInterval(current, *previous, elapsedSeconds) : NetworkInterval{};
+            (previous != nullptr && networkAvailable) ? networkInterval(current, *previous, interval.elapsedSeconds) : NetworkInterval{};
         if (netInterval.kind == NetworkInterval::Kind::Measure)
         {
             const auto netRate = [seconds = netInterval.seconds, maxSaneRate](std::uint64_t now, std::uint64_t before)
@@ -571,6 +598,10 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // Prune dead processes: a single erase_if on one map instead of the previous
     // two separate erase_if calls on m_PrevCounters and m_PeakRss.
     std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
+    if (!m_HeldOver.empty())
+    {
+        std::erase_if(m_HeldOver, [this](const auto& entry) { return !m_PerProcessState.contains(entry.first); });
+    }
 
     m_PrevTotalCpuTime = totalCpuTime;
 
@@ -1213,6 +1244,55 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
     support.readFailed = true;
     return support;
 }
+bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current,
+                                        const ProcessIdentity& key,
+                                        Clock::time_point lastSampleTime,
+                                        std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
+                                        std::vector<ProcessSnapshot>& newSnapshots)
+{
+    if (previousSnapshots == nullptr)
+    {
+        std::shared_lock const lock(m_Mutex);
+        previousSnapshots = m_Snapshots;
+    }
+    // m_PidIndex still maps the last generation's rows: computeSnapshotsLocked() rebuilds it after the loop.
+    const std::size_t row = m_PidIndex.find(current.pid);
+    if (row >= previousSnapshots->size() || (*previousSnapshots)[row].startTimeTicks != current.startTimeTicks)
+    {
+        return false;
+    }
+    // Its counters were read last refresh, unless it was carried over then too.
+    m_HeldOver.try_emplace(key, HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime});
+    // Copied in place: emplace_back(const ProcessSnapshot&), not the loop's push_back(ProcessSnapshot&&), so
+    // that one stays inlined there.
+    newSnapshots.emplace_back((*previousSnapshots)[row]).childrenIndices.clear(); // the tree is built again after the loop
+    return true;
+}
+
+ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const ProcessIdentity& key,
+                                                                         RateInterval interval,
+                                                                         std::uint64_t totalCpuTime,
+                                                                         Clock::time_point now)
+{
+    const auto since = m_HeldOver.find(key);
+    if (since == m_HeldOver.end())
+    {
+        return interval;
+    }
+    interval.totalCpuDelta =
+        (since->second.totalCpuTime > 0 && totalCpuTime > since->second.totalCpuTime) ? totalCpuTime - since->second.totalCpuTime : 0;
+    const auto sinceRead = now - since->second.sampleTime;
+    interval.elapsedSeconds = std::chrono::duration<double>(sinceRead).count();
+    interval.timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sinceRead).count());
+    if (interval.elapsedSeconds < MIN_ELAPSED_FOR_RATES)
+    {
+        interval.elapsedSeconds = 0.0;
+        interval.timeDeltaUs = 0;
+    }
+    m_HeldOver.erase(since);
+    return interval;
+}
+
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,

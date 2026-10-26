@@ -189,9 +189,17 @@ class BrokeredProcessProbe final : public IProcessProbe
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
 
   private:
+    /// What listHiddenProcesses() did.
+    enum class HiddenListing : std::uint8_t
+    {
+        NotAsked, ///< nothing hidden, no helper, or one that doesn't list them
+        Listed,   ///< the helper listed them, and they were appended
+        Skipped,  ///< the helper was busy or slow, or its read failed: the last listing still stands (#3031)
+    };
+
     /// Appends the processes hidepid hides from the inner probe, listed by a running helper (#2728), when
     /// its capabilities say some are hidden.
-    void listHiddenProcesses(std::vector<ProcessCounters>& counters);
+    [[nodiscard]] HiddenListing listHiddenProcesses(std::vector<ProcessCounters>& counters);
 
     /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread, and
     /// when due its socket owners.
@@ -211,6 +219,9 @@ class BrokeredProcessProbe final : public IProcessProbe
     bool m_CountersRefused = false;
     /// The helper answered ListHiddenProcesses with an error: not asked again.
     bool m_HiddenRefused = false;
+    /// The hidden processes as the last listing gave them, counters read and all: carried over, marked
+    /// heldOver, into a refresh whose listing is skipped, so they don't drop out and back in (#3031).
+    std::vector<ProcessCounters> m_LastHidden;
     /// When the helper last read socket inodes: again every INODE_PID_CACHE_TTL_MS, as the inner map rebuilds.
     std::chrono::steady_clock::time_point m_SocketsReadAt;
     /// From the last socket read: each inode's owner, and the processes whose sockets were all read.

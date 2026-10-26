@@ -456,17 +456,36 @@ BrokeredProcessProbe::BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner,
 std::vector<ProcessCounters> BrokeredProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> counters = m_Inner->enumerate();
-    listHiddenProcesses(counters);
+    const std::size_t visible = counters.size();
+    const HiddenListing listing = listHiddenProcesses(counters);
+    if (listing == HiddenListing::Skipped)
+    {
+        // The helper is busy with another call, perhaps a service action that waits up to a minute: the
+        // hidden processes as last listed, so the Domain keeps them and their history (#3031).
+        for (const ProcessCounters& last : m_LastHidden)
+        {
+            counters.push_back(last);
+            counters.back().heldOver = true;
+        }
+    }
     readRefusedCounters(counters); // the hidden processes' FD counts, I/O and network too
+    if (listing == HiddenListing::Listed)
+    {
+        m_LastHidden.assign(counters.begin() + static_cast<std::ptrdiff_t>(visible), counters.end());
+    }
+    else if (listing == HiddenListing::NotAsked)
+    {
+        m_LastHidden.clear();
+    }
     return counters;
 }
 
-void BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& counters)
+BrokeredProcessProbe::HiddenListing BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& counters)
 {
     if (m_HiddenRefused || m_Broker == nullptr || !m_Broker->connected() ||
         (m_Inner->capabilities().missingPrivileges & MissingPrivilege::PROCESSES_HIDDEN) == 0)
     {
-        return;
+        return HiddenListing::NotAsked;
     }
     Broker::HiddenProcessesRequest request;
     request.visiblePids.reserve(counters.size());
@@ -480,17 +499,21 @@ void BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& cou
     const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, HIDDEN_TIMEOUT);
     if (!response.has_value())
     {
-        return;
+        return HiddenListing::Skipped;
     }
     if (std::holds_alternative<Broker::ErrorReply>(*response))
     {
         m_HiddenRefused = true; // a helper that doesn't list them: not asked again
-        return;
+        return HiddenListing::NotAsked;
     }
     const auto* reply = std::get_if<Broker::HiddenProcessesReply>(&*response);
     if (reply == nullptr)
     {
-        return;
+        return HiddenListing::Skipped;
+    }
+    if (reply->truncated && reply->processes.empty())
+    {
+        return HiddenListing::Skipped; // the helper's read failed this time (#3032)
     }
     for (const Broker::HiddenProcess& hidden : reply->processes)
     {
@@ -507,6 +530,7 @@ void BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& cou
             counters.push_back(std::move(*process));
         }
     }
+    return HiddenListing::Listed;
 }
 
 void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& counters)
@@ -522,8 +546,9 @@ void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& cou
                           m_Inner->capabilities().hasNetworkCounters;
     for (const ProcessCounters& process : counters)
     {
-        const bool refused =
-            !process.handleCountAvailable || !process.ioCountersAvailable || (request.withSockets && !process.networkCountersAvailable);
+        // A carried-over record keeps what its own refresh read (#3031).
+        const bool refused = !process.heldOver && (!process.handleCountAvailable || !process.ioCountersAvailable ||
+                                                   (request.withSockets && !process.networkCountersAvailable));
         if (refused && request.targets.size() < Broker::MAX_COUNTER_TARGETS)
         {
             request.targets.push_back({.pid = process.pid, .startTimeTicks = process.startTimeTicks});

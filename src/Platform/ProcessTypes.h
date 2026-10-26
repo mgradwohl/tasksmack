@@ -134,6 +134,12 @@ struct ProcessCounters
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
                                           // could be attributed to it (Linux: from its /proc/[pid]/fd;
                                           // Windows: per-process network counters are on)
+
+    // This refresh couldn't read the process, so this is the last read's record, carried over (#3031):
+    // Linux's hidepid-hidden processes, when the helper's listing was skipped because the helper was busy
+    // with another call. The Domain keeps the process and its last published values, and measures its
+    // next real read against the last real one.
+    bool heldOver = false;
 };
 
 /// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.

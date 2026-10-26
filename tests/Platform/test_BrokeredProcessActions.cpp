@@ -587,6 +587,49 @@ TEST(BrokeredProcessProbeTest, AListingThatFailedOnceIsAskedForAgain)
     EXPECT_EQ(again.front().pid, TARGET.pid);
 }
 
+// #3031: a refresh whose listing is skipped (the helper busy with another call) carries the last listing
+// over, marked heldOver, so the hidden processes don't drop out and back in; a refresh with nothing hidden
+// forgets it.
+TEST(BrokeredProcessProbeTest, ASkippedListingCarriesTheLastOneOver)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    bool busy = false;
+    broker->setAnswer(
+        [&busy](const Broker::Request&) -> std::expected<Broker::Response, std::string>
+        {
+            if (busy)
+            {
+                return std::unexpected(std::string("busy"));
+            }
+            return Broker::Response{
+                Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"}}, .truncated = false}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    auto* raw = owned.get();
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    owned->setCapabilities(caps);
+    owned->setProcessFromFiles([](std::int32_t pid, const ProcFileTexts& /*files*/) -> std::optional<ProcessCounters>
+                               { return countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, true); });
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    const std::vector<ProcessCounters> listed = probe.enumerate();
+    ASSERT_EQ(listed.size(), 1U);
+    EXPECT_FALSE(listed.front().heldOver);
+
+    busy = true;
+    const std::vector<ProcessCounters> skipped = probe.enumerate();
+    ASSERT_EQ(skipped.size(), 1U) << "the last listing, carried over";
+    EXPECT_EQ(skipped.front().pid, TARGET.pid);
+    EXPECT_TRUE(skipped.front().heldOver);
+    EXPECT_EQ(probe.enumerate().size(), 1U) << "for as long as the helper stays busy";
+
+    raw->setCapabilities(ProcessCapabilities{}); // nothing hidden any more
+    EXPECT_TRUE(probe.enumerate().empty());
+    raw->setCapabilities(caps);
+    EXPECT_TRUE(probe.enumerate().empty()) << "the old listing was forgotten";
+}
+
 TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(true);
