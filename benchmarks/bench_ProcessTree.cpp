@@ -7,10 +7,14 @@
 // in a sorted order, so each parent's children come out sorted too (#838). FilteredWithAncestors builds a
 // filtered tree that also shows each match's ancestors (#838), and ProcessFilter_Indices is the filter
 // pass itself: every process's name and command line searched for the term (#838).
+//
+// Every benchmark here runs on BenchmarkUtils::makeProcessForest() (ProcessTreeFixture.h): four roots
+// and most processes 2-6 levels deep, a shape tests/Benchmarks/test_ProcessTreeFixture.cpp pins (#2976).
 
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "Domain/ProcessSnapshot.h"
+#include "ProcessTreeFixture.h"
 
 #include <benchmark/benchmark.h>
 
@@ -26,29 +30,10 @@
 namespace
 {
 
-/// @p count processes in one tree of a realistic shape: each process's parent is an earlier one,
-/// picked by a multiplicative hash, so a few processes have many children and most have none.
-std::vector<Domain::ProcessSnapshot> makeForest(std::size_t count)
-{
-    std::vector<Domain::ProcessSnapshot> snapshots(count);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        snapshots[i].pid = static_cast<std::int32_t>(i + 1);
-        snapshots[i].uniqueKey = i + 1;
-        snapshots[i].cpuPercent = static_cast<double>((i * 37U) % 101U);
-    }
-    for (std::size_t i = 1; i < count; ++i)
-    {
-        const std::size_t parent = (i * 2'654'435'761U) % i;
-        snapshots[parent].childrenIndices.push_back(i);
-    }
-    return snapshots;
-}
-
 void runBuild(benchmark::State& state, bool sorted)
 {
     const auto count = static_cast<std::size_t>(state.range(0));
-    const auto snapshots = makeForest(count);
+    const auto snapshots = BenchmarkUtils::makeProcessForest(count);
     std::vector<std::size_t> order(count);
     std::iota(order.begin(), order.end(), std::size_t{0});
     if (sorted)
@@ -85,7 +70,7 @@ void BM_ProcessTree_BuildRows_SortedOrder(benchmark::State& state)
 void BM_ProcessTree_BuildRows_FilteredWithAncestors(benchmark::State& state)
 {
     const auto count = static_cast<std::size_t>(state.range(0));
-    const auto snapshots = makeForest(count);
+    const auto snapshots = BenchmarkUtils::makeProcessForest(count);
     std::vector<std::size_t> matches;
     for (std::size_t i = 0; i < count; i += 50)
     {
@@ -110,7 +95,7 @@ void BM_ProcessTree_BuildRows_FilteredWithAncestors(benchmark::State& state)
 void BM_ProcessFilter_Indices(benchmark::State& state)
 {
     const auto count = static_cast<std::size_t>(state.range(0));
-    auto snapshots = makeForest(count);
+    auto snapshots = BenchmarkUtils::makeProcessForest(count);
     for (std::size_t i = 0; i < count; ++i)
     {
         snapshots[i].name = std::format("process-{}.exe", i);
