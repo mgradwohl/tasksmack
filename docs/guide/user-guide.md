@@ -34,7 +34,7 @@ On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → Sy
 
 On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
 
-On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed x64 `.zip`, once signing is in place ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); until then no release `.zip` includes it. The ARM64 `.zip` doesn't include it either, so it never offers them. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
+On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release `.zip` includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
 ### Verifying a Release
 
@@ -72,8 +72,25 @@ Replace the filename with whichever asset you downloaded. The two `--certificate
 verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
 from any other source fails to verify. A successful check prints `Verified OK`.
 
-If a release asset has **no matching `.bundle` file**, or either `gh attestation verify` or
-`cosign verify-blob` **fails**, do not trust that asset — treat it as potentially tampered with.
+**The Windows executables' Authenticode signature** (releases from v0.9.1): `TaskSmack.exe` and
+`TaskSmackHelper.exe` in each Windows `.zip` are also signed with Authenticode, so Windows itself can
+check them, and the User Account Control prompt names their publisher, **Matt Gradwohl**. After
+extracting the `.zip`, run this in PowerShell from the extracted folder:
+
+```powershell
+Get-AuthenticodeSignature .\TaskSmack.exe, .\TaskSmackHelper.exe |
+  Format-List Path, Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } },
+    @{ n = 'Timestamp'; e = { $_.TimeStamperCertificate.Subject } }
+```
+
+Each file should show `Status : Valid`, a signer starting `CN=Matt Gradwohl`, and a timestamp. The
+signing certificates last only a few days and are renewed automatically, so the certificate itself
+changes from release to release; check the signer's name, not its thumbprint. A new release may
+still get a SmartScreen warning until it has built up download reputation.
+
+If a release asset has **no matching `.bundle` file**, either `gh attestation verify` or
+`cosign verify-blob` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
+do not trust that asset — treat it as potentially tampered with.
 Re-download from the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather
 than a mirror, and if the problem persists, report it per
 [SECURITY.md](https://github.com/mgradwohl/tasksmack/blob/main/SECURITY.md).
