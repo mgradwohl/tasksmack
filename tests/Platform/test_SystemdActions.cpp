@@ -361,6 +361,24 @@ TEST_F(SystemdActionsFakeTest, AStartIsSentInReplaceModeAndWaitsUntilRunning)
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"}));
 }
 
+// #2728: tasksmack-helper holds one connection, opened before its sandbox, and every action borrows it --
+// without closing it, so the second action still has it.
+TEST_F(SystemdActionsFakeTest, ActionsBorrowTheHeldConnectionAndLeaveItOpen)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_EQ(SystemdBus::holdSystemBusForActions(), std::nullopt);
+    EXPECT_EQ(SystemdBus::holdSystemBusForActions(), std::nullopt) << "holding again keeps the one it has";
+    const std::stop_source stop;
+    const ServiceActionResult first = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    const ServiceActionResult second = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    SystemdBus::releaseHeldSystemBusForTesting();
+    EXPECT_TRUE(first.ok) << first.message;
+    EXPECT_TRUE(second.ok) << second.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace", "StartUnit cron.service replace"}));
+}
+
 // #2123: a oneshot service that ran and succeeded is inactive again when its job is gone: that's a start.
 TEST_F(SystemdActionsFakeTest, AOneshotThatRanSuccessfullyStarted)
 {
