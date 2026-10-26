@@ -127,9 +127,13 @@ bool onNativeWayland()
 /// sets TASKSMACK_COMPOSITOR_MAXIMIZES=1 under labwc, which does; sway, a tiling compositor, never does.
 bool compositorMaximizes()
 {
+#ifdef _WIN32
+    return false; // no Wayland there
+#else
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
     const char* maximizes = std::getenv("TASKSMACK_COMPOSITOR_MAXIMIZES");
     return maximizes != nullptr && std::string_view(maximizes) == "1";
+#endif
 }
 
 /// Why a client-side drag test doesn't run on native Wayland.
