@@ -201,6 +201,7 @@ namespace LinuxProcessDetail
 
 [[nodiscard]] PidfdOpen openPidfd(const LinuxProcessSyscalls& syscalls, std::int32_t pid)
 {
+    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from <sys/types.h>, which clang-tidy 23 doesn't map here
     const int fd = syscalls.pidfdOpen(static_cast<pid_t>(pid));
     if (fd >= 0)
     {
