@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -73,11 +74,61 @@ struct WindowsDiskProbe::Impl
     // Busy-time baselines per disk, keyed by PDH instance name (#1108); sampler thread only.
     std::unordered_map<std::string, DiskBusyClock> busyClocks;
 
+    // The PhysicalDisk object's localized name, once a lookup has found it (#2994); empty until then,
+    // so a lookup that failed is tried again by the next rescan. Sampler thread only.
+    std::wstring physicalDiskObject;
+
     void enumerate();
+    /// The name to enumerate PhysicalDisk by: the localized one, or the English one if it can't be found.
+    [[nodiscard]] std::wstring physicalDiskObjectName();
 };
 
 namespace
 {
+
+/// PhysicalDisk's index in the performance-counter name table (Perflib\009's Counter value), the same
+/// in every language. PdhEnumObjectItemsW takes the object's localized name, which this resolves (#2994).
+constexpr DWORD PHYSICAL_DISK_OBJECT_INDEX = 234;
+/// For a system whose localized name can't be looked up; an English system's name is this.
+constexpr const wchar_t* PHYSICAL_DISK_OBJECT_ENGLISH = L"PhysicalDisk";
+
+/// The name PDH has, in the system's language, for the counter object at @p index; nothing if the
+/// lookup fails. Every PDH name fits PDH_MAX_COUNTER_NAME, so the first call normally fills the buffer.
+/// If it reports PDH_MORE_DATA all the same, the size it returned for a too-small buffer isn't reliable
+/// (per PdhLookupPerfNameByIndexW's documentation), so a size-only call asks for the right one.
+[[nodiscard]] std::optional<std::wstring> lookupLocalizedPerfName(const WindowsDiskProbeFunctions::Pdh& pdh, DWORD index)
+{
+    std::vector<wchar_t> buffer(PDH_MAX_COUNTER_NAME + 1);
+    auto size = static_cast<DWORD>(buffer.size());
+    PDH_STATUS status = pdh.lookupPerfNameByIndexW(nullptr, index, buffer.data(), &size);
+    if (static_cast<DWORD>(status) == PDH_MORE_DATA)
+    {
+        size = 0;
+        status = pdh.lookupPerfNameByIndexW(nullptr, index, nullptr, &size);
+        if (static_cast<DWORD>(status) == PDH_MORE_DATA && size > buffer.size())
+        {
+            buffer.resize(size);
+            status = pdh.lookupPerfNameByIndexW(nullptr, index, buffer.data(), &size);
+        }
+        else if (status == ERROR_SUCCESS)
+        {
+            status = static_cast<PDH_STATUS>(PDH_MORE_DATA); // A size-only call filled nothing
+        }
+    }
+    if (status != ERROR_SUCCESS)
+    {
+        spdlog::debug("WindowsDiskProbe: looking up perf object {}'s name failed (0x{:08X})", index, static_cast<DWORD>(status));
+        return std::nullopt;
+    }
+    // Up to the terminator, and never past the buffer if a lookup left it unterminated.
+    const auto end = std::ranges::find(buffer, L'\0');
+    if (end == buffer.begin() || end == buffer.end())
+    {
+        spdlog::debug("WindowsDiskProbe: perf object {}'s name lookup returned no name", index);
+        return std::nullopt;
+    }
+    return std::wstring(buffer.begin(), end);
+}
 
 /// Opens \\.\PhysicalDriveN with query-only access (no admin rights required) and
 /// verifies IOCTL_DISK_PERFORMANCE is usable on it. Returns an empty handle on any
@@ -121,6 +172,23 @@ openPhysicalDriveForPerfQuery(const WindowsDiskProbeFunctions::Drive& fns, int d
 
 } // namespace
 
+std::wstring WindowsDiskProbe::Impl::physicalDiskObjectName()
+{
+    if (physicalDiskObject.empty())
+    {
+        if (auto localized = lookupLocalizedPerfName(fns.pdh, PHYSICAL_DISK_OBJECT_INDEX))
+        {
+            physicalDiskObject = std::move(*localized);
+            spdlog::debug("WindowsDiskProbe: the PhysicalDisk object is '{}'", WinString::wideToUtf8(physicalDiskObject));
+        }
+        else
+        {
+            return PHYSICAL_DISK_OBJECT_ENGLISH; // Not kept: the next rescan looks it up again
+        }
+    }
+    return physicalDiskObject;
+}
+
 /// (Re)build the disk list (#1159). It used to be built once, at construction, so a removed
 /// disk failed every refresh forever and a disk attached later never appeared. The new list is
 /// built aside and swapped in; if PDH itself fails, the current list is kept.
@@ -148,10 +216,13 @@ void WindowsDiskProbe::Impl::enumerate()
         return;
     }
 
+    // By its localized name: an English-only "PhysicalDisk" is no object on a localized Windows, and
+    // every enumeration failed there (#2994).
+    const std::wstring objectName = physicalDiskObjectName();
     DWORD counterBufferSize = 0;
     DWORD instanceBufferSize = 0;
     PDH_STATUS status = fns.pdh.enumObjectItemsW(
-        nullptr, nullptr, L"PhysicalDisk", nullptr, &counterBufferSize, nullptr, &instanceBufferSize, PERF_DETAIL_WIZARD, 0);
+        nullptr, nullptr, objectName.c_str(), nullptr, &counterBufferSize, nullptr, &instanceBufferSize, PERF_DETAIL_WIZARD, 0);
 
     if (static_cast<DWORD>(status) == PDH_MORE_DATA && instanceBufferSize != 0U)
     {
@@ -162,7 +233,7 @@ void WindowsDiskProbe::Impl::enumerate()
 
         status = fns.pdh.enumObjectItemsW(nullptr,
                                           nullptr,
-                                          L"PhysicalDisk",
+                                          objectName.c_str(),
                                           counterBuffer.data(),
                                           &counterSize,
                                           instanceBuffer.data(),
@@ -210,7 +281,10 @@ void WindowsDiskProbe::Impl::enumerate()
 
     if (!enumerated)
     {
-        spdlog::debug("WindowsDiskProbe: PhysicalDisk enumeration failed, keeping {} disks", disks.size());
+        spdlog::debug("WindowsDiskProbe: enumerating PhysicalDisk ('{}') failed (0x{:08X}), keeping {} disks",
+                      WinString::wideToUtf8(objectName),
+                      static_cast<DWORD>(status),
+                      disks.size());
         return;
     }
 
@@ -241,6 +315,7 @@ WindowsDiskProbe::WindowsDiskProbe() : WindowsDiskProbe(systemFunctions())
 WindowsDiskProbeFunctions WindowsDiskProbe::systemFunctions()
 {
     WindowsDiskProbeFunctions fns;
+    fns.pdh.lookupPerfNameByIndexW = &PdhLookupPerfNameByIndexW;
     fns.pdh.enumObjectsW = &PdhEnumObjectsW;
     fns.pdh.enumObjectItemsW = &PdhEnumObjectItemsW;
     fns.drive.openPhysicalDriveQueryOnly = &Windows::openPhysicalDriveQueryOnly;
@@ -323,6 +398,8 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
             disk.weightedIoTimeMs = 0;
             disk.sectorSize = 512;
             disk.isPhysicalDevice = true;
+            // Nothing was read: the Domain records these as no reading, not as idle disks (#2994).
+            disk.hasIoCounters = false;
 
             result.disks.push_back(disk);
         }

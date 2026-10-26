@@ -1,8 +1,8 @@
 /// @file test_WindowsDiskProbeSeams.cpp
 /// @brief WindowsDiskProbe against fake PDH, drive-open and DeviceIoControl calls (#1719): the
-/// logical-drive fallback, a disk whose IOCTL_DISK_PERFORMANCE read fails, open failures with their
-/// warn-once logging, rescans and the busy-time clock. No drive is opened: the fake "drives" are
-/// event handles, and the fake DeviceIoControl answers IOCTL_DISK_PERFORMANCE only.
+/// localized PhysicalDisk object name (#2994), the logical-drive fallback, a disk whose IOCTL_DISK_PERFORMANCE read fails, open failures
+/// with their warn-once logging, rescans and the busy-time clock. No drive is opened: the fake "drives" are event handles, and the fake
+/// DeviceIoControl answers IOCTL_DISK_PERFORMANCE only.
 
 #include "Platform/StorageTypes.h"
 #include "Platform/Windows/WindowsDiskProbe.h"
@@ -13,6 +13,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <map>
@@ -54,6 +55,13 @@ struct OpenDrive
 /// What every fake returns, and what the probe asked of them.
 struct FakeDisks // NOLINT(clang-analyzer-optin.performance.Padding)
 {
+    // The only name the fake PDH knows PhysicalDisk by: a localized system's, as on a German Windows
+    // (#2994). The English name is no object here, as it is on such a system.
+    std::wstring objectName = L"PhysischerDatentr\u00E4ger";
+    bool failLookup = false;
+    DWORD lookupNeeds = 0; // Characters the lookup wants room for; 0 for the name and its terminator
+    int lookups = 0;
+    std::vector<std::wstring> enumeratedAs; // The object name of every PdhEnumObjectItemsW call
     std::vector<std::wstring> instances{L"0 C:", L"1 D: E:", L"_Total"};
     bool failRefresh = false;
     bool failSizing = false;
@@ -88,6 +96,31 @@ FakeDisks& fake()
     return perf;                      // IdleTime 0: the driver does not track it
 }
 
+PDH_STATUS WINAPI fakeLookupPerfName(LPCWSTR machine, DWORD index, LPWSTR name, LPDWORD size)
+{
+    auto& f = fake();
+    ++f.lookups;
+    EXPECT_EQ(machine, nullptr);
+    EXPECT_EQ(index, 234U) << "PhysicalDisk's index";
+    if (f.failLookup)
+    {
+        return static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    }
+    const auto needed = std::max(static_cast<DWORD>(f.objectName.size() + 1), f.lookupNeeds);
+    if (*size < needed)
+    {
+        // The documented contract: a size-only call (0) is told the size; a too-small buffer is not
+        // reliably, so the fake tells it a wrong one.
+        *size = (*size == 0) ? needed : 1;
+        return static_cast<PDH_STATUS>(PDH_MORE_DATA);
+    }
+    EXPECT_NE(name, nullptr);
+    std::ranges::copy(f.objectName, name);
+    name[f.objectName.size()] = L'\0';
+    *size = static_cast<DWORD>(f.objectName.size() + 1);
+    return ERROR_SUCCESS;
+}
+
 PDH_STATUS WINAPI
 fakeEnumObjects(LPCWSTR /*source*/, LPCWSTR /*machine*/, PZZWSTR /*list*/, LPDWORD /*size*/, DWORD /*detail*/, BOOL refresh)
 {
@@ -106,7 +139,11 @@ PDH_STATUS WINAPI fakeEnumObjectItems(LPCWSTR /*source*/,
                                       DWORD /*detail*/,
                                       DWORD /*flags*/)
 {
-    EXPECT_EQ(std::wstring_view(object), L"PhysicalDisk");
+    fake().enumeratedAs.emplace_back(object);
+    if (std::wstring_view(object) != fake().objectName)
+    {
+        return static_cast<PDH_STATUS>(PDH_CSTATUS_NO_OBJECT);
+    }
     std::wstring list;
     for (const auto& name : fake().instances)
     {
@@ -207,6 +244,7 @@ std::chrono::steady_clock::time_point fakeNow() noexcept
 [[nodiscard]] WindowsDiskProbeFunctions fakeFunctions()
 {
     WindowsDiskProbeFunctions fns;
+    fns.pdh.lookupPerfNameByIndexW = &fakeLookupPerfName;
     fns.pdh.enumObjectsW = &fakeEnumObjects;
     fns.pdh.enumObjectItemsW = &fakeEnumObjectItems;
     fns.drive.openPhysicalDriveQueryOnly = &fakeOpenDrive;
@@ -330,6 +368,8 @@ TEST_F(WindowsDiskProbeSeamsTest, NoOpenableDriveFallsBackToTheFixedLogicalDrive
 
     EXPECT_EQ(names(counters), (std::vector<std::string>{"C:", "F:"}));
     EXPECT_EQ(counters.disks[0].readSectors, 0U);
+    EXPECT_FALSE(counters.disks[0].hasIoCounters) << "zeros nothing measured, not an idle disk (#2994)";
+    EXPECT_FALSE(counters.disks[1].hasIoCounters);
     EXPECT_FALSE(probe.capabilities().hasReadWriteBytes);
     EXPECT_FALSE(probe.capabilities().hasIoTime);
     EXPECT_TRUE(probe.capabilities().hasDiskStats);
@@ -356,9 +396,80 @@ TEST_F(WindowsDiskProbeSeamsTest, EachPdhEnumerationFailureFallsBackToLogicalDri
         fake().logicalDrives = 1U << 2U;
         fake().driveTypes = {{L'C', DRIVE_FIXED}};
         WindowsDiskProbe probe(fakeFunctions());
-        EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"C:"})) << failing;
+        const SystemDiskCounters counters = probe.read();
+        EXPECT_EQ(names(counters), (std::vector<std::string>{"C:"})) << failing;
+        EXPECT_FALSE(counters.disks.at(0).hasIoCounters) << failing;
+        EXPECT_FALSE(probe.capabilities().hasReadWriteBytes) << failing;
         EXPECT_TRUE(fake().handles.empty()) << failing << ": no drive is opened";
     }
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, PhysicalDiskIsEnumeratedByItsLocalizedName)
+{
+    // #2994: PdhEnumObjectItemsW takes the object's localized name, and a German Windows has no
+    // "PhysicalDisk": every enumeration failed there, leaving the logical-drive fallback's zeros.
+    WindowsDiskProbe probe(fakeFunctions());
+    const SystemDiskCounters counters = probe.read();
+
+    EXPECT_EQ(names(counters), (std::vector<std::string>{"0 C:", "1 D: E:"}));
+    EXPECT_TRUE(counters.disks.at(0).hasIoCounters);
+    EXPECT_TRUE(probe.capabilities().hasReadWriteBytes);
+    EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>(2, fake().objectName)));
+    EXPECT_EQ(fake().lookups, 1);
+
+    fakeClock() += 30s;
+    (void) probe.read(); // Rescans
+    EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>(4, fake().objectName)));
+    EXPECT_EQ(fake().lookups, 1) << "the name is looked up once";
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, EnglishNameIsUsedWhenTheLookupFails)
+{
+    fake().failLookup = true;
+    fake().objectName = L"PhysicalDisk"; // An English system, whose name the English one is
+    WindowsDiskProbe probe(fakeFunctions());
+
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:"}));
+    EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>(2, L"PhysicalDisk")));
+    EXPECT_EQ(logged("debug", "looking up perf object 234's name failed"), 1U);
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, FailedLookupOnALocalizedSystemFallsBackUntilARescanFindsTheName)
+{
+    // Without the localized name the enumeration fails: the fixed logical drives are listed, their
+    // counters marked unread rather than passed off as idle disks, and the next rescan looks again.
+    fake().failLookup = true;
+    fake().logicalDrives = 1U << 2U;
+    fake().driveTypes = {{L'C', DRIVE_FIXED}};
+    WindowsDiskProbe probe(fakeFunctions());
+
+    const SystemDiskCounters fallback = probe.read();
+    EXPECT_EQ(names(fallback), (std::vector<std::string>{"C:"}));
+    EXPECT_FALSE(fallback.disks.at(0).hasIoCounters);
+    EXPECT_FALSE(probe.capabilities().hasReadWriteBytes);
+    EXPECT_FALSE(probe.capabilities().hasIoTime);
+    EXPECT_EQ(fake().enumeratedAs, (std::vector<std::wstring>{L"PhysicalDisk"}));
+    EXPECT_EQ(logged("debug", "enumerating PhysicalDisk ('PhysicalDisk') failed"), 1U);
+
+    fake().failLookup = false;
+    fakeClock() += 30s;
+    (void) probe.read(); // Rescans, and finds the name this time
+    EXPECT_EQ(fake().lookups, 2);
+    const SystemDiskCounters measured = probe.read();
+    EXPECT_EQ(names(measured), (std::vector<std::string>{"0 C:", "1 D: E:"}));
+    EXPECT_TRUE(measured.disks.at(0).hasIoCounters);
+    EXPECT_TRUE(probe.capabilities().hasReadWriteBytes);
+}
+
+TEST_F(WindowsDiskProbeSeamsTest, LookupWantingALargerBufferIsAskedForItsSize)
+{
+    // PDH_MAX_COUNTER_NAME holds every name, but a lookup that asks for more anyway is asked, with a
+    // size-only call, how much: the size it returns for a too-small buffer isn't reliable.
+    fake().lookupNeeds = PDH_MAX_COUNTER_NAME + 64;
+    WindowsDiskProbe probe(fakeFunctions());
+
+    EXPECT_EQ(names(probe.read()), (std::vector<std::string>{"0 C:", "1 D: E:"}));
+    EXPECT_EQ(fake().lookups, 3);
 }
 
 TEST_F(WindowsDiskProbeSeamsTest, DriveWhoseProbeIoctlFailsIsLeftOut)
@@ -495,6 +606,7 @@ TEST_F(WindowsDiskProbeSeamsTest, NegativeCountersReadAsZero)
 TEST_F(WindowsDiskProbeSeamsTest, SystemFunctionsAreAllSet)
 {
     const WindowsDiskProbeFunctions fns = WindowsDiskProbe::systemFunctions();
+    EXPECT_NE(fns.pdh.lookupPerfNameByIndexW, nullptr);
     EXPECT_NE(fns.pdh.enumObjectsW, nullptr);
     EXPECT_NE(fns.pdh.enumObjectItemsW, nullptr);
     EXPECT_NE(fns.drive.openPhysicalDriveQueryOnly, nullptr);
