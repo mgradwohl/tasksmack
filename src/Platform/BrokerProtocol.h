@@ -50,7 +50,8 @@ namespace Platform::Broker
 /// another version is refused rather than misread. 2: ModulesResult and EnvironmentResult say whether
 /// their list was cut to fit a frame (#2403). 3: Hello says whether the session is held (#2728). 4: ReadProcessCounters (#2728).
 /// 5: ReadProcessCounters can also ask for each process's socket inodes, for network attribution (#2728).
-inline constexpr std::uint16_t PROTOCOL_VERSION = 5;
+/// 6: ListHiddenProcesses, the /proc/<pid> files of processes hidepid hides from TaskSmack (#2728).
+inline constexpr std::uint16_t PROTOCOL_VERSION = 6;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The most processes one ReadProcessCounters asks about (#2728); a sampler with more asks for the first.
@@ -58,6 +59,10 @@ inline constexpr std::size_t MAX_COUNTER_TARGETS = std::size_t{1} << 14U;
 /// The most socket inodes one ProcessCountersReply carries, over all its entries (#2728); an entry past it
 /// goes back without its sockets.
 inline constexpr std::size_t MAX_COUNTER_SOCKET_INODES = std::size_t{1} << 18U;
+/// The most PIDs one ListHiddenProcesses says TaskSmack already sees (#2728); a request with more is refused.
+inline constexpr std::size_t MAX_VISIBLE_PIDS = std::size_t{1} << 18U;
+/// The most hidden processes one HiddenProcessesReply carries; past it, or past a frame, it says it was cut.
+inline constexpr std::size_t MAX_HIDDEN_PROCESSES = std::size_t{1} << 14U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
@@ -88,6 +93,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     ReadFirmwareFile = 37,      ///< One of System Information's root-only firmware files (#2310)
     ReadCrashes = 38,           ///< Recent crashes, every user's (#2310)
     ReadProcessCounters = 39,   ///< Many processes' FD counts and I/O bytes at once, for the sampler (#2728)
+    ListHiddenProcesses = 40,   ///< The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
     ActionResult = 48,          ///< The answer to a process action
     EnvironmentResult = 49,     ///< The answer to ReadEnvironment
     ModulesResult = 50,         ///< The answer to ReadModules
@@ -97,6 +103,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     FirmwareFileResult = 54,    ///< The answer to ReadFirmwareFile
     CrashesResult = 55,         ///< The answer to ReadCrashes
     ProcessCountersResult = 56, ///< The answer to ReadProcessCounters
+    HiddenProcessesResult = 57, ///< The answer to ListHiddenProcesses
     Error = 63,                 ///< A request the helper refused to read (malformed, or a kind it doesn't do)
 };
 
@@ -298,6 +305,40 @@ struct ProcessCountersReply
     friend bool operator==(const ProcessCountersReply&, const ProcessCountersReply&) = default;
 };
 
+/// List the processes hidepid hides from TaskSmack (#2728): every process the helper sees whose PID isn't in
+/// @c visiblePids (the ones TaskSmack's own listing found), as the text of a fixed set of its /proc/<pid>
+/// files, which TaskSmack parses as it parses its own. At most MAX_VISIBLE_PIDS.
+struct HiddenProcessesRequest
+{
+    std::vector<std::int32_t> visiblePids;
+    friend bool operator==(const HiddenProcessesRequest&, const HiddenProcessesRequest&) = default;
+};
+
+/// One hidden process: its identity (the PID and the start time its stat gave) and its files' text, each
+/// at most MAX_STRING_BYTES. Only these files, never a path the request names.
+// NOLINTBEGIN(readability-redundant-member-init) - {} lets designated initializers omit a field without a warning
+struct HiddenProcess
+{
+    ProcessTarget target{};
+    std::string stat{};
+    std::string statm{};
+    std::string status{};
+    std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
+    std::string io{};                     ///< Empty when unreadable
+    std::string cgroup{};
+    friend bool operator==(const HiddenProcess&, const HiddenProcess&) = default;
+};
+// NOLINTEND(readability-redundant-member-init)
+
+/// The answer to HiddenProcessesRequest. @c truncated: more were hidden than MAX_HIDDEN_PROCESSES or a
+/// frame holds.
+struct HiddenProcessesReply
+{
+    std::vector<HiddenProcess> processes;
+    bool truncated = false;
+    friend bool operator==(const HiddenProcessesReply&, const HiddenProcessesReply&) = default;
+};
+
 /// Read a process's PSS and USS (#2309), as the helper reads its smaps_rollup with its capabilities.
 struct MemoryRollupRequest
 {
@@ -423,7 +464,8 @@ using Request = std::variant<Hello,
                              MemoryRollupRequest,
                              FirmwareFileRequest,
                              CrashesRequest,
-                             ProcessCountersRequest>;
+                             ProcessCountersRequest,
+                             HiddenProcessesRequest>;
 using Response = std::variant<HelloReply,
                               ActionResult,
                               ErrorReply,
@@ -434,7 +476,8 @@ using Response = std::variant<HelloReply,
                               MemoryRollupReply,
                               FirmwareFileReply,
                               CrashesReply,
-                              ProcessCountersReply>;
+                              ProcessCountersReply,
+                              HiddenProcessesReply>;
 
 /// A decoded frame: its request id and message.
 template<typename Message> struct Decoded
@@ -769,6 +812,16 @@ template<typename Message>
             writer.target(counters->targets[i]);
         }
     }
+    else if (const auto* hidden = std::get_if<HiddenProcessesRequest>(&request))
+    {
+        kind = MessageKind::ListHiddenProcesses;
+        const std::size_t count = std::min(hidden->visiblePids.size(), MAX_VISIBLE_PIDS);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            writer.i32(hidden->visiblePids[i]);
+        }
+    }
     else if (const auto* firmware = std::get_if<FirmwareFileRequest>(&request))
     {
         kind = MessageKind::ReadFirmwareFile;
@@ -886,6 +939,24 @@ namespace Detail
     return request;
 }
 
+/// A ListHiddenProcesses payload: the count (refused past MAX_VISIBLE_PIDS), then the visible PIDs.
+[[nodiscard]] inline HiddenProcessesRequest decodeHiddenProcessesRequest(Reader& reader)
+{
+    HiddenProcessesRequest request;
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_VISIBLE_PIDS)
+    {
+        reader.fail();
+        return request;
+    }
+    request.visiblePids.reserve(count);
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        request.visiblePids.push_back(reader.i32());
+    }
+    return request;
+}
+
 /// A ReadFirmwareFile request's payload: the file, refused when past BoardSerial.
 [[nodiscard]] inline FirmwareFileRequest decodeFirmwareFileRequest(Reader& reader)
 {
@@ -940,6 +1011,8 @@ namespace Detail
         return Detail::finish<Request>(reader, id, MemoryRollupRequest{.target = reader.target()});
     case MessageKind::ReadProcessCounters:
         return Detail::finish<Request>(reader, id, Detail::decodeProcessCountersRequest(reader));
+    case MessageKind::ListHiddenProcesses:
+        return Detail::finish<Request>(reader, id, Detail::decodeHiddenProcessesRequest(reader));
     case MessageKind::ReadFirmwareFile:
         return Detail::finish<Request>(reader, id, Detail::decodeFirmwareFileRequest(reader));
     case MessageKind::ReadCrashes:
@@ -954,6 +1027,7 @@ namespace Detail
     case MessageKind::FirmwareFileResult:
     case MessageKind::CrashesResult:
     case MessageKind::ProcessCountersResult:
+    case MessageKind::HiddenProcessesResult:
     case MessageKind::Error:
         break;
     }
@@ -1130,6 +1204,37 @@ namespace Detail
                     writer.u64(inode);
                 }
             }
+        }
+    }
+    else if (const auto* hidden = std::get_if<HiddenProcessesReply>(&response))
+    {
+        kind = MessageKind::HiddenProcessesResult;
+        // As many processes as fit in one frame, and it says when it was cut. Truncated, count; a process:
+        // its target, five texts and the command line's flag and text.
+        constexpr std::size_t ROOM = Detail::listRoom(1 + 4);
+        const std::size_t count = Detail::entriesThatFit(std::span(hidden->processes),
+                                                         MAX_HIDDEN_PROCESSES,
+                                                         ROOM,
+                                                         [](const HiddenProcess& process)
+                                                         {
+                                                             return 4 + 8 + Detail::textBytes(process.stat) +
+                                                                    Detail::textBytes(process.statm) + Detail::textBytes(process.status) +
+                                                                    1 + Detail::textBytes(process.cmdline.value_or(std::string{})) +
+                                                                    Detail::textBytes(process.io) + Detail::textBytes(process.cgroup);
+                                                         });
+        writer.u8((hidden->truncated || count < hidden->processes.size()) ? 1 : 0);
+        writer.u32(static_cast<std::uint32_t>(count));
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const HiddenProcess& process = hidden->processes[i];
+            writer.target(process.target);
+            writer.text(process.stat);
+            writer.text(process.statm);
+            writer.text(process.status);
+            writer.u8(process.cmdline.has_value() ? 1 : 0);
+            writer.text(process.cmdline.value_or(std::string{}));
+            writer.text(process.io);
+            writer.text(process.cgroup);
         }
     }
     else if (const auto* firmware = std::get_if<FirmwareFileReply>(&response))
@@ -1419,6 +1524,42 @@ namespace Detail
     return reply;
 }
 
+/// A HiddenProcessesResult's payload: truncated, the count (refused past MAX_HIDDEN_PROCESSES), then each
+/// process's target, its texts, and the command line's flag (0 or 1) before its text.
+[[nodiscard]] inline HiddenProcessesReply decodeHiddenProcessesReply(Reader& reader)
+{
+    HiddenProcessesReply reply;
+    reply.truncated = reader.flag();
+    const std::uint32_t count = reader.u32();
+    if (count > MAX_HIDDEN_PROCESSES)
+    {
+        reader.fail();
+        return reply;
+    }
+    for (std::uint32_t i = 0; reader.ok() && i < count; ++i)
+    {
+        HiddenProcess process;
+        process.target = reader.target();
+        process.stat = reader.text();
+        process.statm = reader.text();
+        process.status = reader.text();
+        const bool cmdlineRead = reader.flag();
+        std::string cmdline = reader.text();
+        if (cmdlineRead)
+        {
+            process.cmdline = std::move(cmdline);
+        }
+        else if (!cmdline.empty())
+        {
+            reader.fail(); // a command line it says it didn't read
+        }
+        process.io = reader.text();
+        process.cgroup = reader.text();
+        reply.processes.push_back(std::move(process));
+    }
+    return reply;
+}
+
 /// A MemoryRollupResult's payload: the tag (0 for figures, else 1 + the failure, refused past PermissionDenied),
 /// then the three figures, which are always sent.
 [[nodiscard]] inline MemoryRollupReply decodeMemoryRollupReply(Reader& reader)
@@ -1561,6 +1702,8 @@ namespace Detail
         return Detail::finish<Response>(reader, id, Detail::decodeCrashesReply(reader));
     case MessageKind::ProcessCountersResult:
         return Detail::finish<Response>(reader, id, Detail::decodeProcessCountersReply(reader));
+    case MessageKind::HiddenProcessesResult:
+        return Detail::finish<Response>(reader, id, Detail::decodeHiddenProcessesReply(reader));
     case MessageKind::Hello:
     case MessageKind::Signal:
     case MessageKind::SetPriority:
@@ -1574,6 +1717,7 @@ namespace Detail
     case MessageKind::ReadFirmwareFile:
     case MessageKind::ReadCrashes:
     case MessageKind::ReadProcessCounters:
+    case MessageKind::ListHiddenProcesses:
         break;
     }
     return std::unexpected("Not a response");

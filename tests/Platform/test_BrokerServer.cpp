@@ -28,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -1249,6 +1250,37 @@ TEST(PkexecBrokerTest, TheHelperReadsProcessCountersAndLeavesOutAStaleTarget)
     // A kernel without task I/O accounting (WSL's) has no /proc/[pid]/io to read.
     EXPECT_EQ(entries.front().ioRead, std::filesystem::exists("/proc/self/io"));
     EXPECT_TRUE(entries.front().socketsRead) << "every fd link read, under the enforcing seccomp filter";
+}
+
+// #2728: given every PID but its child's as visible, the helper lists the child alone, under its
+// enforcing seccomp filter, with its start time and its files' text.
+TEST(PkexecBrokerTest, TheHelperListsTheProcessesTaskSmackDoesntSee)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    std::vector<std::int32_t> visible;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator("/proc"))
+    {
+        const std::string name = entry.path().filename().string();
+        std::int32_t pid = 0;
+        if (std::from_chars(name.data(), name.data() + name.size(), pid).ec == std::errc{} && pid != child.target().pid)
+        {
+            visible.push_back(pid);
+        }
+    }
+    PkexecBroker broker(TASKSMACK_HELPER_PATH, {}, HelperSandbox::Mode::Enforce);
+    ASSERT_TRUE(broker.connect(std::stop_token{}).has_value());
+    const auto response = broker.call(Broker::HiddenProcessesRequest{.visiblePids = visible}, std::stop_token{});
+    ASSERT_TRUE(response.has_value()) << response.error();
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(*response));
+    const auto& processes = std::get<Broker::HiddenProcessesReply>(*response).processes;
+    // Processes started since the listing above come back too; the child must be among them.
+    const auto found =
+        std::ranges::find_if(processes, [&child](const Broker::HiddenProcess& p) { return p.target.pid == child.target().pid; });
+    ASSERT_NE(found, processes.end());
+    EXPECT_EQ(found->target, child.target());
+    EXPECT_FALSE(found->status.empty());
+    EXPECT_TRUE(found->cmdline.has_value());
 }
 
 TEST(PkexecBrokerTest, TheHelperAnswersAFirmwareFileRequest)

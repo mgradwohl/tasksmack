@@ -40,6 +40,7 @@ HELLO_PAYLOADS = {
     3: lambda version: struct.pack("<HB", version, 0),  # forSession off (#2728)
     4: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters added (#2728)
     5: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters can ask for sockets (#2728)
+    6: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ListHiddenProcesses added (#2728)
 }
 
 

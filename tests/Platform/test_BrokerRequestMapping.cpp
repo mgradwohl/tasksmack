@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <variant>
 #include <vector>
@@ -248,6 +249,31 @@ TEST(BrokerRequestMappingTest, AProcessCountersRequestReadsEachTargetAndLeavesOu
     // A helper without the reader (Windows', which reads every process itself) says so.
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(
         BrokerServer::handleRequest(Broker::ProcessCountersRequest{.targets = {TARGET}}, actions)));
+}
+
+TEST(BrokerRequestMappingTest, AHiddenProcessesRequestGoesToItsReaderWithTheVisiblePids)
+{
+    TestMocks::MockProcessActions actions;
+    BrokerServer::Readers readers;
+    std::vector<std::int32_t> seen;
+    readers.hiddenProcesses = [&seen](std::span<const std::int32_t> visible)
+    {
+        seen.assign(visible.begin(), visible.end());
+        return Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "x"}}, .truncated = false};
+    };
+    const Broker::Response response = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{.visiblePids = {1, 2}}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(response));
+    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(response).processes.size(), 1U);
+    EXPECT_EQ(seen, (std::vector<std::int32_t>{1, 2}));
+
+    // One that throws, or a helper without the reader (Windows', which has no hidepid), answers with an error.
+    readers.hiddenProcesses = [](std::span<const std::int32_t>) -> Broker::HiddenProcessesReply
+    {
+        throw std::runtime_error("boom");
+    };
+    EXPECT_TRUE(
+        std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions, readers)));
+    EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions)));
 }
 
 // --- #2417: what the helper does when a read or an action throws -------------------------------------

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 
 namespace Platform::BrokerServer
 {
@@ -39,6 +40,10 @@ struct Readers
     /// exited or its PID now names another process.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<std::optional<Broker::ProcessCountersEntry>(const ProcessTarget&, bool withSockets)> processCounters{};
+    /// The processes hidepid hides from TaskSmack, as their /proc files' text (#2728): every one whose PID
+    /// isn't among the visible PIDs given.
+    // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
+    std::function<Broker::HiddenProcessesReply(std::span<const std::int32_t>)> hiddenProcesses{};
     /// System Information's privileged firmware files (#2310)
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::FirmwareFileReply(Broker::FirmwareFile)> firmwareFile{};

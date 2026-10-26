@@ -647,6 +647,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_Nl80211.cpp  # Wi-Fi rates and standard from nl80211 (#2591)
     Platform/test_ProcessCountersRead.cpp  # FD counts and I/O the helper reads for the sampler (#2728)
+    Platform/test_HiddenProcessesRead.cpp  # the processes hidepid hides, as the helper lists them (#2728)
     Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp

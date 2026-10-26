@@ -24,6 +24,7 @@
 #include "Platform/Linux/HelperPrivileges.h"
 #include "Platform/Linux/HelperSandbox.h"
 #include "Platform/Linux/HelperSandboxMode.h"
+#include "Platform/Linux/HiddenProcessesRead.h"
 #include "Platform/Linux/LinuxCoredumps.h"
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/LinuxProcessControl.h"
@@ -47,6 +48,7 @@
 #include <ctime>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string_view>
 #include <system_error>
@@ -166,6 +168,9 @@ int main(int argc, char** argv)
             // Other users' FD counts, I/O bytes and socket inodes, for the sampler (#2728)
             .processCounters = [](const Platform::ProcessTarget& target, bool withSockets)
             { return Platform::Linux::readProcessCountersAt("/proc", target, withSockets); },
+            // The processes hidepid hides from TaskSmack, as their /proc files' text (#2728)
+            .hiddenProcesses = [](std::span<const std::int32_t> visiblePids)
+            { return Platform::Linux::listHiddenProcessesAt("/proc", visiblePids); },
             // System Information's root-only firmware files (#2310): only the ones FirmwareFile names
             .firmwareFile = [](Platform::Broker::FirmwareFile file) { return Platform::Linux::readFirmwareFileAt("/", file); },
             // Every user's crashes: the journal and core files as root (#2310)

@@ -1309,7 +1309,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::FirmwareFileRequest{}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::CrashesRequest{}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ProcessCountersRequest{.targets = {TARGET}}));
-    static_assert(std::variant_size_v<Broker::Request> == 13, "a new request kind: add it above");
+    EXPECT_TRUE(BrokerPipeServer::isRead(Broker::HiddenProcessesRequest{.visiblePids = {TARGET.pid}}));
+    static_assert(std::variant_size_v<Broker::Request> == 14, "a new request kind: add it above");
 }
 
 TEST(BrokerPipeServeTest, AOneActionSessionIsntKeptOpenByGreetingAgain)

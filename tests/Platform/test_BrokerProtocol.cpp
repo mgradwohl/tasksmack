@@ -150,6 +150,57 @@ TEST(BrokerProtocolTest, ProcessCountersRoundTripAndRefuseTooManyOrAStrayFlag)
     EXPECT_FALSE(decodeResponse(bytes).has_value());
 }
 
+// #2728: the processes hidepid hides, as their /proc files' text.
+TEST(BrokerProtocolTest, HiddenProcessesRoundTripAndRefuseTooManyOrAStrayCommandLine)
+{
+    const Request request = HiddenProcessesRequest{.visiblePids = {1, 2, 4242}};
+    EXPECT_EQ(roundTrip(request), request);
+    EXPECT_EQ(roundTrip(Request{HiddenProcessesRequest{}}), Request{HiddenProcessesRequest{}});
+
+    const Response reply = HiddenProcessesReply{
+        .processes = {HiddenProcess{.target = TARGET,
+                                    .stat = "4242 (sshd) S 1 ...",
+                                    .statm = "1 2 3 0 0 0 0",
+                                    .status = "Name:\tsshd\nUid:\t0\t0\t0\t0\n",
+                                    .cmdline = std::string("sshd: alice\0", 12),
+                                    .io = "read_bytes: 1\nwrite_bytes: 2\n",
+                                    .cgroup = "0::/system.slice/ssh.service\n"},
+                      HiddenProcess{.target = {.pid = 7, .startTimeTicks = 9}, .stat = "7 (k) S 2", .cmdline = std::nullopt}},
+        .truncated = true};
+    EXPECT_EQ(roundTrip(reply), reply);
+
+    // A count past MAX_VISIBLE_PIDS is refused before any PID is read.
+    std::vector<std::uint8_t> bytes = encodeRequest(1, request);
+    const std::uint32_t tooMany = static_cast<std::uint32_t>(MAX_VISIBLE_PIDS) + 1;
+    std::memcpy(bytes.data() + 4 + HEADER_BYTES, &tooMany, sizeof(tooMany));
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+
+    // A command line the flag says wasn't read is refused: the flag set to 0 with the text still there.
+    const Response unread = HiddenProcessesReply{.processes = {HiddenProcess{.target = TARGET, .cmdline = std::string("x")}}};
+    std::vector<std::uint8_t> response = encodeResponse(1, unread);
+    const std::size_t cmdlineFlag = 4 + HEADER_BYTES + 1 + 4 + 4 + 8 + (3 * 4);
+    ASSERT_EQ(response.at(cmdlineFlag), 1U);
+    response.at(cmdlineFlag) = 0;
+    EXPECT_FALSE(decodeResponse(response).has_value());
+}
+
+TEST(BrokerProtocolTest, HiddenProcessesPastAFrameAreCutAndSaySo)
+{
+    // Big enough that a frame holds fewer than all: each process takes its texts at MAX_STRING_BYTES.
+    const std::string big(MAX_STRING_BYTES, 'x');
+    HiddenProcessesReply many;
+    for (std::int32_t pid = 1; pid <= 60; ++pid) // about 192 KiB each: some 42 fit in 8 MiB
+    {
+        many.processes.push_back(HiddenProcess{.target = {.pid = pid, .startTimeTicks = 1}, .stat = big, .statm = big, .status = big});
+    }
+    const Response decoded = roundTrip(Response{many});
+    ASSERT_TRUE(std::holds_alternative<HiddenProcessesReply>(decoded));
+    const auto& cut = std::get<HiddenProcessesReply>(decoded);
+    EXPECT_LT(cut.processes.size(), many.processes.size());
+    EXPECT_FALSE(cut.processes.empty());
+    EXPECT_TRUE(cut.truncated);
+}
+
 TEST(BrokerProtocolTest, AnEntryWhoseSocketsWouldPassTheCapGoesWithoutThem)
 {
     ProcessCountersEntry many{.target = TARGET, .socketsRead = true};
@@ -708,6 +759,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::ReadFirmwareFile,
                                    MessageKind::ReadCrashes,
                                    MessageKind::ReadProcessCounters,
+                                   MessageKind::ListHiddenProcesses,
                                    MessageKind::ActionResult,
                                    MessageKind::EnvironmentResult,
                                    MessageKind::ModulesResult,
@@ -717,6 +769,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::FirmwareFileResult,
                                    MessageKind::CrashesResult,
                                    MessageKind::ProcessCountersResult,
+                                   MessageKind::HiddenProcessesResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);

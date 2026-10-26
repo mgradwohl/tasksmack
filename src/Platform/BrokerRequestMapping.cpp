@@ -11,6 +11,7 @@
 #include <exception>
 #include <expected>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -175,6 +176,24 @@ namespace
     return reply;
 }
 
+/// The processes hidepid hides from TaskSmack (#2728): a helper without the reader, or one that throws,
+/// answers with an error, which TaskSmack takes as "none listed".
+[[nodiscard]] Broker::Response handleHiddenProcesses(const Broker::HiddenProcessesRequest& read, const Readers& readers)
+{
+    if (!readers.hiddenProcesses)
+    {
+        return Broker::ErrorReply{.message = "This helper doesn't list hidden processes"};
+    }
+    try
+    {
+        return readers.hiddenProcesses(read.visiblePids);
+    }
+    catch (const std::exception& error)
+    {
+        return Broker::ErrorReply{.message = std::string("Listing hidden processes failed: ") + error.what()};
+    }
+}
+
 /// System Information's privileged firmware facts (#2310): only the files FirmwareFile names, never a path.
 [[nodiscard]] Broker::Response handleFirmwareFile(const Broker::FirmwareFileRequest& read, const Readers& readers)
 {
@@ -264,6 +283,10 @@ Broker::Response handleRequest(const Broker::Request& request, IProcessActions& 
     if (const auto* read = std::get_if<Broker::ProcessCountersRequest>(&request))
     {
         return handleProcessCounters(*read, readers);
+    }
+    if (const auto* read = std::get_if<Broker::HiddenProcessesRequest>(&request))
+    {
+        return handleHiddenProcesses(*read, readers);
     }
     if (std::holds_alternative<Broker::CrashesRequest>(request))
     {
