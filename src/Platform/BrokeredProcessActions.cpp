@@ -456,8 +456,57 @@ BrokeredProcessProbe::BrokeredProcessProbe(std::unique_ptr<IProcessProbe> inner,
 std::vector<ProcessCounters> BrokeredProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> counters = m_Inner->enumerate();
-    readRefusedCounters(counters);
+    listHiddenProcesses(counters);
+    readRefusedCounters(counters); // the hidden processes' FD counts, I/O and network too
     return counters;
+}
+
+void BrokeredProcessProbe::listHiddenProcesses(std::vector<ProcessCounters>& counters)
+{
+    if (m_HiddenRefused || m_Broker == nullptr || !m_Broker->connected() ||
+        (m_Inner->capabilities().missingPrivileges & MissingPrivilege::PROCESSES_HIDDEN) == 0)
+    {
+        return;
+    }
+    Broker::HiddenProcessesRequest request;
+    request.visiblePids.reserve(counters.size());
+    for (const ProcessCounters& process : counters)
+    {
+        request.visiblePids.push_back(process.pid);
+    }
+    // As the counters read: on the sampler's thread, never behind another call, and briefly; a skipped read
+    // leaves the hidden processes out until the next refresh.
+    constexpr std::chrono::milliseconds HIDDEN_TIMEOUT{1000};
+    const std::expected<Broker::Response, std::string> response = m_Broker->callIfIdle(request, HIDDEN_TIMEOUT);
+    if (!response.has_value())
+    {
+        return;
+    }
+    if (std::holds_alternative<Broker::ErrorReply>(*response))
+    {
+        m_HiddenRefused = true; // a helper that doesn't list them: not asked again
+        return;
+    }
+    const auto* reply = std::get_if<Broker::HiddenProcessesReply>(&*response);
+    if (reply == nullptr)
+    {
+        return;
+    }
+    for (const Broker::HiddenProcess& hidden : reply->processes)
+    {
+        std::optional<ProcessCounters> process = m_Inner->processFromFiles(hidden.target.pid,
+                                                                           ProcFileTexts{.stat = hidden.stat,
+                                                                                         .statm = hidden.statm,
+                                                                                         .status = hidden.status,
+                                                                                         .cmdline = hidden.cmdline,
+                                                                                         .io = hidden.io,
+                                                                                         .cgroup = hidden.cgroup});
+        // The helper's listing names the process its stat was read from; a record from other text isn't it.
+        if (process.has_value() && process->startTimeTicks == hidden.target.startTimeTicks)
+        {
+            counters.push_back(std::move(*process));
+        }
+    }
 }
 
 void BrokeredProcessProbe::readRefusedCounters(std::vector<ProcessCounters>& counters)
@@ -613,6 +662,11 @@ SocketTrafficReading BrokeredProcessProbe::readSocketTraffic() const
         }
     }
     return reading;
+}
+
+std::optional<ProcessCounters> BrokeredProcessProbe::processFromFiles(std::int32_t pid, const ProcFileTexts& files) const
+{
+    return m_Inner->processFromFiles(pid, files);
 }
 
 MemoryRollupRead BrokeredProcessProbe::readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const

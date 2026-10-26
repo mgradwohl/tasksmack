@@ -330,6 +330,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         m_MemoryRollups[pid] = rollup;
     }
 
+    /// What processFromFiles() builds from a hidden process's files (#2728); unset, it builds nothing.
+    void setProcessFromFiles(std::function<std::optional<Platform::ProcessCounters>(std::int32_t, const Platform::ProcFileTexts&)> build)
+    {
+        m_ProcessFromFiles = std::move(build);
+    }
+
+    [[nodiscard]] std::optional<Platform::ProcessCounters> processFromFiles(std::int32_t pid,
+                                                                            const Platform::ProcFileTexts& files) const override
+    {
+        return m_ProcessFromFiles ? m_ProcessFromFiles(pid, files) : std::nullopt;
+    }
+
     /// readMemoryRollup() refuses @p pid as the OS refuses another user's process (#2309).
     void setMemoryRollupDenied(std::int32_t pid)
     {
@@ -429,6 +441,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     uint64_t m_TotalCpuTime = 0;
     uint64_t m_SystemTotalMemory = 8ULL * 1024 * 1024 * 1024; // Default 8 GB
     mutable Platform::ProcessCapabilities m_Capabilities;     // readSocketTraffic() may switch it
+    std::function<std::optional<Platform::ProcessCounters>(std::int32_t, const Platform::ProcFileTexts&)> m_ProcessFromFiles;
     mutable std::optional<Platform::ProcessCapabilities> m_CapabilitiesAfterSocketRead;
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};

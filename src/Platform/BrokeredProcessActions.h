@@ -166,7 +166,8 @@ class BrokeredConnectionsReader final : public IProcessConnectionsReader
 
 /// The process probe, with Process Details' PSS and USS (#2309) read through the helper while it runs
 /// when the in-process read is refused (another user's process), and each refresh's refused FD counts and
-/// I/O bytes the same way, in one ReadProcessCounters (#2728). That request also brings, at the inode map's
+/// I/O bytes the same way, in one ReadProcessCounters (#2728); the processes hidepid hides from it are
+/// listed by the helper (ListHiddenProcesses) and joined to the list. That request also brings, at the inode map's
 /// cadence, the socket inodes of processes whose /proc/<pid>/fd links were refused, so readSocketTraffic()
 /// attributes their connections too. Everything else is the inner probe's.
 /// There is no prompt here: the figures follow once the user has authenticated for anything else.
@@ -183,10 +184,15 @@ class BrokeredProcessProbe final : public IProcessProbe
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
     [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
+    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const override;
     void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
     void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
 
   private:
+    /// Appends the processes hidepid hides from the inner probe, listed by a running helper (#2728), when
+    /// its capabilities say some are hidden.
+    void listHiddenProcesses(std::vector<ProcessCounters>& counters);
+
     /// Fills in @p counters' refused FD counts and I/O bytes from the helper, on the sampler's thread, and
     /// when due its socket owners.
     void readRefusedCounters(std::vector<ProcessCounters>& counters);
@@ -203,6 +209,8 @@ class BrokeredProcessProbe final : public IProcessProbe
     /// The helper answered ReadProcessCounters with an error (a helper that doesn't read them, as Windows'
     /// doesn't need to): not asked again.
     bool m_CountersRefused = false;
+    /// The helper answered ListHiddenProcesses with an error: not asked again.
+    bool m_HiddenRefused = false;
     /// When the helper last read socket inodes: again every INODE_PID_CACHE_TTL_MS, as the inner map rebuilds.
     std::chrono::steady_clock::time_point m_SocketsReadAt;
     /// From the last socket read: each inode's owner, and the processes whose sockets were all read.

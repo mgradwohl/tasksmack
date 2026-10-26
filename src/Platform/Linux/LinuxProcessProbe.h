@@ -72,24 +72,10 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
     [[nodiscard]] MemoryRollupRead readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
 
-    /// The /proc/<pid> files a process's record is built from, as text (#2728): what tasksmack-helper reads
-    /// of a process hidepid hides from TaskSmack, which can't open any of them itself.
-    // NOLINTBEGIN(readability-redundant-member-init) - {} lets designated initializers omit a field without a warning
-    struct ProcFileTexts
-    {
-        std::string stat{};
-        std::string statm{};
-        std::string status{};
-        std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
-        std::string io{};                     ///< Empty when unreadable: its I/O is then unavailable
-        std::string cgroup{};
-    };
-    // NOLINTEND(readability-redundant-member-init)
-
     /// @p pid's record from @p files alone, through the same parsers as enumerate(): nullopt when its stat
     /// doesn't parse. What the files can't say is left unknown: its FD count and network counters (the
     /// helper's counters read supplies those) and its architecture.
-    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const;
+    [[nodiscard]] std::optional<ProcessCounters> processFromFiles(std::int32_t pid, const ProcFileTexts& files) const override;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)

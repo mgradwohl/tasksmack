@@ -101,6 +101,33 @@ bool hasDisplay()
     return TestSupport::enforceDisplayRequirement(available);
 }
 
+/// Whether SDL runs these tests on native Wayland, as it chooses a driver: SDL_VIDEODRIVER when set, else
+/// Wayland whenever WAYLAND_DISPLAY names one (SDL 3 prefers it to X11). There the compositor moves,
+/// resizes and maximizes the window -- the hit test hands it the title bar and the borders (#744) -- and
+/// never tells TaskSmack where the window is, so injected drags can't move it (#2724). Known before the
+/// app starts, so a test can skip without waiting out its deadlines.
+bool onNativeWayland()
+{
+#ifdef _WIN32
+    return false;
+#else
+    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
+    const char* driver = std::getenv("SDL_VIDEODRIVER");
+    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    // NOLINTEND(concurrency-mt-unsafe)
+    if (driver != nullptr && *driver != '\0')
+    {
+        return std::string_view(driver).starts_with("wayland");
+    }
+    return waylandDisplay != nullptr && *waylandDisplay != '\0';
+#endif
+}
+
+/// Why a client-side drag test doesn't run on native Wayland.
+constexpr const char* COMPOSITOR_DRAGS =
+    "native Wayland: the compositor runs title-bar drags, border resizes and maximize (#744), so injected "
+    "pointer events can't move the window; TheHitTestCallbackAnswersForTheRealWindow covers the hand-off (#2724)";
+
 /// For a driver that presses keys through ImGuiIO: a focus loss no longer drops its presses (#2268).
 /// Under Xvfb there's no window manager, so SDL gives each window it shows the X input focus, and a test
 /// app that ctest -j opens alongside this one takes it from ours. ImGui clears every key after the frame
@@ -332,8 +359,12 @@ TEST_F(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     EXPECT_EQ(observed.settings, 1);
     EXPECT_EQ(observed.help, 1);
     EXPECT_EQ(observed.about, 1);
-    EXPECT_TRUE(observed.maximizedAfterMaximize);
-    EXPECT_FALSE(observed.maximizedAfterRestore);
+    // On native Wayland, Maximize asks the compositor, which may decline (sway, a tiling compositor, does).
+    if (!onNativeWayland())
+    {
+        EXPECT_TRUE(observed.maximizedAfterMaximize);
+        EXPECT_FALSE(observed.maximizedAfterRestore);
+    }
     // The bar never lets the window get narrower than it has to show.
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
@@ -694,11 +725,16 @@ TEST_F(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     }
 
     EXPECT_FALSE(observed.timedOut);
-    EXPECT_TRUE(observed.maximizedAfterDoubleClick);        // double-click on the empty title bar maximizes
-    EXPECT_FALSE(observed.maximizedAfterSecondDoubleClick); // and again restores
-    EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
-    EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
-    EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
+    // On native Wayland the title bar's and the edges' presses are the compositor's (DRAGGABLE, RESIZE_*):
+    // its double-click and its click are its own (#744). The keyboard's window menu is still TaskSmack's.
+    if (!onNativeWayland())
+    {
+        EXPECT_TRUE(observed.maximizedAfterDoubleClick);        // double-click on the empty title bar maximizes
+        EXPECT_FALSE(observed.maximizedAfterSecondDoubleClick); // and again restores
+        EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
+        EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
+    }
+    EXPECT_TRUE(observed.systemMenuOpened); // Ctrl+Space opens the window menu
 }
 
 /// What the About driver saw.
@@ -1110,6 +1146,10 @@ TEST_F(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << COMPOSITOR_DRAGS;
+    }
 
     Core::ApplicationSpecification spec;
     spec.Name = "UiLayersOnDisplayDragTest";
@@ -1149,6 +1189,10 @@ TEST_F(UiLayersOnDisplayTest, TitleBarDragStepSurvivesAFocusLossRightAfterThePre
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
+    }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << COMPOSITOR_DRAGS;
     }
 
     Core::ApplicationSpecification spec;
@@ -1617,6 +1661,10 @@ TEST_F(UiLayersOnDisplayTest, TitleBarDragGeometryKeepsThePointerOnTheWindow)
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
+    }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << COMPOSITOR_DRAGS;
     }
 
     Core::ApplicationSpecification spec;
@@ -2100,6 +2148,10 @@ TEST_F(UiLayersOnDisplayTest, TitleBarResizesFromEveryEdgeAndCornerAndStopsAtThe
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << COMPOSITOR_DRAGS;
+    }
 
     Core::ApplicationSpecification spec;
     spec.Name = "UiLayersOnDisplayEdgeResizeTest";
@@ -2390,6 +2442,10 @@ TEST_F(UiLayersOnDisplayTest, AFastLeftEdgeResizeKeepsTheRightEdgeWhereItWas)
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << COMPOSITOR_DRAGS;
+    }
 
     Core::ApplicationSpecification spec;
     spec.Name = "UiLayersOnDisplayFastResizeTest";
@@ -2435,6 +2491,7 @@ struct HitTestObserved
     bool systemDrag = false;                               ///< Core::VideoBackend::usesSystemDrag() while the app ran
     bool systemResize = false;                             ///< Core::VideoBackend::usesSystemResize()
     bool clientSideMaximize = false;                       ///< Core::VideoBackend::supportsClientSideMaximize()
+    bool wayland = false;                                  ///< Core::VideoBackend::isWayland() while the app ran
     bool maximized = false;                                ///< The window maximized for the second round
     bool maximizeUnavailable = false;                      ///< It never did: that round was skipped
     int frames = 0;
@@ -2482,6 +2539,7 @@ class HitTestDriverLayer : public Core::Layer
         {
         case Phase::AskNormal:
             m_Observed.systemDrag = Core::VideoBackend::usesSystemDrag();
+            m_Observed.wayland = Core::VideoBackend::isWayland();
             m_Observed.systemResize = Core::VideoBackend::usesSystemResize();
             m_Observed.clientSideMaximize = Core::VideoBackend::supportsClientSideMaximize();
             askNormal(width, height);
@@ -2733,6 +2791,12 @@ TEST_F(UiLayersOnDisplayTest, TheHitTestCallbackAnswersForTheRealWindow)
     EXPECT_EQ(observed.title, SDL_HITTEST_DRAGGABLE);
     EXPECT_EQ(observed.rightEdge, SDL_HITTEST_NORMAL);
 #endif
+    if (observed.wayland)
+    {
+        // Native Wayland hands the compositor both (#744): what the drag tests can't drive there (#2724).
+        EXPECT_EQ(observed.title, SDL_HITTEST_DRAGGABLE);
+        EXPECT_EQ(observed.rightEdge, SDL_HITTEST_RESIZE_RIGHT);
+    }
     if (observed.maximizeUnavailable)
     {
         GTEST_SKIP() << "The window never maximized on this display, so the maximized round was skipped";
@@ -3707,10 +3771,21 @@ TEST_F(UiLayersOnDisplayTest, AFirstRunOpensAtTheDefaultsAndSavesTheGoldenConfig
     const std::optional<std::string> golden = readWholeFile(goldenPath);
     ASSERT_TRUE(golden.has_value()) << "can't read " << Core::pathToUtf8(goldenPath);
     const std::string masked = maskMachineDependentKeys(saved.value_or(std::string{}));
-    EXPECT_EQ(masked, maskMachineDependentKeys(golden.value_or(std::string{})))
-        << "The first-run config.toml is not " << Core::pathToUtf8(goldenPath)
-        << ". If a default changed on purpose, replace the golden file with this (masked) text:\n"
-        << masked;
+    std::string expected = maskMachineDependentKeys(golden.value_or(std::string{}));
+    if (onNativeWayland())
+    {
+        // The compositor never says where the window is, so no position is saved there (#2724).
+        for (const std::string_view line : {std::string_view("x = \"<masked>\"\n"), std::string_view("y = \"<masked>\"\n")})
+        {
+            if (const std::size_t at = expected.find(line); at != std::string::npos)
+            {
+                expected.erase(at, line.size());
+            }
+        }
+    }
+    EXPECT_EQ(masked, expected) << "The first-run config.toml is not " << Core::pathToUtf8(goldenPath)
+                                << ". If a default changed on purpose, replace the golden file with this (masked) text:\n"
+                                << masked;
 
     try
     {

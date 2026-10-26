@@ -1382,7 +1382,7 @@ TEST(LinuxProcessProbeTest, AnEmptyCmdlineIsAKernelThreadShownInBrackets)
 TEST(LinuxProcessProbeTest, ARecordFromTheFilesTextIsTheOneEnumerateBuilds)
 {
     ScopedTempDir proc("ts_test_proc_from_files");
-    const LinuxProcessProbe::ProcFileTexts files{
+    const ProcFileTexts files{
         .stat = "6161 (worker) S 1 6161 6161 0 -1 4194304 7 0 2 0 120 30 0 0 20 5 3 0 4242 104857600 512 "
                 "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
         .statm = "25600 600 200 0 0 0 0\n",
