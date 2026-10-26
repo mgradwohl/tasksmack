@@ -2990,7 +2990,7 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 | Artifact Signing account | `tasksmacksigning` (endpoint `https://wus2.codesigning.azure.net`) |
 | Certificate profile | `tasksmack-release` (Public Trust) |
 | Expected signer CN | `Matt Gradwohl` (`WINDOWS_EXPECTED_SIGNER` in `release.yml`, `TASKSMACK_EXPECTED_SIGNER` in CMake) |
-| Expected issuer | `CN=Microsoft ID Verified CS [AE]OC CA [0-9][0-9], O=Microsoft Corporation, C=US`, a `-like` pattern (`TASKSMACK_EXPECTED_ISSUER`; #2990). The certificates seen so far: `CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US` |
+| Expected issuer | `CN=Microsoft ID Verified CS ?OC CA ??, O=Microsoft Corporation, C=US` in spirit: an `AOC` or `EOC` CA with a two-digit number, matched with `-like` (`TASKSMACK_EXPECTED_ISSUER`, whose exact default is in cmake/Options.cmake; #2990). The certificates seen so far: `CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US` |
 | Expected extended key usage | `1.3.6.1.4.1.311.97.*`, a `-like` pattern (`TASKSMACK_EXPECTED_EKU`; #2990). The certificates carry `1.3.6.1.4.1.311.97.1.0`, Code Signing (`1.3.6.1.5.5.7.3.3`) and the identity validation's own `1.3.6.1.4.1.311.97.<id>` |
 | GitHub environment | `release-signing`: admits `v*` tags and the `main`, `release/*` and `candidate/*` branches |
 | Sign-in | GitHub OIDC; a tenant-level sign-in (`allow-no-subscriptions`); the environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
