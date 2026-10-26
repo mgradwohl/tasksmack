@@ -127,6 +127,30 @@ for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScen
     fi
 done
 
+# The application itself, once (#2965): the tests never enter main.cpp's runApp(), so its startup, layer
+# composition and teardown went uncounted. A fresh config directory, the synthetic machine and a screenshot
+# request that closes it as Close would (TASKSMACK_SCREENSHOT, as the release smoke checks use): it must
+# exit 0, write a PNG and save its config. Its profile lands beside the tests' (LLVM_PROFILE_FILE's %p).
+APP_SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-coverage-app.XXXXXX")"
+app_status=0
+env TASKSMACK_CONFIG_DIR="${APP_SMOKE_DIR}/config" TASKSMACK_SYNTHETIC="${UI_SCENARIO_SYNTHETIC}" \
+    TASKSMACK_SCREENSHOT="${APP_SMOKE_DIR}/frame.png;after=5" \
+    timeout 120 "${BUILD_DIR}/bin/TaskSmack" >"${APP_SMOKE_DIR}/app.log" 2>&1 || app_status=$?
+app_problem=""
+if [[ $app_status -ne 0 ]]; then
+    app_problem="exit code ${app_status}"
+elif [[ "$(head -c 8 "${APP_SMOKE_DIR}/frame.png" 2>/dev/null | od -An -tx1 | tr -d ' \n')" != "89504e470d0a1a0a" ]]; then
+    app_problem="no PNG at ${APP_SMOKE_DIR}/frame.png"
+elif ! grep -q '^config_version = ' "${APP_SMOKE_DIR}/config/config.toml" 2>/dev/null; then
+    app_problem="no saved config.toml"
+fi
+if [[ -n "$app_problem" ]]; then
+    echo "Warning: the TaskSmack smoke run failed (${app_problem}); its log:" >&2
+    tail -n 40 "${APP_SMOKE_DIR}/app.log" >&2 || true
+    FAILED_SUITES+=("TaskSmack (the application)")
+fi
+rm -rf "${APP_SMOKE_DIR}"
+
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
 $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"

@@ -218,6 +218,44 @@ try {
         }
     }
 
+    # The application itself, once (#2965), as tools/coverage.sh does: a fresh config directory, the
+    # synthetic machine and a screenshot request that closes it as Close would; it must exit 0, write a
+    # PNG and save its config. Its profile lands beside the tests' (LLVM_PROFILE_FILE's %p).
+    $appSmokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tasksmack-coverage-app-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $appSmokeDir | Out-Null
+    $frame = Join-Path $appSmokeDir "frame.png"
+    $env:TASKSMACK_CONFIG_DIR = Join-Path $appSmokeDir "config"
+    $env:TASKSMACK_SYNTHETIC = $uiScenarioSynthetic
+    $env:TASKSMACK_SCREENSHOT = "$frame;after=5"
+    $appProblem = ""
+    try {
+        $app = Start-Process -FilePath "$BuildDir\bin\TaskSmack.exe" -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $appSmokeDir "app.log") -RedirectStandardError (Join-Path $appSmokeDir "app.err.log")
+        if (-not $app.WaitForExit(120000)) {
+            $app.Kill()
+            $appProblem = "it didn't exit within 120 s"
+        } elseif ($app.ExitCode -ne 0) {
+            $appProblem = "exit code $($app.ExitCode)"
+        }
+    }
+    finally {
+        Remove-Item Env:TASKSMACK_CONFIG_DIR, Env:TASKSMACK_SYNTHETIC, Env:TASKSMACK_SCREENSHOT -ErrorAction SilentlyContinue
+    }
+    if (-not $appProblem) {
+        $magic = if (Test-Path $frame) { [System.IO.File]::ReadAllBytes($frame) | Select-Object -First 8 } else { @() }
+        if (($magic -join ',') -ne '137,80,78,71,13,10,26,10') {
+            $appProblem = "no PNG at $frame"
+        } elseif (-not (Select-String -Path (Join-Path $appSmokeDir "config\config.toml") -Pattern '^config_version = ' -Quiet -ErrorAction SilentlyContinue)) {
+            $appProblem = "no saved config.toml"
+        }
+    }
+    if ($appProblem) {
+        Write-Warning "The TaskSmack smoke run failed ($appProblem); its log:"
+        Get-Content (Join-Path $appSmokeDir "app.log"), (Join-Path $appSmokeDir "app.err.log") -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+        $failedSuites.Add("TaskSmack (the application)")
+    }
+    Remove-Item -Recurse -Force $appSmokeDir -ErrorAction SilentlyContinue
+
     # Step 3: Merge profraw files
     Write-Host "==> Merging coverage data..."
     $profrawFiles = Get-ChildItem -Path $BuildDir -Filter "*.profraw" | Select-Object -ExpandProperty FullName
