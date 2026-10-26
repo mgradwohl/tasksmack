@@ -1,0 +1,5 @@
+# Hash-locked dependency of tools/docs-site-smoke.py, the browser smoke test of the Docsify site under
+# docs/ (#2967). Regenerate with:
+#   python -m pip install --require-hashes -r requirements-dev-tools.txt
+#   pip-compile --generate-hashes --output-file=requirements-docs-site.txt requirements-docs-site.in
+playwright==1.64.1

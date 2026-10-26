@@ -18,12 +18,23 @@
 <body>
   <div id="app"></div>
   <script>
+    // The site's root is the User Guide's own route, not the guide shown at the root (#2967): with
+    // relativePath, a page's links resolve from its route, so the guide's faq.md#... and ../images/...
+    // would resolve from the root and 404 there. A redirect, so the root URL and the name link both work.
+    function toUserGuide() {
+      if (location.hash === '' || location.hash === '#' || location.hash === '#/') {
+        location.replace(location.pathname + location.search + '#/guide/user-guide');
+      }
+    }
+    toUserGuide();
+    window.addEventListener('hashchange', toUserGuide);
     window.$docsify = {
       name: 'TaskSmack',
       repo: 'mgradwohl/tasksmack',
+      // What Docsify loads for the root route, which toUserGuide() redirects before it's shown; without
+      // it, Docsify (and search) would ask for a README.md the site doesn't have.
       homepage: 'guide/user-guide.md',
-      // Links and images resolve from the page they're in, as GitHub renders them: the guide's
-      // ../images/... and faq.md#... otherwise resolve from the site root and 404.
+      // Links and images resolve from the page they're in, as GitHub renders them (#2953).
       relativePath: true,
       loadSidebar: true,
       coverpage: false,
@@ -45,7 +56,33 @@
       },
       mermaid: {
         theme: 'default'
-      }
+      },
+      plugins: [
+        // Each heading also answers to GitHub's anchor for it (#2967). The docs link sections as GitHub
+        // renders them (faq.md#process-io-fds-or-network-show-na-on-linux), but Docsify's slugs differ
+        // for some characters: a heading's double quotes become "quot", an apostrophe "39". Without
+        // this, such a link lands at the top of the page instead of the section. Docsify has scrolled to
+        // the route's id by the time this runs, so a link to an added anchor scrolls here.
+        function (hook, vm) {
+          function githubSlug(text) {
+            return text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+          }
+          hook.doneEach(function () {
+            document.querySelectorAll('.markdown-section :is(h1, h2, h3, h4, h5, h6)').forEach(function (heading) {
+              var slug = githubSlug(heading.textContent);
+              if (slug && slug !== heading.id && !document.getElementById(slug)) {
+                var anchor = document.createElement('span');
+                anchor.id = slug;
+                heading.prepend(anchor);
+              }
+            });
+            var wanted = vm.route.query.id && document.getElementById(decodeURIComponent(vm.route.query.id));
+            if (wanted && wanted.tagName === 'SPAN') {
+              wanted.parentElement.scrollIntoView();
+            }
+          });
+        }
+      ]
     };
   </script>
   <!-- Core -->

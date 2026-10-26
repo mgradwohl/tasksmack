@@ -19,6 +19,26 @@ To avoid duplication and doc drift, these are the canonical docs:
 
 Avoid copying contributor commands or architecture diagrams into additional Markdown files. Link to the relevant canonical section instead.
 
+### The docs site
+
+`docs/` is also the [Docsify site](https://mgradwohl.github.io/tasksmack/), rendered in the browser
+from `docs/index.html`. CI checks it two ways, both in `ci.yml`'s `docs-hygiene` job:
+
+- `tools/md-link-audit.sh` checks that every Markdown link's and image's target exists in the tree.
+- `tools/docs-site-smoke.py` serves `docs/` under `/tasksmack/`, as GitHub Pages does, and drives it in
+  headless Chromium (#2967). It checks the root URL, a FAQ link and its section, the sidebar,
+  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. Run it after
+  changing `docs/index.html`, the sidebar, or how pages link to each other:
+
+```bash
+python -m pip install --require-hashes -r requirements-docs-site.txt
+python -m playwright install --with-deps --only-shell chromium   # --with-deps needs sudo; drop it once the deps are in
+python tools/docs-site-smoke.py   # --offline skips fetching the latest release page; --headed shows the browser
+```
+
+Link sections as GitHub renders them (`faq.md#why-doesnt-the-network-total-match-the-sum-of-the-interfaces`):
+the site gives each heading GitHub's anchor as well as Docsify's own.
+
 ### C++ API Documentation
 
 JSDoc and language-level docstrings are not C++ conventions. When declaration-level API documentation is useful, use Doxygen-compatible `///` or `/** ... */` comments in headers. Document contracts, ownership, units, thread safety, and platform limitations; do not narrate self-explanatory accessors or repeat implementation details. Repository-level design and workflow guidance belongs in the Markdown sources above.

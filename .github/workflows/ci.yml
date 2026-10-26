@@ -227,7 +227,7 @@ jobs:
 
   docs-hygiene:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -235,6 +235,24 @@ jobs:
 
       - name: Audit markdown links
         run: ./tools/md-link-audit.sh
+
+      # The audit checks link targets in the source tree; this drives the Docsify site itself, served
+      # under /tasksmack/ as GitHub Pages serves it, in headless Chromium (#2967): routes, section
+      # anchors, screenshots, the 404 page's recovery, JavaScript errors.
+      - name: Setup Python for the docs site check
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: 'requirements-docs-site.txt'
+
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-docs-site.txt
+          python -m playwright install --with-deps --only-shell chromium
+
+      - name: Browser smoke test of the docs site
+        run: python tools/docs-site-smoke.py
 
   # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
