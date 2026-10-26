@@ -221,6 +221,12 @@ try {
     # The application itself, once (#2965), as tools/coverage.sh does: a fresh config directory, the
     # synthetic machine and a screenshot request that closes it as Close would; it must exit 0, write a
     # PNG and save its config. Its profile lands beside the tests' (LLVM_PROFILE_FILE's %p).
+    # A runner with no GPU has only GDI Generic's OpenGL 1.1: .github/actions/setup-mesa-llvmpipe copies Mesa's
+    # software driver beside the tests (copy-to) and exports MESA_DLL_DIR; the application needs it beside
+    # bin\TaskSmack.exe too (a build tree, never the source tree).
+    if ($env:MESA_DLL_DIR -and (Test-Path -LiteralPath $env:MESA_DLL_DIR)) {
+        Copy-Item -Path (Join-Path $env:MESA_DLL_DIR '*.dll') -Destination "$BuildDir\bin" -Force
+    }
     $appSmokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tasksmack-coverage-app-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $appSmokeDir | Out-Null
     $frame = Join-Path $appSmokeDir "frame.png"
