@@ -38,7 +38,7 @@ Only binaries built from this repository's source by the project's GitHub Action
 ([`.github/workflows/release.yml`](https://github.com/mgradwohl/tasksmack/blob/main/.github/workflows/release.yml)),
 running on GitHub-hosted runners, are signed. Nothing built on a developer's machine, in a fork, or by a pull
 request's CI run is signed. The `release-signing` environment admits only release runs for a `v*` tag and
-rehearsal runs (`dry_run`) dispatched from the `main`, `release/*` or `candidate/*` branches; a rehearsal signs
+rehearsal runs (`dry_run`) dispatched from the `main` or `release/*` branches; a rehearsal signs
 with the same certificate but publishes nothing.
 
 The third-party libraries TaskSmack uses are compiled from source and linked statically into
