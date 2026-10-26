@@ -39,8 +39,12 @@ class BrokeredServiceActions final : public IServiceActions
 
   private:
     /// @p result, or, when only authorization stood in its way and the helper is running, the helper's.
-    [[nodiscard]] ServiceActionResult
-    retried(ServiceActionResult result, ServiceAction action, std::string_view name, ServiceStartType startType);
+    /// A stop request ends the wait for the helper's answer (#3029): ServiceActionResult::stopRequested().
+    [[nodiscard]] ServiceActionResult retried(ServiceActionResult result,
+                                              ServiceAction action,
+                                              std::string_view name,
+                                              ServiceStartType startType,
+                                              const std::stop_token& stopToken);
     /// @p action through the helper: its result; nullopt from a helper that doesn't do service actions; or
     /// why it couldn't be asked.
     [[nodiscard]] std::expected<std::optional<ServiceActionResult>, std::string>

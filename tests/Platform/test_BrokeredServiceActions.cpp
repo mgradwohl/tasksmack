@@ -112,6 +112,24 @@ TEST(BrokeredServiceActionsTest, ARefusalForWantOfAuthorizationGoesToARunningHel
     EXPECT_EQ(f.broker->connectCount(), 0) << "never a prompt";
 }
 
+// #3029: a helper's service action can take up to a minute; a stop request (cancelling, or closing
+// TaskSmack) ends the wait for its answer, and the result says it was cancelled.
+TEST(BrokeredServiceActionsTest, AStopRequestEndsTheWaitForTheHelper)
+{
+    Fixture f(/*connected=*/true);
+    f.inner->answer = needsAuthorization();
+    std::stop_source stop;
+    stop.request_stop();
+    const ServiceActionResult restarted = f.actions->restart("cron.service", stop.get_token());
+    EXPECT_TRUE(restarted.cancelled);
+    EXPECT_FALSE(restarted.ok);
+    ASSERT_EQ(f.broker->requests().size(), 1U) << "the token reached the helper's call";
+
+    const ServiceActionResult authorized =
+        f.actions->runAuthorized(ServiceAction::Stop, "cron.service", ServiceStartType::Unknown, stop.get_token());
+    EXPECT_TRUE(authorized.cancelled);
+}
+
 TEST(BrokeredServiceActionsTest, OtherFailuresAndNoRunningHelperLeaveTaskSmacksOwnAnswer)
 {
     Fixture f(/*connected=*/true);

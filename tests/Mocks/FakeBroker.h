@@ -133,14 +133,19 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_ConnectCount;
     }
 
+    /// A stopped @p stopToken fails the call with "cancelled", as PkexecBroker's wait does.
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> call(const Platform::Broker::Request& request,
-                                                                              const std::stop_token& /*stopToken*/) override
+                                                                              const std::stop_token& stopToken) override
     {
         const std::scoped_lock lock(m_Mutex);
         m_Requests.push_back(request);
         if (!m_Connected)
         {
             return std::unexpected(std::string("not connected"));
+        }
+        if (stopToken.stop_requested())
+        {
+            return std::unexpected(std::string("cancelled"));
         }
         if (m_Answer)
         {

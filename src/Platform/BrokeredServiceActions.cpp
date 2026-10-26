@@ -44,14 +44,20 @@ BrokeredServiceActions::askBroker(ServiceAction action, std::string_view name, S
     return std::nullopt; // an ErrorReply: a helper that doesn't do service actions
 }
 
-ServiceActionResult
-BrokeredServiceActions::retried(ServiceActionResult result, ServiceAction action, std::string_view name, ServiceStartType startType)
+ServiceActionResult BrokeredServiceActions::retried(
+    ServiceActionResult result, ServiceAction action, std::string_view name, ServiceStartType startType, const std::stop_token& stopToken)
 {
     if (result.ok || !result.needsAuthorization || m_Broker == nullptr || !m_Broker->connected())
     {
         return result;
     }
-    const auto helper = askBroker(action, name, startType, std::stop_token{});
+    const auto helper = askBroker(action, name, startType, stopToken);
+    if (!helper.has_value() && stopToken.stop_requested())
+    {
+        // A helper's action can take up to PkexecBroker::SERVICE_ACTION_TIMEOUT: closing TaskSmack, or
+        // cancelling, doesn't wait it out (#3029). What the helper already sent systemd still happens.
+        return ServiceActionResult::stopRequested();
+    }
     if (!helper.has_value())
     {
         // The helper exited, timed out or broke between connected() and the call (#2414): the refusal stands,
@@ -64,22 +70,22 @@ BrokeredServiceActions::retried(ServiceActionResult result, ServiceAction action
 
 ServiceActionResult BrokeredServiceActions::start(std::string_view name, const std::stop_token& stopToken)
 {
-    return retried(m_Inner->start(name, stopToken), ServiceAction::Start, name, ServiceStartType::Unknown);
+    return retried(m_Inner->start(name, stopToken), ServiceAction::Start, name, ServiceStartType::Unknown, stopToken);
 }
 
 ServiceActionResult BrokeredServiceActions::stop(std::string_view name, const std::stop_token& stopToken)
 {
-    return retried(m_Inner->stop(name, stopToken), ServiceAction::Stop, name, ServiceStartType::Unknown);
+    return retried(m_Inner->stop(name, stopToken), ServiceAction::Stop, name, ServiceStartType::Unknown, stopToken);
 }
 
 ServiceActionResult BrokeredServiceActions::restart(std::string_view name, const std::stop_token& stopToken)
 {
-    return retried(m_Inner->restart(name, stopToken), ServiceAction::Restart, name, ServiceStartType::Unknown);
+    return retried(m_Inner->restart(name, stopToken), ServiceAction::Restart, name, ServiceStartType::Unknown, stopToken);
 }
 
 ServiceActionResult BrokeredServiceActions::setStartType(std::string_view name, ServiceStartType startType)
 {
-    return retried(m_Inner->setStartType(name, startType), ServiceAction::SetStartType, name, startType);
+    return retried(m_Inner->setStartType(name, startType), ServiceAction::SetStartType, name, startType, std::stop_token{});
 }
 
 ServiceActionResult BrokeredServiceActions::runAuthorized(ServiceAction action,
@@ -101,6 +107,10 @@ ServiceActionResult BrokeredServiceActions::runAuthorized(ServiceAction action,
         }
     }
     const auto helper = askBroker(action, name, startType, stopToken);
+    if (!helper.has_value() && stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
     if (!helper.has_value())
     {
         return ServiceActionResult::failed("Couldn't ask the administrator helper: " + helper.error());
