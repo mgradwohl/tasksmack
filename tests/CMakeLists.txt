@@ -217,6 +217,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(MdLinkAuditScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
 
+# tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
+# Stub binaries; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME ProfileHeapShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_profile_heap_sh.py)
+    set_tests_properties(ProfileHeapShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/analyze-perf.sh fails, rather than summarizing, when every TaskSmack function it sampled is an
 # unresolved address (#2977). A stub perf; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
