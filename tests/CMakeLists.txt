@@ -449,6 +449,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
+    Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
     Platform/test_BrokeredSystemInfoProbe.cpp
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
@@ -881,6 +882,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp

@@ -7,6 +7,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
+#include "Platform/BrokeredServiceActions.h"
 #include "Platform/BrokeredSystemInfoProbe.h"
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
@@ -115,7 +116,14 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
 
 ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* /*scenario*/)
 {
+#ifdef _WIN32
     return {.probe = Platform::makeServiceProbe(), .actions = Platform::makeServiceActions()};
+#else
+    // A refused action goes to a running helper, and Authenticate and retry starts it (#2728). Windows'
+    // helper doesn't do service actions, so Windows keeps its own.
+    return {.probe = Platform::makeServiceProbe(),
+            .actions = Platform::withPrivilegedBroker(Platform::makeServiceActions(), sharedPrivilegedBroker())};
+#endif
 }
 
 StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scenario*/)
