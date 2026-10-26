@@ -63,6 +63,15 @@ endforeach()
 # tasksmack_gtest_add_suites(): one ctest entry per gtest suite, not per case (#1871)
 include(../cmake/GTestSuites.cmake)
 
+# THIRD_PARTY_NOTICES.txt's generator run on its own (#2960): with no Dependencies.cmake included and the
+# toml++ patch variable unset, and with it set as configure sets it. Each case gets a fresh -P process.
+add_test(NAME ThirdPartyNoticesStandaloneScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-standalone
+            -DTS_CASE=standalone -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+add_test(NAME ThirdPartyNoticesExplicitPatchScript
+    COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR} -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/third-party-notices-explicit
+            -DTS_CASE=explicit -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ThirdPartyNoticesCheck.cmake)
+
 if(WIN32)
     find_program(TASKSMACK_PWSH NAMES pwsh)
     if(TASKSMACK_PWSH)
