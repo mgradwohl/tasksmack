@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs the shell of three workflow steps whose bugs lived only inside a `run:` block (#2478).
+"""Runs the shell of workflow steps whose bugs lived only inside a `run:` block (#2478).
 
 - renovate.yml "Select dry-run mode": a scheduled or `disabled` run must not set RENOVATE_DRY_RUN,
   which Renovate reads as a dry run whatever its value (#2527).
@@ -12,10 +12,14 @@
 - release.yml verify-reproducibility-windows "Compare digests": matching packages pass whatever the
   build-inputs manifests say, and only differing packages fail (#2952). Run with pwsh the way GitHub's
   `shell: pwsh` wrapper runs it, against fixture .zips and manifests and the real comparator script.
+- codeql.yml "Keep results under src/": a result is kept when any of its locations, code-flow steps
+  or related locations is under src/, so a taint flow from src/ into a third-party sink survives;
+  only results with no src/ location at all are dropped (#2992).
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
-Main Health cases also need jq, and the reproducibility cases pwsh, and are skipped without them.
+Main Health and CodeQL cases also need jq, and the reproducibility cases pwsh, and are skipped
+without them.
 """
 
 from __future__ import annotations
@@ -532,6 +536,93 @@ class WindowsReproducibilityCompareTests(unittest.TestCase):
                 self.assertIn("::warning::TaskSmack/bin/TaskSmack.exe differs", result.stdout)
                 self.assertIn(explanation, result.stdout)
                 self.assertNotIn("All Windows packages are reproducible", result.stdout)
+
+
+THIRD_PARTY = ".cache/fetchcontent/tomlplusplus-src/include/toml++/impl/parser.inl"
+
+
+def sarif_location(uri: str, line: int) -> dict:
+    return {
+        "physicalLocation": {
+            "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
+            "region": {"startLine": line},
+        }
+    }
+
+
+def sarif_flow(*uris: str) -> list[dict]:
+    """One code flow with one thread flow whose steps are at `uris`, in order."""
+    return [{"threadFlows": [{"locations": [{"location": sarif_location(uri, 10 + i)} for i, uri in enumerate(uris)]}]}]
+
+
+@unittest.skipUnless(bash_has_jq(), "jq is not on bash's PATH")
+class CodeqlSourceFilterTests(unittest.TestCase):
+    """#2992: the filter kept a result only when locations[0] was under src/, so a taint flow from
+    src/ into a sink in a FetchContent header was dropped, code flows and all."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        step = find_step(WORKFLOWS / "codeql.yml", "Keep results under src/", job="analyze")
+        self.script = substitute(step.run, {})
+        (self.tmp / "sarif-results").mkdir()
+        self.sarif = self.tmp / "sarif-results" / "cpp.sarif"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def filtered(self, results: list[dict]) -> tuple[subprocess.CompletedProcess, list[str]]:
+        """Runs the step on one run holding `results`; returns the run and the kept results' ruleIds."""
+        artifacts = [{"location": {"uri": "src/UI/Theme.cpp"}}, {"location": {"uri": THIRD_PARTY}}]
+        run = {"tool": {"driver": {"name": "CodeQL"}}, "artifacts": artifacts, "results": results}
+        document = {"version": "2.1.0", "runs": [run]}
+        self.sarif.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+        result = run_bash(self.script, self.tmp, {})
+        kept = json.loads(self.sarif.read_text(encoding="utf-8"))
+        self.assertEqual(kept["runs"][0]["artifacts"], artifacts, "the step must leave the run's artifacts alone")
+        return result, [entry["ruleId"] for entry in kept["runs"][0]["results"]]
+
+    def test_a_result_with_any_location_under_src_is_kept(self):
+        results = [
+            {"ruleId": "src-primary", "locations": [sarif_location("src/Domain/ProcessModel.cpp", 42)]},
+            # A path-problem result: the sink (locations[0]) is in a third-party header, the source in src/.
+            {
+                "ruleId": "third-party-sink-src-flow",
+                "locations": [sarif_location(THIRD_PARTY, 900)],
+                "codeFlows": sarif_flow("src/UI/Theme.cpp", THIRD_PARTY),
+            },
+            {
+                "ruleId": "third-party-only",
+                "locations": [sarif_location(THIRD_PARTY, 120)],
+                "relatedLocations": [sarif_location(THIRD_PARTY, 80)],
+                "codeFlows": sarif_flow(THIRD_PARTY, THIRD_PARTY),
+            },
+            {"ruleId": "no-locations"},
+        ]
+        result, kept = self.filtered(results)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(kept, ["src-primary", "third-party-sink-src-flow"])
+        self.assertIn("kept 2 of 4 results", result.stdout)
+        self.assertIn("dropped 2 with no location under src/", result.stdout)
+
+    def test_a_src_related_location_keeps_a_third_party_result(self):
+        results = [
+            {
+                "ruleId": "third-party-primary-src-related",
+                "locations": [sarif_location(THIRD_PARTY, 300)],
+                "relatedLocations": [sarif_location("src/Platform/Windows/WindowsProcessProbe.cpp", 7)],
+            },
+            {"ruleId": "empty-arrays", "locations": [], "relatedLocations": [], "codeFlows": []},
+        ]
+        result, kept = self.filtered(results)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(kept, ["third-party-primary-src-related"])
+        self.assertIn("kept 1 of 2 results", result.stdout)
+
+    def test_no_sarif_file_fails_the_step(self):
+        result = run_bash(self.script, self.tmp, {})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no SARIF file in sarif-results/", result.stdout)
 
 
 if __name__ == "__main__":

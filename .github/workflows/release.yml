@@ -11,8 +11,8 @@ on:
         # packages, validates, generates the SBOM and signs exactly as a tag run does, but
         # skips the tag checks in `validate` and creates/publishes nothing -- create-release
         # uploads the would-be release assets as a workflow artifact instead. Dispatch it from
-        # main (or a PR branch) to rehearse the whole pipeline before pushing a tag; only main,
-        # release/* and candidate/* branches may sign (SIGNING_ENABLED, below). Turning it
+        # main (or a PR branch) to rehearse the whole pipeline before pushing a tag; only main and
+        # release/* branches may sign (SIGNING_ENABLED, below), since both take a reviewed PR. Turning it
         # off only makes sense when dispatching against an existing tag ref, to re-run a release.
         description: 'Dry run: build, package, validate and sign, but create no release'
         type: boolean
@@ -61,13 +61,13 @@ env:
   ARTIFACT_SIGNING_PROFILE: 'tasksmack-release'
 
   # The switch for the whole signing path: 'true' when this run may enter the release-signing environment,
-  # whose deployment rules admit only v* tags and the main, release/* and candidate/* branches, so it holds
+  # whose deployment rules admit only v* tags and the main and release/* branches, so it holds
   # for every tag run and for dry runs dispatched from those branches. A dry run from any other branch
   # can't sign, so it packages both .zips as before #2302: no TaskSmackHelper.exe (it never ships
   # unsigned), no sign-windows, no signature check. A real release always signs: validate refuses one
   # this would leave unsigned (#2745). Jobs read it through validate's `signing` output, since a job's
   # `if:` can't read `env`.
-  SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/candidate/') }}
+  SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') }}
 
 permissions: {}
 
@@ -137,7 +137,7 @@ jobs:
           if [[ "$SIGNING_ENABLED" == "true" ]]; then
             echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): sign-windows signs the Windows .zips with the release certificate ('$WINDOWS_EXPECTED_SIGNER'), as a tag run does."
           else
-            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): only v* tags and the main, release/* and candidate/* branches may sign, so the Windows .zips are packaged unsigned and without TaskSmackHelper.exe."
+            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): only v* tags and the main and release/* branches may sign, so the Windows .zips are packaged unsigned and without TaskSmackHelper.exe."
           fi
 
       - name: Refuse to replace a published release
@@ -2354,7 +2354,7 @@ jobs:
         # On a ref that doesn't sign (a feature-branch dry run), the .zip carries no signature to check.
         if: matrix.os == 'windows' && env.SIGNING_ENABLED != 'true'
         run: |
-          echo "Signing is off for this ref (SIGNING_ENABLED isn't 'true': only v* tags and main, release/* and candidate/* sign), so the .zip isn't Authenticode-signed; the check is skipped."
+          echo "Signing is off for this ref (SIGNING_ENABLED isn't 'true': only v* tags and main and release/* sign), so the .zip isn't Authenticode-signed; the check is skipped."
           echo "- Authenticode signatures: skipped (signing is off for this ref)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch Mesa llvmpipe

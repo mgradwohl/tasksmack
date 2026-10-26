@@ -2815,7 +2815,7 @@ workflow files at the tagged commit, so a release branch needs the current `rele
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
 tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s, when
-dispatched from `main`, `release/*` or `candidate/*`), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
+dispatched from `main` or `release/*`), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
 tests and validates the ARM64 packages as well as the x64 ones. No tag is pushed, so
@@ -2988,18 +2988,20 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 | Artifact Signing account | `tasksmacksigning` (endpoint `https://wus2.codesigning.azure.net`) |
 | Certificate profile | `tasksmack-release` (Public Trust) |
 | Expected signer CN | `Matt Gradwohl` (`WINDOWS_EXPECTED_SIGNER` in `release.yml`, `TASKSMACK_EXPECTED_SIGNER` in CMake) |
-| GitHub environment | `release-signing`: admits `v*` tags and the `main`, `release/*` and `candidate/*` branches |
+| GitHub environment | `release-signing`: admits `v*` tags and the `main` and `release/*` branches |
 | Sign-in | GitHub OIDC; a tenant-level sign-in (`allow-no-subscriptions`); the environment's `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` secrets name an Entra app whose federated credential trusts `repo:mgradwohl@3945134/tasksmack@1116557716:environment:release-signing`, and which holds the Artifact Signing Certificate Profile Signer role. No client secret exists. |
 
 **When it signs.** `SIGNING_ENABLED` at the top of `release.yml` is true exactly when the run may
-enter `release-signing`: every tag run, and dry runs dispatched from `main`, `release/*` or
-`candidate/*`. A dry run from any other branch packages both `.zip`s as before #2302: without
+enter `release-signing`: every tag run, and dry runs dispatched from `main` or `release/*`. Both
+take a reviewed PR to change, so only reviewed code is ever signed (#2988). A dry run from any other
+branch, a PR branch included, packages both `.zip`s as before #2302: without
 `TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` skipped
 (`validate-windows-package` and `create-release` accept that skip only then), and with no signature
 check. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
-`SIGNING_ENABLED` would leave unsigned (#2745). To prove a `release.yml` change end to end from a
-PR, push it as a `candidate/<name>` branch and dispatch a dry run from it; that's what the
-`candidate/*` rule is for.
+`SIGNING_ENABLED` would leave unsigned (#2745). A PR branch's dry run proves everything but
+signing. A change to the signing path itself is proven after it merges, by a dry run dispatched
+from `main` (`gh workflow run release.yml --ref main -f dry_run=true`), or from `release/X.Y` once
+its backport PR merges; follow up with a fix PR if that run fails.
 
 With signing on, `release.yml` does this:
 
