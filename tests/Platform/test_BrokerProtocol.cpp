@@ -184,6 +184,34 @@ TEST(BrokerProtocolTest, HiddenProcessesRoundTripAndRefuseTooManyOrAStrayCommand
     EXPECT_FALSE(decodeResponse(response).has_value());
 }
 
+// #2728: a service action and its result.
+TEST(BrokerProtocolTest, ServiceActionsRoundTripAndRefuseAnUnknownActionStartTypeOrFlag)
+{
+    for (const ServiceAction action : {ServiceAction::Start, ServiceAction::Stop, ServiceAction::Restart, ServiceAction::SetStartType})
+    {
+        const Request request = ServiceActionRequest{.action = action, .unit = "cron.service", .startType = ServiceStartType::Disabled};
+        EXPECT_EQ(roundTrip(request), request);
+    }
+    ServiceActionResult refused = ServiceActionResult::failed("Requires administrator");
+    refused.needsAuthorization = true;
+    const Response reply = ServiceActionReply{.result = refused};
+    EXPECT_EQ(roundTrip(reply), reply);
+    EXPECT_EQ(roundTrip(Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}}),
+              Response{ServiceActionReply{.result = ServiceActionResult::succeeded()}});
+
+    // An action past SetStartType, or a start type past System, is refused.
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
+    bytes.at(4 + HEADER_BYTES) = static_cast<std::uint8_t>(ServiceAction::SetStartType) + 1;
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    bytes = encodeRequest(1, Request{ServiceActionRequest{.action = ServiceAction::Start, .unit = "a.service"}});
+    bytes.back() = static_cast<std::uint8_t>(ServiceStartType::System) + 1;
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    // The reply's flags have four bits; any other is refused.
+    std::vector<std::uint8_t> answer = encodeResponse(1, reply);
+    answer.at(4 + HEADER_BYTES) = 16;
+    EXPECT_FALSE(decodeResponse(answer).has_value());
+}
+
 TEST(BrokerProtocolTest, HiddenProcessesPastAFrameAreCutAndSaySo)
 {
     // Big enough that a frame holds fewer than all: each process takes its texts at MAX_STRING_BYTES.
@@ -751,6 +779,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::SetPriority,
                                    MessageKind::SetIoPriority,
                                    MessageKind::SetAffinity,
+                                   MessageKind::ServiceAction,
                                    MessageKind::ReadEnvironment,
                                    MessageKind::ReadModules,
                                    MessageKind::ReadOpenFiles,
@@ -770,6 +799,7 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
                                    MessageKind::CrashesResult,
                                    MessageKind::ProcessCountersResult,
                                    MessageKind::HiddenProcessesResult,
+                                   MessageKind::ServiceActionResult,
                                    MessageKind::Error})
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);

@@ -3,6 +3,7 @@
 #include "DeferredProbe.h"
 #include "History.h"
 #include "ISamplable.h"
+#include "PidIndex.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessEnergyAttribution.h"
@@ -289,6 +290,10 @@ class ProcessModel : public ISamplable
     // last one threw part way, possibly between a process's SingleLineMemo update and its counters
     // being stored, so that call re-derives every single-line form rather than trust them (#1624).
     bool m_SnapshotBuildInterrupted = false;
+    // The process tree's PID -> row table, rebuilt by every computeSnapshotsLocked() (#2981). Writer
+    // scratch, guarded by m_SamplingMutex: kept between refreshes only for its storage, never read
+    // outside the tree build and never part of a published snapshot.
+    PidIndex m_PidIndex;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation

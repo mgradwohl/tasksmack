@@ -16,6 +16,7 @@
 
 #include "Platform/IServiceProbe.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -55,6 +56,27 @@ struct StartTypeSteps
     default:
         return std::nullopt;
     }
+}
+
+/// Whether @p name may be acted on through tasksmack-helper (#2728): a service's unit name as systemd writes
+/// one -- 1 to 255 bytes of letters, digits and ":-_.\\@", ending in ".service" after at least one more --
+/// so a request can't name a path, another kind of unit, or an option.
+[[nodiscard]] constexpr bool isServiceUnitName(std::string_view name) noexcept
+{
+    constexpr std::string_view SUFFIX = ".service";
+    constexpr std::size_t MAX_UNIT_NAME = 255;
+    if (name.size() <= SUFFIX.size() || name.size() > MAX_UNIT_NAME || !name.ends_with(SUFFIX) || name.front() == '.' ||
+        name.front() == '-')
+    {
+        return false;
+    }
+    return std::ranges::all_of(name,
+                               [](char c)
+                               {
+                                   const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+                                   const bool digit = c >= '0' && c <= '9';
+                                   return letter || digit || c == ':' || c == '-' || c == '_' || c == '.' || c == '\\' || c == '@';
+                               });
 }
 
 /// Why Automatic did nothing for a unit file without an [Install] section (static, generated, transient):

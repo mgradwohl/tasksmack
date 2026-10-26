@@ -52,7 +52,7 @@ The [User Guide](docs/guide/user-guide.md#feature-overview) has a screenshot of 
 | Windows 10 version 1903 or later | Supported |
 | macOS and other operating systems | Not supported |
 
-Linux 5.10 is the first kernel that lets the privileged helper set the Realtime I/O class with only `CAP_SYS_NICE`; every current distribution ships it or newer (Debian 11, Ubuntu 22.04, RHEL 9, and later). See the [User Guide](docs/guide/user-guide.md#operating-system).
+Linux 5.10 is the first kernel that lets the privileged helper set the Realtime I/O class with only `CAP_SYS_NICE`; every current distribution ships it or newer (Debian 11, Ubuntu 22.04, RHEL 9, and later). The prebuilt Linux packages also need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on an older distribution, build from source. See the [User Guide](docs/guide/user-guide.md#operating-system).
 
 Windows 10 version 1903 is the first release that honours the application manifest's UTF-8 process code page (`activeCodePage`), which TaskSmack relies on for UTF-8 text throughout.
 
@@ -67,6 +67,8 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 | Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
+
+The Linux packages need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, RHEL 10, or later); on Ubuntu 22.04, Debian 12, RHEL 9 or another older distribution, [build from source](CONTRIBUTING.md#quick-start).
 
 Each package comes for x64 and ARM64. The x64 files are `TaskSmack-<version>-Linux.deb`, `-Linux.tar.gz` and `-win64.zip`; the ARM64 ones are `TaskSmack-<version>-linux-aarch64.deb`, `-linux-aarch64.tar.gz` and `-windows-arm64.zip` (Windows on Arm, such as Snapdragon X PCs).
 

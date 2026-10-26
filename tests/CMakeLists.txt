@@ -209,6 +209,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(ProfileHeapShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/analyze-perf.sh fails, rather than summarizing, when every TaskSmack function it sampled is an
+# unresolved address (#2977). A stub perf; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME AnalyzePerfShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_analyze_perf_sh.py)
+    set_tests_properties(AnalyzePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript
@@ -352,6 +360,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
+    Domain/test_PidIndex.cpp
     Domain/test_ProcessIconCache.cpp
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp
@@ -464,6 +473,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokeredProcessActions.cpp
+    Platform/test_BrokeredServiceActions.cpp  # service actions through the helper (#2728)
     Platform/test_BrokeredSystemInfoProbe.cpp
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
@@ -896,6 +906,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredServiceActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp

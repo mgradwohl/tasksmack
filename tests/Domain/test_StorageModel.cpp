@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -180,6 +181,62 @@ TEST(StorageModelTest, RateUsesInjectedSampleTimeNotWallClockElapsedDuringTest)
     ASSERT_EQ(snap.disks.size(), 1ULL);
     // 2000 sectors * 512 bytes / 2 seconds = 512,000 bytes/sec, exactly -- not approximately.
     EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 512000.0);
+}
+
+// #2995: a disk that disappears and a different one appearing under its name before the history expires
+// (a replacement USB disk, say) isn't measured against the removed one's counters: the first sample after
+// the absence is a new baseline (no rates, a gap), and rates resume from there.
+TEST(StorageModelTest, ADiskBackAfterAnAbsenceIsSeededAfreshNotMeasuredAgainstTheOldCounters)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+    StorageModel model(std::move(mockProbeOwned));
+    const auto sampleWith = [&](std::optional<std::uint64_t> sdbReadSectors, std::chrono::steady_clock::time_point at)
+    {
+        Platform::SystemDiskCounters counters;
+        Platform::DiskCounters sda;
+        sda.deviceName = "sda";
+        sda.sectorSize = 512;
+        counters.disks.push_back(sda);
+        if (sdbReadSectors.has_value())
+        {
+            Platform::DiskCounters sdb;
+            sdb.deviceName = "sdb";
+            sdb.sectorSize = 512;
+            sdb.readSectors = *sdbReadSectors;
+            counters.disks.push_back(sdb);
+        }
+        mockProbe->setNextCounters(counters);
+        model.sampleAt(at);
+        return model.publication()->snapshot;
+    };
+    const auto findSdb = [](const StorageSnapshot& snapshot) -> std::optional<DiskSnapshot>
+    {
+        for (const DiskSnapshot& disk : snapshot.disks)
+        {
+            if (disk.deviceName == "sdb")
+            {
+                return disk;
+            }
+        }
+        return std::nullopt;
+    };
+
+    const auto start = std::chrono::steady_clock::now();
+    static_cast<void>(sampleWith(1000, start));                                         // the original sdb
+    static_cast<void>(sampleWith(std::nullopt, start + std::chrono::seconds(1)));       // removed
+    const StorageSnapshot replaced = sampleWith(5000, start + std::chrono::seconds(2)); // a different disk
+    const std::optional<DiskSnapshot> first = findSdb(replaced);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_FALSE(first->hasRates) << "not (5000 - 1000) sectors over the 2 s since the old disk";
+    EXPECT_DOUBLE_EQ(first->readBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(replaced.totalReadBytesPerSec, 0.0);
+
+    const StorageSnapshot next = sampleWith(5200, start + std::chrono::seconds(3));
+    const std::optional<DiskSnapshot> second = findSdb(next);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_TRUE(second->hasRates);
+    EXPECT_DOUBLE_EQ(second->readBytesPerSec, 200.0 * 512.0) << "measured from its own first sample";
 }
 
 TEST(StorageModelTest, HistoryGrowsWithSamples)
