@@ -239,6 +239,9 @@ std::expected<void, std::string> PipeBroker::connectWithin(const std::stop_token
         closeLocked();
         return connected;
     }
+    // A new session, counted before it is connected: whatever a call gets from it, the call was made
+    // after the count saw it (#2993).
+    ++m_SessionsStarted;
     m_Connected = true;
     return {};
 }

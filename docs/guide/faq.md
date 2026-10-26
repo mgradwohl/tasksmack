@@ -104,11 +104,16 @@ through Windows' own UAC prompt, in front of TaskSmack's window:
   which is why no **Read as administrator** is offered.
 - **With Windows 11's Administrator Protection on,** every elevation runs as a separate,
   system-managed administrator account, never as you. So even an administrator gets the standard user's
-  session: one action per prompt, and reads of your own processes only. TaskSmack can't tell this
-  before the first prompt (the same happens when an administrator's prompt is answered with another
-  administrator's account), so **Read as administrator** is offered once: the first read then says "The
-  administrator account that approved the prompt isn't yours, so the administrator helper can't read
-  other users' processes for you", and the button isn't offered again until TaskSmack is restarted.
+  session: one action per prompt, and reads of your own processes only. **Read as administrator** is
+  still offered once, since only the helper can tell for sure: the first read then says "Administrator
+  Protection runs the administrator helper as a separate administrator account, never as yours, so it
+  can't read other users' processes for you", and the button isn't offered again until TaskSmack is
+  restarted.
+- **If an administrator's prompt asks for a password and is answered with another administrator's
+  account,** the same happens to that helper: its first read says "The administrator account that
+  approved the prompt isn't yours", and **Read as administrator** isn't offered again until another
+  prompt, such as one for **Retry as administrator**, starts a new helper. That prompt is answered
+  afresh: answered with your own account, the button is back.
 
 The prompt is waited for two minutes. If it isn't answered by then, the action fails with "the
 administrator's consent wasn't given in time", and consent given after that isn't acted on: the helper it

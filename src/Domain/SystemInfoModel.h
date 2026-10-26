@@ -114,7 +114,7 @@ class SystemInfoModel
     }
 
     /// What the probe can read, fixed at construction, but for canReadAuthorized, which the helper can
-    /// take back during a read (#2769): that is as of the last read().
+    /// take back during a read (#2769), and a new helper gives back (#2993): that is as of the last read().
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const
     {
         Platform::SystemInfoCapabilities capabilities = m_Capabilities;

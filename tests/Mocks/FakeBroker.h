@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <expected>
 #include <functional>
 #include <mutex>
@@ -56,6 +57,12 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         return m_ReadsOtherUsers;
     }
 
+    /// One more each time connect() connects a fake that wasn't (#2993): a connected fake's first session is 0.
+    [[nodiscard]] std::uint64_t sessionsStarted() const noexcept override
+    {
+        return m_SessionsStarted;
+    }
+
     /// What connect() does: succeed (and connect) by default, or fail with this reason.
     void setConnectFailure(std::string reason)
     {
@@ -71,7 +78,10 @@ class FakeBroker final : public Platform::IPrivilegedBroker
         {
             return std::unexpected(m_ConnectFailure);
         }
-        m_Connected = true;
+        if (!m_Connected.exchange(true))
+        {
+            ++m_SessionsStarted;
+        }
         return {};
     }
 
@@ -154,6 +164,7 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
     std::atomic<bool> m_Connected{true};
+    std::atomic<std::uint64_t> m_SessionsStarted{0};
     std::atomic<bool> m_ReadsOtherUsers{true};
     std::atomic<bool> m_HoldsSessions{false};
     std::atomic<bool> m_Held{false};
