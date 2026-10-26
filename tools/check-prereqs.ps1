@@ -21,9 +21,11 @@ $MIN_CCACHE_VERSION = [Version]"4.9.1"
 $MIN_PYTHON_VERSION = [Version]"3.14"
 $MIN_GIT_VERSION = [Version]"2.30"
 
-# The LLVM major CI builds and formats with (the clang-format rev in .pre-commit-config.yaml). A newer
-# major still builds, but can warn, format or report clang-tidy findings differently from CI, and
-# tools/pgo.ps1 requires it exactly; those rows get a warning instead of a pass.
+# The LLVM major CI builds and formats with (the clang-format rev in .pre-commit-config.yaml). The
+# compilers the win-* presets use (clang, clang++) fail on any other major: the presets require the
+# pinned one, and tools/setup-dev.ps1 replaces another (#3041). The other LLVM tools on another major
+# still work, but can format or report clang-tidy findings differently from CI, and tools/pgo.ps1
+# requires the pinned major exactly; those rows get a warning instead of a pass.
 $PinnedLlvmMajor = Get-PinnedLlvmMajor
 
 # Helper function to print status. Status is "ok", "warn" (usable, but see the note) or "fail".
@@ -38,7 +40,8 @@ function Write-Status {
 
     $nameFormatted = $Name.PadRight(14)
     $versionFormatted = if ($Version) { $Version.PadRight(12) } else { "NOT FOUND".PadRight(12) }
-    $requiredFormatted = if ($Required) { "(>= $Required)".PadRight(12) } else { "".PadRight(12) }
+    # A Required of "= N" is an exact version; any other is a minimum.
+    $requiredFormatted = if ($Required -like '=*') { "($Required)".PadRight(12) } elseif ($Required) { "(>= $Required)".PadRight(12) } else { "".PadRight(12) }
 
     if ($Status -eq "ok") {
         Write-Host "✓ " -ForegroundColor Green -NoNewline
@@ -118,15 +121,22 @@ function Get-PresetLlvmToolHint {
 }
 
 # Print an LLVM tool's row: ok at the pinned major, warn at another major >= the minimum, fail below
-# it or when missing. Returns $false only on fail.
+# it or when missing. -RequirePinned (the compilers) fails another major too. Returns $false only on fail.
 $script:LlvmSkewSeen = $false
+$script:LlvmCompilerMajor = $null
 function Write-LlvmToolStatus {
     param(
         [string]$Name,
         [string]$Path,
         [string]$Major,
-        [string]$MissingHint
+        [string]$MissingHint,
+        [switch]$RequirePinned
     )
+    if ($RequirePinned -and $PinnedLlvmMajor -and $Major -and [int]$Major -ne $PinnedLlvmMajor) {
+        Write-Status -Name $Name -Status "fail" -Version $Major -Path $Path -Required "= $PinnedLlvmMajor"
+        $script:LlvmCompilerMajor = $Major
+        return $false
+    }
     if ($Major -and [int]$Major -ge $MIN_CLANG_VERSION) {
         if ($PinnedLlvmMajor -and [int]$Major -ne $PinnedLlvmMajor) {
             Write-Status -Name $Name -Status "warn" -Version $Major -Path $Path -Required $MIN_CLANG_VERSION
@@ -299,11 +309,11 @@ $clangVersionPattern = 'clang version (\d+)'
 
 # Check clang and clang++ -- the compilers the win-* presets use
 $clangPath = Get-PresetLlvmToolPath "clang"
-if (-not (Write-LlvmToolStatus -Name "clang" -Path $clangPath -MissingHint (Get-PresetLlvmToolHint "clang") -Major (Get-ToolVersion -Path $clangPath -Pattern $clangVersionPattern))) {
+if (-not (Write-LlvmToolStatus -Name "clang" -Path $clangPath -MissingHint (Get-PresetLlvmToolHint "clang") -Major (Get-ToolVersion -Path $clangPath -Pattern $clangVersionPattern) -RequirePinned)) {
     $AllOK = $false
 }
 $clangppPath = Get-PresetLlvmToolPath "clang++"
-if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (Get-PresetLlvmToolHint "clang++") -Major (Get-ToolVersion -Path $clangppPath -Pattern $clangVersionPattern))) {
+if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (Get-PresetLlvmToolHint "clang++") -Major (Get-ToolVersion -Path $clangppPath -Pattern $clangVersionPattern) -RequirePinned)) {
     $AllOK = $false
 }
 
@@ -478,10 +488,14 @@ else {
 }
 
 Write-Host "──────────────────────────────────────────────────────────────────────────"
+if ($script:LlvmCompilerMajor) {
+    Write-Host "✗ " -ForegroundColor Red -NoNewline
+    Write-Host "The win-* presets build with LLVM $PinnedLlvmMajor (.pre-commit-config.yaml), but this clang is LLVM $($script:LlvmCompilerMajor). pwsh tools/setup-dev.ps1 replaces it with LLVM $PinnedLlvmMajor." -ForegroundColor Red
+}
 if ($script:LlvmSkewSeen) {
     Write-Host "! " -ForegroundColor Yellow -NoNewline
     Write-Host "LLVM $PinnedLlvmMajor is the version CI pins (.pre-commit-config.yaml); rows marked ! are another major." -ForegroundColor Yellow
-    if ($clangppPath) {
+    if ($clangppPath -and -not $script:LlvmCompilerMajor) {
         Write-LlvmVersionSkewWarning -ToolPath $clangppPath -Name 'clang++'
     }
     if ($formatPath) {
