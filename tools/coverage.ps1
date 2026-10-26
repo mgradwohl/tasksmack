@@ -200,10 +200,13 @@ try {
     foreach ($run in $runs) {
         $suite = $run.Suite
         $label = if ($run.Filter) { "$suite ($($run.Filter))" } else { $suite }
-        $arguments = if ($run.Filter) { @("--gtest_filter=$($run.Filter)") } else { @() }
+        # Built up, not returned from an if: PowerShell unwraps a one-element array returned from an
+        # expression into a string, and splatting that passed no filter at all (#2927).
+        $arguments = [System.Collections.Generic.List[string]]::new()
+        if ($run.Filter) { $arguments.Add("--gtest_filter=$($run.Filter)") }
         if ($run.Synthetic) { $env:TASKSMACK_SYNTHETIC = $run.Synthetic }
         try {
-            & "$BuildDir\tests\$suite.exe" @arguments
+            & "$BuildDir\tests\$suite.exe" $arguments.ToArray()
             $suiteExit = $LASTEXITCODE
         }
         finally {
