@@ -102,15 +102,11 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
         counters.chargePercent = -1;
     }
 
-    // Time remaining in seconds
-    // Note: Windows API does not provide time-to-full for charging state
-    if (batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN)
+    // Time remaining in seconds. The Windows API gives no time to full while charging, so
+    // timeToFullSec stays 0 (unavailable).
+    if (batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN && counters.state == BatteryState::Discharging)
     {
-        if (counters.state == BatteryState::Discharging)
-        {
-            counters.timeToEmptySec = batteryLifeTimeSec;
-        }
-        // timeToFullSec remains 0 (unavailable) - Windows doesn't provide this
+        counters.timeToEmptySec = batteryLifeTimeSec;
     }
 
     return counters;

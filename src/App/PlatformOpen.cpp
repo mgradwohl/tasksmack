@@ -92,7 +92,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
 
     // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
     // ShellExecuteW returns > 32 on success
-    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)
@@ -118,7 +118,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     const std::wstring widePath = nativeTargetFromPath(path);
 
     // ShellExecuteW returns > 32 on success
-    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)

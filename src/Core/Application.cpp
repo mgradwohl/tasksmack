@@ -372,7 +372,7 @@ Application::~Application()
     // This cleanup is defensive - clear any remaining layers silently.
     // If layers weren't properly detached, their onDetach() may fail trying to access
     // the Application singleton (which is being destroyed).
-    for (auto& layer : std::views::reverse(m_LayerStack))
+    for (const auto& layer : std::views::reverse(m_LayerStack))
     {
         layer->onDetach();
     }

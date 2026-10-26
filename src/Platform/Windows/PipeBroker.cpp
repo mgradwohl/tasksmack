@@ -334,6 +334,7 @@ PipeBroker::launch(const std::wstring& pipeName, const std::stop_token& giveUp, 
         m_Pending = std::move(pending);
         return std::unexpected(std::string(stopped ? std::string_view(CANCELLED) : PROMPT_TIMED_OUT));
     }
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - the wait above returned only once its predicate saw it set, under this lock
     return std::move(*pending->result);
 }
 

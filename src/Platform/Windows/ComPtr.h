@@ -15,6 +15,7 @@ template<typename T> class ComPtr
 {
   public:
     ComPtr() noexcept = default;
+    // NOLINTNEXTLINE(cppcoreguidelines-explicit-constructor,misc-explicit-constructor) - converts from nullptr, as a smart pointer does
     ComPtr(std::nullptr_t) noexcept
     {}
 
