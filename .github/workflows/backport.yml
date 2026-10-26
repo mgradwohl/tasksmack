@@ -24,9 +24,11 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: backport-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: false
+# No workflow-level concurrency: every comment on any PR starts a run, and a group taken at the
+# workflow level is taken before `targets`' `if:` skips it, so a run for an unrelated comment (the
+# action's own result comment included, since CHANGELOG_TOKEN's comments trigger workflows) would
+# replace a pending /backport run in the group, and that backport would never run (#2989). The group
+# is on the backport job instead, which only a merged PR or a collaborator's /backport reaches.
 
 permissions: {}
 
@@ -69,6 +71,14 @@ jobs:
     name: Backport to release/${{ matrix.version }}
     needs: [targets]
     if: needs.targets.outputs.versions != '[]'
+    # One backport of a PR to one release branch at a time, so a merge's run and a /backport run
+    # can't both push the branch and open the PR. A job's concurrency is taken only once its `if:`
+    # passes, so a skipped run never holds or replaces a place in the group (#2989). The group names
+    # the matrix version: each leg is a job, and legs sharing one group would wait on each other, a
+    # third replacing the second's pending place. `targets` only reads labels and needs no group.
+    concurrency:
+      group: backport-${{ github.event.pull_request.number || github.event.issue.number }}-${{ matrix.version }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
