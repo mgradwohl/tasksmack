@@ -22,6 +22,7 @@
 
 #if defined(_WIN32)
 
+#include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 
 #include <benchmark/benchmark.h>
@@ -43,7 +44,8 @@ namespace
 {
 
 constexpr LONG STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<LONG>(0xC0000004L);
-constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = 64 * 1024;
+constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * 1024;
+constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{256} * 1024;
 
 [[nodiscard]] ULONG bufferLength(const std::vector<std::byte>& buffer)
 {
@@ -124,7 +126,7 @@ struct CapturedSnapshot
     {
         return false;
     }
-    std::vector<std::byte> buffer(256 * 1024);
+    std::vector<std::byte> buffer(SNAPSHOT_INITIAL_BYTES);
     const auto bytes = querySnapshot(query, buffer);
     if (!bytes.has_value())
     {
@@ -172,7 +174,9 @@ LONG NTAPI replaySnapshot(ULONG /*systemInformationClass*/, PVOID systemInformat
     std::memcpy(base, snapshot.bytes.data(), snapshot.bytes.size());
     for (const auto& [pointerOffset, nameOffset] : snapshot.namePointers)
     {
-        const auto name = std::bit_cast<PWSTR>(base + nameOffset);
+        // The name's address, written as the pointer's bytes (a uintptr_t is a pointer's size).
+        const std::uintptr_t name = std::bit_cast<std::uintptr_t>(base) + nameOffset;
+        static_assert(sizeof(name) == sizeof(PWSTR));
         std::memcpy(base + pointerOffset, &name, sizeof(name));
     }
     return 0;
@@ -208,7 +212,7 @@ void BM_WindowsProcessProbe_SnapshotQuery(benchmark::State& state)
         state.SkipWithError("NtQuerySystemInformation unavailable");
         return;
     }
-    std::vector<std::byte> buffer(256 * 1024);
+    std::vector<std::byte> buffer(SNAPSHOT_INITIAL_BYTES);
     std::size_t bytes = 0;
     for (auto _ : state)
     {

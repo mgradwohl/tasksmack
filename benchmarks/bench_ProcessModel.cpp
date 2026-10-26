@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -75,7 +76,7 @@ BENCHMARK(BM_ProcessModel_Refresh);
 // and the capabilities, twice -- on this machine's real probe.
 static void BM_ProcessProbe_RefreshExtras(benchmark::State& state)
 {
-    auto probe = Platform::makeProcessProbe();
+    const auto probe = Platform::makeProcessProbe();
     (void) probe->enumerate();
 
     for (auto _ : state)
