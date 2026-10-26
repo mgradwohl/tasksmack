@@ -154,6 +154,20 @@ struct SocketTrafficSample
     bool readable = true;
 };
 
+/// A process's /proc/<pid> files as text (Linux, #2728): what tasksmack-helper reads of a process hidepid
+/// hides from TaskSmack, which can't open any of them itself, for IProcessProbe::processFromFiles().
+// NOLINTBEGIN(readability-redundant-member-init) - {} lets designated initializers omit a field without a warning
+struct ProcFileTexts
+{
+    std::string stat{};
+    std::string statm{};
+    std::string status{};
+    std::optional<std::string> cmdline{}; ///< nullopt when it couldn't be read; empty for a kernel thread
+    std::string io{};                     ///< Empty when unreadable: its I/O is then unavailable
+    std::string cgroup{};
+};
+// NOLINTEND(readability-redundant-member-init)
+
 /// One complete reading of every connection's raw byte counters (IProcessProbe::readSocketTraffic()).
 /// Domain turns successive readings into monotonic per-process counters (#1099).
 struct SocketTrafficReading

@@ -79,7 +79,7 @@ For administrators: the helper is `/usr/libexec/tasksmack/tasksmack-helper`, sta
 
 On Windows, see [Acting as an administrator on Windows](#acting-as-an-administrator-on-windows).
 
-If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptraceable`), other users' processes aren't listed: `noaccess` still shows their PIDs to `ls /proc` but refuses everything else about them. The notice says so. Membership of the mount's `gid=` group, or `CAP_SYS_PTRACE`, shows them.
+If `/proc` is mounted with `hidepid` (`noaccess`/`1`, `invisible`/`2` or `ptraceable`), other users' processes aren't listed: `noaccess` still shows their PIDs to `ls /proc` but refuses everything else about them. The notice says so. Membership of the mount's `gid=` group, or `CAP_SYS_PTRACE`, shows them. So does the helper while it runs (after **Authenticate for this session**, or for a few minutes after any authenticated action or read): it lists the hidden processes and reads a fixed set of their `/proc` files (`stat`, `statm`, `status`, `cmdline`, `io` and `cgroup`), which TaskSmack shows as it shows its own.
 
 > On Windows, I/O counters and handle counts are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed. Network rates need administrator rights; without them every process's network rates read N/A (see *Why are per-process network rates missing?* below).
 

@@ -118,6 +118,15 @@ class IProcessProbe
         return std::unexpected(MemoryRollupFailure::Unavailable);
     }
 
+    /// Process @p pid's record from its /proc files' text (Linux, #2728), as enumerate() would build it from
+    /// the files themselves: how a process hidepid hides, read by the helper, joins the list. nullopt where
+    /// the platform has no such files, and when its stat doesn't parse.
+    [[nodiscard]] virtual std::optional<ProcessCounters> processFromFiles([[maybe_unused]] std::int32_t pid,
+                                                                          [[maybe_unused]] const ProcFileTexts& files) const
+    {
+        return std::nullopt;
+    }
+
     /// Set socket stats cache TTL (Linux only; no-op on Windows).
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// @note This is a performance optimization cache, separate from the user's refresh interval.

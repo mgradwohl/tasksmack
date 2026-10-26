@@ -487,6 +487,74 @@ TEST(BrokeredProcessProbeTest, TheHelpersSocketInodesAttributeConnectionsTheProb
     EXPECT_TRUE(again.front().networkCountersAvailable);
 }
 
+// #2728: when the probe says processes are hidden (hidepid), a running helper lists them, their records are
+// built from the files' text, and the counters read then covers them like any refused process.
+TEST(BrokeredProcessProbeTest, ProcessesHidepidHidesAreListedByTheHelperAndJoinTheList)
+{
+    const ProcessTarget mine{.pid = 99, .startTimeTicks = 1};
+    const ProcessTarget stale{.pid = 77, .startTimeTicks = 5};
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer(
+        [&stale](const Broker::Request& request)
+        {
+            if (std::holds_alternative<Broker::HiddenProcessesRequest>(request))
+            {
+                return Broker::Response{
+                    Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"},
+                                                               Broker::HiddenProcess{.target = stale, .stat = "reused"}},
+                                                 .truncated = false}};
+            }
+            return Broker::Response{Broker::ProcessCountersReply{
+                .entries = {Broker::ProcessCountersEntry{.target = TARGET, .handleCountRead = true, .handleCount = 12}}}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    owned->setCapabilities(caps);
+    owned->setCounters({countersOf(mine, true)});
+    owned->setProcessFromFiles(
+        [&stale](std::int32_t pid, const ProcFileTexts& files) -> std::optional<ProcessCounters>
+        {
+            ProcessCounters built = countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, false);
+            built.name = files.stat;
+            if (files.stat == "reused")
+            {
+                built.startTimeTicks = stale.startTimeTicks + 1; // its PID names another process by now
+            }
+            return built;
+        });
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    const std::vector<ProcessCounters> counters = probe.enumerate();
+    ASSERT_GE(broker->requests().size(), 2U);
+    EXPECT_EQ(broker->requests().front(), (Broker::Request{Broker::HiddenProcessesRequest{.visiblePids = {mine.pid}}}));
+    ASSERT_EQ(counters.size(), 2U) << "the hidden process joins; the one whose start time changed doesn't";
+    EXPECT_EQ(counters[1].pid, TARGET.pid);
+    EXPECT_EQ(counters[1].name, "hidden");
+    EXPECT_TRUE(counters[1].handleCountAvailable) << "the counters read covered it";
+    EXPECT_EQ(counters[1].handleCount, 12);
+    EXPECT_EQ(broker->idleCallCount(), static_cast<int>(broker->requests().size())) << "never behind another call";
+}
+
+TEST(BrokeredProcessProbeTest, NothingHiddenOrAHelperThatRefusesMeansNoListing)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    broker->setAnswer([](const Broker::Request&) { return Broker::Response{Broker::ErrorReply{.message = "not here"}}; });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    auto* raw = owned.get();
+    owned->setCounters({countersOf(TARGET, true)});
+    BrokeredProcessProbe probe(std::move(owned), broker);
+    static_cast<void>(probe.enumerate());
+    EXPECT_TRUE(broker->requests().empty()) << "nothing hidden, nothing refused: nothing asked";
+
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    raw->setCapabilities(caps);
+    static_cast<void>(probe.enumerate());
+    static_cast<void>(probe.enumerate());
+    EXPECT_EQ(broker->requests().size(), 1U) << "a helper that answers with an error is asked once";
+}
+
 TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(true);
