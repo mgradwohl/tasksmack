@@ -555,6 +555,38 @@ TEST(BrokeredProcessProbeTest, NothingHiddenOrAHelperThatRefusesMeansNoListing)
     EXPECT_EQ(broker->requests().size(), 1U) << "a helper that answers with an error is asked once";
 }
 
+// #3032: a helper whose reader failed once lists none that time, marked truncated, which isn't a refusal:
+// the next refresh asks again and takes what it lists.
+TEST(BrokeredProcessProbeTest, AListingThatFailedOnceIsAskedForAgain)
+{
+    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    bool failed = false;
+    broker->setAnswer(
+        [&failed](const Broker::Request&)
+        {
+            if (!failed)
+            {
+                failed = true;
+                return Broker::Response{Broker::HiddenProcessesReply{.processes = {}, .truncated = true}};
+            }
+            return Broker::Response{
+                Broker::HiddenProcessesReply{.processes = {Broker::HiddenProcess{.target = TARGET, .stat = "hidden"}}, .truncated = false}};
+        });
+    auto owned = std::make_unique<TestMocks::MockProcessProbe>();
+    ProcessCapabilities caps;
+    caps.missingPrivileges = MissingPrivilege::PROCESSES_HIDDEN;
+    owned->setCapabilities(caps);
+    owned->setProcessFromFiles([](std::int32_t pid, const ProcFileTexts& /*files*/) -> std::optional<ProcessCounters>
+                               { return countersOf({.pid = pid, .startTimeTicks = TARGET.startTimeTicks}, true); });
+    BrokeredProcessProbe probe(std::move(owned), broker);
+
+    EXPECT_TRUE(probe.enumerate().empty()) << "none listed the first time";
+    const std::vector<ProcessCounters> again = probe.enumerate();
+    EXPECT_EQ(broker->requests().size(), 2U) << "asked again after the failed listing";
+    ASSERT_EQ(again.size(), 1U);
+    EXPECT_EQ(again.front().pid, TARGET.pid);
+}
+
 TEST(BrokeredProcessProbeTest, AHelperThatRefusesProcessCountersIsntAskedAgain)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(true);

@@ -266,13 +266,15 @@ TEST(BrokerRequestMappingTest, AHiddenProcessesRequestGoesToItsReaderWithTheVisi
     EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(response).processes.size(), 1U);
     EXPECT_EQ(seen, (std::vector<std::int32_t>{1, 2}));
 
-    // One that throws, or a helper without the reader (Windows', which has no hidepid), answers with an error.
+    // One that throws lists none this time, marked truncated, so TaskSmack asks again (#3032); only a helper
+    // without the reader (Windows', which has no hidepid) answers with the error that stops it asking.
     readers.hiddenProcesses = [](std::span<const std::int32_t>) -> Broker::HiddenProcessesReply
     {
         throw std::runtime_error("boom");
     };
-    EXPECT_TRUE(
-        std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions, readers)));
+    const Broker::Response thrown = BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions, readers);
+    ASSERT_TRUE(std::holds_alternative<Broker::HiddenProcessesReply>(thrown));
+    EXPECT_EQ(std::get<Broker::HiddenProcessesReply>(thrown), (Broker::HiddenProcessesReply{.processes = {}, .truncated = true}));
     EXPECT_TRUE(std::holds_alternative<Broker::ErrorReply>(BrokerServer::handleRequest(Broker::HiddenProcessesRequest{}, actions)));
 }
 

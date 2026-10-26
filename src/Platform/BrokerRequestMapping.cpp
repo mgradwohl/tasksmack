@@ -177,8 +177,10 @@ namespace
     return reply;
 }
 
-/// The processes hidepid hides from TaskSmack (#2728): a helper without the reader, or one that throws,
-/// answers with an error, which TaskSmack takes as "none listed".
+/// The processes hidepid hides from TaskSmack (#2728). A helper without the reader answers with an error,
+/// which TaskSmack takes as "this helper never lists them" and doesn't ask again. A reader that throws
+/// lists none this time, marked truncated, so the next refresh asks again (#3032): one failed read, a
+/// process gone mid-walk or a failed allocation, isn't the helper lacking the reader.
 [[nodiscard]] Broker::Response handleHiddenProcesses(const Broker::HiddenProcessesRequest& read, const Readers& readers)
 {
     if (!readers.hiddenProcesses)
@@ -189,9 +191,9 @@ namespace
     {
         return readers.hiddenProcesses(read.visiblePids);
     }
-    catch (const std::exception& error)
+    catch (...)
     {
-        return Broker::ErrorReply{.message = std::string("Listing hidden processes failed: ") + error.what()};
+        return Broker::HiddenProcessesReply{.processes = {}, .truncated = true};
     }
 }
 
