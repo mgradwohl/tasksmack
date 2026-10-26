@@ -76,6 +76,13 @@ inline constexpr int NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS = 30;
 // which reads only the live state (GetSystemPowerStatus) each pass.
 inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
 
+// How long WindowsProcessProbe reuses the account name LookupAccountSidW gave for a SID (seconds)
+// (#2982). The owner read asks the LSA to name each process's token user SID on every heavy detail
+// pass; that call was most of the pass, though a machine's processes are owned by a handful of
+// accounts whose names barely change. A failed lookup is never kept, and a renamed account shows its
+// new name within this long.
+inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
+
 // A system-probe sub-read -- the CPU times, memory, the PDH clock counter, the interface table -- that
 // takes this long or longer is logged by name at debug level (#2731), so an overrun names "pdh-freq"
 // or "ifTable" rather than "system". The fastest Settings interval: a sub-read that long overruns it

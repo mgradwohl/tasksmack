@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -942,5 +943,71 @@ struct WindowsProcessMemory
         .virtualBytes = fields.pagefileUsage,
     };
 }
+
+/// The account names LookupAccountSidW gave, by the SID's bytes (#2982), so a process's owner costs
+/// that call only for a SID not named in the last TTL. LookupAccountSidW asks the LSA, which is most
+/// of the heavy detail pass's cost, while a machine's processes are owned by a handful of accounts.
+///  - Only a lookup that succeeded is stored (the caller's rule; an empty SID or name isn't kept), so a
+///    failed one is asked again on the next read.
+///  - An entry is reused for one TTL from when it was stored, so a renamed account shows its new name
+///    within that long.
+///  - Bounded: storing a new SID into a full cache clears it first.
+/// Not thread-safe: WindowsProcessProbe uses it from enumerate() only, as it does its detail cache.
+class AccountNameCache
+{
+  public:
+    static constexpr std::size_t MAX_ENTRIES = 1024;
+
+    explicit AccountNameCache(std::chrono::steady_clock::duration ttl) : m_Ttl(ttl)
+    {}
+
+    /// The name stored for @p sid, if it was stored less than one TTL before @p now.
+    [[nodiscard]] std::optional<std::string> find(std::span<const std::byte> sid, std::chrono::steady_clock::time_point now) const
+    {
+        const auto it = m_Names.find(key(sid));
+        if (it == m_Names.end() || now >= it->second.expires)
+        {
+            return std::nullopt;
+        }
+        return it->second.name;
+    }
+
+    /// Remember the name a successful lookup gave @p sid at @p now.
+    void store(std::span<const std::byte> sid, std::string name, std::chrono::steady_clock::time_point now)
+    {
+        if (sid.empty() || name.empty())
+        {
+            return;
+        }
+        std::string sidKey = key(sid);
+        if (m_Names.size() >= MAX_ENTRIES && !m_Names.contains(sidKey))
+        {
+            m_Names.clear();
+        }
+        m_Names.insert_or_assign(std::move(sidKey), Entry{.name = std::move(name), .expires = now + m_Ttl});
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Names.size();
+    }
+
+  private:
+    struct Entry
+    {
+        std::string name;
+        std::chrono::steady_clock::time_point expires;
+    };
+
+    [[nodiscard]] static std::string key(std::span<const std::byte> sid)
+    {
+        std::string bytes(sid.size(), '\0');
+        std::ranges::transform(sid, bytes.begin(), [](std::byte b) { return static_cast<char>(b); });
+        return bytes;
+    }
+
+    std::chrono::steady_clock::duration m_Ttl;
+    std::unordered_map<std::string, Entry> m_Names;
+};
 
 } // namespace Platform

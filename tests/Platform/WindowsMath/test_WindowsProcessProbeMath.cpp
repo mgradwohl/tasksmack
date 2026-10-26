@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -1476,6 +1477,98 @@ TEST(WindowsProcessMemoryTest, KernelPseudoProcessWithNoMemoryReadsZero)
     EXPECT_EQ(memory.sharedBytes, 0U);
     EXPECT_EQ(memory.peakRssBytes, 0U);
     EXPECT_EQ(memory.virtualBytes, 0U);
+}
+
+// ==========================================================================
+// AccountNameCache (#2982): account names by SID, reused for one TTL
+// ==========================================================================
+
+/// A SID's bytes, distinct for each @p tag.
+std::vector<std::byte> sidBytes(std::uint8_t tag)
+{
+    return {std::byte{1}, std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{5}, std::byte{tag}};
+}
+
+constexpr auto NAME_TTL = std::chrono::seconds(300);
+
+TEST(AccountNameCacheTest, ASidNeverStoredIsNotFound)
+{
+    const AccountNameCache names(NAME_TTL);
+    EXPECT_FALSE(names.find(sidBytes(1), std::chrono::steady_clock::time_point{}).has_value());
+}
+
+TEST(AccountNameCacheTest, AStoredNameIsFoundUntilItsTtlRunsOut)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point stored{std::chrono::hours(1)};
+    names.store(sidBytes(1), "alice", stored);
+
+    EXPECT_EQ(names.find(sidBytes(1), stored), "alice");
+    EXPECT_EQ(names.find(sidBytes(1), stored + NAME_TTL - std::chrono::nanoseconds(1)), "alice");
+    EXPECT_FALSE(names.find(sidBytes(1), stored + NAME_TTL).has_value()); // Asked again: a rename shows
+}
+
+TEST(AccountNameCacheTest, EachSidHasItsOwnName)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point now{};
+    names.store(sidBytes(1), "alice", now);
+    names.store(sidBytes(2), "bob", now);
+
+    EXPECT_EQ(names.find(sidBytes(1), now), "alice");
+    EXPECT_EQ(names.find(sidBytes(2), now), "bob");
+    EXPECT_FALSE(names.find(sidBytes(3), now).has_value());
+    EXPECT_EQ(names.size(), 2U);
+}
+
+TEST(AccountNameCacheTest, StoringAgainReplacesTheNameAndRestartsItsTtl)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point first{};
+    names.store(sidBytes(1), "alice", first);
+    const auto second = first + NAME_TTL;
+    names.store(sidBytes(1), "alice2", second);
+
+    EXPECT_EQ(names.find(sidBytes(1), second + NAME_TTL - std::chrono::seconds(1)), "alice2");
+    EXPECT_EQ(names.size(), 1U);
+}
+
+TEST(AccountNameCacheTest, AnEmptySidOrNameIsNotStored)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point now{};
+    names.store({}, "alice", now);
+    names.store(sidBytes(1), "", now);
+
+    EXPECT_EQ(names.size(), 0U);
+    EXPECT_FALSE(names.find(sidBytes(1), now).has_value());
+}
+
+TEST(AccountNameCacheTest, ANewSidInAFullCacheClearsItFirst)
+{
+    AccountNameCache names(NAME_TTL);
+    const std::chrono::steady_clock::time_point now{};
+    for (std::size_t i = 0; i < AccountNameCache::MAX_ENTRIES; ++i)
+    {
+        std::vector<std::byte> sid = sidBytes(0);
+        sid.push_back(static_cast<std::byte>(i & 0xFFU));
+        sid.push_back(static_cast<std::byte>(i >> 8U));
+        names.store(sid, "user", now);
+    }
+    ASSERT_EQ(names.size(), AccountNameCache::MAX_ENTRIES);
+
+    // A SID already stored replaces its entry: the cache stays full.
+    std::vector<std::byte> first = sidBytes(0);
+    first.push_back(std::byte{0});
+    first.push_back(std::byte{0});
+    names.store(first, "renamed", now);
+    EXPECT_EQ(names.size(), AccountNameCache::MAX_ENTRIES);
+
+    // A new SID clears it, so the bound holds.
+    names.store(sidBytes(1), "alice", now);
+    EXPECT_EQ(names.size(), 1U);
+    EXPECT_EQ(names.find(sidBytes(1), now), "alice");
+    EXPECT_FALSE(names.find(first, now).has_value());
 }
 
 } // namespace
