@@ -3804,6 +3804,169 @@ TEST(ProcessModelTest, ProcessTreeLinksChildWhenStartTimesUnavailable)
     EXPECT_EQ(snaps[0].childrenIndices[0], 1);
 }
 
+// A PID listed twice (two processes the probe saw holding it, told apart by start time) maps to its
+// last row, as the std::unordered_map the tree build used before #2981 did: the child links there.
+TEST(ProcessModelTest, ProcessTreeLinksAChildToTheLastRowOfARepeatedPid)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(10, "first_holder", 'R', 1000, 500, 500, 1024, 0),
+                        makeCounter(10, "second_holder", 'R', 1000, 500, 600, 1024, 0),
+                        makeCounter(20, "child_proc", 'R', 1000, 500, 2000, 1024, 10)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 3);
+    EXPECT_EQ(snaps[0].name, "first_holder");
+    EXPECT_TRUE(snaps[0].childrenIndices.empty());
+    EXPECT_EQ(snaps[1].name, "second_holder");
+    ASSERT_EQ(snaps[1].childrenIndices.size(), 1);
+    EXPECT_EQ(snaps[1].childrenIndices[0], 2);
+    EXPECT_TRUE(snaps[2].childrenIndices.empty());
+}
+
+// A process reporting itself as its parent is never its own child; its real children still link.
+TEST(ProcessModelTest, ProcessTreeNeverMakesAProcessItsOwnChild)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters(
+        {makeCounter(5, "self_parent", 'R', 1000, 500, 1000, 1024, 5), makeCounter(6, "child_proc", 'R', 1000, 500, 2000, 1024, 5)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+    ASSERT_EQ(snaps[0].childrenIndices.size(), 1);
+    EXPECT_EQ(snaps[0].childrenIndices[0], 1);
+    EXPECT_TRUE(snaps[1].childrenIndices.empty());
+}
+
+// A parent PID that no listed process holds links nothing, and a parentPid of 0 is a root.
+TEST(ProcessModelTest, ProcessTreeLeavesChildrenOfMissingParentsUnlinked)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "root_proc", 'R', 1000, 500, 1000, 1024, 0),
+                        makeCounter(2, "orphan_a", 'R', 1000, 500, 2000, 1024, 999),
+                        makeCounter(3, "orphan_b", 'R', 1000, 500, 2000, 1024, 4)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 3);
+    for (const auto& snap : snaps)
+    {
+        EXPECT_TRUE(snap.childrenIndices.empty()) << snap.name;
+    }
+}
+
+// The PID-reuse guard across refreshes, with the PID index reused between them (#2981): a child
+// linked to its parent stops being linked once a process that started after it holds that PID.
+TEST(ProcessModelTest, ProcessTreeDropsTheLinkWhenTheParentPidIsReused)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* probePtr = probe.get();
+    probe->setCounters(
+        {makeCounter(1, "parent_proc", 'R', 1000, 500, 1000, 1024, 0), makeCounter(2, "child_proc", 'R', 1000, 500, 2000, 1024, 1)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+    {
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 2);
+        ASSERT_EQ(snaps[0].childrenIndices.size(), 1);
+        EXPECT_EQ(snaps[0].childrenIndices[0], 1);
+    }
+
+    // The parent exits and an unrelated process (started at 3000, after the child) takes PID 1.
+    probePtr->setCounters(
+        {makeCounter(1, "new_holder", 'R', 1000, 500, 3000, 1024, 0), makeCounter(2, "child_proc", 'R', 1100, 550, 2000, 1024, 1)});
+    probePtr->setTotalCpuTime(200000);
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+    EXPECT_EQ(snaps[0].name, "new_holder");
+    EXPECT_TRUE(snaps[0].childrenIndices.empty());
+}
+
+// Repeated refreshes of a stable 1,000-process tree, the case the reusable PID index exists for
+// (#2981): every refresh gives each process exactly its children, none carried over from the last
+// one; then a process leaving shifts the rows, and the links follow the new rows.
+TEST(ProcessModelTest, ProcessTreeIsRebuiltExactlyOnEveryRefreshOfAStableSet)
+{
+    constexpr std::int32_t PROCESS_COUNT = 1000;
+    constexpr std::int32_t FIRST_PID = 100;
+    // pid FIRST_PID + i has parent FIRST_PID + (i - 1) / 2: a binary tree rooted at FIRST_PID.
+    const auto makeTree = [&](std::int32_t skippedPid)
+    {
+        std::vector<Platform::ProcessCounters> counters;
+        for (std::int32_t i = 0; i < PROCESS_COUNT; ++i)
+        {
+            const std::int32_t pid = FIRST_PID + i;
+            if (pid == skippedPid)
+            {
+                continue;
+            }
+            const std::int32_t parentPid = i == 0 ? 0 : FIRST_PID + ((i - 1) / 2);
+            counters.push_back(makeCounter(pid, "proc", 'S', 1000, 500, 1000 + static_cast<std::uint64_t>(i), 1024, parentPid));
+        }
+        return counters;
+    };
+    const auto expectTree = [](const std::vector<Domain::ProcessSnapshot>& snaps)
+    {
+        std::unordered_map<std::int32_t, std::size_t> rowOf;
+        for (std::size_t row = 0; row < snaps.size(); ++row)
+        {
+            rowOf[snaps[row].pid] = row;
+        }
+        std::vector<std::vector<std::size_t>> expected(snaps.size());
+        for (std::size_t row = 0; row < snaps.size(); ++row)
+        {
+            const auto parent = rowOf.find(snaps[row].parentPid);
+            if (parent != rowOf.end())
+            {
+                expected[parent->second].push_back(row);
+            }
+        }
+        for (std::size_t row = 0; row < snaps.size(); ++row)
+        {
+            ASSERT_EQ(snaps[row].childrenIndices, expected[row]) << "pid " << snaps[row].pid;
+        }
+    };
+
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* probePtr = probe.get();
+    probe->setCounters(makeTree(0));
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+
+    for (int refresh = 0; refresh < 3; ++refresh)
+    {
+        probePtr->setTotalCpuTime(100000 * static_cast<std::uint64_t>(refresh + 1));
+        model.refresh();
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), static_cast<std::size_t>(PROCESS_COUNT));
+        ASSERT_EQ(snaps[0].childrenIndices, (std::vector<std::size_t>{1, 2}));
+        expectTree(snaps);
+    }
+
+    // PID 101 (row 1) exits: its children are left unlinked and every later row moves up one.
+    probePtr->setCounters(makeTree(FIRST_PID + 1));
+    probePtr->setTotalCpuTime(400000);
+    model.refresh();
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), static_cast<std::size_t>(PROCESS_COUNT - 1));
+    EXPECT_EQ(snaps[0].childrenIndices, (std::vector<std::size_t>{1})); // PID 102, now row 1
+    expectTree(snaps);
+}
+
 // =============================================================================
 // Thread Safety Tests
 // =============================================================================

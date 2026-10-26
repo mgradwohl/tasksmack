@@ -435,6 +435,7 @@ set(TASKSMACK_HEADERS
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
     src/Domain/LruMap.h
+    src/Domain/PidIndex.h
     src/Domain/ProcessIconCache.h
     src/UI/IconTextureCache.h
     src/App/Panels/ProcessIconView.h
