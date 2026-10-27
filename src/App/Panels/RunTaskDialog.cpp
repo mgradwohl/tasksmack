@@ -133,43 +133,8 @@ void RunTaskDialog::takeBrowseResult()
     }
 }
 
-std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
+bool RunTaskDialog::renderCommandRow()
 {
-    if (m_ShowRequested)
-    {
-        ImGui::OpenPopup(POPUP_ID);
-        m_ShowRequested = false;
-    }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
-    if (!m_Open)
-    {
-        return std::nullopt;
-    }
-    takeBrowseResult();
-
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title = std::string(ICON_FA_ROCKET "  Run new task") + POPUP_ID;
-    UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
-                                 UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
-    ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
-    std::optional<Platform::RunProgramRequest> run;
-    if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings))
-    {
-        return run;
-    }
-    UI::Widgets::keepCurrentWindowInViewport();
-    const bool escaped = UI::Widgets::dialogEscapePressed();
-    const auto& theme = UI::Theme::get();
-
-    ImGui::PushTextWrapPos(0.0F);
-    ImGui::TextUnformatted("The program to start, and its arguments. It runs on its own, apart from TaskSmack.");
-    ImGui::TextColored(theme.scheme().textMuted,
-                       "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.");
-    ImGui::PopTextWrapPos();
-    ImGui::Spacing();
-
-    // The command line, with the recent ones and Browse... beside it.
     const float browseWidth = ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN " Browse...").x + (ImGui::GetStyle().FramePadding.x * 2.0F);
     const float recentWidth = m_Recent.empty() ? 0.0F : ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetNextItemWidth(std::max(ImGui::GetFontSize() * 6.0F,
@@ -225,6 +190,46 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Choose a program file");
+    return entered;
+}
+
+std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
+{
+    if (m_ShowRequested)
+    {
+        ImGui::OpenPopup(POPUP_ID);
+        m_ShowRequested = false;
+    }
+    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    if (!m_Open)
+    {
+        return std::nullopt;
+    }
+    takeBrowseResult();
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const std::string title = std::string(ICON_FA_ROCKET "  Run new task") + POPUP_ID;
+    UI::Widgets::centerNextDialog(m_LastWorkSize);
+    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+                                 UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
+    std::optional<Platform::RunProgramRequest> run;
+    if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings))
+    {
+        return run;
+    }
+    UI::Widgets::keepCurrentWindowInViewport();
+    const bool escaped = UI::Widgets::dialogEscapePressed();
+    const auto& theme = UI::Theme::get();
+
+    ImGui::PushTextWrapPos(0.0F);
+    ImGui::TextUnformatted("The program to start, and its arguments. It runs on its own, apart from TaskSmack.");
+    ImGui::TextColored(theme.scheme().textMuted,
+                       "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.");
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+
+    const bool entered = renderCommandRow();
 
     if (m_CanRunAsAdministrator)
     {

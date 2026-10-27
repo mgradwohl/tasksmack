@@ -30,9 +30,11 @@ namespace Platform::CommandWords
         Double,
     };
     Quote quote = Quote::None;
-    for (std::size_t i = 0; i < commandLine.size(); ++i)
+    // A while loop, not a for: an escape consumes the next character too, so i advances in the body.
+    std::size_t i = 0;
+    while (i < commandLine.size())
     {
-        const char c = commandLine[i];
+        const char c = commandLine[i++];
         if (quote == Quote::Single)
         {
             if (c == '\'')
@@ -51,9 +53,9 @@ namespace Platform::CommandWords
             {
                 quote = Quote::None;
             }
-            else if (c == '\\' && i + 1 < commandLine.size() && std::string_view("\"\\$`\n").contains(commandLine[i + 1]))
+            else if (c == '\\' && i < commandLine.size() && std::string_view("\"\\$`\n").contains(commandLine[i]))
             {
-                word.push_back(commandLine[++i]);
+                word.push_back(commandLine[i++]);
             }
             else
             {
@@ -82,11 +84,11 @@ namespace Platform::CommandWords
         }
         else if (c == '\\')
         {
-            if (i + 1 >= commandLine.size())
+            if (i >= commandLine.size())
             {
                 return std::unexpected(std::string("The command ends with a lone backslash"));
             }
-            word.push_back(commandLine[++i]);
+            word.push_back(commandLine[i++]);
         }
         else
         {

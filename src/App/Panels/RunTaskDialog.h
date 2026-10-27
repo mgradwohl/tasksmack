@@ -61,6 +61,8 @@ class RunTaskDialog
     };
 
     void takeBrowseResult();
+    /// The command line, with the recent ones and Browse... beside it; true when Enter was pressed in it.
+    [[nodiscard]] bool renderCommandRow();
 
     Browse m_Browse;
     std::shared_ptr<BrowseSlot> m_BrowseSlot = std::make_shared<BrowseSlot>();
