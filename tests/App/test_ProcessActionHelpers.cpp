@@ -98,11 +98,11 @@ TEST(ProcessActionHelpersTest, EachOtherSignalSendsItsSignalAndIsWordedForIt)
 {
     TestMocks::MockProcessActions mock;
     const Platform::ProcessTarget target{.pid = 321, .startTimeTicks = 1000};
-    for (const auto [action, signal, name] : {std::tuple{ProcessAction::SignalHangup, Platform::ProcessSignal::Hangup, "SIGHUP"},
-                                              std::tuple{ProcessAction::SignalInterrupt, Platform::ProcessSignal::Interrupt, "SIGINT"},
-                                              std::tuple{ProcessAction::SignalQuit, Platform::ProcessSignal::Quit, "SIGQUIT"},
-                                              std::tuple{ProcessAction::SignalUser1, Platform::ProcessSignal::User1, "SIGUSR1"},
-                                              std::tuple{ProcessAction::SignalUser2, Platform::ProcessSignal::User2, "SIGUSR2"}})
+    for (const auto& [action, signal, name] : {std::tuple{ProcessAction::SignalHangup, Platform::ProcessSignal::Hangup, "SIGHUP"},
+                                               std::tuple{ProcessAction::SignalInterrupt, Platform::ProcessSignal::Interrupt, "SIGINT"},
+                                               std::tuple{ProcessAction::SignalQuit, Platform::ProcessSignal::Quit, "SIGQUIT"},
+                                               std::tuple{ProcessAction::SignalUser1, Platform::ProcessSignal::User1, "SIGUSR1"},
+                                               std::tuple{ProcessAction::SignalUser2, Platform::ProcessSignal::User2, "SIGUSR2"}})
     {
         EXPECT_TRUE(dispatchProcessAction(mock, action, target).success) << name;
         EXPECT_EQ(mock.lastSignal(), signal) << name;
