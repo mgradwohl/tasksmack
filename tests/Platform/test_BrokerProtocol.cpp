@@ -64,6 +64,15 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 0x0123456789ABCDEF
     return decoded->message;
 }
 
+// #3063: v8's signals end at User2; the next value is refused, not sent as some other signal.
+TEST(BrokerProtocolTest, ASignalPastTheLastIsRefused)
+{
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{SignalRequest{.target = TARGET, .signal = Signal::User2}});
+    ASSERT_TRUE(decodeRequest(bytes).has_value());
+    bytes.back() = static_cast<std::uint8_t>(static_cast<std::uint8_t>(Signal::User2) + 1); // the signal is the payload's last byte
+    EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
@@ -72,7 +81,15 @@ TEST(BrokerProtocolTest, EveryRequestRoundTrips)
     EXPECT_EQ(roundTrip(counters), counters);
     const Request withSockets = ProcessCountersRequest{.targets = {TARGET}, .withSockets = true};
     EXPECT_EQ(roundTrip(withSockets), withSockets);
-    for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
+    for (const Signal signal : {Signal::Terminate,
+                                Signal::Kill,
+                                Signal::Suspend,
+                                Signal::Resume,
+                                Signal::Hangup,
+                                Signal::Interrupt,
+                                Signal::Quit,
+                                Signal::User1,
+                                Signal::User2}) // the last five from v8 (#3063)
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
         EXPECT_EQ(roundTrip(request), request);

@@ -36,6 +36,16 @@ namespace
             return Broker::ActionResult::from(actions.stop(signal->target));
         case Broker::Signal::Resume:
             return Broker::ActionResult::from(actions.resume(signal->target));
+        case Broker::Signal::Hangup:
+            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Hangup));
+        case Broker::Signal::Interrupt:
+            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Interrupt));
+        case Broker::Signal::Quit:
+            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Quit));
+        case Broker::Signal::User1:
+            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::User1));
+        case Broker::Signal::User2:
+            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::User2));
         }
     }
     if (const auto* priority = std::get_if<Broker::PriorityRequest>(&request))

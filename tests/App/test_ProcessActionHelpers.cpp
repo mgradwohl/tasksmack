@@ -16,7 +16,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <format>
 #include <string>
+#include <tuple>
 
 namespace App::Detail
 {
@@ -89,6 +91,36 @@ TEST(ProcessActionHelpersTest, StopCallsStopWithPid)
     EXPECT_EQ(mock.stopCount(), 1);
     EXPECT_EQ(mock.lastStopPid(), 88);
     EXPECT_TRUE(result.success);
+}
+
+// #3063: each Signal* action sends its own signal, says it plainly, and retries as SendSignal.
+TEST(ProcessActionHelpersTest, EachOtherSignalSendsItsSignalAndIsWordedForIt)
+{
+    TestMocks::MockProcessActions mock;
+    const Platform::ProcessTarget target{.pid = 321, .startTimeTicks = 1000};
+    for (const auto& [action, signal, name] : {std::tuple{ProcessAction::SignalHangup, Platform::ProcessSignal::Hangup, "SIGHUP"},
+                                               std::tuple{ProcessAction::SignalInterrupt, Platform::ProcessSignal::Interrupt, "SIGINT"},
+                                               std::tuple{ProcessAction::SignalQuit, Platform::ProcessSignal::Quit, "SIGQUIT"},
+                                               std::tuple{ProcessAction::SignalUser1, Platform::ProcessSignal::User1, "SIGUSR1"},
+                                               std::tuple{ProcessAction::SignalUser2, Platform::ProcessSignal::User2, "SIGUSR2"}})
+    {
+        EXPECT_TRUE(dispatchProcessAction(mock, action, target).success) << name;
+        EXPECT_EQ(mock.lastSignal(), signal) << name;
+        EXPECT_STREQ(actionLabel(action), name);
+        EXPECT_EQ(confirmTitle(action, "nginx", 321), std::format("Send {} to nginx (PID 321)?", name));
+        EXPECT_FALSE(confirmBody(action, "nginx", 321).empty()) << name;
+        const auto authorized = authorizedActionFor(action, target);
+        ASSERT_TRUE(authorized.has_value()) << name;
+        EXPECT_EQ(authorized->kind, Platform::AuthorizedAction::Kind::SendSignal);
+        EXPECT_EQ(authorized->signal, signal);
+        EXPECT_FALSE(isDestructiveAction(action)) << name;
+    }
+    EXPECT_EQ(mock.sendSignalCount(), 5);
+    EXPECT_EQ(formatActionResultMessage(ProcessAction::SignalHangup, 321, Platform::ProcessActionResult::ok()).text,
+              "SIGHUP sent to PID 321");
+    EXPECT_EQ(formatActionResultMessage(ProcessAction::SignalQuit, 321, Platform::ProcessActionResult::error("No such process")).text,
+              "Could not send SIGQUIT to PID 321: No such process");
+    EXPECT_FALSE(signalFor(ProcessAction::Kill).has_value());
 }
 
 TEST(ProcessActionHelpersTest, ResumeCallsResumeWithPid)

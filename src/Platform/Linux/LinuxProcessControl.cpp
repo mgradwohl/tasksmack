@@ -420,6 +420,7 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
         .canKill = true,
         .canStop = true,
         .canContinue = true,
+        .canSendSignals = true, // HUP, INT, QUIT, USR1, USR2 (#3063)
         .canSetPriority = true,
         .canSetIoPriority = true, // ioprio_set(2) (#803)
         .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
@@ -431,25 +432,45 @@ ProcessActionCapabilities LinuxProcessControl::actionCapabilities() const
 
 ProcessActionResult LinuxProcessControl::terminate(const ProcessTarget& target)
 {
-    return sendSignal(target, SIGTERM, "SIGTERM");
+    return sendSignalNumber(target, SIGTERM, "SIGTERM");
 }
 
 ProcessActionResult LinuxProcessControl::kill(const ProcessTarget& target)
 {
     // NOLINTNEXTLINE(misc-include-cleaner) - SIGKILL is provided by <signal.h>
-    return sendSignal(target, SIGKILL, "SIGKILL");
+    return sendSignalNumber(target, SIGKILL, "SIGKILL");
 }
 
 ProcessActionResult LinuxProcessControl::stop(const ProcessTarget& target)
 {
     // NOLINTNEXTLINE(misc-include-cleaner) - SIGSTOP is provided by <signal.h>
-    return sendSignal(target, SIGSTOP, "SIGSTOP");
+    return sendSignalNumber(target, SIGSTOP, "SIGSTOP");
 }
 
 ProcessActionResult LinuxProcessControl::resume(const ProcessTarget& target)
 {
     // NOLINTNEXTLINE(misc-include-cleaner) - SIGCONT is provided by <signal.h>
-    return sendSignal(target, SIGCONT, "SIGCONT");
+    return sendSignalNumber(target, SIGCONT, "SIGCONT");
+}
+
+ProcessActionResult LinuxProcessControl::sendSignal(const ProcessTarget& target, ProcessSignal signal)
+{
+    // NOLINTBEGIN(misc-include-cleaner) - the SIG* constants are provided by <signal.h>
+    switch (signal)
+    {
+    case ProcessSignal::Hangup:
+        return sendSignalNumber(target, SIGHUP, "SIGHUP");
+    case ProcessSignal::Interrupt:
+        return sendSignalNumber(target, SIGINT, "SIGINT");
+    case ProcessSignal::Quit:
+        return sendSignalNumber(target, SIGQUIT, "SIGQUIT");
+    case ProcessSignal::User1:
+        return sendSignalNumber(target, SIGUSR1, "SIGUSR1");
+    case ProcessSignal::User2:
+        return sendSignalNumber(target, SIGUSR2, "SIGUSR2");
+    }
+    // NOLINTEND(misc-include-cleaner)
+    return ProcessActionResult::error("Unknown signal");
 }
 
 namespace
@@ -619,7 +640,7 @@ ProcessActionResult LinuxProcessControl::setPriority(const ProcessTarget& target
     spdlog::debug("Setting priority (nice={}) for PID {}", clampedNice, target.pid);
 
     // setpriority(2) has no pidfd form, so it can only be aimed at the PID. A pidfd still closes
-    // the gap, after the fact: opened before the identity check as in sendSignal(), it lets us
+    // the gap, after the fact: opened before the identity check as in sendSignalNumber(), it lets us
     // ask afterwards whether the target is still there. A PID is freed only when its process is
     // reaped, so if the target is still there after the call -- running or a zombie -- the PID
     // never changed hands and the call reached it.
@@ -861,7 +882,7 @@ IoPriorityReadResult LinuxProcessControl::getIoPriority(const ProcessTarget& tar
     return *decoded;
 }
 
-ProcessActionResult LinuxProcessControl::sendSignal(const ProcessTarget& target, int signal, std::string_view signalName) const
+ProcessActionResult LinuxProcessControl::sendSignalNumber(const ProcessTarget& target, int signal, std::string_view signalName) const
 {
     if (target.pid <= 0)
     {

@@ -3099,6 +3099,23 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             request(Detail::ProcessAction::Resume);
         }
     }
+    // The other signals (#3063, Linux): one process, each confirmed with what it usually does.
+    if (can.canSendSignals && batchCount == 0 && ImGui::BeginMenu(ICON_FA_BOLT " Send signal###SendSignal", actionsIdle))
+    {
+        for (const auto [action, hint] : {std::pair{Detail::ProcessAction::SignalHangup, "reload a daemon"},
+                                          std::pair{Detail::ProcessAction::SignalInterrupt, "as Ctrl+C"},
+                                          std::pair{Detail::ProcessAction::SignalQuit, "exit with a core dump"},
+                                          std::pair{Detail::ProcessAction::SignalUser1, "program-defined"},
+                                          std::pair{Detail::ProcessAction::SignalUser2, "program-defined"}})
+        {
+            const std::string label = std::format("{}...###{}", Detail::signalName(action), Detail::signalName(action));
+            if (ImGui::MenuItem(label.c_str(), hint))
+            {
+                requestRowAction(action, proc);
+            }
+        }
+        ImGui::EndMenu();
+    }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
     // A single process's priority stays in Process Details' Actions block.
     if (ProcessBatch::offersBatchPriority(can, batchCount))

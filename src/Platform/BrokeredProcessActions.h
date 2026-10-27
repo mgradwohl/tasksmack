@@ -49,6 +49,9 @@ namespace Platform
 /// The broker request that does @p action.
 [[nodiscard]] Broker::Request brokerRequestFor(const AuthorizedAction& action);
 
+/// The Signal request's value for @p signal (#3063).
+[[nodiscard]] Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept;
+
 class BrokeredProcessActions final : public IProcessActions
 {
   public:
@@ -62,6 +65,7 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult sendSignal(const ProcessTarget& target, ProcessSignal signal) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, std::int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, std::int32_t level) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;

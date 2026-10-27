@@ -26,7 +26,64 @@ enum class ProcessAction : std::uint8_t
     Kill,
     Stop,
     Resume,
+    // The other signals (#3063, Linux): each its own action, so the confirm, run and result paths need no
+    // extra parameter. signalFor() maps them to Platform::ProcessSignal.
+    SignalHangup,
+    SignalInterrupt,
+    SignalQuit,
+    SignalUser1,
+    SignalUser2,
 };
+
+/// The signal a Signal* action sends (#3063), or nullopt for the other actions.
+[[nodiscard]] constexpr std::optional<Platform::ProcessSignal> signalFor(ProcessAction action) noexcept
+{
+    switch (action)
+    {
+    case ProcessAction::SignalHangup:
+        return Platform::ProcessSignal::Hangup;
+    case ProcessAction::SignalInterrupt:
+        return Platform::ProcessSignal::Interrupt;
+    case ProcessAction::SignalQuit:
+        return Platform::ProcessSignal::Quit;
+    case ProcessAction::SignalUser1:
+        return Platform::ProcessSignal::User1;
+    case ProcessAction::SignalUser2:
+        return Platform::ProcessSignal::User2;
+    case ProcessAction::None:
+    case ProcessAction::Terminate:
+    case ProcessAction::Kill:
+    case ProcessAction::Stop:
+    case ProcessAction::Resume:
+        break;
+    }
+    return std::nullopt;
+}
+
+/// The signal's name, "SIGHUP": a Signal* action's label (#3063); empty for the other actions.
+[[nodiscard]] constexpr const char* signalName(ProcessAction action) noexcept
+{
+    switch (action)
+    {
+    case ProcessAction::SignalHangup:
+        return "SIGHUP";
+    case ProcessAction::SignalInterrupt:
+        return "SIGINT";
+    case ProcessAction::SignalQuit:
+        return "SIGQUIT";
+    case ProcessAction::SignalUser1:
+        return "SIGUSR1";
+    case ProcessAction::SignalUser2:
+        return "SIGUSR2";
+    case ProcessAction::None:
+    case ProcessAction::Terminate:
+    case ProcessAction::Kill:
+    case ProcessAction::Stop:
+    case ProcessAction::Resume:
+        break;
+    }
+    return "";
+}
 
 /// Human-readable verb for ProcessAction, used in confirmation/result messages.
 /// Returns a `const char*` (not std::string_view) since callers need a null-terminated
@@ -46,6 +103,16 @@ enum class ProcessAction : std::uint8_t
         return "suspend";
     case ProcessAction::Resume:
         return "resume";
+    case ProcessAction::SignalHangup:
+        return "send SIGHUP to";
+    case ProcessAction::SignalInterrupt:
+        return "send SIGINT to";
+    case ProcessAction::SignalQuit:
+        return "send SIGQUIT to";
+    case ProcessAction::SignalUser1:
+        return "send SIGUSR1 to";
+    case ProcessAction::SignalUser2:
+        return "send SIGUSR2 to";
     case ProcessAction::None:
         break;
     }
@@ -77,6 +144,18 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     case ProcessAction::Resume:
         authorized.kind = Kind::Resume;
         return authorized;
+    case ProcessAction::SignalHangup:
+    case ProcessAction::SignalInterrupt:
+    case ProcessAction::SignalQuit:
+    case ProcessAction::SignalUser1:
+    case ProcessAction::SignalUser2:
+        if (const std::optional<Platform::ProcessSignal> signal = signalFor(action))
+        {
+            authorized.kind = Kind::SendSignal;
+            authorized.signal = *signal;
+            return authorized;
+        }
+        break;
     case ProcessAction::None:
         break;
     }
@@ -96,6 +175,16 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return "Suspending";
     case ProcessAction::Resume:
         return "Resuming";
+    case ProcessAction::SignalHangup:
+        return "Sending SIGHUP to";
+    case ProcessAction::SignalInterrupt:
+        return "Sending SIGINT to";
+    case ProcessAction::SignalQuit:
+        return "Sending SIGQUIT to";
+    case ProcessAction::SignalUser1:
+        return "Sending SIGUSR1 to";
+    case ProcessAction::SignalUser2:
+        return "Sending SIGUSR2 to";
     case ProcessAction::None:
         break;
     }
@@ -116,6 +205,12 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return "Suspend";
     case ProcessAction::Resume:
         return "Resume";
+    case ProcessAction::SignalHangup:
+    case ProcessAction::SignalInterrupt:
+    case ProcessAction::SignalQuit:
+    case ProcessAction::SignalUser1:
+    case ProcessAction::SignalUser2:
+        return signalName(action); // "SIGHUP sent to PID 1234"
     case ProcessAction::None:
         break;
     }
@@ -133,6 +228,10 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 /// Confirm dialog title, "Kill firefox (PID 1234)?": the action, then the process it hits (#1203).
 [[nodiscard]] inline std::string confirmTitle(ProcessAction action, std::string_view processName, std::int32_t pid)
 {
+    if (signalFor(action).has_value())
+    {
+        return std::format("Send {} to {} (PID {})?", signalName(action), processName, pid); // #3063
+    }
     return std::format("{} {} (PID {})?", actionLabel(action), processName, pid);
 }
 
@@ -150,6 +249,20 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
         return std::format("{} (PID {}) will stop running until it is resumed.", processName, pid);
     case ProcessAction::Resume:
         return std::format("{} (PID {}) will continue running.", processName, pid);
+    case ProcessAction::SignalHangup:
+        return std::format("{} (PID {}) gets SIGHUP. A daemon usually reloads its configuration; a program with no handler for it ends.",
+                           processName,
+                           pid);
+    case ProcessAction::SignalInterrupt:
+        return std::format("{} (PID {}) gets SIGINT, as Ctrl+C sends: most programs stop what they're doing and exit.", processName, pid);
+    case ProcessAction::SignalQuit:
+        return std::format("{} (PID {}) gets SIGQUIT: most programs exit and leave a core dump.", processName, pid);
+    case ProcessAction::SignalUser1:
+    case ProcessAction::SignalUser2:
+        return std::format("{} (PID {}) gets {}, which runs its own handler for it if it has one; a program with none ends.",
+                           processName,
+                           pid,
+                           signalName(action));
     case ProcessAction::None:
         break;
     }
@@ -185,6 +298,16 @@ dispatchProcessAction(Platform::IProcessActions& actions, ProcessAction action, 
         return actions.stop(target);
     case ProcessAction::Resume:
         return actions.resume(target);
+    case ProcessAction::SignalHangup:
+    case ProcessAction::SignalInterrupt:
+    case ProcessAction::SignalQuit:
+    case ProcessAction::SignalUser1:
+    case ProcessAction::SignalUser2:
+        if (const std::optional<Platform::ProcessSignal> signal = signalFor(action))
+        {
+            return actions.sendSignal(target, *signal);
+        }
+        break;
     case ProcessAction::None:
         break;
     }

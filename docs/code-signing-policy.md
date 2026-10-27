@@ -40,7 +40,7 @@ and timestamps the two installers. The workflow then checks the signatures in ea
 issued with Artifact Signing's extended key usage, timestamped), and checks each installer the same way: its
 own signature, then a silent install whose files must be the `.zip`'s and whose executables, the uninstaller
 included, must all pass, a start of the installed TaskSmack, and a silent uninstall that must leave nothing
-behind. Only then are the files hashed, signed with Sigstore and published. The details are in
+behind. Only then are the files hashed into `SHA256SUMS`, which is signed with Sigstore, and published. The details are in
 [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#windows-code-signing).
 
 Only binaries built from this repository's source by the project's GitHub Actions release workflow
@@ -57,8 +57,9 @@ ships with that project's own signature or none.
 Every signed `TaskSmack.exe`, `TaskSmackHelper.exe` and installer carries the product name **TaskSmack** and the product version of the release
 (`project(TaskSmack VERSION ...)` in `CMakeLists.txt`, which the release workflow requires to match the tag).
 
-On top of Authenticode, every release asset (the `.zip`, installer, `.deb`, `.tar.gz` and SBOM) is also signed with
-Sigstore; see [Verifying a Release](guide/user-guide.md#verifying-a-release).
+On top of Authenticode, every release asset (the `.zip`, installer, `.deb`, `.tar.gz` and SBOM) is listed with its
+SHA-256 in the release's `SHA256SUMS`, which is signed with Sigstore; see
+[Verifying a Release](guide/user-guide.md#verifying-a-release).
 
 ## Team roles and members
 
