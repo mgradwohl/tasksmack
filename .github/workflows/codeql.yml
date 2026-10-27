@@ -107,9 +107,12 @@ jobs:
     if: needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     # Only the app's own compiles are traced (#1786), which took the job from 35-45+ minutes to
-    # about a third of that; 30 leaves headroom for a busy runner. It was 45 (#1444) while the
-    # tests were traced too, and still timed out.
-    timeout-minutes: 30
+    # about a third of that. It was 45 (#1444) while the tests were traced too, and still timed out.
+    # Now a pull request's run takes 10-20 minutes and main's about 23, since main never restores a
+    # TRAP cache: a traced build of ~14 minutes and a query run of ~7. 30 left too little room for
+    # one slow download: an Initialize CodeQL that took 10 minutes instead of under one timed a
+    # pull request out at 30 (#3171). 40 absorbs that and still stops a stuck job.
+    timeout-minutes: 40
     permissions:
       actions: read
       contents: read
@@ -197,7 +200,11 @@ jobs:
           cmake --build --preset debug --target
           SDL3-static freetype spdlog imgui_lib implot_lib glad_gl_core_33
 
+      # Downloads the CodeQL bundle and, on a pull request, the newest TRAP cache (~640 MB, #3111):
+      # under a minute normally, 10 once (#3171). A slow download still fits the job's 40 minutes; a
+      # stalled one fails here, under this step's name, instead of timing out in a later step.
       - name: Initialize CodeQL
+        timeout-minutes: 12
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: c-cpp
