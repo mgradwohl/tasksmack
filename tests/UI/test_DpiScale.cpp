@@ -5,6 +5,7 @@
 
 #include "UI/DpiScale.h"
 
+#include <SDL3/SDL_events.h>
 #include <gtest/gtest.h>
 
 #include <limits>
@@ -88,6 +89,67 @@ TEST(DpiScaleTest, WindowUnitScaleFallsBackOnAnUnusableDensity)
     EXPECT_FLOAT_EQ(windowUnitScale(1.5F, -1.0F), 1.5F);
     EXPECT_FLOAT_EQ(windowUnitScale(1.5F, std::numeric_limits<float>::quiet_NaN()), 1.5F);
     EXPECT_FLOAT_EQ(windowUnitScale(1.5F, std::numeric_limits<float>::infinity()), 1.5F);
+}
+
+// #3150: a window minimized before its first frame reported a pixel density of 0.197 on Windows,
+// which made the UI scale 8.88 at 175 % and rebuilt the fonts at 213 px.
+TEST(DpiScaleTest, WindowUnitScaleIgnoresTheDensityOfAWindowWithNoRealSize)
+{
+    EXPECT_FLOAT_EQ(windowUnitScale(1.75F, 0.197F), 1.75F);
+    EXPECT_FLOAT_EQ(windowUnitScale(1.0F, 0.01F), 1.0F);
+    EXPECT_FLOAT_EQ(windowUnitScale(1.0F, 50.0F), 1.0F);
+}
+
+// ---- When the UI scale is measured again (#943, #3150) ----
+
+TEST(DpiScaleTest, ADisplayChangeOrARestoreAsksForAScaleCheck)
+{
+    EXPECT_TRUE(requestsDisplayScaleCheck(SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED));
+    EXPECT_TRUE(requestsDisplayScaleCheck(SDL_EVENT_WINDOW_DISPLAY_CHANGED));
+    EXPECT_TRUE(requestsDisplayScaleCheck(SDL_EVENT_WINDOW_RESTORED)); // a check that waited while minimized
+    EXPECT_FALSE(requestsDisplayScaleCheck(SDL_EVENT_WINDOW_MINIMIZED));
+    EXPECT_FALSE(requestsDisplayScaleCheck(SDL_EVENT_WINDOW_RESIZED));
+    EXPECT_FALSE(requestsDisplayScaleCheck(SDL_EVENT_MOUSE_MOTION));
+}
+
+TEST(DpiScaleTest, AScaleCheckRunsOnceAtTheNextFrame)
+{
+    DisplayScaleCheck check;
+    EXPECT_FALSE(check.pending());
+    EXPECT_FALSE(check.takeDue(false)); // nothing asked for
+
+    check.request();
+    check.request(); // two events before a frame: still one measurement
+    EXPECT_TRUE(check.pending());
+    EXPECT_TRUE(check.takeDue(false));
+    EXPECT_FALSE(check.pending());
+    EXPECT_FALSE(check.takeDue(false));
+}
+
+TEST(DpiScaleTest, AScaleCheckWaitsWhileTheWindowIsMinimized)
+{
+    DisplayScaleCheck check;
+    check.request(); // the display change SDL sends at startup, with the window already minimized
+    EXPECT_FALSE(check.takeDue(true));
+    EXPECT_FALSE(check.takeDue(true)); // every minimized frame keeps it
+    EXPECT_TRUE(check.pending());
+
+    check.request(); // SDL_EVENT_WINDOW_RESTORED
+    EXPECT_TRUE(check.takeDue(false));
+    EXPECT_FALSE(check.pending());
+}
+
+TEST(DpiScaleTest, AScaleCheckIsConstexprEvaluable)
+{
+    constexpr bool measuredAfterRestore = []
+    {
+        DisplayScaleCheck check;
+        check.request();
+        const bool whileMinimized = check.takeDue(true);
+        return !whileMinimized && check.takeDue(false);
+    }();
+    static_assert(measuredAfterRestore);
+    EXPECT_TRUE(measuredAfterRestore);
 }
 
 // ---- Title-bar height (#1169) ----

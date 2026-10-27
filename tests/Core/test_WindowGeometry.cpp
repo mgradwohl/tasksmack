@@ -412,6 +412,28 @@ TEST(WindowGeometryTest, WindowUnitScaleIsDisplayScaleOverPixelDensity)
     EXPECT_FLOAT_EQ(windowUnitScale(1.5F, 0.0F), 1.5F);   // unknown density: the display scale
 }
 
+// #3150: a pixel density no real window has -- 0.197 from a window minimized before its first frame
+// on Windows -- is not divided out, or the scale comes out 5x the display's.
+TEST(WindowGeometryTest, PixelDensityOutsideThePlausibleRangeIsIgnored)
+{
+    EXPECT_TRUE(isPlausiblePixelDensity(1.0F));
+    EXPECT_TRUE(isPlausiblePixelDensity(MIN_PIXEL_DENSITY)); // the bounds are inclusive
+    EXPECT_TRUE(isPlausiblePixelDensity(MAX_PIXEL_DENSITY));
+    EXPECT_TRUE(isPlausiblePixelDensity(3.0F)); // a Retina display
+    EXPECT_FALSE(isPlausiblePixelDensity(0.197F));
+    EXPECT_FALSE(isPlausiblePixelDensity(MIN_PIXEL_DENSITY - 0.01F));
+    EXPECT_FALSE(isPlausiblePixelDensity(MAX_PIXEL_DENSITY + 0.01F));
+    EXPECT_FALSE(isPlausiblePixelDensity(0.0F));
+    EXPECT_FALSE(isPlausiblePixelDensity(-1.0F));
+    EXPECT_FALSE(isPlausiblePixelDensity(std::numeric_limits<float>::quiet_NaN()));
+    EXPECT_FALSE(isPlausiblePixelDensity(std::numeric_limits<float>::infinity()));
+
+    EXPECT_FLOAT_EQ(windowUnitScale(1.75F, 0.197F), 1.75F); // was 8.88
+    EXPECT_FLOAT_EQ(windowUnitScale(1.0F, MIN_PIXEL_DENSITY), 2.0F);
+    EXPECT_FLOAT_EQ(windowUnitScale(8.0F, MAX_PIXEL_DENSITY), 1.0F);
+    EXPECT_FLOAT_EQ(windowUnitScale(2.0F, 9.0F), 2.0F);
+}
+
 // #1297 review: a maximized window saves its restore rectangle, so it must be tagged with the scale
 // captured with that rectangle -- not the live scale of the maximized window, which can belong to
 // another display or a later scale setting.

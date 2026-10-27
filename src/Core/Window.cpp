@@ -876,7 +876,10 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
 
 auto Window::getUnitScale() const noexcept -> float
 {
-    if (m_Handle == nullptr)
+    // Unknown while minimized: the window has no real size then, and its pixel density gave a scale
+    // about 5x the display's on Windows (#3150), which an exit while minimized would have saved with
+    // the window size and shrunk the next launch's window by.
+    if (m_Handle == nullptr || isMinimized())
     {
         return 0.0F;
     }

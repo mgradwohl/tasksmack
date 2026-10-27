@@ -2,10 +2,10 @@
 /// @brief UI::UILayer and App::TitleBarLayer in a real Core::Application (#1395): the ImGui frame
 /// UILayer brackets, the title bar TitleBarLayer draws into it, and each title-bar button's effect --
 /// Settings, Help and About raise their events, Maximize and Restore change the window's state, and
-/// Close stops the app. Also the minimum window size the bar sets from its contents, the drags and
-/// resizes the bar runs client-side, from every edge and corner (#2717); and the whole
-/// shell as main.cpp composes it -- its real panels, each main tab, F1 and the config it saves on exit --
-/// and a first launch from an empty config directory, whose saved config.toml is a golden file (#2727).
+/// Close stops the app. Also the UI scale after a display change and after a start minimized (#3150), the minimum window size the bar sets
+/// from its contents, the drags and resizes the bar runs client-side, from every edge and corner (#2717); and the whole shell as main.cpp
+/// composes it -- its real panels, each main tab, F1 and the config it saves on exit -- and a first launch from an empty config directory,
+/// whose saved config.toml is a golden file (#2727).
 ///
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like the ApplicationTest suite.
@@ -35,6 +35,7 @@
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "ScratchConfigDir.h"
+#include "UI/DpiScale.h"
 #include "UI/IconTextureCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
@@ -474,6 +475,120 @@ TEST_F(UiLayersOnDisplayTest, ADisplayScaleChangeRebuildsTheFontsAtTheMeasuredSc
     EXPECT_GT(observed.measured, 0.0F);
     EXPECT_FLOAT_EQ(observed.afterRebuild, observed.measured); // back at what the window reports
     EXPECT_GT(observed.fontGenerationAfter, observed.fontGenerationBefore) << "the fonts weren't rebuilt";
+}
+
+/// What MinimizedStartDriverLayer saw (#3150).
+struct MinimizedStartObserved
+{
+    bool minimizedAtFirstFrame = false;
+    float scaleWhileMinimized = 0.0F; ///< Theme's scale after a display change arrived while minimized
+    float afterRestore = 0.0F;        ///< Theme's scale a few frames after the restore
+    float restoredWindowScale = 0.0F; ///< What the restored window measures (Window::getUnitScale())
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer, in an app whose window was minimized before UILayer attached: queues the
+/// SDL_EVENT_WINDOW_DISPLAY_CHANGED SDL sends at startup while the window is still minimized, which
+/// measured the minimized window's pixel density and rebuilt the fonts at about 5x (#3150), then
+/// restores the window and records the scale UILayer settles on.
+class MinimizedStartDriverLayer : public Core::Layer
+{
+  public:
+    explicit MinimizedStartDriverLayer(MinimizedStartObserved& observed) : Layer("MinimizedStartDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        Core::Window& window = Core::Application::get().getWindow();
+        if (frame == 1)
+        {
+            m_Observed.minimizedAtFirstFrame = window.isMinimized();
+            SDL_Event event{};
+            event.type = SDL_EVENT_WINDOW_DISPLAY_CHANGED;
+            event.window.windowID = SDL_GetWindowID(window.getHandle());
+            SDL_PushEvent(&event);
+        }
+        else if (frame == 1 + STEP)
+        {
+            m_Observed.scaleWhileMinimized = UI::Theme::get().displayScale();
+            window.restore();
+            m_RestoreFrame = frame;
+        }
+        else if (m_RestoreFrame != 0 && !window.isMinimized())
+        {
+            // Waits on the state, not a frame count (#2901): the restore event, and the measurement it
+            // asks for, can land a few frames later under load.
+            m_Observed.afterRestore = UI::Theme::get().displayScale();
+            m_Observed.restoredWindowScale = window.getUnitScale();
+            if (frame >= m_RestoreFrame + STEP && m_Observed.restoredWindowScale > 0.0F &&
+                std::abs(m_Observed.afterRestore - m_Observed.restoredWindowScale) < UI::DISPLAY_SCALE_EPSILON)
+            {
+                Core::Application::get().stop();
+            }
+        }
+        if (frame >= MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+        }
+    }
+
+  private:
+    static constexpr int STEP = 3;         // a minimized window renders at about 5 fps
+    static constexpr int MAX_FRAMES = 300; // the restore and the rebuild normally land within a few frames
+
+    MinimizedStartObserved& m_Observed;
+    int m_RestoreFrame = 0;
+};
+
+TEST_F(UiLayersOnDisplayTest, AWindowMinimizedBeforeItsFirstFrameGetsTheDisplayScaleBackOnRestore)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    if (onNativeWayland())
+    {
+        GTEST_SKIP() << "native Wayland: a client can't bring its own window back from minimized";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayMinimizedStartTest";
+    spec.VSync = false;
+    MinimizedStartObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        // Minimized before UILayer measures anything, as "Run: Minimized" or ShowWindow(SW_SHOWMINNOACTIVE)
+        // from a launcher does (#3150).
+        app.getWindow().minimize();
+        SDL_SyncWindow(app.getWindow().getHandle());
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<MinimizedStartDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    if (!observed.minimizedAtFirstFrame)
+    {
+        GTEST_SKIP() << "The window didn't minimize on this display (no window manager), so there was nothing to check";
+    }
+    ASSERT_GT(observed.restoredWindowScale, 0.0F) << "the window never came back from minimized";
+    // The scale the restored window measures, not one taken from the minimized window (8.88 at 175 %).
+    EXPECT_FLOAT_EQ(observed.afterRestore, observed.restoredWindowScale)
+        << "while minimized the UI scale was " << observed.scaleWhileMinimized;
+    EXPECT_FALSE(observed.timedOut);
+#ifdef _WIN32
+    // A real window's pixel density is 1 on Windows, so the minimized window's one (about 0.2) is
+    // ignored and the fonts were never built at 5x, even before the restore.
+    EXPECT_FLOAT_EQ(observed.scaleWhileMinimized, observed.restoredWindowScale);
+#endif
 }
 
 /// What the real OpenGL icon backend did inside a frame, with the app's context current.

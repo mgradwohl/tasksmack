@@ -38,6 +38,18 @@ python -m playwright install --with-deps --only-shell chromium   # --with-deps n
 python tools/docs-site-smoke.py   # --offline skips fetching the latest release page; --headed shows the browser
 ```
 
+The site's scripts and stylesheet come from jsDelivr, each pinned to a version in its URL and carrying a
+Subresource Integrity hash (#3167). The hashes live in `docs/cdn-integrity.json`. Pre-commit's
+`check-docs-sri` hook, `tools/docs-sri.py --check`, fails when a tag's hash doesn't match it or a URL
+changed. After changing a version, by hand or on a Renovate branch, regenerate both and commit them:
+
+```bash
+python -I tools/docs-sri.py --update   # downloads each pinned file, hashes it, rewrites the tags
+```
+
+Renovate tracks the pins (a `customManagers` entry for `docs/index.html`, majors behind dashboard
+approval). The browser enforces the hashes, so a stale one breaks the page and fails the smoke test.
+
 Link sections as GitHub renders them (`faq.md#why-doesnt-the-network-total-match-the-sum-of-the-interfaces`):
 the site gives each heading GitHub's anchor as well as Docsify's own.
 
