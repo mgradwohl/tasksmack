@@ -28,9 +28,10 @@ on:
       scope:
         description: >-
           What to run. 'all' runs every job (the default, as before). 'benchmark' runs only
-          benchmark-regression, which is all a performance PR's merge gate needs.
+          benchmark-regression, which is all a performance PR's merge gate needs. 'coverage' runs
+          only the Linux and Windows coverage jobs (#3148).
         type: choice
-        options: [all, benchmark]
+        options: [all, benchmark, coverage]
         default: all
 
 # Pushes to main or a release/* branch get one group per commit and are never cancelled, so
@@ -224,12 +225,24 @@ jobs:
           # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
           install: binary
           key: windows-coverage-llvm${{ env.LLVM_SEMVER_VERSION }}
-          max-size: 500M
+          # 500M held under a quarter of one build (#3148): main ran full, with about 500 cleanups a
+          # build and 18-23% hits, so the build took about 26 of the job's 32 minutes.
+          max-size: 1250M
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+          # The post step prints `ccache -s -vv`: hits, misses and why calls were uncacheable.
+          verbose: 2
+
+      # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
+      # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
+      - name: Configure ccache
+        shell: bash
+        run: |
+          ccache --set-config=inode_cache=true
+          ccache -p | grep -E 'inode_cache|max_size|sloppiness|compiler_check'
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -255,6 +268,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/coverage.ps1 -ShowDetails *>&1 | Tee-Object -FilePath coverage-output.txt
+
+      # Where the build's time went (scans, compiles, links, the slowest links), from .ninja_log (#3148).
+      - name: Build profile
+        if: always()
+        shell: bash
+        run: python -I -X utf8 tools/ninja-build-profile.py build/win-coverage | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Add coverage summary to workflow summary
         if: always()
@@ -345,7 +364,7 @@ jobs:
     # Skip main-branch pushes (handled by standalone sanitizers.yml) to avoid duplicate sanitizer runs.
     if: >-
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.scope != 'benchmark')
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'all')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -543,6 +562,7 @@ jobs:
           exit 1
 
   benchmark-regression:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage'
     runs-on: ubuntu-24.04
     # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
     # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top
@@ -672,7 +692,7 @@ jobs:
   wayland-matrix:
     if: >-
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.scope != 'benchmark')
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'all')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
