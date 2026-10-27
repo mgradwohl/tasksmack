@@ -37,6 +37,21 @@ namespace Platform
 
 class ProcessorPerformanceCounter;
 
+/// Opens PDH's "% Processor Performance" counter for the current clock (#1184): the counter, or null
+/// when it can't be opened. The default probe's opener opens pdh.dll's counter
+/// (ProcessorPerformanceCounter::open()); tests pass a fake.
+using ProcessorPerformanceOpener = std::unique_ptr<ProcessorPerformanceCounter> (*)();
+
+/// The "% Processor Performance" counter, left for WindowsSystemProbe to open itself on its second read()
+/// (#3154). PDH's first use in the process loads the perf counter name tables, which takes 130-300 ms,
+/// and the first read() is the seed the system sampler publishes; the clock is the only figure that
+/// needs PDH. A struct rather than the bare opener, so a probe built with nullptr for its counter still
+/// picks the constructor that takes an open one.
+struct DeferredProcessorPerformance
+{
+    ProcessorPerformanceOpener open = nullptr;
+};
+
 /// The Win32/NT calls WindowsSystemProbe makes for CPU, topology, memory (#1719) and network (#1395): the
 /// system's by default (WindowsSystemProbe::systemFunctions()), fakes in tests, so each one failing alone,
 /// the per-core fallbacks, several processor groups and removed network adapters can be tested. Grouped by
@@ -105,12 +120,18 @@ struct SystemReadTiming
 class WindowsSystemProbe : public ISystemProbe
 {
   public:
+    /// The system's probe: the rated base clock (readNominalCpuBaseMHz in CpuBaseClock.h:
+    /// CallNtPowerInformation's MaxMhz, else the registry's ~MHz; #1530), and pdh.dll's counter, opened
+    /// on the second read() (#3154).
     WindowsSystemProbe();
     /// The probe with its current-clock inputs supplied (#1184): the base clock in MHz (0 = unknown) and
-    /// the "% Processor Performance" counter (null = none, and the base clock is reported). The default
-    /// constructor reads the rated base (readNominalCpuBaseMHz in CpuBaseClock.h: CallNtPowerInformation's
-    /// MaxMhz, else the registry's ~MHz; #1530) and opens pdh.dll's counter; tests inject fakes here.
+    /// the "% Processor Performance" counter (null = none, and the base clock is reported), already open,
+    /// so the first read() uses it. Tests inject fakes here.
     WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
+    /// As above, with the counter opened by @p processorPerformance on the second read() (#3154): the
+    /// first read() makes no PDH call and reports the base clock, as does the read() that opens it,
+    /// whose collection only primes the rate. An opener that returns null isn't called again.
+    WindowsSystemProbe(std::uint64_t baseCpuMHz, DeferredProcessorPerformance processorPerformance);
     /// As above, making every CPU, topology, memory and network call through @p functions (tests, #1719).
     WindowsSystemProbe(std::uint64_t baseCpuMHz,
                        std::unique_ptr<ProcessorPerformanceCounter> processorPerformance,
@@ -208,8 +229,11 @@ class WindowsSystemProbe : public ISystemProbe
     // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session
     std::uint64_t m_BaseCpuMHz{0};
     // PDH's "% Processor Performance", which scales the base clock to the current one (#1184); null
-    // when PDH is unavailable, and the base clock is reported instead. Sampler thread only.
+    // when PDH is unavailable or not open yet, and the base clock is reported instead. Sampler thread only.
     std::unique_ptr<ProcessorPerformanceCounter> m_ProcessorPerformance;
+    // What opens m_ProcessorPerformance on the second read() (#3154); null once called, or when the
+    // counter was supplied open. Sampler thread only.
+    ProcessorPerformanceOpener m_OpenProcessorPerformance = nullptr;
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
@@ -217,6 +241,8 @@ class WindowsSystemProbe : public ISystemProbe
     // ids they describe; read at construction and again when the set of active processors the
     // per-core read samples changes (a processor hot-added). Sampler thread only.
     CpuTopology::CachedCpuDetails m_CpuDetails;
+    // Set by the first read(), so the second opens m_OpenProcessorPerformance's counter (#3154)
+    bool m_FirstReadDone = false;
 };
 
 } // namespace Platform

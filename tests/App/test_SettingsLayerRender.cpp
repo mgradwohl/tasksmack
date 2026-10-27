@@ -1,8 +1,9 @@
 /// @file test_SettingsLayerRender.cpp
 /// @brief The Settings layer (#1395), run headless through its test seam: Core::OpenSettingsEvent opens
 /// the dialog, Save writes only what the user picked, raises the refresh-rate and history events and
-/// saves the config, and the Advanced buttons hand their paths to the opener or raise
-/// Core::OpenAboutEvent. UserConfig is redirected to a temporary directory, never the user's config.
+/// saves the config, and the Advanced buttons hand their paths to the opener, on the layer's open
+/// worker (#3155), or raise Core::OpenAboutEvent. UserConfig is redirected to a temporary directory,
+/// never the user's config.
 
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
@@ -14,9 +15,12 @@
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its controls
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -102,8 +106,14 @@ class SettingsLayerRenderTest : public ::testing::Test
                         return false;
                     });
             },
+            // On the layer's open worker (#3155): read m_Seen.opened only after waitForOpen().
             [this](const std::filesystem::path& path)
             {
+                if (m_HoldOpens.has_value())
+                {
+                    // Bounded, so a test that fails before releasing it still tears down.
+                    static_cast<void>(m_HoldOpens->wait_for(std::chrono::seconds(30)));
+                }
                 m_Seen.opened.push_back(path);
                 return true;
             },
@@ -224,9 +234,17 @@ class SettingsLayerRenderTest : public ::testing::Test
         static_cast<void>(runFrame());
     }
 
+    /// Waits for an open the layer started on its worker, and takes it in (#3155).
+    void waitForOpen()
+    {
+        m_Layer->waitForPendingOpen();
+    }
+
     static constexpr int SETTLE_FRAMES = 6;
 
     Seen m_Seen;
+    /// Set before a press: the opener waits for it, as a slow shell extension would (#3155).
+    std::optional<std::shared_future<void>> m_HoldOpens;
     std::filesystem::path m_ConfigPath;
     std::filesystem::path m_TempDir;
 
@@ -341,15 +359,60 @@ TEST_F(SettingsLayerRenderTest, EditConfigOpensTheConfigFile)
     ASSERT_FALSE(std::filesystem::exists(m_ConfigPath));
     ASSERT_TRUE(openDialog());
     pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
+    waitForOpen(); // written and opened on the worker (#3155)
     ASSERT_EQ(m_Seen.opened.size(), 1U);
     EXPECT_EQ(m_Seen.opened.front(), m_ConfigPath);
     EXPECT_TRUE(std::filesystem::exists(m_ConfigPath)) << "the file is there to open";
+}
+
+TEST_F(SettingsLayerRenderTest, EditConfigLeavesAnExistingFileAsItIs)
+{
+    {
+        std::ofstream existing(m_ConfigPath);
+        existing << "# edited by hand\n";
+    }
+    std::error_code ec;
+    const auto writtenAt = std::filesystem::last_write_time(m_ConfigPath, ec);
+    ASSERT_FALSE(ec);
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
+    waitForOpen();
+    ASSERT_EQ(m_Seen.opened.size(), 1U);
+    EXPECT_EQ(m_Seen.opened.front(), m_ConfigPath);
+    EXPECT_EQ(std::filesystem::last_write_time(m_ConfigPath, ec), writtenAt) << "only a missing file is written";
+}
+
+// #3155: the open runs on a worker, so a slow one (a shell extension, a network folder) never holds up
+// a frame; while it runs both buttons are disabled, so a double click, or the other button, opens
+// nothing more. Once it is done, they open again.
+TEST_F(SettingsLayerRenderTest, AnOpenStillRunningHoldsNoFrameAndRefusesASecond)
+{
+    std::promise<void> release;
+    m_HoldOpens = release.get_future().share();
+    ASSERT_TRUE(openDialog());
+    const auto started = std::chrono::steady_clock::now();
+    pressInBody(SettingsDialog::OPEN_THEMES_LABEL); // frames run while the open waits
+    pressInBody(SettingsDialog::OPEN_THEMES_LABEL); // the double click's second
+    pressInBody(SettingsDialog::EDIT_CONFIG_LABEL); // and the other button
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5)) << "no frame waited for the open";
+    release.set_value();
+    waitForOpen();
+    ASSERT_EQ(m_Seen.opened.size(), 1U) << "one open for all three presses";
+    EXPECT_EQ(m_Seen.opened.front(), m_TempDir / "themes");
+
+    m_HoldOpens.reset();
+    static_cast<void>(runFrame()); // takes the finished open in: the buttons are enabled again
+    pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
+    waitForOpen();
+    ASSERT_EQ(m_Seen.opened.size(), 2U);
+    EXPECT_EQ(m_Seen.opened.back(), m_ConfigPath);
 }
 
 TEST_F(SettingsLayerRenderTest, OpenThemesFolderMakesAndOpensTheUserThemesDirectory)
 {
     ASSERT_TRUE(openDialog());
     pressInBody(SettingsDialog::OPEN_THEMES_LABEL);
+    waitForOpen(); // made and opened on the worker (#3155)
     ASSERT_EQ(m_Seen.opened.size(), 1U);
     EXPECT_EQ(m_Seen.opened.front(), m_TempDir / "themes");
     std::error_code ec;
@@ -440,6 +503,7 @@ TEST_F(SettingsLayerRenderTest, OpenThemesFolderStillOpensWhenItCantBeCreated)
     }
     ASSERT_TRUE(openDialog());
     pressInBody(SettingsDialog::OPEN_THEMES_LABEL);
+    waitForOpen();
     ASSERT_EQ(m_Seen.opened.size(), 1U);
     EXPECT_EQ(m_Seen.opened.front(), m_TempDir / "themes");
     std::error_code ec;

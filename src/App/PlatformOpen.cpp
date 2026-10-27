@@ -1,6 +1,7 @@
 #include "App/PlatformOpen.h"
 
 #ifdef _WIN32
+#include "Platform/ThreadApartment.h"
 #include "Platform/Windows/WinString.h"
 #endif
 
@@ -56,7 +57,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // /proc and /sys files open, and drivers their device nodes), stdio on /dev/null, signals reset, and
     // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
     const std::string targetStr = nativeTargetFromUtf8(target);
-    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on the UI thread; nothing sets it
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on an open worker (#3155); nothing sets it
     const std::optional<std::string> xdgOpen =
         Platform::SyscallTrace::findExecutable("xdg-open",
                                                pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
@@ -91,6 +92,8 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     }
 
     // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
+    // On a worker (#3155), in an STA for the call, as ShellExecuteW asks of its caller.
+    const Platform::SingleThreadedApartment apartment;
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
@@ -117,6 +120,8 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // The native wide path directly, never a narrowed one (#1648).
     const std::wstring widePath = nativeTargetFromPath(path);
 
+    // On a worker (#3155), in an STA for the call, as ShellExecuteW asks of its caller.
+    const Platform::SingleThreadedApartment apartment;
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int

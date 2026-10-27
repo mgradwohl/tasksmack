@@ -1099,6 +1099,7 @@ bool Window::restoreForShellMinimize()
     return true;
 }
 
+#ifdef _WIN32
 bool Window::handleShellCommand(WindowGeometry::SystemCommand command)
 {
     if (m_Handle == nullptr)
@@ -1125,6 +1126,7 @@ bool Window::handleShellCommand(WindowGeometry::SystemCommand command)
     }
     return true;
 }
+#endif
 
 void Window::restore()
 {

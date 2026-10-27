@@ -1198,25 +1198,34 @@ void ProcessesPanel::onDetach()
     m_RowActionRun.requestStop();
     m_RowActionRun.update(/*wait=*/true);
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
-    // panel lets the collector go last (#1492).
-    applyUdpEventTrace(false);
+    // panel lets the collector go last (#1492): after a switch still running on its worker (#3155),
+    // which is waited for, and whatever was asked for after it dropped. The one wait a detach makes
+    // for the trace: nothing draws after it.
+    logUdpSwitch(m_UdpSwitch.shutdown());
+    if (m_UdpCollector)
+    {
+        m_UdpCollector->stop();
+    }
     m_UdpCollector.reset();
     m_ProcessModel.reset();
 }
 
 void ProcessesPanel::applyUdpEventTrace(bool enabled)
 {
-    if (!m_UdpCollector)
+    // Started or stopped on the switch's worker, never here (#3155): a start's stale-session sweep and
+    // a stop's join of the consumer thread can take long. Null before the platform is adopted: the
+    // start hook read the setting itself.
+    logUdpSwitch(m_UdpSwitch.request(m_UdpCollector, enabled));
+}
+
+void ProcessesPanel::logUdpSwitch(const std::optional<UdpTraceSwitch::Outcome>& outcome)
+{
+    // A start the OS refused is logged by the collector, with why; only a switch that threw or had no
+    // thread to run on is logged here.
+    if (outcome.has_value() && !outcome->error.empty())
     {
-        return;
+        spdlog::warn("ProcessesPanel: couldn't {} the UDP event trace: {}", outcome->enabled ? "start" : "stop", outcome->error);
     }
-    if (!enabled)
-    {
-        m_UdpCollector->stop();
-        return;
-    }
-    // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
-    (void) m_UdpCollector->start();
 }
 
 void ProcessesPanel::onEvent(Core::Event& event)
@@ -1263,6 +1272,8 @@ void ProcessesPanel::onEvent(Core::Event& event)
 
 void ProcessesPanel::onUpdate(float deltaTime)
 {
+    // The UDP event trace's switch (#3155): a finished one taken in, and one asked for meanwhile started.
+    logUdpSwitch(m_UdpSwitch.update());
     if (m_RowActionResultSeconds > 0.0F)
     {
         m_RowActionResultSeconds = std::max(0.0F, m_RowActionResultSeconds - std::max(0.0F, deltaTime));
@@ -3253,10 +3264,11 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL, nullptr, false, actionsIdle))
         {
-            m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
-                               proc.name,
-                               DumpDetail::rememberedDumpDirectory(),
-                               m_ProcessActions.get());
+            // The remembered folder is checked on the confirm's worker, never here (#3155).
+            m_DumpView.requestInRememberedFolder({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                                 proc.name,
+                                                 DumpDetail::rememberedDumpFolder(),
+                                                 m_ProcessActions.get());
         }
         ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
     }

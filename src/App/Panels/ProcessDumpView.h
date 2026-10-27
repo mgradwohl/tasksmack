@@ -11,12 +11,19 @@
 // until the user answers), modal to the main window; the folder chosen is used for this dump and
 // remembered for the next ones (UserSettings::dumpFolder).
 //
+// The folder and its drive are read on a worker too (#3155): whether the remembered folder still
+// exists, the drive's free space and the process's private bytes, each time the confirm opens or its
+// folder changes. A remembered folder on an unplugged drive or an offline share can take seconds to
+// answer; until it has, the confirm says it is checking and its buttons wait, Cancel aside. The dump
+// result's "Open folder" is opened on a worker as well (BackgroundOpen).
+//
 // The IProcessActions stays owned by the panel (the composition root's) and is passed in when the
 // dump starts. The worker uses it until it finishes, so the panel declares this view after its
 // actions (it is destroyed first) and the destructor cancels a dump in flight and waits for it.
 //
 // Everything but render() is free of ImGui (tests/App/test_ProcessDumpView.cpp).
 
+#include "App/BackgroundOpen.h"
 #include "App/Panels/BackgroundTask.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ThreadName.h"
@@ -90,10 +97,11 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 [[nodiscard]] std::filesystem::path defaultDumpDirectory();
 
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
-/// folder, else defaultDumpDirectory().
+/// folder, else defaultDumpDirectory(). Asks the file system: on the confirm's worker, never the UI thread.
 [[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered);
-/// dumpDirectory() of the folder the user last chose, from the user's config.
-[[nodiscard]] std::filesystem::path rememberedDumpDirectory();
+/// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config: read on
+/// the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
+[[nodiscard]] std::string rememberedDumpFolder();
 /// Keeps @p directory as the folder later dumps go to, in the user's config, and saves it.
 void rememberDumpDirectory(const std::filesystem::path& directory);
 
@@ -120,6 +128,19 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
                                           std::string_view warning = {});
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
+
+/// What the confirm says, in place of a space warning, while its folder and drive are read (#3155).
+inline constexpr std::string_view CHECKING_FOLDER_TEXT = "Checking the folder and the free space on its drive...";
+
+/// What the confirm's worker read for its folder (#3155): the folder (the remembered one, or the
+/// default where it is gone), the drive's free space and the process's private bytes.
+struct ConfirmFacts
+{
+    std::filesystem::path directory;
+    Platform::DumpSpace space;
+};
+/// The confirm worker's answer: its facts, or why it couldn't read them (it threw, or had no thread).
+using ConfirmCheck = std::expected<ConfirmFacts, std::string>;
 
 /// What the result dialog shows.
 struct DumpMessage
@@ -188,29 +209,46 @@ class ProcessDumpView
 
     /// "Create dump file..." was chosen for @p target, named @p processName: asks to confirm writing it
     /// into @p directory, warning when its drive may be too full -- read through @p actions'
-    /// dumpSpace(), once, here (null: no check), and saying how long the process pauses
-    /// (ProcessActionCapabilities::dumpsFromSnapshot; null: for the whole write). Ignored while a
-    /// confirm, a dump or its result is up (active()).
+    /// dumpSpace() on a worker (#3155), taken in by takeConfirmCheck() (null: no check), and saying how
+    /// long the process pauses (ProcessActionCapabilities::dumpsFromSnapshot; null: for the whole
+    /// write). Ignored while a confirm, a dump or its result is up (active()).
     void request(const Platform::ProcessTarget& target,
                  std::string processName,
                  std::filesystem::path directory,
                  Platform::IProcessActions* actions = nullptr);
 
+    /// request() into the folder the user last chose, @p remembered (UserSettings::dumpFolder, UTF-8;
+    /// empty: none): the worker checks that it still exists, and uses the default folder where it
+    /// doesn't (DumpDetail::dumpDirectory()), before reading its drive's space. The Actions card's
+    /// button and the row menu's item.
+    void requestInRememberedFolder(const Platform::ProcessTarget& target,
+                                   std::string processName,
+                                   std::string_view remembered,
+                                   Platform::IProcessActions* actions);
+
+    /// Takes in what the confirm's worker read for its folder (#3155) -- at once, or with @p wait after
+    /// waiting for it: the folder, and the space warning in the confirm's question. True on the call
+    /// that took one in for the confirm still up. A check for a confirm since closed, or for a folder
+    /// since changed, is dropped (and the current folder checked again).
+    bool takeConfirmCheck(Platform::IProcessActions* actions, bool wait = false);
+
     /// "Save dump to..." was pressed in the confirm: opens @p actions' folder dialog on a worker,
     /// starting in the confirm's folder and modal to @p ownerWindow (a native window, or null); where the
     /// platform has none, the fallback FolderDialog, which answers asynchronously. Does nothing unless a
-    /// confirm is pending, no folder dialog is up already, and there is one (canChooseFolder()).
+    /// confirm is pending, no folder dialog is up already, its folder isn't being checked
+    /// (checkingFolder()), and there is one (canChooseFolder()).
     void chooseFolder(Platform::IProcessActions* actions, void* ownerWindow);
 
     /// Takes in the folder dialog's answer -- at once, or with @p wait after waiting for it. True on
     /// the call that took one in. A folder chosen becomes the confirm's (its space checked again
-    /// through @p actions) and is remembered; a cancelled dialog changes nothing; a failed one says
-    /// why in the confirm.
+    /// through @p actions, on the confirm's worker) and is remembered; a cancelled dialog changes
+    /// nothing; a failed one says why in the confirm.
     bool takeFolderChoice(Platform::IProcessActions* actions, bool wait = false);
 
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
-    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up.
+    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up or its
+    /// folder is being checked.
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -229,8 +267,9 @@ class ProcessDumpView
         m_Result.reset();
     }
 
-    /// Cancels a dump in flight and waits for it to end, and for a folder dialog still up to be
-    /// answered; for the destructor, and a panel's detach.
+    /// Cancels a dump in flight and waits for it to end, for a folder dialog still up to be answered,
+    /// and for the confirm's folder check and an "Open folder" still running; for the destructor, and
+    /// a panel's detach.
     void shutdown() noexcept;
 
     /// A different process was selected: a confirm still up is dropped (the dialog closes at the next
@@ -251,6 +290,17 @@ class ProcessDumpView
     [[nodiscard]] bool choosingFolder() const noexcept
     {
         return m_FolderPick.busy();
+    }
+    /// Whether the confirm's folder and drive are being read on its worker, or are still to be (#3155).
+    /// A check of a confirm since closed, or of a folder since changed, doesn't count: it is dropped.
+    [[nodiscard]] bool checkingFolder() const noexcept
+    {
+        return m_CheckWanted || (m_ConfirmCheck.busy() && m_RunningCheckGeneration == m_CheckGeneration);
+    }
+    /// Whether the dump result's "Open folder" is still being opened on its worker (#3155).
+    [[nodiscard]] bool openingFolder() const noexcept
+    {
+        return m_OpenFolder.busy();
     }
     /// Whether any of its dialogs is up: the confirm, the folder dialog, the progress or the result.
     /// F9 waits until none is.
@@ -287,22 +337,45 @@ class ProcessDumpView
 
   private:
     void renderProgressDialog();
-    /// Rebuilds the confirm's question for its folder, reading its free space through @p actions.
-    void refreshConfirm(Platform::IProcessActions* actions);
+    /// Opens the confirm for @p target, in @p directory; the caller asks for its check.
+    void openConfirm(const Platform::ProcessTarget& target,
+                     std::string processName,
+                     std::filesystem::path directory,
+                     Platform::IProcessActions* actions);
+    /// Takes in @p check, the confirm worker's answer: its folder and space warning, or why it failed.
+    void applyCheck(DumpDetail::ConfirmCheck check, Platform::IProcessActions* actions);
+    /// Has the confirm's folder read on its worker (#3155): resolved from @p remembered first where
+    /// @p resolve, and its drive's space read through @p actions (null: not read). A check already
+    /// running is left to finish, dropped, and this one started after it.
+    void checkFolder(Platform::IProcessActions* actions, bool resolve, std::string remembered = {});
+    /// Starts the check checkFolder() asked for, once none is running.
+    void startCheckIfDue();
+    /// Rebuilds the confirm's question from its folder, the space warning and the folder dialog's
+    /// failure, or says the folder is being checked. No platform call.
+    void rebuildQuestion();
 
+    // Member order is free of lifetime rules: the destructor's shutdown() waits for all four workers
+    // (dump, folder dialog, folder check, Open folder) before any member goes, and none of their jobs
+    // touches a member (each owns copies; the actions are the panel's). The flags are last, together,
+    // so they pack (clang-analyzer-optin.performance.Padding).
     FolderChosenHandler m_OnFolderChosen;
 
-    bool m_ShowConfirm = false;
-    bool m_DismissConfirm = false; // the confirm must close unconfirmed at the next render()
-    bool m_ConfirmPending = false; // a confirm was requested and not yet answered
     Platform::ProcessTarget m_Target{.pid = -1, .startTimeTicks = 0};
     std::string m_ProcessName;
     std::filesystem::path m_Directory;
-    bool m_DumpsFromSnapshot = false; // ProcessActionCapabilities::dumpsFromSnapshot of the actions given
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
     std::string m_SpaceWarning;  // lowSpaceWarning() for m_Directory; empty when none
     std::string m_FolderFailure; // why the folder dialog couldn't be shown; empty when it could
+
+    // The confirm's folder check (#3155): on a worker, one at a time. A check asked for while one runs
+    // waits in m_CheckWanted (and its inputs) until that one is taken in, and drops it.
+    BackgroundTask<DumpDetail::ConfirmCheck> m_ConfirmCheck{Platform::DUMP_CHECK_THREAD_NAME,
+                                                            &DumpDetail::failedWith<DumpDetail::ConfirmCheck>};
+    std::string m_CheckRemembered;                       // UserSettings::dumpFolder, for a check that resolves it
+    Platform::IProcessActions* m_CheckActions = nullptr; // the actions it reads the space through; may be null
+    std::uint64_t m_CheckGeneration = 0;                 // bumped by each checkFolder() and each confirm opened or closed
+    std::uint64_t m_RunningCheckGeneration = 0;          // the generation of the check running
 
     // The folder dialog's answer: its worker's, or adopted from the fallback (answered from SDL's event
     // pump, not a worker).
@@ -313,8 +386,17 @@ class ProcessDumpView
     /// The running dump; a new stop token per dump.
     BackgroundTask<Platform::ProcessDumpResult> m_Worker{Platform::DUMP_THREAD_NAME, &DumpDetail::failedWith<Platform::ProcessDumpResult>};
     std::chrono::steady_clock::time_point m_StartedAt;
-    bool m_CancelRequested = false;
     std::optional<DumpDetail::DumpMessage> m_Result;
+    // The result's "Open folder", on a worker (#3155): ShellExecuteW or xdg-open.
+    BackgroundOpen m_OpenFolder;
+
+    bool m_ShowConfirm = false;
+    bool m_DismissConfirm = false;    // the confirm must close unconfirmed at the next render()
+    bool m_ConfirmPending = false;    // a confirm was requested and not yet answered
+    bool m_DumpsFromSnapshot = false; // ProcessActionCapabilities::dumpsFromSnapshot of the actions given
+    bool m_CheckWanted = false;       // a folder check was asked for and not started yet
+    bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
+    bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
 };
 
 } // namespace App

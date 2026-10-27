@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace App::HelpWindow
 {
@@ -23,6 +24,7 @@ enum class Action : std::uint8_t
 {
     None,
     OpenAbout, ///< "About TaskSmack..." was clicked
+    OpenLink,  ///< A "More help" link was clicked: State::linkUrl is the URL to open
 };
 
 /// The window's state, owned by HelpLayer.
@@ -36,6 +38,11 @@ struct State
     std::size_t visibleCount = KeyboardShortcuts::SHORTCUT_HELP.size();
     /// Shortcut rows drawn on the last frame the window was visible (for the headless tests).
     std::size_t shortcutRowsDrawn = 0;
+    /// Set by HelpLayer while the open of a link it started still runs on its worker (#3155): the links
+    /// are drawn disabled, so a second click opens nothing more until it is done.
+    bool linksBusy = false;
+    /// The URL of the link clicked on the frame render() returned Action::OpenLink.
+    std::string_view linkUrl;
 };
 
 /// Opens the window (F1, the ? buttons) and brings it to the front, or only to the front when it is
@@ -45,7 +52,8 @@ void requestOpen(State& state) noexcept;
 /// Draws the Help window for this frame when it is open: a resizable, non-modal window with the
 /// keyboard shortcuts (grouped by area, with a filter), the tab overview, the Processes column
 /// reference and links, and a footer link to About. Its title bar's close button or Escape (while it
-/// has focus and no text field is being typed in) closes it.
+/// has focus and no text field is being typed in) closes it. A link is returned (Action::OpenLink,
+/// State::linkUrl) for HelpLayer to open on a worker, never opened here on the UI thread (#3155).
 ///
 /// Rendered headless in the tests (test_HelpWindowRender.cpp), as the About dialog is.
 [[nodiscard]] Action render(State& state);

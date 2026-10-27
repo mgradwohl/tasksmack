@@ -130,6 +130,8 @@ struct FakePdh
     PDH_STATUS formatStatus = ERROR_SUCCESS;
     DWORD counterStatus = PDH_CSTATUS_VALID_DATA;
     bool addThrows = false;
+    int openQueries = 0;
+    int collects = 0;
     int closes = 0;
 };
 FakePdh g_FakePdh; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fakes are plain function pointers
@@ -141,6 +143,7 @@ const PDH_HCOUNTER FAKE_COUNTER = &g_FakePdh.percent;
 PDH_STATUS WINAPI fakeOpenQuery(LPCWSTR /*source*/, DWORD_PTR /*userData*/, PDH_HQUERY* query)
 {
     *query = FAKE_QUERY;
+    ++g_FakePdh.openQueries;
     return g_FakePdh.openStatus;
 }
 
@@ -156,6 +159,7 @@ PDH_STATUS WINAPI fakeAddEnglishCounter(PDH_HQUERY /*query*/, LPCWSTR /*path*/, 
 
 PDH_STATUS WINAPI fakeCollectQueryData(PDH_HQUERY /*query*/)
 {
+    ++g_FakePdh.collects;
     return g_FakePdh.collectStatus;
 }
 
@@ -184,6 +188,22 @@ constexpr PdhFunctions FAKE_PDH_FUNCTIONS{
 
 constexpr std::uint64_t FAKE_BASE_MHZ = 3000;
 
+int g_FakeOpens = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the opener is a plain function pointer
+
+/// A deferred counter's opener (#3154): the fake pdh.dll's counter, counting the calls.
+std::unique_ptr<ProcessorPerformanceCounter> fakeOpenProcessorPerformance()
+{
+    ++g_FakeOpens;
+    return ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS);
+}
+
+/// A deferred counter's opener that finds no counter, as without pdh.dll.
+std::unique_ptr<ProcessorPerformanceCounter> fakeOpenNoProcessorPerformance()
+{
+    ++g_FakeOpens;
+    return nullptr;
+}
+
 /// Resets the fake pdh.dll before each test, so one test's failure mode doesn't leak into the next.
 class WindowsSystemProbeCpuClockTest : public ::testing::Test
 {
@@ -191,6 +211,7 @@ class WindowsSystemProbeCpuClockTest : public ::testing::Test
     void SetUp() override
     {
         g_FakePdh = FakePdh{};
+        g_FakeOpens = 0;
     }
 };
 } // namespace
@@ -307,6 +328,61 @@ TEST_F(WindowsSystemProbeCpuClockTest, FailedReadingGivesTheBaseClock)
     EXPECT_EQ(probe.read().cpuFreqMHz, 2250U) << "a good reading after failures is used again";
 }
 
+TEST_F(WindowsSystemProbeCpuClockTest, DeferredCounterIsOpenedOnTheSecondReadNotTheFirst)
+{
+    // The first read, the system sampler's seed, makes no PDH call, so it never waits on PDH's
+    // first-use load (#3154): the base clock until the counter has a rate.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, DeferredProcessorPerformance{.open = &fakeOpenProcessorPerformance});
+    g_FakePdh.percent = 75.0;
+    EXPECT_EQ(g_FakeOpens, 0) << "the constructor doesn't open the counter";
+
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+    EXPECT_EQ(g_FakeOpens, 0) << "the first read doesn't open the counter";
+    EXPECT_EQ(g_FakePdh.openQueries, 0);
+    EXPECT_EQ(g_FakePdh.collects, 0) << "the first read makes no PDH call";
+
+    // The second read opens it; its collection only primes the rate, so the base clock again
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+    EXPECT_EQ(g_FakeOpens, 1);
+    EXPECT_EQ(g_FakePdh.openQueries, 1);
+    EXPECT_EQ(g_FakePdh.collects, 1) << "only the priming collection";
+
+    // Then the current clock, from the counter opened once
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2250U);
+    g_FakePdh.percent = 130.0;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 3900U);
+    EXPECT_EQ(g_FakeOpens, 1) << "the counter is opened once";
+    EXPECT_EQ(g_FakePdh.openQueries, 1);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, DeferredCounterThatCannotBeOpenedGivesTheBaseClockAndIsNotRetried)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, DeferredProcessorPerformance{.open = &fakeOpenNoProcessorPerformance});
+    for (int i = 0; i < 4; ++i)
+    {
+        EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ) << "read " << i;
+    }
+    EXPECT_EQ(g_FakeOpens, 1) << "a counter that can't be opened isn't tried again every read";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, DeferredCounterWithNoOpenerGivesTheBaseClock)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, DeferredProcessorPerformance{});
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+    EXPECT_EQ(g_FakePdh.collects, 0);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, DeferredCounterIsClosedWithTheProbe)
+{
+    {
+        WindowsSystemProbe probe(FAKE_BASE_MHZ, DeferredProcessorPerformance{.open = &fakeOpenProcessorPerformance});
+        (void) probe.read();
+        (void) probe.read(); // Opens the counter
+    }
+    EXPECT_EQ(g_FakePdh.closes, 1);
+}
+
 TEST_F(WindowsSystemProbeCpuClockTest, QueryIsClosedWithTheProbe)
 {
     {
@@ -338,6 +414,7 @@ TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
     WindowsSystemProbe probe;
     EXPECT_TRUE(probe.capabilities().hasCpuFreq);
     (void) probe.read();
+    (void) probe.read(); // Opens the counter (#3154)
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     const auto counters = probe.read();
     EXPECT_GT(counters.cpuFreqMHz, 0U);

@@ -36,12 +36,14 @@ using NativeTarget = std::string;
 /// xdg-open, or one that can't be exec'd, is a failure. Whether xdg-open then finds a handler isn't known.
 /// On Windows, uses ShellExecuteW with UTF-8 to UTF-16 conversion.
 /// Returns true on success, false on failure (with a logged warning).
+/// Can block (a shell extension, COM, a network folder, a fork and exec): call it from a worker, as
+/// App::BackgroundOpen does, never from the UI thread (#3155).
 [[nodiscard]] bool openWithSystemHandler(std::string_view target);
 
 /// Open a filesystem path with the system's default handler.
 /// Handles UTF-16 conversion on Windows using the native path representation,
 /// avoiding any ANSI/UTF-8 encoding issues with non-ASCII paths.
-/// Returns true on success, false on failure (with a logged warning).
+/// Returns true on success, false on failure (with a logged warning). Can block, as the other does.
 [[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path);
 
 #ifdef __linux__

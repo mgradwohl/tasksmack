@@ -41,16 +41,25 @@ void wrapped(std::string_view text)
     ImGui::PopTextWrapPos();
 }
 
+/// The links drawn this frame: the one activated, and whether they are disabled while an open the
+/// caller started for one is still running (#3155).
+struct Links
+{
+    std::string_view activatedUrl;
+    bool busy = false;
+};
+
 /// A link: @p label in the accent colour, wrapped at the right edge of its cell like the text around
-/// it, that sets @p activatedUrl to @p url when clicked or activated from the keyboard (#1212); the
-/// caller opens it in the system browser. The full URL shows as a tooltip and the cursor becomes a
-/// hand; a one-line link is underlined on hover.
+/// it, that sets @p links' activatedUrl to @p url when clicked or activated from the keyboard (#1212);
+/// the caller opens it in the system browser, and it is drawn disabled while @p links is busy. The
+/// full URL shows as a tooltip and the cursor becomes a hand; a one-line link is underlined on hover.
 ///
 /// The label is a short form of the URL and wraps: a one-line Selectable as wide as the full URL
 /// could not shrink with the dialog, and was clipped by a narrow window at a large font (#1490
 /// review). An invisible button over the wrapped text is what makes it clickable and focusable.
-void renderLink(std::string_view label, const char* url, const ImVec4& color, std::string_view& activatedUrl)
+void renderLink(std::string_view label, const char* url, const ImVec4& color, Links& links)
 {
+    ImGui::BeginDisabled(links.busy);
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     wrapped(label);
     ImGui::PopStyleColor();
@@ -67,9 +76,9 @@ void renderLink(std::string_view label, const char* url, const ImVec4& color, st
     ImGui::PopID();
     if (pressed)
     {
-        activatedUrl = url;
+        links.activatedUrl = url;
     }
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         ImGui::SetTooltip("%s", url);
@@ -78,6 +87,7 @@ void renderLink(std::string_view label, const char* url, const ImVec4& color, st
             ImGui::GetWindowDrawList()->AddLine(ImVec2(textMin.x, textMax.y), textMax, ImGui::GetColorU32(color));
         }
     }
+    ImGui::EndDisabled();
 }
 
 /// Text in the theme's muted colour, wrapped at the right edge of the cell or window it is in.
@@ -196,14 +206,14 @@ void detailsRow(const char* label)
     ImGui::TableNextColumn();
 }
 
-void renderDetails(std::string_view& activatedUrl)
+void renderDetails(Links& links)
 {
     const auto& theme = UI::Theme::get();
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_INFO, "Project");
     if (beginDetailsTable("##AboutProject"))
     {
         detailsRow("Source");
-        renderLink(REPO_LABEL, REPO_URL, theme.accentColor(0), activatedUrl);
+        renderLink(REPO_LABEL, REPO_URL, theme.accentColor(0), links);
         detailsRow("License");
         ImGui::TextUnformatted("MIT");
         detailsRow("Commit");
@@ -214,15 +224,15 @@ void renderDetails(std::string_view& activatedUrl)
 
 /// The user guide and the issue tracker, the same links as the Help window's "More help" (#1600):
 /// About is where people look for where to get help or report a problem, so they are in both.
-void renderMoreHelp(std::string_view& activatedUrl)
+void renderMoreHelp(Links& links)
 {
     const ImVec4 color = UI::Theme::get().accentColor(0);
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_QUESTION, "More help");
-    renderLink(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL, color, activatedUrl);
-    renderLink(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL, color, activatedUrl);
+    renderLink(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL, color, links);
+    renderLink(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL, color, links);
 }
 
-void renderCredits(std::string_view& activatedUrl)
+void renderCredits(Links& links)
 {
     const auto& theme = UI::Theme::get();
     // Every bundled font and icon set with its licence (#1212). Font Awesome Free is licensed in two
@@ -237,7 +247,7 @@ void renderCredits(std::string_view& activatedUrl)
         detailsRow("Icons");
         wrapped("Font Awesome Free by Fonticons, Inc.");
         mutedWrapped("Icons CC BY 4.0, font SIL Open Font License 1.1");
-        renderLink(FONT_AWESOME_LICENSE_LABEL, FONT_AWESOME_LICENSE_URL, theme.accentColor(0), activatedUrl);
+        renderLink(FONT_AWESOME_LICENSE_LABEL, FONT_AWESOME_LICENSE_URL, theme.accentColor(0), links);
         ImGui::EndTable();
     }
 }
@@ -247,7 +257,7 @@ void renderCredits(std::string_view& activatedUrl)
 
 } // namespace
 
-std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon)
+std::string_view render(bool& openRequested, bool& closeRequested, const UI::Texture& icon, bool linksBusy)
 {
     if (!openRequested && !ImGui::IsPopupOpen(POPUP_ID))
     {
@@ -319,12 +329,12 @@ std::string_view render(bool& openRequested, bool& closeRequested, const UI::Tex
     ImGui::BeginChild("##AboutBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeY);
     renderHeader(icon, emPx);
     UI::Widgets::sectionGap();
-    std::string_view activatedUrl;
-    renderDetails(activatedUrl);
+    Links links{.activatedUrl = {}, .busy = linksBusy};
+    renderDetails(links);
     UI::Widgets::sectionGap();
-    renderMoreHelp(activatedUrl);
+    renderMoreHelp(links);
     UI::Widgets::sectionGap();
-    renderCredits(activatedUrl);
+    renderCredits(links);
     ImGui::EndChild(); // ##AboutBody
 
     ImGui::PopStyleColor();
@@ -340,7 +350,7 @@ std::string_view render(bool& openRequested, bool& closeRequested, const UI::Tex
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
-    return activatedUrl;
+    return links.activatedUrl;
 }
 
 } // namespace App::AboutDialog
