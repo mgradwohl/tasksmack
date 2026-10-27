@@ -1,10 +1,10 @@
 #include "CrashHistory.h"
 
 #include "Domain/ProcessModules.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -25,15 +25,6 @@ namespace
 {
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     return now > 0 ? static_cast<std::uint64_t>(now) : 0;
-}
-
-[[nodiscard]] bool equalsIgnoreAsciiCase(std::string_view a, std::string_view b) noexcept
-{
-    return a.size() == b.size() &&
-           std::ranges::equal(a,
-                              b,
-                              [](char x, char y)
-                              { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
 }
 
 } // namespace
@@ -108,8 +99,9 @@ bool crashMatchesExecutable(const Platform::CrashEvent& event, std::string_view 
     switch (family)
     {
     case Platform::OsFamily::Windows:
-        // Windows file names are case-insensitive: "NOTEPAD.EXE" is notepad.exe.
-        return equalsIgnoreAsciiCase(application, name);
+        // Windows file names are case-insensitive: "NOTEPAD.EXE" is notepad.exe. ASCII letters only,
+        // so no locale folds a byte of UTF-8 (#2566).
+        return Platform::equalsIgnoreCase(application, name);
     case Platform::OsFamily::Linux:
         // A core is named by its process's comm, cut by the kernel to 15 bytes; the journal's
         // executable path (#1674), when there is one, has the whole name.

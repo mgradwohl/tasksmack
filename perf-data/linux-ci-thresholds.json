@@ -7,6 +7,10 @@
     "BM_ChartWidgets_ComputeAlpha": {
       "threshold": 60,
       "reason": "#2336: moves with GetSnapshots across runner classes (sd of the log ratio between them 0.05 over the same 47 captures), measuring up to 1.44x with no code change and crossing 40% twice (+44.2%). 60% clears that by about 11%."
+    },
+    "BM_Format_ChooseByteUnit": {
+      "min_abs_delta_ns": 3,
+      "reason": "#3126: sub-nanosecond, so a code-layout shift from an unrelated change moves it by a few cycles. It measured 0.43-0.87ns until runs 40444757786 and 40448017472 read 3.09ns and 2.88ns (+2.36ns over the 0.736ns baseline, +320%) with no change to the code it times, then 0.736ns on run 40456436642; the other sub-nanosecond benchmarks stayed within 0.3ns in those runs. 3ns clears the worst reading by about 27% and still fails 0.7ns -> 4ns."
     }
   }
 }

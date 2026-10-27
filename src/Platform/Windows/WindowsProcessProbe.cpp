@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
@@ -77,8 +78,32 @@ using ProcessFunctions = WindowsProcessProbeFunctions::Process;
 using SystemFunctions = WindowsProcessProbeFunctions::System;
 using TokenFunctions = WindowsProcessProbeFunctions::Token;
 
-/// Get the username (owner) of a process
-[[nodiscard]] std::string getProcessOwner(const TokenFunctions& fns, HANDLE hProcess)
+/// The bytes of the SID @p sid points at, when it lies whole inside @p buffer (the TokenUser read it
+/// came in) and is valid; empty otherwise, and the name it gets is then not cached.
+[[nodiscard]] std::span<const std::byte> sidBytesIn(std::span<const BYTE> buffer, PSID sid)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the buffer
+    const auto sidBegin = reinterpret_cast<std::uintptr_t>(sid);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the buffer
+    const auto bufferBegin = reinterpret_cast<std::uintptr_t>(buffer.data());
+    const auto bufferEnd = bufferBegin + buffer.size();
+    constexpr std::size_t SID_HEADER_BYTES = 8; // Revision, sub-authority count, identifier authority
+    if (sidBegin < bufferBegin || sidBegin > bufferEnd || bufferEnd - sidBegin < SID_HEADER_BYTES || IsValidSid(sid) == FALSE)
+    {
+        return {};
+    }
+    const DWORD length = GetLengthSid(sid);
+    if (length > bufferEnd - sidBegin)
+    {
+        return {};
+    }
+    return std::as_bytes(buffer.subspan(sidBegin - bufferBegin, length));
+}
+
+/// Get the username (owner) of a process. With @p names, a SID it named less than its TTL before
+/// @p now isn't looked up again, and a successful lookup is stored in it (#2982).
+[[nodiscard]] std::string
+getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* names, std::chrono::steady_clock::time_point now)
 {
     if (hProcess == nullptr)
     {
@@ -116,6 +141,15 @@ using TokenFunctions = WindowsProcessProbeFunctions::Token;
 
     TOKEN_USER tokenUser{};
     std::memcpy(&tokenUser, tokenInfo.data(), sizeof(TOKEN_USER));
+    const std::span<const std::byte> sid = (names != nullptr) ? sidBytesIn(tokenInfo, tokenUser.User.Sid) : std::span<const std::byte>{};
+    if (names != nullptr && !sid.empty())
+    {
+        if (std::optional<std::string> cached = names->find(sid, now))
+        {
+            return std::move(*cached);
+        }
+    }
+
     std::array<WCHAR, 256> userName{};
     std::array<WCHAR, 256> domainName{};
     // Fallback to the actual array size constant (256) if conversion fails
@@ -128,7 +162,12 @@ using TokenFunctions = WindowsProcessProbeFunctions::Token;
         return {};
     }
 
-    return WinString::wideToUtf8(userName.data());
+    std::string user = WinString::wideToUtf8(userName.data());
+    if (names != nullptr && !sid.empty())
+    {
+        names->store(sid, user, now);
+    }
+    return user;
 }
 
 /// The full path of a process's executable (QueryFullProcessImageNameW). Empty when unreadable.
@@ -519,6 +558,26 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return result;
 }
 
+/// Fill @p image from the process's image path and its publisher, unless an earlier read already has
+/// (#2982): neither changes while the process runs. A failed path read (an empty path) leaves it
+/// unread, so the next heavy refresh tries again.
+const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image)
+{
+    if (image.read)
+    {
+        return image;
+    }
+    const std::wstring path = getProcessImagePath(fns, hProcess);
+    if (path.empty())
+    {
+        return image;
+    }
+    image.path = WinString::wideToUtf8(path);
+    image.publisher = getFilePublisher(path);
+    image.read = true;
+    return image;
+}
+
 /// Classify a process as "App", "Background Process", or "Windows Process".
 /// - "App": has USER objects (owns an interactive UI window)
 /// - "Windows Process": core OS components in the Windows system directories
@@ -747,6 +806,48 @@ readThreadGroupAffinities(const ProcessFunctions& fns, std::span<const std::byte
 
 } // namespace
 
+std::string WindowsProcessDetailReads::owner(const WindowsProcessProbeFunctions::Token& fns, HANDLE hProcess)
+{
+    return getProcessOwner(fns, hProcess, nullptr, {});
+}
+
+std::string WindowsProcessDetailReads::owner(const WindowsProcessProbeFunctions::Token& fns,
+                                             HANDLE hProcess,
+                                             AccountNameCache& names,
+                                             std::chrono::steady_clock::time_point now)
+{
+    return getProcessOwner(fns, hProcess, &names, now);
+}
+
+std::wstring WindowsProcessDetailReads::imagePath(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess)
+{
+    return getProcessImagePath(fns, hProcess);
+}
+
+std::string WindowsProcessDetailReads::commandLine(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess)
+{
+    return getProcessCommandLine(fns, hProcess);
+}
+
+std::string WindowsProcessDetailReads::publisher(const std::wstring& imagePath)
+{
+    return getFilePublisher(imagePath);
+}
+
+const ProcessImage&
+WindowsProcessDetailReads::image(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess, ProcessImage& cached)
+{
+    return readProcessImage(fns, hProcess, cached);
+}
+
+std::string_view WindowsProcessDetailReads::processType(const WindowsProcessProbeFunctions::Process& fns,
+                                                        HANDLE hQuery,
+                                                        DWORD pid,
+                                                        std::string_view imagePath)
+{
+    return classifyProcessType(fns, hQuery, pid, imagePath);
+}
+
 WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
 {
     return {
@@ -795,7 +896,8 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
       m_IsElevated(isCurrentProcessElevated(functions.token)),
       m_NativeMachine((functions.system.nativeMachine != nullptr) ? functions.system.nativeMachine() : MachineMath::MACHINE_UNKNOWN),
       m_ProcessorGroups(readProcessorGroupMaximums(functions.system)),
-      m_ThreadsMaySpanGroups(threadsMaySpanGroups(functions.system.windowsBuildNumber()))
+      m_ThreadsMaySpanGroups(threadsMaySpanGroups(functions.system.windowsBuildNumber())),
+      m_AccountNames(std::chrono::seconds{Domain::Sampling::ACCOUNT_NAME_CACHE_TTL_SECONDS})
 {
     // Stored here rather than in the member-initializer list on purpose: detectNetworkCounters()
     // writes members declared after m_HasNetworkCounters (m_NetworkCountersAccessDenied,
@@ -1072,7 +1174,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.user = cache.user;
         counters.command = cache.command;
         counters.status = cache.status;
-        counters.publisher = cache.publisher;
+        counters.publisher = cache.image.publisher;
         counters.processType = cache.processType;
         counters.architecture = cache.architecture;
         counters.gdiObjectCount = cache.gdiObjectCount;
@@ -1141,13 +1243,15 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         cache.priorityClass = counters.priorityClass;
     }
 
-    std::string imagePathUtf8; // Read with the heavy details, for classification
+    std::string_view imagePathUtf8; // Read with the heavy details, for classification
     if (plan.heavy)
     {
-        // Expensive data: owner, command line, image path and publisher at a lower cadence.
-        const std::wstring imagePath = getProcessImagePath(m_Fns.process, hProcess.get());
-        imagePathUtf8 = WinString::wideToUtf8(imagePath);
-        counters.user = getProcessOwner(m_Fns.token, hProcess.get());
+        // Expensive data: owner and command line at a lower cadence. The image path and its publisher
+        // never change for a process, so they are read once, on the first heavy read that succeeds (#2982).
+        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image);
+        imagePathUtf8 = image.path;
+        counters.publisher = image.publisher;
+        counters.user = getProcessOwner(m_Fns.token, hProcess.get(), &m_AccountNames, now);
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
         counters.command = getProcessCommandLine(m_Fns.process, hProcess.get());
@@ -1155,9 +1259,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         {
             counters.command = imagePathUtf8;
         }
-
-        // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
-        counters.publisher = getFilePublisher(imagePath);
 
         // CPU affinity rarely changes — refresh alongside heavy details, and cached with them.
         counters.cpuAffinity = readCpuAffinity(hProcess.get(), threadRecords);
@@ -1205,7 +1306,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         cache.user = counters.user;
         cache.command = counters.command;
-        cache.publisher = counters.publisher;
         cache.processType = counters.processType;
         cache.cpuAffinity = counters.cpuAffinity;
         if (canCache)

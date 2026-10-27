@@ -4,7 +4,8 @@
 // owners, opening the system bus with CALL_TIMEOUT_USEC on every call, and telling a timeout from an
 // answer. The readers themselves are split by service: SystemdUnits.cpp (systemd's units and boot
 // timestamps), UDisks2Smart.cpp, NetworkManager.cpp (Wi-Fi and DHCP) and NetworkdResolved.cpp
-// (networkd's DHCP and resolved's DNS). Their API stays in SystemdBus.h. Only for those files.
+// (networkd's DHCP and resolved's DNS). Their API stays in SystemdBus.h. Only for those files, and
+// LinuxProcessActions.cpp, whose Open file location borrows the owners for one session-bus call (#3064).
 
 #ifdef TASKSMACK_HAS_SDBUS
 

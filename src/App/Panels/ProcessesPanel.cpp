@@ -3,6 +3,7 @@
 #include "App/KeyboardInput.h"
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
+#include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
@@ -15,6 +16,8 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessLookup.h"
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -30,6 +33,7 @@
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
@@ -957,6 +961,7 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings = UserConfig::get().settings().processColumns;
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
+    m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1339,6 +1344,12 @@ void ProcessesPanel::adoptNewerSnapshots()
             m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport, &m_CachedRowHistory))
     {
         m_CachedSnapshotVersion = newVersion;
+        // Which processes exited since the generation before, kept as dimmed rows for a moment (#3060).
+        if (UserConfig::get().settings().highlightNewProcesses && m_PreviousGeneration)
+        {
+            (void) m_ExitingRows.onGeneration(*m_PreviousGeneration, *m_CachedRenderSnapshots, Core::Application::getTime());
+        }
+        m_PreviousGeneration = m_CachedRenderSnapshots;
         // Selected processes that have exited drop out of the selection (#804): once per generation,
         // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
         (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
@@ -1367,6 +1378,25 @@ void ProcessesPanel::updateDisplayFreeze()
     {
         spdlog::debug("ProcessesPanel: display {} (Ctrl)", wasFrozen ? "resumed" : "frozen");
     }
+}
+
+void ProcessesPanel::updateDisplaySnapshots()
+{
+    // Exited rows leave after ExitingProcessRows::DURATION_SECONDS, or all at once when the setting is off.
+    const bool dropped =
+        UserConfig::get().settings().highlightNewProcesses ? m_ExitingRows.expire(Core::Application::getTime()) : m_ExitingRows.clear();
+    if (!dropped && m_DisplayBuiltForVersion == m_CachedSnapshotVersion)
+    {
+        return;
+    }
+    m_DisplayBuiltForVersion = m_CachedSnapshotVersion;
+    m_LiveRowCount = m_CachedRenderSnapshots->size();
+    // With nothing exited, the shared generation itself: no copy.
+    m_DisplaySnapshots = m_ExitingRows.exited().empty()
+                           ? m_CachedRenderSnapshots
+                           : std::make_shared<const std::vector<Domain::ProcessSnapshot>>(
+                                 ExitingProcessRows::displayRows(*m_CachedRenderSnapshots, m_ExitingRows.exited()));
+    ++m_DisplayVersion;
 }
 
 void ProcessesPanel::renderContent()
@@ -1413,8 +1443,12 @@ void ProcessesPanel::renderContent()
     // before adopting (#1394).
     adoptPlatform();
     adoptNewerSnapshots();
-    const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
-    const auto& currentSnapshots = *m_CachedRenderSnapshots;
+    updateDisplaySnapshots();
+    // The rows drawn: the adopted generation, then any process that exited a moment ago (#3060). The
+    // filter, sort and tree caches are keyed on m_DisplayVersion, which changes with either.
+    const std::uint64_t adoptedVersion = m_DisplayVersion;
+    const auto& liveSnapshots = *m_CachedRenderSnapshots;
+    const auto& currentSnapshots = *m_DisplaySnapshots;
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
     // follow them, through the same request path as the Columns menu (#1210).
@@ -1493,7 +1527,9 @@ void ProcessesPanel::renderContent()
     // Filtered indices, running count, and summary string are only recomputed when snapshot
     // version or search term changes (typically once per second at the 1Hz refresh rate).
     const std::string_view searchTerm(m_SearchBuffer);
-    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm);
+    // A pin added or removed (#3061) refilters too: a pinned process stays through the filter.
+    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm) ||
+                             std::exchange(m_PinsChanged, false);
     if (filterDirty)
     {
         m_CachedFilteredIndices.clear();
@@ -1502,7 +1538,8 @@ void ProcessesPanel::renderContent()
         // Case-insensitive, in the name or the command line, as the user guide says (#838)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm))
+            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm) ||
+                m_Pins.contains(currentSnapshots[i].name)) // a pinned process stays in view (#3061)
             {
                 m_CachedFilteredIndices.push_back(i);
             }
@@ -1512,8 +1549,9 @@ void ProcessesPanel::renderContent()
             m_FilterCollapsedKeys.clear(); // The next filter opens fully expanded (#838)
         }
 
+        // Counted from the running processes only: an exited row is not one (#3060).
         m_CachedRunningCount = 0;
-        for (const auto& proc : currentSnapshots)
+        for (const auto& proc : liveSnapshots)
         {
             if (proc.displayState == "Running")
             {
@@ -1524,14 +1562,15 @@ void ProcessesPanel::renderContent()
         if (searchTerm.empty())
         {
             m_CachedSummaryStr = std::format("{} processes, {} running",
-                                             UI::Format::formatIntLocalized(currentSnapshots.size()),
+                                             UI::Format::formatIntLocalized(liveSnapshots.size()),
                                              UI::Format::formatIntLocalized(m_CachedRunningCount));
         }
         else
         {
-            m_CachedSummaryStr = std::format("{} / {} processes",
-                                             UI::Format::formatIntLocalized(m_CachedFilteredIndices.size()),
-                                             UI::Format::formatIntLocalized(currentSnapshots.size()));
+            m_CachedSummaryStr =
+                std::format("{} / {} processes",
+                            UI::Format::formatIntLocalized(ExitingProcessRows::countLive(m_CachedFilteredIndices, m_LiveRowCount)),
+                            UI::Format::formatIntLocalized(liveSnapshots.size()));
         }
 
         m_CachedFilterVersion = adoptedVersion;
@@ -1539,7 +1578,9 @@ void ProcessesPanel::renderContent()
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
         // Reset sorted indices to natural order; the sort below sorts them again this frame (#1174).
+        // Pinned processes first (#3061), which stands when the table has no sort.
         m_CachedSortedIndices = m_CachedFilteredIndices;
+        ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);
         m_SortPending = true;
     }
 
@@ -1908,6 +1949,9 @@ void ProcessesPanel::renderContent()
                     m_CachedSortedIndices,
                     [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                     { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+                // Pinned processes ahead of the rest, each group in the sort's order (#3061); in tree view
+                // that puts pinned roots first, and pinned children first among their siblings.
+                ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);
                 sortSpecs->SpecsDirty = false;
                 m_SortPending = false;
                 ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
@@ -1917,7 +1961,7 @@ void ProcessesPanel::renderContent()
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
         applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
 
-        prepareRowMeters(currentSnapshots); // Inline meters (#1528)
+        prepareRowMeters(liveSnapshots); // Inline meters (#1528), scaled to the running processes
         // The Settings toggle, read each frame so a change shows at once; and the icons' size (#1800).
         m_IconView.setEnabled(UserConfig::get().settings().showProcessIcons);
         m_IconView.beginFrame();
@@ -2077,9 +2121,19 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
     const std::size_t procIdx = row.procIdx;
     ImGui::TableNextRow();
 
+    // A process that exited a moment ago (#3060): kept as a dimmed row with a steady tint, never
+    // selectable or acted on, until ExitingProcessRows::DURATION_SECONDS have passed.
+    const bool exited = isExitedRow(procIdx);
+    if (exited)
+    {
+        ImVec4 tint = UI::Theme::get().scheme().processExiting; // the theme's, else its error colour
+        tint.w = ExitingProcessRows::TINT_ALPHA;
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * ExitingProcessRows::CONTENT_ALPHA);
+    }
     // A process that started a moment ago (#3060): its row tinted, fading out over a few seconds. The
     // wall clock is read once a frame, not per row.
-    if (UserConfig::get().settings().highlightNewProcesses)
+    else if (UserConfig::get().settings().highlightNewProcesses)
     {
         if (const int frame = ImGui::GetFrameCount(); frame != m_HighlightClockFrame)
         {
@@ -2137,7 +2191,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         // disabled one.
         if (col == ProcessColumn::PID)
         {
-            renderPidCell(proc, fmt, columnVisible);
+            if (exited)
+            {
+                renderExitedPidCell(proc, fmt, columnVisible); // its text only: nothing to select
+            }
+            else
+            {
+                renderPidCell(proc, fmt, columnVisible);
+            }
             continue;
         }
         if (!columnVisible)
@@ -2155,13 +2216,31 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         }
         // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
         // most one rectangle or one line (#1612).
-        if (m_MetersShown)
+        if (m_MetersShown && !exited) // an exited row's last values aren't live: no meter
         {
             ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
             ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
+    if (exited)
+    {
+        ImGui::PopStyleVar();
+    }
+}
+
+void ProcessesPanel::renderExitedPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible)
+{
+    if (!columnVisible)
+    {
+        return;
+    }
+    std::array<char, 16> labelBuf{};
+    const auto labelResult = std::to_chars(labelBuf.data(), labelBuf.data() + labelBuf.size() - 1, proc.pid);
+    *labelResult.ptr = '\0';
+    const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
+    renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
+    ImGui::SetItemTooltip("Exited a moment ago");
 }
 
 void ProcessesPanel::prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -2361,6 +2440,15 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
         ImGui::SameLine();
     }
 
+    // A pinned process's thumbtack (#3061), muted, before its icon.
+    if (m_Pins.contains(proc.name))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+        ImGui::TextUnformatted(ICON_FA_THUMBTACK);
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Pinned");
+        ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
+    }
     // The program's icon, or the generic one, before its name (#1800).
     m_IconView.drawInline(proc);
     // A collapsed parent's child count follows its name (#838), muted. The name keeps room for it, so a
@@ -2398,7 +2486,7 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
 ProcessTreeFlatten::ProcessTreeRowsKey ProcessesPanel::treeRowsKey() const noexcept
 {
     return {
-        .snapshotVersion = m_CachedSnapshotVersion,
+        .snapshotVersion = m_DisplayVersion, // the rows drawn, exited ones included (#3060)
         .filterGeneration = m_FilterGeneration,
         .sortGeneration = m_SortGeneration,
         .collapseGeneration = m_CollapseGeneration,
@@ -2700,6 +2788,27 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     {
         shapes->clear();
     }
+    // Exited rows (#3060) are drawn but never navigated to, selected or acted on: dropped here, with
+    // their tree shapes, so the keyboard and a Shift+click's range skip them.
+    if (shapes != nullptr && shapes->size() == visible.size())
+    {
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < visible.size(); ++i)
+        {
+            if (!isExitedRow(visible[i]))
+            {
+                visible[kept] = visible[i];
+                (*shapes)[kept] = (*shapes)[i];
+                ++kept;
+            }
+        }
+        visible.resize(kept);
+        shapes->resize(kept);
+    }
+    else
+    {
+        std::erase_if(visible, [this](std::size_t idx) { return isExitedRow(idx); });
+    }
 }
 
 std::vector<ProcessSelection::Identity> ProcessesPanel::visibleIdentities(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -2908,6 +3017,18 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         Core::ShowProcessDetailsEvent event;
         raiseEvent(event);
     }
+    // Kept at the top through every sort and filter (#3061): every process of this name.
+    const bool pinned = m_Pins.contains(proc.name);
+    if (ImGui::MenuItem(pinned ? ICON_FA_THUMBTACK " Unpin###Pin" : ICON_FA_THUMBTACK " Pin to top###Pin",
+                        nullptr,
+                        false,
+                        pinned || proc.name.size() <= ProcessPins::MAX_NAME_BYTES))
+    {
+        togglePin(proc);
+    }
+    ImGui::SetItemTooltip(pinned ? "Stop keeping processes named \"%s\" at the top"
+                                 : "Keep processes named \"%s\" at the top of the table, through any sort or filter",
+                          proc.name.c_str());
 
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_COPY " Copy PID"))
@@ -2928,6 +3049,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 
     // No other process action while one runs on its worker (#2142, #2305): its result is still to come.
     const bool actionsIdle = !rowActionRunning();
+
+    // The row's executable in the file manager, and its name in a web search (#3064), as Task Manager's
+    // menu has them: for the row the menu was opened on, each on the action worker.
+    ImGui::Separator();
+    if (m_ActionCapabilities.canOpenFileLocation &&
+        ImGui::MenuItem(ICON_FA_FOLDER_OPEN " Open file location###OpenFileLocation", nullptr, false, actionsIdle))
+    {
+        openRowFileLocation(proc);
+    }
+    if (ImGui::MenuItem(ICON_FA_MAGNIFYING_GLASS " Search online###SearchOnline", nullptr, false, actionsIdle))
+    {
+        searchRowOnline(proc);
+    }
+    ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
     const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
@@ -3028,6 +3163,45 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         ImGui::PopStyleColor();
     }
+}
+
+void ProcessesPanel::togglePin(const Domain::ProcessSnapshot& proc)
+{
+    const bool changed = m_Pins.contains(proc.name) ? m_Pins.unpin(proc.name) : m_Pins.pin(proc.name);
+    if (!changed)
+    {
+        showRowActionResult({.ok = false, .text = std::format("Can't pin more than {} processes", ProcessPins::MAX_PINS)}, false);
+        return;
+    }
+    UserConfig::get().settings().pinnedProcesses = m_Pins.names(); // saved with the other settings
+    m_PinsChanged = true;
+    spdlog::info("ProcessesPanel: {} {}", m_Pins.contains(proc.name) ? "pinned" : "unpinned", proc.name);
+}
+
+void ProcessesPanel::openRowFileLocation(const Domain::ProcessSnapshot& proc)
+{
+    // This row's identity: the platform refuses it if the PID has since been reused (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    runRowAction(
+        std::format("Opening the file location of {}...", proc.name),
+        [actions = m_ProcessActions.get(), target] { return actions->openFileLocation(target); },
+        [name = proc.name, pid = proc.pid](const Platform::ProcessActionResult& result)
+        { return Detail::formatOpenFileLocationResult(name, pid, result); },
+        std::nullopt); // the user's own file manager: nothing the helper does
+}
+
+void ProcessesPanel::searchRowOnline(const Domain::ProcessSnapshot& proc)
+{
+    runRowAction(
+        std::format("Searching online for {}...", proc.name),
+        [url = Detail::searchOnlineUrl(proc.name)]
+        {
+            return PlatformOpen::openWithSystemHandler(std::string_view{url})
+                     ? Platform::ProcessActionResult::ok()
+                     : Platform::ProcessActionResult::error("no web browser could be started");
+        },
+        [name = proc.name](const Platform::ProcessActionResult& result) { return Detail::formatSearchOnlineResult(name, result); },
+        std::nullopt);
 }
 
 void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)

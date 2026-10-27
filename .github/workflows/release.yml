@@ -727,13 +727,28 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
+      - name: Register the PowerShell Gallery if the runner has none
+        # The signing action installs its module with `Install-Module -Repository PSGallery`, which fails
+        # with "Unable to find repository 'PSGallery'" on the occasional runner whose PowerShell has no
+        # PSGallery registered (#3109). Register the default gallery only when it's missing, and say which
+        # case this runner was. No token is involved.
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+            $null = Get-PSRepository -Name PSGallery -ErrorAction Stop
+            Write-Host 'PSGallery was not registered: registered the default repository.'
+          } else {
+            Write-Host 'PSGallery is already registered: nothing to do.'
+          }
+
       - name: Sign with Azure Artifact Signing
         # SHA-256 file digests and an RFC 3161 SHA-256 timestamp from Microsoft's timestamp service:
         # the certificates last about three days, so only the timestamp keeps a signature valid after
         # its certificate expires. Every credential type but the Azure CLI's is excluded, so the action
         # signs only as the azure/login session above (the action's OIDC documentation). The action's
         # dependency cache is off: a cache entry any workflow on main could write would otherwise
-        # supply the signing tools.
+        # supply the signing tools, so the module comes from PSGallery on every run (#3109 kept it off).
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
@@ -1030,6 +1045,18 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
+
+      - name: Register the PowerShell Gallery if the runner has none
+        # As sign-windows' step of the same name (#3109): the signing action's Install-Module needs PSGallery.
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+            $null = Get-PSRepository -Name PSGallery -ErrorAction Stop
+            Write-Host 'PSGallery was not registered: registered the default repository.'
+          } else {
+            Write-Host 'PSGallery is already registered: nothing to do.'
+          }
 
       - name: Sign with Azure Artifact Signing
         # sign-windows' settings (see its comments): SHA-256 digests, an RFC 3161 SHA-256 timestamp, the

@@ -451,6 +451,8 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
+    App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
+    App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -488,6 +490,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxOsInfo.cpp
     Platform/test_NetworkdLinkJson.cpp
     Platform/test_DnsMessage.cpp
+    Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -557,6 +560,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessThreadsView.cpp # Process Details Threads (#3069)
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_BackgroundTask.cpp
@@ -586,6 +590,7 @@ set(COMMON_TEST_SOURCES
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
+    App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
@@ -728,6 +733,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
+    Platform/test_LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
@@ -735,6 +741,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SystemdServices.cpp
     Platform/test_SystemdActions.cpp  # systemd service control (#2006 phase 2)
     Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
+    Platform/test_PressureParser.cpp  # /proc/pressure parsing (#3062)
     Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
@@ -858,6 +865,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessThreadsView.cpp
     # Process Details' Recent crashes line (#1675), run headless (test_ProcessCrashHistoryView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessCrashHistoryView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
@@ -949,6 +957,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

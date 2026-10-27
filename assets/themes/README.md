@@ -75,6 +75,7 @@ core_performance = "#FFB300" # CPU Cores P-core marker (fallback: text_warning)
 core_efficiency = "#00E676"  # CPU Cores E-core marker (fallback: text_success)
 core_low_power = "#999999"   # CPU Cores low-power E-core marker (fallback: text_muted)
 process_new = "#00E676"      # Processes table tint for a just-started process, drawn faint (fallback: text_success)
+process_exiting = "#FF5252"  # Processes table tint for a just-exited process's dimmed row (fallback: text_error)
 ```
 
 ### `[status]` - Process State Colors

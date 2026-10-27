@@ -1,12 +1,14 @@
 #include "LinuxProcessActions.h"
 
 #include "DetachedSpawn.h"
+#include "FileManagerReveal.h"
 #include "LinuxCoreDump.h"
 #include "LinuxProcessActionsDetail.h"
 #include "LinuxProcessControl.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
 #include "ProcPrivileges.h"
+#include "SessionUser.h"
 #include "SyscallTrace.h"
 
 #include <spdlog/spdlog.h>
@@ -18,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <expected>
 #include <filesystem>
@@ -33,6 +36,13 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifdef TASKSMACK_HAS_SDBUS
+#include "Platform/Linux/SdBusCall.h"
+#include "Platform/Linux/SystemdBus.h"
+
+#include <systemd/sd-bus.h>
+#endif
 
 #include <fcntl.h>
 #include <features.h>
@@ -309,6 +319,60 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     }
 }
 
+/// Where /proc/<pid>/exe points, or the errno readlink gave (#3064).
+[[nodiscard]] std::expected<std::string, int> executableLinkFromProc(std::int32_t pid)
+{
+    std::error_code error;
+    const std::filesystem::path link = std::filesystem::read_symlink(std::format("/proc/{}/exe", pid), error);
+    if (error)
+    {
+        return std::unexpected(error.value());
+    }
+    return link.string();
+}
+
+/// org.freedesktop.FileManager1.ShowItems([uri], "") on this user's session bus: Nautilus, Dolphin,
+/// Nemo, Caja, Thunar and PCManFM answer it with the file selected (#3064). False when there is no
+/// session bus or nothing answers in time.
+// LCOV_EXCL_START - opens the user's real file manager; tests fake it (LinuxProcessSyscalls::showItemInFileManager)
+[[nodiscard]] bool showItemOverSessionBus(const std::string& uri)
+{
+#ifdef TASKSMACK_HAS_SDBUS
+    namespace Bus = SystemdBus::Detail;
+    Bus::Bus bus;
+    int result = sd_bus_open_user(bus.out());
+    if (result < 0)
+    {
+        spdlog::debug("Open file location: no session bus ({})",
+                      std::strerror(-result)); // NOLINT(concurrency-mt-unsafe) - one worker thread
+        return false;
+    }
+    (void) sd_bus_set_method_call_timeout(bus.get(), SystemdBus::CALL_TIMEOUT_USEC);
+    Bus::BusError error;
+    result = sd_bus_call_method(bus.get(),
+                                "org.freedesktop.FileManager1",
+                                "/org/freedesktop/FileManager1",
+                                "org.freedesktop.FileManager1",
+                                "ShowItems",
+                                error.get(),
+                                nullptr,
+                                "ass",
+                                1,
+                                uri.c_str(),
+                                ""); // no startup notification ID
+    if (result < 0)
+    {
+        spdlog::debug("Open file location: ShowItems failed ({})", error.text(result));
+        return false;
+    }
+    return true;
+#else
+    static_cast<void>(uri);
+    return false;
+#endif
+}
+// LCOV_EXCL_STOP
+
 /// @p syscalls with the trace and dump calls a test left null filled in with the real ones;
 /// LinuxProcessControl fills in the thread listing the same way.
 [[nodiscard]] LinuxProcessSyscalls withTraceAndDumpDefaults(LinuxProcessSyscalls syscalls)
@@ -328,6 +392,14 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     if (syscalls.tracerPid == nullptr)
     {
         syscalls.tracerPid = &tracerPidFromProc;
+    }
+    if (syscalls.executableLink == nullptr)
+    {
+        syscalls.executableLink = &executableLinkFromProc;
+    }
+    if (syscalls.showItemInFileManager == nullptr)
+    {
+        syscalls.showItemInFileManager = &showItemOverSessionBus;
     }
     return syscalls;
 }
@@ -358,6 +430,11 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
     ProcessActionCapabilities capabilities = LinuxProcessControl::actionCapabilities();
     capabilities.syscallTrace = syscallTrace;
     capabilities.canCreateDump = !m_TraceTools.coreDumperPath.empty(); // gdb's gcore (#807)
+#ifdef TASKSMACK_HAS_SDBUS
+    capabilities.canOpenFileLocation = true; // ShowItems is tried first; xdg-open, if found, is the fallback
+#else
+    capabilities.canOpenFileLocation = !m_TraceTools.folderOpenerPath.empty();
+#endif
     return capabilities;
 }
 
@@ -372,10 +449,12 @@ SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
     tools.tracerPath = find("strace").value_or(std::string{});
     tools.terminal = SyscallTrace::selectTerminal(environmentValue("TERMINAL"), find);
     tools.coreDumperPath = find("gcore").value_or(std::string{});
-    spdlog::debug("System call tracing: strace {}, terminal {}; dump files: gcore {}",
+    tools.folderOpenerPath = find("xdg-open").value_or(std::string{});
+    spdlog::debug("System call tracing: strace {}, terminal {}; dump files: gcore {}; file locations: xdg-open {}",
                   tools.tracerPath.empty() ? std::string("not found") : tools.tracerPath,
                   tools.terminal ? tools.terminal->path : std::string("not found"),
-                  tools.coreDumperPath.empty() ? std::string("not found") : tools.coreDumperPath);
+                  tools.coreDumperPath.empty() ? std::string("not found") : tools.coreDumperPath,
+                  tools.folderOpenerPath.empty() ? std::string("not found") : tools.folderOpenerPath);
     return tools;
 }
 
@@ -444,6 +523,79 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
     }
     spdlog::info("Opened {} running strace on PID {}", terminal.path, target.pid);
     return ProcessActionResult::ok();
+}
+
+ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& target)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    if (!actionCapabilities().canOpenFileLocation)
+    {
+        return IProcessActions::openFileLocation(target);
+    }
+    // The identity check every action makes, then the link read, then the pidfd asked whether the
+    // process survived the read: if it did, its PID never changed hands, so the link was its own.
+    const PidfdOpen opened = openPidfd(syscalls(), target.pid);
+    if (opened.fd < 0)
+    {
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        return identity;
+    }
+    const std::expected<std::string, int> link = syscalls().executableLink(target.pid);
+    int exited = syscalls().pollPidfd(pidfd.get());
+    while (exited < 0 && errno == EINTR)
+    {
+        exited = syscalls().pollPidfd(pidfd.get());
+    }
+    if (exited != 0)
+    {
+        return ProcessActionResult::error("The process exited");
+    }
+    if (!link.has_value())
+    {
+        if (link.error() == ENOENT)
+        {
+            return ProcessActionResult::error("It has no executable file (a kernel thread)");
+        }
+        if (link.error() == EACCES || link.error() == EPERM)
+        {
+            return ProcessActionResult::error("Its executable can't be read: it belongs to another user");
+        }
+        return ProcessActionResult::error(std::format("Its executable can't be read: {}", std::system_category().message(link.error())));
+    }
+    const std::string_view path = FileManagerReveal::withoutDeletedSuffix(*link);
+    // Deleted or replaced since it started (an upgraded package): its folder is still worth opening.
+    std::string note = (path.size() != link->size()) ? std::string("its file has since been deleted or replaced") : std::string{};
+
+    // Root for another user (sudo, pkexec): xdg-open as them, in their session (#2461), and no D-Bus.
+    const std::optional<DetachedSpawn::RunAs> user = SessionUser::invokingUserSession();
+    if (!user.has_value() && syscalls().showItemInFileManager(FileManagerReveal::fileUri(path)))
+    {
+        spdlog::info("Asked the file manager to show {} (PID {})", path, target.pid);
+        return ProcessActionResult::ok(std::move(note));
+    }
+    const std::string& opener = m_TraceTools.folderOpenerPath;
+    if (opener.empty())
+    {
+        return ProcessActionResult::error("No file manager answered, and xdg-open isn't installed");
+    }
+    const std::array<std::string, 2> argv{opener, std::string(FileManagerReveal::parentFolder(path))};
+    const auto spawned = user.has_value() ? DetachedSpawn::spawnDetached(argv, *user) : DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
+    {
+        std::string message = DetachedSpawn::spawnFailureMessage(spawned.error(), opener);
+        spdlog::warn("Failed to open the folder of PID {}'s executable: {}", target.pid, message);
+        return ProcessActionResult::error(std::move(message));
+    }
+    spdlog::info("Opened {} on {} (PID {})", opener, argv[1], target.pid);
+    return ProcessActionResult::ok(std::move(note));
 }
 
 ProcessDumpResult

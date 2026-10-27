@@ -20,6 +20,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/StorageTypes.h"
@@ -370,6 +371,15 @@ std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const 
         return std::make_unique<Platform::UnsupportedProcessModulesReader>();
     }
     return Platform::makeProcessModulesReader();
+}
+
+std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessThreadsReader>();
+    }
+    return Platform::makeProcessThreadsReader();
 }
 
 std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario)

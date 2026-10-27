@@ -2525,5 +2525,146 @@ TEST_F(ProcessesPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
     panel->onDetach();
 }
 
+// #3061: a pinned process's row comes first, marked, though the sort (CPU %, descending) puts it last;
+// Unpin in its row menu undoes both and the saved pin. Pin to top pins the row the menu opened on.
+TEST_F(ProcessesPanelRenderTest, APinnedProcessComesFirstAndUnpinUndoesIt)
+{
+    UserConfig::get().settings().pinnedProcesses = {"init"}; // the least CPU of the three
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(ICON_FA_THUMBTACK)) << text;
+    ASSERT_NE(text.find("init"), std::string::npos) << text;
+    EXPECT_LT(text.find("init"), text.find("server")) << text;
+    EXPECT_LT(text.find("init"), text.find("worker")) << text;
+
+    // The top row is init's, so the menu opens on it.
+    EXPECT_EQ(openARowMenu(*panel), std::optional<std::int32_t>{1});
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Unpin###Pin");
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(UserConfig::get().settings().pinnedProcesses.empty());
+    EXPECT_FALSE(text.contains(ICON_FA_THUMBTACK)) << text;
+    EXPECT_LT(text.find("server"), text.find("init")) << text; // back where the sort puts it
+
+    // And Pin to top pins the name of the row the menu opened on.
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::map<std::int32_t, std::string> names{{1, "init"}, {100, "server"}, {101, "worker"}};
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Pin to top###Pin");
+    EXPECT_EQ(UserConfig::get().settings().pinnedProcesses, (std::vector<std::string>{names.at(menuPid.value_or(1))}));
+    panel->onDetach();
+    UserConfig::get().settings().pinnedProcesses.clear();
+}
+
+// #3060: a process that exits stays as a dimmed row for a moment, not counted, then leaves. The probe
+// drops it on demand; enumerate() runs on the sampler thread, so the PID to drop is an atomic.
+class ExitingProbe : public TestMocks::MockProcessProbe
+{
+  public:
+    void exitProcess(std::int32_t pid) noexcept
+    {
+        m_Gone.store(pid);
+    }
+
+    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    {
+        std::vector<Platform::ProcessCounters> all = MockProcessProbe::enumerate();
+        const std::int32_t gone = m_Gone.load();
+        std::erase_if(all, [gone](const Platform::ProcessCounters& c) { return c.pid == gone; });
+        return all;
+    }
+
+  private:
+    std::atomic<std::int32_t> m_Gone{0};
+};
+
+class ProcessesPanelExitingRowsTest : public ProcessesPanelRenderTest
+{
+  protected:
+    /// Renders frames, with onUpdate() before each, until @p done(panel, text) or a deadline; true if it was.
+    template<typename Done> [[nodiscard]] static bool renderUntil(ProcessesPanel& panel, const Done& done, std::chrono::seconds limit)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            panel.onUpdate(1.0F / 60.0F);
+            if (done(panel, renderAndCapture(panel)))
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    }
+
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> exitingPanel(ExitingProbe*& probeOut)
+    {
+        auto panel = std::make_unique<ProcessesPanel>(
+            [&probeOut]
+            {
+                auto probe = std::make_unique<ExitingProbe>();
+                probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                    .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
+                    .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+                probeOut = probe.get();
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+            });
+        attachAndSeed(*panel);
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        return panel;
+    }
+};
+
+TEST_F(ProcessesPanelExitingRowsTest, AnExitedProcessStaysUncountedForAMomentThenLeaves)
+{
+    UserConfig::get().settings().highlightNewProcesses = true;
+    ExitingProbe* probe = nullptr;
+    const auto panel = exitingPanel(probe);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(probe, nullptr);
+
+    probe->exitProcess(101);
+    std::string text;
+    ASSERT_TRUE(renderUntil(
+        *panel,
+        [&text](const ProcessesPanel& p, const std::string& frame)
+        {
+            text = frame;
+            return p.processCount() == 2;
+        },
+        std::chrono::seconds(30)))
+        << "the sampler never published the generation without worker";
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;      // kept, dimmed
+    EXPECT_TRUE(text.contains("2 processes")) << text; // and not counted
+
+    EXPECT_TRUE(renderUntil(
+        *panel, [](const ProcessesPanel&, const std::string& frame) { return !frame.contains("worker"); }, std::chrono::seconds(10)))
+        << "the exited row never left";
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelExitingRowsTest, WithTheSettingOffAnExitedProcessLeavesAtOnce)
+{
+    UserConfig::get().settings().highlightNewProcesses = false;
+    ExitingProbe* probe = nullptr;
+    const auto panel = exitingPanel(probe);
+    renderUntilLoaded(*panel);
+    ASSERT_NE(probe, nullptr);
+
+    probe->exitProcess(101);
+    ASSERT_TRUE(
+        renderUntil(*panel, [](const ProcessesPanel& p, const std::string&) { return p.processCount() == 2; }, std::chrono::seconds(30)));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_FALSE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App

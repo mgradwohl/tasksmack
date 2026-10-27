@@ -158,6 +158,11 @@ ProcessActionResult BrokeredProcessActions::launchSyscallTrace(const ProcessTarg
     return m_Inner->launchSyscallTrace(target);
 }
 
+ProcessActionResult BrokeredProcessActions::openFileLocation(const ProcessTarget& target)
+{
+    return m_Inner->openFileLocation(target); // the user's file manager, as the user: never the helper's
+}
+
 ProcessDumpResult
 BrokeredProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
 {

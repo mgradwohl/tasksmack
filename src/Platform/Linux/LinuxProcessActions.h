@@ -20,6 +20,10 @@ namespace Platform
 ///
 /// createDump() writes a core file with gdb's gcore (#807), found the same way: the action is offered
 /// only where gcore is installed, and refused with the reason where ptrace would refuse gcore.
+///
+/// openFileLocation() asks the session's file manager to show the executable selected
+/// (org.freedesktop.FileManager1.ShowItems over D-Bus), and opens its folder with xdg-open when none
+/// answers (#3064).
 class LinuxProcessActions : public LinuxProcessControl
 {
   public:
@@ -48,9 +52,14 @@ class LinuxProcessActions : public LinuxProcessControl
     /// least (LinuxCoreDump::coreBytesFromStatus()), read from the target itself through the identity
     /// check (#807, #2001).
     [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
+    /// The executable /proc/<pid>/exe names, read through the identity check, shown selected by the
+    /// session's file manager, or its folder opened with xdg-open (#3064). Running as root for another
+    /// user (sudo, pkexec), the folder is opened as that user, in their session, and D-Bus isn't tried:
+    /// root's session bus, if it has one, isn't theirs.
+    [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
 
-    /// strace and the terminal to run it in, from this process's PATH and $TERMINAL, and gcore for
-    /// createDump() (#807).
+    /// strace and the terminal to run it in, from this process's PATH and $TERMINAL, gcore for
+    /// createDump() (#807), and xdg-open for openFileLocation() (#3064).
     [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();
 
   private:

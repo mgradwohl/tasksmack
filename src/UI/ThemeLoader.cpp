@@ -450,6 +450,7 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.corePerformance = getColor(tbl, "semantic.core_performance", scheme.textWarning);
     scheme.coreEfficiency = getColor(tbl, "semantic.core_efficiency", scheme.textSuccess);
     scheme.processNew = getColor(tbl, "semantic.process_new", scheme.textSuccess);
+    scheme.processExiting = getColor(tbl, "semantic.process_exiting", scheme.textError);
     scheme.coreLowPower = getColor(tbl, "semantic.core_low_power", scheme.textMuted);
 
     // Status colors

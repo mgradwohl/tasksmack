@@ -48,6 +48,7 @@ struct Inputs
     bool hasCpuFreq = false;                    ///< Platform::SystemCapabilities::hasCpuFreq
     bool hasUptime = false;                     ///< Platform::SystemCapabilities::hasUptime
     bool hasLoadAvg = false;                    ///< Platform::SystemCapabilities::hasLoadAvg (Linux)
+    bool hasPressure = false;                   ///< Platform::SystemCapabilities::hasPressure (Linux PSI)
     bool hasVirtualizationInfo = false;         ///< Platform::SystemCapabilities::hasVirtualizationInfo
     bool hasVirtualizationSecurityInfo = false; ///< Platform::SystemCapabilities::hasVirtualizationSecurityInfo
     std::optional<std::size_t> processCount;
@@ -91,6 +92,41 @@ struct Inputs
         return *details.virtualizationFirmwareEnabled ? std::string_view{"Enabled"} : std::string_view{"Disabled"};
     }
     return std::nullopt;
+}
+
+/// "1.2%": a pressure average as the Pressure row writes it.
+[[nodiscard]] inline std::string formatPressurePercent(double percent)
+{
+    return UI::Format::formatFixedLocalized(percent, 1, "%");
+}
+
+/// The Pressure row's hover text (#3062): what the figures are, then each resource's some and full
+/// averages over 10 s, 60 s and 5 min.
+[[nodiscard]] inline std::string pressureTooltip(const Domain::SystemSnapshot& snap)
+{
+    std::string text = "Share of time tasks were stalled waiting for each resource (Linux pressure stall information).\n"
+                       "some: at least one task waited. full: every running task waited at once.\n"
+                       "Averages over 10 s / 60 s / 5 min:";
+    const auto line = [&text](std::string_view name, std::string_view kind, const std::optional<Platform::PressureStall>& stall)
+    {
+        if (stall.has_value())
+        {
+            text += std::format("\n{} {}: {} / {} / {}",
+                                name,
+                                kind,
+                                formatPressurePercent(stall->avg10),
+                                formatPressurePercent(stall->avg60),
+                                formatPressurePercent(stall->avg300));
+        }
+    };
+    for (const auto& [name, pressure] : {std::pair<std::string_view, const Platform::ResourcePressure*>{"CPU", &snap.cpuPressure},
+                                         std::pair<std::string_view, const Platform::ResourcePressure*>{"Memory", &snap.memoryPressure},
+                                         std::pair<std::string_view, const Platform::ResourcePressure*>{"I/O", &snap.ioPressure}})
+    {
+        line(name, "some", pressure->some);
+        line(name, "full", pressure->full);
+    }
+    return text;
 }
 
 /// The block's rows, in reading order: the live figures, then the CPU's static facts, then (where
@@ -204,6 +240,30 @@ struct Inputs
                                              UI::Format::formatFixedLocalized(snap.loadAvg15, 2, "")),
                         .available = true,
                         .tooltip = "Runnable and uninterruptible tasks, averaged over 1, 5 and 15 minutes"});
+    }
+
+    // Pressure stall information (Linux, #3062): how much of the last 10 s tasks spent waiting for CPU,
+    // memory and I/O, which utilization alone doesn't show. The other averages and "full" on hover.
+    if (in.hasPressure)
+    {
+        const auto some10 = [](const Platform::ResourcePressure& pressure)
+        {
+            return pressure.some.has_value() ? formatPressurePercent(pressure.some->avg10) : std::string("-");
+        };
+        if (snap.cpuPressure.read() || snap.memoryPressure.read() || snap.ioPressure.read())
+        {
+            rows.push_back({.label = "Pressure",
+                            .value = std::format("CPU {} \xC2\xB7 memory {} \xC2\xB7 I/O {}",
+                                                 some10(snap.cpuPressure),
+                                                 some10(snap.memoryPressure),
+                                                 some10(snap.ioPressure)),
+                            .available = true,
+                            .tooltip = pressureTooltip(snap)});
+        }
+        else
+        {
+            unavailable("Pressure", "The pressure files could not be read this time");
+        }
     }
 
     // The CPU's static facts

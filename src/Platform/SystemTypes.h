@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -97,6 +98,29 @@ struct MemoryCounters
 };
 
 /// Combined system counters snapshot.
+/// One line of a Linux pressure stall information file (#3062): the share of wall time, in percent, that
+/// tasks were stalled on the resource, averaged over the last 10, 60 and 300 seconds.
+struct PressureStall
+{
+    double avg10 = 0.0;
+    double avg60 = 0.0;
+    double avg300 = 0.0;
+};
+
+/// A resource's /proc/pressure/<resource> (#3062). `some`: at least one task was stalled. `full`: every
+/// non-idle task was stalled at once (CPU reports it from Linux 5.13, as zeros). Either is nullopt when
+/// the file didn't have that line.
+struct ResourcePressure
+{
+    std::optional<PressureStall> some;
+    std::optional<PressureStall> full;
+
+    [[nodiscard]] bool read() const noexcept
+    {
+        return some.has_value() || full.has_value();
+    }
+};
+
 struct SystemCounters
 {
     CpuCounters cpuTotal;                // Aggregate across all cores
@@ -110,6 +134,11 @@ struct SystemCounters
     double loadAvg1 = 0.0;
     double loadAvg5 = 0.0;
     double loadAvg15 = 0.0;
+
+    // Pressure stall information (Linux PSI, #3062), where SystemCapabilities::hasPressure says it's read.
+    ResourcePressure cpuPressure;
+    ResourcePressure memoryPressure;
+    ResourcePressure ioPressure;
 
     // The current CPU clock in MHz (#1184). Linux: cpu0's cpufreq reading. Windows: the base clock (~MHz)
     // scaled by "% Processor Performance", the processors' average, as Task Manager's "Speed".
@@ -163,6 +192,7 @@ struct SystemCapabilities
     bool hasIoWait = false;
     bool hasSteal = false;
     bool hasLoadAvg = false;
+    bool hasPressure = false; // /proc/pressure: Linux PSI, when the kernel has it enabled (#3062)
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
     // CpuDetails' virtualization fields (firmware, SLAT, hypervisor) mean something here (Windows,
