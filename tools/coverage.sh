@@ -29,6 +29,10 @@ Options:
   -v, --verbose      Show verbose output
   -o, --open         Open HTML report in browser after generation
   -h, --help         Show this help
+
+Environment:
+  TASKSMACK_COVERAGE_ROOT=1  Also run TasksmackHelperRootTest as root with sudo -n, so the helper's
+                             privilege drop is counted (CI's coverage job sets it; needs passwordless sudo)
 EOF
     exit "$exit_code"
 }
@@ -86,7 +90,7 @@ cmake --build --preset "$PRESET"
 # Step 2: Run tests to generate profraw data
 echo "==> Running tests..."
 cd "$BUILD_DIR"
-rm -f -- *.profraw default.profdata
+rm -rf -- *.profraw default.profdata coverage-root
 
 # Set profraw output location
 export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
@@ -127,6 +131,29 @@ for run in "TaskSmackTests||" "TaskSmackThemeTests||" "TaskSmackAppTests|-UiScen
     fi
 done
 
+# tasksmack-helper's privilege drop, as root (#3058, #3108): TasksmackHelperRootTest skips unless it
+# runs as root, so with TASKSMACK_COVERAGE_ROOT=1 (CI's coverage job, where sudo needs no password) it
+# runs once more under sudo. The helper drops to 65534 and installs a seccomp filter that refuses
+# opening files long before it exits, when LLVM would write its profile, so this run uses continuous
+# mode (%c): each process's profile is opened and mapped at startup, before the drop, and its counters
+# are written through the mapping. Its profiles go to a world-writable folder of their own; the merge
+# below takes them with the rest. A failure or a skip counts as a failed suite.
+if [[ "${TASKSMACK_COVERAGE_ROOT:-0}" == 1 ]]; then
+    ROOT_PROFILE_DIR="${BUILD_DIR}/coverage-root"
+    mkdir -p "$ROOT_PROFILE_DIR" && chmod 1777 "$ROOT_PROFILE_DIR"
+    root_log="$(mktemp "${TMPDIR:-/tmp}/tasksmack-coverage-root.XXXXXX")"
+    root_status=0
+    # shellcheck disable=SC2024 # the log is meant to be the invoking user's file, not root's
+    sudo -n env LLVM_PROFILE_FILE="${ROOT_PROFILE_DIR}/coverage-%c%p.profraw" ./tests/TaskSmackTests \
+        --gtest_filter='TasksmackHelperRootTest.*' >"$root_log" 2>&1 || root_status=$?
+    if [[ $root_status -ne 0 ]] || grep -q '\[  SKIPPED \]' "$root_log" || ! grep -q '\[  PASSED  \] 1 test' "$root_log"; then
+        echo "Warning: TasksmackHelperRootTest didn't run and pass as root (exit code ${root_status}); its log:" >&2
+        tail -n 30 "$root_log" >&2 || true
+        FAILED_SUITES+=("TaskSmackTests (TasksmackHelperRootTest, as root)")
+    fi
+    rm -f "$root_log"
+fi
+
 # The application itself, once (#2965): the tests never enter main.cpp's runApp(), so its startup, layer
 # composition and teardown went uncounted. A fresh config directory, the synthetic machine and a screenshot
 # request that closes it as Close would (TASKSMACK_SCREENSHOT, as the release smoke checks use): it must
@@ -153,7 +180,10 @@ rm -rf "${APP_SMOKE_DIR}"
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
-$LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"
+shopt -s nullglob
+profiles=("${BUILD_DIR}"/*.profraw "${BUILD_DIR}"/coverage-root/*.profraw)
+shopt -u nullglob
+$LLVM_PROFDATA merge -sparse "${profiles[@]}" -o "${BUILD_DIR}/default.profdata"
 
 # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
 # test-support headers the tests include, #1395). ImGui panel code
