@@ -15,6 +15,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
+#include "App/Panels/ProcessLookup.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -30,6 +31,7 @@
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
@@ -2928,6 +2930,20 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 
     // No other process action while one runs on its worker (#2142, #2305): its result is still to come.
     const bool actionsIdle = !rowActionRunning();
+
+    // The row's executable in the file manager, and its name in a web search (#3064), as Task Manager's
+    // menu has them: for the row the menu was opened on, each on the action worker.
+    ImGui::Separator();
+    if (m_ActionCapabilities.canOpenFileLocation &&
+        ImGui::MenuItem(ICON_FA_FOLDER_OPEN " Open file location###OpenFileLocation", nullptr, false, actionsIdle))
+    {
+        openRowFileLocation(proc);
+    }
+    if (ImGui::MenuItem(ICON_FA_MAGNIFYING_GLASS " Search online###SearchOnline", nullptr, false, actionsIdle))
+    {
+        searchRowOnline(proc);
+    }
+    ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
     // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
     // ID the same whichever it says.
     const auto actionItem = [batchCount, actionsIdle](Detail::ProcessAction action, const char* icon, const char* shortcut)
@@ -3028,6 +3044,32 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         ImGui::PopStyleColor();
     }
+}
+
+void ProcessesPanel::openRowFileLocation(const Domain::ProcessSnapshot& proc)
+{
+    // This row's identity: the platform refuses it if the PID has since been reused (#973).
+    const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
+    runRowAction(
+        std::format("Opening the file location of {}...", proc.name),
+        [actions = m_ProcessActions.get(), target] { return actions->openFileLocation(target); },
+        [name = proc.name, pid = proc.pid](const Platform::ProcessActionResult& result)
+        { return Detail::formatOpenFileLocationResult(name, pid, result); },
+        std::nullopt); // the user's own file manager: nothing the helper does
+}
+
+void ProcessesPanel::searchRowOnline(const Domain::ProcessSnapshot& proc)
+{
+    runRowAction(
+        std::format("Searching online for {}...", proc.name),
+        [url = Detail::searchOnlineUrl(proc.name)]
+        {
+            return PlatformOpen::openWithSystemHandler(std::string_view{url})
+                     ? Platform::ProcessActionResult::ok()
+                     : Platform::ProcessActionResult::error("no web browser could be started");
+        },
+        [name = proc.name](const Platform::ProcessActionResult& result) { return Detail::formatSearchOnlineResult(name, result); },
+        std::nullopt);
 }
 
 void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)

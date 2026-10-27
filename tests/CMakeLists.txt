@@ -451,6 +451,7 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
+    App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp

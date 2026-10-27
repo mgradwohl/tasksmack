@@ -771,6 +771,11 @@ class ProcessesPanel : public Panel
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
 
+    /// "Open file location" (#3064): the row's executable in the file manager, on the row action worker.
+    void openRowFileLocation(const Domain::ProcessSnapshot& proc);
+    /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
+    void searchRowOnline(const Domain::ProcessSnapshot& proc);
+
     /// Asks to run `action` on `proc`, through the confirmation dialog.
     void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
 

@@ -784,6 +784,24 @@ class MockProcessActions : public Platform::IProcessActions
         return m_SyscallTraceCount;
     }
 
+    /// What openFileLocation() returns (#3064).
+    void setOpenFileLocationResult(Platform::ProcessActionResult result)
+    {
+        m_OpenFileLocationResult = std::move(result);
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult openFileLocation(const Platform::ProcessTarget& target) override
+    {
+        m_LastTarget = target;
+        ++m_OpenFileLocationCount;
+        return m_OpenFileLocationResult;
+    }
+
+    [[nodiscard]] int openFileLocationCount() const
+    {
+        return m_OpenFileLocationCount;
+    }
+
     /// What createDump() returns (#807).
     void setDumpResult(Platform::ProcessDumpResult result)
     {
@@ -953,6 +971,8 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessTarget m_LastIoPriorityReadTarget;
     int m_SyscallTraceCount = 0;
     Platform::ProcessActionResult m_SyscallTraceResult = Platform::ProcessActionResult::ok();
+    int m_OpenFileLocationCount = 0;
+    Platform::ProcessActionResult m_OpenFileLocationResult = Platform::ProcessActionResult::ok();
 };
 
 // =============================================================================

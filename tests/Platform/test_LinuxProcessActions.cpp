@@ -7,6 +7,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/Linux/FileManagerReveal.h"
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/LinuxProcessActions.h"
@@ -928,7 +929,8 @@ void writeScript(const std::filesystem::path& path, const std::string& body)
     writeScript(tracer, "exit 0\n");
     return {.tracerPath = tracer.string(),
             .terminal = SyscallTrace::Terminal{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE},
-            .coreDumperPath = {}};
+            .coreDumperPath = {},
+            .folderOpenerPath = {}};
 }
 
 TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
@@ -936,14 +938,17 @@ TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
     const TestSupport::ScopedTempDir dir("tasksmack_trace_caps");
     const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
     EXPECT_EQ(LinuxProcessActions(tools).actionCapabilities().syscallTrace, SyscallTraceAvailability::Available);
-    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal, .coreDumperPath = {}})
-                  .actionCapabilities()
-                  .syscallTrace,
-              SyscallTraceAvailability::NoTracer);
-    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt, .coreDumperPath = {}})
-                  .actionCapabilities()
-                  .syscallTrace,
-              SyscallTraceAvailability::NoTerminal);
+    EXPECT_EQ(
+        LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal, .coreDumperPath = {}, .folderOpenerPath = {}})
+            .actionCapabilities()
+            .syscallTrace,
+        SyscallTraceAvailability::NoTracer);
+    EXPECT_EQ(
+        LinuxProcessActions(
+            SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}})
+            .actionCapabilities()
+            .syscallTrace,
+        SyscallTraceAvailability::NoTerminal);
 }
 
 TEST(LinuxProcessActionsTest, SyscallTraceIsRefusedWithTheReasonWhenToolsAreMissing)
@@ -1057,7 +1062,7 @@ SyscallTrace::PtraceContext ptraceDescendantsOnly(std::int32_t /*pid*/, const st
 {
     const std::filesystem::path gcore = dir / "fake-gcore";
     writeScript(gcore, std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}/gcore-args.txt'\n{}", dir.string(), body));
-    return {.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = gcore.string()};
+    return {.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = gcore.string(), .folderOpenerPath = {}};
 }
 
 /// The files in @p dir, by name.
@@ -2073,6 +2078,191 @@ TEST_F(LinuxProcessActionsFaultTest, ACancelledDumpWakesAPtraceStoppedTargetOnce
     EXPECT_EQ(tracedPlan().sigcontsWhileTraced, 0);
     EXPECT_EQ(tracedPlan().sigcontsOnceUntraced, 1);
     EXPECT_EQ(plan().sendCalls, 1);
+}
+
+// --- Open file location (#3064) --------------------------------------------------------------------
+// No file manager opens: ShowItems is faked, and the "xdg-open" is a script that records its argv.
+
+/// What the faked ShowItems was asked for, and whether it says a file manager took it.
+struct ShowItemsFake
+{
+    std::vector<std::string> uris;
+    bool answers = true;
+};
+
+ShowItemsFake& showItems()
+{
+    static ShowItemsFake fake;
+    return fake;
+}
+
+bool fakeShowItems(const std::string& uri)
+{
+    showItems().uris.push_back(uri);
+    return showItems().answers;
+}
+
+/// The errno the faked link read fails with.
+int& linkError()
+{
+    static int error = 0;
+    return error;
+}
+
+std::expected<std::string, int> failingExecutableLink(std::int32_t /*pid*/)
+{
+    return std::unexpected(linkError());
+}
+
+std::expected<std::string, int> deletedExecutableLink(std::int32_t /*pid*/)
+{
+    return std::string("/opt/old app/bin/tool (deleted)");
+}
+
+/// Actions whose ShowItems is faked (answering as @p answers) and whose xdg-open records its argv to
+/// @p dir/argv.txt.
+[[nodiscard]] LinuxProcessActions
+fileLocationActions(const std::filesystem::path& dir, bool answers, LinuxProcessSyscalls syscalls = realProcessSyscalls())
+{
+    showItems() = ShowItemsFake{.uris = {}, .answers = answers};
+    const std::filesystem::path opener = dir / "fake-xdg-open";
+    writeScript(
+        opener,
+        std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}/argv.tmp'\nmv '{0}/argv.tmp' '{0}/argv.txt'\n", dir.string()));
+    syscalls.showItemInFileManager = &fakeShowItems;
+    return LinuxProcessActions(
+        SyscallTrace::Tools{.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = opener.string()},
+        syscalls);
+}
+
+/// The argv the fake xdg-open recorded, waiting up to 5 s for it (it runs detached).
+[[nodiscard]] std::vector<std::string> recordedArgv(const std::filesystem::path& dir)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!std::filesystem::exists(dir / "argv.txt") && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::ifstream recorded(dir / "argv.txt");
+    std::vector<std::string> argv;
+    for (std::string line; std::getline(recorded, line);)
+    {
+        argv.push_back(line);
+    }
+    return argv;
+}
+
+TEST(FileManagerRevealTest, FileUriPercentEncodesAllButUnreservedAndSlash)
+{
+    EXPECT_EQ(FileManagerReveal::fileUri("/usr/bin/bash"), "file:///usr/bin/bash");
+    EXPECT_EQ(FileManagerReveal::fileUri("/opt/My App,1/50%"), "file:///opt/My%20App%2C1/50%25");
+    EXPECT_EQ(FileManagerReveal::fileUri("/home/z\xC3\xBC/a#b?c"), "file:///home/z%C3%BC/a%23b%3Fc");
+    EXPECT_EQ(FileManagerReveal::fileUri("/x/\xFF"), "file:///x/%FF"); // a path need not be UTF-8
+}
+
+TEST(FileManagerRevealTest, DeletedSuffixAndParentFolder)
+{
+    EXPECT_EQ(FileManagerReveal::withoutDeletedSuffix("/usr/bin/vim (deleted)"), "/usr/bin/vim");
+    EXPECT_EQ(FileManagerReveal::withoutDeletedSuffix("/usr/bin/vim"), "/usr/bin/vim");
+    EXPECT_EQ(FileManagerReveal::parentFolder("/usr/bin/vim"), "/usr/bin");
+    EXPECT_EQ(FileManagerReveal::parentFolder("/init"), "/");
+    EXPECT_EQ(FileManagerReveal::parentFolder("relative"), "/");
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationAsksTheFileManagerToShowTheExecutable)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_location");
+    LinuxProcessActions actions = fileLocationActions(dir.path, true);
+    EXPECT_TRUE(actions.actionCapabilities().canOpenFileLocation);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_TRUE(result.successNote.empty());
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe");
+    ASSERT_EQ(showItems().uris.size(), 1U);
+    EXPECT_EQ(showItems().uris.front(), FileManagerReveal::fileUri(self.string()));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt")); // ShowItems answered: no xdg-open
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationOpensTheFolderWhenNoFileManagerAnswers)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_folder");
+    LinuxProcessActions actions = fileLocationActions(dir.path, false);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const std::vector<std::string> argv = recordedArgv(dir.path);
+    ASSERT_EQ(argv.size(), 1U);
+    EXPECT_EQ(argv.front(), std::filesystem::read_symlink("/proc/self/exe").parent_path().string());
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationOfADeletedExecutableOpensItsOldFolderWithANote)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_deleted");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &deletedExecutableLink;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_FALSE(result.successNote.empty());
+    ASSERT_EQ(showItems().uris.size(), 1U);
+    EXPECT_EQ(showItems().uris.front(), "file:///opt/old%20app/bin/tool");
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhyTheExecutableCantBeRead)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_open_unreadable");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &failingExecutableLink;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+    linkError() = ENOENT;
+    auto result = actions.openFileLocation(ownTarget());
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("kernel thread"), std::string::npos) << result.errorMessage;
+
+    linkError() = EACCES;
+    result = actions.openFileLocation(ownTarget());
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.permissionDenied); // nothing the helper could do better
+    EXPECT_NE(result.errorMessage.find("another user"), std::string::npos) << result.errorMessage;
+    EXPECT_TRUE(showItems().uris.empty());
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationRefusesAnInvalidOrUnconfirmedTarget)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_open_refuse");
+    LinuxProcessActions actions = fileLocationActions(dir.path, true);
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1; // the PID now names another process
+
+    EXPECT_FALSE(actions.openFileLocation({.pid = 0, .startTimeTicks = 1}).success);
+    EXPECT_FALSE(actions.openFileLocation(reused).success);
+    EXPECT_TRUE(showItems().uris.empty());
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+}
+
+TEST(LinuxProcessActionsTest, ProcessControlAloneDoesNotOpenFileLocations)
+{
+    LinuxProcessControl control;
+    EXPECT_FALSE(control.actionCapabilities().canOpenFileLocation);
+    EXPECT_FALSE(control.openFileLocation(ownTarget()).success);
 }
 
 } // namespace
