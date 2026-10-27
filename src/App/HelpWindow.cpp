@@ -3,7 +3,6 @@
 #include "App/DialogGeometry.h"
 #include "App/HelpContent.h"
 #include "App/KeyboardShortcuts.h"
-#include "App/PlatformOpen.h"
 #include "App/ProcessColumnConfig.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -173,22 +172,25 @@ void renderColumns()
     }
 }
 
-/// A one-line link that opens @p url with the system handler, as About's links do; the URL is its
-/// tooltip. Its colour is the caller's ImGuiCol_TextLink.
-void link(const char* label, const char* url)
+/// A one-line link to @p url, as About's links are: clicked, it is @p state's linkUrl, for HelpLayer to
+/// open with the system handler on its worker (#3155). The URL is its tooltip; it is disabled while
+/// @p state's linksBusy. Its colour is the caller's ImGuiCol_TextLink.
+void link(const char* label, const char* url, State& state)
 {
+    ImGui::BeginDisabled(state.linksBusy);
     if (ImGui::TextLink(label))
     {
-        (void) PlatformOpen::openWithSystemHandler(std::string_view{url});
+        state.linkUrl = url;
     }
     ImGui::SetItemTooltip("%s", url);
+    ImGui::EndDisabled();
 }
 
-void renderLinks()
+void renderLinks(State& state)
 {
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_QUESTION, "More help");
-    link(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL);
-    link(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL);
+    link(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL, state);
+    link(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL, state);
 }
 
 } // namespace
@@ -227,6 +229,7 @@ Action render(State& state)
     }
 
     Action action = Action::None;
+    state.linkUrl = {};
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin(WINDOW_ID, &state.open, flags))
     {
@@ -252,9 +255,13 @@ Action render(State& state)
             UI::Widgets::sectionGap();
             renderColumns();
             UI::Widgets::sectionGap();
-            renderLinks();
+            renderLinks(state);
         }
         ImGui::EndChild();
+        if (!state.linkUrl.empty())
+        {
+            action = Action::OpenLink;
+        }
 
         ImGui::Separator();
         if (ImGui::TextLink(ABOUT_LINK_LABEL))

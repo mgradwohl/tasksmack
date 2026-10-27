@@ -1,11 +1,14 @@
 #include "App/HelpLayer.h"
 
+#include "App/BackgroundOpen.h"
 #include "App/HelpWindow.h"
 #include "App/SelectOverride.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+
+#include <string>
 
 namespace App
 {
@@ -31,10 +34,23 @@ void HelpLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void HelpLayer::onRender()
 {
-    if (HelpWindow::render(m_State) == HelpWindow::Action::OpenAbout)
+    // A finished open frees the links; a failure is in the log, as the opener writes it.
+    static_cast<void>(m_Open.poll());
+    m_State.linksBusy = m_Open.busy();
+    switch (HelpWindow::render(m_State))
+    {
+    case HelpWindow::Action::OpenAbout:
     {
         Core::OpenAboutEvent event;
         Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case HelpWindow::Action::OpenLink:
+        // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
+        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(m_State.linkUrl))));
+        break;
+    case HelpWindow::Action::None:
+        break;
     }
 }
 

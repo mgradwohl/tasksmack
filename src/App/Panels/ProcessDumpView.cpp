@@ -1,7 +1,7 @@
 #include "ProcessDumpView.h"
 
+#include "App/BackgroundOpen.h"
 #include "App/NativeWindow.h"
-#include "App/PlatformOpen.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/SaveFileDialog.h"
@@ -78,9 +78,9 @@ std::filesystem::path dumpDirectory(std::string_view remembered)
     return defaultDumpDirectory();
 }
 
-std::filesystem::path rememberedDumpDirectory()
+std::string rememberedDumpFolder()
 {
-    return dumpDirectory(UserConfig::get().settings().dumpFolder);
+    return UserConfig::get().settings().dumpFolder;
 }
 
 void rememberDumpDirectory(const std::filesystem::path& directory)
@@ -252,12 +252,20 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_ConfirmQuestion = std::move(other.m_ConfirmQuestion);
         m_SpaceWarning = std::move(other.m_SpaceWarning);
         m_FolderFailure = std::move(other.m_FolderFailure);
+        m_ConfirmCheck = std::move(other.m_ConfirmCheck);
+        m_CheckWanted = std::exchange(other.m_CheckWanted, false);
+        m_CheckResolve = other.m_CheckResolve;
+        m_CheckRemembered = std::move(other.m_CheckRemembered);
+        m_CheckActions = other.m_CheckActions;
+        m_CheckGeneration = other.m_CheckGeneration;
+        m_RunningCheckGeneration = other.m_RunningCheckGeneration;
         m_FolderPick = std::move(other.m_FolderPick);
         m_FolderDialog = std::move(other.m_FolderDialog);
         m_Worker = std::move(other.m_Worker);
         m_StartedAt = other.m_StartedAt;
         m_CancelRequested = other.m_CancelRequested;
         m_Result = std::move(other.m_Result);
+        m_OpenFolder = std::move(other.m_OpenFolder);
     }
     return *this;
 }
@@ -271,31 +279,125 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
     {
         return;
     }
+    openConfirm(target, std::move(processName), std::move(directory), actions);
+    if (actions != nullptr)
+    {
+        checkFolder(actions, false);
+    }
+    rebuildQuestion();
+}
+
+void ProcessDumpView::requestInRememberedFolder(const Platform::ProcessTarget& target,
+                                                std::string processName,
+                                                std::string_view remembered,
+                                                Platform::IProcessActions* actions)
+{
+    if (active() || target.pid <= 0)
+    {
+        return;
+    }
+    // Named while it is checked; the worker falls back to the default folder where it is gone. Nothing
+    // remembered names "the temporary folder" until the worker has found it.
+    openConfirm(target, std::move(processName), remembered.empty() ? std::filesystem::path{} : Core::utf8ToPath(remembered), actions);
+    checkFolder(actions, true, std::string(remembered));
+    rebuildQuestion();
+}
+
+void ProcessDumpView::openConfirm(const Platform::ProcessTarget& target,
+                                  std::string processName,
+                                  std::filesystem::path directory,
+                                  Platform::IProcessActions* actions)
+{
     m_Target = target;
     m_ProcessName = std::move(processName);
     m_Directory = std::move(directory);
     m_FolderFailure.clear();
-    m_DumpsFromSnapshot = false;
+    m_SpaceWarning.clear();
+    // Whether the platform dumps from a snapshot: the pause the confirm promises (#2241).
+    m_DumpsFromSnapshot = actions != nullptr && actions->actionCapabilities().dumpsFromSnapshot;
     // Built once here, not every frame the dialog is up.
     m_ConfirmTitle = DumpDetail::confirmTitle(m_ProcessName, target.pid);
-    refreshConfirm(actions);
+    ++m_CheckGeneration; // a check of an earlier confirm still running is dropped when it arrives
+    m_CheckWanted = false;
     m_ConfirmPending = true;
     m_ShowConfirm = true;
     m_DismissConfirm = false;
 }
 
-void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
+void ProcessDumpView::checkFolder(Platform::IProcessActions* actions, bool resolve, std::string remembered)
 {
-    // Read once per folder, never per frame: the free space and the process's private bytes, and
-    // whether the platform dumps from a snapshot (the pause the confirm promises, #2241).
-    if (actions != nullptr)
+    m_CheckWanted = true;
+    m_CheckResolve = resolve;
+    m_CheckRemembered = std::move(remembered);
+    m_CheckActions = actions;
+    ++m_CheckGeneration;
+    startCheckIfDue();
+}
+
+void ProcessDumpView::startCheckIfDue()
+{
+    if (!m_CheckWanted || m_ConfirmCheck.busy())
     {
-        m_DumpsFromSnapshot = actions->actionCapabilities().dumpsFromSnapshot;
+        return; // nothing asked for, or one still running: started once that is taken in
     }
-    m_SpaceWarning = (actions != nullptr)
-                       ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory), m_Directory, canChooseFolder(actions))
-                       : std::string{};
-    std::string warning = m_SpaceWarning;
+    m_CheckWanted = false;
+    m_RunningCheckGeneration = m_CheckGeneration;
+    // Read once per folder, never per frame, and never here (#3155): whether the remembered folder
+    // still exists, the drive's free space and the process's private bytes. The worker owns copies of
+    // the target, folder and remembered folder; it shares only its result with this view, and the
+    // actions, which outlive it (see the header). A check that throws is a failure, built on the worker.
+    if (auto failed = m_ConfirmCheck.start(
+            [actions = m_CheckActions, target = m_Target, directory = m_Directory, resolve = m_CheckResolve, remembered = m_CheckRemembered]
+            -> DumpDetail::ConfirmCheck
+            {
+                DumpDetail::ConfirmFacts facts{.directory = resolve ? DumpDetail::dumpDirectory(remembered) : directory, .space = {}};
+                if (actions != nullptr)
+                {
+                    facts.space = actions->dumpSpace(target, facts.directory);
+                }
+                return facts;
+            }))
+    {
+        applyCheck(std::move(*failed), m_CheckActions); // no thread to check it on
+    }
+}
+
+bool ProcessDumpView::takeConfirmCheck(Platform::IProcessActions* actions, bool wait)
+{
+    std::optional<DumpDetail::ConfirmCheck> taken = m_ConfirmCheck.poll(wait);
+    if (!taken.has_value())
+    {
+        return false;
+    }
+    // For the confirm still up and its folder as it is; else dropped, and a check asked for meanwhile
+    // started now.
+    const bool current = m_ConfirmPending && m_RunningCheckGeneration == m_CheckGeneration;
+    if (current)
+    {
+        applyCheck(std::move(*taken), actions);
+    }
+    startCheckIfDue();
+    return current;
+}
+
+void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProcessActions* actions)
+{
+    if (check.has_value())
+    {
+        m_Directory = std::move(check->directory);
+        m_SpaceWarning = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions));
+    }
+    else
+    {
+        // The dump is still offered: the warning is a forecast, and the dump says why if it fails.
+        m_SpaceWarning = std::format("Couldn't check the free space on the folder's drive: {}", check.error());
+    }
+    rebuildQuestion();
+}
+
+void ProcessDumpView::rebuildQuestion()
+{
+    std::string warning = checkingFolder() ? std::string(DumpDetail::CHECKING_FOLDER_TEXT) : m_SpaceWarning;
     if (!m_FolderFailure.empty())
     {
         if (!warning.empty())
@@ -309,7 +411,7 @@ void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
 
 void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* ownerWindow)
 {
-    if (!m_ConfirmPending || choosingFolder() || !canChooseFolder(actions))
+    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || !canChooseFolder(actions))
     {
         return;
     }
@@ -339,7 +441,7 @@ void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* own
             m_FolderPick.start([actions, initial = m_Directory, ownerWindow] { return actions->chooseDumpFolder(initial, ownerWindow); }))
     {
         m_FolderFailure = std::format("Couldn't show the folder dialog: {}", failed->error());
-        refreshConfirm(actions);
+        rebuildQuestion();
     }
 }
 
@@ -351,6 +453,7 @@ bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool 
         return false;
     }
     Platform::FolderChoice choice = std::move(*taken);
+    bool chosen = false;
     if (!choice.has_value())
     {
         m_FolderFailure = choice.error();
@@ -364,17 +467,22 @@ bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool 
             m_OnFolderChosen(**choice);
         }
         m_Directory = std::move(**choice);
+        chosen = true;
     }
     if (m_ConfirmPending)
     {
-        refreshConfirm(actions);
+        if (chosen)
+        {
+            checkFolder(actions, false); // its drive's space, on the worker (#3155)
+        }
+        rebuildQuestion();
     }
     return true;
 }
 
 void ProcessDumpView::confirm(Platform::IProcessActions* actions)
 {
-    if (!m_ConfirmPending || choosingFolder())
+    if (!m_ConfirmPending || choosingFolder() || checkingFolder())
     {
         return;
     }
@@ -406,6 +514,9 @@ void ProcessDumpView::cancelConfirm() noexcept
 {
     m_ConfirmPending = false;
     m_ShowConfirm = false;
+    // A check still running is dropped when it arrives; one not started yet never starts.
+    ++m_CheckGeneration;
+    m_CheckWanted = false;
 }
 
 void ProcessDumpView::cancel() noexcept
@@ -448,6 +559,11 @@ void ProcessDumpView::shutdown() noexcept
     // event pump on this thread, so waiting would never end: wait() drops that adopted answer instead
     // (the promise it fills is shared, so a late answer is harmless).
     m_FolderPick.wait();
+    // The confirm's folder check and an "Open folder" (#3155): each one platform call, which owns
+    // copies of all it uses but the actions, which are still here.
+    m_CheckWanted = false;
+    m_ConfirmCheck.wait();
+    m_OpenFolder.wait();
 }
 
 void ProcessDumpView::onSelectionChanged() noexcept
@@ -459,6 +575,8 @@ void ProcessDumpView::onSelectionChanged() noexcept
 void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform::ProcessTarget* liveTarget)
 {
     static_cast<void>(takeFolderChoice(actions));
+    static_cast<void>(takeConfirmCheck(actions));
+    static_cast<void>(m_OpenFolder.poll()); // a failure is in the log, as the opener writes it
 
     // The confirm: closed unconfirmed after a selection change, or once the selection is another
     // process, so it never starts a dump of a process other than the one it names.
@@ -474,7 +592,7 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
         bool choosePressed = false;
         const ProcessActionConfirm::LeadingButton chooseButton{.label = offerFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
                                                                .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
-                                                               .busy = choosingFolder(),
+                                                               .busy = choosingFolder() || checkingFolder(),
                                                                .pressed = &choosePressed};
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.
@@ -588,8 +706,11 @@ void ProcessDumpView::renderProgressDialog()
     UI::Widgets::DialogFooterAction pressed = UI::Widgets::DialogFooterAction::None;
     if (result.ok)
     {
-        const UI::Widgets::DialogFooterButton openButton{
-            .label = ICON_FA_FOLDER_OPEN " Open folder", .fills = nullptr, .tooltip = "Show the dump file's folder", .disabled = false};
+        // Disabled while an earlier "Open folder" is still being opened (#3155).
+        const UI::Widgets::DialogFooterButton openButton{.label = ICON_FA_FOLDER_OPEN " Open folder",
+                                                         .fills = nullptr,
+                                                         .tooltip = "Show the dump file's folder",
+                                                         .disabled = openingFolder()};
         const UI::Widgets::DialogFooterButton closeButton{.label = "Close", .fills = nullptr, .tooltip = nullptr, .disabled = false};
         pressed = UI::Widgets::dialogFooter(
             openButton, closeButton, UI::Widgets::footerButtonWidth({openButton.label, closeButton.label}, DUMP_BUTTON_MIN_EM));
@@ -605,7 +726,8 @@ void ProcessDumpView::renderProgressDialog()
     }
     if (pressed == UI::Widgets::DialogFooterAction::Primary && result.ok)
     {
-        static_cast<void>(PlatformOpen::openWithSystemHandler(result.file.parent_path()));
+        // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
+        static_cast<void>(m_OpenFolder.start(BackgroundOpen::openPath(result.file.parent_path())));
     }
     if (pressed == UI::Widgets::DialogFooterAction::Primary || pressed == UI::Widgets::DialogFooterAction::Secondary)
     {

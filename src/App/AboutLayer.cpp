@@ -1,7 +1,7 @@
 #include "App/AboutLayer.h"
 
 #include "App/AboutDialog.h"
-#include "App/PlatformOpen.h"
+#include "App/BackgroundOpen.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -41,9 +41,12 @@ void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void AboutLayer::onRender()
 {
-    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon); !url.empty())
+    // A finished open frees the links; a failure is in the log, as the opener writes it.
+    static_cast<void>(m_Open.poll());
+    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_CloseRequested, m_Icon, m_Open.busy()); !url.empty())
     {
-        (void) PlatformOpen::openWithSystemHandler(url);
+        // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
+        static_cast<void>(m_Open.start(BackgroundOpen::openUtf8(std::string(url))));
     }
 }
 

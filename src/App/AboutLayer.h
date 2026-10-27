@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/BackgroundOpen.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
@@ -34,6 +35,9 @@ class AboutLayer : public Core::Layer
     bool m_OpenRequested = false;
     bool m_CloseRequested = false;
     UI::Texture m_Icon;
+    // A link's open, on a worker (#3155): the links are disabled until it is done. Destroying the
+    // layer waits for it.
+    BackgroundOpen m_Open;
 };
 
 } // namespace App

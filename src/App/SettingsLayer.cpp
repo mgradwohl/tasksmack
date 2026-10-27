@@ -1,5 +1,6 @@
 #include "SettingsLayer.h"
 
+#include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
@@ -53,31 +54,35 @@ void SettingsLayer::raiseEvent(Core::Event& event) const
     Core::Application::get().raiseEvent(event);
 }
 
-void SettingsLayer::openPath(const std::filesystem::path& path) const
+void SettingsLayer::startOpen(std::function<void()> prepare, std::filesystem::path path)
 {
-    // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-    if (m_OpenPath)
+    // ShellExecuteW or xdg-open, and what must be on disk first, on the worker: never on the UI thread
+    // (#3155). Its result is ignored here, as before: the opener logs a failure.
+    std::function<bool(const std::filesystem::path&)> open = m_OpenPath ? m_OpenPath : [](const std::filesystem::path& target)
     {
-        static_cast<void>(m_OpenPath(path));
-        return;
-    }
-    static_cast<void>(App::PlatformOpen::openWithSystemHandler(path));
+        return App::PlatformOpen::openWithSystemHandler(target);
+    };
+    static_cast<void>(m_Open.start(
+        [prepare = std::move(prepare), path = std::move(path), open = std::move(open)]
+        {
+            prepare();
+            return open(path);
+        }));
+}
+
+void SettingsLayer::waitForPendingOpen()
+{
+    m_Open.wait();
+    static_cast<void>(m_Open.poll());
 }
 
 // The user themes directory: the one UILayer scans and merges over the built-ins. The built-in
 // themes live in the install's assets directory, which is read-only and replaced on upgrade, so
-// that is not where users should add themes (#1127). Created on first use so the button always
-// opens something.
+// that is not where users should add themes (#1127). Made by the open worker before it is opened, so
+// the button always opens something.
 auto SettingsLayer::userThemesDir() const -> std::filesystem::path
 {
-    auto dir = (m_UserConfigDir ? m_UserConfigDir() : Core::Application::get().paths().userConfigDir()) / "themes";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    if (ec)
-    {
-        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
-    }
-    return dir;
+    return (m_UserConfigDir ? m_UserConfigDir() : Core::Application::get().paths().userConfigDir()) / "themes";
 }
 
 SettingsLayer::~SettingsLayer() = default;
@@ -99,6 +104,9 @@ void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void SettingsLayer::onRender()
 {
+    // A finished open frees the buttons; a failure is in the log, as the opener writes it.
+    static_cast<void>(m_Open.poll());
+    m_State.openingPath = m_Open.busy();
     switch (SettingsDialog::render(m_State))
     {
     case SettingsDialog::Action::Save:
@@ -107,25 +115,40 @@ void SettingsLayer::onRender()
     case SettingsDialog::Action::EditConfig:
     {
         // On a first run nothing has saved the file yet, and opening a path that doesn't exist does
-        // nothing the user can see (#2145): write it first, every key with its documentation. The one
-        // synchronous save a click makes (#2916): the editor opens the file at once, so it must exist
-        // first, and it is written at most once, on a first run.
+        // nothing the user can see (#2145): the worker writes it first, every key with its
+        // documentation, from a copy of the settings taken here, and starts the editor only then.
+        // Checked and written there, never here (#3155).
         auto& config = UserConfig::get();
-        std::error_code ec;
-        if (!std::filesystem::exists(config.configPath(), ec))
-        {
-            config.save();
-            if (!std::filesystem::exists(config.configPath(), ec))
+        const std::filesystem::path path = config.configPath();
+        startOpen(
+            [&config, settings = config.settings(), path = path] // a copy of its own, movable
             {
-                spdlog::warn("Couldn't create {} to open it", Core::pathToUtf8(config.configPath()));
-            }
-        }
-        openPath(config.configPath());
+                if (!config.writeIfMissing(settings))
+                {
+                    spdlog::warn("Couldn't create {} to open it", Core::pathToUtf8(path));
+                }
+            },
+            path); // a copy: the lambda above holds its own (argument order is unspecified)
         break;
     }
     case SettingsDialog::Action::OpenThemesFolder:
-        openPath(userThemesDir());
+    {
+        const std::filesystem::path dir = userThemesDir();
+        startOpen(
+            [dir = dir] // a copy of its own, movable
+            {
+                // Made on first use; a failure is logged, and the path opened anyway (the handler
+                // says what it can't open).
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                if (ec)
+                {
+                    spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+                }
+            },
+            dir); // a copy, as above
         break;
+    }
     case SettingsDialog::Action::OpenAbout:
     {
         Core::OpenAboutEvent event;

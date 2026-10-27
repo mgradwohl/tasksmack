@@ -457,6 +457,7 @@ Action render(State& state)
         // Button row for config file and themes folder
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+        ImGui::BeginDisabled(state.openingPath); // the last one's open still runs (#3155)
         if (ImGui::Button(EDIT_CONFIG_LABEL))
         {
             action = Action::EditConfig;
@@ -466,6 +467,7 @@ Action render(State& state)
         {
             action = Action::OpenThemesFolder;
         }
+        ImGui::EndDisabled();
         ImGui::PopStyleColor();
 
         // The notice TaskSmack shows at startup when it runs without the rights to read every
