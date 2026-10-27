@@ -13,6 +13,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -60,6 +61,10 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessModulesReader implementation (#802).
 [[nodiscard]] std::unique_ptr<IProcessModulesReader> makeProcessModulesReader();
+
+/// Creates the platform-appropriate IProcessThreadsReader implementation (#3069; Windows: unsupported
+/// until its lane adds one).
+[[nodiscard]] std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader();
 
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();

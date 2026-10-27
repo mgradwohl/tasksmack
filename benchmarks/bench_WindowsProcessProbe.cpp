@@ -24,9 +24,13 @@
 //    read without the account name cache (token, its user SID, LookupAccountSidW); OwnerToken is the
 //    same with LookupAccountSidW stubbed out, and LookupAccountSid that call alone over the SIDs the
 //    token reads found, so the two halves can be told apart. OwnerCached is the read as the probe
-//    makes it, with every SID already in its account name cache (#2982). Publisher is its steady state: the path cache hit every heavy
-//    read after the first makes. Affinity is the single-group read (GetProcessAffinityMask), and
-//    is skipped on a machine with several processor groups.
+//    makes it, with every SID already in its account name cache (#2982). Publisher is the path
+//    cache hit getFilePublisher() makes for a path it has seen. ImagePath is the uncached read;
+//    ImagePathCached the image path and publisher as the probe takes them on a heavy pass after a
+//    process's first, from its own detail cache entry (#2982); its paths_read counter is how many
+//    of them read (the rest are tried again every pass, as the probe does). Affinity is the
+//    single-group read (GetProcessAffinityMask), and is skipped on a machine with several
+//    processor groups.
 //
 // The process count and the snapshot's size are this machine's; they are reported as counters, so
 // runs on different machines, or with a different load, are not compared as like for like.
@@ -540,6 +544,37 @@ void BM_WindowsProcessProbe_Detail_ImagePath(benchmark::State& state)
                          });
 }
 BENCHMARK(BM_WindowsProcessProbe_Detail_ImagePath)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_ImagePathCached(benchmark::State& state)
+{
+    if (!openProcesses())
+    {
+        state.SkipWithError("Could not open any process");
+        return;
+    }
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    const auto& processes = openedProcesses();
+    // The probe's steady state: each process's image path and publisher were read on an earlier heavy
+    // pass, so a later one only takes the publisher from its detail cache entry.
+    std::vector<Platform::ProcessImage> images(processes.size());
+    std::size_t read = 0;
+    for (std::size_t i = 0; i < processes.size(); ++i)
+    {
+        read += Platform::WindowsProcessDetailReads::image(functions.process, processes[i].handle.get(), images[i]).read ? 1U : 0U;
+    }
+    for (auto _ : state)
+    {
+        for (std::size_t i = 0; i < processes.size(); ++i)
+        {
+            std::string publisher =
+                Platform::WindowsProcessDetailReads::image(functions.process, processes[i].handle.get(), images[i]).publisher;
+            benchmark::DoNotOptimize(publisher);
+        }
+    }
+    reportPerProcess(state, processes.size());
+    state.counters["paths_read"] = benchmark::Counter(static_cast<double>(read));
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_ImagePathCached)->Unit(benchmark::kMicrosecond);
 
 void BM_WindowsProcessProbe_Detail_CommandLine(benchmark::State& state)
 {

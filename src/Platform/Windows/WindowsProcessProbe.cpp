@@ -558,6 +558,26 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return result;
 }
 
+/// Fill @p image from the process's image path and its publisher, unless an earlier read already has
+/// (#2982): neither changes while the process runs. A failed path read (an empty path) leaves it
+/// unread, so the next heavy refresh tries again.
+const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image)
+{
+    if (image.read)
+    {
+        return image;
+    }
+    const std::wstring path = getProcessImagePath(fns, hProcess);
+    if (path.empty())
+    {
+        return image;
+    }
+    image.path = WinString::wideToUtf8(path);
+    image.publisher = getFilePublisher(path);
+    image.read = true;
+    return image;
+}
+
 /// Classify a process as "App", "Background Process", or "Windows Process".
 /// - "App": has USER objects (owns an interactive UI window)
 /// - "Windows Process": core OS components in the Windows system directories
@@ -812,6 +832,12 @@ std::string WindowsProcessDetailReads::commandLine(const WindowsProcessProbeFunc
 std::string WindowsProcessDetailReads::publisher(const std::wstring& imagePath)
 {
     return getFilePublisher(imagePath);
+}
+
+const ProcessImage&
+WindowsProcessDetailReads::image(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess, ProcessImage& cached)
+{
+    return readProcessImage(fns, hProcess, cached);
 }
 
 std::string_view WindowsProcessDetailReads::processType(const WindowsProcessProbeFunctions::Process& fns,
@@ -1148,7 +1174,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.user = cache.user;
         counters.command = cache.command;
         counters.status = cache.status;
-        counters.publisher = cache.publisher;
+        counters.publisher = cache.image.publisher;
         counters.processType = cache.processType;
         counters.architecture = cache.architecture;
         counters.gdiObjectCount = cache.gdiObjectCount;
@@ -1217,12 +1243,14 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         cache.priorityClass = counters.priorityClass;
     }
 
-    std::string imagePathUtf8; // Read with the heavy details, for classification
+    std::string_view imagePathUtf8; // Read with the heavy details, for classification
     if (plan.heavy)
     {
-        // Expensive data: owner, command line, image path and publisher at a lower cadence.
-        const std::wstring imagePath = getProcessImagePath(m_Fns.process, hProcess.get());
-        imagePathUtf8 = WinString::wideToUtf8(imagePath);
+        // Expensive data: owner and command line at a lower cadence. The image path and its publisher
+        // never change for a process, so they are read once, on the first heavy read that succeeds (#2982).
+        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image);
+        imagePathUtf8 = image.path;
+        counters.publisher = image.publisher;
         counters.user = getProcessOwner(m_Fns.token, hProcess.get(), &m_AccountNames, now);
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
@@ -1231,9 +1259,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         {
             counters.command = imagePathUtf8;
         }
-
-        // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
-        counters.publisher = getFilePublisher(imagePath);
 
         // CPU affinity rarely changes — refresh alongside heavy details, and cached with them.
         counters.cpuAffinity = readCpuAffinity(hProcess.get(), threadRecords);
@@ -1281,7 +1306,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         cache.user = counters.user;
         cache.command = counters.command;
-        cache.publisher = counters.publisher;
         cache.processType = counters.processType;
         cache.cpuAffinity = counters.cpuAffinity;
         if (canCache)

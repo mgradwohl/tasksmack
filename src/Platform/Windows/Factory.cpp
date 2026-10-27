@@ -13,6 +13,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -111,6 +112,12 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 {
     return std::make_unique<Windows::WindowsProcessModulesReader>();
+}
+
+std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
+{
+    // The Threads section (#3069) is hidden until the Windows lane adds a Toolhelp reader.
+    return std::make_unique<UnsupportedProcessThreadsReader>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()

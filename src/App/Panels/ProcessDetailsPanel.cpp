@@ -81,7 +81,9 @@ ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
                           std::move(readers.modules),
                           std::move(readers.security),
                           std::move(readers.openFiles))
-{}
+{
+    setThreadsReader(std::move(readers.threads)); // the one reader not passed above: untouched by those moves
+}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
     : ProcessDetailsPanel(std::move(processActions), nullptr, nullptr)
@@ -205,6 +207,15 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // The Modules section's on-demand read (#802), on the same terms.
     const bool canReadModules = m_HasModules && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_ModulesView.update(canReadModules ? m_ModulesReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Threads section's on-demand read (#3069), on the same terms, at the Settings interval: its CPU %
+    // is a live figure.
+    const bool canReadThreads = m_HasThreads && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_ThreadsView.update(canReadThreads ? m_ThreadsReader.get() : nullptr,
+                                           selectedTarget(),
+                                           deltaTime,
+                                           static_cast<int>(m_RefreshInterval.count()),
+                                           std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count()));
 
     // The Security section's on-demand read (#1526), on the same terms.
     const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;
@@ -455,6 +466,8 @@ void ProcessDetailsPanel::renderPane(bool killRequested)
                 // Likewise collapsed by default; hidden only in synthetic runs (#802)
                 openIfRequested(SelectOverride::DetailsSection::Modules, m_HasModules);
                 m_ModulesView.render(m_HasModules);
+                // Likewise collapsed by default; hidden in synthetic runs and, for now, on Windows (#3069)
+                m_ThreadsView.render(m_HasThreads);
                 // Likewise collapsed by default; hidden only in synthetic runs (#1526)
                 openIfRequested(SelectOverride::DetailsSection::Security, m_HasSecurity);
                 m_SecurityView.render(m_HasSecurity);
@@ -595,6 +608,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
     m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
     m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
+    m_ThreadsView.onSelectionChanged();     // And its threads (#3069)
     m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
     m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
 

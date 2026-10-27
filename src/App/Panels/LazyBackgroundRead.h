@@ -52,6 +52,12 @@ template<typename Result> class LazyBackgroundRead
         : m_RefreshMs(refreshMs), m_Pending(threadName, failed, UNKNOWN_FAILURE)
     {}
 
+    /// Re-reads every @p refreshMs from now on (a view that follows the Settings interval, #3069).
+    void setRefreshMs(int refreshMs) noexcept
+    {
+        m_RefreshMs = refreshMs;
+    }
+
     /// Records that render() drew the section open this frame.
     void markDrawnOpen() noexcept
     {

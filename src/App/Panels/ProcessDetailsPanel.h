@@ -15,6 +15,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -28,6 +29,7 @@
 #include "ProcessPriorityView.h"
 #include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
+#include "ProcessThreadsView.h"
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
@@ -38,6 +40,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace App
@@ -52,6 +55,7 @@ struct ProcessDetailsReaders
     std::unique_ptr<Platform::IProcessModulesReader> modules;
     std::unique_ptr<Platform::IProcessSecurityReader> security;
     std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles;
+    std::unique_ptr<Platform::IProcessThreadsReader> threads; ///< #3069
 };
 
 /// Panel displaying detailed information for a selected process.
@@ -97,6 +101,14 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
 
     ~ProcessDetailsPanel() override = default;
+
+    /// The Threads section's reader (#3069); null, the default, hides the section. Call before the first
+    /// update; the default constructor sets the platform's.
+    void setThreadsReader(std::unique_ptr<Platform::IProcessThreadsReader> reader)
+    {
+        m_ThreadsReader = std::move(reader);
+        m_HasThreads = m_ThreadsReader != nullptr && m_ThreadsReader->hasThreads();
+    }
 
     /// With @p readers (PanelPlatforms.h): the default constructor's, made for the active scenario (#2137).
     explicit ProcessDetailsPanel(ProcessDetailsReaders readers);
@@ -395,6 +407,9 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
+    std::unique_ptr<Platform::IProcessThreadsReader> m_ThreadsReader; // the Threads section's (#3069)
+    bool m_HasThreads = false; // m_ThreadsReader can list threads here (Linux; not synthetic runs, nor Windows yet)
+    ProcessThreadsView m_ThreadsView{static_cast<std::size_t>(std::thread::hardware_concurrency())};
 
     // The Overview's Security section (#1526), on the same terms, its reader declared before its view.
     std::unique_ptr<Platform::IProcessSecurityReader> m_SecurityReader;
