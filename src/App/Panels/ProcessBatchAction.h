@@ -84,6 +84,63 @@ template<typename SnapshotRange, typename SelectedPredicate>
 }
 
 /// "Kill 5 processes?"
+/// @p root and every process descended from it in @p snapshots, as targets, leaves first (#3059): a child
+/// is ended before its parent, so none is re-parented and left running when its parent goes first. The
+/// descendants are the snapshots' childrenIndices, which the tree build links only where the parent
+/// started no later than the child, so a process that reused a PID is never taken for a child. Empty
+/// when @p root (by PID and start time) is no longer listed.
+template<typename SnapshotVector>
+[[nodiscard]] std::vector<BatchTarget> resolveTreeTargets(const SnapshotVector& snapshots, const Platform::ProcessTarget& root)
+{
+    std::size_t rootRow = snapshots.size();
+    for (std::size_t row = 0; row < snapshots.size(); ++row)
+    {
+        if (snapshots[row].pid == root.pid && snapshots[row].startTimeTicks == root.startTimeTicks)
+        {
+            rootRow = row;
+            break;
+        }
+    }
+    std::vector<BatchTarget> targets;
+    if (rootRow == snapshots.size())
+    {
+        return targets;
+    }
+    // An iterative post-order walk (a deep tree can't overflow the stack): each entry is a row and the
+    // next of its children to visit. visited guards against a malformed index list visiting a row twice.
+    std::vector<bool> visited(snapshots.size(), false);
+    std::vector<std::pair<std::size_t, std::size_t>> stack{{rootRow, 0}};
+    visited[rootRow] = true;
+    while (!stack.empty())
+    {
+        const std::size_t row = stack.back().first;
+        const auto& children = snapshots[row].childrenIndices;
+        if (stack.back().second < children.size())
+        {
+            const std::size_t child = children[stack.back().second++];
+            if (child < snapshots.size() && !visited[child])
+            {
+                visited[child] = true;
+                stack.emplace_back(child, 0);
+            }
+            continue;
+        }
+        const auto& snapshot = snapshots[row];
+        targets.push_back({.target = {.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks},
+                           .name = snapshot.name,
+                           .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice))});
+        stack.pop_back();
+    }
+    return targets;
+}
+
+/// The title of End process tree's confirmation (#3059): the process it starts from, and how many it
+/// ends in all.
+[[nodiscard]] inline std::string treeConfirmTitle(std::string_view rootName, std::int32_t rootPid, std::size_t count)
+{
+    return std::format("End {} (PID {}) and its {} descendant process{}?", rootName, rootPid, count - 1, count == 2 ? "" : "es");
+}
+
 [[nodiscard]] inline std::string confirmTitle(Detail::ProcessAction action, std::size_t count)
 {
     return std::format("{} {} processes?", Detail::actionLabel(action), count);

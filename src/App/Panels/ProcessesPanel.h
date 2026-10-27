@@ -777,6 +777,9 @@ class ProcessesPanel : public Panel
     /// Asks to run `action` on every selected process still listed, through the batch confirmation
     /// (#804). One process left: the single-process dialog. None: nothing happens.
     void requestSelectionAction(Detail::ProcessAction action);
+    /// End process tree (#3059): @p action for @p proc and every process descended from it, leaves first,
+    /// confirmed and run as a batch. Just @p proc when it has no descendants listed any more.
+    void requestTreeAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
 
     /// Opens the batch priority dialog for every selected process still listed (#1484). None left:
     /// nothing happens.

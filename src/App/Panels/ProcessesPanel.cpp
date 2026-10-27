@@ -3000,6 +3000,13 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         {
             request(Detail::ProcessAction::Kill);
         }
+        // The process and everything it started (#3059), as Task Manager's End process tree: one process,
+        // with children listed. Terminate where the platform has it, else Kill.
+        if (batchCount == 0 && !proc.childrenIndices.empty() &&
+            ImGui::MenuItem(ICON_FA_SITEMAP " End process tree###EndProcessTree", nullptr, false, actionsIdle))
+        {
+            requestTreeAction(can.canTerminate ? Detail::ProcessAction::Terminate : Detail::ProcessAction::Kill, proc);
+        }
         ImGui::PopStyleColor();
     }
 }
@@ -3037,6 +3044,22 @@ void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
         m_RowAction.title = ProcessBatch::confirmTitle(action, targets.size());
         m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
     }
+    m_RowAction.action = action;
+    m_RowAction.targets = std::move(targets);
+    m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::requestTreeAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)
+{
+    std::vector<ProcessBatch::BatchTarget> targets =
+        ProcessBatch::resolveTreeTargets(*m_CachedRenderSnapshots, {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks});
+    if (targets.size() < 2)
+    {
+        requestRowAction(action, proc); // its children have exited since the menu opened
+        return;
+    }
+    m_RowAction.title = ProcessBatch::treeConfirmTitle(proc.name, proc.pid, targets.size());
+    m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
     m_RowAction.action = action;
     m_RowAction.targets = std::move(targets);
     m_ShowRowActionConfirm = true;
