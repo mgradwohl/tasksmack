@@ -255,6 +255,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/tidy-findings.py writes the clang-tidy jobs' summary, including the result-cache line (#3101).
+add_test(NAME TidyFindingsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_findings.py)
+
 # tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
 # match the C++ encoder's.
 add_test(NAME HelperHandshakeScript
@@ -326,9 +330,9 @@ endif()
 
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
-set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
-    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script StartupWiringScript
-    PROPERTIES TIMEOUT 120)
+set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript TidyFindingsScript MergeGtestResultsScript
+    CoverageMismatchesScript CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script
+    StartupWiringScript PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.

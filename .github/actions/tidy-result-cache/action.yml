@@ -18,6 +18,14 @@ outputs:
   cache-dir:
     description: 'The absolute cache directory to pass to the tidy script'
     value: ${{ steps.dir.outputs.cache-dir }}
+  restored-key:
+    description: >-
+      mode: restore only -- the key of the entry restored (this run's or an older one's), empty when
+      none matched or the run was fresh; tools/tidy-findings.py --cache-key puts it in the job summary
+    value: ${{ steps.restore.outputs.cache-matched-key }}
+  fresh:
+    description: "mode: restore only -- the fresh input, for tools/tidy-findings.py --cache-fresh"
+    value: ${{ inputs.fresh }}
 
 runs:
   using: 'composite'
@@ -34,6 +42,7 @@ runs:
     # marker whose inputs changed is just never looked up. Hence the restore-keys fallback to the
     # newest entry, from this branch or main.
     - name: Restore clang-tidy results
+      id: restore
       if: inputs.mode == 'restore' && inputs.fresh != 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -42,7 +51,10 @@ runs:
         restore-keys: ${{ runner.os }}-tidy-results-
 
     # A few hundred tiny files, so each save is a few KB. Callers save only outside pull requests,
-    # like the ccache/FetchContent caches (#1554); cache-prune.yml keeps main's newest entry.
+    # like the ccache/FetchContent caches (#1554); cache-prune.yml keeps main's newest entry. Main
+    # saves one per OS a night, and nothing reads it until a pull request does, so it is among the
+    # first entries GitHub's least-recently-used eviction removes whenever the repository's caches
+    # exceed their limit; cache-prune.yml keeps them under it (#3101).
     - name: Save clang-tidy results
       if: inputs.mode == 'save'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
