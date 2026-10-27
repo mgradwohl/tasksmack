@@ -11,7 +11,6 @@
 #include "Core/WindowConstants.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -453,16 +452,33 @@ inline constexpr float MAX_WINDOW_SCALE = 16.0F;
     return scale > 0.0F && scale <= MAX_WINDOW_SCALE;
 }
 
+/// Smallest and largest pixel density (framebuffer pixels per window unit) windowUnitScale() takes
+/// from SDL. A real window's density is 1 on Windows and X11 and the display's scale on native
+/// Wayland and macOS, and no desktop runs below 50 % or above 800 %. A value outside these bounds
+/// measures a window with no real size instead: SDL computes the density as the framebuffer's width
+/// over the window's, and a window minimized before its first frame reported 0.197 on Windows, which
+/// made the UI scale 8.88 at 175 % (#3150).
+inline constexpr float MIN_PIXEL_DENSITY = 0.5F;
+inline constexpr float MAX_PIXEL_DENSITY = 8.0F;
+
+/// Whether @p pixelDensity is one a real window can have (see MIN_PIXEL_DENSITY). False for NaN.
+[[nodiscard]] constexpr bool isPlausiblePixelDensity(float pixelDensity) noexcept
+{
+    return pixelDensity >= MIN_PIXEL_DENSITY && pixelDensity <= MAX_PIXEL_DENSITY;
+}
+
 /// The UI scale in window units: SDL's display scale divided by the window's pixel density.
 ///
 /// On Windows and X11 window coordinates are physical pixels (density 1), so this is the display's
 /// scale (1.75 at 175 %). On native Wayland and macOS the window is created with
 /// SDL_WINDOW_HIGH_PIXEL_DENSITY, window coordinates are already logical and the pixel density
 /// carries the scale, so this is 1 (#1096). A density that is not a usable number (0 on failure,
-/// NaN) falls back to the display scale alone. UI::windowUnitScale() forwards here.
+/// NaN) or not a plausible one (isPlausiblePixelDensity(): a minimized or zero-sized window, #3150)
+/// falls back to the display scale alone, which is right wherever the density should be 1.
+/// UI::windowUnitScale() forwards here.
 [[nodiscard]] inline float windowUnitScale(float displayScale, float pixelDensity) noexcept
 {
-    if (!std::isfinite(pixelDensity) || pixelDensity <= 0.0F)
+    if (!isPlausiblePixelDensity(pixelDensity))
     {
         return displayScale;
     }
