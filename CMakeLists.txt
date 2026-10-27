@@ -191,6 +191,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/ProcessModulesView.cpp
+    src/App/Panels/ProcessThreadsView.cpp # Process Details Threads (#3069)
     src/App/Panels/ProcessCrashHistoryView.cpp
     src/App/Panels/ProcessOpenFilesView.cpp
     src/App/Panels/ProcessSecurityView.cpp
@@ -256,6 +257,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxProcessModulesReader.cpp
+    src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp

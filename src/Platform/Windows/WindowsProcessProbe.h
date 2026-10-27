@@ -135,6 +135,16 @@ struct WindowsProcessProbeFunctions
     std::optional<Windows::EnergyMeterFunctions> energyMeter = std::nullopt;
 };
 
+/// A process's executable path and the publisher named in it, which can't change while the process
+/// runs: read once per process, keyed by {pid, start time}, rather than on every heavy refresh (#2982).
+/// Unread until a read succeeds, so a failed one (access denied, the process gone) is tried again.
+struct ProcessImage
+{
+    std::string path;      // UTF-8, for the classification and the command line's fallback
+    std::string publisher; // CompanyName from the executable's version info; may be empty once read
+    bool read = false;
+};
+
 /// The reads WindowsProcessProbe makes for one process on its heavy detail cadence, each callable
 /// alone so the heavy pass can be timed read by read (benchmarks, #2982). The probe makes these same
 /// calls; each takes a handle opened with PROCESS_QUERY_LIMITED_INFORMATION and returns empty when
@@ -153,6 +163,9 @@ owner(const WindowsProcessProbeFunctions::Token& fns, HANDLE hProcess, AccountNa
 [[nodiscard]] std::string commandLine(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess);
 /// The CompanyName from the executable's version info, cached by path for the life of the program.
 [[nodiscard]] std::string publisher(const std::wstring& imagePath);
+/// The image path and publisher as the probe reads them: @p cached is filled from imagePath() and
+/// publisher() while it is unread, and returned as it is once a read has succeeded.
+const ProcessImage& image(const WindowsProcessProbeFunctions::Process& fns, HANDLE hProcess, ProcessImage& cached);
 /// "App", "Background Process" or "Windows Process" (hQuery may be null: the USER objects aren't counted).
 [[nodiscard]] std::string_view
 processType(const WindowsProcessProbeFunctions::Process& fns, HANDLE hQuery, DWORD pid, std::string_view imagePath);
@@ -161,8 +174,9 @@ processType(const WindowsProcessProbeFunctions::Process& fns, HANDLE hQuery, DWO
 /// Windows implementation of IProcessProbe.
 /// Uses a single bulk NtQuerySystemInformation(SystemProcessInformation) snapshot per sample
 /// (PIDs, names, CPU times, memory, I/O, handle/thread counts, thread states), plus TTL-cached
-/// per-process details (owner, command line, publisher, classification, priority) refreshed via
-/// short-lived handles.
+/// per-process details (owner, command line, classification, priority) refreshed via short-lived
+/// handles. What can't change while a process runs (its architecture, image path and publisher) is
+/// read once per {pid, start time}.
 /// Per-process power (#2587) is the CPU packages' energy from the EMI energy meters
 /// (WindowsEnergyMeter.h), read raw each sample by readPackageEnergy() and shared out by CPU time
 /// in Domain, as Linux's RAPL counter is. The meters are enumerated and opened once, on the
@@ -268,7 +282,7 @@ class WindowsProcessProbe : public IProcessProbe
         std::string user;
         std::string command;
         std::string status;
-        std::string publisher;
+        ProcessImage image; // Image path and publisher (#2982): read once, with the first heavy read that succeeds
         std::string processType;
         std::string architecture;                   // MachineMath::windowsArchitectureLabel() (#2394): read once, it never changes
         bool architectureRead = false;              // Whether architecture above was read (with the first handle opened)

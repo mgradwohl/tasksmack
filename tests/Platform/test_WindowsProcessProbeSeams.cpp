@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 // clang-format off
@@ -131,6 +132,7 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     DWORD priorityClass = HIGH_PRIORITY_CLASS;
     std::wstring imagePath = L"C:\\fake\\app.exe";
     bool failImagePath = false;
+    int imagePathCalls = 0;
     std::wstring commandLine = L"app.exe --flag";
     bool failStatus = false;
     bool failCommandLine = false;
@@ -382,6 +384,7 @@ DWORD WINAPI fakeGetPriorityClass(HANDLE /*process*/)
 
 BOOL WINAPI fakeQueryFullProcessImageNameW(HANDLE /*process*/, DWORD /*flags*/, LPWSTR path, PDWORD size)
 {
+    ++fake().imagePathCalls;
     if (fake().failImagePath)
     {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -1055,6 +1058,84 @@ TEST_F(WindowsProcessProbeSeamTest, ARenamedAccountShowsItsNewNameOnceTheCachedN
     fake().now += std::chrono::seconds(Domain::Sampling::ACCOUNT_NAME_CACHE_TTL_SECONDS);
     EXPECT_EQ(find(probe.enumerate()).user, "alicia");
     EXPECT_EQ(fake().lookupCalls, 2);
+}
+
+// --- Image path and publisher (#2982) ---------------------------------------------------------------
+
+TEST_F(WindowsProcessProbeSeamTest, TheImagePathIsReadOnceAcrossHeavyRefreshes)
+{
+    fake().failCommandLine = true; // The command line falls back to the image path, which shows it
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).command, "C:\\fake\\app.exe");
+    EXPECT_EQ(fake().imagePathCalls, 1);
+
+    // Past every TTL, twice: the owner is read again each time, the image path never is.
+    fake().imagePath = L"C:\\elsewhere\\app.exe";
+    for (const auto& [wide, utf8] : {std::pair{L"bob", "bob"}, std::pair{L"carol", "carol"}})
+    {
+        fake().user = wide;
+        fake().now += std::chrono::hours(1);
+        const ProcessCounters process = find(probe.enumerate());
+        EXPECT_EQ(process.user, utf8);
+        EXPECT_EQ(process.command, "C:\\fake\\app.exe");
+    }
+    EXPECT_EQ(fake().imagePathCalls, 1);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AFailedImagePathReadIsRetriedOnTheNextHeavyRefresh)
+{
+    fake().failCommandLine = true;
+    fake().failImagePath = true; // Access denied
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).command, "[app.exe]");
+    EXPECT_EQ(fake().imagePathCalls, 1);
+
+    fake().failImagePath = false;
+    EXPECT_EQ(find(probe.enumerate()).command, "[app.exe]"); // Within the heavy TTL: not read again yet
+    EXPECT_EQ(fake().imagePathCalls, 1);
+
+    fake().now += std::chrono::hours(1); // The next heavy refresh tries again, and keeps what it reads
+    EXPECT_EQ(find(probe.enumerate()).command, "C:\\fake\\app.exe");
+    EXPECT_EQ(fake().imagePathCalls, 2);
+
+    fake().now += std::chrono::hours(1);
+    EXPECT_EQ(find(probe.enumerate()).command, "C:\\fake\\app.exe");
+    EXPECT_EQ(fake().imagePathCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AReusedPidReadsItsImagePathAgain)
+{
+    fake().failCommandLine = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).command, "C:\\fake\\app.exe");
+
+    fake().imagePath = L"C:\\other\\tool.exe";
+    fake().processes.front().createTime += 1; // The PID now belongs to a new process
+    EXPECT_EQ(find(probe.enumerate()).command, "C:\\other\\tool.exe");
+    EXPECT_EQ(fake().imagePathCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnExitedProcessIsPrunedWithItsImagePath)
+{
+    fake().failCommandLine = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    (void) probe.enumerate();
+    EXPECT_EQ(fake().imagePathCalls, 1);
+
+    fake().processes = {processWithPid(PID + 4)}; // PID has exited
+    (void) probe.enumerate();
+    EXPECT_EQ(fake().imagePathCalls, 2);
+
+    // The same {pid, start time} again (as no real process would be): its entry was pruned, so its
+    // image path is read anew; PID + 4's is still cached.
+    fake().imagePath = L"C:\\other\\tool.exe";
+    fake().processes = {FakeProcess{}, processWithPid(PID + 4)};
+    const auto processes = probe.enumerate();
+    EXPECT_EQ(find(processes).command, "C:\\other\\tool.exe");
+    const auto other = std::ranges::find(processes, static_cast<std::int32_t>(PID + 4), &ProcessCounters::pid);
+    ASSERT_NE(other, processes.end());
+    EXPECT_EQ(other->command, "C:\\fake\\app.exe");
+    EXPECT_EQ(fake().imagePathCalls, 3);
 }
 
 // --- Architecture (#2394) ------------------------------------------------------------------------

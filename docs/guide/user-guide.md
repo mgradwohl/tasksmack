@@ -458,9 +458,20 @@ The Process Details **Overview** tab also has a collapsible **Modules** section,
 - **Linux:** read from `/proc/[pid]/maps`. A module is a file with at least one executable mapping, so data files the process has mapped (a locale archive, fonts) are not listed, nor are anonymous memory and the kernel's `[heap]`, `[stack]` and `[vdso]`. Its base is its lowest mapping and its size the total of its mappings. A library that was deleted or replaced on disk after it was loaded (typically by a package upgrade) shows "(deleted)" after its name. TaskSmack reads at most the first 16 MiB of a process's `maps` (a real module list is far shorter); a process with more lists the modules found up to there, under "Showing the first N modules". Another user's process shows "Access denied ...": reading its mappings needs the process's own user, or root / `CAP_SYS_PTRACE`.
 - A process that has exited shows "Process exited"; one whose start time TaskSmack does not know (Windows' Idle and System) shows "Not available for this process".
 
+### Threads
+
+On Linux, the Process Details **Overview** tab also has a collapsible **Threads** section, closed by default, under the Modules section. Open it to list the selected process's threads in a **TID / NAME / STATE / CPU % / CPU TIME / NICE** table, with the count in the section's header ("Threads (12)"):
+
+- **TID** is the thread's ID, and **NAME** its name (at most 15 characters on Linux; a thread that never named itself has its process's name). **STATE** is Running, Sleeping, Disk Sleep, Stopped, Zombie and so on, as in the Processes table.
+- **CPU %** is the thread's share of the whole machine since the previous read, on the same scale as the Processes table's CPU %. It shows a dash until a second read has a figure to compare with. **CPU TIME** is the thread's total CPU time, user and kernel together. **NICE** is the thread's own nice value: Linux schedules each thread by its own.
+- Rows are sorted by CPU %, busiest first. Click a column header to sort by that column; type in the filter box to show only threads whose name or TID contains the text. More than 12 rows scroll inside the section.
+- TaskSmack reads the threads only for the selected process and only while the section is open, at the refresh interval set in Settings, in the background. A process with more than 4096 threads lists the first 4096, under "Showing the first N threads".
+- On a system that mounts `/proc` with `hidepid`, another user's process shows "Access denied: another user's process". A process that has exited shows "Process exited".
+- Suspending, resuming or ending a single thread isn't offered on Linux, which has no safe way to do it to one thread. On Windows the section isn't shown yet.
+
 ### Security
 
-The Process Details **Overview** tab also has a collapsible **Security** section, closed by default, under the Modules section. Open it to see what the selected process is allowed to do, as a two-column table. On **Linux**:
+The Process Details **Overview** tab also has a collapsible **Security** section, closed by default, under the Modules section (and the Threads section, on Linux). Open it to see what the selected process is allowed to do, as a two-column table. On **Linux**:
 
 - **User** and **Group**: the effective ID with its name (`1000 (matt)`). When the real, saved or filesystem ID differs, as in a setuid program, it follows: `0 (root), real 1000 (matt), saved 1000 (matt)`.
 - **Supplementary groups**: the other groups the process belongs to, with their names, or "none".
