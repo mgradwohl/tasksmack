@@ -561,6 +561,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessThreadsView.cpp # Process Details Threads (#3069)
     App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_BackgroundTask.cpp
@@ -733,6 +734,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
+    Platform/test_LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
@@ -865,6 +867,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessThreadsView.cpp
     # Process Details' Recent crashes line (#1675), run headless (test_ProcessCrashHistoryView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessCrashHistoryView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
