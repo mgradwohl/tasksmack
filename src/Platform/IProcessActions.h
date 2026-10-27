@@ -227,6 +227,13 @@ struct AuthorizedAction
     CpuAffinity cpus{};
 };
 
+/// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
+struct RunProgramRequest
+{
+    std::string commandLine;      ///< The program and its arguments, split as CommandWords::split() does
+    bool asAdministrator = false; ///< Started with administrator rights (Linux: through pkexec)
+};
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
@@ -260,6 +267,10 @@ struct ProcessActionCapabilities
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
     /// FileManager1 over D-Bus or xdg-open).
     bool canOpenFileLocation = false;
+    /// runProgram(): Run new task can start a program (#3065), and with administrator rights too where
+    /// canRunProgramAsAdministrator says so (Linux: pkexec is installed, or TaskSmack runs as root).
+    bool canRunProgram = false;
+    bool canRunProgramAsAdministrator = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -331,6 +342,16 @@ class IProcessActions
     {
         static_cast<void>(target);
         return ProcessActionResult::error("Opening a file location isn't available on this system");
+    }
+
+    /// Starts the program @p request names, detached from TaskSmack (#3065), and returns once it has been
+    /// started, never waiting for it. Its first word is looked up on PATH unless it holds a '/'. The
+    /// default refuses it as unsupported, matching ProcessActionCapabilities::canRunProgram's default
+    /// (false), which an implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult runProgram(const RunProgramRequest& request)
+    {
+        static_cast<void>(request);
+        return ProcessActionResult::error("Running a program isn't available on this system");
     }
 
     /// Lets the target run only on @p cpus (#1887), numbered as CpuAffinity and the per-core figures

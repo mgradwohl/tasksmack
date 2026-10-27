@@ -193,6 +193,88 @@ enum class MaximizeState : std::uint8_t
     return previous == 0 && lastError != 0;
 }
 
+/// The window commands of the system menu (Win32 WM_SYSCOMMAND) that TaskSmack tells apart (#3161).
+enum class SystemCommand : std::uint8_t
+{
+    Other, ///< Anything else (the keyboard menu, the screen saver, ...): always the OS's
+    Restore,
+    Move,
+    Size,
+    Minimize,
+    Maximize,
+    Close,
+};
+
+/// Win32's SC_* command values and the mask over their low four bits, which Windows uses internally
+/// (<winuser.h>). Kept here, free of <windows.h>, so decodeSystemCommand() is tested on every
+/// platform; Window.cpp checks them against the real ones.
+inline constexpr std::uintptr_t WIN32_SC_MASK = 0xFFF0U;
+inline constexpr std::uintptr_t WIN32_SC_SIZE = 0xF000U;
+inline constexpr std::uintptr_t WIN32_SC_MOVE = 0xF010U;
+inline constexpr std::uintptr_t WIN32_SC_MINIMIZE = 0xF020U;
+inline constexpr std::uintptr_t WIN32_SC_MAXIMIZE = 0xF030U;
+inline constexpr std::uintptr_t WIN32_SC_CLOSE = 0xF060U;
+inline constexpr std::uintptr_t WIN32_SC_RESTORE = 0xF120U;
+
+/// The command in a WM_SYSCOMMAND's wParam, or the native system menu's TrackPopupMenu() result,
+/// with the low four bits masked off before comparing, as Win32 prescribes (#3161).
+[[nodiscard]] constexpr auto decodeSystemCommand(std::uintptr_t command) noexcept -> SystemCommand
+{
+    switch (command & WIN32_SC_MASK)
+    {
+    case WIN32_SC_RESTORE:
+        return SystemCommand::Restore;
+    case WIN32_SC_MOVE:
+        return SystemCommand::Move;
+    case WIN32_SC_SIZE:
+        return SystemCommand::Size;
+    case WIN32_SC_MINIMIZE:
+        return SystemCommand::Minimize;
+    case WIN32_SC_MAXIMIZE:
+        return SystemCommand::Maximize;
+    case WIN32_SC_CLOSE:
+        return SystemCommand::Close;
+    default:
+        return SystemCommand::Other;
+    }
+}
+
+/// Whether the borderless window carries out a Restore or Maximize from the shell itself, instead of
+/// passing it on to the OS (#3161).
+///
+/// A client-side maximize has no OS maximized state, so the OS took the window's Restore -- from the
+/// native system menu, or any other sender of WM_SYSCOMMAND -- for a restore of a normal window and
+/// did nothing, and carried out a Maximize as an OS maximize the window then had to adopt (#1208).
+/// So Restore of a client-side maximized window is Window::restore(), and Maximize of a window the
+/// OS hasn't maximized is Window::maximize(), as the title-bar buttons do. A minimized window is left
+/// to the OS: the taskbar brings it back with Restore, to the geometry it had, still maximized if it
+/// was. An OS maximize (System) is the OS's to restore, and Minimize is shellMinimizeRestores()'s.
+///
+/// @param command    The command (decodeSystemCommand()).
+/// @param state      How the window is maximized (NormalGeometryTracker::state()).
+/// @param minimized  Whether the window is minimized right now.
+[[nodiscard]] constexpr bool shellCommandCarriedOutClientSide(SystemCommand command, MaximizeState state, bool minimized) noexcept
+{
+    if (minimized)
+    {
+        return false;
+    }
+    switch (command)
+    {
+    case SystemCommand::Restore:
+        return state == MaximizeState::ClientSide;
+    case SystemCommand::Maximize:
+        return state != MaximizeState::System;
+    case SystemCommand::Other:
+    case SystemCommand::Move:
+    case SystemCommand::Size:
+    case SystemCommand::Minimize:
+    case SystemCommand::Close:
+        return false;
+    }
+    return false;
+}
+
 /// Tracks the window's normal (restored) rectangle through every maximize and restore, whoever
 /// starts it (#1250).
 ///

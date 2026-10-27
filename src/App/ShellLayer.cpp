@@ -65,10 +65,12 @@ namespace
 constexpr const char* PROCESSES_TAB_TEXT = "Processes";
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
-constexpr const char* SERVICES_TAB_TEXT = "Services";                                 // #800
-constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab";  // #800
-constexpr const char* STARTUP_TAB_TEXT = "Startup";                                   // #801
-constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab"; // #801
+constexpr const char* SERVICES_TAB_TEXT = "Services";                                                 // #800
+constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab";                  // #800
+constexpr const char* STARTUP_TAB_TEXT = "Startup";                                                   // #801
+constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab";                 // #801
+constexpr const char* CONNECTIONS_TAB_TEXT = "Connections";                                           // #3066
+constexpr const char* CONNECTIONS_TAB_LABEL = ICON_FA_NETWORK_WIRED "  Connections###ConnectionsTab"; // #3066
 // #1399. Last: static reference facts, visited least often, and the tabs before it keep their places.
 constexpr const char* SYSTEM_INFO_TAB_TEXT = "System";
 constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemInfoTab";
@@ -107,6 +109,10 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host)
                .eventName = "Startup",
                .label = [] { return STARTUP_TAB_LABEL; },
                .text = [] { return std::string_view(STARTUP_TAB_TEXT); }},
+              {.panel = m_ConnectionsPanel,
+               .eventName = "Connections",
+               .label = [] { return CONNECTIONS_TAB_LABEL; },
+               .text = [] { return std::string_view(CONNECTIONS_TAB_TEXT); }},
               {.panel = m_SystemInfoPanel,
                .eventName = "SystemInfo",
                .label = [] { return SYSTEM_INFO_TAB_LABEL; },

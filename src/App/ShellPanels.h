@@ -9,6 +9,7 @@
 // model, crash history, selection count, background demand or shared icon view).
 
 #include "Domain/ProcessSnapshot.h"
+#include "Panels/ConnectionsPanel.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
@@ -63,15 +64,19 @@ class ShellPanels
     {
         return m_Startup;
     }
+    [[nodiscard]] ConnectionsPanel& connections() noexcept
+    {
+        return m_Connections;
+    }
     [[nodiscard]] SystemInfoPanel& systemInfo() noexcept
     {
         return m_SystemInfo;
     }
 
-    /// In tab order: System, Processes, Process Details, Services, Startup, System Information.
-    [[nodiscard]] std::array<Panel*, 6> inTabOrder() noexcept
+    /// In tab order: System, Processes, Process Details, Services, Startup, Connections, System Information.
+    [[nodiscard]] std::array<Panel*, 7> inTabOrder() noexcept
     {
-        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_SystemInfo};
+        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_Connections, &m_SystemInfo};
     }
 
     /// Before the panels attach: the recent crashes and hangs the System tab's reads fill and Process
@@ -101,6 +106,7 @@ class ShellPanels
     SystemMetricsPanel m_SystemMetrics;
     ServicesPanel m_Services;
     StartupPanel m_Startup;
+    ConnectionsPanel m_Connections; // #3066
     SystemInfoPanel m_SystemInfo;
 
     // The PID the process model watches for Process Details, and the scratch buffer its new samples

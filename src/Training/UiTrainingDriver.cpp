@@ -303,7 +303,7 @@ class TrainingShell : public Core::Layer
     }
 
   private:
-    [[nodiscard]] std::array<App::Panel*, 6> panels() noexcept
+    [[nodiscard]] std::array<App::Panel*, 7> panels() noexcept
     {
         return m_Panels.inTabOrder();
     }

@@ -5,6 +5,7 @@
 /// of process actions. We avoid actually terminating processes to keep
 /// tests safe and non-destructive.
 
+#include "Platform/CommandWords.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/FileManagerReveal.h"
@@ -952,7 +953,8 @@ void writeScript(const std::filesystem::path& path, const std::string& body)
     return {.tracerPath = tracer.string(),
             .terminal = SyscallTrace::Terminal{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE},
             .coreDumperPath = {},
-            .folderOpenerPath = {}};
+            .folderOpenerPath = {},
+            .elevatorPath = {}};
 }
 
 TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
@@ -960,14 +962,16 @@ TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
     const TestSupport::ScopedTempDir dir("tasksmack_trace_caps");
     const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
     EXPECT_EQ(LinuxProcessActions(tools).actionCapabilities().syscallTrace, SyscallTraceAvailability::Available);
-    EXPECT_EQ(
-        LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal, .coreDumperPath = {}, .folderOpenerPath = {}})
-            .actionCapabilities()
-            .syscallTrace,
-        SyscallTraceAvailability::NoTracer);
+    EXPECT_EQ(LinuxProcessActions(
+                  SyscallTrace::Tools{
+                      .tracerPath = {}, .terminal = tools.terminal, .coreDumperPath = {}, .folderOpenerPath = {}, .elevatorPath = {}})
+                  .actionCapabilities()
+                  .syscallTrace,
+              SyscallTraceAvailability::NoTracer);
     EXPECT_EQ(
         LinuxProcessActions(
-            SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}})
+            SyscallTrace::Tools{
+                .tracerPath = tools.tracerPath, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}, .elevatorPath = {}})
             .actionCapabilities()
             .syscallTrace,
         SyscallTraceAvailability::NoTerminal);
@@ -1084,7 +1088,7 @@ SyscallTrace::PtraceContext ptraceDescendantsOnly(std::int32_t /*pid*/, const st
 {
     const std::filesystem::path gcore = dir / "fake-gcore";
     writeScript(gcore, std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}/gcore-args.txt'\n{}", dir.string(), body));
-    return {.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = gcore.string(), .folderOpenerPath = {}};
+    return {.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = gcore.string(), .folderOpenerPath = {}, .elevatorPath = {}};
 }
 
 /// The files in @p dir, by name.
@@ -2153,7 +2157,8 @@ fileLocationActions(const std::filesystem::path& dir, bool answers, LinuxProcess
         std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}/argv.tmp'\nmv '{0}/argv.tmp' '{0}/argv.txt'\n", dir.string()));
     syscalls.showItemInFileManager = &fakeShowItems;
     return LinuxProcessActions(
-        SyscallTrace::Tools{.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = opener.string()},
+        SyscallTrace::Tools{
+            .tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = opener.string(), .elevatorPath = {}},
         syscalls);
 }
 
@@ -2285,6 +2290,94 @@ TEST(LinuxProcessActionsTest, ProcessControlAloneDoesNotOpenFileLocations)
     LinuxProcessControl control;
     EXPECT_FALSE(control.actionCapabilities().canOpenFileLocation);
     EXPECT_FALSE(control.openFileLocation(ownTarget()).success);
+}
+
+// --- Run new task (#3065) ----------------------------------------------------------------------------
+// The "program" is a script that records its argv; the "pkexec" another, which records its own.
+
+/// A script at @p dir/@p name that writes its arguments, one per line, to @p dir/@p name.txt.
+[[nodiscard]] std::filesystem::path recordingScript(const std::filesystem::path& dir, const std::string& name)
+{
+    const std::filesystem::path script = dir / name;
+    writeScript(script,
+                std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}/{1}.tmp'\nmv '{0}/{1}.tmp' '{0}/{1}.txt'\n",
+                            dir.string(),
+                            name));
+    return script;
+}
+
+/// The lines @p file got, waiting up to 5 s for it (the program runs detached).
+[[nodiscard]] std::vector<std::string> recordedLines(const std::filesystem::path& file)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!std::filesystem::exists(file) && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::ifstream recorded(file);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(recorded, line);)
+    {
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+TEST(LinuxProcessActionsTest, RunProgramStartsTheProgramWithItsArguments)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, the program would run as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_run_task");
+    const std::filesystem::path program = recordingScript(dir.path, "prog");
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    EXPECT_TRUE(actions.actionCapabilities().canRunProgram);
+
+    const auto result = actions.runProgram(
+        {.commandLine = Platform::CommandWords::quote(program.string()) + " --title 'Res cue' $HOME", .asAdministrator = false});
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(recordedLines(dir.path / "prog.txt"), (std::vector<std::string>{"--title", "Res cue", "$HOME"}));
+}
+
+TEST(LinuxProcessActionsTest, RunProgramAsAdministratorGoesThroughPkexec)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "Already root: pkexec isn't used";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_run_admin");
+    const std::filesystem::path program = recordingScript(dir.path, "prog");
+    const std::filesystem::path pkexec = recordingScript(dir.path, "pkexec");
+    LinuxProcessActions actions(SyscallTrace::Tools{
+        .tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}, .elevatorPath = pkexec.string()});
+    EXPECT_TRUE(actions.actionCapabilities().canRunProgramAsAdministrator);
+
+    const auto result = actions.runProgram({.commandLine = program.string() + " -x", .asAdministrator = true});
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    // pkexec is given the program's absolute path, then its arguments.
+    EXPECT_EQ(recordedLines(dir.path / "pkexec.txt"), (std::vector<std::string>{program.string(), "-x"}));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "prog.txt"));
+}
+
+TEST(LinuxProcessActionsTest, RunProgramSaysWhatIsWrongWithTheCommand)
+{
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    EXPECT_FALSE(actions.runProgram({.commandLine = "   ", .asAdministrator = false}).success);
+    const auto unclosed = actions.runProgram({.commandLine = "gedit 'notes", .asAdministrator = false});
+    EXPECT_FALSE(unclosed.success);
+    EXPECT_NE(unclosed.errorMessage.find("quote"), std::string::npos) << unclosed.errorMessage;
+    const auto missing = actions.runProgram({.commandLine = "tasksmack-no-such-program-3065 --x", .asAdministrator = false});
+    EXPECT_FALSE(missing.success);
+    EXPECT_NE(missing.errorMessage.find("wasn't found"), std::string::npos) << missing.errorMessage;
+    if (::geteuid() != 0)
+    {
+        const auto noPkexec = actions.runProgram({.commandLine = "true", .asAdministrator = true});
+        EXPECT_FALSE(noPkexec.success);
+        EXPECT_FALSE(actions.actionCapabilities().canRunProgramAsAdministrator);
+    }
 }
 
 } // namespace

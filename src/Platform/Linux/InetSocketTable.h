@@ -18,8 +18,47 @@
 #include <system_error>
 #include <vector>
 
+// NOLINTBEGIN(misc-include-cleaner) - include-cleaner lacks mappings for IPPROTO_* and AF_*
+#include <netinet/in.h>
+#include <sys/socket.h>
+// NOLINTEND(misc-include-cleaner)
+
 namespace Platform::InetSockets
 {
+
+/// One of the four socket tables: what to dump over netlink, and the /proc/[pid]/net file that holds it.
+/// Shared by the per-process Connections reader (#799) and the system-wide one (#3066).
+struct SocketTable
+{
+    ConnectionProtocol protocol;
+    ConnectionFamily family;
+    int ipProtocol;
+    int addressFamily;
+    const char* procFile;
+};
+
+constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
+    {.protocol = ConnectionProtocol::Tcp,
+     .family = ConnectionFamily::IPv4,
+     .ipProtocol = IPPROTO_TCP,
+     .addressFamily = AF_INET,
+     .procFile = "net/tcp"},
+    {.protocol = ConnectionProtocol::Tcp,
+     .family = ConnectionFamily::IPv6,
+     .ipProtocol = IPPROTO_TCP,
+     .addressFamily = AF_INET6,
+     .procFile = "net/tcp6"},
+    {.protocol = ConnectionProtocol::Udp,
+     .family = ConnectionFamily::IPv4,
+     .ipProtocol = IPPROTO_UDP,
+     .addressFamily = AF_INET,
+     .procFile = "net/udp"},
+    {.protocol = ConnectionProtocol::Udp,
+     .family = ConnectionFamily::IPv6,
+     .ipProtocol = IPPROTO_UDP,
+     .addressFamily = AF_INET6,
+     .procFile = "net/udp6"},
+}};
 
 /// One socket, raw: the kernel's state number and the endpoints in network byte order.
 struct RawInetSocket

@@ -188,6 +188,11 @@ ProcessActionResult BrokeredProcessActions::openFileLocation(const ProcessTarget
     return m_Inner->openFileLocation(target); // the user's file manager, as the user: never the helper's
 }
 
+ProcessActionResult BrokeredProcessActions::runProgram(const RunProgramRequest& request)
+{
+    return m_Inner->runProgram(request); // its own pkexec prompt when elevated: the helper never starts programs
+}
+
 ProcessDumpResult
 BrokeredProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
 {

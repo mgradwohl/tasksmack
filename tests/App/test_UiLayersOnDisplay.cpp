@@ -2,10 +2,12 @@
 /// @brief UI::UILayer and App::TitleBarLayer in a real Core::Application (#1395): the ImGui frame
 /// UILayer brackets, the title bar TitleBarLayer draws into it, and each title-bar button's effect --
 /// Settings, Help and About raise their events, Maximize and Restore change the window's state, and
-/// Close stops the app. Also the UI scale after a display change and after a start minimized (#3150), the minimum window size the bar sets
-/// from its contents, the drags and resizes the bar runs client-side, from every edge and corner (#2717); and the whole shell as main.cpp
-/// composes it -- its real panels, each main tab, F1 and the config it saves on exit -- and a first launch from an empty config directory,
-/// whose saved config.toml is a golden file (#2727).
+/// Close stops the app. Also the UI scale after a display change and after a start minimized (#3150),
+/// the minimum window size the bar sets from its contents, the drags and resizes the bar runs
+/// client-side, from every edge and corner (#2717); the window menu's and the shell's Restore and
+/// Maximize (#3161); and the whole shell as main.cpp composes it -- its real panels, each main tab, F1
+/// and the config it saves on exit -- and a first launch from an empty config directory, whose saved
+/// config.toml is a golden file (#2727).
 ///
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like the ApplicationTest suite.
@@ -2938,6 +2940,405 @@ TEST_F(UiLayersOnDisplayTest, TheHitTestCallbackAnswersForTheRealWindow)
 #endif
 }
 
+/// What the system-menu driver saw.
+struct SystemMenuObserved
+{
+    App::WindowRect normal{};         ///< The window before it was maximized
+    bool maximizeUnavailable = false; ///< The window never maximized: the menu's checks were skipped
+    bool openedOnMaximized = false;   ///< Ctrl+Space opened the menu on the maximized window
+    bool restoredByMenu = false;      ///< Its Restore restored the window...
+    App::WindowRect restored{};       ///< ...to this rectangle
+    bool openedOnNormal = false;      ///< Ctrl+Space opened the menu on the restored window
+    bool maximizedByMenu = false;     ///< Its Maximize maximized the window
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: maximizes the window, opens the window menu with Ctrl+Space
+/// as a user does (TitleBarLayer::onSDLEvent()), chooses Restore and waits for the window to be back at
+/// its normal rectangle; then opens the menu again and chooses Maximize (#3161). Each wait is up to
+/// WAIT_LIMIT frames: the window manager may apply either some frames later (#2054).
+class SystemMenuDriverLayer : public Core::Layer
+{
+  public:
+    explicit SystemMenuDriverLayer(SystemMenuObserved& observed) : Layer("SystemMenuDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        Core::Window& window = Core::Application::get().getWindow();
+        const bool maximized = window.isMaximized();
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const bool waiting = frame < m_Deadline;
+        switch (m_Phase)
+        {
+        case Phase::Maximize:
+            m_Observed.normal = currentRect(window);
+            window.maximize();
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
+            break;
+        case Phase::AwaitMaximized:
+            if (!maximized && waiting)
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
+            if (!maximized)
+            {
+                m_Observed.maximizeUnavailable = true;
+                next(Phase::Stop, 1);
+                break;
+            }
+            pushCtrlSpace();
+            next(Phase::ChooseRestore, STEP);
+            break;
+        case Phase::ChooseRestore:
+            m_Observed.openedOnMaximized = choose(ICON_FA_WINDOW_RESTORE "  Restore");
+            m_Deadline = frame + WAIT_LIMIT;
+            m_StableFrames = 0;
+            next(m_Observed.openedOnMaximized ? Phase::AwaitRestored : Phase::Stop, 1);
+            break;
+        case Phase::AwaitRestored:
+        {
+            // On X11 the restore is a request: wait until the window is restored and its geometry has
+            // held for STABLE_FRAMES, so the rectangle read is where it settled.
+            const App::WindowRect rect = currentRect(window);
+            m_StableFrames = (!maximized && sameRect(rect, m_Observed.restored)) ? m_StableFrames + 1 : 0;
+            m_Observed.restored = rect;
+            if (m_StableFrames < STABLE_FRAMES && waiting)
+            {
+                next(Phase::AwaitRestored, 1);
+                break;
+            }
+            m_Observed.restoredByMenu = !maximized;
+            pushCtrlSpace();
+            next(Phase::ChooseMaximize, STEP);
+            break;
+        }
+        case Phase::ChooseMaximize:
+            m_Observed.openedOnNormal = choose(ICON_FA_WINDOW_MAXIMIZE "  Maximize");
+            m_Deadline = frame + WAIT_LIMIT;
+            next(m_Observed.openedOnNormal ? Phase::AwaitMaximizedByMenu : Phase::Stop, 1);
+            break;
+        case Phase::AwaitMaximizedByMenu:
+            m_Observed.maximizedByMenu = maximized;
+            if (!maximized && waiting)
+            {
+                next(Phase::AwaitMaximizedByMenu, 1);
+                break;
+            }
+            next(Phase::Stop, 1);
+            break;
+        case Phase::Stop:
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// Ctrl+Space, through SDL's queue as a real key press arrives: TitleBarLayer opens the window menu.
+    static void pushCtrlSpace()
+    {
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.key.key = SDLK_SPACE;
+        event.key.scancode = SDL_SCANCODE_SPACE; // as a real key event carries; ImGui's SDL backend expects one
+        event.key.mod = SDL_KMOD_LCTRL;
+        event.key.down = true;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    /// Choose the open window menu's item @p label, which the menu reports the next frame. False when
+    /// the menu isn't open.
+    static bool choose(const char* label)
+    {
+        if (GImGui->OpenPopupStack.empty() || GImGui->OpenPopupStack.back().Window == nullptr)
+        {
+            return false;
+        }
+        ImGui::ActivateItemByID(ImHashStr(label, 0, GImGui->OpenPopupStack.back().Window->ID));
+        return true;
+    }
+
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        Maximize,
+        AwaitMaximized,
+        ChooseRestore,
+        AwaitRestored,
+        ChooseMaximize,
+        AwaitMaximizedByMenu,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10;       // frames before the first step: fonts, layout and minimum size settle
+    static constexpr int STEP = 10;         // frames for a key press to open the menu
+    static constexpr int STABLE_FRAMES = 5; // frames the restored window must hold still
+    static constexpr int WAIT_LIMIT = 300;  // frames each maximize and restore may take
+    static constexpr int MAX_FRAMES = 1200;
+
+    SystemMenuObserved& m_Observed;
+    Phase m_Phase = Phase::Maximize;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
+    int m_StableFrames = 0;
+};
+
+// #3161: the window menu's Restore restores a maximized window to the rectangle it had, and its
+// Maximize maximizes a normal one, as the title-bar buttons do. The menu is TaskSmack's own, opened by
+// Ctrl+Space, on every platform; the native Windows menu the icon opens maps its choice to the same
+// actions (TitleBarSystemMenuTest), and its Restore and Maximize sent as WM_SYSCOMMAND are covered by
+// TheShellsRestoreAndMaximizeAreTheClientSideOnes.
+TEST_F(UiLayersOnDisplayTest, TheWindowMenusRestoreAndMaximizeDoWhatTheySay)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    if (onNativeWayland() && !compositorMaximizes())
+    {
+        GTEST_SKIP() << "native Wayland: this compositor doesn't maximize the window, so there is nothing to restore";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplaySystemMenuTest";
+    spec.VSync = false;
+    SystemMenuObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<SystemMenuDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    if (observed.maximizeUnavailable)
+    {
+        GTEST_SKIP() << "The window never maximized on this display, so the window menu's Restore can't be checked";
+    }
+    ASSERT_TRUE(observed.openedOnMaximized) << "Ctrl+Space didn't open the window menu";
+    EXPECT_TRUE(observed.restoredByMenu) << "the window menu's Restore left the window maximized";
+    // Native Wayland never tells TaskSmack where the window is; elsewhere it is back where it was.
+    if (!onNativeWayland())
+    {
+        EXPECT_TRUE(withinRect(observed.restored, observed.normal))
+            << "restored to " << describeRect(observed.restored) << ", was " << describeRect(observed.normal);
+#ifdef _WIN32
+        EXPECT_TRUE(sameRect(observed.restored, observed.normal)) // the client-side restore is exact
+            << "restored to " << describeRect(observed.restored) << ", was " << describeRect(observed.normal);
+#endif
+    }
+    ASSERT_TRUE(observed.openedOnNormal) << "Ctrl+Space didn't open the window menu again";
+    EXPECT_TRUE(observed.maximizedByMenu) << "the window menu's Maximize didn't maximize the window";
+}
+
+#ifdef _WIN32
+/// What the shell-command driver saw.
+struct ShellCommandObserved
+{
+    App::WindowRect normal{};         ///< The window before it was maximized
+    bool maximizeUnavailable = false; ///< The window never maximized: the checks were skipped
+    bool restoredAtOnce = false;      ///< WM_SYSCOMMAND SC_RESTORE restored it before SendMessage returned...
+    App::WindowRect restored{};       ///< ...to this rectangle
+    bool stayedRestored = false;      ///< and it was still restored once the window's events were handled
+    bool maximizedAtOnce = false;     ///< SC_MAXIMIZE maximized the normal window client-side at once:
+    bool zoomedByWindows = true;      ///< not an OS maximize (IsZoomed()) the window would have to adopt (#1208)
+    App::WindowRect maximized{};      ///< The rectangle SC_MAXIMIZE gave it
+    std::pair<int, int> usable{};     ///< The usable bounds of its display
+    bool stayedMaximized = false;     ///< Still maximized client-side once the events were handled
+    bool minimizedByShell = false;    ///< SC_MINIMIZE, with no Win+Down, minimized the maximized window...
+    bool backMaximized = false;       ///< ...and the taskbar's SC_RESTORE brought it back maximized, not restored
+    App::WindowRect restoredAgain{};  ///< Where SC_RESTORE then put it: the rectangle from before SC_MAXIMIZE
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: sends the real window the shell's window commands, as the
+/// native system menu (posted to it before #3161), the taskbar and other programs do -- WM_SYSCOMMAND
+/// to this window alone, through its subclass procedure -- and records what each did: SC_RESTORE on a
+/// client-side maximized window, SC_MAXIMIZE on a normal one, then SC_MINIMIZE and the taskbar's
+/// SC_RESTORE on the maximized one, and SC_RESTORE once more. Each is carried out before SendMessage
+/// returns, so it is read at once and again STEP frames later, after the window's events.
+class ShellCommandDriverLayer : public Core::Layer
+{
+  public:
+    explicit ShellCommandDriverLayer(ShellCommandObserved& observed) : Layer("ShellCommandDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        Core::Window& window = Core::Application::get().getWindow();
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        if (hwnd == nullptr)
+        {
+            ADD_FAILURE() << "the window has no HWND";
+            Core::Application::get().stop();
+            return;
+        }
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        switch (m_Phase)
+        {
+        case Phase::Maximize:
+            // No Win+Down, whatever the real keyboard is doing: SC_MINIMIZE below must minimize (#1279).
+            window.setShellRestoreKeysReader([] noexcept { return std::pair{false, false}; });
+            m_Observed.normal = currentRect(window);
+            window.maximize(); // client-side, as the title-bar button does
+            next(Phase::Restore, STEP);
+            break;
+        case Phase::Restore:
+            if (!window.isMaximized())
+            {
+                m_Observed.maximizeUnavailable = true;
+                Core::Application::get().stop();
+                break;
+            }
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+            m_Observed.restoredAtOnce = !window.isMaximized();
+            m_Observed.restored = currentRect(window);
+            next(Phase::MaximizeNormal, STEP);
+            break;
+        case Phase::MaximizeNormal:
+            m_Observed.stayedRestored = !window.isMaximized();
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+            m_Observed.maximizedAtOnce = window.isMaximized();
+            m_Observed.zoomedByWindows = IsZoomed(hwnd) != FALSE;
+            m_Observed.maximized = currentRect(window);
+            m_Observed.usable = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+            next(Phase::MinimizeAndBack, STEP);
+            break;
+        case Phase::MinimizeAndBack:
+            m_Observed.stayedMaximized = window.isMaximized() && IsZoomed(hwnd) == FALSE;
+            // Both in this frame: a minimized window gets no frames to render in.
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            m_Observed.minimizedByShell = window.isMinimized();
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+            m_Observed.backMaximized = !window.isMinimized() && window.isMaximized();
+            next(Phase::RestoreAgain, STEP);
+            break;
+        case Phase::RestoreAgain:
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+            m_Observed.restoredAgain = currentRect(window);
+            next(Phase::Stop, STEP);
+            break;
+        case Phase::Stop:
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        Maximize,
+        Restore,
+        MaximizeNormal,
+        MinimizeAndBack,
+        RestoreAgain,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10; // frames before the first step: fonts, layout and minimum size settle
+    static constexpr int STEP = 10;   // frames between commands, for the window's events to be handled
+    static constexpr int MAX_FRAMES = 600;
+
+    ShellCommandObserved& m_Observed;
+    Phase m_Phase = Phase::Maximize;
+    int m_NextFrame = SETTLE;
+};
+
+// #3161: WM_SYSCOMMAND SC_RESTORE and SC_MAXIMIZE reach the client-side maximize. Windows never
+// considers the client-side maximized window maximized, so it ignored the native system menu's
+// Restore, and carried out its Maximize as an OS maximize. The window's subclass procedure now carries
+// both out as the title-bar buttons do, while the taskbar's Restore of a minimized window is still
+// Windows': the window comes back as it was, maximized.
+TEST_F(UiLayersOnDisplayTest, TheShellsRestoreAndMaximizeAreTheClientSideOnes)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayShellCommandTest";
+    spec.VSync = false;
+    ShellCommandObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<ShellCommandDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    if (observed.maximizeUnavailable)
+    {
+        GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+    }
+    EXPECT_TRUE(observed.restoredAtOnce) << "SC_RESTORE left the client-side maximized window maximized";
+    EXPECT_TRUE(sameRect(observed.restored, observed.normal))
+        << "restored to " << describeRect(observed.restored) << ", was " << describeRect(observed.normal);
+    EXPECT_TRUE(observed.stayedRestored);
+
+    EXPECT_TRUE(observed.maximizedAtOnce) << "SC_MAXIMIZE didn't maximize the window client-side";
+    EXPECT_FALSE(observed.zoomedByWindows) << "SC_MAXIMIZE was carried out as an OS maximize";
+    EXPECT_EQ(std::pair(observed.maximized.width, observed.maximized.height), observed.usable);
+    EXPECT_TRUE(observed.stayedMaximized);
+
+    EXPECT_TRUE(observed.minimizedByShell);
+    EXPECT_TRUE(observed.backMaximized) << "the taskbar's SC_RESTORE of the minimized window didn't bring it back maximized";
+    EXPECT_TRUE(sameRect(observed.restoredAgain, observed.normal))
+        << "restored to " << describeRect(observed.restoredAgain) << ", was " << describeRect(observed.normal);
+}
+#endif
 /// What the UI-layer driver saw.
 struct UiLayerObserved
 {

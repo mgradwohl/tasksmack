@@ -57,6 +57,11 @@ class LinuxProcessActions : public LinuxProcessControl
     /// user (sudo, pkexec), the folder is opened as that user, in their session, and D-Bus isn't tried:
     /// root's session bus, if it has one, isn't theirs.
     [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
+    /// Run new task (#3065): the command line's words, its program looked up on PATH, started detached;
+    /// as administrator through pkexec (asking for the password itself), or as it is when TaskSmack
+    /// already runs as root. Run as root for another user and not as administrator, it starts as that
+    /// user, in their session.
+    [[nodiscard]] ProcessActionResult runProgram(const RunProgramRequest& request) override;
 
     /// strace and the terminal to run it in, from this process's PATH and $TERMINAL, gcore for
     /// createDump() (#807), and xdg-open for openFileLocation() (#3064).

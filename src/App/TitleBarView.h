@@ -6,6 +6,7 @@
 // returned action, so the bar can be rendered headless in the tests.
 
 #include "App/TitleBarGeometry.h"
+#include "Core/WindowGeometry.h"
 #include "UI/IconLoader.h"
 
 #include <cstdint>
@@ -57,6 +58,52 @@ enum class Action : std::uint8_t
     Help,
     About,
 };
+
+/// Which of the system menu's items can be chosen. The same rule for the Linux menu the view draws
+/// and the native Windows one TitleBarLayer shows, which Windows doesn't keep up to date for a
+/// client-side maximize (#3161).
+struct SystemMenuItems
+{
+    bool restore = false;
+    bool move = false;
+    bool size = false;
+    bool minimize = false;
+    bool maximize = false;
+    bool close = false;
+
+    [[nodiscard]] constexpr bool operator==(const SystemMenuItems&) const = default;
+};
+
+/// The system menu's items for a window that is @p maximized or not: Restore only when maximized,
+/// Maximize only when not, and Move and Size only when not, since a maximized window has neither.
+[[nodiscard]] constexpr auto systemMenuItems(bool maximized) noexcept -> SystemMenuItems
+{
+    return {.restore = maximized, .move = !maximized, .size = !maximized, .minimize = true, .maximize = !maximized, .close = true};
+}
+
+/// The action for a command chosen from the native Windows system menu (#3161): the window commands
+/// the title-bar buttons have are carried out the same way, client-side maximize included. None for
+/// anything else (Move, Size), which goes to the OS as WM_SYSCOMMAND.
+[[nodiscard]] constexpr auto actionForSystemCommand(Core::WindowGeometry::SystemCommand command) noexcept -> Action
+{
+    using Core::WindowGeometry::SystemCommand;
+    switch (command)
+    {
+    case SystemCommand::Restore:
+        return Action::Restore;
+    case SystemCommand::Maximize:
+        return Action::Maximize;
+    case SystemCommand::Minimize:
+        return Action::Minimize;
+    case SystemCommand::Close:
+        return Action::Close;
+    case SystemCommand::Other:
+    case SystemCommand::Move:
+    case SystemCommand::Size:
+        return Action::None;
+    }
+    return Action::None;
+}
 
 /// The bar's inputs for one frame.
 struct Input

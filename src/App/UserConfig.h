@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/CoalescingWriter.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
@@ -37,6 +38,10 @@ struct UserSettings
 
     // Font size
     UI::FontSize fontSize = UI::FontSize::Medium;
+
+    // Group by (#3068): what the Processes table groups by, [process_table] group_by. Written only when
+    // it isn't None. Beside fontSize, so the two one-byte fields share their padding.
+    ProcessGrouping::GroupBy processGroupBy = ProcessGrouping::GroupBy::None;
 
     // Process table column visibility
     ProcessColumnSettings processColumns;
@@ -127,6 +132,10 @@ struct UserSettings
     // The folder "Create dump file..." writes to (#2001), [dumps] folder, UTF-8: the last one chosen
     // with the confirm's "Save dump to...". Empty, or a folder that no longer exists: the temp folder.
     std::string dumpFolder;
+
+    // Run new task's recent command lines (#3065), newest first, [run_task] recent. Written only when
+    // there are any.
+    std::vector<std::string> recentCommands;
 
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom

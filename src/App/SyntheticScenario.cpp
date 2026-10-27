@@ -21,6 +21,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IProcessThreads.h"
+#include "Platform/ISystemConnections.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/StorageTypes.h"
@@ -380,6 +381,15 @@ std::unique_ptr<Platform::IProcessThreadsReader> makeProcessThreadsReader(const 
         return std::make_unique<Platform::UnsupportedProcessThreadsReader>();
     }
     return Platform::makeProcessThreadsReader();
+}
+
+std::unique_ptr<Platform::ISystemConnectionsReader> makeSystemConnectionsReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedSystemConnectionsReader>();
+    }
+    return Platform::makeSystemConnectionsReader();
 }
 
 std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario)

@@ -18,6 +18,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
@@ -112,6 +113,12 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 {
     return std::make_unique<Windows::WindowsProcessModulesReader>();
+}
+
+std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
+{
+    // The Connections tab (#3066) says it isn't available until the Windows lane adds a reader.
+    return std::make_unique<UnsupportedSystemConnectionsReader>();
 }
 
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()

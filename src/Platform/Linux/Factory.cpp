@@ -16,6 +16,7 @@
 #include "LinuxServiceActions.h"
 #include "LinuxServiceProbe.h"
 #include "LinuxStartup.h"
+#include "LinuxSystemConnectionsReader.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "PkexecBroker.h"
@@ -37,6 +38,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
@@ -98,6 +100,11 @@ std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader()
 {
     return std::make_unique<LinuxProcessThreadsReader>();
+}
+
+std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
+{
+    return std::make_unique<LinuxSystemConnectionsReader>();
 }
 
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()

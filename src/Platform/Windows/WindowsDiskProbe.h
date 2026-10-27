@@ -14,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <cfgmgr32.h>
 #include <pdh.h>
 // clang-format on
 
@@ -47,14 +48,26 @@ struct WindowsDiskProbeFunctions
         UINT(WINAPI* getDriveTypeW)(LPCWSTR) = nullptr;
     } drive;
 
+    /// Disk and volume arrival and removal notifications, which say when to rescan (#3151).
+    struct Devices
+    {
+        /// CM_Register_Notification. A fake keeps the callback and context to simulate a change.
+        decltype(&::CM_Register_Notification) registerNotification = nullptr;
+        /// CM_Unregister_Notification, which waits for any callback still running.
+        decltype(&::CM_Unregister_Notification) unregisterNotification = nullptr;
+    } devices;
+
     /// The monotonic clock for rescans and each disk's busy time.
     std::chrono::steady_clock::time_point (*now)() noexcept = nullptr;
 };
 
 /// Windows implementation of IDiskProbe. Uses IOCTL_DISK_PERFORMANCE for cumulative
 /// disk I/O counters; Performance Data Helper (PDH) is used only to enumerate physical disk
-/// instance names (e.g. "0 C:"), at construction and again from read() after a disk fails or
-/// every DISK_REENUMERATE_INTERVAL, so removed and added disks are picked up (#1159).
+/// instance names (e.g. "0 C:"), at construction and again from read() so removed and added disks
+/// are picked up (#1159): after a disk fails, shortly after a disk or volume arrives or leaves
+/// (CM_Register_Notification, registered by the constructor on the thread that builds the probe,
+/// the disk sampler's), and otherwise every DISK_REENUMERATE_SAFETY_INTERVAL, or every
+/// DISK_REENUMERATE_INTERVAL when the notifications couldn't be registered (#3151).
 class WindowsDiskProbe : public IDiskProbe
 {
   public:

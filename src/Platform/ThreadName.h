@@ -29,6 +29,8 @@ inline constexpr std::string_view GPU_SAMPLER_THREAD_NAME = "ts-sampler-gpu";
 inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc";
 /// The sensors' own sampler (#2737): temperatures, fans and voltages, at the Settings interval.
 inline constexpr std::string_view SENSOR_SAMPLER_THREAD_NAME = "ts-sampler-sens";
+/// The Connections tab's sampler (#3066), running only while the tab is shown.
+inline constexpr std::string_view CONNECTIONS_SAMPLER_THREAD_NAME = "ts-sampler-conn";
 /// The Startup tab's sampler (#801), running only while the tab is shown.
 inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto";
 /// The worker that runs one Process Details Connections read at a time (#799).

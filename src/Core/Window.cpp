@@ -177,8 +177,11 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 // minimize to, and the window procedure SDL installed, which it passes every message on to (#1279).
 constexpr const wchar_t* WINDOW_PROP = L"TaskSmack.Core.Window";
 constexpr const wchar_t* SDL_WINDOW_PROC_PROP = L"TaskSmack.Core.SdlWindowProc";
-// WM_SYSCOMMAND's low four bits are used internally by Windows; mask them off before comparing.
-constexpr WPARAM SYSCOMMAND_MASK = 0xFFF0U;
+// WindowGeometry decodes WM_SYSCOMMAND without <windows.h> (#3161); its values must be Win32's.
+static_assert(WindowGeometry::WIN32_SC_MASK == 0xFFF0U);
+static_assert(WindowGeometry::WIN32_SC_SIZE == SC_SIZE && WindowGeometry::WIN32_SC_MOVE == SC_MOVE);
+static_assert(WindowGeometry::WIN32_SC_MINIMIZE == SC_MINIMIZE && WindowGeometry::WIN32_SC_MAXIMIZE == SC_MAXIMIZE);
+static_assert(WindowGeometry::WIN32_SC_CLOSE == SC_CLOSE && WindowGeometry::WIN32_SC_RESTORE == SC_RESTORE);
 
 [[nodiscard]] HWND nativeWindowHandle(SDL_Window* window)
 {
@@ -186,29 +189,30 @@ constexpr WPARAM SYSCOMMAND_MASK = 0xFFF0U;
     return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 }
 
-// The borderless window's subclass procedure (#1279). The shell asks the window to minimize with
-// WM_SYSCOMMAND SC_MINIMIZE; when that is Win+Down on a client-side maximized window,
-// Window::restoreForShellMinimize() restores it instead and the minimize is dropped. Everything else
-// goes to SDL's procedure unchanged.
+// The borderless window's subclass procedure. The shell sends the window's commands as
+// WM_SYSCOMMAND, which Window::handleShellCommand() may carry out itself: Win+Down's minimize of a
+// client-side maximized window restores it instead (#1279), and Restore and Maximize are the
+// client-side ones, which the OS doesn't know about (#3161). A command carried out there is dropped;
+// everything else goes to SDL's procedure unchanged.
 LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    if (message == WM_SYSCOMMAND && (wParam & SYSCOMMAND_MASK) == SC_MINIMIZE)
+    if (message == WM_SYSCOMMAND)
     {
         if (auto* window = static_cast<Window*>(GetPropW(hwnd, WINDOW_PROP)); window != nullptr)
         {
-            bool restored = false;
+            bool handled = false;
             try
             {
-                restored = window->restoreForShellMinimize();
+                handled = window->handleShellCommand(WindowGeometry::decodeSystemCommand(wParam));
             }
             catch (...)
             {
-                // No exception may cross back into the OS; let the minimize through instead.
-                // LCOV_EXCL_START - a guard; restoreForShellMinimize() has no failure a test can force (#2039)
-                restored = false;
+                // No exception may cross back into the OS; let the command through instead.
+                // LCOV_EXCL_START - a guard; handleShellCommand() has no failure a test can force (#2039)
+                handled = false;
             }
             // LCOV_EXCL_STOP
-            if (restored)
+            if (handled)
             {
                 return 0;
             }
@@ -421,7 +425,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     m_IconBig = iconBig;
 
     // The custom title bar's maximize is client-side, which the shell does not know about: catch its
-    // Win+Down minimize so it restores the window like a native maximized one (#1279).
+    // Win+Down minimize so it restores the window like a native maximized one (#1279), and its
+    // Restore and Maximize so they are the client-side ones (#3161).
     if (m_Spec.Borderless)
     {
         hookShellCommands(m_Handle, this);
@@ -1091,6 +1096,33 @@ bool Window::restoreForShellMinimize()
         SDL_RestoreWindow(m_Handle);
     }
     restore();
+    return true;
+}
+
+bool Window::handleShellCommand(WindowGeometry::SystemCommand command)
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    if (command == WindowGeometry::SystemCommand::Minimize)
+    {
+        return restoreForShellMinimize();
+    }
+    if (!WindowGeometry::shellCommandCarriedOutClientSide(command, m_Geometry.state(), isMinimized()))
+    {
+        return false;
+    }
+    if (command == WindowGeometry::SystemCommand::Restore)
+    {
+        spdlog::debug("Window::handleShellCommand: Restore of the client-side maximized window (#3161)");
+        restore();
+    }
+    else
+    {
+        spdlog::debug("Window::handleShellCommand: Maximize, client-side (#3161)");
+        maximize();
+    }
     return true;
 }
 

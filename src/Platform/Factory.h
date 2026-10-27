@@ -18,6 +18,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemConnections.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
@@ -65,6 +66,10 @@ namespace Platform
 /// Creates the platform-appropriate IProcessThreadsReader implementation (#3069; Windows: unsupported
 /// until its lane adds one).
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader();
+
+/// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported
+/// until its lane adds one).
+[[nodiscard]] std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader();
 
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();
