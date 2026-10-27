@@ -916,15 +916,15 @@ void TitleBarLayer::renderTitleBar()
     }
     updateMinimumWindowSize(drawn.contentWidth);
 
-    TitleBarView::Action action = drawn.action;
 #ifdef _WIN32
-    if (action == TitleBarView::Action::IconClicked)
-    // LCOV_EXCL_START - opens the modal native system menu, which a test can't dismiss (#2039)
-    {
-        // What the native menu chose is carried out below, as the buttons' actions are (#3161).
-        action = showNativeSystemMenu(window.isMaximized());
-    }
-    // LCOV_EXCL_STOP
+    // The icon opens the native system menu, and what it chose is carried out below, as the buttons'
+    // actions are (#3161).
+    const TitleBarView::Action action =
+        drawn.action == TitleBarView::Action::IconClicked
+            ? showNativeSystemMenu(window.isMaximized()) // LCOV_EXCL_LINE - the modal native menu, which a test can't dismiss (#2039)
+            : drawn.action;
+#else
+    const TitleBarView::Action action = drawn.action;
 #endif
     switch (action)
     {
