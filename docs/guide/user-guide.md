@@ -9,7 +9,7 @@ TaskSmack is a system monitor and task manager for Linux and Windows, built with
 - **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
 - **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
 - **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
-- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is listed in a Sigstore-signed `SHA256SUMS` and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
 
 ---
 
@@ -56,13 +56,42 @@ Every file on a release (each architecture's `.deb`, `.tar.gz`, `.zip` and Windo
 manifests and the source SBOM) is built and published by TaskSmack's `release` GitHub Actions
 workflow, and you can check that a download came from it in two ways. Either one is enough.
 
+**With cosign and `SHA256SUMS`:** each release has a `SHA256SUMS` file listing the SHA-256 of every
+other file on it, and `SHA256SUMS.bundle`, its [Sigstore](https://www.sigstore.dev/) signature, made
+with keyless OIDC signing by the release workflow. Download both into the folder holding the files
+you downloaded, check the signature with [cosign](https://github.com/sigstore/cosign), which needs
+no GitHub account, then check your files against the list:
+
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The two `--certificate-*` flags pin verification to TaskSmack's actual release workflow and to
+GitHub's OIDC issuer, so a signature from any other source fails to verify. A successful check
+prints `Verified OK`, then `<file>: OK` for each file you downloaded (`--ignore-missing` skips the
+ones you didn't). On Windows, run the same `cosign verify-blob` (cosign publishes a
+`cosign-windows-amd64.exe`), then this in PowerShell from that folder:
+
+```powershell
+Get-Content SHA256SUMS | ForEach-Object { $h, $n = $_ -split '  ', 2; if (Test-Path -LiteralPath $n) { "${n}: $(if ((Get-FileHash -LiteralPath $n -Algorithm SHA256).Hash -eq $h) { 'OK' } else { 'FAILED' })" } }
+```
+
+Each file you downloaded should show `OK`. Releases up to v0.9.x have no `SHA256SUMS`, but a
+`<filename>.bundle` beside each file instead: check one with the same `cosign verify-blob` command,
+giving `--bundle` the file's own bundle and the file in place of `SHA256SUMS`.
+
 **With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
 [artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
 (SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) 2.49 or later installed and signed in
 (`gh auth login`), run this on the downloaded file. Check `gh --version` first: some distributions
 package an older `gh` without the `attestation` command (Ubuntu's is 2.46), which then prints its list
 of commands instead of a result. That isn't a failed check; install `gh` from
-[GitHub's packages](https://github.com/cli/cli#installation), or use cosign below:
+[GitHub's packages](https://github.com/cli/cli#installation), or use cosign above:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
@@ -70,24 +99,8 @@ gh attestation verify <asset> --repo mgradwohl/tasksmack
 
 A successful check prints `Verification succeeded!` and the workflow run that built the file. To
 also require that it was the release workflow, rather than any workflow in the repository, add
-`--signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`.
-
-**With cosign:** every file is also signed with [Sigstore](https://www.sigstore.dev/) via keyless
-OIDC signing. Each asset has a matching `<filename>.bundle` alongside it on the same release —
-download both, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub
-account:
-
-```bash
-cosign verify-blob \
-  --bundle <asset>.bundle \
-  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  <asset>
-```
-
-Replace the filename with whichever asset you downloaded. The two `--certificate-*` flags pin
-verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
-from any other source fails to verify. A successful check prints `Verified OK`.
+`--signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`. `SHA256SUMS` has an
+attestation too.
 
 **The Windows executables' Authenticode signature** (releases from v0.9.1): `TaskSmack.exe` and
 `TaskSmackHelper.exe` in each Windows `.zip` are also signed with Authenticode, so Windows itself can
@@ -105,8 +118,8 @@ signing certificates last only a few days and are renewed automatically, so the 
 changes from release to release; check the signer's name, not its thumbprint. A new release may
 still get a SmartScreen warning until it has built up download reputation.
 
-If a release asset has **no matching `.bundle` file**, either `gh attestation verify` or
-`cosign verify-blob` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
+If a release asset has **no line in `SHA256SUMS`**, `cosign verify-blob`, the checksum check or
+`gh attestation verify` **fails**, or a Windows executable's signature isn't `Valid` from Matt Gradwohl,
 do not trust that asset — treat it as potentially tampered with.
 Re-download from the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather
 than a mirror, and if the problem persists, report it per

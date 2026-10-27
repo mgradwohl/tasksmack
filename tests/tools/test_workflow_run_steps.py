@@ -16,6 +16,10 @@
 - release.yml create-release "Verify the package set" and build-windows "Stage the installer's first
   pass": the NSIS installers are part of the exact release set, and the installer's first pass is handed
   on with exactly one of each file (#2302).
+- release.yml create-release "Write SHA256SUMS" and "Verify the release's file set": one `sha256sum`-format
+  SHA256SUMS lists every release file, and the signed set holds it and SHA256SUMS.bundle but no per-file
+  Sigstore bundle (#3145); verify-published-release "Verify SHA256SUMS and every asset against it" pins
+  cosign to the run's own ref and fails a download that doesn't match SHA256SUMS (`cosign` is a stub).
 - codeql.yml "Keep results under src/": a result is kept when any of its locations, code-flow steps
   or related locations is under src/, so a taint flow from src/ into a third-party sink survives;
   only results with no src/ location at all are dropped (#2992).
@@ -31,6 +35,7 @@ without them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -721,6 +726,193 @@ class ReleasePackageSetTests(unittest.TestCase):
                 result = self.check([suffix for suffix in self.PACKAGES if suffix != missing])
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(f"< TaskSmack-1.2.3-{missing}", result.stderr)
+
+    def test_a_sigstore_bundle_fails(self):
+        result = self.check([*self.PACKAGES, "win64.zip.bundle"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+
+
+class ReleaseSha256SumsTests(unittest.TestCase):
+    """release.yml create-release "Write SHA256SUMS" and "Verify the release's file set" (#3145): one
+    `sha256sum`-format SHA256SUMS lists every release file, and the published set is those files,
+    SHA256SUMS and its one Sigstore bundle, with no per-file bundle."""
+
+    LABEL = "v1.2.3"
+    FILES = (
+        "TaskSmack-1.2.3-Linux.deb",
+        "TaskSmack-1.2.3-win64.zip",
+        "TaskSmack-1.2.3-windows-arm64-build-inputs.json",
+        "tasksmack-v1.2.3-source-sbom.spdx.json",
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.dist = self.tmp / "dist"
+        self.dist.mkdir()
+        release = WORKFLOWS / "release.yml"
+        self.write = find_step(release, "Write SHA256SUMS", job="create-release").run
+        verify = find_step(release, "Verify the release's file set", job="create-release")
+        self.verify = verify.run
+        self.verify_env = {
+            name: substitute(value, {"steps.version.outputs.label": self.LABEL}) for name, value in verify.env.items()
+        }
+        for index, name in enumerate(self.FILES):
+            # Different sizes and bytes, a CRLF and a trailing newline among them, so a text-mode hash would differ.
+            (self.dist / name).write_bytes(f"{name}\r\n".encode() * (index + 1))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_sums(self) -> subprocess.CompletedProcess:
+        result = run_bash(self.write, self.tmp, {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def signed_set(self):
+        """dist/ as it is after signing: the files, SHA256SUMS and a stand-in SHA256SUMS.bundle."""
+        self.write_sums()
+        (self.dist / "SHA256SUMS.bundle").write_text("{}", encoding="utf-8")
+
+    def verify_set(self) -> subprocess.CompletedProcess:
+        return run_bash(self.verify, self.tmp, self.verify_env)
+
+    def test_sha256sums_lists_every_file_in_sha256sum_format(self):
+        self.write_sums()
+        data = (self.dist / "SHA256SUMS").read_bytes()
+        self.assertNotIn(b"\r", data)
+        self.assertTrue(data.endswith(b"\n"))
+        expected = "".join(
+            f"{hashlib.sha256((self.dist / name).read_bytes()).hexdigest()}  {name}\n" for name in sorted(self.FILES)
+        )
+        self.assertEqual(data.decode("utf-8"), expected)
+
+    def test_sha256sums_fails_on_an_empty_dist(self):
+        for name in self.FILES:
+            (self.dist / name).unlink()
+        result = run_bash(self.write, self.tmp, {})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse((self.dist / "SHA256SUMS").exists())
+
+    def test_the_signed_set_passes(self):
+        self.signed_set()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SHA256SUMS.bundle", result.stdout)
+
+    def test_a_leftover_per_file_bundle_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-win64.zip.bundle").write_text("{}", encoding="utf-8")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("per-file Sigstore bundle", result.stderr)
+        self.assertIn("TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+
+    def test_a_missing_sha256sums_bundle_fails(self):
+        self.signed_set()
+        (self.dist / "SHA256SUMS.bundle").unlink()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("dist/SHA256SUMS.bundle is missing", result.stderr)
+
+    def test_a_missing_sbom_fails(self):
+        (self.dist / "tasksmack-v1.2.3-source-sbom.spdx.json").unlink()
+        self.signed_set()
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("source-sbom.spdx.json is missing", result.stderr)
+
+    def test_a_file_sha256sums_does_not_list_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-Linux.tar.gz").write_bytes(b"late")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-Linux.tar.gz", result.stderr)
+
+    def test_a_file_changed_after_sha256sums_fails(self):
+        self.signed_set()
+        (self.dist / "TaskSmack-1.2.3-win64.zip").write_bytes(b"changed")
+        result = self.verify_set()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("doesn't match its SHA256SUMS line", result.stderr)
+
+
+class PublishedSha256SumsTests(unittest.TestCase):
+    """release.yml verify-published-release "Verify SHA256SUMS and every asset against it" (#3145): cosign
+    checks SHA256SUMS.bundle pinned to the run's own ref, then every download must match its line.
+    `cosign` is a shell function that records its arguments, so the real one never runs."""
+
+    FILES = ("TaskSmack-1.2.3-Linux.deb", "TaskSmack-1.2.3-win64.zip", "tasksmack-v1.2.3-source-sbom.spdx.json")
+    COSIGN_STUB = 'cosign() { printf "%s\\n" "$@" > cosign-args.txt; return "${COSIGN_EXIT:-0}"; }\n'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.published = self.tmp / "published"
+        self.published.mkdir()
+        release = WORKFLOWS / "release.yml"
+        self.script = self.COSIGN_STUB + find_step(
+            release, "Verify SHA256SUMS and every asset against it", job="verify-published-release"
+        ).run
+        lines = []
+        for name in self.FILES:
+            data = f"{name}\n".encode()
+            (self.published / name).write_bytes(data)
+            lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}\n")
+        (self.published / "SHA256SUMS").write_text("".join(lines), encoding="utf-8", newline="\n")
+        (self.published / "SHA256SUMS.bundle").write_text("{}", encoding="utf-8")
+        self.summary = self.tmp / "summary.md"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_step(self, **env) -> subprocess.CompletedProcess:
+        return run_bash(
+            self.script,
+            self.tmp,
+            {
+                "GITHUB_REF": "refs/tags/v1.2.3",
+                "GITHUB_STEP_SUMMARY": posix(self.summary),
+                "COSIGN_IDENTITY_REGEXP": r"^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$",
+                "COSIGN_OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+                **env,
+            },
+        )
+
+    def test_a_signed_matching_download_passes_pinned_to_the_tag(self):
+        result = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = (self.tmp / "cosign-args.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(args[:3], ["verify-blob", "--bundle", "published/SHA256SUMS.bundle"])
+        self.assertEqual(args[-1], "published/SHA256SUMS")
+        identity = args[args.index("--certificate-identity-regexp") + 1]
+        self.assertEqual(
+            identity, r"^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/v1\.2\.3$"
+        )
+        self.assertIn("passed (3 assets", self.summary.read_text(encoding="utf-8"))
+
+    def test_a_failed_signature_fails(self):
+        result = self.run_step(COSIGN_EXIT="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Sigstore signature of `SHA256SUMS`: **FAILED**", self.summary.read_text(encoding="utf-8"))
+
+    def test_a_changed_asset_fails(self):
+        (self.published / "TaskSmack-1.2.3-win64.zip").write_bytes(b"tampered")
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Assets against `SHA256SUMS`: **FAILED**", self.summary.read_text(encoding="utf-8"))
+
+    def test_an_unlisted_or_missing_asset_fails(self):
+        (self.published / "TaskSmack-1.2.3-win64.zip.bundle").write_text("{}", encoding="utf-8")
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("> TaskSmack-1.2.3-win64.zip.bundle", result.stderr)
+        (self.published / "TaskSmack-1.2.3-win64.zip.bundle").unlink()
+        (self.published / "TaskSmack-1.2.3-Linux.deb").unlink()
+        result = self.run_step()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("< TaskSmack-1.2.3-Linux.deb", result.stderr)
 
 
 @unittest.skipUnless(PWSH, "pwsh is not on PATH")

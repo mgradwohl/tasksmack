@@ -2857,8 +2857,8 @@ ships, unless the maintainer keeps it for security fixes.
 
 Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` or on the `release/X.Y` branch it names is what
 triggers both an official TaskSmack release (`release.yml`: validates the tag, builds Linux/Windows
-packages for x64 and ARM64, Authenticode-signs the Windows executables, signs every asset with
-Sigstore, and publishes a GitHub Release) and the corresponding `CHANGELOG.md`
+packages for x64 and ARM64, Authenticode-signs the Windows executables, lists every asset in a
+Sigstore-signed `SHA256SUMS`, and publishes a GitHub Release) and the corresponding `CHANGELOG.md`
 update (`changelog.yml`, tag push only -- it has no `workflow_dispatch` trigger). Both run from the
 workflow files at the tagged commit, so a release branch needs the current `release.yml` and
 `changelog.yml` (backport workflow changes to it like any fix).
@@ -2906,10 +2906,10 @@ That single push runs two independent workflows:
 
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms for both architectures, validates the packaged artifacts (see [Release Artifact
-  Validation](#release-artifact-validation)), signs everything with Sigstore and attests its build
-  provenance, and publishes the GitHub Release: it creates the release as a **draft**
-  with a placeholder body ("Release notes follow." and the two verification commands; not GitHub's
-  generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset and `.bundle`, checks the draft's assets match `dist/` by name and
+  Validation](#release-artifact-validation)), writes `SHA256SUMS`, signs it with Sigstore and attests
+  every file's build provenance, and publishes the GitHub Release: it creates the release as a **draft**
+  titled `TaskSmack vX.Y.Z` (the form every release since v0.5.0 is named in) with a placeholder body ("Release notes follow." and the verification commands; not GitHub's
+  generated notes, which exceed the release-body limit on a big release, #2801), uploads every asset, `SHA256SUMS` and `SHA256SUMS.bundle`, checks the draft's assets match `dist/` by name and
   size, and only then publishes it (`gh release edit --draft=false --latest`), so a failure
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. Then `verify-published-release` downloads the published assets
@@ -2951,6 +2951,10 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   builds of one commit with equal `inputs` should give the same bytes; see [Release
   Reproducibility](#release-reproducibility) for how a mismatch is read.
 - Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
+- Checksums: `SHA256SUMS` and `SHA256SUMS.bundle` (from v0.10.0, #3145) -- `SHA256SUMS` has one
+  `sha256sum`-format line (`<sha256>  <name>`, sorted by name) for every file above, and
+  `SHA256SUMS.bundle` is its Sigstore bundle, the release's only one. Up to v0.9.x each file had its
+  own `<file>.bundle` instead, and `release/0.9` keeps doing that.
 
 The x64 names are the ones earlier releases used, so existing download links keep working; only the
 ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/Packaging.cmake`
@@ -3025,12 +3029,14 @@ may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
 on one x64 Linux and one x64 Windows runner. A tag run downloads the published release (`gh release
 download`); a dry run, which publishes nothing, downloads its `release-assets-dry-run` artifact instead,
 so every dry run exercises the job, and where the files come from is the only difference. Each leg
-checks that the download holds exactly the files `create-release` hashed after signing (every asset and
-its `.bundle`, nothing extra), each with the SHA-256 of its `dist/` copy (the job's `sha256sums` output,
-not a rebuild). The Linux leg then runs `cosign verify-blob --bundle` on every asset with the User
-Guide's certificate identity and issuer (a dry run signs from a branch, so it pins the same workflow at
-its own ref), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
-on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
+checks that the download holds exactly the files `create-release` hashed after signing (every asset,
+`SHA256SUMS` and `SHA256SUMS.bundle`, no per-file bundle, nothing extra), each with the SHA-256 of its
+`dist/` copy (the job's `sha256sums` output, not a rebuild). The Linux leg then runs
+`cosign verify-blob --bundle SHA256SUMS.bundle` on `SHA256SUMS` with the User Guide's issuer and its
+certificate identity pinned to the run's own ref (`refs/tags/<tag>` on a tag run; a dry run signs from a
+branch, so the branch), checks every downloaded asset against `SHA256SUMS` (each listed, each matching,
+no line without its file), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
+on every asset, `SHA256SUMS` included, on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
 `validate-linux-package`'s smoke check. The Windows leg checks the Authenticode signatures of the `.zip`'s
 executables and of the x64 installer with `validate-windows-package`'s check once signing is on (on a ref
 that doesn't sign, the step says they're skipped), and relaunches the `.zip` with that job's smoke check. Both jobs run the same scripts:
@@ -3083,7 +3089,7 @@ With signing on, `release.yml` does this:
    SHA-256 (`windows-2025` ships none, `windows-11-arm` 3.10).
 2. `sign-windows` (on `windows-2025`; no checkout, no build; in `release-signing`, and with
    `sign-windows-installer` the only jobs with `id-token: write` apart from `create-release`'s Sigstore
-   signing) downloads both unsigned `.zip`s and uninstallers, extracts the two executables from each
+   signing and attestations) downloads both unsigned `.zip`s and uninstallers, extracts the two executables from each
    `.zip`, signs in with `azure/login` and signs all six files with `azure/artifact-signing-action`
    (SHA-256 file digest, RFC 3161 SHA-256 timestamp from `http://timestamp.acs.microsoft.com`, every
    credential type but the Azure CLI's excluded). It then writes each signed executable back over its
@@ -3106,8 +3112,8 @@ With signing on, `release.yml` does this:
    certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
    key usage, timestamped, and by the same subject. It runs the same check on the installer, installs
    it and runs it on `TaskSmack.exe`, `TaskSmackHelper.exe` and `Uninstall.exe` as installed (see
-   [Release Artifact Validation](#release-artifact-validation)). Only then can `create-release` hash,
-   Sigstore-sign and publish them, so an unsigned or wrongly signed helper, installer or uninstaller
+   [Release Artifact Validation](#release-artifact-validation)). Only then can `create-release` hash
+   them into the Sigstore-signed `SHA256SUMS` and publish them, so an unsigned or wrongly signed helper, installer or uninstaller
    can't be published.
 
 Artifact Signing certificates last about three days and rotate, so every check matches the signer's
@@ -3218,7 +3224,7 @@ To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
 `cpack -G "TGZ;DEB"`, and compare `sha256sum` of the result against the published asset.
 
-Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`. A tag run also records a GitHub artifact attestation (SLSA build provenance, `actions/attest-build-provenance`) covering the same files; a dry run skips it, since attestations are public and permanent, and lists the files a tag run would attest instead (#2673). See the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `gh attestation verify` and `cosign verify-blob` procedures.
+`create-release` writes `SHA256SUMS`, one `sha256sum`-format line per asset, and signs only that file with Sigstore (keyless OIDC via `cosign sign-blob`) into `SHA256SUMS.bundle` (#3145; up to v0.9.x every asset had its own `<file>.bundle`). It checks the set before anything is signed ("Verify the package set") and again after ("Verify the release's file set": the packages, manifests and SBOM, `SHA256SUMS` listing each of them and matching, `SHA256SUMS.bundle`, and no per-file bundle). A tag run also records a GitHub artifact attestation (SLSA build provenance, `actions/attest-build-provenance`) for every asset and for `SHA256SUMS`; a dry run skips it, since attestations are public and permanent, and lists the files a tag run would attest instead (#2673). See the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `gh attestation verify` and `cosign verify-blob` procedures.
 
 ### Changelog
 

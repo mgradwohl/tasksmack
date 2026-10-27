@@ -2346,20 +2346,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      # `sha256sum` of every file in dist/ (the release's assets and their .bundle files), for
+      # `sha256sum` of every file in dist/ (the release's files, SHA256SUMS and SHA256SUMS.bundle), for
       # verify-published-release to compare its downloads with (#2721).
       sha256sums: ${{ steps.digests.outputs.sha256sums }}
     permissions:
       contents: write
       actions: read
-      # Keyless OIDC: the certificate behind both the Sigstore/cosign bundles and the build-provenance attestation
+      # Keyless OIDC: the certificate behind both the Sigstore/cosign bundle and the build-provenance attestation
       id-token: write
       attestations: write  # Store the build-provenance attestation (tag runs only; #2673)
     env:
-      # Every file the release publishes apart from the Sigstore bundles: the packages, the build-inputs
-      # manifests and the source SBOM, once they're all staged in dist/ and before any .bundle is written there.
-      # The build-provenance attestation's subject, the dry run's listing of it and the cosign loop all expand
-      # this one glob, so what is attested is exactly what is signed.
+      # Every file the release publishes apart from SHA256SUMS.bundle: the packages, the build-inputs
+      # manifests, the source SBOM and SHA256SUMS, once they're all staged in dist/ and before cosign writes
+      # the bundle there. The build-provenance attestation's subject and the dry run's listing of it both
+      # expand this one glob, so every file SHA256SUMS lists, and SHA256SUMS itself, is attested (#3145).
       RELEASE_ASSETS: dist/*
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2410,8 +2410,8 @@ jobs:
 
       - name: Download the Windows build-inputs manifests
         # windows-build-inputs-{x64,arm64} (#2802): TaskSmack-<version>-win64-build-inputs.json and
-        # TaskSmack-<version>-windows-arm64-build-inputs.json ship beside the .zips, with Sigstore
-        # bundles like every asset, so a rebuilder can check their toolchain against the release's
+        # TaskSmack-<version>-windows-arm64-build-inputs.json ship beside the .zips, listed in the
+        # signed SHA256SUMS like every asset, so a rebuilder can check their toolchain against the release's
         # and the post-release dry-run comparison can tell a CRT change from a build change
         # (compare-build-inputs.ps1 beside the action).
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -2425,7 +2425,8 @@ jobs:
         # releases used (win64 / Linux), so existing download links still work, and ARM64's are
         # windows-arm64 / linux-aarch64 (#2214); each Windows .zip has its build-inputs manifest
         # (#2802), and an NSIS installer beside it (#2302). A missing, extra or renamed file fails here.
-        # A new package has to be added to this list.
+        # A new package has to be added to this list. "Verify the release's file set" checks the whole
+        # set again after signing, with the SBOM, SHA256SUMS and SHA256SUMS.bundle added (#3145).
         run: |
           version=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
           if [[ -z "$version" ]]; then
@@ -2452,11 +2453,35 @@ jobs:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
+      - name: Write SHA256SUMS
+        # One `sha256sum`-format line per release file ("<sha256>  <name>": two spaces, LF endings, sorted
+        # by name in the C locale), so `sha256sum -c --ignore-missing SHA256SUMS` checks whichever files a
+        # user downloaded. cosign signs this one file below instead of every asset (#3145). It's built in a
+        # temporary file and moved in last, so it never lists itself.
+        run: |
+          set -euo pipefail
+          sums=$(mktemp)
+          count=0
+          while IFS= read -r -d '' name; do
+            hash=$(sha256sum -- "dist/$name" | cut -d' ' -f1)
+            printf '%s  %s\n' "${hash#\\}" "$name" >> "$sums"
+            count=$((count + 1))
+          done < <(find dist -maxdepth 1 -type f -printf '%f\0' | LC_ALL=C sort -z)
+          if (( count == 0 )); then
+            echo "dist/ holds no files to list in SHA256SUMS." >&2
+            exit 1
+          fi
+          chmod 644 "$sums"
+          mv -- "$sums" dist/SHA256SUMS
+          echo "dist/SHA256SUMS lists $count files:"
+          cat dist/SHA256SUMS
+
       - name: Attest build provenance
-        # GitHub artifact attestations (SLSA build provenance, #2673), beside the cosign bundles below:
+        # GitHub artifact attestations (SLSA build provenance, #2673), beside the cosign bundle below:
         # `gh attestation verify <file> --repo mgradwohl/tasksmack` checks a download (the User Guide's
-        # "Verifying a Release"). Tag runs only: an attestation is public and permanent, and a dry run
-        # publishes nothing. Before cosign, so the glob doesn't match its .bundle files.
+        # "Verifying a Release"). Every release file is a subject, SHA256SUMS included (#3145). Tag runs
+        # only: an attestation is public and permanent, and a dry run publishes nothing. Before cosign, so
+        # the glob doesn't match SHA256SUMS.bundle.
         if: env.DRY_RUN != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -2487,21 +2512,55 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Sign release artifacts with Sigstore (keyless OIDC)
-        # Produces a .bundle file alongside each release artifact. Verifiable with cosign verify-blob
-        # (the User Guide's "Verifying a Release" has the identity and issuer flags).
+      - name: Sign SHA256SUMS with Sigstore (keyless OIDC)
+        # One bundle for the one checksum file, not one per asset (#3145). A user checks SHA256SUMS.bundle
+        # with cosign verify-blob (the User Guide's "Verifying a Release" has the identity and issuer
+        # flags), then checks their downloads against SHA256SUMS.
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
+
+      - name: Verify the release's file set
+        # What the release publishes, after signing (#3145): the packages and manifests "Verify the
+        # package set" checked, the source SBOM, SHA256SUMS and its one Sigstore bundle, and nothing
+        # else. No per-file .bundle may be in dist/ (it would be published), SHA256SUMS must list every
+        # other file once, and each listed file must match its line.
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: |
-          # shellcheck disable=SC2086 # the glob must expand, as the attest step's does
-          for f in $RELEASE_ASSETS; do
-            [[ -f "$f" ]] || continue
-            echo "Signing: $f"
-            cosign sign-blob --yes --bundle "${f}.bundle" "$f"
+          set -uo pipefail
+          problems=()
+          for required in SHA256SUMS SHA256SUMS.bundle "tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"; do
+            [[ -f "dist/$required" ]] || problems+=("dist/$required is missing")
           done
+          files=$(find dist -maxdepth 1 -type f ! -name SHA256SUMS ! -name SHA256SUMS.bundle -printf '%f\n' | LC_ALL=C sort)
+          bundles=$(grep '\.bundle$' <<< "$files" || true)
+          if [[ -n "$bundles" ]]; then
+            problems+=("dist/ holds a per-file Sigstore bundle, but only SHA256SUMS is signed: ${bundles//$'\n'/, }")
+          fi
+          if [[ -f dist/SHA256SUMS ]]; then
+            malformed=$(grep -cvE '^[0-9a-f]{64}  [^/]+$' dist/SHA256SUMS || true)
+            if (( malformed > 0 )); then
+              problems+=("SHA256SUMS has $malformed line(s) not of the form '<sha256>  <name>'")
+            fi
+            listed=$(sed -E 's/^[0-9a-f]{64}  //' dist/SHA256SUMS | LC_ALL=C sort)
+            if [[ "$listed" != "$files" ]]; then
+              echo "SHA256SUMS doesn't list exactly the other files in dist/ (< listed, > in dist/):" >&2
+              diff <(echo "$listed") <(echo "$files") >&2 || true
+              problems+=("SHA256SUMS doesn't list exactly the other files in dist/")
+            elif ! (cd dist && sha256sum --check --strict --quiet SHA256SUMS); then
+              problems+=("a file in dist/ doesn't match its SHA256SUMS line")
+            fi
+          fi
+          if (( ${#problems[@]} > 0 )); then
+            printf '%s\n' "${problems[@]}" >&2
+            exit 1
+          fi
+          echo "dist/ holds the $(wc -l <<< "$files") files SHA256SUMS lists, SHA256SUMS and SHA256SUMS.bundle:"
+          find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
 
       - name: Record the release assets' digests
         # What verify-published-release compares the published (or, on a dry run, the uploaded)
-        # files with: every file the release will carry, .bundle files included, hashed here rather
-        # than rebuilt there (#2721).
+        # files with: every file the release will carry, SHA256SUMS and SHA256SUMS.bundle included,
+        # hashed here rather than rebuilt there (#2721).
         id: digests
         run: |
           sums=$(cd dist && find . -maxdepth 1 -type f -printf '%f\0' | LC_ALL=C sort -z | xargs -0 sha256sum --)
@@ -2514,7 +2573,7 @@ jobs:
 
       - name: Upload would-be release assets (dry run)
         # A dry run creates no release; keep exactly what would have been attached to it
-        # (packages, source SBOM and their Sigstore bundles) for inspection instead.
+        # (packages, manifests, source SBOM, SHA256SUMS and SHA256SUMS.bundle) for inspection instead.
         if: env.DRY_RUN == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -2539,18 +2598,27 @@ jobs:
 
             ## Verifying downloads
 
-            Each package, build-inputs manifest and the source SBOM has a GitHub build-provenance attestation and a Sigstore `<asset>.bundle`. Check a download with either command:
-
-            ```bash
-            gh attestation verify <asset> --repo mgradwohl/tasksmack
-            ```
+            `SHA256SUMS` lists the SHA-256 of every package, build-inputs manifest and the source SBOM, and `SHA256SUMS.bundle` is its Sigstore signature. Download both into the folder with your files, check the signature, then check the files:
 
             ```bash
             cosign verify-blob \
-              --bundle <asset>.bundle \
+              --bundle SHA256SUMS.bundle \
               --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              <asset>
+              SHA256SUMS
+            sha256sum -c --ignore-missing SHA256SUMS
+            ```
+
+            On Windows, run the same `cosign verify-blob`, then check the files in PowerShell:
+
+            ```powershell
+            Get-Content SHA256SUMS | ForEach-Object { $h, $n = $_ -split '  ', 2; if (Test-Path -LiteralPath $n) { "${n}: $(if ((Get-FileHash -LiteralPath $n -Algorithm SHA256).Hash -eq $h) { 'OK' } else { 'FAILED' })" } }
+            ```
+
+            Or check any file, `SHA256SUMS` included, against its GitHub build-provenance attestation:
+
+            ```bash
+            gh attestation verify <asset> --repo mgradwohl/tasksmack
             ```
 
             See [Verifying a Release](https://github.com/mgradwohl/tasksmack/blob/main/docs/guide/user-guide.md#verifying-a-release).
@@ -2568,7 +2636,7 @@ jobs:
             # exceed its 125,000-character body limit (v0.9.0's did, HTTP 422; #2801), and the
             # maintainer's approved notes replace the body after publish anyway
             # (gh release edit --notes-file; CONTRIBUTING.md's "Cutting a Release").
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "$PLACEHOLDER_NOTES"
+            gh release create "$TAG" --draft --verify-tag --title "TaskSmack $TAG" --notes "$PLACEHOLDER_NOTES"
             echo "Created draft release for '$TAG'."
           else
             echo "Could not check for an existing release for '$TAG':" >&2
@@ -2645,8 +2713,8 @@ jobs:
       fail-fast: false
       matrix:
         # x64 only, to bound the cost. Each leg checks that every asset is there and matches the
-        # digest create-release recorded. The Linux leg then verifies every asset's Sigstore bundle
-        # and attestation and relaunches the .tar.gz; the Windows leg checks the Authenticode signatures
+        # digest create-release recorded. The Linux leg then verifies SHA256SUMS's Sigstore bundle, every
+        # asset against SHA256SUMS and every asset's attestation, and relaunches the .tar.gz; the Windows leg checks the Authenticode signatures
         # of the .zip's executables and of the installer (once signing is on) and relaunches the .zip.
         include:
           - os: linux
@@ -2663,10 +2731,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
-      SHA256SUMS: ${{ needs.create-release.outputs.sha256sums }}
+      RELEASE_DIGESTS: ${{ needs.create-release.outputs.sha256sums }}
       # The certificate identity and issuer the User Guide's "Verifying a Release" and the draft's
-      # placeholder notes give users (create-release). A dry run signs from a branch, so its check
-      # pins the same workflow at the run's own ref instead (the cosign step derives that from this).
+      # placeholder notes give users (create-release). The cosign step pins the same workflow at the
+      # run's own ref instead (derived from this): refs/tags/<tag> on a tag run, the branch on a dry run.
       COSIGN_IDENTITY_REGEXP: '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$'
       COSIGN_OIDC_ISSUER: https://token.actions.githubusercontent.com
       ATTESTATION_REPO: mgradwohl/tasksmack
@@ -2713,13 +2781,13 @@ jobs:
           path: published/
 
       - name: Check the asset set and digests
-        # Exactly the files create-release hashed after signing (every RELEASE_ASSETS file and its
-        # .bundle), nothing missing and nothing extra, each with the SHA-256 of the dist/ copy built,
-        # validated and signed in this run.
+        # Exactly the files create-release hashed after signing (every RELEASE_ASSETS file, SHA256SUMS
+        # among them, and SHA256SUMS.bundle), nothing missing and nothing extra, each with the SHA-256 of
+        # the dist/ copy built, validated and signed in this run.
         run: |
           set -uo pipefail
           summary() { echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
-          if [[ -z "${SHA256SUMS//[[:space:]]/}" ]]; then
+          if [[ -z "${RELEASE_DIGESTS//[[:space:]]/}" ]]; then
             echo "create-release passed no digests (its sha256sums output is empty)." >&2
             summary "Assets and digests: **FAILED** (create-release passed no digests)"
             exit 1
@@ -2728,7 +2796,7 @@ jobs:
           while read -r sum name; do
             [[ -n "$sum" ]] || continue
             want["${name#\*}"]=$sum
-          done <<< "$SHA256SUMS"
+          done <<< "$RELEASE_DIGESTS"
           shopt -s nullglob dotglob
           found=()
           for path in published/*; do found+=("${path#published/}"); done
@@ -2740,17 +2808,15 @@ jobs:
             diff <(echo "$expected") <(echo "$actual") >&2 || true
             problems+=("the file set differs from create-release's")
           fi
+          for name in SHA256SUMS SHA256SUMS.bundle; do
+            [[ -n "${want[$name]+set}" ]] || problems+=("create-release hashed no $name")
+          done
           assets=0
           for name in "${!want[@]}"; do
-            if [[ "$name" == *.bundle ]]; then
-              if [[ -z "${want[${name%.bundle}]+set}" ]]; then
-                problems+=("$name signs no asset")
-              fi
-            else
+            if [[ "$name" == *.bundle && "$name" != SHA256SUMS.bundle ]]; then
+              problems+=("$name is a per-file Sigstore bundle; only SHA256SUMS is signed")
+            elif [[ "$name" != SHA256SUMS && "$name" != SHA256SUMS.bundle ]]; then
               assets=$((assets + 1))
-              if [[ -z "${want[$name.bundle]+set}" ]]; then
-                problems+=("$name has no Sigstore bundle")
-              fi
             fi
           done
           for name in "${found[@]}"; do
@@ -2772,49 +2838,49 @@ jobs:
             summary "Assets and digests: **FAILED** (${joined%; })"
             exit 1
           fi
-          echo "All ${#found[@]} files are there ($assets assets and their bundles), each with the SHA-256 of its dist/ copy:"
+          echo "All ${#found[@]} files are there ($assets assets, SHA256SUMS and SHA256SUMS.bundle), each with the SHA-256 of its dist/ copy:"
           echo "$actual"
-          summary "Assets and digests: passed (${#found[@]} files: $assets assets and their \`.bundle\`s, each matching the SHA-256 of its \`dist/\` copy)"
+          summary "Assets and digests: passed (${#found[@]} files: $assets assets, \`SHA256SUMS\` and \`SHA256SUMS.bundle\`, each matching the SHA-256 of its \`dist/\` copy)"
 
       - name: Install cosign
         if: matrix.os == 'linux'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Verify the Sigstore bundles
-        # cosign verify-blob as the User Guide has users run it: the certificate must come from this
-        # repo's release.yml through GitHub's OIDC issuer. A tag run uses the documented identity
-        # (any refs/tags/ ref); a dry run pins the same workflow at the run's own ref, since it signed
-        # from a branch.
+      - name: Verify SHA256SUMS and every asset against it
+        # The User Guide's check (#3145): cosign verify-blob on SHA256SUMS.bundle, whose certificate must
+        # come from this repo's release.yml through GitHub's OIDC issuer, then every downloaded asset
+        # against SHA256SUMS. The identity is pinned to the run's own ref, which is narrower than the
+        # documented one: refs/tags/<tag> on a tag run, the branch on a dry run (which signs from one).
+        # Every asset must have a line and match it, and every line must name a downloaded file.
         if: matrix.os == 'linux'
         run: |
           set -uo pipefail
-          if [[ "$DRY_RUN" == "true" ]]; then
-            # The run's ref as a literal in the regexp (git refs can't hold a backslash). The bracket
-            # starts with ']' and ends with '[': a '[' right before '.' would open a collating symbol.
-            ref=$(sed 's/[]*.+?(){}|^$[]/\\&/g' <<< "$GITHUB_REF")
-            identity="${COSIGN_IDENTITY_REGEXP%'refs/tags/.+$'}${ref}\$"
-          else
-            identity="$COSIGN_IDENTITY_REGEXP"
-          fi
+          summary() { echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+          # The run's ref as a literal in the regexp (git refs can't hold a backslash). The bracket
+          # starts with ']' and ends with '[': a '[' right before '.' would open a collating symbol.
+          ref=$(sed 's/[]*.+?(){}|^$[]/\\&/g' <<< "$GITHUB_REF")
+          identity="${COSIGN_IDENTITY_REGEXP%'refs/tags/.+$'}${ref}\$"
           echo "Certificate identity: $identity"
           echo "OIDC issuer: $COSIGN_OIDC_ISSUER"
-          shopt -s nullglob
-          failed=()
-          verified=0
-          for f in published/*; do
-            [[ "$f" == *.bundle ]] && continue
-            if cosign verify-blob --bundle "$f.bundle" --certificate-identity-regexp "$identity" \
-              --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" "$f"; then
-              verified=$((verified + 1))
-            else
-              failed+=("${f#published/}")
-            fi
-          done
-          if (( ${#failed[@]} > 0 || verified == 0 )); then
-            echo "- Sigstore bundles: **FAILED** for ${failed[*]:-every asset (none verified)}" >> "$GITHUB_STEP_SUMMARY"
+          if ! cosign verify-blob --bundle published/SHA256SUMS.bundle --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" published/SHA256SUMS; then
+            summary "Sigstore signature of \`SHA256SUMS\`: **FAILED** (identity \`$identity\`)"
             exit 1
           fi
-          echo "- Sigstore bundles: passed ($verified assets, identity \`$identity\`)" >> "$GITHUB_STEP_SUMMARY"
+          summary "Sigstore signature of \`SHA256SUMS\`: passed (identity \`$identity\`)"
+          files=$(find published -maxdepth 1 -type f ! -name SHA256SUMS ! -name SHA256SUMS.bundle -printf '%f\n' | LC_ALL=C sort)
+          listed=$(sed -E 's/^[0-9a-f]{64}  //' published/SHA256SUMS | LC_ALL=C sort)
+          if [[ "$listed" != "$files" ]]; then
+            echo "SHA256SUMS doesn't list exactly the downloaded assets (< listed, > downloaded):" >&2
+            diff <(echo "$listed") <(echo "$files") >&2 || true
+            summary "Assets against \`SHA256SUMS\`: **FAILED** (it doesn't list exactly the downloaded assets)"
+            exit 1
+          fi
+          if ! (cd published && sha256sum --check --strict SHA256SUMS); then
+            summary "Assets against \`SHA256SUMS\`: **FAILED** (see the step log)"
+            exit 1
+          fi
+          summary "Assets against \`SHA256SUMS\`: passed ($(wc -l <<< "$files") assets, each matching its line)"
 
       - name: Verify the build-provenance attestations
         # gh attestation verify as the User Guide has users run it, pinned to this repo's release.yml as
