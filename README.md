@@ -28,11 +28,20 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 - CPU, memory, swap, storage, network, GPU, NPU, and battery histories
 - Per-process CPU, memory, disk I/O, network, GPU, and NPU metrics when the platform exposes them
 - Process termination, forced termination, priority and CPU affinity changes, suspend/resume, dump files, batch actions on several processes, and Linux I/O priority (ionice) and strace actions
-- Services and Startup (Windows) tabs that list and control services and startup apps, and a System tab of hardware, firmware, network, driver, and crash facts
+- Services and Startup tabs that list and control services and startup apps (Windows Run keys, Startup folders and packaged apps; Linux XDG autostart), and a System tab of hardware, firmware, network, driver, and crash facts
 - TOML configuration, 20 bundled themes, user themes, configurable sampling, and bounded history
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
 See [Implemented Features](docs/dev/completed-features.md) for the detailed shipped-feature inventory.
+
+## Why TaskSmack
+
+- **One app on Linux and Windows.** The same window, keys and themes on both, with each platform's own depth rather than a lowest common denominator.
+- **Acts on other users' processes without running as root.** On Linux, a small polkit helper does the privileged reads and actions after asking for an administrator's password; on Windows, a helper does the same through UAC (signed, from v0.9.1). TaskSmack itself stays unprivileged.
+- **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
+- **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
+- **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance.
 
 ## Screenshots
 

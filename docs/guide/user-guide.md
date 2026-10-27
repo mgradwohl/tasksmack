@@ -2,6 +2,15 @@
 
 TaskSmack is a system monitor and task manager for Linux and Windows, built with modern C++23, Dear ImGui, OpenGL, and SDL3. It delivers an immediate-mode UI with real-time process and system metrics, designed for developers and power users who want accurate, low-overhead monitoring.
 
+### Why TaskSmack
+
+- **One app on Linux and Windows.** The same window, keys and themes on both, with each platform's own depth rather than a lowest common denominator.
+- **Acts on other users' processes without running as root.** On Linux, a small polkit helper does the privileged reads and actions after asking for an administrator's password; on Windows, a helper does the same through UAC (signed, from v0.9.1). TaskSmack itself stays unprivileged.
+- **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
+- **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
+- **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
+
 ---
 
 ## Supported Platforms
