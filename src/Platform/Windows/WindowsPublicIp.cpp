@@ -2,6 +2,7 @@
 
 #include "Platform/DnsMessage.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/PublicIpLookup.h"
 #include "WinString.h"
 
 // NOLINTBEGIN(misc-include-cleaner) - Winsock umbrella headers; their symbols come from sub-headers
@@ -64,13 +65,10 @@ class WinsockScope
 };
 
 /// One query in flight: its socket, the bytes sent, and the result once there is one.
-struct Query
+struct Query : PublicIpLookup::Outcome
 {
     SOCKET socket = INVALID_SOCKET;
     std::vector<std::uint8_t> sent;
-    bool done = false;
-    std::string address;
-    std::string unavailable;
 
     Query() = default;
     Query(const Query&) = delete;
@@ -83,12 +81,6 @@ struct Query
         {
             ::closesocket(socket);
         }
-    }
-
-    void fail(std::string reason)
-    {
-        done = true;
-        unavailable = std::move(reason);
     }
 };
 
@@ -208,7 +200,7 @@ void receive(Query& query, bool v6)
             }
             if (error == WSAEMSGSIZE)
             {
-                query.fail("The resolver's reply couldn't be read"); // larger than any reply to this query
+                query.fail(std::string(PublicIpLookup::UNREADABLE_REPLY)); // larger than any reply to this query
                 return;
             }
             query.fail(Detail::networkError(error, v6));
@@ -216,30 +208,8 @@ void receive(Query& query, bool v6)
         }
         const auto answer =
             DnsMessage::parseAnswer(std::span<const std::uint8_t>(buffer.data(), static_cast<std::size_t>(received)), query.sent);
-        if (const auto* error = std::get_if<DnsMessage::AnswerError>(&answer))
-        {
-            switch (*error)
-            {
-            case DnsMessage::AnswerError::NotTheReply:
-                continue; // a stray datagram: keep waiting for the reply
-            case DnsMessage::AnswerError::Malformed:
-                query.fail("The resolver's reply couldn't be read");
-                return;
-            case DnsMessage::AnswerError::ServerError:
-            case DnsMessage::AnswerError::NameNotFound:
-                query.fail("The resolver answered with an error");
-                return;
-            case DnsMessage::AnswerError::NoAddress:
-                query.fail(v6 ? "No IPv6 address was returned" : "No IPv4 address was returned");
-                return;
-            }
-        }
-        query.done = true;
-        query.address = formatAddress(answer);
-        if (query.address.empty())
-        {
-            query.unavailable = "The resolver's reply couldn't be read";
-        }
+        // A stray datagram leaves the query waiting for its reply; anything else ends it.
+        query.settle(PublicIpLookup::replyDisposition(answer, v6, formatAddress));
     }
 }
 
@@ -265,17 +235,14 @@ std::string Detail::networkError(int wsaError, bool v6)
 
 PublicIpInfo lookUp(const Options& options)
 {
-    const std::string timedOut = std::format("The resolver didn't answer within {} s", (options.timeout.count() + 999) / 1000);
-    PublicIpInfo info;
-    info.read = true;
-    info.source = options.source;
-
     const WinsockScope winsock; // outlives the queries' sockets, declared after it
     if (winsock.error() != 0)
     {
-        info.v4Unavailable = Detail::networkError(winsock.error(), false);
-        info.v6Unavailable = Detail::networkError(winsock.error(), true);
-        return info;
+        PublicIpLookup::Outcome v4Failed;
+        v4Failed.fail(Detail::networkError(winsock.error(), false));
+        PublicIpLookup::Outcome v6Failed;
+        v6Failed.fail(Detail::networkError(winsock.error(), true));
+        return PublicIpLookup::assembleInfo(options, v4Failed, v6Failed);
     }
 
     std::random_device random;
@@ -322,11 +289,7 @@ PublicIpInfo lookUp(const Options& options)
         }
     }
 
-    info.v4 = v4.address;
-    info.v4Unavailable = v4.done ? v4.unavailable : timedOut;
-    info.v6 = v6.address;
-    info.v6Unavailable = v6.done ? v6.unavailable : timedOut;
-    return info;
+    return PublicIpLookup::assembleInfo(options, v4, v6);
 }
 
 } // namespace Platform::WindowsPublicIp

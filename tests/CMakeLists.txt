@@ -452,6 +452,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
+    App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -489,6 +490,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxOsInfo.cpp
     Platform/test_NetworkdLinkJson.cpp
     Platform/test_DnsMessage.cpp
+    Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -952,6 +954,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

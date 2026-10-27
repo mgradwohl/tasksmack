@@ -2525,6 +2525,41 @@ TEST_F(ProcessesPanelRenderTest, TheFirstFrameDrawsWithoutASnapshot)
     panel->onDetach();
 }
 
+// #3061: a pinned process's row comes first, marked, though the sort (CPU %, descending) puts it last;
+// Unpin in its row menu undoes both and the saved pin. Pin to top pins the row the menu opened on.
+TEST_F(ProcessesPanelRenderTest, APinnedProcessComesFirstAndUnpinUndoesIt)
+{
+    UserConfig::get().settings().pinnedProcesses = {"init"}; // the least CPU of the three
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains(ICON_FA_THUMBTACK)) << text;
+    ASSERT_NE(text.find("init"), std::string::npos) << text;
+    EXPECT_LT(text.find("init"), text.find("server")) << text;
+    EXPECT_LT(text.find("init"), text.find("worker")) << text;
+
+    // The top row is init's, so the menu opens on it.
+    EXPECT_EQ(openARowMenu(*panel), std::optional<std::int32_t>{1});
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Unpin###Pin");
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(UserConfig::get().settings().pinnedProcesses.empty());
+    EXPECT_FALSE(text.contains(ICON_FA_THUMBTACK)) << text;
+    EXPECT_LT(text.find("server"), text.find("init")) << text; // back where the sort puts it
+
+    // And Pin to top pins the name of the row the menu opened on.
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::map<std::int32_t, std::string> names{{1, "init"}, {100, "server"}, {101, "worker"}};
+    pressPopupItem(*panel, ICON_FA_THUMBTACK " Pin to top###Pin");
+    EXPECT_EQ(UserConfig::get().settings().pinnedProcesses, (std::vector<std::string>{names.at(menuPid.value_or(1))}));
+    panel->onDetach();
+    UserConfig::get().settings().pinnedProcesses.clear();
+}
+
 // #3060: a process that exits stays as a dimmed row for a moment, not counted, then leaves. The probe
 // drops it on demand; enumerate() runs on the sampler thread, so the PID to drop is an atomic.
 class ExitingProbe : public TestMocks::MockProcessProbe

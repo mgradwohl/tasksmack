@@ -13,6 +13,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIconView.h"
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -570,6 +571,10 @@ class ProcessesPanel : public Panel
     // m_CachedSortedIndices is in natural order and must be sorted again on the next frame, even
     // though ImGui's SpecsDirty is not set (the filter result was rebuilt, #1174).
     bool m_SortPending = true;
+    // Pinned processes (#3061): kept first in either view and through the filter. Loaded in onAttach();
+    // a change in the row menu is written back to the settings and refilters on the next frame.
+    ProcessPins::Pins m_Pins;
+    bool m_PinsChanged = false;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
@@ -795,6 +800,8 @@ class ProcessesPanel : public Panel
     void openRowFileLocation(const Domain::ProcessSnapshot& proc);
     /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
     void searchRowOnline(const Domain::ProcessSnapshot& proc);
+    /// Pins or unpins processes named as @p proc (#3061), saving the list in the settings.
+    void togglePin(const Domain::ProcessSnapshot& proc);
 
     /// Asks to run `action` on `proc`, through the confirmation dialog.
     void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);

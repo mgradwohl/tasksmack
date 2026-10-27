@@ -17,6 +17,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessLookup.h"
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -960,6 +961,7 @@ void ProcessesPanel::onAttach()
     m_ColumnSettings = UserConfig::get().settings().processColumns;
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
     m_MeterSettings = UserConfig::get().settings().processMeters;
+    m_Pins = ProcessPins::Pins(UserConfig::get().settings().pinnedProcesses); // #3061
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -1525,7 +1527,9 @@ void ProcessesPanel::renderContent()
     // Filtered indices, running count, and summary string are only recomputed when snapshot
     // version or search term changes (typically once per second at the 1Hz refresh rate).
     const std::string_view searchTerm(m_SearchBuffer);
-    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm);
+    // A pin added or removed (#3061) refilters too: a pinned process stays through the filter.
+    const bool filterDirty = ProcessFilterCache::isStale(adoptedVersion, m_CachedFilterVersion, searchTerm, m_CachedSearchTerm) ||
+                             std::exchange(m_PinsChanged, false);
     if (filterDirty)
     {
         m_CachedFilteredIndices.clear();
@@ -1534,7 +1538,8 @@ void ProcessesPanel::renderContent()
         // Case-insensitive, in the name or the command line, as the user guide says (#838)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm))
+            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm) ||
+                m_Pins.contains(currentSnapshots[i].name)) // a pinned process stays in view (#3061)
             {
                 m_CachedFilteredIndices.push_back(i);
             }
@@ -1573,7 +1578,9 @@ void ProcessesPanel::renderContent()
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
         // Reset sorted indices to natural order; the sort below sorts them again this frame (#1174).
+        // Pinned processes first (#3061), which stands when the table has no sort.
         m_CachedSortedIndices = m_CachedFilteredIndices;
+        ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);
         m_SortPending = true;
     }
 
@@ -1942,6 +1949,9 @@ void ProcessesPanel::renderContent()
                     m_CachedSortedIndices,
                     [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                     { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+                // Pinned processes ahead of the rest, each group in the sort's order (#3061); in tree view
+                // that puts pinned roots first, and pinned children first among their siblings.
+                ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);
                 sortSpecs->SpecsDirty = false;
                 m_SortPending = false;
                 ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
@@ -2430,6 +2440,15 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
         ImGui::SameLine();
     }
 
+    // A pinned process's thumbtack (#3061), muted, before its icon.
+    if (m_Pins.contains(proc.name))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+        ImGui::TextUnformatted(ICON_FA_THUMBTACK);
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Pinned");
+        ImGui::SameLine(0.0F, ImGui::GetStyle().ItemInnerSpacing.x);
+    }
     // The program's icon, or the generic one, before its name (#1800).
     m_IconView.drawInline(proc);
     // A collapsed parent's child count follows its name (#838), muted. The name keeps room for it, so a
@@ -2998,6 +3017,18 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         Core::ShowProcessDetailsEvent event;
         raiseEvent(event);
     }
+    // Kept at the top through every sort and filter (#3061): every process of this name.
+    const bool pinned = m_Pins.contains(proc.name);
+    if (ImGui::MenuItem(pinned ? ICON_FA_THUMBTACK " Unpin###Pin" : ICON_FA_THUMBTACK " Pin to top###Pin",
+                        nullptr,
+                        false,
+                        pinned || proc.name.size() <= ProcessPins::MAX_NAME_BYTES))
+    {
+        togglePin(proc);
+    }
+    ImGui::SetItemTooltip(pinned ? "Stop keeping processes named \"%s\" at the top"
+                                 : "Keep processes named \"%s\" at the top of the table, through any sort or filter",
+                          proc.name.c_str());
 
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_COPY " Copy PID"))
@@ -3149,6 +3180,19 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         ImGui::PopStyleColor();
     }
+}
+
+void ProcessesPanel::togglePin(const Domain::ProcessSnapshot& proc)
+{
+    const bool changed = m_Pins.contains(proc.name) ? m_Pins.unpin(proc.name) : m_Pins.pin(proc.name);
+    if (!changed)
+    {
+        showRowActionResult({.ok = false, .text = std::format("Can't pin more than {} processes", ProcessPins::MAX_PINS)}, false);
+        return;
+    }
+    UserConfig::get().settings().pinnedProcesses = m_Pins.names(); // saved with the other settings
+    m_PinsChanged = true;
+    spdlog::info("ProcessesPanel: {} {}", m_Pins.contains(proc.name) ? "pinned" : "unpinned", proc.name);
 }
 
 void ProcessesPanel::openRowFileLocation(const Domain::ProcessSnapshot& proc)

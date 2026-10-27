@@ -878,6 +878,42 @@ TEST_F(UserConfigSaveLoadFixture, EmptyProcessTableLayoutRoundTrips)
     EXPECT_TRUE(config.settings().processTableLayout.empty());
 }
 
+// ========== Pinned processes (#3061) ==========
+
+TEST_F(UserConfigSaveLoadFixture, PinnedProcessesRoundTrip)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().pinnedProcesses = {"game", "make"};
+    config.save();
+    config.settings().pinnedProcesses.clear();
+    config.load();
+    EXPECT_EQ(config.settings().pinnedProcesses, (std::vector<std::string>{"game", "make"}));
+}
+
+TEST_F(UserConfigSaveLoadFixture, NoPinsWritesNoPinnedKey)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().pinnedProcesses.clear();
+    config.save();
+    std::ifstream file(config.configPath());
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_FALSE(text.contains("pinned =")) << text;
+}
+
+TEST_F(UserConfigSaveLoadFixture, APinnedListIsTakenInFiltered)
+{
+    {
+        std::ofstream file(m_TempDir / "config.toml");
+        ASSERT_TRUE(file.is_open());
+        file << "config_version = 2\n[process_table]\npinned = [\"server\", 5, \"\", \"game\", \"server\"]\n";
+    }
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().pinnedProcesses, (std::vector<std::string>{"game", "server"}));
+}
+
 // ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
 
 TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
@@ -1027,6 +1063,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  processColumns,
                  processMeters,
                  processTableLayout,
+                 pinnedProcesses,
                  refreshIntervalMs,
                  maxHistorySeconds,
                  socketStatsCacheTtlMs,
@@ -1061,6 +1098,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
         EXPECT_EQ(processMeters.style(col), meter) << getColumnInfo(col).configKey;
     }
     EXPECT_TRUE(processTableLayout.empty()); // ImGui's own default widths, order and sort (CPU %, descending)
+    EXPECT_TRUE(pinnedProcesses.empty());    // #3061
     EXPECT_EQ(refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
     EXPECT_EQ(refreshIntervalMs, 1000);
     EXPECT_EQ(maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
