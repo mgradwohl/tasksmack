@@ -904,7 +904,7 @@ void SystemMetricsPanel::renderOverview()
                     });
 
                 // The User and System bands' edges (shared with Process Details, #1180). A gap point is
-                // NaN in every band (see UI::Widgets::reduceAlignedSeries). They are gathered only when
+                // NaN in every band (see UI::Widgets::reduceAlignedPoints). They are gathered only when
                 // the points change (ReducedValuesStamp, #843), each with the value it holds out to
                 // "now" (#1016) already appended; between samples a frame rebuilds only their x, which
                 // moves with now.
