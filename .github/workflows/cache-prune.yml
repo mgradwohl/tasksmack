@@ -3,11 +3,15 @@ name: Cache Prune
 # Deletes superseded Actions cache entries on main (#1583). ccache-action saves a new timestamped
 # entry (ccache-<key>-<ISO timestamp>) on every main run, and the FetchContent cache saves
 # <OS>-fetchcontent-<hash> whenever its key changes; the clang-tidy result cache saves
-# <OS>-tidy-results-<run id>-<attempt> on every scheduled CI run (#1785). Restores only ever use the newest entry of each
+# <OS>-tidy-results-<run id>-<attempt> on every scheduled CI run (#1785), and CodeQL saves its TRAP
+# cache, codeql-trap-<N>-<CLI version>-<language>-<commit SHA> (about 640 MB), for every main commit
+# it analyzes (#3101). Restores only ever use the newest entry of each
 # family, but the old ones stayed until GitHub's quota eviction removed them: main alone reached
 # 12.4 GB of the 10 GB quota (2026-10-09). Keeping only the newest entry per family keeps usage under
 # quota, so least-recently-used eviction never has to touch a live entry (such as the Windows LLVM
-# cache). Other entries (LLVM, CodeQL TRAP, setup-python) have a single live key and are left alone.
+# cache). The TRAP caches weren't pruned until #3101: 20-30 a day kept the repository over its limit,
+# and the eviction took main's clang-tidy result caches, which only pull requests read between
+# nightly saves. Other entries (LLVM, setup-python) have a single live key and are left alone.
 # tools/cache-prune-stale.py decides what a family is; a non-x64 runner's entries carry its
 # architecture in the key, so x64 and ARM64 each keep their own newest entry (#2528).
 # workflow_run always runs this file from the default branch, with this file's permissions.

@@ -782,6 +782,7 @@ void SystemMetricsPanel::renderOverview()
             .snapshot = &snap,
             .hasCpuFreq = caps.hasCpuFreq,
             .hasUptime = caps.hasUptime,
+            .hasLoadAvg = caps.hasLoadAvg,
             .hasPressure = caps.hasPressure,
             .hasVirtualizationInfo = caps.hasVirtualizationInfo,
             .hasVirtualizationSecurityInfo = caps.hasVirtualizationSecurityInfo,

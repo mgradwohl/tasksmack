@@ -71,6 +71,7 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.showPrivilegeNotice = settings.showPrivilegeNotice;
     state.udpEventTrace = settings.udpEventTrace;
     state.showProcessIcons = settings.showProcessIcons;
+    state.highlightNewProcesses = settings.highlightNewProcesses;
 }
 
 void resetToDefaults(State& state)
@@ -89,6 +90,7 @@ void resetToDefaults(State& state)
     state.showPrivilegeNotice = defaults.showPrivilegeNotice;
     state.udpEventTrace = defaults.udpEventTrace;
     state.showProcessIcons = defaults.showProcessIcons;
+    state.highlightNewProcesses = defaults.highlightNewProcesses;
 }
 
 Action render(State& state)
@@ -241,10 +243,13 @@ Action render(State& state)
 #ifndef _WIN32
         const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
                                                  checkboxWidth(PROCESS_ICONS_LABEL),
+                                                 checkboxWidth(HIGHLIGHT_NEW_LABEL),
                                                  Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F});
 #else
-        const float checkboxRowWidth =
-            std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL), checkboxWidth(PROCESS_ICONS_LABEL), checkboxWidth(UDP_EVENT_TRACE_LABEL)});
+        const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+                                                 checkboxWidth(PROCESS_ICONS_LABEL),
+                                                 checkboxWidth(HIGHLIGHT_NEW_LABEL),
+                                                 checkboxWidth(UDP_EVENT_TRACE_LABEL)});
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -330,6 +335,8 @@ Action render(State& state)
         ImGui::Spacing();
         UI::Widgets::outlinedCheckbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
         ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes, Services and Startup tabs and Process Details");
+        UI::Widgets::outlinedCheckbox(HIGHLIGHT_NEW_LABEL, &state.highlightNewProcesses);
+        ImGui::SetItemTooltip("Tint a process's row for a few seconds after it starts, so short-lived processes stand out");
 
         UI::Widgets::sectionGap();
 

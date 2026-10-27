@@ -455,10 +455,15 @@ jobs:
           ./tools/clang-tidy.sh --cache-dir "$RESULT_CACHE" ${{ inputs.build_type }} "${files[@]}" 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
 
+      # The summary also says which result-cache baseline was restored, or why none was, and how many
+      # files were reused from it (#3101).
       - name: Summarize clang-tidy findings (Linux)
         if: always() && (steps.tidy-linux.outcome == 'success' || steps.tidy-linux.outcome == 'failure')
         shell: bash
-        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CACHE_KEY: ${{ steps.tidy-cache.outputs.restored-key }}
+          CACHE_FRESH: ${{ steps.tidy-cache.outputs.fresh }}
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' --cache-key "$CACHE_KEY" --cache-fresh "$CACHE_FRESH" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run clang-tidy (Windows)
         id: tidy
@@ -484,7 +489,10 @@ jobs:
       - name: Summarize clang-tidy findings (Windows)
         if: always() && (steps.tidy.outcome == 'success' || steps.tidy.outcome == 'failure')
         shell: bash
-        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CACHE_KEY: ${{ steps.tidy-cache.outputs.restored-key }}
+          CACHE_FRESH: ${{ steps.tidy-cache.outputs.fresh }}
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' --cache-key "$CACHE_KEY" --cache-fresh "$CACHE_FRESH" >> "$GITHUB_STEP_SUMMARY"
 
       # Clean results are valid whether or not other files failed, so save after a failure too.
       # Never from a pull request (#1554).

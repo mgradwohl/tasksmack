@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
 #include "App/Panels/GpuSection.h"
+#include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
@@ -2075,6 +2076,24 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
 {
     const std::size_t procIdx = row.procIdx;
     ImGui::TableNextRow();
+
+    // A process that started a moment ago (#3060): its row tinted, fading out over a few seconds. The
+    // wall clock is read once a frame, not per row.
+    if (UserConfig::get().settings().highlightNewProcesses)
+    {
+        if (const int frame = ImGui::GetFrameCount(); frame != m_HighlightClockFrame)
+        {
+            m_HighlightClockFrame = frame;
+            m_HighlightNowEpochSeconds = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        }
+        if (const std::optional<float> alpha = NewProcessHighlight::alpha(proc.startTimeEpoch, m_HighlightNowEpochSeconds);
+            alpha.has_value())
+        {
+            ImVec4 tint = UI::Theme::get().scheme().processNew; // the theme's, else its success colour
+            tint.w = *alpha;
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+        }
+    }
 
     // Get-or-build the pre-formatted strings for this row. Built lazily here --
     // the first time this specific row is actually rendered after its snapshot

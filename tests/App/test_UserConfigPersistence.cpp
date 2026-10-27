@@ -1044,6 +1044,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
                  windowMaximized,
                  showPrivilegeNotice,
                  showProcessIcons,
+                 highlightNewProcesses,
                  cpuDetailsExpanded,
                  dumpFolder,
                  forceNativeWindowDecorationsOnWayland] = config.settings();
@@ -1080,6 +1081,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileLeavesEverySettingAtItsDocument
     EXPECT_FALSE(windowMaximized);
     EXPECT_TRUE(showPrivilegeNotice);
     EXPECT_TRUE(showProcessIcons);
+    EXPECT_TRUE(highlightNewProcesses); // #3060
     EXPECT_TRUE(cpuDetailsExpanded);
     EXPECT_TRUE(dumpFolder.empty()); // the temp folder
     EXPECT_FALSE(forceNativeWindowDecorationsOnWayland);

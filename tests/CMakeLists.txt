@@ -255,6 +255,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/tidy-findings.py writes the clang-tidy jobs' summary, including the result-cache line (#3101).
+add_test(NAME TidyFindingsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_findings.py)
+
 # tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
 # match the C++ encoder's.
 add_test(NAME HelperHandshakeScript
@@ -309,6 +313,17 @@ if(TASKSMACK_BASH)
         TIMEOUT 120)
 endif()
 
+# tools/ci-change-classifier.py picks the C++ jobs a pull request needs (#3104): its table of paths, its
+# allowlist rules, and ci.yml's classify and CI Success steps run with bash on throwaway merge commits and
+# job results. The step cases need bash and are skipped without it. They build git repositories, about 50 s
+# on an idle Windows machine; 300 s is headroom for a busy one (#1797).
+add_test(NAME CiChangeClassifierScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ci_change_classifier.py)
+set_tests_properties(CiChangeClassifierScript PROPERTIES TIMEOUT 300)
+if(TASKSMACK_BASH)
+    set_tests_properties(CiChangeClassifierScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}")
+endif()
+
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
@@ -326,9 +341,9 @@ endif()
 
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
-set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
-    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script StartupWiringScript
-    PROPERTIES TIMEOUT 120)
+set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript TidyFindingsScript MergeGtestResultsScript
+    CoverageMismatchesScript CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script
+    StartupWiringScript PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
@@ -570,6 +585,7 @@ set(COMMON_TEST_SOURCES
     # The PGO UI training plan (#880): workload weights, frame allocation, the driver's command line
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
+    App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp

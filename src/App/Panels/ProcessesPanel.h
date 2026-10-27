@@ -803,6 +803,9 @@ class ProcessesPanel : public Panel
     /// @param row Its place in the tree (depth, children, expanded) and its index in the adopted
     ///            generation, which its sparklines are found by; a list row is a root without children.
     void renderProcessRow(const Domain::ProcessSnapshot& proc, const ProcessTreeFlatten::ProcessTreeRow& row);
+    /// The wall clock new-process highlighting compares start times with (#3060), read once a frame.
+    double m_HighlightNowEpochSeconds = 0.0;
+    int m_HighlightClockFrame = -1;
 
     /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
     /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
