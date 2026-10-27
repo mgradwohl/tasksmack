@@ -40,96 +40,115 @@ env:
 permissions: {}
 
 jobs:
+  # Classifies a pull request's changes with tools/ci-change-classifier.py, whose header documents
+  # each output and every file it lets skip the C++ jobs (#3104). A push, the schedule and a manual
+  # run always get every output's safe value (the full suite). The outputs are never left unset: a
+  # failed or unexpected classification gives the safe values too, so the worst a classifier fault
+  # can do is run jobs it didn't need to, and a failed job still fails CI Success.
   detect-docs-only:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       docs_only: ${{ steps.set_output.outputs.docs_only }}
       linux_only: ${{ steps.set_output.outputs.linux_only }}
       windows_only: ${{ steps.set_output.outputs.windows_only }}
+      automation_only: ${{ steps.set_output.outputs.automation_only }}
     steps:
-      - name: Detect docs-only and platform-only pull request changes
-        id: filter
+      # The merge commit GitHub builds (refs/pull/N/merge) and its two parents, so HEAD^1..HEAD is
+      # exactly what the pull request changes on the base branch it would merge into.
+      - name: Check out the pull request's merge commit
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # With predicate-quantifier=every a FILE matches a filter only if it matches all of the
-          # filter's patterns, and the filter is true if ANY changed file matches. So each filter
-          # below is "**" minus a set (negated patterns): it is true when some changed file lies
-          # outside that set, and false only when every changed file lies inside it. The filters
-          # used to list the set itself, which made windows_platform true for any PR touching one
-          # Windows platform file -- skipping the Linux build of a PR that also changed shared code
-          # -- and docs_only never true (no file matches all of its patterns).
-          predicate-quantifier: every
-          filters: |
-            outside_docs:
-              - '**'
-              - '!**/*.md'
-              - '!docs/**'
-              - '!.github/ISSUE_TEMPLATE/**'
-              - '!.github/pull_request_template.md'
-              - '!.github/PULL_REQUEST_TEMPLATE/**'
-              - '!LICENSE'
-            # Only a platform's .cpp files are its own. Its headers can be compiled into the other
-            # OS's build: the shared test binary includes about 20 header-only Linux parsers
-            # (test_LinuxOsInfo.cpp and others in COMMON_TEST_SOURCES), and Linux builds the Windows
-            # *Math.h headers (WINDOWS_MATH_TEST_SOURCES). So a header change runs both OSes' builds,
-            # or a break in the other OS's compile would only show on main (#2130).
-            outside_linux_platform:
-              - '**'
-              - '!src/Platform/Linux/**/*.cpp'
-            outside_windows_platform:
-              - '**'
-              - '!src/Platform/Windows/**/*.cpp'
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Normalize outputs
+      # github.head_ref and the other pull request fields are attacker-controlled (a fork names its
+      # own branch); they reach the shell only as environment variables, never as inline expressions.
+      - name: Classify the changes
         id: set_output
-        # github.head_ref is attacker-controlled (the PR branch name); passing it
-        # directly into an inline shell expression enables script injection. Bind it
-        # to an env var first so the shell treats it as data, not as code.
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          # steps.filter only ran (see its own `if:`) for pull_request events.
-          emit_platform_outputs() {
-            # A set's "only" output is true when no changed file lies outside it (see the filter
-            # step). paths-filter reports 'false' for a filter no file matched, and an empty
-            # change set can't occur for a pull request.
-            if [[ "${{ steps.filter.outputs.outside_docs }}" = 'false' ]]; then
-              echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            fi
-            if [[ "${{ steps.filter.outputs.outside_linux_platform }}" = 'false' ]]; then
-              echo "linux_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "linux_only=false" >> "$GITHUB_OUTPUT"
-            fi
-            if [[ "${{ steps.filter.outputs.outside_windows_platform }}" = 'false' ]]; then
-              echo "windows_only=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "windows_only=false" >> "$GITHUB_OUTPUT"
-            fi
+          # Every output, in the classifier's order, with its safe value (the one that runs every job
+          # the output can skip). Keep it in step with OUTPUTS in tools/ci-change-classifier.py;
+          # tests/tools/test_ci_change_classifier.py checks that it is.
+          SAFE_OUTPUTS='docs_only=false linux_only=false windows_only=false automation_only=false'
+          read -r -a safe <<<"$SAFE_OUTPUTS"
+
+          report() {
+            echo "$1"
+            {
+              echo "## Change classification"
+              echo ""
+              echo "$1"
+              echo ""
+              echo '```'
+              cat
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          full_validation() {
+            printf '%s\n' "${safe[@]}" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${safe[@]}" | report "Full validation: $1."
           }
 
-          if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
-            if [[ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" && \
-                  "${{ github.event.pull_request.user.login }}" = 'github-actions[bot]' && \
-                  "${HEAD_REF}" == chore/changelog-* ]]; then
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-              echo "linux_only=false" >> "$GITHUB_OUTPUT"
-              echo "windows_only=false" >> "$GITHUB_OUTPUT"
-            else
-              emit_platform_outputs
-            fi
-          else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "linux_only=false" >> "$GITHUB_OUTPUT"
-            echo "windows_only=false" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" != 'pull_request' ]]; then
+            full_validation "a ${EVENT_NAME} run always gets every job"
+            exit 0
           fi
+          # changelog.yml's CHANGELOG.md pull request is docs only, but it is the release's last
+          # check before the tag, so it gets every job.
+          if [[ "$HEAD_REPO" == "$REPOSITORY" && "$PR_AUTHOR" == 'github-actions[bot]' &&
+                "$HEAD_REF" == chore/changelog-* ]]; then
+            full_validation "the changelog pull request always gets every job"
+            exit 0
+          fi
+          if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
+            echo "::warning title=Change classification::HEAD is not the pull request's merge commit; running every job."
+            full_validation "HEAD is not a merge commit"
+            exit 0
+          fi
+
+          # The base branch's copy of the classifier, never the pull request's: a change to the
+          # classifier is judged by the reviewed version, which gives that change every job.
+          classifier="${RUNNER_TEMP}/ci-change-classifier.py"
+          if ! git show 'HEAD^1:tools/ci-change-classifier.py' > "$classifier" 2> /dev/null; then
+            full_validation "the base branch has no tools/ci-change-classifier.py"
+            exit 0
+          fi
+          if ! result="$(python3 -I "$classifier" --base 'HEAD^1' --head HEAD)"; then
+            echo "::warning title=Change classification::tools/ci-change-classifier.py failed; running every job."
+            full_validation "the classifier failed"
+            exit 0
+          fi
+
+          # Exactly one name=true|false line per output, in order, or the result isn't used.
+          mapfile -t lines <<<"$result"
+          valid=true
+          if [[ "${#lines[@]}" -ne "${#safe[@]}" ]]; then
+            valid=false
+          else
+            for i in "${!safe[@]}"; do
+              if [[ ! "${lines[$i]}" =~ ^${safe[$i]%%=*}=(true|false)$ ]]; then
+                valid=false
+              fi
+            done
+          fi
+          if [[ "$valid" != 'true' ]]; then
+            echo "::warning title=Change classification::unexpected classifier output; running every job."
+            printf '%s\n' "$result"
+            full_validation "the classifier's output was not the expected outputs"
+            exit 0
+          fi
+          printf '%s\n' "${lines[@]}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${lines[@]}" | report "Classified by the base branch's tools/ci-change-classifier.py (per-file categories in the step log)."
 
   # Linux debug build and test, plus the Linux clang-tidy run (#2047), the same way as Windows
   # below: clang-tidy runs after the tests on the tree this job configured, so it reuses its LLVM
@@ -137,11 +156,14 @@ jobs:
   # check changed files only, the nightly schedule and manual runs everything, and push to main
   # or a release/* branch never (the PR already checked the same tree). The nightly only runs
   # clang-tidy here (no build). "CI Success" gates on the tidy-outcome output; skipped for
-  # docs-only and Windows-only changes, whose Linux file selection would be empty anyway.
+  # docs-only and Windows-only changes, whose Linux file selection would be empty anyway. Every C++
+  # job skips for an automation-only pull request too (#3104): see automation-checks below.
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' ||
+       (needs.detect-docs-only.outputs.docs_only != 'true' &&
+        needs.detect-docs-only.outputs.automation_only != 'true')) &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -161,7 +183,9 @@ jobs:
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' ||
+       (needs.detect-docs-only.outputs.docs_only != 'true' &&
+        needs.detect-docs-only.outputs.automation_only != 'true')) &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -183,7 +207,9 @@ jobs:
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' ||
+       (needs.detect-docs-only.outputs.docs_only != 'true' &&
+        needs.detect-docs-only.outputs.automation_only != 'true')) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -254,12 +280,50 @@ jobs:
       - name: Browser smoke test of the docs site
         run: python tools/docs-site-smoke.py
 
+  # An automation-only pull request (tools/ci-change-classifier.py's automation_only, #3104) skips
+  # the C++ jobs, and with them ctest's tool tests (tests/tools). The ones that read the files the
+  # classifier lets skip those jobs run here instead, in about a minute and with no build:
+  # test_workflow_run_steps.py runs renovate.yml's dry-run step, and test_check_cache_prune_triggers.py
+  # reads every workflow. test_ci_change_classifier.py fails when a tests/tools script names one of
+  # those files without this step running it. pre-commit.yml (actionlint), CodeQL's Actions analysis,
+  # Dependency Review and OSV-Scanner run for the pull request as for any other.
+  automation-checks:
+    name: Automation checks
+    needs: [detect-docs-only]
+    if: github.event_name == 'pull_request' && needs.detect-docs-only.outputs.automation_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+
+      - name: Run the tool tests that read automation files
+        run: |
+          status=0
+          for test in \
+              tests/tools/test_ci_change_classifier.py \
+              tests/tools/test_workflow_run_steps.py \
+              tests/tools/test_check_cache_prune_triggers.py; do
+            echo "::group::${test}"
+            python -X utf8 "$test" || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
   # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
   # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
-  # as before: skipped on push to main or a release/* branch, for docs-only changes and when every
-  # change is Linux-only.
+  # as before: skipped on push to main or a release/* branch, for docs-only and automation-only
+  # changes and when every change is Linux-only.
   # always(): a failed or cancelled build-windows-debug must fail this check, not skip it (a
   # skipped required check counts as passing).
   static-analysis-windows:
@@ -268,7 +332,9 @@ jobs:
     if: >-
       always() &&
       needs.detect-docs-only.result == 'success' &&
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' ||
+       (needs.detect-docs-only.outputs.docs_only != 'true' &&
+        needs.detect-docs-only.outputs.automation_only != 'true')) &&
       (github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/'))) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     runs-on: ubuntu-24.04
@@ -481,7 +547,8 @@ jobs:
     needs: [detect-docs-only]
     if: >-
       github.event_name == 'pull_request' &&
-      needs.detect-docs-only.outputs.docs_only != 'true'
+      needs.detect-docs-only.outputs.docs_only != 'true' &&
+      needs.detect-docs-only.outputs.automation_only != 'true'
     runs-on: ubuntu-24.04
     # 45, not 30: a PR into release/X.Y restores main's ccache, which matches little of the release
     # branch's sources, so its build runs near cold. Backport #2862 took 28 minutes and backport
@@ -582,6 +649,7 @@ jobs:
       - build-windows-release
       - build-linux-unity
       - docs-hygiene
+      - automation-checks
       - static-analysis-windows
       - asan-ubsan
     runs-on: ubuntu-24.04
@@ -621,6 +689,8 @@ jobs:
           DOCS_ONLY:      ${{ needs.detect-docs-only.outputs.docs_only }}
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
+          AUTOMATION_ONLY: ${{ needs.detect-docs-only.outputs.automation_only }}
+          AUTOMATION_RESULT: ${{ needs.automation-checks.result }}
           EVENT_NAME:     ${{ github.event_name }}
           SCHEDULE:       ${{ github.event.schedule }}
           REF:            ${{ github.ref }}
@@ -641,6 +711,41 @@ jobs:
           if [[ "$DETECT_RESULT" != 'success' ]]; then
             echo "❌ Change detection did not succeed: $DETECT_RESULT"
             failed=true
+          else
+            # The detect job always writes every output. An unset or odd one, both skips at once,
+            # or an automation-only skip outside a pull request is a broken classification: fail
+            # rather than trust it.
+            for flag in DOCS_ONLY LINUX_ONLY WINDOWS_ONLY AUTOMATION_ONLY; do
+              if [[ "${!flag}" != 'true' && "${!flag}" != 'false' ]]; then
+                echo "❌ Change detection output ${flag,,} is '${!flag}', not true or false"
+                failed=true
+              fi
+            done
+            if [[ "$DOCS_ONLY" == 'true' && "$AUTOMATION_ONLY" == 'true' ]]; then
+              echo "❌ Change detection said both docs_only and automation_only"
+              failed=true
+            fi
+            if [[ "$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" != 'pull_request' ]]; then
+              echo "❌ Change detection said automation_only for a ${EVENT_NAME} run"
+              failed=true
+            fi
+          fi
+          # A docs-only or an automation-only pull request changes no C++ job's input (#3104,
+          # tools/ci-change-classifier.py), so those jobs may skip; nothing else lets them.
+          no_cpp_change=false
+          if [[ "$DOCS_ONLY" == 'true' || ("$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request') ]]; then
+            no_cpp_change=true
+          fi
+          # automation-checks runs the tool tests the skipped C++ jobs would have, so it must pass
+          # whenever they skip for automation_only; otherwise it is skipped.
+          if [[ "$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request' ]]; then
+            if [[ "$AUTOMATION_RESULT" != 'success' ]]; then
+              echo "❌ Automation checks did not succeed: $AUTOMATION_RESULT"
+              failed=true
+            fi
+          elif [[ "$AUTOMATION_RESULT" != 'skipped' && "$AUTOMATION_RESULT" != 'success' ]]; then
+            echo "❌ Automation checks did not succeed: $AUTOMATION_RESULT"
+            failed=true
           fi
           if [[ "$DOCS_RESULT" != 'success' ]]; then
             echo "❌ Documentation hygiene did not succeed: $DOCS_RESULT"
@@ -649,23 +754,23 @@ jobs:
           if [[ "$EVENT_NAME" != 'schedule' ]]; then
             if [[ "$LINUX_RESULT" != 'success' &&
                   ! ("$LINUX_RESULT" == 'skipped' &&
-                     ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
+                     ("$no_cpp_change" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
               echo "❌ Linux debug build did not succeed or have an intentional skip: $LINUX_RESULT"
               failed=true
             fi
             if [[ "$WINDOWS_RESULT" != 'success' &&
                   ! ("$WINDOWS_RESULT" == 'skipped' &&
-                     ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
+                     ("$no_cpp_change" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
               echo "❌ Windows debug build did not succeed or have an intentional skip: $WINDOWS_RESULT"
               failed=true
             fi
           fi
 
-          # Linux release runs on every event (#1134); it may only skip for docs-only or
-          # Windows-only changes, exactly like Linux debug.
+          # Linux release runs on every event (#1134); it may only skip for docs-only,
+          # automation-only or Windows-only changes, exactly like Linux debug.
           if [[ "$LINUX_RELEASE_RESULT" != 'success' &&
                 ! ("$LINUX_RELEASE_RESULT" == 'skipped' &&
-                   ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
+                   ("$no_cpp_change" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
             echo "❌ Linux release build did not succeed or have an intentional skip: $LINUX_RELEASE_RESULT"
             failed=true
           fi
@@ -690,11 +795,11 @@ jobs:
           # main or a release/* branch (the PR already checked the same tree; the nightly runs
           # every file). Its step is
           # continue-on-error, so the job result can't show a finding: read the step's outcome.
-          # Like the job, it skips docs-only and Windows-only changes; a selection with no
+          # Like the job, it skips docs-only, automation-only and Windows-only changes; a selection with no
           # translation unit ('none') passes. Anything else -- a finding, or a tidy step that
           # never ran because the job failed or was cancelled first -- fails the gate.
           if [[ "$EVENT_NAME" != 'push' || ("$REF" != 'refs/heads/main' && "$REF" != refs/heads/release/*) ]]; then
-            if [[ "$LINUX_RESULT" == 'skipped' && ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true') ]]; then
+            if [[ "$LINUX_RESULT" == 'skipped' && ("$no_cpp_change" == 'true' || "$WINDOWS_ONLY" == 'true') ]]; then
               echo "✅ clang-tidy (Linux) skipped: no Linux-relevant change."
             elif [[ "$LINUX_TIDY_OUTCOME" == 'success' ]]; then
               echo "✅ clang-tidy (Linux) passed (${LINUX_TIDY_MODE} files)."
@@ -715,17 +820,17 @@ jobs:
             # The Windows job is also skipped, intentionally, when every change is Linux-only.
             if [[ "$STATIC_ANALYSIS_WINDOWS_RESULT" != 'success' &&
                   ! ("$STATIC_ANALYSIS_WINDOWS_RESULT" == 'skipped' &&
-                     ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
+                     ("$no_cpp_change" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
               echo "❌ Windows static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_WINDOWS_RESULT"
               failed=true
             fi
           fi
 
           # ASan+UBSan runs on pull requests only (push/schedule/dispatch get it from sanitizers.yml
-          # and heavy-checks.yml), and is skipped for docs-only PRs.
+          # and heavy-checks.yml), and is skipped for docs-only and automation-only PRs.
           if [[ "$EVENT_NAME" == 'pull_request' ]]; then
             if [[ "$ASAN_UBSAN_RESULT" != 'success' &&
-                  ! ("$ASAN_UBSAN_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
+                  ! ("$ASAN_UBSAN_RESULT" == 'skipped' && "$no_cpp_change" == 'true') ]]; then
               echo "❌ ASan+UBSan did not succeed or have an intentional skip: $ASAN_UBSAN_RESULT"
               failed=true
             fi

@@ -309,6 +309,17 @@ if(TASKSMACK_BASH)
         TIMEOUT 120)
 endif()
 
+# tools/ci-change-classifier.py picks the C++ jobs a pull request needs (#3104): its table of paths, its
+# allowlist rules, and ci.yml's classify and CI Success steps run with bash on throwaway merge commits and
+# job results. The step cases need bash and are skipped without it. They build git repositories, about 50 s
+# on an idle Windows machine; 300 s is headroom for a busy one (#1797).
+add_test(NAME CiChangeClassifierScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ci_change_classifier.py)
+set_tests_properties(CiChangeClassifierScript PROPERTIES TIMEOUT 300)
+if(TASKSMACK_BASH)
+    set_tests_properties(CiChangeClassifierScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}")
+endif()
+
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
