@@ -2914,17 +2914,34 @@ That single push runs two independent workflows:
   part-way leaves a draft, never a public release with missing assets; re-running reuses that
   draft and overwrites its assets. Then `verify-published-release` downloads the published assets
   and checks them again (see [Release Artifact Validation](#release-artifact-validation)). The
-  maintainer's approved release notes then replace the
-  placeholder: `gh release edit vX.Y.Z --notes-file <notes.md>`. Keep a pointer to the User
-  Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) in them, as the
-  placeholder has.
+  placeholder doesn't stay: `changelog.yml`'s `release-notes` job replaces it automatically once the
+  release is published (below, #3144).
   See [Release Artifacts](#release-artifacts) for what it contains and [Release
   Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
 - **`changelog.yml`** generates the tag's `CHANGELOG.md` section from its own branch history and
   opens a `chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y` pull request and a
   `chore/changelog-vX.Y.Z-to-main → main` one; each must be merged separately -- see
-  [Changelog](#changelog) below. Watch it under **Actions → Changelog**.
+  [Changelog](#changelog) below. Its `release-notes` job fills in the release page (#3144): it waits
+  up to two hours for `release.yml` to publish the release, then, only while the body still starts with
+  "Release notes follow.", replaces it with `tools/compose-release-notes.py`'s notes:
+  - `# TaskSmack vX.Y.Z`;
+  - the "Which file should I download?" guide, from
+    [`.github/release-notes/download-guide.md`](.github/release-notes/download-guide.md) with the
+    version filled in. Its line about the files you don't need names `SHA256SUMS` and
+    `SHA256SUMS.bundle` when the release has them, and the per-file `.bundle` files otherwise;
+  - `## Changes`: the same git-cliff section as `CHANGELOG.md`, without its `## [X.Y.Z]` line and with
+    its headings one level down. If the notes would pass 120,000 bytes (GitHub refuses a body over
+    125,000 characters, #2801), the list is cut and links to the full section in `CHANGELOG.md`;
+  - the placeholder's own "Verifying downloads" block, unchanged.
+
+  Notes that no longer start with the placeholder are left as they are, so hand-written notes are
+  never overwritten. To replace the generated ones with a hand-written summary (as v0.9.0 and v0.9.1
+  had), run `gh release edit vX.Y.Z --notes-file <notes.md>` afterwards, keeping the download guide
+  and a pointer to the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release).
+  If `release.yml` fails or takes longer than the wait, the job fails saying so; re-run it once the
+  release is published. A tag on `release/X.Y` runs that branch's `changelog.yml`, so the branch
+  needs this job too; the composer and the guide are read from `main`.
 
 ### Release Artifacts
 
@@ -3246,6 +3263,7 @@ and:
 4. Runs git-cliff (pinned to a fixed version in `changelog.yml`, with `main`'s `cliff.toml`) over that range and prepends the `[X.Y.Z]` section after the header of each target branch's current `CHANGELOG.md`, so every branch's copy of the section is identical.
 5. Opens one pull request per target (`chore/changelog-vX.Y.Z-to-release-X.Y → release/X.Y`, `chore/changelog-vX.Y.Z-to-main → main`), labeled `documentation`. If a PR can't be created, the workflow fails with an error that links the compare page for opening it by hand. A rerun reuses the open PR, and a target whose `CHANGELOG.md` already carries the section is skipped.
 6. Merge each PR once CI passes. If the release branch is cut after its tag (`release/0.9` was, after `v0.9.0`), label `main`'s changelog PR `backport:X.Y` so the branch gets the section too.
+7. Separately, the `release-notes` job puts the same section on the GitHub release, under the download guide, once `release.yml` has published it, as long as the release still has the placeholder body (see [Cutting a Release](#cutting-a-release), #3144).
 
 You can watch the progress under **Actions → Changelog** in the GitHub UI.
 

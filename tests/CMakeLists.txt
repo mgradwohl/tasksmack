@@ -280,6 +280,10 @@ add_test(NAME CoverageMismatchesScript
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
 
+# tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
+add_test(NAME ComposeReleaseNotesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_compose_release_notes.py)
+
 # tools/check-cflite-paths.py keeps the ClusterFuzzLite baseline build's paths equal to PR fuzzing's (#2533).
 add_test(NAME CheckCflitePathsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)
@@ -297,8 +301,8 @@ add_test(NAME StartupWiringScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_startup_wiring.py)
 
 # The run: scripts of renovate.yml's dry-run choice (#2527), sanitizers.yml's job summary (#2532),
-# main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952) and
-# codeql.yml's src/ filter (#2992), read from the workflows and run with bash (pwsh for release.yml's)
+# main-health.yml's per-job check (#2313), release.yml's Windows digest comparison (#2952),
+# codeql.yml's src/ filter (#2992) and changelog.yml's release notes (#3144), read from the workflows and run with bash (pwsh for release.yml's)
 # against stubs and fixtures (#2478). The Main Health and CodeQL cases also need jq on bash's PATH, and
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)

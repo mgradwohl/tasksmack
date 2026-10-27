@@ -26,6 +26,10 @@
 - release.yml sign-windows and sign-windows-installer "Register the PowerShell Gallery if the runner has
   none": runs just before the signing action, whose Install-Module needs PSGallery, and registers the
   default gallery only when it's missing (#3109). Run with pwsh against stub repository cmdlets.
+- changelog.yml release-notes "Wait for the release to be published" and "Replace the placeholder
+  notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
+  release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
+  someone wrote (#3144). `gh` is a stub; the composer and the guide's template are the real ones.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -1065,6 +1069,144 @@ class SigningGalleryRegistrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("Register-PSRepository", result.stdout)
         self.assertIn("PSGallery is already registered: nothing to do.", result.stdout)
+
+
+# Stands in for the release-notes job's gh calls (#3144). `release view` answers isDraft from the next
+# line of $FIXTURES/states (missing, draft or published; the last line repeats) and body/assets from
+# $FIXTURES/release.json; `release edit` copies the notes file to $FIXTURES/edited.md. Every call is
+# logged to $FIXTURES/calls.log.
+RELEASE_GH_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FIXTURES/calls.log"
+case "$1 $2" in
+  "release view")
+    if [[ "$*" == *"--json isDraft"* ]]; then
+      count=$(grep -c 'isDraft' "$FIXTURES/calls.log")
+      state=$(sed -n "${count}p" "$FIXTURES/states")
+      [[ -n "$state" ]] || state=$(tail -n1 "$FIXTURES/states")
+      case "$state" in
+        missing) echo "release not found" >&2; exit 1 ;;
+        error) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
+        draft) echo true ;;
+        published) echo false ;;
+      esac
+    else
+      cat "$FIXTURES/release.json"
+    fi ;;
+  "release edit")
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --notes-file ]]; then cp "$2" "$FIXTURES/edited.md"; fi
+      shift
+    done ;;
+  *) echo "gh stub: unexpected command $*" >&2; exit 2 ;;
+esac
+"""
+
+
+class ChangelogReleaseNotesTests(unittest.TestCase):
+    """#3144: v0.9.1 shipped with release.yml's "Release notes follow." placeholder until its notes
+    were applied by hand. changelog.yml's release-notes job waits for the release to be published,
+    then replaces the placeholder with tools/compose-release-notes.py's notes, and leaves notes
+    someone wrote alone."""
+
+    WORKFLOW = WORKFLOWS / "changelog.yml"
+    JOB = "release-notes"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.fixtures = self.tmp / "fixtures"
+        self.fixtures.mkdir()
+        (self.fixtures / "calls.log").write_text("", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_step(self, name: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        step = find_step(self.WORKFLOW, name, job=self.JOB)
+        stub = self.tmp / "gh"
+        stub.write_text(RELEASE_GH_STUB, encoding="utf-8", newline="\n")
+        script = (
+            # GitHub's bash: -e -o pipefail. gh and python3 are shell functions, so the real gh can never
+            # answer and python3 is this interpreter (Git Bash's may be the Store alias), and the step
+            # runs from the checkout's root as on the runner.
+            "set -eo pipefail\n"
+            f'gh() {{ "$BASH" "{posix(stub)}" "$@"; }}\n'
+            f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
+            "sleep() { :; }\n"
+            f'cd "{posix(REPO)}"\n' + step.run
+        )
+        values = {"runner.temp": posix(self.tmp), "github.token": "not-a-token"}
+        step_env = {key: substitute(value, values).strip("'") for key, value in step.env.items()}
+        return run_bash(
+            script,
+            self.tmp,
+            {**step_env, **env, "FIXTURES": posix(self.fixtures), "TAG_NAME": "v0.10.0", "RUNNER_TEMP": posix(self.tmp)},
+        )
+
+    def calls(self) -> list[str]:
+        return (self.fixtures / "calls.log").read_text(encoding="utf-8").splitlines()
+
+    def wait(self, *states: str, minutes: str = "5") -> subprocess.CompletedProcess:
+        (self.fixtures / "states").write_text("\n".join(states) + "\n", encoding="utf-8")
+        return self.run_step("Wait for the release to be published", {"WAIT_MINUTES": minutes, "POLL_SECONDS": "0"})
+
+    def test_the_job_waits_then_composes_with_least_privilege(self):
+        self.assertEqual(
+            step_names(self.WORKFLOW, self.JOB),
+            ["Generate the tag's changelog section", "Wait for the release to be published",
+             "Replace the placeholder notes"],
+        )
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text[text.index("\n  release-notes:\n"):]
+        block = job[job.index("    permissions:\n"):job.index("    steps:\n")].splitlines()[1:]
+        self.assertEqual([line.split("#")[0].strip() for line in block], ["contents: write", "pull-requests: read"])
+        self.assertIn("persist-credentials: false", job)
+        # The changelog job's git-cliff and range, without the file header the composer would drop anyway.
+        cliff = find_step(self.WORKFLOW, "Generate the tag's changelog section", job=self.JOB)
+        self.assertEqual(cliff.uses, "orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4")
+        self.assertIn("args: --verbose --strip header ${{ needs.targets.outputs.previous }}..${{ github.ref_name }}", job)
+
+    def test_a_draft_or_missing_release_is_waited_for(self):
+        result = self.wait("missing", "error", "draft", "draft", "published")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("is not created yet; checking again", result.stdout)
+        self.assertIn("is unreadable (HTTP 502: Bad Gateway); checking again", result.stdout)
+        self.assertIn("is still a draft; checking again", result.stdout)
+        self.assertIn("The release for 'v0.10.0' is published.", result.stdout)
+        self.assertEqual(len(self.calls()), 5)
+
+    def test_a_release_never_published_fails_the_wait(self):
+        result = self.wait("draft", minutes="0")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("::error title=Release not published::The release for 'v0.10.0' is still a draft after 0 minutes", result.stdout)
+
+    def write_release(self, body: str) -> None:
+        section = "## [0.10.0] - 2026-11-20\n### Fixed\n\n- A fix\n"
+        (self.tmp / "changelog-section.md").write_text(section, encoding="utf-8")
+        assets = [{"name": name} for name in ("TaskSmack-0.10.0-win64.zip", "SHA256SUMS", "SHA256SUMS.bundle")]
+        (self.fixtures / "release.json").write_text(json.dumps({"body": body, "assets": assets}), encoding="utf-8")
+
+    def test_the_placeholder_is_replaced(self):
+        verify = "## Verifying downloads\n\nCheck `SHA256SUMS`."
+        self.write_release("Release notes follow.\n\n" + verify + "\n")
+        result = self.run_step("Replace the placeholder notes", {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Replaced the placeholder notes of the 'v0.10.0' release.", result.stdout)
+        self.assertIn("release edit v0.10.0 --notes-file", self.calls()[-1])
+        notes = (self.fixtures / "edited.md").read_text(encoding="utf-8")
+        self.assertTrue(notes.startswith("# TaskSmack v0.10.0\n\n## Which file should I download?\n"))
+        self.assertIn("## Changes\n\n#### Fixed\n\n- A fix\n", notes)
+        self.assertIn("`SHA256SUMS`, `SHA256SUMS.bundle`, `*-build-inputs.json`", notes)
+        self.assertTrue(notes.endswith(verify + "\n"))
+
+    def test_hand_written_notes_are_never_edited(self):
+        self.write_release("# TaskSmack v0.10.0\n\nThe maintainer's notes.\n")
+        result = self.run_step("Replace the placeholder notes", {})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("release notes already set; left as is", result.stdout)
+        self.assertFalse(any(call.startswith("release edit") for call in self.calls()), self.calls())
+        self.assertFalse((self.fixtures / "edited.md").exists())
 
 
 if __name__ == "__main__":
