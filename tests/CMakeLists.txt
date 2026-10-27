@@ -453,6 +453,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSortUtils.cpp
     App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
     App/test_ProcessPins.cpp # pinned processes (#3061)
+    App/test_Connections.cpp # the Connections tab (#3066)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -734,6 +735,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
     Platform/test_LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
+    Platform/test_LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
@@ -902,6 +904,8 @@ add_executable(TaskSmackTests
     # (test_ServicesStartupPanelsRender.cpp, #1721)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsView.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
@@ -944,6 +948,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/ConnectionsModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SensorTracker.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp

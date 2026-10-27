@@ -208,6 +208,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/StartupActionsView.cpp
     src/App/Panels/StartupPanel.cpp
     src/App/Panels/StartupView.cpp
+    src/App/Panels/ConnectionsPanel.cpp # the Connections tab (#3066)
+    src/App/Panels/ConnectionsView.cpp
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
@@ -218,6 +220,7 @@ set(TASKSMACK_SOURCES
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
+    src/Domain/ConnectionsModel.cpp # the Connections tab (#3066)
     src/Domain/ServiceModel.cpp
     src/Domain/SensorModel.cpp
     src/Domain/SensorTracker.cpp
@@ -256,6 +259,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
+    src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
     src/Platform/Linux/LinuxProcessModulesReader.cpp
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)

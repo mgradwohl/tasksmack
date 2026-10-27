@@ -581,6 +581,17 @@ The **Startup** tab lists the programs Windows (or, on Linux, your desktop sessi
 - Scheduled tasks that run at sign-in, and services, are not listed here.
 - **Linux:** the XDG autostart entries the desktop session starts at sign-in: the `.desktop` files in `~/.config/autostart` (Location "Autostart (your folder)", Current user) and `/etc/xdg/autostart` or the other `$XDG_CONFIG_DIRS` (Location "Autostart (system)", All users). A file in your folder with the same name as a system one replaces it, as the session does. **Enabled** follows the file's `Hidden` and `X-GNOME-Autostart-enabled` keys; an entry whose `OnlyShowIn` or `NotShowIn` leaves out your desktop (`$XDG_CURRENT_DESKTOP`) shows "Not started here" and can't be switched ("Starts only in KDE"). Parts of the desktop session itself (`NoDisplay=true`, or GNOME's `X-GNOME-Autostart-Phase` and `X-GNOME-HiddenUnderSystemd`: accessibility, settings daemons) are listed but can't be switched ("Part of the desktop session"), as the desktops' own startup settings don't offer them. A copy in your folder with no `Exec` (the usual `Hidden=true` stub) hides the system entry; enabling it brings the system entry back. Disable and Enable never touch a system file and need no administrator rights: they write a copy in `~/.config/autostart` with `Hidden=true` or `Hidden=false` (and `X-GNOME-Autostart-enabled` to match, when the file has it), the way desktop settings tools do. Enabling a system entry whose copy changed nothing else removes the copy, so later updates of the system file apply again.
 
+### Connections tab
+
+The **Connections** tab, between Startup and System, lists every TCP and UDP socket on the machine, with the process holding it, in a **Process / PID / Protocol / Local address / Remote address / State** table. It's what Windows' Resource Monitor shows under Network; Process Details' [Connections](#connections) section shows the same for one process.
+
+- **Local address** and **Remote address** are the socket's endpoints (`10.0.0.5:52144`, `[::1]:631`). A listening or unconnected socket's remote end is `*`. **State** uses netstat's names (`ESTABLISHED`, `LISTEN`, `TIME_WAIT`); a UDP socket that is only bound is `UNCONN`.
+- Rows are sorted by process name. Click a column header to sort by that column, and type in the filter box to show only rows whose process, PID, address, port, protocol or state contains the text. The count beside the box says how many rows match.
+- Click a row to select its process (Process Details follows). Double-click it to show the process in Process Details.
+- A socket shows **Unknown** for its process when no process TaskSmack can see holds it: a closing (`TIME_WAIT`) socket, or one belonging to another user's process, which only an administrator can see. Hover it for the reason.
+- TaskSmack reads the sockets only while the tab is shown, at the refresh interval set in Settings, on a background thread. On Linux it lists the sockets of TaskSmack's own network namespace, so a container's sockets aren't listed. They come from the kernel's netlink socket tables, and each socket's process is found from the processes' open files.
+- On Windows the tab says it isn't available yet.
+
 ### System Information
 
 ![The System tab: a filter box, a Show identifiers checkbox, Copy all, Save report and Refresh buttons with the time of the last read, then the Operating system and Firmware and board sections of label/value rows, each with its own Copy button](../images/screenshots/windows/system-windows-dark.webp)
