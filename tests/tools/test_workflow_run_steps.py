@@ -19,6 +19,9 @@
 - codeql.yml "Keep results under src/": a result is kept when any of its locations, code-flow steps
   or related locations is under src/, so a taint flow from src/ into a third-party sink survives;
   only results with no src/ location at all are dropped (#2992).
+- release.yml sign-windows and sign-windows-installer "Register the PowerShell Gallery if the runner has
+  none": runs just before the signing action, whose Install-Module needs PSGallery, and registers the
+  default gallery only when it's missing (#3109). Run with pwsh against stub repository cmdlets.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -40,7 +43,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from workflow_steps import find_step, substitute  # noqa: E402
+from workflow_steps import find_step, step_names, substitute  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -791,6 +794,85 @@ class HeavyChecksCodecovUploadTests(unittest.TestCase):
                 # Without an `if:`, the implicit success() skipped the upload once the test or
                 # coverage-floor step had failed, so Codecov kept an older measurement.
                 self.assertEqual(step.condition, self.CONDITION)
+
+
+class SigningGalleryRegistrationTests(unittest.TestCase):
+    """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
+    whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
+
+    WORKFLOW = WORKFLOWS / "release.yml"
+    JOBS = ("sign-windows", "sign-windows-installer")
+    REGISTER = "Register the PowerShell Gallery if the runner has none"
+    SIGN = "Sign with Azure Artifact Signing"
+    GUARD = "if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {"
+
+    def test_each_signing_job_registers_the_gallery_just_before_the_signing_action(self):
+        for job in self.JOBS:
+            with self.subTest(job=job):
+                names = step_names(self.WORKFLOW, job)
+                self.assertIn(self.REGISTER, names)
+                self.assertEqual(names.index(self.SIGN), names.index(self.REGISTER) + 1)
+                sign = find_step(self.WORKFLOW, self.SIGN, job=job)
+                self.assertTrue(sign.uses.startswith("azure/artifact-signing-action@"), sign.uses)
+
+    def test_the_register_step_is_the_guarded_default_registration(self):
+        for job in self.JOBS:
+            with self.subTest(job=job):
+                step = find_step(self.WORKFLOW, self.REGISTER, job=job)
+                self.assertEqual(step.shell, "pwsh")
+                self.assertEqual(step.condition, "")
+                self.assertEqual(step.env, {})
+                lines = step.run.splitlines()
+                self.assertEqual(lines[0], self.GUARD)
+                self.assertEqual(lines[1].strip(), "Register-PSRepository -Default")
+                # Both jobs run the same script.
+                self.assertEqual(step.run, find_step(self.WORKFLOW, self.REGISTER, job=self.JOBS[0]).run)
+
+    def run_step(self, registered: bool) -> subprocess.CompletedProcess:
+        """The step's script under pwsh, with Get-PSRepository and Register-PSRepository stubbed by
+        functions (which PowerShell resolves before cmdlets) that log their calls."""
+        script = find_step(self.WORKFLOW, self.REGISTER, job=self.JOBS[0]).run
+        stubs = (
+            f"$script:registered = ${str(registered).lower()}\n"
+            "function Get-PSRepository {\n"
+            "  param([string]$Name, $ErrorAction)\n"
+            "  Write-Host \"stub: Get-PSRepository $Name\"\n"
+            "  if ($script:registered) { return [pscustomobject]@{ Name = 'PSGallery' } }\n"
+            "  if ($ErrorAction -eq 'Stop') { throw 'no PSGallery' }\n"
+            "}\n"
+            "function Register-PSRepository {\n"
+            "  param([switch]$Default)\n"
+            "  Write-Host \"stub: Register-PSRepository -Default:$Default\"\n"
+            "  $script:registered = $true\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "step.ps1"
+            path.write_text(stubs + script + "\n", encoding="utf-8")
+            return subprocess.run(
+                # GitHub's `shell: pwsh` wrapper: -command ". '{0}'" with $ErrorActionPreference = 'stop'.
+                [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                 f"$ErrorActionPreference = 'stop'; . '{path}'"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=60,
+            )
+
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_a_runner_without_the_gallery_registers_it(self):
+        result = self.run_step(registered=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stub: Register-PSRepository -Default:True", result.stdout)
+        self.assertIn("PSGallery was not registered: registered the default repository.", result.stdout)
+
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_a_runner_with_the_gallery_registers_nothing(self):
+        result = self.run_step(registered=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Register-PSRepository", result.stdout)
+        self.assertIn("PSGallery is already registered: nothing to do.", result.stdout)
 
 
 if __name__ == "__main__":
