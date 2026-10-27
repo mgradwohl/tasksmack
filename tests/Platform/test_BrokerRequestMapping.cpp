@@ -75,6 +75,18 @@ TEST(BrokerRequestMappingTest, EachSignalReachesItsAction)
     EXPECT_EQ(actions.stopCount(), 1);
     EXPECT_EQ(actions.resumeCount(), 1);
     EXPECT_EQ(actions.lastTarget(), TARGET);
+
+    // The other signals (#3063) reach sendSignal() with their own ProcessSignal.
+    for (const auto [wire, signal] : {std::pair{Broker::Signal::Hangup, ProcessSignal::Hangup},
+                                      std::pair{Broker::Signal::Interrupt, ProcessSignal::Interrupt},
+                                      std::pair{Broker::Signal::Quit, ProcessSignal::Quit},
+                                      std::pair{Broker::Signal::User1, ProcessSignal::User1},
+                                      std::pair{Broker::Signal::User2, ProcessSignal::User2}})
+    {
+        EXPECT_TRUE(actionResult(BrokerServer::handleRequest(Broker::SignalRequest{.target = TARGET, .signal = wire}, actions)).success);
+        EXPECT_EQ(actions.lastSignal(), signal);
+    }
+    EXPECT_EQ(actions.sendSignalCount(), 5);
 }
 
 TEST(BrokerRequestMappingTest, PriorityIoPriorityAndAffinityReachTheirActions)

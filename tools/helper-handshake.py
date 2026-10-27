@@ -42,6 +42,7 @@ HELLO_PAYLOADS = {
     5: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ReadProcessCounters can ask for sockets (#2728)
     6: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ListHiddenProcesses added (#2728)
     7: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; ServiceAction added (#2728)
+    8: lambda version: struct.pack("<HB", version, 0),  # Hello unchanged; Signal adds HUP, INT, QUIT, USR1, USR2 (#3063)
 }
 
 
