@@ -33,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -4737,4 +4738,74 @@ TEST(ProcessModelTest, ARefusedMemoryRollupIsMarkedNotReadable)
     ASSERT_NE(samples.back().snapshot, nullptr);
     EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
     EXPECT_TRUE(samples.back().snapshot->memoryRollupDenied);
+}
+
+// #3031: a process this refresh couldn't read (Linux's hidepid-hidden processes while the helper is busy)
+// arrives carried over. It stays, with its last row, and its next real read is measured over the whole
+// time since the last one: no gap, no history reset, no double rate.
+TEST(ProcessModelTest, AHeldOverProcessKeepsItsRowAndItsNextReadSpansTheWholeInterval)
+{
+    Domain::ProcessModel::Clock::time_point now;
+    Domain::ProcessModel model(nullptr, [&now] { return now; });
+    const auto find = [&model](std::int32_t pid)
+    {
+        const auto snapshots = model.snapshots();
+        const auto it = std::ranges::find(snapshots, pid, &Domain::ProcessSnapshot::pid);
+        return it == snapshots.end() ? std::optional<Domain::ProcessSnapshot>{} : std::optional<Domain::ProcessSnapshot>{*it};
+    };
+
+    Platform::ProcessCounters visible = makeCounter(100, "visible", 'S', 0, 0);
+    Platform::ProcessCounters hidden = makeCounter(200, "hidden", 'S', 0, 0);
+    std::uint64_t total = 1000;
+    const auto sample = [&](const Platform::ProcessCounters& second)
+    {
+        now += std::chrono::seconds(1);
+        total += 1000;
+        visible.userTime += 100;
+        model.updateFromCounters({visible, second}, total);
+    };
+
+    now += std::chrono::seconds(1);
+    model.updateFromCounters({visible, hidden}, total);
+    hidden.userTime = 100;
+    hidden.readBytes = 1000;
+    sample(hidden);
+    ASSERT_TRUE(find(200).has_value());
+    EXPECT_DOUBLE_EQ(find(200)->cpuPercent, 10.0);
+    EXPECT_DOUBLE_EQ(find(200)->ioReadBytesPerSec, 1000.0);
+
+    Platform::ProcessCounters carried = hidden;
+    carried.heldOver = true;
+    carried.userTime = 0; // whatever a carried record says, the row is the last one
+    sample(carried);
+    const auto held = find(200);
+    ASSERT_TRUE(held.has_value()) << "a carried-over process stays";
+    EXPECT_DOUBLE_EQ(held->cpuPercent, 10.0) << "its last row again";
+    EXPECT_DOUBLE_EQ(held->ioReadBytesPerSec, 1000.0);
+    EXPECT_EQ(held->name, "hidden");
+    EXPECT_DOUBLE_EQ(find(100)->cpuPercent, 10.0) << "the others are measured as ever";
+
+    hidden.userTime = 300; // 200 ticks over the two intervals since its last read
+    hidden.readBytes = 3000;
+    sample(hidden);
+    const auto read = find(200);
+    ASSERT_TRUE(read.has_value());
+    EXPECT_DOUBLE_EQ(read->cpuPercent, 10.0) << "over the 2000 ticks since its last read, not the last 1000";
+    EXPECT_DOUBLE_EQ(read->ioReadBytesPerSec, 1000.0) << "over the two seconds since";
+    EXPECT_DOUBLE_EQ(find(100)->cpuPercent, 10.0);
+}
+
+// #3031: a carried-over record for a process with no row yet is taken as an ordinary first read.
+TEST(ProcessModelTest, AHeldOverProcessWithNoRowYetIsListedAsNew)
+{
+    Domain::ProcessModel::Clock::time_point now;
+    Domain::ProcessModel model(nullptr, [&now] { return now; });
+    Platform::ProcessCounters carried = makeCounter(200, "hidden", 'S', 100, 0);
+    carried.heldOver = true;
+    now += std::chrono::seconds(1);
+    model.updateFromCounters({carried}, 1000);
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1U);
+    EXPECT_EQ(snapshots[0].pid, 200);
+    EXPECT_DOUBLE_EQ(snapshots[0].cpuPercent, 0.0);
 }

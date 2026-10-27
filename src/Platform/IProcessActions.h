@@ -242,6 +242,9 @@ struct ProcessActionCapabilities
     /// runAuthorized() can retry a permissionDenied failure as an administrator, after a password
     /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
     bool canAuthorizeInteractively = false;
+    /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
+    /// FileManager1 over D-Bus or xdg-open).
+    bool canOpenFileLocation = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -301,6 +304,18 @@ class IProcessActions
     {
         static_cast<void>(target);
         return ProcessActionResult::error(syscallTraceUnavailableReason(SyscallTraceAvailability::Unsupported));
+    }
+
+    /// Opens the file manager on the target's executable, selected where the file manager can do that
+    /// (#3064), as Task Manager's "Open file location". Returns once the file manager has been asked,
+    /// never waiting for it. Refused, as every action is, unless the process at the target's PID is the
+    /// target. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canOpenFileLocation's default (false), which an implementation that
+    /// does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult openFileLocation(const ProcessTarget& target)
+    {
+        static_cast<void>(target);
+        return ProcessActionResult::error("Opening a file location isn't available on this system");
     }
 
     /// Lets the target run only on @p cpus (#1887), numbered as CpuAffinity and the per-core figures

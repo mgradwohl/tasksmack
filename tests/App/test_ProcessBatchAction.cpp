@@ -152,6 +152,43 @@ TEST(ProcessBatchActionTest, ACollidingProcessThatAppearsAfterTheSelectedOneExit
 
 // ========== Confirmation text ==========
 
+// #3059: End process tree takes the process and every descendant, children before parents, by the
+// snapshots' childrenIndices; a process outside the subtree, and one already visited, aren't taken.
+TEST(ProcessBatchActionTest, ATreeResolvesToItsDescendantsLeavesFirst)
+{
+    // 0: shell (root) -> 1: make -> 3: cc1, 4: as ; 0 -> 2: vim ; 5: unrelated
+    std::vector<Domain::ProcessSnapshot> snaps{snapshot(100, 1, 1, "shell"),
+                                               snapshot(200, 2, 2, "make"),
+                                               snapshot(300, 3, 3, "vim"),
+                                               snapshot(400, 4, 4, "cc1"),
+                                               snapshot(500, 5, 5, "as"),
+                                               snapshot(600, 6, 6, "unrelated")};
+    snaps[0].childrenIndices = {1, 2};
+    snaps[1].childrenIndices = {3, 4};
+    snaps[2].childrenIndices = {1}; // a malformed duplicate link: make is still taken once
+
+    const std::vector<BatchTarget> targets = ProcessBatch::resolveTreeTargets(snaps, {.pid = 100, .startTimeTicks = 1});
+    std::vector<std::int32_t> pids;
+    pids.reserve(targets.size());
+    for (const BatchTarget& target : targets)
+    {
+        pids.push_back(target.target.pid);
+    }
+    EXPECT_EQ(pids, (std::vector<std::int32_t>{400, 500, 200, 300, 100})) << "children before parents, the root last";
+    EXPECT_EQ(targets.back().name, "shell");
+    EXPECT_EQ(targets.front().target.startTimeTicks, 4U) << "each by PID and start time";
+
+    EXPECT_TRUE(ProcessBatch::resolveTreeTargets(snaps, {.pid = 100, .startTimeTicks = 99}).empty())
+        << "a root whose PID now names another process isn't found";
+    EXPECT_EQ(ProcessBatch::resolveTreeTargets(snaps, {.pid = 600, .startTimeTicks = 6}).size(), 1U) << "no children: just the process";
+}
+
+TEST(ProcessBatchActionTest, TreeTitleNamesTheRootAndCountsItsDescendants)
+{
+    EXPECT_EQ(ProcessBatch::treeConfirmTitle("shell", 100, 5), "End shell (PID 100) and its 4 descendant processes?");
+    EXPECT_EQ(ProcessBatch::treeConfirmTitle("shell", 100, 2), "End shell (PID 100) and its 1 descendant process?");
+}
+
 TEST(ProcessBatchActionTest, TitleCountsTheProcesses)
 {
     EXPECT_EQ(confirmTitle(ProcessAction::Kill, 5), "Kill 5 processes?");

@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -46,6 +47,10 @@ struct UserSettings
     // Process table column widths, order and sort, as ImGui's own "[Table]" settings text (#952).
     // Opaque to TaskSmack: it is filtered by ProcessTableSettings::sanitize() and handed to ImGui.
     std::string processTableLayout;
+
+    // Pinned processes (#3061), by name: kept at the top of the Processes table and through its filter,
+    // [process_table] pinned. Written only when there are any.
+    std::vector<std::string> pinnedProcesses;
 
     // Sampling / refresh interval (milliseconds)
     // Applied to all background samplers (process + system) for consistent cadence.
@@ -109,6 +114,11 @@ struct UserSettings
     // Whether the Processes table, Process Details and the Services and Startup tabs show each
     // program's icon beside its name (#1800); off, the names stand alone.
     bool showProcessIcons = true;
+
+    // Whether the Processes table tints the rows of processes that started in the last few seconds,
+    // and keeps those that just exited as dimmed rows for a moment (#3060), as Process Explorer and
+    // System Informer do, so short-lived processes are seen.
+    bool highlightNewProcesses = true;
 
     // Whether the Overview's CPU Details block is expanded (#809); its heading toggles it. A config
     // written before the block existed has no such key and loads expanded.

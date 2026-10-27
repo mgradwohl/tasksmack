@@ -95,6 +95,10 @@ if(WIN32)
         add_test(NAME VerifyWindowsSignaturesScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-verify-windows-signatures.ps1)
         set_tests_properties(VerifyWindowsSignaturesScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}")
+        # The NSIS installer's second pass (#2302): only a .zip whose files are the ones the uninstaller
+        # deletes is packaged, with the given uninstaller. Stub makensis; nothing is installed.
+        add_test(NAME BuildWindowsInstallerScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-build-windows-installer.ps1)
         # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
         # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
         # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
@@ -111,16 +115,18 @@ if(WIN32)
         # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript PROPERTIES RESOURCE_LOCK pwsh-script-tests
+            CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript PROPERTIES
+            RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript PROPERTIES TIMEOUT 120)
+            VerifyWindowsSignaturesScript BuildWindowsInstallerScript PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript and "
-                        "VerifyWindowsSignaturesScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript, BenchScript, CheckPrereqsScript, SetupDevScript, "
+                        "VerifyWindowsSignaturesScript and BuildWindowsInstallerScript tests are not registered. "
+                        "Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
     # executables are refused, by name, before anything could be packaged.
@@ -249,6 +255,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
 
+# tools/tidy-findings.py writes the clang-tidy jobs' summary, including the result-cache line (#3101).
+add_test(NAME TidyFindingsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_findings.py)
+
 # tools/helper-handshake.py checks the installed helper in the release workflow (#2723); its Hello must
 # match the C++ encoder's.
 add_test(NAME HelperHandshakeScript
@@ -303,6 +313,17 @@ if(TASKSMACK_BASH)
         TIMEOUT 120)
 endif()
 
+# tools/ci-change-classifier.py picks the C++ jobs a pull request needs (#3104): its table of paths, its
+# allowlist rules, and ci.yml's classify and CI Success steps run with bash on throwaway merge commits and
+# job results. The step cases need bash and are skipped without it. They build git repositories, about 50 s
+# on an idle Windows machine; 300 s is headroom for a busy one (#1797).
+add_test(NAME CiChangeClassifierScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ci_change_classifier.py)
+set_tests_properties(CiChangeClassifierScript PROPERTIES TIMEOUT 300)
+if(TASKSMACK_BASH)
+    set_tests_properties(CiChangeClassifierScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}")
+endif()
+
 # tools/cache-prune-stale.py picks the superseded cache entries cache-prune.yml deletes (#1583, #2528).
 add_test(NAME CachePruneStaleScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cache_prune_stale.py)
@@ -320,9 +341,9 @@ endif()
 
 # The short Python script tests (under 6 s each, even with every script test running at once) get
 # their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
-set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
-    CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script StartupWiringScript
-    PROPERTIES TIMEOUT 120)
+set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript TidyFindingsScript MergeGtestResultsScript
+    CoverageMismatchesScript CheckCachePruneTriggersScript CheckDllLoadsScript CachePruneStaleScript CheckUtf8Script
+    StartupWiringScript PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
@@ -430,6 +451,8 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
+    App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
+    App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -467,6 +490,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxOsInfo.cpp
     Platform/test_NetworkdLinkJson.cpp
     Platform/test_DnsMessage.cpp
+    Platform/test_PublicIpLookup.cpp  # what either OS's public IP lookup does with a reply (#3117)
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -564,6 +588,8 @@ set(COMMON_TEST_SOURCES
     # The PGO UI training plan (#880): workload weights, frame allocation, the driver's command line
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
+    App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
+    App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
@@ -713,6 +739,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SystemdServices.cpp
     Platform/test_SystemdActions.cpp  # systemd service control (#2006 phase 2)
     Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
+    Platform/test_PressureParser.cpp  # /proc/pressure parsing (#3062)
     Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
@@ -927,6 +954,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredSystemInfoProbe.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

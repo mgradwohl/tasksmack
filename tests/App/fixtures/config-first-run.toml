@@ -62,6 +62,7 @@ chart_smooth_factor = 0.5
 chart_tau_ms_max = 400
 chart_tau_ms_min = 20
 cpu_details_expanded = true
+highlight_new_processes = true
 show_privilege_notice = true
 show_process_icons = true
 

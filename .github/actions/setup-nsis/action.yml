@@ -1,0 +1,78 @@
+name: 'Setup NSIS'
+description: >-
+  Install the pinned NSIS (makensis) for CPack's NSIS generator and the Windows installer's second
+  pass (#2302): the release's portable .zip from SourceForge, its SHA-256 checked before anything in
+  it runs, unpacked under RUNNER_TEMP. Exports MAKENSIS (the full path, which the cpack and makensis
+  calls pass explicitly, so an NSIS the runner image ships can't be picked instead) and adds its
+  folder to PATH.
+inputs:
+  version:
+    description: >-
+      NSIS version. 3.08 or later: the installer embeds its signed uninstaller with !uninstfinalize
+      (cmake/CPackProjectConfig.cmake.in).
+    required: false
+    default: '3.13'
+  sha256:
+    description: "SHA-256 of nsis-<version>.zip; update it with the version."
+    required: false
+    # nsis-3.13.zip (SourceForge also lists SHA-1 db14f8af2ea346b786c6ae19343f61aaf5e09b8e and
+    # MD5 530e3623c077cba879ed2ae6e13be362 for it, which this file matched when it was pinned).
+    default: 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8'
+outputs:
+  makensis:
+    description: 'The full path of makensis.exe'
+    value: ${{ steps.install.outputs.makensis }}
+
+runs:
+  using: 'composite'
+  steps:
+    # windows-2025 ships no NSIS and windows-11-arm ships 3.10, so every job that needs makensis
+    # installs this one: the two architectures' installers, and the reproducibility rebuild's, are
+    # then made by the same NSIS. The zip is NSIS's own portable build (x86; on windows-11-arm it
+    # runs emulated, as the image's own copy would). SourceForge redirects to a mirror, so each URL
+    # gets retries and the second is tried when the first fails; the SHA-256 decides either way.
+    - name: Install NSIS
+      id: install
+      shell: pwsh
+      env:
+        NSIS_VERSION: ${{ inputs.version }}
+        NSIS_SHA256: ${{ inputs.sha256 }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $zip = Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION.zip"
+        $urls = @(
+          "https://downloads.sourceforge.net/project/nsis/NSIS%203/$env:NSIS_VERSION/nsis-$env:NSIS_VERSION.zip",
+          "https://sourceforge.net/projects/nsis/files/NSIS%203/$env:NSIS_VERSION/nsis-$env:NSIS_VERSION.zip/download"
+        )
+        $actual = $null
+        foreach ($url in $urls) {
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $zip -MaximumRetryCount 3 -RetryIntervalSec 10 -UserAgent 'Wget'
+            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -eq $env:NSIS_SHA256) { break }
+            Write-Host "::warning title=NSIS download::$url gave a file with SHA-256 $actual, not the pinned $env:NSIS_SHA256."
+          } catch {
+            Write-Host "::warning title=NSIS download::$url failed: $($_.Exception.Message)"
+          }
+        }
+        if ($actual -ne $env:NSIS_SHA256) {
+          Write-Host "::error title=NSIS SHA-256 mismatch::No download of nsis-$env:NSIS_VERSION.zip matched the pinned SHA-256 $env:NSIS_SHA256 (last: $actual)."
+          exit 1
+        }
+        $root = Join-Path $env:RUNNER_TEMP 'nsis'
+        Expand-Archive -LiteralPath $zip -DestinationPath $root -Force
+        $makensis = Join-Path $root "nsis-$env:NSIS_VERSION\makensis.exe"
+        if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) {
+          Write-Host "::error title=NSIS layout::nsis-$env:NSIS_VERSION.zip has no nsis-$env:NSIS_VERSION\makensis.exe."
+          exit 1
+        }
+        $reported = (& $makensis /VERSION | Out-String).Trim()
+        if ($reported -ne "v$env:NSIS_VERSION") {
+          Write-Host "::error title=NSIS version::$makensis reports '$reported', expected v$env:NSIS_VERSION."
+          exit 1
+        }
+        Write-Host "makensis $reported at $makensis (nsis-$env:NSIS_VERSION.zip, SHA-256 $actual)"
+        "makensis=$makensis" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "MAKENSIS=$makensis" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        Split-Path -Parent $makensis | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        exit 0

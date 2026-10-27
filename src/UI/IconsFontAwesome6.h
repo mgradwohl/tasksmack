@@ -123,6 +123,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_FLOPPY_DISK "\xef\x83\x87" // U+f0c7 - Floppy disk (save)
 #define ICON_FA_FOLDER "\xef\x81\xbb"      // U+f07b - Folder
 #define ICON_FA_FOLDER_OPEN "\xef\x81\xbc" // U+f07c - Open folder
+#define ICON_FA_THUMBTACK "\xef\x82\x8d"   // U+f08d - Pin (#3061)
 
 // ============================================================================
 // Menu & Navigation Icons

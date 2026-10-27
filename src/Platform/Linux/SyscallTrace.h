@@ -113,6 +113,9 @@ struct Tools
     std::optional<Terminal> terminal;
     /// Absolute path to gdb's gcore, which createDump() runs to write a core file (#807), or empty.
     std::string coreDumperPath;
+    /// Absolute path to xdg-open, which openFileLocation() opens the executable's folder with when no file
+    /// manager answers ShowItems (#3064), or empty.
+    std::string folderOpenerPath;
 };
 
 /// Where @p name would be run from: @p name itself when it contains a '/', otherwise the first

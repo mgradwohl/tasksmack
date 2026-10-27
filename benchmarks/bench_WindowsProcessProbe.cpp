@@ -16,18 +16,34 @@
 //    is the default refresh interval (the light details read every sample, the heavy ones every
 //    fourth on a 16 GB+ machine), 60000 expires every TTL every call (light and heavy read for every
 //    process each sample).
+//  - Detail_<read>: each read of the heavy detail pass alone (WindowsProcessDetailReads, the probe's
+//    own functions, through its system seams), once over every process this user can open with
+//    PROCESS_QUERY_LIMITED_INFORMATION, with the handles opened once beforehand, so each benchmark
+//    times one pass of that read alone. The per_process counter is the time per opened process.
+//    OpenProcess is the handle a detail refresh opens first (light or heavy). Owner is the whole
+//    read without the account name cache (token, its user SID, LookupAccountSidW); OwnerToken is the
+//    same with LookupAccountSidW stubbed out, and LookupAccountSid that call alone over the SIDs the
+//    token reads found, so the two halves can be told apart. OwnerCached is the read as the probe
+//    makes it, with every SID already in its account name cache (#2982). Publisher is its steady state: the path cache hit every heavy
+//    read after the first makes. Affinity is the single-group read (GetProcessAffinityMask), and
+//    is skipped on a machine with several processor groups.
 //
 // The process count and the snapshot's size are this machine's; they are reported as counters, so
 // runs on different machines, or with a different load, are not compared as like for like.
 
 #if defined(_WIN32)
 
+#include "Platform/CpuAffinity.h"
+#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
+#include "Platform/Windows/WindowsProcessProbeMath.h"
 
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cstddef>
@@ -35,6 +51,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -290,6 +307,294 @@ void BM_WindowsProcessProbe_EnumerateAtInterval(benchmark::State& state)
     state.counters["processes"] = benchmark::Counter(static_cast<double>(counters.size()));
 }
 BENCHMARK(BM_WindowsProcessProbe_EnumerateAtInterval)->ArgName("ms")->Arg(0)->Arg(1000)->Arg(60000)->Unit(benchmark::kMicrosecond);
+
+/// One process this user can open, with what the heavy reads take from earlier ones: its image path
+/// (for the publisher and the classification) and whether GetGuiResources reads it (whether the
+/// classification counts its USER objects, as getProcessDetails() decides).
+struct OpenedProcess
+{
+    DWORD pid = 0;
+    Platform::Windows::UniqueHandle handle;
+    std::wstring imagePath;
+    std::string imagePathUtf8;
+    bool guiReadable = false;
+};
+
+/// Every process in the captured snapshot but Idle that OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
+/// opens, opened once per benchmark binary and kept open, so each Detail benchmark times its read alone.
+[[nodiscard]] std::vector<OpenedProcess>& openedProcesses()
+{
+    static std::vector<OpenedProcess> processes;
+    return processes;
+}
+
+/// The user SIDs the owner reads find (one per process whose token opens), for LookupAccountSid.
+[[nodiscard]] std::vector<std::vector<std::byte>>& ownerSids()
+{
+    static std::vector<std::vector<std::byte>> sids;
+    return sids;
+}
+
+/// The user SID in @p hProcess's token, read as getProcessOwner() reads it; empty if it can't be.
+[[nodiscard]] std::vector<std::byte> tokenUserSid(HANDLE hProcess)
+{
+    Platform::Windows::UniqueHandle token;
+    if (OpenProcessToken(hProcess, TOKEN_QUERY, token.put()) == 0)
+    {
+        return {};
+    }
+    DWORD length = 0;
+    (void) GetTokenInformation(token.get(), TokenUser, nullptr, 0, &length);
+    std::vector<std::byte> info(length);
+    if (length < sizeof(TOKEN_USER) || GetTokenInformation(token.get(), TokenUser, info.data(), length, &length) == 0)
+    {
+        return {};
+    }
+    TOKEN_USER user{};
+    std::memcpy(&user, info.data(), sizeof(user));
+    if (IsValidSid(user.User.Sid) == 0)
+    {
+        return {};
+    }
+    const DWORD sidLength = GetLengthSid(user.User.Sid);
+    std::vector<std::byte> sid(sidLength);
+    if (CopySid(sidLength, sid.data(), user.User.Sid) == 0)
+    {
+        return {};
+    }
+    return sid;
+}
+
+/// Open every process in the captured snapshot (once per benchmark binary). False if none opened.
+[[nodiscard]] bool openProcesses()
+{
+    auto& processes = openedProcesses();
+    if (!processes.empty())
+    {
+        return true;
+    }
+    if (!captureSnapshot())
+    {
+        return false;
+    }
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    const auto& bytes = capturedSnapshot().bytes;
+    for (std::size_t offset = 0; offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= bytes.size();)
+    {
+        SYSTEM_PROCESS_INFORMATION entry{};
+        std::memcpy(&entry, bytes.data() + offset, sizeof(entry));
+        const auto pid = static_cast<DWORD>(std::bit_cast<std::uintptr_t>(entry.UniqueProcessId));
+        if (pid != 0)
+        {
+            Platform::Windows::UniqueHandle handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+            if (handle.valid())
+            {
+                std::wstring imagePath = Platform::WindowsProcessDetailReads::imagePath(functions.process, handle.get());
+                std::string imagePathUtf8 = Platform::WinString::wideToUtf8(imagePath);
+                SetLastError(0);
+                const bool guiReadable = GetGuiResources(handle.get(), GR_GDIOBJECTS) != 0 || GetLastError() == 0;
+                OpenedProcess process{.pid = pid,
+                                      .handle = std::move(handle),
+                                      .imagePath = std::move(imagePath),
+                                      .imagePathUtf8 = std::move(imagePathUtf8),
+                                      .guiReadable = guiReadable};
+                if (auto sid = tokenUserSid(process.handle.get()); !sid.empty())
+                {
+                    ownerSids().push_back(std::move(sid));
+                }
+                processes.push_back(std::move(process));
+            }
+        }
+        if (entry.NextEntryOffset == 0)
+        {
+            break;
+        }
+        offset += entry.NextEntryOffset;
+    }
+    return !processes.empty();
+}
+
+/// The counters every Detail benchmark reports: how many processes (or SIDs) one pass reads, and the
+/// time per one of them.
+void reportPerProcess(benchmark::State& state, std::size_t count)
+{
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(count));
+    state.counters["per_process"] =
+        benchmark::Counter(static_cast<double>(count), benchmark::Counter::kIsIterationInvariantRate | benchmark::Counter::kInvert);
+}
+
+/// Runs @p read once for every opened process per iteration; @p read returns what it read.
+template<typename Read> void benchmarkEachProcess(benchmark::State& state, Read read)
+{
+    if (!openProcesses())
+    {
+        state.SkipWithError("Could not open any process");
+        return;
+    }
+    const auto& processes = openedProcesses();
+    for (auto _ : state)
+    {
+        for (const OpenedProcess& process : processes)
+        {
+            auto value = read(process);
+            benchmark::DoNotOptimize(value);
+        }
+    }
+    reportPerProcess(state, processes.size());
+}
+
+void BM_WindowsProcessProbe_Detail_OpenProcess(benchmark::State& state)
+{
+    benchmarkEachProcess(state,
+                         [](const OpenedProcess& process)
+                         {
+                             const Platform::Windows::UniqueHandle handle(
+                                 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process.pid));
+                             return handle.valid();
+                         });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_OpenProcess)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_Owner(benchmark::State& state)
+{
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    benchmarkEachProcess(state,
+                         [&functions](const OpenedProcess& process)
+                         { return Platform::WindowsProcessDetailReads::owner(functions.token, process.handle.get()); });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_Owner)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_OwnerCached(benchmark::State& state)
+{
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    Platform::AccountNameCache names(std::chrono::hours{1});
+    const auto now = std::chrono::steady_clock::now();
+    // The probe's steady state: each SID was named on an earlier pass, so only the token is read.
+    benchmarkEachProcess(state,
+                         [&functions, &names, now](const OpenedProcess& process)
+                         { return Platform::WindowsProcessDetailReads::owner(functions.token, process.handle.get(), names, now); });
+    state.counters["sids"] = benchmark::Counter(static_cast<double>(names.size()));
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_OwnerCached)->Unit(benchmark::kMicrosecond);
+
+/// A LookupAccountSidW that names every SID at once, without asking the LSA.
+BOOL WINAPI instantLookupAccountSidW(
+    LPCWSTR /*system*/, PSID /*sid*/, LPWSTR name, LPDWORD nameLength, LPWSTR domain, LPDWORD domainLength, PSID_NAME_USE use)
+{
+    if (name == nullptr || nameLength == nullptr || *nameLength < 2 || domain == nullptr || domainLength == nullptr || *domainLength < 1 ||
+        use == nullptr)
+    {
+        return FALSE;
+    }
+    name[0] = L'u';
+    name[1] = L'\0';
+    *nameLength = 1;
+    domain[0] = L'\0';
+    *domainLength = 0;
+    *use = SidTypeUser;
+    return TRUE;
+}
+
+void BM_WindowsProcessProbe_Detail_OwnerToken(benchmark::State& state)
+{
+    auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    functions.token.lookupAccountSidW = &instantLookupAccountSidW;
+    benchmarkEachProcess(state,
+                         [&functions](const OpenedProcess& process)
+                         { return Platform::WindowsProcessDetailReads::owner(functions.token, process.handle.get()); });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_OwnerToken)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_LookupAccountSid(benchmark::State& state)
+{
+    if (!openProcesses() || ownerSids().empty())
+    {
+        state.SkipWithError("No process's token user could be read");
+        return;
+    }
+    auto& sids = ownerSids();
+    for (auto _ : state)
+    {
+        for (auto& sid : sids)
+        {
+            std::array<WCHAR, 256> name{};
+            std::array<WCHAR, 256> domain{};
+            auto nameLength = static_cast<DWORD>(name.size());
+            auto domainLength = static_cast<DWORD>(domain.size());
+            SID_NAME_USE use = SidTypeUnknown;
+            benchmark::DoNotOptimize(LookupAccountSidW(nullptr, sid.data(), name.data(), &nameLength, domain.data(), &domainLength, &use));
+        }
+    }
+    reportPerProcess(state, sids.size());
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_LookupAccountSid)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_ImagePath(benchmark::State& state)
+{
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    benchmarkEachProcess(state,
+                         [&functions](const OpenedProcess& process)
+                         {
+                             return Platform::WinString::wideToUtf8(
+                                 Platform::WindowsProcessDetailReads::imagePath(functions.process, process.handle.get()));
+                         });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_ImagePath)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_CommandLine(benchmark::State& state)
+{
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    benchmarkEachProcess(state,
+                         [&functions](const OpenedProcess& process)
+                         { return Platform::WindowsProcessDetailReads::commandLine(functions.process, process.handle.get()); });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_CommandLine)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_Publisher(benchmark::State& state)
+{
+    benchmarkEachProcess(state,
+                         [](const OpenedProcess& process) { return Platform::WindowsProcessDetailReads::publisher(process.imagePath); });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_Publisher)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_ProcessType(benchmark::State& state)
+{
+    const auto functions = Platform::WindowsProcessProbe::systemFunctions();
+    benchmarkEachProcess(state,
+                         [&functions](const OpenedProcess& process)
+                         {
+                             return Platform::WindowsProcessDetailReads::processType(functions.process,
+                                                                                     process.guiReadable ? process.handle.get() : nullptr,
+                                                                                     process.pid,
+                                                                                     process.imagePathUtf8);
+                         });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_ProcessType)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_PriorityClass(benchmark::State& state)
+{
+    benchmarkEachProcess(state, [](const OpenedProcess& process) { return GetPriorityClass(process.handle.get()); });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_PriorityClass)->Unit(benchmark::kMicrosecond);
+
+void BM_WindowsProcessProbe_Detail_Affinity(benchmark::State& state)
+{
+    if (GetMaximumProcessorGroupCount() != 1)
+    {
+        state.SkipWithError("Several processor groups: the probe reads group affinities, not timed here");
+        return;
+    }
+    benchmarkEachProcess(state,
+                         [](const OpenedProcess& process)
+                         {
+                             DWORD_PTR processMask = 0;
+                             DWORD_PTR systemMask = 0;
+                             const bool read = GetProcessAffinityMask(process.handle.get(), &processMask, &systemMask) != 0;
+                             return read ? Platform::CpuAffinity::fromMask(static_cast<std::uint64_t>(processMask))
+                                         : Platform::CpuAffinity{};
+                         });
+}
+BENCHMARK(BM_WindowsProcessProbe_Detail_Affinity)->Unit(benchmark::kMicrosecond);
 
 } // namespace
 

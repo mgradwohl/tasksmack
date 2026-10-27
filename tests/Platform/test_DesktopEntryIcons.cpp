@@ -142,6 +142,16 @@ TEST(DesktopEntryIconsTest, TheProgramAnExecRuns)
     EXPECT_TRUE(execProgramKeys("%U").empty()); // a field code where the program would be: none (#1891)
 }
 
+TEST(DesktopEntryIconsTest, FoldCaseLowersAsciiLettersOnly)
+{
+    EXPECT_EQ(foldCase("Org.GNOME.Nautilus"), "org.gnome.nautilus");
+    EXPECT_EQ(foldCase(""), "");
+    // A byte of 0x80 and up is kept as it is, whatever the locale (#2566): 0xC4 is Latin-1's Ä, which
+    // a Latin-1 C locale would lower to 0xE4, and UTF-8's É (0xC3 0x89) stays É.
+    EXPECT_EQ(foldCase("\xC4PP"), "\xC4pp");
+    EXPECT_EQ(foldCase("CAF\xC3\x89"), "caf\xC3\x89");
+}
+
 TEST(DesktopEntryIconsTest, TheIndexFindsAProcessByExecutableThenName)
 {
     DesktopIndex index;

@@ -16,23 +16,31 @@ unsigned.
 
 ## What is signed
 
-- **`TaskSmack.exe`**, the application in the Windows x64 and ARM64 `.zip`s on the
+- **`TaskSmack.exe`**, the application in the Windows x64 and ARM64 `.zip`s and installers on the
   [releases page](https://github.com/mgradwohl/tasksmack/releases).
 - **`TaskSmackHelper.exe`**, the TaskSmack helper ([#2181](https://github.com/mgradwohl/tasksmack/issues/2181)),
-  beside it in the same `.zip`. The helper ships only signed: the release workflow refuses to publish a `.zip`
-  whose two executables aren't both validly signed and timestamped by the expected signer.
-- Not yet: an NSIS installer, which isn't built yet.
+  beside it in the same `.zip` and installed beside it. The helper ships only signed: the release workflow
+  refuses to publish a `.zip` or an installer whose executables aren't all validly signed and timestamped by
+  the expected signer.
+- **The installers**, `TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`, and
+  **`Uninstall.exe`**, the uninstaller each one installs, so installing and removing TaskSmack both show the
+  same publisher.
 
 ## How signing works
 
-The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner. A separate job, which
-checks out no code and builds nothing, then takes both `.zip`s, signs and timestamps `TaskSmack.exe` and
-`TaskSmackHelper.exe` from each through Azure Artifact Signing, and writes them back into their `.zip`s, leaving
-everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the `release-signing`
-environment; no password or client secret exists. The workflow then checks both signatures in each `.zip`
+The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner, with a first build of
+the installer whose only use is its uninstaller. A separate job, which checks out no code and builds nothing,
+then takes both `.zip`s and both uninstallers, signs and timestamps `TaskSmack.exe` and `TaskSmackHelper.exe`
+from each `.zip` and each uninstaller through Azure Artifact Signing, and writes the executables back into their
+`.zip`s, leaving everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the
+`release-signing` environment; no password or client secret exists. Another job, without that token, builds
+each installer from its signed `.zip`'s files and its signed uninstaller, and a third job like the first signs
+and timestamps the two installers. The workflow then checks the signatures in each `.zip`
 (`Get-AuthenticodeSignature`: valid, the expected signer, a certificate Microsoft's ID Verified code-signing CA
-issued with Artifact Signing's extended key usage, timestamped) before the `.zip`s are hashed, signed with
-Sigstore and published. The details are in
+issued with Artifact Signing's extended key usage, timestamped), and checks each installer the same way: its
+own signature, then a silent install whose files must be the `.zip`'s and whose executables, the uninstaller
+included, must all pass, a start of the installed TaskSmack, and a silent uninstall that must leave nothing
+behind. Only then are the files hashed, signed with Sigstore and published. The details are in
 [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#windows-code-signing).
 
 Only binaries built from this repository's source by the project's GitHub Actions release workflow
@@ -46,10 +54,10 @@ The third-party libraries TaskSmack uses are compiled from source and linked sta
 `TaskSmack.exe`. TaskSmack does not sign binaries published by other projects; if a release ever ships one, it
 ships with that project's own signature or none.
 
-Every signed binary carries the product name **TaskSmack** and the product version of the release
+Every signed `TaskSmack.exe`, `TaskSmackHelper.exe` and installer carries the product name **TaskSmack** and the product version of the release
 (`project(TaskSmack VERSION ...)` in `CMakeLists.txt`, which the release workflow requires to match the tag).
 
-On top of Authenticode, every release asset (the `.zip`, `.deb`, `.tar.gz` and SBOM) is also signed with
+On top of Authenticode, every release asset (the `.zip`, installer, `.deb`, `.tar.gz` and SBOM) is also signed with
 Sigstore; see [Verifying a Release](guide/user-guide.md#verifying-a-release).
 
 ## Team roles and members

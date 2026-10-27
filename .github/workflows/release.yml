@@ -49,9 +49,10 @@ env:
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
 
-  # Authenticode signing of the Windows .zips (#2302; docs/code-signing-policy.md): sign-windows signs
-  # TaskSmack.exe and TaskSmackHelper.exe in both architectures' .zips through Azure Artifact Signing, with
-  # the Public Trust certificate profile below. The signer common name that profile's certificates carry:
+  # Authenticode signing of the Windows packages (#2302; docs/code-signing-policy.md): sign-windows signs
+  # TaskSmack.exe and TaskSmackHelper.exe in both architectures' .zips, and both NSIS uninstallers, and
+  # sign-windows-installer both NSIS installers, through Azure Artifact Signing, with the Public Trust
+  # certificate profile below. The signer common name that profile's certificates carry:
   # what build-windows configures as TASKSMACK_EXPECTED_SIGNER and validate-windows-package's signature
   # check requires, defined once so the two can't drift (#2779). The certificates last about three days and
   # rotate, so the check matches this name, never a thumbprint or serial.
@@ -64,7 +65,9 @@ env:
   # whose deployment rules admit only v* tags and the main and release/* branches, so it holds
   # for every tag run and for dry runs dispatched from those branches. A dry run from any other branch
   # can't sign, so it packages both .zips as before #2302: no TaskSmackHelper.exe (it never ships
-  # unsigned), no sign-windows, no signature check. A real release always signs: validate refuses one
+  # unsigned), no sign-windows, no signature check. It still builds both installers the same way, from the
+  # unsigned .zips and uninstallers, and installs and uninstalls them, so the whole pipeline runs from any
+  # branch; only sign-windows-installer is skipped too. A real release always signs: validate refuses one
   # this would leave unsigned (#2745). Jobs read it through validate's `signing` output, since a job's
   # `if:` can't read `env`.
   SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') }}
@@ -119,25 +122,26 @@ jobs:
 
       - name: Refuse a real release that wouldn't be signed
         # Fail closed (#2745): a real release (a tag push, or a dispatch with dry_run off) always
-        # Authenticode-signs its Windows .zips, and validate-windows-package then requires both
-        # executables in each to be validly signed and timestamped by WINDOWS_EXPECTED_SIGNER, so an
-        # unsigned or wrongly signed .zip can't publish. SIGNING_ENABLED holds for every v* tag; this
+        # Authenticode-signs its Windows .zips and installers, and validate-windows-package then requires
+        # both executables in each .zip, each installer and every executable it installs to be validly
+        # signed and timestamped by WINDOWS_EXPECTED_SIGNER, so an unsigned or wrongly signed package
+        # can't publish. SIGNING_ENABLED holds for every v* tag; this
         # stops a run it doesn't hold for from publishing unsigned .zips without TaskSmackHelper.exe.
         if: env.DRY_RUN != 'true'
         run: |
           if [[ "$SIGNING_ENABLED" != "true" ]]; then
-            echo "::error::Ref '$TAG_NAME' ($REF_TYPE) can't enter the release-signing environment (SIGNING_ENABLED, at the top of release.yml), so its Windows .zips wouldn't be signed. A real release must be signed. Aborting release."
+            echo "::error::Ref '$TAG_NAME' ($REF_TYPE) can't enter the release-signing environment (SIGNING_ENABLED, at the top of release.yml), so its Windows packages wouldn't be signed. A real release must be signed. Aborting release."
             exit 1
           fi
-          echo "Windows .zips will be Authenticode-signed by '$WINDOWS_EXPECTED_SIGNER'."
+          echo "Windows .zips and installers will be Authenticode-signed by '$WINDOWS_EXPECTED_SIGNER'."
 
       - name: Report signing (dry run)
         if: env.DRY_RUN == 'true'
         run: |
           if [[ "$SIGNING_ENABLED" == "true" ]]; then
-            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): sign-windows signs the Windows .zips with the release certificate ('$WINDOWS_EXPECTED_SIGNER'), as a tag run does."
+            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): sign-windows and sign-windows-installer sign the Windows .zips, uninstallers and installers with the release certificate ('$WINDOWS_EXPECTED_SIGNER'), as a tag run does."
           else
-            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): only v* tags and the main and release/* branches may sign, so the Windows .zips are packaged unsigned and without TaskSmackHelper.exe."
+            echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): only v* tags and the main and release/* branches may sign, so the Windows .zips and installers are packaged unsigned and without TaskSmackHelper.exe."
           fi
 
       - name: Refuse to replace a published release
@@ -424,6 +428,9 @@ jobs:
     # ARM64EC), and setup-mesa-llvmpipe fetches mmozeiko/build-mesa's ARM64 llvmpipe for the tests.
     # With SIGNING_ENABLED, both legs package TaskSmackHelper.exe and hand their unsigned .zip to
     # sign-windows (#2302); with signing off, every leg packages and uploads as before, without the helper.
+    # Each leg also makes the NSIS installer's first pass (cmake/CPackProjectConfig.cmake.in): its project
+    # and uninstaller go to build-windows-installer, which builds the installer that ships from the
+    # .zip that ships, and the uninstaller goes to sign-windows with the .zip.
     strategy:
       fail-fast: false
       matrix:
@@ -458,6 +465,10 @@ jobs:
         with:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
+      - name: Setup NSIS
+        # The pinned, SHA-256-checked makensis the Package step's NSIS generator runs (MAKENSIS).
+        uses: ./.github/actions/setup-nsis
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -481,14 +492,17 @@ jobs:
           cmake --version
           ninja --version
           python --version
+          & $env:MAKENSIS /VERSION
 
       - name: Configure
         # With signing on, the .zip packages TaskSmackHelper.exe (#2550) for sign-windows to sign with
         # TaskSmack.exe. TASKSMACK_SIGN_AFTER_PACKAGING moves cmake/VerifyWindowsSignatures.cmake's check
-        # from CPack, where the .zip isn't signed yet, to validate-windows-package, which runs it on the
-        # signed .zip, so an unsigned helper still can't be published. TASKSMACK_EXPECTED_SIGNER is the
+        # from CPack, where the .zip and the installer's first pass aren't signed yet, to
+        # validate-windows-package, which runs it on the signed .zip, the signed installer and the files
+        # that installs, so an unsigned helper still can't be published. TASKSMACK_EXPECTED_SIGNER is the
         # signer the certificate profile's certificates name, the one that check requires
-        # (WINDOWS_EXPECTED_SIGNER, from the workflow's env).
+        # (WINDOWS_EXPECTED_SIGNER, from the workflow's env). verify-reproducibility-windows configures
+        # the same way; keep the two in step.
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
@@ -533,10 +547,53 @@ jobs:
         run: ctest --preset win-release -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
 
       - name: Package
+        # The .zip, and the NSIS installer's first pass (cmake/CPackProjectConfig.cmake.in), which also
+        # copies out the uninstaller makensis built. CPACK_NSIS_EXECUTABLE is setup-nsis' makensis, so
+        # NSIS from the runner image (windows-11-arm has 3.10) can't be picked instead.
         shell: pwsh
         run: |
           cd build/win-release
-          cpack -G "ZIP"
+          cpack -G "ZIP;NSIS" -D "CPACK_NSIS_EXECUTABLE=$env:MAKENSIS"
+
+      - name: Stage the installer's first pass
+        # nsis-project/: CPack's project.nsi and NSIS.InstallOptions.ini, the uninstaller makensis built
+        # (Uninstall.exe) and the first-pass installer, for build-windows-installer (and, the installer,
+        # for verify-reproducibility-windows to compare with). for-signing/: the .zip and the
+        # uninstaller, what sign-windows signs. Each file must be there exactly once.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-One([string]$Pattern) {
+            $found = @(Get-ChildItem -Path $Pattern -File)
+            if ($found.Count -ne 1) {
+              Write-Error "Expected one $Pattern, found $($found.Count): $(($found | ForEach-Object FullName) -join ', ')"
+              exit 1
+            }
+            return $found[0]
+          }
+          $zip = Get-One 'dist/*.zip'
+          $installer = Get-One 'dist/*.exe'
+          if ($installer.BaseName -ne $zip.BaseName) {
+            Write-Error "The first-pass installer ($($installer.Name)) and the .zip ($($zip.Name)) are named for different packages."
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path nsis-project, for-signing | Out-Null
+          foreach ($name in 'project.nsi', 'NSIS.InstallOptions.ini', 'Uninstall.exe') {
+            Copy-Item -LiteralPath (Get-One "dist/_CPack_Packages/*/NSIS/$name").FullName -Destination nsis-project/
+          }
+          Copy-Item -LiteralPath $installer.FullName -Destination nsis-project/
+          Copy-Item -LiteralPath $zip.FullName, nsis-project/Uninstall.exe -Destination for-signing/
+          Get-ChildItem nsis-project, for-signing -File | ForEach-Object {
+            Write-Host "$($_.Directory.Name)/$($_.Name) $($_.Length) bytes, SHA-256 $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+          }
+
+      - name: Upload the installer's first pass
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-nsis-${{ matrix.arch }}
+          path: nsis-project/*
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Record build inputs
         # build-inputs/<package>-build-inputs.json (#2802): the MSVC toolset, the SHA-256 of the
@@ -563,14 +620,14 @@ jobs:
 
       # With signing on, the .zip isn't a release package yet: it goes to sign-windows as
       # windows-unsigned-<arch>, a name create-release's '*-packages-*' download never matches, and
-      # sign-windows uploads the signed .zip as windows-packages-<arch>. Only the .zip, at the
-      # artifact's root, where sign-windows looks for it.
-      - name: Upload the unsigned .zip for signing
+      # sign-windows uploads the signed .zip as windows-packages-<arch>. Only the .zip and the
+      # uninstaller, at the artifact's root, where sign-windows looks for them.
+      - name: Upload the unsigned .zip and uninstaller for signing
         if: env.SIGNING_ENABLED == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-unsigned-${{ matrix.arch }}
-          path: dist/*.zip
+          path: for-signing/*
           if-no-files-found: error
           retention-days: 90
 
@@ -591,10 +648,12 @@ jobs:
     # Skipped while signing is off (SIGNING_ENABLED); validate-windows-package and create-release
     # accept that skip only then.
     if: needs.validate.outputs.signing == 'true'
-    # No checkout and no build: this job only takes build-windows' two unsigned .zips, signs and
-    # timestamps TaskSmack.exe and TaskSmackHelper.exe inside each, and uploads the .zips otherwise
-    # unchanged, so the OIDC token that can sign never shares a job with third-party build code
-    # (#2302's decision). The release-signing environment admits only the refs SIGNING_ENABLED
+    # No checkout and no build: this job only takes build-windows' two unsigned .zips and uninstallers,
+    # signs and timestamps TaskSmack.exe and TaskSmackHelper.exe inside each .zip and each uninstaller,
+    # and uploads the .zips otherwise unchanged and the uninstallers, so the OIDC token that can sign never
+    # shares a job with third-party build code (#2302's decision). makensis doesn't run here either:
+    # build-windows-installer builds the installers, without the token, and sign-windows-installer signs
+    # them. The release-signing environment admits only the refs SIGNING_ENABLED
     # names, and its secrets name the Entra app whose federated credential trusts this repository's
     # release-signing environment; the app holds the Certificate Profile Signer role on the account.
     # The signing action runs only on Windows; signtool signs ARM64 images on this x64 runner too.
@@ -608,34 +667,40 @@ jobs:
     env:
       # The executables signed in each .zip, directly under its top-level folder, as CPack lays them out.
       SIGNED_FILES: 'TaskSmack.exe,TaskSmackHelper.exe'
+      # The NSIS uninstaller build-windows' first pass made, beside each .zip (#2302).
+      UNINSTALLER: 'Uninstall.exe'
     steps:
-      - name: Download the unsigned x64 .zip
+      - name: Download the unsigned x64 .zip and uninstaller
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-unsigned-x64
           path: unsigned/x64/
 
-      - name: Download the unsigned ARM64 .zip
+      - name: Download the unsigned ARM64 .zip and uninstaller
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-unsigned-arm64
           path: unsigned/arm64/
 
       - name: Extract the executables to sign
-        # to-sign/<arch>/<name>, the paths the signing step lists. Each .zip must be the one
-        # build-windows names for its architecture, with each executable exactly once, directly under
-        # the .zip's top-level folder.
+        # to-sign/<arch>/<name>, the paths the signing step lists. Each artifact must hold exactly the
+        # .zip build-windows names for its architecture and the uninstaller, and each .zip each
+        # executable exactly once, directly under its top-level folder.
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           foreach ($arch in 'x64', 'arm64') {
             $suffix = if ($arch -eq 'x64') { 'win64' } else { 'windows-arm64' }
-            $zips = @(Get-ChildItem -LiteralPath "unsigned/$arch" -File)
-            if ($zips.Count -ne 1 -or $zips[0].Name -notmatch "^TaskSmack-[^/\\]+-$suffix\.zip$") {
-              Write-Error "Expected one TaskSmack-<version>-$suffix.zip in windows-unsigned-$arch, found: $($zips.Name -join ', ')"
+            $files = @(Get-ChildItem -LiteralPath "unsigned/$arch" -File)
+            $zips = @($files | Where-Object { $_.Name -match "^TaskSmack-[^/\\]+-$suffix\.zip$" })
+            $uninstaller = Join-Path "unsigned/$arch" $env:UNINSTALLER
+            if ($files.Count -ne 2 -or $zips.Count -ne 1 -or -not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+              Write-Error "Expected TaskSmack-<version>-$suffix.zip and $env:UNINSTALLER in windows-unsigned-$arch, found: $($files.Name -join ', ')"
               exit 1
             }
             $out = (New-Item -ItemType Directory -Force -Path "to-sign/$arch").FullName
+            Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $out $env:UNINSTALLER)
+            Write-Host "windows-unsigned-$arch/$env:UNINSTALLER -> to-sign/$arch/$env:UNINSTALLER"
             $zip = [System.IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
             try {
               foreach ($name in $env:SIGNED_FILES -split ',') {
@@ -677,8 +742,10 @@ jobs:
           files: |
             ${{ github.workspace }}\to-sign\x64\TaskSmack.exe
             ${{ github.workspace }}\to-sign\x64\TaskSmackHelper.exe
+            ${{ github.workspace }}\to-sign\x64\Uninstall.exe
             ${{ github.workspace }}\to-sign\arm64\TaskSmack.exe
             ${{ github.workspace }}\to-sign\arm64\TaskSmackHelper.exe
+            ${{ github.workspace }}\to-sign\arm64\Uninstall.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -700,12 +767,12 @@ jobs:
       - name: Check the signatures
         # A quick look before repacking: each file Valid, signed by WINDOWS_EXPECTED_SIGNER and
         # timestamped. validate-windows-package runs the release gate (cmake/VerifyWindowsSignatures.cmake)
-        # on each signed .zip.
+        # on each signed .zip, and on the uninstaller as each installer installs it.
         shell: pwsh
         run: |
           $failed = $false
           foreach ($arch in 'x64', 'arm64') {
-            foreach ($name in $env:SIGNED_FILES -split ',') {
+            foreach ($name in @($env:SIGNED_FILES -split ',') + $env:UNINSTALLER) {
               $sig = Get-AuthenticodeSignature -LiteralPath "to-sign/$arch/$name"
               $cn = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '-' }
               Write-Host "$arch/${name}: $($sig.Status); signer $($sig.SignerCertificate.Subject); issuer $($sig.SignerCertificate.Issuer); timestamped by $($sig.TimeStamperCertificate.Subject)"
@@ -738,7 +805,7 @@ jobs:
           }
           $signedNames = $env:SIGNED_FILES -split ','
           foreach ($arch in 'x64', 'arm64') {
-            $source = Get-ChildItem -LiteralPath "unsigned/$arch" -File | Select-Object -First 1
+            $source = Get-ChildItem -LiteralPath "unsigned/$arch" -File -Filter '*.zip' | Select-Object -First 1
             $outDir = (New-Item -ItemType Directory -Force -Path "signed/$arch").FullName
             $target = Join-Path $outDir $source.Name
             Copy-Item -LiteralPath $source.FullName -Destination $target
@@ -800,17 +867,253 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      # For build-windows-installer to embed in each installer. No create-release download pattern
+      # matches these names: the uninstallers ship only inside the installers.
+      - name: Upload the signed x64 uninstaller
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-signed-uninstaller-x64
+          path: to-sign/x64/Uninstall.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the signed ARM64 uninstaller
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-signed-uninstaller-arm64
+          path: to-sign/arm64/Uninstall.exe
+          if-no-files-found: error
+          retention-days: 90
+
+  build-windows-installer:
+    name: Build Windows Installer (${{ matrix.arch }})
+    # The installer that ships (#2302): build-windows' first pass, built again by
+    # tools/build-windows-installer.ps1 from the .zip that ships (windows-packages-<arch>: sign-windows'
+    # signed .zip with signing on, else build-windows' own) and with the uninstaller to embed
+    # (sign-windows' signed one, else the first pass's own), so it installs exactly the .zip's files and
+    # that uninstaller. Runs whether signing is on or not, as validate-windows-package does.
+    needs: [validate, build-windows, sign-windows]
+    if: >-
+      ${{ !cancelled() && needs.build-windows.result == 'success' &&
+      (needs.sign-windows.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) }}
+    # The runner build-windows' leg ran on, with the checkout in the same place: CPack's project.nsi
+    # names its folders and its icon and licence by their absolute paths there.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    # No signing credential here: makensis runs on a script build-windows wrote, so this job can't
+    # sign (no id-token); sign-windows-installer signs what it uploads.
+    permissions:
+      contents: read
+      actions: read  # Required to download this run's artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup NSIS
+        uses: ./.github/actions/setup-nsis
+
+      - name: Download the installer's first pass
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-nsis-${{ matrix.arch }}
+          path: nsis-project/
+
+      - name: Download the .zip that ships
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-packages-${{ matrix.arch }}
+          path: package/
+
+      - name: Download the signed uninstaller
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-signed-uninstaller-${{ matrix.arch }}
+          path: signed-uninstaller/
+
+      - name: Build the installer
+        # With signing off, the uninstaller is the first pass's own, so the second pass runs the same way
+        # on every branch.
+        shell: pwsh
+        env:
+          SIGNED: ${{ env.SIGNING_ENABLED }}
+        run: |
+          $zips = @(Get-ChildItem package -File -Filter '*.zip')
+          if ($zips.Count -ne 1) {
+            Write-Error "Expected one .zip in windows-packages-${{ matrix.arch }}, found $($zips.Count)."
+            exit 1
+          }
+          $uninstaller = if ($env:SIGNED -eq 'true') { 'signed-uninstaller/Uninstall.exe' } else { 'nsis-project/Uninstall.exe' }
+          & tools/build-windows-installer.ps1 -ProjectDir nsis-project -Zip $zips[0].FullName `
+            -Uninstaller $uninstaller -OutputDir installer -Makensis $env:MAKENSIS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # With signing on, sign-windows-installer signs it and uploads windows-installer-<arch>; a name
+      # that doesn't start with windows-installer-, so create-release's download never takes this one.
+      - name: Upload the unsigned installer for signing
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-unsigned-installer-${{ matrix.arch }}
+          path: installer/*.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the installer
+        if: env.SIGNING_ENABLED != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-installer-${{ matrix.arch }}
+          path: installer/*.exe
+          if-no-files-found: error
+          retention-days: 90
+
+  sign-windows-installer:
+    name: Sign Windows Installers (Azure Artifact Signing)
+    needs: [validate, build-windows-installer]
+    # Skipped while signing is off, like sign-windows; validate-windows-package and create-release
+    # accept that skip only then. sign-windows' rules apply: no checkout, no build, the same environment,
+    # sign-in and signing settings (keep the two in step).
+    if: needs.validate.outputs.signing == 'true'
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read  # Required to download build-windows-installer's artifacts from this run
+      id-token: write  # GitHub OIDC for azure/login: no client secret exists
+    steps:
+      - name: Download the unsigned x64 installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-unsigned-installer-x64
+          path: unsigned/x64/
+
+      - name: Download the unsigned ARM64 installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-unsigned-installer-arm64
+          path: unsigned/arm64/
+
+      - name: Stage the installers to sign
+        # to-sign/<arch>/installer.exe, the paths the signing step lists; each artifact must hold just
+        # the installer build-windows-installer names for its architecture, whose name it keeps.
+        shell: pwsh
+        run: |
+          foreach ($arch in 'x64', 'arm64') {
+            $suffix = if ($arch -eq 'x64') { 'win64' } else { 'windows-arm64' }
+            $files = @(Get-ChildItem -LiteralPath "unsigned/$arch" -File)
+            if ($files.Count -ne 1 -or $files[0].Name -notmatch "^TaskSmack-[^/\\]+-$suffix\.exe$") {
+              Write-Error "Expected one TaskSmack-<version>-$suffix.exe in windows-unsigned-installer-$arch, found: $($files.Name -join ', ')"
+              exit 1
+            }
+            $out = (New-Item -ItemType Directory -Force -Path "to-sign/$arch").FullName
+            Copy-Item -LiteralPath $files[0].FullName -Destination (Join-Path $out 'installer.exe')
+            $files[0].Name | Out-File -FilePath (Join-Path $out 'name.txt') -Encoding utf8 -NoNewline
+            Write-Host "windows-unsigned-installer-$arch/$($files[0].Name) -> to-sign/$arch/installer.exe"
+          }
+
+      - name: Sign in to Azure (OIDC)
+        # As sign-windows' sign-in (a tenant-level sign-in, #2302).
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign with Azure Artifact Signing
+        # sign-windows' settings (see its comments): SHA-256 digests, an RFC 3161 SHA-256 timestamp, the
+        # azure/login session as the only credential, and no dependency cache.
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\to-sign\x64\installer.exe
+            ${{ github.workspace }}\to-sign\arm64\installer.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: TaskSmack Setup
+          description-url: https://github.com/mgradwohl/tasksmack
+          correlation-id: tasksmack-${{ github.run_id }}-${{ github.run_attempt }}-installer
+          cache-dependencies: false
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Check the signatures and restore the names
+        # Each installer Valid, signed by WINDOWS_EXPECTED_SIGNER and timestamped, then given back its
+        # package name in signed/<arch>/. validate-windows-package runs the release gate on each.
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($arch in 'x64', 'arm64') {
+            $file = "to-sign/$arch/installer.exe"
+            $sig = Get-AuthenticodeSignature -LiteralPath $file
+            $cn = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '-' }
+            Write-Host "$arch installer: $($sig.Status); signer $($sig.SignerCertificate.Subject); issuer $($sig.SignerCertificate.Issuer); timestamped by $($sig.TimeStamperCertificate.Subject)"
+            if ($sig.Status -ne 'Valid' -or $cn -ne $env:WINDOWS_EXPECTED_SIGNER -or -not $sig.TimeStamperCertificate) {
+              Write-Host "::error::The $arch installer isn't validly signed and timestamped by '$env:WINDOWS_EXPECTED_SIGNER' ($($sig.Status): $($sig.StatusMessage))."
+              $failed = $true
+              continue
+            }
+            $name = Get-Content -LiteralPath "to-sign/$arch/name.txt" -Raw
+            $outDir = (New-Item -ItemType Directory -Force -Path "signed/$arch").FullName
+            Copy-Item -LiteralPath $file -Destination (Join-Path $outDir $name)
+            Write-Host "signed/$arch/$name SHA-256 $((Get-FileHash -LiteralPath (Join-Path $outDir $name) -Algorithm SHA256).Hash)"
+          }
+          if ($failed) { exit 1 }
+
+      - name: Upload the signed x64 installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-installer-x64
+          path: signed/x64/*.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the signed ARM64 installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-installer-arm64
+          path: signed/arm64/*.exe
+          if-no-files-found: error
+          retention-days: 90
+
   verify-reproducibility-windows:
     name: Verify Windows Build Reproducibility (${{ matrix.arch }})
     needs: [validate, build-windows]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
-    # The original is build-windows' unsigned .zip for this architecture. With signing on
-    # (SIGNING_ENABLED), it's the one build-windows sent to sign-windows (windows-unsigned-<arch>),
-    # since Authenticode signatures carry a timestamp, so the signed .zip differs on every run by
-    # design and isn't compared. This rebuild is unsigned and configured without
-    # TASKSMACK_PACKAGE_WINDOWS_HELPER, so its .zip lacks the TaskSmackHelper.exe the original then
-    # has; "Compare digests" compares that against the helper this rebuild built instead.
+    # The originals are build-windows' unsigned .zip and first-pass NSIS installer for this
+    # architecture. With signing on (SIGNING_ENABLED), the .zip is the one build-windows sent to
+    # sign-windows (windows-unsigned-<arch>), since Authenticode signatures carry a timestamp, so the
+    # signed .zip and installer differ on every run by design and aren't compared. The installer is the
+    # first pass from windows-nsis-<arch>: the one that ships is built from the signed files, but from
+    # the same project, so a first pass that reproduces is what the shipped one's reproducibility rests
+    # on (CPackProjectConfig.cmake.in's SetDateSave off keeps build times out of it). This rebuild is
+    # configured as build-windows is, so with signing on its packages carry the (unsigned)
+    # TaskSmackHelper.exe too; "Compare digests" still accepts a helper only the original packages, by
+    # comparing it with the one this rebuild built.
     strategy:
       fail-fast: false
       matrix:
@@ -844,14 +1147,28 @@ jobs:
         with:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
+      - name: Setup NSIS
+        uses: ./.github/actions/setup-nsis
+
       - name: Configure
         # No ccache here (unlike build-windows) -- see verify-reproducibility (Linux)'s
         # comment: a genuinely independent rebuild must not be able to serve a cached
-        # object instead of actually re-invoking the compiler.
+        # object instead of actually re-invoking the compiler. Otherwise as build-windows configures,
+        # so the packages are comparable (signing itself never runs here).
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
+          SIGNED: ${{ env.SIGNING_ENABLED }}
+        run: |
+          $signing = @()
+          if ($env:SIGNED -eq 'true') {
+            $signing = @(
+              '-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON',
+              '-DTASKSMACK_SIGN_AFTER_PACKAGING=ON',
+              "-DTASKSMACK_EXPECTED_SIGNER=$env:WINDOWS_EXPECTED_SIGNER"
+            )
+          }
+          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF @signing
 
       - name: Build
         shell: pwsh
@@ -863,7 +1180,7 @@ jobs:
         shell: pwsh
         run: |
           cd build/win-release
-          cpack -G "ZIP"
+          cpack -G "ZIP;NSIS" -D "CPACK_NSIS_EXECUTABLE=$env:MAKENSIS"
 
       - name: Record build inputs
         # This rebuild's manifest (see build-windows' step, #2802), for "Compare digests" to set
@@ -878,6 +1195,19 @@ jobs:
           name: ${{ env.SIGNING_ENABLED == 'true' && format('windows-unsigned-{0}', matrix.arch) || format('windows-packages-{0}', matrix.arch) }}
           path: original-dist/
 
+      - name: Download build-windows's first-pass installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-nsis-${{ matrix.arch }}
+          path: original-nsis/
+
+      - name: Add the first-pass installer to the originals
+        # Only the installer: the rest of windows-nsis-<arch> (project.nsi, the uninstaller) isn't a
+        # package, and the signed path's windows-unsigned-<arch> already brought an Uninstall.exe, which
+        # "Compare digests" ignores, since it compares only what this rebuild put in dist/.
+        shell: pwsh
+        run: Copy-Item -Path original-nsis/*.exe -Exclude Uninstall.exe -Destination original-dist/
+
       - name: Download build-windows's build-inputs manifest
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -890,9 +1220,10 @@ jobs:
         # build-windows uploads just that (#2799). Get-FileHash errors on a directory, so -File
         # restricts Get-ChildItem to regular files up front.
         #
-        # Identical .zip digests pass. Otherwise every file in the two .zips is compared, and the
-        # only difference allowed is a TaskSmackHelper.exe only the original packages (with signing
-        # on, see the job's comment), which must match the one this rebuild built in build/win-release/bin.
+        # Identical digests pass. A .zip that differs has every file in the two .zips compared, and the
+        # only difference allowed is a TaskSmackHelper.exe only the original packages, which must match
+        # the one this rebuild built in build/win-release/bin. Any other package (the NSIS installer)
+        # that differs fails: it can't be opened to compare.
         #
         # The two build-inputs manifests then say what a difference means (#2802): inputs that
         # differ (toolset, CRT/UCRT library hashes, SDK, runner image, compiler) explain it as the
@@ -933,6 +1264,11 @@ jobs:
             $originalHash = (Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash
             Write-Host "$($rebuiltZip.Name): rebuilt=$rebuiltHash original=$originalHash"
             if ($rebuiltHash -eq $originalHash) { continue }
+            if ($rebuiltZip.Extension -ne '.zip') {
+              Write-Host "::warning::$($rebuiltZip.Name) differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+              $failed = $true
+              continue
+            }
 
             $rebuilt = Get-EntryHashes $rebuiltZip.FullName
             $original = Get-EntryHashes (Get-Item -LiteralPath $orig).FullName
@@ -1528,30 +1864,40 @@ jobs:
     # TaskSmackHelper.exe; otherwise it comes from build-windows, without the helper. sign-windows is
     # skipped while signing is off, so this runs when build-windows succeeded and sign-windows
     # succeeded, or was skipped because signing is off; a failed or cancelled signing (or run) still
-    # stops it.
-    needs: [validate, build-windows, sign-windows]
+    # stops it. The same holds for the installer: build-windows-installer must succeed, and
+    # sign-windows-installer succeed, or be skipped with signing off.
+    needs: [validate, build-windows, sign-windows, build-windows-installer, sign-windows-installer]
     if: >-
       ${{ !cancelled() && needs.build-windows.result == 'success' &&
+      needs.build-windows-installer.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
-      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) }}
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
+      (needs.sign-windows-installer.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows-installer.result == 'skipped')) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    # 30: the .zip's checks, then the installer's round trip, which runs the smoke check's two launches
+    # again from the installed copy.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           # pe-machine: the COFF Machine field TaskSmack.exe must carry (IMAGE_FILE_MACHINE_*).
+          # package: CPack's system name in the package file names (cmake/Packaging.cmake).
           - arch: x64
             runner: windows-2025
             pe-machine: '0x8664'
+            package: win64
           - arch: arm64
             runner: windows-11-arm
             pe-machine: '0xAA64'
+            package: windows-arm64
     permissions:
       contents: read
-      actions: read  # Required to download the windows-packages-<arch> artifact from this run
-    # The .zip is portable, so there is no package to upgrade over v0.8.0's here; an NSIS upgrade
-    # check (install the previous release, then this one) waits on #2302's installer.
+      actions: read  # Required to download this run's windows-packages-<arch> and installer artifacts
+    # The .zip is portable, so there is no package to upgrade over v0.8.0's here, and v0.8.0 published
+    # no installer; an upgrade check for the installer (install the previous release's, then this one)
+    # can come once a release has shipped one (#2302).
     steps:
       # Only the signature and smoke checks' scripts, and the config.toml v0.8.0 saved, for the smoke
       # check's second launch (#2726). In its own folder, since a checkout cleans the folder it checks
@@ -1765,17 +2111,211 @@ jobs:
             -Fixture repo/tests/App/fixtures/config-v0.8.0.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The NSIS installer (#2302): a silent round trip on this runner. Its signature is checked, it
+      # installs into Program Files with the .zip's files and the uninstaller build-windows-installer
+      # embedded, every installed executable is checked like the .zip's, the installed TaskSmack.exe
+      # runs the same smoke check, and the uninstaller removes the folder, the Start menu entries and
+      # the Uninstall registry key again.
+      - name: Download the Windows installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-installer-${{ matrix.arch }}
+          path: installer/
+
+      # The uninstaller the installer must have installed, byte for byte: sign-windows' signed one, or,
+      # with signing off, build-windows' first pass's own.
+      - name: Download the signed uninstaller
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-signed-uninstaller-${{ matrix.arch }}
+          path: expected-uninstaller/
+
+      - name: Download the first pass's uninstaller
+        if: env.SIGNING_ENABLED != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-nsis-${{ matrix.arch }}
+          path: expected-uninstaller/
+
+      - name: Check the installer's name
+        # The one file, named as the .zip is but for the extension: TaskSmack-<version>-<package>.exe.
+        shell: pwsh
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          $files = @(Get-ChildItem -Path installer -File)
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          $expected = "$($zip.BaseName).exe"
+          if ($files.Count -ne 1 -or $files[0].Name -ne $expected -or $expected -notmatch "-$([regex]::Escape($env:PACKAGE))\.exe$") {
+            Write-Error "Expected just $expected (TaskSmack-<version>-$env:PACKAGE.exe) in windows-installer-${{ matrix.arch }}, found: $($files.Name -join ', ')"
+            exit 1
+          }
+          Write-Host "Installer: $($files[0].Name), $($files[0].Length) bytes"
+          "TASKSMACK_INSTALLER=$($files[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the installer's Authenticode signature
+        # The .zip's gate (tools/verify-windows-signatures.ps1, cmake/VerifyWindowsSignatures.cmake), on
+        # the installer: Valid, signed by WINDOWS_EXPECTED_SIGNER with an Artifact Signing certificate,
+        # timestamped.
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot installer -Names (Split-Path -Leaf $env:TASKSMACK_INSTALLER) `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install silently into Program Files
+        # /S: no window and the defaults, as an administrator gets them: all users, Program Files,
+        # no PATH change, no desktop shortcut. Then the installed folder must hold exactly the .zip's
+        # files, byte for byte, plus the expected Uninstall.exe, with an Uninstall registry key and a
+        # Start menu shortcut. The installer is 32-bit, so its registry keys are in the 32-bit view
+        # (WOW6432Node); both views are searched. What was there before goes to a file the uninstall
+        # step compares with.
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $startMenus = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")
+          $uninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
+          function Get-StartMenuEntries { $startMenus | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -Force -ErrorAction SilentlyContinue } | Where-Object { $_.Name -match 'TaskSmack' } | ForEach-Object FullName }
+          function Get-UninstallEntries { $uninstallKeys | ForEach-Object { Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue } | Where-Object { $_.PSChildName -match 'TaskSmack' -or "$($_.GetValue('DisplayName'))" -match 'TaskSmack' } | ForEach-Object Name }
+          $installDir = Join-Path $env:ProgramW6432 'TaskSmack'
+          if (Test-Path -LiteralPath $installDir) { Write-Error "$installDir exists before the install."; exit 1 }
+          $before = @{ StartMenu = @(Get-StartMenuEntries); Uninstall = @(Get-UninstallEntries) }
+          $before | ConvertTo-Json | Out-File -FilePath (Join-Path $env:RUNNER_TEMP 'before-install.json') -Encoding utf8
+
+          $proc = Start-Process -FilePath $env:TASKSMACK_INSTALLER -ArgumentList '/S' -PassThru
+          $null = $proc.Handle  # keep the handle, or ExitCode is empty once it has gone
+          if (-not $proc.WaitForExit(240000)) { Write-Error 'The installer didn''t finish within 240 s.'; exit 1 }
+          if ($proc.ExitCode -ne 0) { Write-Error "The installer exited with $($proc.ExitCode)."; exit 1 }
+
+          $failed = @()
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir 'TaskSmack.exe') -PathType Leaf)) { $failed += "no TaskSmack.exe in $installDir" }
+          function Get-Tree([string]$Root) {
+            $tree = @{}
+            Get-ChildItem -LiteralPath $Root -Recurse -File -Force | ForEach-Object {
+              $tree[$_.FullName.Substring($Root.Length).TrimStart('\')] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            }
+            return $tree
+          }
+          $zipTree = Get-Tree (Resolve-Path -LiteralPath $env:TASKSMACK_PKG_ROOT).Path
+          $installedTree = Get-Tree $installDir
+          $expectedUninstaller = (Get-FileHash -LiteralPath expected-uninstaller/Uninstall.exe -Algorithm SHA256).Hash
+          foreach ($name in $zipTree.Keys) {
+            if (-not $installedTree.ContainsKey($name)) { $failed += "$name, in the .zip, wasn't installed" }
+            elseif ($installedTree[$name] -ne $zipTree[$name]) { $failed += "the installed $name differs from the .zip's" }
+          }
+          foreach ($name in $installedTree.Keys) {
+            if ($name -eq 'Uninstall.exe') {
+              if ($installedTree[$name] -ne $expectedUninstaller) { $failed += "the installed Uninstall.exe ($($installedTree[$name])) isn't the expected one ($expectedUninstaller)" }
+            } elseif (-not $zipTree.ContainsKey($name)) { $failed += "$name was installed but isn't in the .zip" }
+          }
+          if (-not $installedTree.ContainsKey('Uninstall.exe')) { $failed += 'no Uninstall.exe was installed' }
+          $uninstall = @(Get-UninstallEntries | Where-Object { $before.Uninstall -notcontains $_ })
+          if ($uninstall.Count -ne 1) { $failed += "expected one new Uninstall registry key, found $($uninstall.Count): $($uninstall -join ', ')" }
+          $shortcuts = @(Get-StartMenuEntries | Where-Object { $before.StartMenu -notcontains $_ })
+          if (-not @($shortcuts | Where-Object { (Split-Path -Leaf $_) -eq 'TaskSmack.lnk' }).Count) { $failed += "no TaskSmack.lnk in the Start menu (new entries: $($shortcuts -join ', '))" }
+          Write-Host "Installed $($installedTree.Count) files into $installDir; Uninstall key: $($uninstall -join ', '); Start menu: $($shortcuts -join ', ')"
+          if ($failed.Count) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "The installed files are the .zip's, byte for byte, plus the expected Uninstall.exe ($expectedUninstaller)."
+          "TASKSMACK_INSTALL_DIR=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify the installed executables' Authenticode signatures
+        # Every .exe the installer installed: TaskSmack.exe, TaskSmackHelper.exe and Uninstall.exe, and
+        # no other (an unsigned one would pass unchecked otherwise), through the .zip's gate.
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $names = @('TaskSmack.exe', 'TaskSmackHelper.exe', 'Uninstall.exe')
+          $exes = @(Get-ChildItem -LiteralPath $env:TASKSMACK_INSTALL_DIR -Recurse -File -Filter *.exe | ForEach-Object Name | Sort-Object)
+          if (($exes -join ',') -ne (($names | Sort-Object) -join ',')) {
+            Write-Error "Expected exactly $($names -join ', ') in $env:TASKSMACK_INSTALL_DIR; found $($exes -join ', ')."
+            exit 1
+          }
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_INSTALL_DIR -Names $names `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke-check the installed executable
+        # The .zip's smoke check, on the installed TaskSmack.exe where it is (-InPlace), from config dirs
+        # of its own (its own work folder); Mesa's DLLs go beside it for the launches only.
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          & repo/tools/release-smoke-check.ps1 -PackageRoot $env:TASKSMACK_INSTALL_DIR -InPlace -MesaDllDir $env:MESA_DLL_DIR `
+            -Fixture repo/tests/App/fixtures/config-v0.8.0.toml -WorkDir (Join-Path $env:RUNNER_TEMP 'tasksmack-smoke-installed') `
+            -Title "Installed TaskSmack smoke check ($env:RUNNER_ARCH)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Uninstall silently and check nothing is left
+        # The installed Uninstall.exe with /S. NSIS's uninstaller copies itself to %TEMP% and runs from
+        # there, so the process started here exits at once; the end state is polled for instead: the
+        # install folder gone, and the Uninstall registry key and the Start menu entries back to what
+        # they were before the install.
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $startMenus = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")
+          $uninstallKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
+          function Get-StartMenuEntries { $startMenus | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -Force -ErrorAction SilentlyContinue } | Where-Object { $_.Name -match 'TaskSmack' } | ForEach-Object FullName }
+          function Get-UninstallEntries { $uninstallKeys | ForEach-Object { Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue } | Where-Object { $_.PSChildName -match 'TaskSmack' -or "$($_.GetValue('DisplayName'))" -match 'TaskSmack' } | ForEach-Object Name }
+          $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'before-install.json') -Raw | ConvertFrom-Json
+          $uninstaller = Join-Path $env:TASKSMACK_INSTALL_DIR 'Uninstall.exe'
+          $proc = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru
+          $null = $proc.Handle
+          if (-not $proc.WaitForExit(120000)) { Write-Error 'Uninstall.exe didn''t exit within 120 s.'; exit 1 }
+          if ($proc.ExitCode -ne 0) { Write-Error "Uninstall.exe exited with $($proc.ExitCode)."; exit 1 }
+
+          $deadline = (Get-Date).AddSeconds(180)
+          do {
+            $left = @()
+            if (Test-Path -LiteralPath $env:TASKSMACK_INSTALL_DIR) {
+              $left += "$env:TASKSMACK_INSTALL_DIR still exists, holding: $((Get-ChildItem -LiteralPath $env:TASKSMACK_INSTALL_DIR -Recurse -Force | ForEach-Object FullName) -join ', ')"
+            }
+            $keys = @(Get-UninstallEntries | Where-Object { @($before.Uninstall) -notcontains $_ })
+            if ($keys.Count) { $left += "the Uninstall registry key is still there: $($keys -join ', ')" }
+            $entries = @(Get-StartMenuEntries | Where-Object { @($before.StartMenu) -notcontains $_ })
+            if ($entries.Count) { $left += "Start menu entries are still there: $($entries -join ', ')" }
+            if (-not $left.Count) { break }
+            Start-Sleep -Seconds 2
+          } while ((Get-Date) -lt $deadline)
+          if ($left.Count) {
+            $left | ForEach-Object { Write-Host "::error::After the uninstall, $_" }
+            exit 1
+          }
+          # The app's own key under the vendor's goes too; the vendor's (empty) key itself is CPack's
+          # template's to leave, so it's only reported.
+          foreach ($view in 'HKLM:\SOFTWARE', 'HKLM:\SOFTWARE\WOW6432Node') {
+            if (Test-Path -LiteralPath "$view\TaskSmack Contributors\TaskSmack") {
+              Write-Host "::error::After the uninstall, $view\TaskSmack Contributors\TaskSmack is still there."
+              exit 1
+            }
+            if (Test-Path -LiteralPath "$view\TaskSmack Contributors") { Write-Host "$view\TaskSmack Contributors is left, empty (CPack's NSIS template doesn't delete the vendor key)." }
+          }
+          Write-Host "Uninstalled: $env:TASKSMACK_INSTALL_DIR, the Uninstall registry key and the Start menu entries are gone."
+
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-linux, build-windows, sign-windows, validate-linux-package, validate-linux-upgrade, validate-linux-helper, validate-windows-package]
-    # Every job it needs must succeed, except sign-windows, which is skipped while signing is off
-    # (SIGNING_ENABLED, only on a dry run). Without this `if:`, that skip would skip the release too.
+    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-linux-helper, validate-windows-package]
+    # Every job it needs must succeed, except sign-windows and sign-windows-installer, which are skipped
+    # while signing is off (SIGNING_ENABLED, only on a dry run). Without this `if:`, those skips would
+    # skip the release too.
     if: >-
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
+      needs.build-windows-installer.result == 'success' &&
       needs.validate-linux-package.result == 'success' && needs.validate-linux-upgrade.result == 'success' &&
       needs.validate-linux-helper.result == 'success' && needs.validate-windows-package.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
-      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) }}
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
+      (needs.sign-windows-installer.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-windows-installer.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -1823,11 +2363,21 @@ jobs:
         # on, the Windows .zips are sign-windows' signed ones (windows-unsigned-* never matches). Package
         # names differ by architecture (cmake/Packaging.cmake), so nothing in one artifact
         # overwrites another's, and each artifact holds only its packages (#2799), so dist/ is
-        # exactly the release's package set plus the manifests below: signing, the upload and the
-        # asset-count check all see the same files.
+        # exactly the release's package set plus the installers and manifests below: signing, the
+        # upload and the asset-count check all see the same files.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: '*-packages-*'
+          path: dist/
+          merge-multiple: true
+
+      - name: Download the Windows installers
+        # windows-installer-{x64,arm64}: TaskSmack-<version>-win64.exe and -windows-arm64.exe (#2302),
+        # sign-windows-installer's signed ones with signing on, else build-windows-installer's. The
+        # unsigned ones sign-windows-installer takes (windows-unsigned-installer-*) never match.
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: 'windows-installer-*'
           path: dist/
           merge-multiple: true
 
@@ -1847,8 +2397,8 @@ jobs:
         # Exactly the expected files, before anything is signed: x64 keeps the names earlier
         # releases used (win64 / Linux), so existing download links still work, and ARM64's are
         # windows-arm64 / linux-aarch64 (#2214); each Windows .zip has its build-inputs manifest
-        # (#2802). A missing, extra or renamed file fails here. A new package (such as #2302's NSIS
-        # installers) has to be added to this list.
+        # (#2802), and an NSIS installer beside it (#2302). A missing, extra or renamed file fails here.
+        # A new package has to be added to this list.
         run: |
           version=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
           if [[ -z "$version" ]]; then
@@ -1856,8 +2406,9 @@ jobs:
             exit 1
           fi
           expected=$(printf 'TaskSmack-%s-%s\n' \
-            "$version" Linux.deb "$version" Linux.tar.gz "$version" win64.zip \
+            "$version" Linux.deb "$version" Linux.tar.gz "$version" win64.zip "$version" win64.exe \
             "$version" linux-aarch64.deb "$version" linux-aarch64.tar.gz "$version" windows-arm64.zip \
+            "$version" windows-arm64.exe \
             "$version" win64-build-inputs.json "$version" windows-arm64-build-inputs.json |
             LC_ALL=C sort)
           actual=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
@@ -2068,8 +2619,8 @@ jobs:
       matrix:
         # x64 only, to bound the cost. Each leg checks that every asset is there and matches the
         # digest create-release recorded. The Linux leg then verifies every asset's Sigstore bundle
-        # and attestation and relaunches the .tar.gz; the Windows leg checks the .zip's Authenticode
-        # signatures (once signing is on) and relaunches it.
+        # and attestation and relaunches the .tar.gz; the Windows leg checks the Authenticode signatures
+        # of the .zip's executables and of the installer (once signing is on) and relaunches the .zip.
         include:
           - os: linux
             runner: ubuntu-24.04
@@ -2350,12 +2901,32 @@ jobs:
           "- Authenticode signatures: $result" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           exit $code
 
+      - name: Verify the published installer's Authenticode signature
+        # The same check on the downloaded x64 NSIS installer (#2302), as validate-windows-package makes
+        # it before publishing.
+        if: matrix.os == 'windows' && env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path published -Filter 'TaskSmack-*-win64.exe' -File)
+          if ($installers.Count -ne 1) {
+            "- Authenticode signature of the x64 installer: **FAILED** (no single x64 installer)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Write-Error "Expected one TaskSmack-*-win64.exe in the download, found $($installers.Count)."
+            exit 1
+          }
+          & repo/tools/verify-windows-signatures.ps1 -PackageRoot published -Names $installers[0].Name `
+            -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          $code = $LASTEXITCODE
+          $result = if ($code -eq 0) { "passed (``$($installers[0].Name)``, signer ``$env:WINDOWS_EXPECTED_SIGNER``)" } else { '**FAILED** (see the step log)' }
+          "- Authenticode signature of the x64 installer: $result" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          exit $code
+
       - name: Report the Authenticode check as skipped
-        # On a ref that doesn't sign (a feature-branch dry run), the .zip carries no signature to check.
+        # On a ref that doesn't sign (a feature-branch dry run), the .zip and the installer carry no
+        # signature to check.
         if: matrix.os == 'windows' && env.SIGNING_ENABLED != 'true'
         run: |
-          echo "Signing is off for this ref (SIGNING_ENABLED isn't 'true': only v* tags and main and release/* sign), so the .zip isn't Authenticode-signed; the check is skipped."
-          echo "- Authenticode signatures: skipped (signing is off for this ref)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signing is off for this ref (SIGNING_ENABLED isn't 'true': only v* tags and main and release/* sign), so the .zip and the installer aren't Authenticode-signed; the checks are skipped."
+          echo "- Authenticode signatures (the .zip and the installer): skipped (signing is off for this ref)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch Mesa llvmpipe
         if: matrix.os == 'windows'

@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
@@ -325,6 +326,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
     {
         settings.showProcessIcons = *val;
     }
+    if (auto val = config["ui"]["highlight_new_processes"].value<bool>())
+    {
+        settings.highlightNewProcesses = *val;
+    }
     if (auto val = config["ui"]["cpu_details_expanded"].value<bool>())
     {
         settings.cpuDetailsExpanded = *val;
@@ -349,6 +354,20 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {
             settings.processTableLayout = std::move(*layout);
         }
+    }
+    // Pinned processes (#3061): the strings of the list, filtered as Pins takes them in (empty, over-long,
+    // repeated and past ProcessPins::MAX_PINS left out); anything that isn't a string is skipped.
+    if (const auto* pinned = config["process_table"]["pinned"].as_array())
+    {
+        std::vector<std::string> names;
+        for (const auto& node : *pinned)
+        {
+            if (auto name = node.value<std::string>())
+            {
+                names.push_back(std::move(*name));
+            }
+        }
+        settings.pinnedProcesses = ProcessPins::Pins(names).names();
     }
 
     // Process panel column visibility. Since CONFIG_FORMAT_VERSION 2 the section lists only the
@@ -401,6 +420,22 @@ void readSettings(const toml::table& config, UserSettings& settings)
 }
 
 /// The TOML document for `settings`: every key TaskSmack owns.
+/// [process_table]: the layout, and the pinned processes when there are any (#3061).
+[[nodiscard]] toml::table processTableTable(const UserSettings& settings)
+{
+    toml::table table{{"layout", settings.processTableLayout}};
+    if (!settings.pinnedProcesses.empty())
+    {
+        toml::array pinned;
+        for (const std::string& name : settings.pinnedProcesses)
+        {
+            pinned.push_back(name);
+        }
+        table.insert("pinned", std::move(pinned));
+    }
+    return table;
+}
+
 [[nodiscard]] toml::table buildTable(const UserSettings& settings)
 {
     // Convert font size to string
@@ -491,6 +526,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
              {"show_privilege_notice", settings.showPrivilegeNotice},
              {"show_process_icons", settings.showProcessIcons},
+             {"highlight_new_processes", settings.highlightNewProcesses},
              {"cpu_details_expanded", settings.cpuDetailsExpanded},
              {"chart_anti_aliasing", settings.chartAntiAliasing},
          }},
@@ -499,7 +535,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"window", windowTable},
         {"process_columns", processColumnsTable},
         {"process_meters", processMetersTable},
-        {"process_table", toml::table{{"layout", settings.processTableLayout}}},
+        {"process_table", processTableTable(settings)},
         {"dumps", toml::table{{"folder", settings.dumpFolder}}},
     };
 }

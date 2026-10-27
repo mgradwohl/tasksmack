@@ -1,13 +1,13 @@
 #include "ProcessIconCache.h"
 
 #include "Domain/LruMap.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IProcessIconSource.h"
 #include "Platform/ThreadName.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -248,7 +248,8 @@ std::string ProcessIconCache::iconKey(std::string_view executablePath, std::stri
     }
     if (m_FoldCase)
     {
-        std::ranges::transform(key, key.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+        // ASCII letters only: a UTF-8 byte in a path is never folded, whatever the locale (#2566).
+        std::ranges::transform(key, key.begin(), Platform::foldAscii);
     }
     return key;
 }

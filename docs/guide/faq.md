@@ -21,7 +21,7 @@ The `release-compatible` presets need an x86-64-v2 CPU: Intel Nehalem (first-gen
 
 ## How do I check that a download is genuine?
 
-Every release file (the `.deb`, `.tar.gz` and `.zip` for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases after v0.9.0 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
+Every release file (the `.deb`, `.tar.gz`, `.zip` and Windows installer for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases after v0.9.0 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
@@ -125,16 +125,17 @@ would stop Windows), and it acts only on the process you chose, checked by its s
 its PID.
 
 **Where TaskSmack must be installed.** The helper works only for a TaskSmack installed where only an
-administrator can change it, such as `C:\Program Files\TaskSmack`. That covers `TaskSmack.exe`,
+administrator can change it, such as `C:\Program Files\TaskSmack`, where the installer
+(`TaskSmack-<version>-win64.exe` or `-windows-arm64.exe`, from v0.9.1) puts it. That covers `TaskSmack.exe`,
 `TaskSmackHelper.exe`, their folder, and every folder above it. If your account could replace either
 file or move the folder, any program you run could put itself in TaskSmack's place, and the helper's
 signed UAC prompt would then hand it administrator rights. So a portable copy unpacked from the `.zip`
 into your Downloads, Desktop or another folder you own, or an install under your user profile, can't use
 the helper: TaskSmack then doesn't offer the buttons. Everything else works as before.
 
-The helper ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1
+The helper ships only in the Authenticode-signed installers and `.zip`s, x64 and ARM64, from v0.9.1
 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)), so that its UAC prompt names TaskSmack's
-publisher, **Matt Gradwohl**. No earlier release `.zip` includes it, nor does any unsigned build; without
+publisher, **Matt Gradwohl**. No earlier release includes it, nor does any unsigned build; without
 it, TaskSmack offers neither button. If TaskSmack is already running as
 administrator, it needs no helper and offers neither.
 

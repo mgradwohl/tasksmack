@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -12,6 +13,7 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIconView.h"
+#include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -569,6 +571,10 @@ class ProcessesPanel : public Panel
     // m_CachedSortedIndices is in natural order and must be sorted again on the next frame, even
     // though ImGui's SpecsDirty is not set (the filter result was rebuilt, #1174).
     bool m_SortPending = true;
+    // Pinned processes (#3061): kept first in either view and through the filter. Loaded in onAttach();
+    // a change in the row menu is written back to the settings and refilters on the next frame.
+    ProcessPins::Pins m_Pins;
+    bool m_PinsChanged = false;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
@@ -588,6 +594,17 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    // Processes that just exited, kept as dimmed rows for a moment (#3060): the generation before
+    // m_CachedRenderSnapshots' (to tell which exited), and those still shown.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_PreviousGeneration;
+    ExitingProcessRows::Tracker m_ExitingRows;
+    // What the table draws: m_CachedRenderSnapshots, followed by the exited processes when there are
+    // any (ExitingProcessRows::displayRows()). An index at or past m_LiveRowCount is an exited row.
+    // m_DisplayVersion changes whenever it is rebuilt; the filter, sort and tree caches are keyed on it.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_DisplaySnapshots = m_CachedRenderSnapshots;
+    std::size_t m_LiveRowCount = 0;
+    std::uint64_t m_DisplayVersion = 0;
+    std::uint64_t m_DisplayBuiltForVersion = std::numeric_limits<std::uint64_t>::max();
     SelectOverride::Pending m_StartupSelection;   // TASKSMACK_SELECT_PID/_NAME (#1559); idle once fired
     bool m_StartupSelectionShowsDetails = true;   // false when TASKSMACK_TAB picks the tab instead
     SelectOverride::Pending m_RequestedSelection; // TASKSMACK_DEMO's select= (#2827); idle once fired
@@ -745,6 +762,14 @@ class ProcessesPanel : public Panel
     /// The visible rows in drawn order, as indices into `snapshots`: the sorted list, or the flattened
     /// tree. With `shapes`, also each tree row's shape (left empty in list view, or if any index had to
     /// be dropped). Not while the tree rows are being iterated: it can rebuild them.
+    /// Rebuilds m_DisplaySnapshots when a generation was adopted or an exited row expired (#3060).
+    void updateDisplaySnapshots();
+    /// Whether @p procIdx, an index into m_DisplaySnapshots, is a process that has exited (#3060).
+    [[nodiscard]] bool isExitedRow(std::size_t procIdx) const noexcept
+    {
+        return procIdx >= m_LiveRowCount;
+    }
+
     void collectVisibleRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
                             std::vector<std::size_t>& visible,
                             std::vector<ProcessTableNavigation::TreeRowShape>* shapes);
@@ -771,12 +796,22 @@ class ProcessesPanel : public Panel
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
 
+    /// "Open file location" (#3064): the row's executable in the file manager, on the row action worker.
+    void openRowFileLocation(const Domain::ProcessSnapshot& proc);
+    /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
+    void searchRowOnline(const Domain::ProcessSnapshot& proc);
+    /// Pins or unpins processes named as @p proc (#3061), saving the list in the settings.
+    void togglePin(const Domain::ProcessSnapshot& proc);
+
     /// Asks to run `action` on `proc`, through the confirmation dialog.
     void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
 
     /// Asks to run `action` on every selected process still listed, through the batch confirmation
     /// (#804). One process left: the single-process dialog. None: nothing happens.
     void requestSelectionAction(Detail::ProcessAction action);
+    /// End process tree (#3059): @p action for @p proc and every process descended from it, leaves first,
+    /// confirmed and run as a batch. Just @p proc when it has no descendants listed any more.
+    void requestTreeAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
 
     /// Opens the batch priority dialog for every selected process still listed (#1484). None left:
     /// nothing happens.
@@ -800,10 +835,15 @@ class ProcessesPanel : public Panel
     /// @param row Its place in the tree (depth, children, expanded) and its index in the adopted
     ///            generation, which its sparklines are found by; a list row is a root without children.
     void renderProcessRow(const Domain::ProcessSnapshot& proc, const ProcessTreeFlatten::ProcessTreeRow& row);
+    /// The wall clock new-process highlighting compares start times with (#3060), read once a frame.
+    double m_HighlightNowEpochSeconds = 0.0;
+    int m_HighlightClockFrame = -1;
 
     /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
     /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
     void renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
+    /// An exited row's PID cell (#3060): the PID text alone, with no selectable, menu or click.
+    static void renderExitedPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
 
     /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906),
     /// then, after a collapsed parent's name, its child count (#838).

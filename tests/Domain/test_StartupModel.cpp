@@ -52,6 +52,28 @@ TEST(StartupModelTest, SamplePublishesEntriesOrderedByNameIgnoringCase)
     EXPECT_EQ(publication->entries[2].name, "Zoom");
 }
 
+TEST(StartupModelTest, NameOrderFoldsAsciiLettersOnlyAndKeepsTheProbesOrderForTies)
+{
+    // Mixed case folds; a byte of 0x80 and up sorts as itself, after every ASCII letter, whatever the
+    // locale (#2566): 0xE4 (Latin-1's ä) after 0xC4 (Ä), never folded into a tie with it. Names equal
+    // ignoring case keep the probe's order (the sort is stable). An empty name first.
+    auto probe = std::make_unique<Mocks::MockStartupProbe>();
+    probe->setEntries({entry("\xE4pp"), entry("teams", false), entry("\xC4pp"), entry("TEAMS"), entry(""), entry("Zoom")});
+    StartupModel model(std::move(probe));
+
+    model.sample();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->entries.size(), 6U);
+    EXPECT_EQ(publication->entries[0].name, "");
+    EXPECT_EQ(publication->entries[1].name, "teams");
+    EXPECT_FALSE(publication->entries[1].enabled);
+    EXPECT_EQ(publication->entries[2].name, "TEAMS");
+    EXPECT_EQ(publication->entries[3].name, "Zoom");
+    EXPECT_EQ(publication->entries[4].name, "\xC4pp");
+    EXPECT_EQ(publication->entries[5].name, "\xE4pp");
+}
+
 TEST(StartupModelTest, EachSampleIsANewImmutableGeneration)
 {
     auto probe = std::make_unique<Mocks::MockStartupProbe>();

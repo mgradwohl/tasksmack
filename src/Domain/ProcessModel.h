@@ -294,6 +294,15 @@ class ProcessModel : public ISamplable
     // scratch, guarded by m_SamplingMutex: kept between refreshes only for its storage, never read
     // outside the tree build and never part of a published snapshot.
     PidIndex m_PidIndex;
+    // The processes carried over (ProcessCounters::heldOver) since their counters were read (#3031), with the
+    // system CPU total and sample time of that read: their next real read's rates are taken over the whole
+    // time since. Empty nearly always; kept apart from PerProcessState so every other process pays nothing.
+    struct HeldOverSince
+    {
+        std::uint64_t totalCpuTime = 0;
+        Clock::time_point sampleTime;
+    };
+    std::unordered_map<ProcessIdentity, HeldOverSince, ProcessIdentityHash> m_HeldOver;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
@@ -355,6 +364,31 @@ class ProcessModel : public ISamplable
     // Helpers
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
+
+    /// For a carried-over process (ProcessCounters::heldOver, #3031), appends its last row to @p newSnapshots,
+    /// taking the last generation into @p previousSnapshots the first time, and notes when its counters were
+    /// last read (@p lastSampleTime, m_PrevTotalCpuTime) unless already noted. False when it has no last row.
+    /// Out of line, never inlined: computeSnapshotsLocked()'s loop runs for every process, and this for
+    /// nearly none. Requires m_SamplingMutex held.
+    [[gnu::noinline]] [[nodiscard]] bool appendHeldOverLocked(const Platform::ProcessCounters& current,
+                                                              const ProcessIdentity& key,
+                                                              Clock::time_point lastSampleTime,
+                                                              std::shared_ptr<const std::vector<ProcessSnapshot>>& previousSnapshots,
+                                                              std::vector<ProcessSnapshot>& newSnapshots);
+
+    /// The interval a process's rates are taken over (#3031), as the system CPU ticks, seconds and
+    /// microseconds since its counters were last read.
+    struct RateInterval
+    {
+        std::uint64_t totalCpuDelta = 0;
+        double elapsedSeconds = 0.0;
+        std::uint64_t timeDeltaUs = 0;
+    };
+
+    /// @p interval, or, for a process carried over since its counters were last read, the interval since
+    /// that read, forgetting it (#3031). Never inlined, as appendHeldOverLocked(). Requires m_SamplingMutex held.
+    [[gnu::noinline]] [[nodiscard]] RateInterval
+    rateIntervalAfterHeldOverLocked(const ProcessIdentity& key, RateInterval interval, std::uint64_t totalCpuTime, Clock::time_point now);
 
     /// Merges @p publication's per-process GPU counters into @p snapshots. @p firstSeen holds, for
     /// each snapshot, when this model first listed that process: a process first listed after the

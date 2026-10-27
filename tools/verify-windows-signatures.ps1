@@ -1,10 +1,12 @@
 <#
 .SYNOPSIS
-    Check the Authenticode signatures of an extracted, signed Windows .zip (#2302).
+    Check the Authenticode signatures of an extracted, signed Windows .zip, or of other files (#2302).
 .DESCRIPTION
     release.yml's signature check: validate-windows-package runs it on sign-windows' signed .zip
     before create-release can publish it, and verify-published-release on the x64 .zip downloaded
-    from the release (#2721). Both run it only while signing is on (SIGNING_ENABLED).
+    from the release (#2721). Both run it only while signing is on (SIGNING_ENABLED). With -Names,
+    validate-windows-package also checks the NSIS installer and the files it installed (TaskSmack.exe,
+    TaskSmackHelper.exe and Uninstall.exe), and verify-published-release the published x64 installer.
 
     cmake/VerifyWindowsSignatures.cmake requires TaskSmack.exe and TaskSmackHelper.exe to be validly
     signed by ExpectedSigner, timestamped, and both by a certificate with the same subject (Azure
@@ -14,7 +16,8 @@
     signed or untimestamped signature fails. The Public Trust certificate chains to a root Windows
     trusts, so nothing is added to the trust store.
 .PARAMETER PackageRoot
-    The extracted .zip's top-level directory, which holds TaskSmack.exe and TaskSmackHelper.exe.
+    The extracted .zip's top-level directory, which holds TaskSmack.exe and TaskSmackHelper.exe, or the
+    folder that holds the -Names files.
 .PARAMETER ExpectedSigner
     The signer certificate's common name (release.yml's WINDOWS_EXPECTED_SIGNER).
 .PARAMETER ExpectedIssuer
@@ -25,20 +28,27 @@
     Omitted, the script's default (TASKSMACK_EXPECTED_EKU: Artifact Signing's 1.3.6.1.4.1.311.97.*).
 .PARAMETER VerifyScript
     The path to cmake/VerifyWindowsSignatures.cmake.
+.PARAMETER Names
+    Optional: the file names to check, each found once under PackageRoot (TASKSMACK_VERIFY_NAMES).
+    Omitted, TaskSmack.exe and TaskSmackHelper.exe.
 #>
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$ExpectedSigner,
     [Parameter(Mandatory)][string]$VerifyScript,
     [string]$ExpectedIssuer = '',
-    [string]$ExpectedEku = ''
+    [string]$ExpectedEku = '',
+    [string[]]$Names = @('TaskSmack.exe', 'TaskSmackHelper.exe')
 )
 
-foreach ($name in 'TaskSmack.exe', 'TaskSmackHelper.exe') {
-  $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $PackageRoot $name)
+foreach ($name in $Names) {
+  $file = Get-ChildItem -LiteralPath $PackageRoot -Recurse -File -Filter $name | Select-Object -First 1
+  if (-not $file) { Write-Host "${name}: not found under $PackageRoot"; continue }
+  $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
   $ekus = ($sig.SignerCertificate.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId }) -join ', '
   Write-Host "${name}: $($sig.Status); signer $($sig.SignerCertificate.Subject) ($($sig.SignerCertificate.Thumbprint)); issuer $($sig.SignerCertificate.Issuer); EKUs $ekus; timestamped by $($sig.TimeStamperCertificate.Subject)"
 }
 cmake "-DTASKSMACK_VERIFY_DIR=$PackageRoot" "-DTASKSMACK_EXPECTED_SIGNER=$ExpectedSigner" `
-  "-DTASKSMACK_EXPECTED_ISSUER=$ExpectedIssuer" "-DTASKSMACK_EXPECTED_EKU=$ExpectedEku" -P $VerifyScript
+  "-DTASKSMACK_EXPECTED_ISSUER=$ExpectedIssuer" "-DTASKSMACK_EXPECTED_EKU=$ExpectedEku" `
+  "-DTASKSMACK_VERIFY_NAMES=$($Names -join ';')" -P $VerifyScript
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

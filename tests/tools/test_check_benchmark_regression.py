@@ -357,8 +357,84 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         for name, entry in overrides.items():
             with self.subTest(name):
                 self.assertIn(name, baseline_names)
-                self.assertGreater(entry["threshold"], 40)
+                # Each CI override loosens a limit heavy-checks.yml passes (40%, the 1.0ns default).
+                self.assertTrue("threshold" in entry or "min_abs_delta_ns" in entry)
+                if "threshold" in entry:
+                    self.assertGreater(entry["threshold"], 40)
+                if "min_abs_delta_ns" in entry:
+                    self.assertGreater(entry["min_abs_delta_ns"], 1.0)
                 self.assertTrue(entry["reason"].strip())
+
+    # #3126: a per-benchmark noise floor for a sub-nanosecond benchmark that code layout moves.
+    @staticmethod
+    def floor_override(floor: object, name: str = "BM_Format_ChooseByteUnit", **extra: object) -> dict:
+        return {"thresholds": {name: {"min_abs_delta_ns": floor, "reason": "code layout", **extra}}}
+
+    def test_a_floor_override_decides_each_case(self):
+        # Gate at 40% with the 1.0ns default floor and BM_Format_ChooseByteUnit's own 3ns floor. The
+        # first row is runs 40444757786 / 40448017472; the others show the floor is no blanket pass.
+        cases = [
+            ("layout noise on the floored benchmark", "BM_Format_ChooseByteUnit", 0.7, 3.1, 0),
+            ("the floored benchmark over its floor", "BM_Format_ChooseByteUnit", 0.7, 4.0, 1),
+            ("the floored benchmark at 2ns -> 12ns", "BM_Format_ChooseByteUnit", 2.0, 12.0, 1),
+            ("another sub-ns benchmark keeps 1.0ns", "BM_Numeric_ToDouble_Int", 0.7, 3.1, 1),
+            ("a 10ns -> 40ns regression elsewhere", "BM_Numeric_ToDouble_Int", 10.0, 40.0, 1),
+            ("2ns -> 12ns elsewhere", "BM_Numeric_ToDouble_Int", 2.0, 12.0, 1),
+        ]
+        for label, name, base_ns, cur_ns, expected in cases:
+            with self.subTest(label):
+                baseline = {"BM_Format_ChooseByteUnit": 0.7, "BM_Numeric_ToDouble_Int": 0.7, name: base_ns}
+                current = {**baseline, name: cur_ns}
+                code, output = self.run_gate(baseline, current, overrides=self.floor_override(3))
+                self.assertEqual(code, expected, output)
+                self.assertIn("BM_Format_ChooseByteUnit: floor 3.00ns", output)
+
+    def test_a_floor_override_reports_its_own_floor(self):
+        baseline = {"BM_Format_ChooseByteUnit": 0.7}
+        code, output = self.run_gate(baseline, {"BM_Format_ChooseByteUnit": 3.1}, overrides=self.floor_override(3))
+        self.assertEqual(code, 0, output)
+        self.assertIn("within the 1.00ns noise floor (or their own floor) (1, not regressions)", output)
+        self.assertIn("BM_Format_ChooseByteUnit: 0.70ns -> 3.10ns  (+342.9%)  [floor 3.00ns]", output)
+        self.assertIn("40.0% threshold and the 1.00ns floor (1 with their own)", output)
+        code, output = self.run_gate(baseline, {"BM_Format_ChooseByteUnit": 4.0}, overrides=self.floor_override(3))
+        self.assertEqual(code, 1, output)
+        self.assertIn("BM_Format_ChooseByteUnit: 0.7ns -> 4.0ns  (+471.4%)  [floor 3.00ns]", output)
+        # A floor alone leaves the benchmark on --threshold.
+        self.assertIn("regressed beyond 40.0%.", output)
+
+    def test_a_floor_override_keeps_the_threshold(self):
+        # 10ns -> 13.9ns is +3.9ns, over the 3ns floor, but +39%, under the 40% threshold it still uses.
+        code, output = self.run_gate(
+            {"BM_Format_ChooseByteUnit": 10.0}, {"BM_Format_ChooseByteUnit": 13.9}, overrides=self.floor_override(3)
+        )
+        self.assertEqual(code, 0, output)
+
+    def test_an_override_can_set_a_threshold_and_a_floor(self):
+        overrides = self.floor_override(3, threshold=60)
+        code, output = self.run_gate(
+            {"BM_Format_ChooseByteUnit": 10.0}, {"BM_Format_ChooseByteUnit": 15.5}, overrides=overrides
+        )
+        self.assertEqual(code, 0, output)  # +55%: under its own 60%
+        self.assertIn("BM_Format_ChooseByteUnit: 60.0%, floor 3.00ns", output)
+        code, output = self.run_gate(
+            {"BM_Format_ChooseByteUnit": 10.0}, {"BM_Format_ChooseByteUnit": 17.0}, overrides=overrides
+        )
+        self.assertEqual(code, 1, output)  # +70% and +7ns: over both
+        self.assertIn("[threshold 60.0%, floor 3.00ns]", output)
+
+    def test_an_invalid_floor_override_is_a_usage_error(self):
+        cases = {
+            "nan floor": self.floor_override(float("nan")),
+            "negative floor": self.floor_override(-1),
+            "bool floor": self.floor_override(True),
+            "string floor": self.floor_override("3"),
+            "neither limit": {"thresholds": {"BM_Format_ChooseByteUnit": {"reason": "code layout"}}},
+        }
+        for label, overrides in cases.items():
+            with self.subTest(label):
+                code, output = self.run_gate({"BM_Memory": 100.0}, {"BM_Memory": 100.0}, overrides=overrides)
+                self.assertEqual(code, 2, output)
+                self.assertIn("invalid threshold overrides", output)
 
 
 if __name__ == "__main__":

@@ -17,9 +17,18 @@ A family is a key with its per-save part removed:
   - <OS>-fetchcontent-<hash>             (.github/actions/fetchcontent-cache)
   - <OS>[-<ARCH>]-cmake-checks-<preset>-<hash>-v<N>  (.github/actions/cmake-check-cache)
   - <OS>-tidy-results-<run id>-<attempt> (.github/actions/tidy-result-cache, #1785)
+  - codeql-trap-<N>-<CLI version>-<language>-<commit SHA>  (github/codeql-action's TRAP cache, #3101)
 
 Restores only ever use the newest entry of a family, so every older one is stale. Anything else (the
-LLVM, IWYU, CodeQL and setup-python caches) has a single live key and is never picked.
+LLVM, IWYU and setup-python caches) has a single live key and is never picked.
+
+The CodeQL TRAP cache is saved once per analyzed commit of the default branch (about 640 MB each, and
+main analyzes 20-30 commits on a busy day), which main's own runs never read back ("Analyzing default
+branch. Skipping downloading of TRAP caches"); a pull request asks for its base commit's entry and falls
+back to the newest by prefix ("Cache hit for restore-key"). Nothing deleted the older ones, so they
+kept the repository over its cache limit, and GitHub's least-recently-used eviction then removed the
+small entries nothing had read for a few hours: main's clang-tidy result caches, saved once a night
+(#3101).
 
 A family must name everything that makes two entries non-interchangeable, or the newest one evicts
 the other's live entry. x64 and ARM64 Windows runners once both saved
@@ -40,6 +49,7 @@ FAMILY_RULES: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...] = (
     (re.compile(r"-fetchcontent-"), re.compile(r"-fetchcontent-.*$"), "-fetchcontent"),
     (re.compile(r"-cmake-checks-"), re.compile(r"-[0-9a-f]+-v\d+$"), ""),
     (re.compile(r"-tidy-results-"), re.compile(r"-\d+-\d+$"), ""),
+    (re.compile(r"^codeql-trap-"), re.compile(r"-[0-9a-f]{40}$"), ""),
 )
 
 

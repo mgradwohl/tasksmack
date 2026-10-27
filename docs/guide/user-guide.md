@@ -2,6 +2,15 @@
 
 TaskSmack is a system monitor and task manager for Linux and Windows, built with modern C++23, Dear ImGui, OpenGL, and SDL3. It delivers an immediate-mode UI with real-time process and system metrics, designed for developers and power users who want accurate, low-overhead monitoring.
 
+### Why TaskSmack
+
+- **One app on Linux and Windows.** The same window, keys and themes on both, with each platform's own depth rather than a lowest common denominator.
+- **Acts on other users' processes without running as root.** On Linux, a small polkit helper does the privileged reads and actions after asking for an administrator's password; on Windows, a helper does the same through UAC (signed, from v0.9.1). TaskSmack itself stays unprivileged.
+- **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
+- **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
+- **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
+
 ---
 
 ## Supported Platforms
@@ -21,7 +30,8 @@ TaskSmack runs on Linux and Windows only; macOS and other operating systems are 
 |----------|---------|---------|
 | Linux (Debian/Ubuntu) | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
-| Windows | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
+| Windows | `.exe` installer (from v0.9.1) | Run it to install TaskSmack in `C:\Program Files\TaskSmack`, with a Start menu shortcut; remove it from **Settings → Apps** |
+| Windows (portable) | `.zip` | Extract and run `TaskSmack.exe` (no Visual C++ Redistributable needed) |
 
 The Linux packages are built on Ubuntu 24.04 and need glibc 2.38 or newer: Ubuntu 24.04, Debian 13, Fedora 39, RHEL, AlmaLinux and Rocky 10, or later, and current Arch and openSUSE Tumbleweed. An older distribution, such as Ubuntu 22.04, Debian 12 or RHEL 9, can't run them (the `.deb` won't install, and the `.tar.gz`'s program won't start), but TaskSmack builds from source there: see [System Requirements](#operating-system).
 
@@ -29,25 +39,30 @@ Each package comes in two architectures. Pick the one that matches your computer
 
 | Architecture | Linux | Windows |
 |--------------|-------|---------|
-| x64 (Intel, AMD) | `TaskSmack-<version>-Linux.deb`, `TaskSmack-<version>-Linux.tar.gz` | `TaskSmack-<version>-win64.zip` |
-| ARM64 | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.zip` |
+| x64 (Intel, AMD) | `TaskSmack-<version>-Linux.deb`, `TaskSmack-<version>-Linux.tar.gz` | `TaskSmack-<version>-win64.exe`, `TaskSmack-<version>-win64.zip` |
+| ARM64 | `TaskSmack-<version>-linux-aarch64.deb`, `TaskSmack-<version>-linux-aarch64.tar.gz` | `TaskSmack-<version>-windows-arm64.exe`, `TaskSmack-<version>-windows-arm64.zip` |
+
+On Windows, the installer (`.exe`) asks for administrator rights, installs TaskSmack for every user in `C:\Program Files\TaskSmack` and adds a TaskSmack folder to the Start menu. To remove it, use **Settings → Apps → Installed apps**, or **Uninstall** in that Start menu folder; your settings, which live in your own profile, stay. `TaskSmack-<version>-win64.exe /S` installs it without any questions. The `.zip` holds the same files and runs from wherever you extract it.
 
 On Linux, `uname -m` prints `x86_64` or `aarch64`. On Windows, **Settings → System → About** shows "x64-based processor" or "ARM-based processor". On Windows on Arm, OpenGL comes from Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" (in the Microsoft Store), which many such PCs come with; without it TaskSmack stops at startup with a message naming the OpenGL version it found (see [Graphics](#graphics)).
 
-On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
+On Linux, the `.deb` also installs TaskSmack's privileged helper, `/usr/libexec/tasksmack/tasksmack-helper`, and its polkit action (`/usr/share/polkit-1/actions/app.tasksmack.TaskSmack.helper.policy`). After asking for an administrator's password, process actions' **Authenticate and retry** and Process Details' and System Information's **Authenticate to read** use them to act on or read another user's process, or to read root-only system facts; the `.deb` recommends `pkexec`, which starts the helper. The `.tar.gz` has neither, so a copy run from it works in every other way but doesn't offer those buttons. The `.tar.gz` also brings no dependencies of its own: it needs the shared libraries the `.deb` depends on, which a desktop install already has but a minimal one (a server, a container) may not. On Ubuntu or Debian: `sudo apt install libx11-6 libxext6 libgl1 libegl1 libglx0 libopengl0 libsystemd0`. Without them the program stops at once, naming the missing library (for example `libOpenGL.so.0`). TaskSmack run as root doesn't offer them either, since it needs no helper. (The Services tab's **Authenticate and retry** goes through systemd and polkit directly, so it doesn't need the helper.) See [Acting on another user's process](faq.md#process-io-fds-or-network-show-na-on-linux).
 
-On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release `.zip` includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
+On Windows, acting on or reading another account's or an elevated process as an administrator (**Retry as administrator**, **Read as administrator**) needs TaskSmack installed where only an administrator can change it, such as `C:\Program Files\TaskSmack`, where the installer puts it. A copy unpacked from the `.zip` into a folder you own works in every other way, but doesn't offer those buttons. The buttons also need the administrator helper, `TaskSmackHelper.exe`, which ships only in the Authenticode-signed installers and `.zip`s, x64 and ARM64, from v0.9.1 ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); no earlier release includes it. See [Acting as an administrator on Windows](faq.md#acting-as-an-administrator-on-windows).
 
 ### Verifying a Release
 
-Every file on a release (each architecture's `.deb`, `.tar.gz` and `.zip`, the Windows build-inputs
+Every file on a release (each architecture's `.deb`, `.tar.gz`, `.zip` and Windows installer, the Windows build-inputs
 manifests and the source SBOM) is built and published by TaskSmack's `release` GitHub Actions
 workflow, and you can check that a download came from it in two ways. Either one is enough.
 
 **With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
 [artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
-(SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) installed and signed in
-(`gh auth login`), run this on the downloaded file:
+(SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) 2.49 or later installed and signed in
+(`gh auth login`), run this on the downloaded file. Check `gh --version` first: some distributions
+package an older `gh` without the `attestation` command (Ubuntu's is 2.46), which then prints its list
+of commands instead of a result. That isn't a failed check; install `gh` from
+[GitHub's packages](https://github.com/cli/cli#installation), or use cosign below:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
@@ -150,6 +165,8 @@ The process table is the primary view. It lists all running processes. **PID** a
 
 Each process's name has its program's icon beside it, as in Task Manager, and so does the Process Details tab's title. On Windows the icon is the executable's own; on Linux it comes from the application's desktop entry (`.desktop` file in `~/.local/share/applications`, `/usr/share/applications`, or Flatpak's and Snap's exported entries) and the hicolor icon theme, PNG icons only. A process with no icon, one TaskSmack can't read (another user's process without administrator or root rights), or one whose icon is still loading shows a generic window icon instead. Icons are read once per program, in the background, and kept in memory (at most 512 programs); the Services and Startup tabs share them, so a program listed in several tabs is read once. Turn them off, in every tab, with **Show process icons** in Settings.
 
+A process that has just started has its row tinted green, fading out over five seconds, so a short-lived process is seen even if it exits before you look. A process that has just exited stays for about two seconds as a dimmed row tinted red, where it was in the list or tree. It can't be selected or acted on, and it isn't counted in the process total. Turn both off with **Highlight new and exited processes** in Settings.
+
 - **User** — the account the process runs as
 - **Publisher** (Windows, hidden by default) — the company named in the executable's version information
 - **Status** (hidden by default) — on Windows, **Suspended** for a frozen process (such as a suspended Store app) or **Efficiency Mode** for one running with EcoQoS, as Task Manager's Efficiency mode sets it; **Suspended** on Linux for a process its cgroup has frozen. Process Details' **State** row shows it after the state.
@@ -200,7 +217,11 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count (just a pause icon when the window is too narrow for the words; hover it for the explanation), and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
 
-**Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Copy PID**, **Copy Name** and **Copy Command Line**, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9). On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
+**Row menu.** Right-click a row for **Details** (opens the Process Details tab), **Pin to top** (or **Unpin**), **Copy PID**, **Copy Name** and **Copy Command Line**, then **Open file location** and **Search online** for the row it was opened on, then the process actions this platform offers: **Suspend...** and **Resume...**, **Set affinity...** and **Create dump file...** (one process only), and **Terminate...** and **Kill...** (F9), then **End process tree** for a process with child processes, which ends it and every process it started, children first, behind one confirmation that names them. On a multi-selection the actions apply to every selected process, and **Set priority for N processes...** is added; see [Process Actions](#process-actions).
+
+**Pin to top** keeps every process with that name at the top of the table, marked with a thumbtack, through any sort and any filter. Pinned processes sort among themselves by the current sort, and in tree view a pinned process comes first among its siblings. Pins are saved by name in `config.toml` (`[process_table] pinned`), so a program you restart is pinned again. Up to 64 names can be pinned.
+
+**Open file location** opens your file manager with the process's executable selected. On Linux, TaskSmack asks the file manager over D-Bus (`org.freedesktop.FileManager1`, which Nautilus, Dolphin, Nemo, Caja, Thunar and PCManFM answer); when none answers, it opens the executable's folder with `xdg-open`. Kernel threads have no executable, and another user's process can't be read without root. When TaskSmack runs as root through `sudo` or `pkexec`, it opens the folder as you, in your session. **Search online** opens your web browser on a DuckDuckGo search for the process name followed by "process". Only the name is sent, never the executable's path or the command line, which can contain user names and folders. Both report back in the toolbar's result line.
 
 ![Animation: the Processes tab opens, a process row is selected, and its Process Details tab comes forward on the Network and I/O sub-tab](../images/screenshots/linux/walk-live.webp)
 
@@ -270,6 +291,7 @@ The machine tab, the first tab, is named after the computer. Its sub-tabs (**Ove
   - **Linux:** Intel's NPU (driver `intel_vpu`, shown as "Intel NPU") has its utilization charted, sampled from the driver's `npu_busy_time_us` counter. That counter needs kernel 6.11 or later; on older kernels the chart stays empty. AMD's NPU (`amdxdna`, "AMD NPU") is listed with its name and vendor only, because its driver has no counter an ordinary user can read. Any other accel device is listed as "Accelerator (<driver>)". Intel's NPU also reports the memory it has in use (`npu_memory_utilization`); it is shown in bytes on the device's details line ("Memory: Shared, 12.0 MiB in use"). The driver gives no total to set it against, so no percent is made up and the device's memory chart stays empty. AMD's NPU reports neither. Per process, the memory each process holds on an NPU is read from the driver's DRM fdinfo (`drm-resident-memory`) for the processes holding `/dev/accel/accelN` open: TaskSmack looks for those processes every 5 seconds, by walking every process's open files, and reads only their fdinfo each sample. A process that opens the NPU appears within 5 seconds. Another user's processes are visible only with the privileges that read their open files.
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
+- **Pressure** (Linux only) — pressure stall information: the share of the last 10 seconds that tasks spent waiting for CPU, memory and I/O, in the Overview's CPU Details block, with the 60-second and 5-minute averages and the "full" figures (every running task waiting at once) on hover. Shown when the kernel has PSI enabled (`/proc/pressure`); it's left out on kernels built without it or booted with `psi=0`.
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
 
 All charts retain a bounded scrolling history window. Depending on the metric, TaskSmack uses fixed-capacity ring buffers or time-trimmed history containers so memory usage stays bounded regardless of how long the app runs.
@@ -735,6 +757,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |
+| Pressure stall information (CPU, memory, I/O) | ✅ (`/proc/pressure`, when the kernel has PSI) | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ✅ (the shareable working set: working set less private working set) |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (the environment block in the process's memory; processes TaskSmack can open for reading: own user's, or every user's when elevated; 32-bit (WOW64) processes not yet) |
 | Process security context (Process Details) | ✅ (`/proc/[pid]/status`: IDs, groups, capabilities, `no_new_privs`, seccomp; security label; cgroup) | ✅ (process token: user, session, integrity level, elevation, AppContainer, virtualization, privileges, groups) |
@@ -785,7 +808,7 @@ If the saved position is no longer on any connected display (a monitor was unplu
 
 The Settings dialog (the gear icon, or **F2**) has three sections:
 
-- **Appearance:** **Theme** (Arctic Fire by default), **Font size** (Small, Medium, Large, Extra Large, Huge or Largest; Medium by default), and **Show process icons**, the programs' icons beside process names in the Processes table and Process Details, and beside the names in the Services and Startup tabs (on by default).
+- **Appearance:** **Theme** (Arctic Fire by default), **Font size** (Small, Medium, Large, Extra Large, Huge or Largest; Medium by default), and **Show process icons**, the programs' icons beside process names in the Processes table and Process Details, and beside the names in the Services and Startup tabs (on by default), and **Highlight new and exited processes**, the fading tint on the rows of processes that started in the last five seconds and the dimmed rows of processes that exited in the last two (on by default).
 - **Performance:** **Update interval**, how often values are sampled (100 ms, 250 ms, 500 ms, 1 second, 2 seconds or 5 seconds; 1 second by default), and **History length**, how much the charts keep (1, 2, 5 or 10 minutes; 5 minutes by default). A value set in `config.toml` that isn't one of these shows as "Custom (...)". On Windows, also **Count UDP traffic per process** (off by default; needs TaskSmack running as administrator), which counts UDP in the per-process network columns through a kernel event trace. It takes effect when you click Save. See [Counting UDP on Windows](#counting-udp-on-windows).
 - **Advanced:** **Edit Config File** and **Open Themes Folder**, which open `config.toml` and the user themes folder; **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked; and **About TaskSmack**, which closes Settings (without saving) and opens About. On native Wayland only, it also has **Use native window decorations instead of the custom title bar**, which takes effect after restarting TaskSmack.
 

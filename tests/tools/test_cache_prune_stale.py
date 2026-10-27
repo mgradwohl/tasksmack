@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for tools/cache-prune-stale.py (#1583, #2528): cache-prune.yml keeps the newest entry of each cache
-family and deletes the rest, so a family must keep apart entries that can't stand in for each other, such
+"""Tests for tools/cache-prune-stale.py (#1583, #2528, #3101): cache-prune.yml keeps the newest entry of each
+cache family and deletes the rest, so a family must keep apart entries that can't stand in for each other, such
 as the x64 and ARM64 Windows configure-check caches."""
 
 import importlib.util
@@ -47,6 +47,17 @@ class FamilyTests(unittest.TestCase):
     def test_tidy_results_strip_the_run(self):
         self.assertEqual(pruner.family("Linux-tidy-results-39169793986-1"), "Linux-tidy-results")
 
+    def test_codeql_trap_strips_the_commit(self):
+        # #3101: one ~640 MB entry per analyzed main commit; PRs fall back to the newest by prefix.
+        self.assertEqual(
+            pruner.family("codeql-trap-1-2.27.3-cpp-cbe76138db3f52ac081a951cc5d4e06ae5644d77"),
+            "codeql-trap-1-2.27.3-cpp",
+        )
+        self.assertEqual(
+            pruner.family("codeql-trap-1-2.27.3-actions-89fe5c7f9a1fea5978ca5b951a8d942ffb1ef708"),
+            "codeql-trap-1-2.27.3-actions",
+        )
+
     def test_single_key_caches_are_not_managed(self):
         for key in (
             "windows-llvm-22.1.7-ARM64-v2",
@@ -54,6 +65,7 @@ class FamilyTests(unittest.TestCase):
             "setup-python-Linux-x64-24.04-Ubuntu-python-3.12.3-pip-0123",
             "ccache-not-timestamped",
             "Windows-cmake-checks-win-debug",
+            "codeql-trap-1-2.27.3-cpp-not-a-sha",
         ):
             with self.subTest(key=key):
                 self.assertIsNone(pruner.family(key))
@@ -104,6 +116,23 @@ class StaleEntryTests(unittest.TestCase):
             row(26, "windows-llvm-22.1.7-ARM64-v2", "2026-01-02T00:00:00Z"),
         ]
         self.assertEqual(sorted(stale_keys(rows)), ["Linux-fetchcontent-" + "1" * 64, "Linux-tidy-results-100-1"])
+
+    def test_codeql_trap_keeps_the_newest_per_language_and_cli_version(self):
+        sha = "{:040x}".format
+        rows = [
+            row(50, f"codeql-trap-1-2.27.3-cpp-{sha(1)}", "2026-10-26T11:06:48Z", 642125253),
+            row(51, f"codeql-trap-1-2.27.3-cpp-{sha(2)}", "2026-10-26T16:47:51Z", 642337562),
+            row(52, f"codeql-trap-1-2.27.3-cpp-{sha(3)}", "2026-10-27T01:57:25Z", 644145509),
+            row(53, f"codeql-trap-1-2.27.3-actions-{sha(4)}", "2026-10-26T10:00:00Z", 1000),
+            row(54, f"codeql-trap-1-2.28.0-cpp-{sha(5)}", "2026-10-25T10:00:00Z", 1000),
+            # The tidy result caches this pressure evicted are a family of their own.
+            row(55, "Linux-tidy-results-40277744615-1", "2026-10-26T06:16:24Z", 13852),
+            row(56, "Windows-tidy-results-40277744615-1", "2026-10-26T06:15:05Z", 12090),
+        ]
+        self.assertEqual(
+            sorted(stale_keys(rows)),
+            [f"codeql-trap-1-2.27.3-cpp-{sha(1)}", f"codeql-trap-1-2.27.3-cpp-{sha(2)}"],
+        )
 
     def test_output_fields_and_order(self):
         rows = [

@@ -63,6 +63,10 @@ class LinuxSystemProbe : public ISystemProbe
     static void readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readUptime(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot);
+    /// /proc/pressure/{cpu,memory,io} into the counters (#3062). Only called when m_HasPressure.
+    static void readPressure(SystemCounters& counters, const std::filesystem::path& procRoot);
+    /// @p procRoot/pressure/<resource>, parsed; empty when it can't be read (no PSI, or psi=0).
+    [[nodiscard]] static ResourcePressure readResourcePressure(const std::filesystem::path& procRoot, const char* resource);
     static void readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
@@ -107,6 +111,7 @@ class LinuxSystemProbe : public ISystemProbe
     std::filesystem::path m_CpuSysfsRoot;
     long m_TicksPerSecond;
     std::size_t m_NumCores;
+    bool m_HasPressure = false; // the kernel has PSI enabled: /proc/pressure/cpu reads (#3062)
 
     // Cached static info (read once)
     std::string m_Hostname;

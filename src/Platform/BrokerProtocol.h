@@ -778,108 +778,144 @@ template<typename Message>
 
 } // namespace Detail
 
+namespace Detail
+{
+
+// One encoder per request kind (#3043), as the decoders below: each writes its request's payload and says
+// which kind of message it is. encodeRequest() visits the Request with them, so a kind without an
+// encoder doesn't compile.
+
+/// Hello: the client's protocol version, and whether the helper is held for the session (#2728).
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const Hello& hello)
+{
+    writer.u16(hello.version);
+    writer.u8(hello.forSession ? 1 : 0);
+    return MessageKind::Hello;
+}
+
+/// Signal: the target, then the signal.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const SignalRequest& signal)
+{
+    writer.target(signal.target);
+    writer.u8(static_cast<std::uint8_t>(signal.signal));
+    return MessageKind::Signal;
+}
+
+/// SetPriority: the target, then the nice value.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const PriorityRequest& priority)
+{
+    writer.target(priority.target);
+    writer.i32(priority.nice);
+    return MessageKind::SetPriority;
+}
+
+/// SetIoPriority: the target, the I/O class, then its level.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const IoPriorityRequest& io)
+{
+    writer.target(io.target);
+    writer.u8(static_cast<std::uint8_t>(io.ioClass));
+    writer.i32(io.level);
+    return MessageKind::SetIoPriority;
+}
+
+/// The reads that name only their target.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentRequest& environment)
+{
+    writer.target(environment.target);
+    return MessageKind::ReadEnvironment;
+}
+
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ModulesRequest& modules)
+{
+    writer.target(modules.target);
+    return MessageKind::ReadModules;
+}
+
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesRequest& files)
+{
+    writer.target(files.target);
+    return MessageKind::ReadOpenFiles;
+}
+
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ConnectionsRequest& connections)
+{
+    writer.target(connections.target);
+    return MessageKind::ReadConnections;
+}
+
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryRollupRequest& rollup)
+{
+    writer.target(rollup.target);
+    return MessageKind::ReadMemoryRollup;
+}
+
+/// ReadProcessCounters: whether to read sockets, then the count and up to MAX_COUNTER_TARGETS targets.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ProcessCountersRequest& counters)
+{
+    writer.u8(counters.withSockets ? 1U : 0U);
+    const std::size_t count = std::min(counters.targets.size(), MAX_COUNTER_TARGETS);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        writer.target(counters.targets[i]);
+    }
+    return MessageKind::ReadProcessCounters;
+}
+
+/// ServiceAction (#2728): the action, the unit's name, then the start type.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ServiceActionRequest& service)
+{
+    writer.u8(static_cast<std::uint8_t>(service.action));
+    writer.text(service.unit);
+    writer.u8(static_cast<std::uint8_t>(service.startType));
+    return MessageKind::ServiceAction;
+}
+
+/// ListHiddenProcesses (#2728): the count, then up to MAX_VISIBLE_PIDS PIDs the client already lists.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const HiddenProcessesRequest& hidden)
+{
+    const std::size_t count = std::min(hidden.visiblePids.size(), MAX_VISIBLE_PIDS);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        writer.i32(hidden.visiblePids[i]);
+    }
+    return MessageKind::ListHiddenProcesses;
+}
+
+/// ReadFirmwareFile: which file.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const FirmwareFileRequest& firmware)
+{
+    writer.u8(static_cast<std::uint8_t>(firmware.file));
+    return MessageKind::ReadFirmwareFile;
+}
+
+/// ReadCrashes: no payload.
+[[nodiscard]] inline MessageKind encodePayload(Writer& /*writer*/, const CrashesRequest& /*crashes*/)
+{
+    return MessageKind::ReadCrashes;
+}
+
+/// SetAffinity: the target, then the CPU set's word count and words.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const AffinityRequest& affinity)
+{
+    writer.target(affinity.target);
+    const std::span<const std::uint64_t> words = affinity.cpus.words();
+    writer.u32(static_cast<std::uint32_t>(words.size()));
+    for (const std::uint64_t word : words)
+    {
+        writer.u64(word);
+    }
+    return MessageKind::SetAffinity;
+}
+
+} // namespace Detail
+
 /// The frame of request @p requestId asking for @p request.
 [[nodiscard]] inline std::vector<std::uint8_t> encodeRequest(std::uint32_t requestId, const Request& request)
 {
     Detail::Writer writer;
-    MessageKind kind = MessageKind::Hello;
-    if (const auto* hello = std::get_if<Hello>(&request))
-    {
-        writer.u16(hello->version);
-        writer.u8(hello->forSession ? 1 : 0);
-    }
-    else if (const auto* signal = std::get_if<SignalRequest>(&request))
-    {
-        kind = MessageKind::Signal;
-        writer.target(signal->target);
-        writer.u8(static_cast<std::uint8_t>(signal->signal));
-    }
-    else if (const auto* priority = std::get_if<PriorityRequest>(&request))
-    {
-        kind = MessageKind::SetPriority;
-        writer.target(priority->target);
-        writer.i32(priority->nice);
-    }
-    else if (const auto* io = std::get_if<IoPriorityRequest>(&request))
-    {
-        kind = MessageKind::SetIoPriority;
-        writer.target(io->target);
-        writer.u8(static_cast<std::uint8_t>(io->ioClass));
-        writer.i32(io->level);
-    }
-    else if (const auto* environment = std::get_if<EnvironmentRequest>(&request))
-    {
-        kind = MessageKind::ReadEnvironment;
-        writer.target(environment->target);
-    }
-    else if (const auto* modules = std::get_if<ModulesRequest>(&request))
-    {
-        kind = MessageKind::ReadModules;
-        writer.target(modules->target);
-    }
-    else if (const auto* files = std::get_if<OpenFilesRequest>(&request))
-    {
-        kind = MessageKind::ReadOpenFiles;
-        writer.target(files->target);
-    }
-    else if (const auto* connections = std::get_if<ConnectionsRequest>(&request))
-    {
-        kind = MessageKind::ReadConnections;
-        writer.target(connections->target);
-    }
-    else if (const auto* rollup = std::get_if<MemoryRollupRequest>(&request))
-    {
-        kind = MessageKind::ReadMemoryRollup;
-        writer.target(rollup->target);
-    }
-    else if (const auto* counters = std::get_if<ProcessCountersRequest>(&request))
-    {
-        kind = MessageKind::ReadProcessCounters;
-        writer.u8(counters->withSockets ? 1U : 0U);
-        const std::size_t count = std::min(counters->targets.size(), MAX_COUNTER_TARGETS);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            writer.target(counters->targets[i]);
-        }
-    }
-    else if (const auto* service = std::get_if<ServiceActionRequest>(&request))
-    {
-        kind = MessageKind::ServiceAction;
-        writer.u8(static_cast<std::uint8_t>(service->action));
-        writer.text(service->unit);
-        writer.u8(static_cast<std::uint8_t>(service->startType));
-    }
-    else if (const auto* hidden = std::get_if<HiddenProcessesRequest>(&request))
-    {
-        kind = MessageKind::ListHiddenProcesses;
-        const std::size_t count = std::min(hidden->visiblePids.size(), MAX_VISIBLE_PIDS);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            writer.i32(hidden->visiblePids[i]);
-        }
-    }
-    else if (const auto* firmware = std::get_if<FirmwareFileRequest>(&request))
-    {
-        kind = MessageKind::ReadFirmwareFile;
-        writer.u8(static_cast<std::uint8_t>(firmware->file));
-    }
-    else if (std::holds_alternative<CrashesRequest>(request))
-    {
-        kind = MessageKind::ReadCrashes;
-    }
-    else if (const auto* affinity = std::get_if<AffinityRequest>(&request))
-    {
-        kind = MessageKind::SetAffinity;
-        writer.target(affinity->target);
-        const std::span<const std::uint64_t> words = affinity->cpus.words();
-        writer.u32(static_cast<std::uint32_t>(words.size()));
-        for (const std::uint64_t word : words)
-        {
-            writer.u64(word);
-        }
-    }
+    const MessageKind kind = std::visit([&writer](const auto& message) { return Detail::encodePayload(writer, message); }, request);
     return writer.frame(kind, requestId);
 }
 
@@ -1093,254 +1129,279 @@ namespace Detail
     return std::unexpected("Not a request this helper does");
 }
 
+namespace Detail
+{
+
+// One encoder per reply kind (#3043), as for the requests above; encodeResponse() visits the Response.
+
+/// HelloReply: the helper's protocol version, and whether it accepted the client's.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const HelloReply& hello)
+{
+    writer.u16(hello.version);
+    writer.u8(hello.accepted ? 1 : 0);
+    return MessageKind::HelloReply;
+}
+
+/// ActionResult: success, the error message, then the success note.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ActionResult& result)
+{
+    writer.u8(result.success ? 1 : 0);
+    writer.text(result.errorMessage);
+    writer.text(result.successNote);
+    return MessageKind::ActionResult;
+}
+
+/// Error: why the helper couldn't answer.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ErrorReply& error)
+{
+    writer.text(error.message);
+    return MessageKind::Error;
+}
+
+/// EnvironmentResult: status, truncated, count, then each variable's name and value; as many as fit a frame.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const EnvironmentReply& environment)
+{
+    const std::vector<EnvironmentVariable>& variables = environment.result.variables;
+    constexpr std::size_t ROOM = listRoom(1 + 1 + 4); // status, truncated, count
+    const std::size_t count =
+        entriesThatFit(std::span(variables),
+                       MAX_ENVIRONMENT_VARIABLES,
+                       ROOM,
+                       [](const EnvironmentVariable& variable) { return textBytes(variable.name) + textBytes(variable.value); });
+    writer.u8(static_cast<std::uint8_t>(environment.result.status));
+    writer.u8((environment.result.truncated || count < variables.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        writer.text(variables[i].name);
+        writer.text(variables[i].value);
+    }
+    return MessageKind::EnvironmentResult;
+}
+
+/// ModulesResult: status, detail, truncated, count; a module: path, base, size, version flag and version,
+/// deleted. As many as fit a frame.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ModulesReply& modules)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
+    const std::size_t count = entriesThatFit(std::span(modules.result.modules),
+                                             MAX_MODULES,
+                                             ROOM,
+                                             [](const ProcessModule& module) -> std::size_t
+                                             { return textBytes(module.path) + 8 + 8 + 1 + (module.version.has_value() ? 8 : 0) + 1; });
+    writer.u8(static_cast<std::uint8_t>(modules.result.status));
+    writer.text(modules.result.detail);
+    writer.u8((modules.result.truncated || count < modules.result.modules.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ProcessModule& module = modules.result.modules[i];
+        writer.text(module.path);
+        writer.u64(module.baseAddress);
+        writer.u64(module.sizeBytes);
+        writer.u8(module.version.has_value() ? 1 : 0);
+        if (module.version.has_value())
+        {
+            writer.u16(module.version->major);
+            writer.u16(module.version->minor);
+            writer.u16(module.version->build);
+            writer.u16(module.version->revision);
+        }
+        writer.u8(module.deleted ? 1 : 0);
+    }
+    return MessageKind::ModulesResult;
+}
+
+/// OpenFilesResult: status, detail, three flags, count; a file: descriptor, kind, path, flag, flags, deleted.
+/// As many files as fit in one frame: thousands of long paths could pass MAX_MESSAGE_BYTES, so the list
+/// stops short of it and says it was cut, as a read past MAX_OPEN_FILES does.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const OpenFilesReply& files)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 3 + 4);
+    const std::size_t count = entriesThatFit(
+        std::span(files.result.files), MAX_OPEN_FILES, ROOM, [](const OpenFile& file) { return 8 + 1 + textBytes(file.path) + 1 + 4 + 1; });
+    writer.u8(static_cast<std::uint8_t>(files.result.status));
+    writer.text(files.result.detail);
+    writer.u8((files.result.truncated || count < files.result.files.size()) ? 1 : 0);
+    writer.u8(files.result.namesIncomplete ? 1 : 0);
+    writer.u8(files.result.hexDescriptors ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const OpenFile& file = files.result.files[i];
+        writer.u64(file.descriptor);
+        writer.u8(static_cast<std::uint8_t>(file.kind));
+        writer.text(file.path);
+        writer.u8(file.flags.has_value() ? 1 : 0);
+        writer.u32(file.flags.value_or(0));
+        writer.u8(file.deleted ? 1 : 0);
+    }
+    return MessageKind::OpenFilesResult;
+}
+
+/// ConnectionsResult: status, detail, count; a socket: protocol, family, two endpoints, state. Every socket
+/// takes the same bytes, so MAX_CONNECTIONS of them always fit a frame: the count is the only cap this list
+/// needs (#2403).
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ConnectionsReply& connections)
+{
+    constexpr std::size_t ENDPOINT_BYTES = std::tuple_size_v<decltype(ConnectionEndpoint::address)> + 2;
+    static_assert(MAX_CONNECTIONS * (1 + 1 + ENDPOINT_BYTES + ENDPOINT_BYTES + 1) <= listRoom(1 + 4 + MAX_STRING_BYTES + 4));
+    writer.u8(static_cast<std::uint8_t>(connections.result.status));
+    writer.text(connections.result.detail);
+    const std::size_t count = std::min(connections.result.connections.size(), MAX_CONNECTIONS);
+    writer.u32(static_cast<std::uint32_t>(count));
+    const auto endpoint = [&writer](const ConnectionEndpoint& end)
+    {
+        for (const std::uint8_t byte : end.address)
+        {
+            writer.u8(byte);
+        }
+        writer.u16(end.port);
+    };
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ProcessConnection& connection = connections.result.connections[i];
+        writer.u8(static_cast<std::uint8_t>(connection.protocol));
+        writer.u8(static_cast<std::uint8_t>(connection.family));
+        endpoint(connection.local);
+        endpoint(connection.remote);
+        writer.u8(static_cast<std::uint8_t>(connection.state));
+    }
+    return MessageKind::ConnectionsResult;
+}
+
+/// MemoryRollupResult: 0 when the figures follow, else 1 + the failure; then PSS, USS and swap PSS.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const MemoryRollupReply& rollup)
+{
+    writer.u8(rollup.result.has_value() ? 0 : static_cast<std::uint8_t>(1 + static_cast<std::uint8_t>(rollup.result.error())));
+    const MemoryRollup figures = rollup.result.value_or(MemoryRollup{});
+    writer.u64(figures.pssBytes);
+    writer.u64(figures.ussBytes);
+    writer.u64(figures.swapPssBytes);
+    return MessageKind::MemoryRollupResult;
+}
+
+/// ProcessCountersResult: the count; an entry: the target, a flags byte (1: the handle count was read, 2: the
+/// I/O was, 4: the sockets were), the count, both byte figures, then the socket inodes' count and the
+/// inodes. MAX_COUNTER_TARGETS entries and MAX_COUNTER_SOCKET_INODES inodes between them fit a frame with
+/// room to spare; an entry whose sockets would pass that goes without them.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ProcessCountersReply& counters)
+{
+    static_assert((MAX_COUNTER_TARGETS * (4 + 8 + 1 + 4 + 8 + 8 + 4)) + (MAX_COUNTER_SOCKET_INODES * 8) <= listRoom(4));
+    const std::size_t count = std::min(counters.entries.size(), MAX_COUNTER_TARGETS);
+    writer.u32(static_cast<std::uint32_t>(count));
+    std::size_t inodesLeft = MAX_COUNTER_SOCKET_INODES;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ProcessCountersEntry& entry = counters.entries[i];
+        const bool sockets = entry.socketsRead && entry.socketInodes.size() <= inodesLeft;
+        writer.target(entry.target);
+        writer.u8(static_cast<std::uint8_t>((entry.handleCountRead ? 1U : 0U) | (entry.ioRead ? 2U : 0U) | (sockets ? 4U : 0U)));
+        writer.i32(entry.handleCount);
+        writer.u64(entry.readBytes);
+        writer.u64(entry.writeBytes);
+        writer.u32(static_cast<std::uint32_t>(sockets ? entry.socketInodes.size() : 0U));
+        if (sockets)
+        {
+            inodesLeft -= entry.socketInodes.size();
+            for (const std::uint64_t inode : entry.socketInodes)
+            {
+                writer.u64(inode);
+            }
+        }
+    }
+    return MessageKind::ProcessCountersResult;
+}
+
+/// ServiceActionResult (#2728): flags (1: ok, 2: cancelled, 4: needs authorization, 8: authorization
+/// unavailable), then the message.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const ServiceActionReply& service)
+{
+    const ServiceActionResult& outcome = service.result;
+    writer.u8(static_cast<std::uint8_t>((outcome.ok ? 1U : 0U) | (outcome.cancelled ? 2U : 0U) | (outcome.needsAuthorization ? 4U : 0U) |
+                                        (outcome.authorizationUnavailable ? 8U : 0U)));
+    writer.text(outcome.message);
+    return MessageKind::ServiceActionResult;
+}
+
+/// HiddenProcessesResult (#2728): truncated, count; a process: its target, five texts and the command
+/// line's flag and text. As many processes as fit in one frame, and it says when it was cut.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const HiddenProcessesReply& hidden)
+{
+    constexpr std::size_t ROOM = listRoom(1 + 4);
+    const std::size_t count = entriesThatFit(std::span(hidden.processes),
+                                             MAX_HIDDEN_PROCESSES,
+                                             ROOM,
+                                             [](const HiddenProcess& process)
+                                             {
+                                                 return 4 + 8 + textBytes(process.stat) + textBytes(process.statm) +
+                                                        textBytes(process.status) + 1 + textBytes(process.cmdline.value_or(std::string{})) +
+                                                        textBytes(process.io) + textBytes(process.cgroup);
+                                             });
+    writer.u8((hidden.truncated || count < hidden.processes.size()) ? 1 : 0);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const HiddenProcess& process = hidden.processes[i];
+        writer.target(process.target);
+        writer.text(process.stat);
+        writer.text(process.statm);
+        writer.text(process.status);
+        writer.u8(process.cmdline.has_value() ? 1 : 0);
+        writer.text(process.cmdline.value_or(std::string{}));
+        writer.text(process.io);
+        writer.text(process.cgroup);
+    }
+    return MessageKind::HiddenProcessesResult;
+}
+
+/// FirmwareFileResult: the status, then up to MAX_FIRMWARE_FILE_BYTES of the file.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const FirmwareFileReply& firmware)
+{
+    writer.u8(static_cast<std::uint8_t>(firmware.status));
+    writer.blob(firmware.bytes, MAX_FIRMWARE_FILE_BYTES);
+    return MessageKind::FirmwareFileResult;
+}
+
+/// CrashesResult: the listing's flags and reasons, the count, then up to CRASH_LIST_MAX events.
+[[nodiscard]] inline MessageKind encodePayload(Writer& writer, const CrashesReply& crashes)
+{
+    const CrashesInfo& info = crashes.info;
+    writer.u8(info.available ? 1 : 0);
+    writer.u8(static_cast<std::uint8_t>(info.family));
+    writer.u8(info.listed ? 1 : 0);
+    writer.u8(info.accessDenied ? 1 : 0);
+    writer.text(info.unavailableReason);
+    writer.u8(info.capped ? 1 : 0);
+    writer.u8(info.journalRead ? 1 : 0);
+    writer.text(info.journalUnavailableReason);
+    writer.u8(info.otherUsersHidden ? 1 : 0);
+    const std::size_t count = std::min(info.events.size(), CRASH_LIST_MAX);
+    writer.u32(static_cast<std::uint32_t>(count));
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const CrashEvent& event = info.events[i];
+        writer.u64(event.unixSeconds);
+        writer.text(event.application);
+        writer.u8(event.pid.has_value() ? 1 : 0);
+        writer.u32(event.pid.value_or(0));
+        writer.u8(event.uid.has_value() ? 1 : 0);
+        writer.u32(event.uid.value_or(0));
+        writer.u64(event.coreBytes);
+        writer.u8(event.coreKept ? 1 : 0);
+        writer.text(event.signal);
+        writer.text(event.executable);
+    }
+    return MessageKind::CrashesResult;
+}
+
+} // namespace Detail
+
 /// The frame of the response to request @p requestId.
 [[nodiscard]] inline std::vector<std::uint8_t> encodeResponse(std::uint32_t requestId, const Response& response)
 {
     Detail::Writer writer;
-    MessageKind kind = MessageKind::HelloReply;
-    if (const auto* hello = std::get_if<HelloReply>(&response))
-    {
-        writer.u16(hello->version);
-        writer.u8(hello->accepted ? 1 : 0);
-    }
-    else if (const auto* result = std::get_if<ActionResult>(&response))
-    {
-        kind = MessageKind::ActionResult;
-        writer.u8(result->success ? 1 : 0);
-        writer.text(result->errorMessage);
-        writer.text(result->successNote);
-    }
-    else if (const auto* error = std::get_if<ErrorReply>(&response))
-    {
-        kind = MessageKind::Error;
-        writer.text(error->message);
-    }
-    else if (const auto* environment = std::get_if<EnvironmentReply>(&response))
-    {
-        kind = MessageKind::EnvironmentResult;
-        const std::vector<EnvironmentVariable>& variables = environment->result.variables;
-        constexpr std::size_t ROOM = Detail::listRoom(1 + 1 + 4); // status, truncated, count
-        const std::size_t count = Detail::entriesThatFit(std::span(variables),
-                                                         MAX_ENVIRONMENT_VARIABLES,
-                                                         ROOM,
-                                                         [](const EnvironmentVariable& variable)
-                                                         { return Detail::textBytes(variable.name) + Detail::textBytes(variable.value); });
-        writer.u8(static_cast<std::uint8_t>(environment->result.status));
-        writer.u8((environment->result.truncated || count < variables.size()) ? 1 : 0);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            writer.text(variables[i].name);
-            writer.text(variables[i].value);
-        }
-    }
-    else if (const auto* modules = std::get_if<ModulesReply>(&response))
-    {
-        kind = MessageKind::ModulesResult;
-        // Status, detail, truncated, count; an entry: path, base, size, version flag and version, deleted.
-        constexpr std::size_t ROOM = Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
-        const std::size_t count =
-            Detail::entriesThatFit(std::span(modules->result.modules),
-                                   MAX_MODULES,
-                                   ROOM,
-                                   [](const ProcessModule& module) -> std::size_t
-                                   { return Detail::textBytes(module.path) + 8 + 8 + 1 + (module.version.has_value() ? 8 : 0) + 1; });
-        writer.u8(static_cast<std::uint8_t>(modules->result.status));
-        writer.text(modules->result.detail);
-        writer.u8((modules->result.truncated || count < modules->result.modules.size()) ? 1 : 0);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const ProcessModule& module = modules->result.modules[i];
-            writer.text(module.path);
-            writer.u64(module.baseAddress);
-            writer.u64(module.sizeBytes);
-            writer.u8(module.version.has_value() ? 1 : 0);
-            if (module.version.has_value())
-            {
-                writer.u16(module.version->major);
-                writer.u16(module.version->minor);
-                writer.u16(module.version->build);
-                writer.u16(module.version->revision);
-            }
-            writer.u8(module.deleted ? 1 : 0);
-        }
-    }
-    else if (const auto* files = std::get_if<OpenFilesReply>(&response))
-    {
-        kind = MessageKind::OpenFilesResult;
-        // As many files as fit in one frame: thousands of long paths could pass MAX_MESSAGE_BYTES, so the
-        // list stops short of it and says it was cut, as a read past MAX_OPEN_FILES does.
-        // Status, detail, three flags, count; an entry: descriptor, kind, path, flag, flags, deleted.
-        constexpr std::size_t ROOM = Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 3 + 4);
-        const std::size_t count =
-            Detail::entriesThatFit(std::span(files->result.files),
-                                   MAX_OPEN_FILES,
-                                   ROOM,
-                                   [](const OpenFile& file) { return 8 + 1 + Detail::textBytes(file.path) + 1 + 4 + 1; });
-        writer.u8(static_cast<std::uint8_t>(files->result.status));
-        writer.text(files->result.detail);
-        writer.u8((files->result.truncated || count < files->result.files.size()) ? 1 : 0);
-        writer.u8(files->result.namesIncomplete ? 1 : 0);
-        writer.u8(files->result.hexDescriptors ? 1 : 0);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const OpenFile& file = files->result.files[i];
-            writer.u64(file.descriptor);
-            writer.u8(static_cast<std::uint8_t>(file.kind));
-            writer.text(file.path);
-            writer.u8(file.flags.has_value() ? 1 : 0);
-            writer.u32(file.flags.value_or(0));
-            writer.u8(file.deleted ? 1 : 0);
-        }
-    }
-    else if (const auto* connections = std::get_if<ConnectionsReply>(&response))
-    {
-        kind = MessageKind::ConnectionsResult;
-        // Every socket takes the same bytes (protocol, family, two endpoints, state), so MAX_CONNECTIONS of
-        // them always fit a frame: the count is the only cap this list needs (#2403).
-        constexpr std::size_t ENDPOINT_BYTES = std::tuple_size_v<decltype(ConnectionEndpoint::address)> + 2;
-        static_assert(MAX_CONNECTIONS * (1 + 1 + ENDPOINT_BYTES + ENDPOINT_BYTES + 1) <= Detail::listRoom(1 + 4 + MAX_STRING_BYTES + 4));
-        writer.u8(static_cast<std::uint8_t>(connections->result.status));
-        writer.text(connections->result.detail);
-        const std::size_t count = std::min(connections->result.connections.size(), MAX_CONNECTIONS);
-        writer.u32(static_cast<std::uint32_t>(count));
-        const auto endpoint = [&writer](const ConnectionEndpoint& end)
-        {
-            for (const std::uint8_t byte : end.address)
-            {
-                writer.u8(byte);
-            }
-            writer.u16(end.port);
-        };
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const ProcessConnection& connection = connections->result.connections[i];
-            writer.u8(static_cast<std::uint8_t>(connection.protocol));
-            writer.u8(static_cast<std::uint8_t>(connection.family));
-            endpoint(connection.local);
-            endpoint(connection.remote);
-            writer.u8(static_cast<std::uint8_t>(connection.state));
-        }
-    }
-    else if (const auto* rollup = std::get_if<MemoryRollupReply>(&response))
-    {
-        kind = MessageKind::MemoryRollupResult;
-        // 0: the figures follow; else 1 + the failure.
-        writer.u8(rollup->result.has_value() ? 0 : static_cast<std::uint8_t>(1 + static_cast<std::uint8_t>(rollup->result.error())));
-        const MemoryRollup figures = rollup->result.value_or(MemoryRollup{});
-        writer.u64(figures.pssBytes);
-        writer.u64(figures.ussBytes);
-        writer.u64(figures.swapPssBytes);
-    }
-    else if (const auto* counters = std::get_if<ProcessCountersReply>(&response))
-    {
-        kind = MessageKind::ProcessCountersResult;
-        // An entry: the target, a flags byte (1: the handle count was read, 2: the I/O was, 4: the sockets
-        // were), the count, both byte figures, then the socket inodes' count and the inodes. MAX_COUNTER_TARGETS
-        // entries and MAX_COUNTER_SOCKET_INODES inodes between them fit a frame with room to spare; an entry
-        // whose sockets would pass that goes without them.
-        static_assert((MAX_COUNTER_TARGETS * (4 + 8 + 1 + 4 + 8 + 8 + 4)) + (MAX_COUNTER_SOCKET_INODES * 8) <= Detail::listRoom(4));
-        const std::size_t count = std::min(counters->entries.size(), MAX_COUNTER_TARGETS);
-        writer.u32(static_cast<std::uint32_t>(count));
-        std::size_t inodesLeft = MAX_COUNTER_SOCKET_INODES;
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const ProcessCountersEntry& entry = counters->entries[i];
-            const bool sockets = entry.socketsRead && entry.socketInodes.size() <= inodesLeft;
-            writer.target(entry.target);
-            writer.u8(static_cast<std::uint8_t>((entry.handleCountRead ? 1U : 0U) | (entry.ioRead ? 2U : 0U) | (sockets ? 4U : 0U)));
-            writer.i32(entry.handleCount);
-            writer.u64(entry.readBytes);
-            writer.u64(entry.writeBytes);
-            writer.u32(static_cast<std::uint32_t>(sockets ? entry.socketInodes.size() : 0U));
-            if (sockets)
-            {
-                inodesLeft -= entry.socketInodes.size();
-                for (const std::uint64_t inode : entry.socketInodes)
-                {
-                    writer.u64(inode);
-                }
-            }
-        }
-    }
-    else if (const auto* service = std::get_if<ServiceActionReply>(&response))
-    {
-        kind = MessageKind::ServiceActionResult;
-        // Flags (1: ok, 2: cancelled, 4: needs authorization, 8: authorization unavailable), then the message.
-        const ServiceActionResult& outcome = service->result;
-        writer.u8(static_cast<std::uint8_t>((outcome.ok ? 1U : 0U) | (outcome.cancelled ? 2U : 0U) |
-                                            (outcome.needsAuthorization ? 4U : 0U) | (outcome.authorizationUnavailable ? 8U : 0U)));
-        writer.text(outcome.message);
-    }
-    else if (const auto* hidden = std::get_if<HiddenProcessesReply>(&response))
-    {
-        kind = MessageKind::HiddenProcessesResult;
-        // As many processes as fit in one frame, and it says when it was cut. Truncated, count; a process:
-        // its target, five texts and the command line's flag and text.
-        constexpr std::size_t ROOM = Detail::listRoom(1 + 4);
-        const std::size_t count = Detail::entriesThatFit(std::span(hidden->processes),
-                                                         MAX_HIDDEN_PROCESSES,
-                                                         ROOM,
-                                                         [](const HiddenProcess& process)
-                                                         {
-                                                             return 4 + 8 + Detail::textBytes(process.stat) +
-                                                                    Detail::textBytes(process.statm) + Detail::textBytes(process.status) +
-                                                                    1 + Detail::textBytes(process.cmdline.value_or(std::string{})) +
-                                                                    Detail::textBytes(process.io) + Detail::textBytes(process.cgroup);
-                                                         });
-        writer.u8((hidden->truncated || count < hidden->processes.size()) ? 1 : 0);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const HiddenProcess& process = hidden->processes[i];
-            writer.target(process.target);
-            writer.text(process.stat);
-            writer.text(process.statm);
-            writer.text(process.status);
-            writer.u8(process.cmdline.has_value() ? 1 : 0);
-            writer.text(process.cmdline.value_or(std::string{}));
-            writer.text(process.io);
-            writer.text(process.cgroup);
-        }
-    }
-    else if (const auto* firmware = std::get_if<FirmwareFileReply>(&response))
-    {
-        kind = MessageKind::FirmwareFileResult;
-        writer.u8(static_cast<std::uint8_t>(firmware->status));
-        writer.blob(firmware->bytes, MAX_FIRMWARE_FILE_BYTES);
-    }
-    else if (const auto* crashes = std::get_if<CrashesReply>(&response))
-    {
-        kind = MessageKind::CrashesResult;
-        const CrashesInfo& info = crashes->info;
-        writer.u8(info.available ? 1 : 0);
-        writer.u8(static_cast<std::uint8_t>(info.family));
-        writer.u8(info.listed ? 1 : 0);
-        writer.u8(info.accessDenied ? 1 : 0);
-        writer.text(info.unavailableReason);
-        writer.u8(info.capped ? 1 : 0);
-        writer.u8(info.journalRead ? 1 : 0);
-        writer.text(info.journalUnavailableReason);
-        writer.u8(info.otherUsersHidden ? 1 : 0);
-        const std::size_t count = std::min(info.events.size(), CRASH_LIST_MAX);
-        writer.u32(static_cast<std::uint32_t>(count));
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            const CrashEvent& event = info.events[i];
-            writer.u64(event.unixSeconds);
-            writer.text(event.application);
-            writer.u8(event.pid.has_value() ? 1 : 0);
-            writer.u32(event.pid.value_or(0));
-            writer.u8(event.uid.has_value() ? 1 : 0);
-            writer.u32(event.uid.value_or(0));
-            writer.u64(event.coreBytes);
-            writer.u8(event.coreKept ? 1 : 0);
-            writer.text(event.signal);
-            writer.text(event.executable);
-        }
-    }
+    const MessageKind kind = std::visit([&writer](const auto& message) { return Detail::encodePayload(writer, message); }, response);
     return writer.frame(kind, requestId);
 }
 

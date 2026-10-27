@@ -17,20 +17,60 @@ endif()
 # (#2302). Before anything is packaged, VerifyWindowsSignatures.cmake refuses a TaskSmack.exe or helper
 # that isn't validly signed, timestamped, by TASKSMACK_EXPECTED_SIGNER with a certificate whose issuer
 # and extended key usage match TASKSMACK_EXPECTED_ISSUER and TASKSMACK_EXPECTED_EKU (Azure Artifact
-# Signing's, #2990), so an unsigned or wrongly signed helper can't ship by mistake. With TASKSMACK_SIGN_AFTER_PACKAGING the .zip is signed after
-# it's packaged (release.yml's sign-windows signs the executables inside it, #2302), so the .zip is packaged
-# unsigned and the same check runs on the signed .zip's contents instead, before anything is published
-# (release.yml's validate-windows-package). The NSIS installer can't be signed inside afterwards, so it
-# keeps the check.
+# Signing's, #2990), so an unsigned or wrongly signed helper can't ship by mistake. With
+# TASKSMACK_SIGN_AFTER_PACKAGING the executables are signed after packaging (release.yml's sign-windows
+# signs the executables inside the .zip, #2302), so both packages are made unsigned and the same check
+# runs on the signed files instead, before anything is published (release.yml's validate-windows-package).
+# For the installer that means this run is only its first pass: release.yml builds the published one
+# again from the signed .zip and the signed uninstaller (tools/build-windows-installer.ps1, and the
+# !uninstfinalize below).
 if(@TASKSMACK_PACKAGES_WINDOWS_HELPER@ AND (CPACK_GENERATOR STREQUAL "ZIP" OR CPACK_GENERATOR STREQUAL "NSIS"))
     set(CPACK_INSTALL_CMAKE_PROJECTS "@CMAKE_BINARY_DIR@;@PROJECT_NAME@;Unspecified;/;@CMAKE_BINARY_DIR@;@PROJECT_NAME@;windows_helper;/")
-    if(CPACK_GENERATOR STREQUAL "ZIP" AND @TASKSMACK_SIGN_AFTER_PACKAGING@)
-        message(WARNING "TaskSmackHelper.exe is packaged unsigned (TASKSMACK_SIGN_AFTER_PACKAGING): sign this .zip and "
-                        "check it with cmake/VerifyWindowsSignatures.cmake before publishing it (#2302).")
+    if(@TASKSMACK_SIGN_AFTER_PACKAGING@)
+        if(CPACK_GENERATOR STREQUAL "ZIP")
+            message(WARNING "TaskSmackHelper.exe is packaged unsigned (TASKSMACK_SIGN_AFTER_PACKAGING): sign this .zip and "
+                            "check it with cmake/VerifyWindowsSignatures.cmake before publishing it (#2302).")
+        else()
+            message(WARNING "TaskSmackHelper.exe is packaged unsigned (TASKSMACK_SIGN_AFTER_PACKAGING): this installer is "
+                            "only the first pass. Build the one to publish from the signed .zip and the signed "
+                            "uninstaller with tools/build-windows-installer.ps1, then sign it (#2302).")
+        endif()
     else()
         set(CPACK_PRE_BUILD_SCRIPTS "@CMAKE_SOURCE_DIR@/cmake/VerifyWindowsSignatures.cmake")
         set(TASKSMACK_EXPECTED_SIGNER "@TASKSMACK_EXPECTED_SIGNER@")
         set(TASKSMACK_EXPECTED_ISSUER "@TASKSMACK_EXPECTED_ISSUER@")
         set(TASKSMACK_EXPECTED_EKU "@TASKSMACK_EXPECTED_EKU@")
     endif()
+endif()
+
+# The NSIS installer's uninstaller is Authenticode-signed like the rest of the release (#2302). NSIS normally
+# writes the uninstaller out of the installer's own data at install time, so it can't be signed beforehand;
+# !uninstfinalize (NSIS 3.08 or later) has makensis build it whole, run a command on it and embed the file
+# the command leaves. Two makensis runs of the same project.nsi use that:
+#   - CPack's run (no TASKSMACK_UNINSTALLER): copies the uninstaller out, to Uninstall.exe beside
+#     project.nsi (makensis runs in that folder), and embeds it unchanged. release.yml signs that copy.
+#   - tools/build-windows-installer.ps1's run, with /DTASKSMACK_UNINSTALLER=<file>: copies <file>, the
+#     signed uninstaller, over the one makensis built, so the installer embeds and installs that file.
+# SetDateSave off: files keep no build-time timestamps (the staged ones carry the build's), so two builds
+# of one commit can make the same installer (release.yml's verify-reproducibility-windows); installed files
+# take the install's time instead. The version information is assets/tasksmack.rc.in's, for the installer,
+# so it too names the product and the release's version (docs/code-signing-policy.md). Read when CPack
+# configures project.nsi, at the top of the script.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    set(CPACK_NSIS_DEFINES [=[
+  SetDateSave off
+  VIProductVersion "@PROJECT_VERSION@.0"
+  VIFileVersion "@PROJECT_VERSION@.0"
+  VIAddVersionKey /LANG=1033 "CompanyName" "TaskSmack"
+  VIAddVersionKey /LANG=1033 "FileDescription" "TaskSmack Setup"
+  VIAddVersionKey /LANG=1033 "FileVersion" "@PROJECT_VERSION@"
+  VIAddVersionKey /LANG=1033 "LegalCopyright" "MIT License"
+  VIAddVersionKey /LANG=1033 "ProductName" "TaskSmack"
+  VIAddVersionKey /LANG=1033 "ProductVersion" "@PROJECT_VERSION@"
+  !ifdef TASKSMACK_UNINSTALLER
+    !uninstfinalize 'copy /b /y "${TASKSMACK_UNINSTALLER}" "%1"' = 0
+  !else
+    !uninstfinalize 'copy /b /y "%1" "Uninstall.exe"' = 0
+  !endif
+]=])
 endif()

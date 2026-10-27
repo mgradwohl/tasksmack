@@ -19,6 +19,7 @@ class Step:
     name: str
     env: dict[str, str] = field(default_factory=dict)
     run: str = ""
+    condition: str = ""  # its `if:`, as written; empty when it has none
 
 
 def _indent(line: str) -> int:
@@ -85,6 +86,10 @@ def find_step(workflow: Path, name: str, job: str | None = None) -> Step:
                 step.run, index = _block(lines, index + 1, keys)
                 if value not in ("|", "|-"):
                     step.run = value
+                continue
+            if key == "if":
+                step.condition = value
+                index += 1
                 continue
             if key == "env":
                 index += 1

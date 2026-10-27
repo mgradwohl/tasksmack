@@ -27,8 +27,10 @@ from `docs/index.html`. CI checks it two ways, both in `ci.yml`'s `docs-hygiene`
 - `tools/md-link-audit.sh` checks that every Markdown link's and image's target exists in the tree.
 - `tools/docs-site-smoke.py` serves `docs/` under `/tasksmack/`, as GitHub Pages does, and drives it in
   headless Chromium (#2967). It checks the root URL, a FAQ link and its section, the sidebar,
-  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. Run it after
-  changing `docs/index.html`, the sidebar, or how pages link to each other:
+  every section link on the sidebar's pages, the screenshots, and the 404 page's recovery. On a pull
+  request it runs only when the change touches `docs/`, the test or its lockfile (the change
+  classifier's `docs_site` output, #3103); pushes to `main` and release branches always run it. Run it
+  after changing `docs/index.html`, the sidebar, or how pages link to each other:
 
 ```bash
 python -m pip install --require-hashes -r requirements-docs-site.txt
@@ -1048,7 +1050,9 @@ file it includes (from `clang-scan-deps`), `.clang-tidy`, the script's flags and
 clean results are recorded, and any cache problem means the file is analyzed. CI's tidy jobs use it (pull
 requests restore main's cache, the nightly run saves it), and the Sunday run ignores it, so every file is
 analyzed from scratch once a week. A nightly failure turns main red, which opens or updates main-health's
-single `ci-red-main` issue; the job summary counts the findings by check.
+single `ci-red-main` issue; the job summary counts the findings by check. The summary starts with a "Result
+cache" line: the baseline restored, or why there was none, and how many translation units were selected,
+reused and analyzed (#3101).
 
 Naming is enforced by `readability-identifier-naming` in `.clang-tidy`: `PascalCase` classes, structs,
 enums, enumerators, namespaces and type aliases; `camelCase` functions, methods and parameters;
@@ -1402,7 +1406,8 @@ python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.
 
 PR CI (`ci.yml`'s Linux Release job) only *builds* `TaskSmackBenchmarks` -- it never runs it -- so a
 change that breaks the benchmark build fails the PR (#1348). Timing runs and the regression gate below
-live only in `heavy-checks.yml`.
+live only in `heavy-checks.yml`. That job builds only `TaskSmackBenchmarks` too, not the preset's whole
+tree, so with a cold ccache the build and the 23-minute suite still fit its 45-minute timeout (#3052).
 
 `heavy-checks.yml`'s `benchmark-regression` job runs nightly and on pushes to `main` that touch the code the
 benchmarks measure, gating against
@@ -1428,9 +1433,16 @@ difference as a regression on every run (#683). Hosted runners also land on two 
 committed CI baseline is a capture from the slower class: a run on the faster class can only look like an
 improvement, never a false regression (#682). The two classes don't slow every benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
-JSON file lists their own threshold, each with a required `reason`. `perf-data/linux-ci-thresholds.json`
-sets those. Add an entry only with the captures that justify it, and remove it when a baseline refresh
-makes it unnecessary. Without the flag every benchmark uses `--threshold`.
+JSON file lists their own threshold, each with a required `reason`. An entry can set its own noise floor
+instead, or as well, as `min_abs_delta_ns`: that is for a sub-nanosecond benchmark that an unrelated
+change's code layout moves by a few cycles. `BM_Format_ChooseByteUnit` read 0.43-0.87ns, then 3.1ns and
+2.9ns on two builds and 0.74ns on the next with no change to the code it times (#3126). That's +320% and
++2.4ns, over the 1.0ns floor, so it has a 3ns floor of its own: 0.7ns -> 3.1ns passes, 0.7ns -> 4ns and
+2ns -> 12ns still fail, and every other benchmark keeps 1.0ns, so 10ns -> 40ns, or 0.7ns -> 3.1ns
+anywhere else, still fails. A global 3ns floor would have let a 2.6ns benchmark double unnoticed.
+`perf-data/linux-ci-thresholds.json` sets those. Add an entry only with the captures that justify it, and
+remove it when a baseline refresh makes it unnecessary. Without the flag every benchmark uses
+`--threshold` and `--min-abs-delta-ns`.
 
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
 changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
@@ -2520,9 +2532,11 @@ Supported generators:
 | `TGZ` | All | .tar.gz archive |
 | `DEB` | Linux | Debian .deb package |
 | `RPM` | Linux | Red Hat .rpm package |
-| `NSIS` | Windows | .exe installer |
+| `NSIS` | Windows | .exe installer (needs NSIS 3.08 or later; release.yml pins 3.13 through `.github/actions/setup-nsis`) |
 
-Packages are created in `dist/`.
+Packages are created in `dist/`. The NSIS run also copies the uninstaller it built to `Uninstall.exe` beside
+CPack's `project.nsi` in `dist/_CPack_Packages/<system>/NSIS/` (`cmake/CPackProjectConfig.cmake.in`), so a
+release can sign it; see [Windows code signing](#windows-code-signing).
 
 What a package contains, and what it depends on (#1398):
 
@@ -2566,7 +2580,9 @@ What a package contains, and what it depends on (#1398):
   `.zip`'s CPack run, and `cmake -DTASKSMACK_VERIFY_DIR=<extracted .zip>
   -DTASKSMACK_EXPECTED_SIGNER=<CN> -P cmake/VerifyWindowsSignatures.cmake` must then pass on the
   signed `.zip` before it's published (see [Windows code signing](#windows-code-signing)). The NSIS
-  installer keeps the check either way, since nothing can sign inside it afterwards. The helper serves only an
+  installer CPack then makes is only a first pass, unsigned too: the release builds the one it ships
+  from the signed `.zip` and the signed uninstaller with `tools/build-windows-installer.ps1`, and checks
+  it and what it installs the same way. The helper serves only an
   install its user can't change (`BrokerHelper::checkUnchangeableBy`), so it works from the NSIS
   installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
   its user owns.
@@ -2688,16 +2704,29 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
 - **`ci.yml`**: The primary hub. Runs on pushes and PRs to `main` and `release/*`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch.
-  - **Builds:** Linux and Windows Debug on push/PR; Linux Release on the same events plus the nightly schedule, also compiling and linking (but not running) `TaskSmackBenchmarks` so a PR that breaks the benchmark build fails CI (#1348); Windows Release nightly and on dispatch only; the unity build weekly. Docs-only pull requests skip the C++ builds and `clang-tidy`. It also checks Markdown links.
+  - **Builds:** Linux and Windows Debug on push/PR; Linux Release on the same events plus the nightly schedule, also compiling and linking (but not running) `TaskSmackBenchmarks` so a PR that breaks the benchmark build fails CI (#1348); Windows Release nightly and on dispatch only; the unity build weekly. Docs-only and automation-only pull requests skip the C++ builds and `clang-tidy`. It also checks Markdown links.
   - **`clang-tidy` (blocking):** runs on Linux and Windows on PRs, the schedule and dispatch, not on pushes to `main`. The Windows run is skipped when every change is Linux-only, and the Linux run when every change is Windows-only. Each run happens inside that OS's debug job, after its tests and on the tree it configured, so LLVM setup and configure happen once per OS per PR head (the nightly runs those jobs in clang-tidy-only mode, without a build). The tidy step is `continue-on-error`, so a finding leaves the build check green and is reported separately: a small `Static Analysis (Windows)` job reports the Windows result under the check name the ruleset requires (#1875), and `CI Success` fails on a Linux finding or on a Linux tidy run that didn't happen, with a `clang-tidy (Linux)` annotation (#2047).
   - **Which files:** on a PR it analyzes only the translation units the change can affect (changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header), and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406). The nightly run analyzes every file.
   - **Other jobs:** a blocking Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs, and IWYU (include analysis) on manual dispatch only.
   - **`CI Success`** is the gate job used for branch protection. When a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
+  - **Which jobs a pull request runs** (#3104): the `detect-docs-only` job runs the base branch's copy of `tools/ci-change-classifier.py` on the pull request's merge commit, and its outputs decide which jobs skip. `docs_only` (every change is Markdown, `docs/`, an issue or PR template, or `LICENSE`) and `automation_only` (every change is docs or one of the automation files below, at least one of them) skip the C++ builds, both `clang-tidy` runs and ASan+UBSan; `linux_only`/`windows_only` (every change is that platform's `.cpp`) skip the other OS's jobs. An automation-only pull request runs the `Automation checks` job instead: the tool tests that read those files (`tests/tools/test_ci_change_classifier.py`, `test_workflow_run_steps.py`, `test_check_cache_prune_triggers.py`), which ctest would otherwise run in the skipped builds. Pre-commit (actionlint), CodeQL's Actions analysis, Dependency Review and OSV-Scanner run for every pull request as before, and pushes, the schedule and manual runs always run every job. A path the classifier doesn't list, an empty or failed diff, an unexpected classifier result, or a change to the classifier, its tests, `ci.yml`, `reusable-*.yml` or `.github/actions/**` runs every job, and `CI Success` fails when a job skipped without a classification that allows it, the classification itself is inconsistent, or `Automation checks` didn't pass when it had to. The automation allowlist, exact paths only, and why none of them can change what the skipped jobs check:
+
+    | File | Why the skipped C++ jobs can't depend on it |
+    |---|---|
+    | `.github/workflows/renovate.yml` | The self-hosted Renovate run (schedule and dispatch only); no workflow calls it and no build reads it. `test_workflow_run_steps.py` runs its dry-run step, in `Automation checks`. |
+    | `.github/renovate.json5` | Read only by Renovate. The pins it updates live in other files, which stay build inputs. |
+    | `.github/dependabot.yml` | Read only by GitHub's Dependabot. The pins it updates live in other files, which stay build inputs. |
+    | `.github/labeler.yml` | `pr-labeler.yml`'s label globs, read only by `actions/labeler`. |
+    | `.github/workflows/pr-labeler.yml` | Labels pull requests (`pull_request_target`, so a PR runs the base branch's copy); no build reads it. |
+    | `.github/CODEOWNERS` | Review routing, read only by GitHub. |
+    | `.github/actionlint.yaml` | actionlint's configuration, read only by the pre-commit hook, which still runs. |
+
+    To add a file, show the same for it, add it to `AUTOMATION` in the classifier with its reason, and add a case to `tests/tools/test_ci_change_classifier.py`. That test fails when an allowlisted file is missing, when a build input names one outside a comment, or when a `tests/tools` script names one without `Automation checks` running it.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
 - **`arm64.yml`**: Linux aarch64 (`ubuntu-24.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.exe` (`setup-windows-llvm`, pinned by SHA-256; Chocolatey only has the x64 installer) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
-CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB (500 MB elsewhere) with `inode_cache` on, and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, Windows coverage, benchmarks, packaging, the Wayland matrix) keep 500 MB. At most one entry per family survives pruning, so the ccache total is about 8 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to `main` and `release/*`, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
@@ -2706,7 +2735,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
-- **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
+- **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
@@ -2716,13 +2745,13 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
-- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip`; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
+- **`release.yml`**: Handles compiling production binaries, packaging them (Windows `.zip` and NSIS installer; Linux `.tar.gz` and `.deb`; x64 and ARM64), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags on `main` or on the `release/X.Y` branch the tag names; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
 - **`changelog.yml`**: For a strict `vMAJOR.MINOR.PATCH` tag, generates its `CHANGELOG.md` section with `git-cliff` from the tag's own branch history and opens one pull request against the tag's release branch and one against `main`, the canonical file (see [Changelog](#changelog)).
 - **`backport.yml`**: On a merged PR carrying a `backport:X.Y` label (or a `/backport` comment on it), cherry-picks it with korthout/backport-action into a `<title> [backport X.Y]` PR against `release/X.Y`, copying the labels and setting the open `vX.Y.*` milestone (#2741; see [Branching Strategy](#branching-strategy)).
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
-PR optimization: docs-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast.
+PR optimization: docs-only and automation-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast (see "Which jobs a pull request runs" above).
 
 Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` or a
 `release/*` branch never cancel each other. `ci.yml`, `arm64.yml`, `sanitizers.yml` and `heavy-checks.yml` give
@@ -2836,7 +2865,7 @@ workflow files at the tagged commit, so a release branch needs the current `rele
 
 `release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
 **true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
-tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s, when
+tag run (including [Authenticode signing](#windows-code-signing) of the Windows `.zip`s and installers, when
 dispatched from `main` or `release/*`), but skips `validate`'s tag, branch-ancestry, existing-release and version-equals-tag checks
 (it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
 would-be release assets as a `release-assets-dry-run` workflow artifact instead. A dry run builds,
@@ -2909,6 +2938,10 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   [Windows code signing](#windows-code-signing)); v0.9.0 and earlier are unsigned and have no helper.
 - Windows ARM64 package: `TaskSmack-<version>-windows-arm64.zip` (from v0.9.0; plain ARM64, not
   ARM64EC; signed and carrying `TaskSmackHelper.exe` from v0.9.1, like the x64 one)
+- Windows installers: `TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`
+  (from v0.9.1, #2302) -- NSIS installers of the same files as each `.zip`, per machine into
+  `C:\Program Files\TaskSmack` with a Start menu folder and an `Uninstall.exe`; the installer and the
+  uninstaller are Authenticode-signed like the executables (see [Windows code signing](#windows-code-signing))
 - Windows build-inputs manifests: `TaskSmack-<version>-win64-build-inputs.json` and
   `TaskSmack-<version>-windows-arm64-build-inputs.json` (from v0.9.1, #2802) -- one per Windows
   `.zip`, written by `.github/actions/windows-build-inputs` after packaging: the MSVC toolset
@@ -2924,8 +2957,9 @@ ARM64 packages carry an architecture suffix (`CPACK_SYSTEM_NAME`, set in `cmake/
 from the compiler's target). Each package's build, test, reproducibility check and validation runs
 natively per architecture, as a matrix over `ubuntu-24.04`/`ubuntu-24.04-arm` and
 `windows-2025`/`windows-11-arm`, and each build uploads `<os>-packages-<arch>` (for example
-`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`.
-`create-release` checks that `dist/` holds exactly these six packages and the two manifests before
+`windows-packages-arm64`), and each Windows build also uploads `windows-build-inputs-<arch>`; the
+installers come from `windows-installer-<arch>` (see [Windows code signing](#windows-code-signing)).
+`create-release` checks that `dist/` holds exactly these eight packages and the two manifests before
 signing anything, so a missing or renamed file fails the release.
 
 ### Release Artifact Validation
@@ -2955,7 +2989,15 @@ settings changed in v0.8.0's UI when the fixture was made (theme, font size, ref
 privilege notice, and the User and Threads columns; see `tests/App/fixtures/README.md`).
 On Windows the runs must also leave no trace, as a user deleting the portable `.zip`'s folder expects: no new
 TaskSmack-named entry under `%APPDATA%` or `%LOCALAPPDATA%` outside the config dirs and `%TEMP%`, and the folder
-they ran from deletes with no file still locked. Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
+they ran from deletes with no file still locked. Then the installer gets a silent round trip (#2302): with
+signing on, its own signature is checked; `/S` installs it into `C:\Program Files\TaskSmack`, whose files must
+be the `.zip`'s, byte for byte, plus the expected `Uninstall.exe` (the one `sign-windows` signed, or the first
+pass's own with signing off), with an Uninstall registry key and a Start menu shortcut; with signing on, every
+installed `.exe` (`TaskSmack.exe`, `TaskSmackHelper.exe`, `Uninstall.exe`, and no other) passes the same
+signature check as the `.zip`'s; the installed `TaskSmack.exe` runs the same smoke check where it is
+(`release-smoke-check.ps1 -InPlace`, with config dirs of its own and Mesa's DLLs beside it only for the
+launches); and `Uninstall.exe /S` must remove the folder, the Uninstall key and the Start menu entries again.
+Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
@@ -2971,8 +3013,8 @@ and upgrade `tasksmack` in place. Every file the new `.deb` ships must be instal
 and man pages aside, which the image's dpkg doesn't unpack), the helper and its polkit policy checked by name, and no v0.8.0 file the new `.deb` dropped may be left
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
-the fixture's settings kept. Windows has no package to upgrade while the `.zip` is portable; an NSIS
-upgrade check waits on the installer (#2302).
+the fixture's settings kept. Windows has no package to upgrade from yet: the `.zip` is portable, and v0.9.1
+publishes the first installer, so an installer upgrade check can follow once a release has one.
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
@@ -2989,9 +3031,9 @@ not a rebuild). The Linux leg then runs `cosign verify-blob --bundle` on every a
 Guide's certificate identity and issuer (a dry run signs from a branch, so it pins the same workflow at
 its own ref), runs `gh attestation verify --signer-workflow mgradwohl/tasksmack/.github/workflows/release.yml`
 on a tag run (a dry run makes no attestations), and relaunches the `.tar.gz` with
-`validate-linux-package`'s smoke check. The Windows leg checks the `.zip`'s Authenticode signatures
-with `validate-windows-package`'s check once signing is on (until #2302 signs it, the step says it's
-skipped), and relaunches it with that job's smoke check. Both jobs run the same scripts:
+`validate-linux-package`'s smoke check. The Windows leg checks the Authenticode signatures of the `.zip`'s
+executables and of the x64 installer with `validate-windows-package`'s check once signing is on (on a ref
+that doesn't sign, the step says they're skipped), and relaunches the `.zip` with that job's smoke check. Both jobs run the same scripts:
 `tools/release-smoke-check.sh`, `tools/release-smoke-check.ps1` and `tools/verify-windows-signatures.ps1`.
 On a tag run the release is already public by then, so a failure can't unpublish it: the job fails the
 run, its step summary names the check that failed, and the maintainer decides what to do about the
@@ -2999,8 +3041,8 @@ live release.
 
 ### Windows code signing
 
-Both Windows `.zip`s' `TaskSmack.exe` and `TaskSmackHelper.exe`, x64 and ARM64, are
-Authenticode-signed through [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
+Both Windows `.zip`s' `TaskSmack.exe` and `TaskSmackHelper.exe`, x64 and ARM64, both NSIS installers
+and the `Uninstall.exe` each installs are Authenticode-signed through [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
 (#2302; [code signing policy](docs/code-signing-policy.md)). The signer is the maintainer's validated
 identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and SmartScreen name
 **Matt Gradwohl** as the publisher.
@@ -3019,9 +3061,11 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 enter `release-signing`: every tag run, and dry runs dispatched from `main` or `release/*`. Both
 take a reviewed PR to change, so only reviewed code is ever signed (#2988). A dry run from any other
 branch, a PR branch included, packages both `.zip`s as before #2302: without
-`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` skipped
-(`validate-windows-package` and `create-release` accept that skip only then), and with no signature
-check. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
+`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` and
+`sign-windows-installer` skipped (`build-windows-installer`, `validate-windows-package` and
+`create-release` accept those skips only then), and with no signature check. It still builds both
+installers the same way, from the unsigned `.zip`s and the first pass's own uninstallers, and runs
+their install round trip. `validate` refuses a real release (a tag run or a `dry_run=false` dispatch) that
 `SIGNING_ENABLED` would leave unsigned (#2745). A PR branch's dry run proves everything but
 signing. A change to the signing path itself is proven after it merges, by a dry run dispatched
 from `main` (`gh workflow run release.yml --ref main -f dry_run=true`), or from `release/X.Y` once
@@ -3031,20 +3075,40 @@ With signing on, `release.yml` does this:
 
 1. `build-windows` (both architectures) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
    `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=Matt Gradwohl`, packages
-   the `.zip` with CPack as usual (the helper unsigned, with a CPack warning saying so) and uploads
-   it as the `windows-unsigned-<arch>` artifact, which `create-release` never downloads.
-2. `sign-windows` (on `windows-2025`; no checkout, no build; the only job in `release-signing`, and
-   the only one with `id-token: write` apart from `create-release`'s Sigstore signing) downloads both
-   unsigned `.zip`s, extracts the two executables from each, signs in with `azure/login` and signs all
-   four with `azure/artifact-signing-action` (SHA-256 file digest, RFC 3161 SHA-256 timestamp from
-   `http://timestamp.acs.microsoft.com`, every credential type but the Azure CLI's excluded). It then
-   writes each signed executable back over its own entry in its `.zip`, checks that nothing else in
-   the `.zip` changed, and uploads the signed `.zip`s as `windows-packages-<arch>`.
-3. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
+   the `.zip` and the NSIS installer's first pass with CPack (`cpack -G "ZIP;NSIS"`, the helper
+   unsigned, with a CPack warning saying so) and uploads the `.zip` and the uninstaller that first
+   pass copied out (`Uninstall.exe`) as the `windows-unsigned-<arch>` artifact, which `create-release`
+   never downloads. The first pass's `project.nsi`, `NSIS.InstallOptions.ini`, uninstaller and
+   installer go up as `windows-nsis-<arch>`. NSIS is 3.13 from `.github/actions/setup-nsis`, pinned by
+   SHA-256 (`windows-2025` ships none, `windows-11-arm` 3.10).
+2. `sign-windows` (on `windows-2025`; no checkout, no build; in `release-signing`, and with
+   `sign-windows-installer` the only jobs with `id-token: write` apart from `create-release`'s Sigstore
+   signing) downloads both unsigned `.zip`s and uninstallers, extracts the two executables from each
+   `.zip`, signs in with `azure/login` and signs all six files with `azure/artifact-signing-action`
+   (SHA-256 file digest, RFC 3161 SHA-256 timestamp from `http://timestamp.acs.microsoft.com`, every
+   credential type but the Azure CLI's excluded). It then writes each signed executable back over its
+   own entry in its `.zip`, checks that nothing else in the `.zip` changed, and uploads the signed
+   `.zip`s as `windows-packages-<arch>` and the signed uninstallers as `windows-signed-uninstaller-<arch>`.
+3. `build-windows-installer` (both architectures, on the runner its `build-windows` leg ran on, with no
+   signing credential) runs `tools/build-windows-installer.ps1`: the signed `.zip`'s files become the
+   folder the first pass's `project.nsi` installs from (they must be exactly the files its uninstaller
+   deletes), and `makensis /DTASKSMACK_UNINSTALLER=<signed Uninstall.exe>` builds it again. NSIS writes
+   an uninstaller at install time from the installer's own data, so it can't be signed beforehand;
+   `!uninstfinalize` (NSIS 3.08+, in `cmake/CPackProjectConfig.cmake.in`) instead has makensis build it
+   whole and run a command on it, which in the first pass copies it out and here copies the signed one
+   over it, so the installer embeds that file. The installer goes up as
+   `windows-unsigned-installer-<arch>`.
+4. `sign-windows-installer` (like `sign-windows`: `windows-2025`, no checkout, `release-signing`) signs
+   both installers the same way and uploads them as `windows-installer-<arch>`, which `create-release`
+   downloads beside the `.zip`s.
+5. `validate-windows-package` (both architectures) runs `cmake/VerifyWindowsSignatures.cmake` on the
    signed `.zip`'s extracted contents: both executables `Valid`, signed by `Matt Gradwohl` with a
    certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
-   key usage, timestamped, and by the same subject. Only then can `create-release` hash,
-   Sigstore-sign and publish them, so an unsigned or wrongly signed helper can't be published.
+   key usage, timestamped, and by the same subject. It runs the same check on the installer, installs
+   it and runs it on `TaskSmack.exe`, `TaskSmackHelper.exe` and `Uninstall.exe` as installed (see
+   [Release Artifact Validation](#release-artifact-validation)). Only then can `create-release` hash,
+   Sigstore-sign and publish them, so an unsigned or wrongly signed helper, installer or uninstaller
+   can't be published.
 
 Artifact Signing certificates last about three days and rotate, so every check matches the signer's
 common name, the issuer's name and the extended key usage, never a thumbprint or serial number; the
@@ -3057,10 +3121,10 @@ To check a run's signatures, download its `windows-packages-<arch>` artifact (or
 `release-assets-dry-run`), extract the `.zip` and run
 `Get-AuthenticodeSignature .\TaskSmack-*\TaskSmack*.exe | Format-List Status, StatusMessage,
 SignerCertificate, TimeStamperCertificate`. Each file should read `Valid`, with signer subject
-`CN=Matt Gradwohl, ...` and a timestamp certificate.
-
-The NSIS installer #2302 plans isn't built yet: it needs its executables signed before `cpack` runs
-(it can't be signed inside afterwards), then its uninstaller and the installer itself.
+`CN=Matt Gradwohl, ...` and a timestamp certificate. `Get-AuthenticodeSignature` checks a downloaded
+installer (`windows-installer-<arch>`) the same way; its uninstaller is checked as installed, by
+`validate-windows-package`. Never run an installer on a development machine just to look: it installs
+for every user and asks for administrator rights.
 
 ### Release Environment
 
@@ -3116,9 +3180,14 @@ architecture on that architecture's runner, and compare package digests against 
 `build-linux`/`build-windows` leg's artifact -- a missing
 matching artifact counts as a failure, not a skip. With signing on, each Windows leg compares against
 the **unsigned** `.zip` `build-windows` sent for signing (`windows-unsigned-<arch>`): an Authenticode signature embeds a
-timestamp, so signed release `.zip`s are not byte-reproducible by design. The rebuild is configured
-without `TASKSMACK_PACKAGE_WINDOWS_HELPER`, so its `.zip` lacks `TaskSmackHelper.exe`; the check then
-compares the two `.zip`s file by file and the original's helper against the one the rebuild built. Both are advisory only (`continue-on-error:
+timestamp, so signed release `.zip`s and installers are not byte-reproducible by design. Each Windows leg
+also compares the NSIS installer's unsigned first pass (`windows-nsis-<arch>`, #2302): the installer that
+ships is built from the same `project.nsi` with the signed files, so a reproducible first pass is what its
+reproducibility rests on, and `SetDateSave off` (`cmake/CPackProjectConfig.cmake.in`) keeps the build's
+file times out of it. The rebuild is configured as `build-windows` is, so with signing on its packages
+carry the unsigned `TaskSmackHelper.exe` too; a `.zip` that differs is compared file by file (a helper only
+the original packages is checked against the one the rebuild built), and an installer that differs
+fails, since it can't be opened to compare. Both are advisory only (`continue-on-error:
 true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning for
 investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism

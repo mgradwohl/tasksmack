@@ -230,6 +230,7 @@ set(TASKSMACK_SOURCES
     src/Platform/BrokeredServiceActions.cpp  # service actions through the helper, no polkit prompt each (#2728)
     src/Platform/BrokeredSystemInfoProbe.cpp # System Information's root-only facts through the helper (#2310)
     src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
+    src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
@@ -415,6 +416,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessTypes.h
     src/Platform/ProcessArchitecture.h
     src/Platform/CurrentProcess.h
+    src/Platform/PublicIpLookup.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
     src/Platform/Synthetic/SyntheticWorkload.h
