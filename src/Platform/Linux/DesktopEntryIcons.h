@@ -15,11 +15,11 @@
 // directory tree on every platform (tests/Platform/test_DesktopEntryIcons.cpp). Reading the process's
 // executable and decoding the PNG are LinuxProcessIconSource's.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -80,11 +80,12 @@ struct DesktopEntry
     bool application = true;    ///< Type=Application (or no Type)
 };
 
-/// @p text lower-cased, ASCII only (desktop file IDs and program names are ASCII in practice).
+/// @p text lower-cased, ASCII only (desktop file IDs and program names are ASCII in practice): every
+/// byte of 0x80 and up is kept as it is, whatever the locale (#2566).
 [[nodiscard]] inline std::string foldCase(std::string_view text)
 {
     std::string folded(text);
-    std::ranges::transform(folded, folded.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+    std::ranges::transform(folded, folded.begin(), Platform::foldAscii);
     return folded;
 }
 

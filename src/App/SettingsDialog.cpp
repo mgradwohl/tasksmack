@@ -336,7 +336,8 @@ Action render(State& state)
         UI::Widgets::outlinedCheckbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
         ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes, Services and Startup tabs and Process Details");
         UI::Widgets::outlinedCheckbox(HIGHLIGHT_NEW_LABEL, &state.highlightNewProcesses);
-        ImGui::SetItemTooltip("Tint a process's row for a few seconds after it starts, so short-lived processes stand out");
+        ImGui::SetItemTooltip("Tint a process's row for a few seconds after it starts, and keep it dimmed for a moment after it exits, so "
+                              "short-lived processes stand out");
 
         UI::Widgets::sectionGap();
 

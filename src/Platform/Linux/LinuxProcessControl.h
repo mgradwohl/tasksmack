@@ -52,6 +52,13 @@ struct LinuxProcessSyscalls
     /// The TracerPid in /proc/<pid>/status (0 for nobody), nullopt when it can't be read (the process is
     /// gone). Left null, the real /proc is read.
     std::optional<std::int32_t> (*tracerPid)(std::int32_t pid) = nullptr;
+    /// Where /proc/<pid>/exe points (readlink), or the errno that refused it (ENOENT for a kernel thread,
+    /// EACCES for another user's process). Left null, the real link is read. LinuxProcessActions only (#3064).
+    std::expected<std::string, int> (*executableLink)(std::int32_t pid) = nullptr;
+    /// org.freedesktop.FileManager1.ShowItems for file:// URI @p uri on the session bus: true when a file
+    /// manager took it. Left null, the real call is made (none without sd-bus, which is a false); tests
+    /// fake it so no file manager opens. LinuxProcessActions only (#3064).
+    bool (*showItemInFileManager)(const std::string& uri) = nullptr;
 };
 
 /// The real system calls.

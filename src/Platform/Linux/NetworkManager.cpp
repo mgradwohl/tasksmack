@@ -13,12 +13,12 @@
 #include "Platform/ProcessEnvironment.h"
 
 #include <algorithm>
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <expected>
 #include <string_view>
 #include <utility>
 
@@ -47,15 +47,6 @@ constexpr const char* NM_PATH = "/org/freedesktop/NetworkManager";
 constexpr const char* NM_WIRELESS = "org.freedesktop.NetworkManager.Device.Wireless";
 constexpr const char* NM_ACCESS_POINT = "org.freedesktop.NetworkManager.AccessPoint";
 
-/// One system-bus connection for every Wi-Fi adapter of a read, opened on the first.
-struct NetworkManagerSession
-{
-    Bus bus;
-    bool opened = false;
-    int openResult = 0;
-    std::string stopped; ///< Set once NetworkManager is found absent or unresponsive: every later adapter gets it.
-};
-
 /// Why NetworkManager couldn't answer for an adapter, in the user's terms, and whether that holds for
 /// every other adapter too (it isn't running, or stopped answering).
 [[nodiscard]] std::pair<std::string, bool> networkManagerError(const BusError& error, int result)
@@ -76,6 +67,62 @@ struct NetworkManagerSession
     }
     return {"NetworkManager couldn't be asked: " + error.text(result), false};
 }
+
+/// One system-bus connection for every adapter of a reader (Wi-Fi links, or DHCP leases), opened on the
+/// first; the setup and device lookup both readers start with (#3118).
+struct NetworkManagerSession
+{
+    Bus bus;
+    bool opened = false;
+    std::string stopped; ///< Set once NetworkManager is found absent or unresponsive: every later adapter gets it.
+
+    /// Opens the system bus on the first call. Empty while NetworkManager can still be asked; else why
+    /// it can't be, for this adapter and every later one.
+    [[nodiscard]] const std::string& ready()
+    {
+        if (!opened)
+        {
+            opened = true;
+            if (const int result = openSystemBus(bus); result < 0)
+            {
+                stopped = std::string("The system bus couldn't be reached: ") +
+                          std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - one reader thread
+            }
+        }
+        return stopped;
+    }
+
+    /// networkManagerError()'s text for a failed call, remembered in stopped when it holds for every
+    /// adapter (NetworkManager isn't running, or stopped answering); one adapter's failure isn't.
+    [[nodiscard]] std::string failure(const BusError& error, int result)
+    {
+        auto [text, forEveryAdapter] = networkManagerError(error, result);
+        if (forEveryAdapter)
+        {
+            stopped = text;
+        }
+        return std::move(text);
+    }
+
+    /// @p adapter's device object path, copied out of the reply before it is freed, or failure()'s text.
+    /// Call once ready() is empty.
+    [[nodiscard]] std::expected<std::string, std::string> devicePath(const std::string& adapter)
+    {
+        BusError error;
+        Message reply;
+        int result = sd_bus_call_method(bus.get(), NM, NM_PATH, NM, "GetDeviceByIpIface", error.get(), reply.out(), "s", adapter.c_str());
+        const char* path = nullptr;
+        if (result >= 0)
+        {
+            result = sd_bus_message_read(reply.get(), "o", &path);
+        }
+        if (result < 0 || path == nullptr)
+        {
+            return std::unexpected(failure(error, result));
+        }
+        return std::string(path);
+    }
+};
 
 /// An object-path property into @p path (empty when it can't be read).
 [[nodiscard]] int
@@ -98,52 +145,29 @@ getObjectPath(sd_bus* bus, const char* object, const char* interface, const char
 [[nodiscard]] LinuxNetworkAdapters::WifiLinkRead readWifiLinkOnce(NetworkManagerSession& session, const std::string& adapter)
 {
     LinuxNetworkAdapters::WifiLinkRead read;
-    if (!session.opened)
+    if (const std::string& stopped = session.ready(); !stopped.empty())
     {
-        session.opened = true;
-        session.openResult = openSystemBus(session.bus);
-        if (session.openResult < 0)
-        {
-            session.stopped = std::string("The system bus couldn't be reached: ") +
-                              std::strerror(-session.openResult); // NOLINT(concurrency-mt-unsafe) - as above
-        }
-    }
-    if (!session.stopped.empty())
-    {
-        read.error = session.stopped;
+        read.error = stopped;
         return read;
     }
-    sd_bus* bus = session.bus.get();
     const auto fail = [&session, &read](const BusError& error, int result)
     {
-        auto [text, forEveryAdapter] = networkManagerError(error, result);
-        if (forEveryAdapter)
-        {
-            session.stopped = text;
-        }
-        read.error = std::move(text);
+        read.error = session.failure(error, result);
         return read;
     };
-
-    // The adapter's device object.
-    BusError error;
-    Message reply;
-    int result = sd_bus_call_method(bus, NM, NM_PATH, NM, "GetDeviceByIpIface", error.get(), reply.out(), "s", adapter.c_str());
-    const char* devicePath = nullptr;
-    if (result >= 0)
+    const std::expected<std::string, std::string> devicePath = session.devicePath(adapter);
+    if (!devicePath.has_value())
     {
-        result = sd_bus_message_read(reply.get(), "o", &devicePath);
+        read.error = devicePath.error();
+        return read;
     }
-    if (result < 0 || devicePath == nullptr)
-    {
-        return fail(error, result);
-    }
-    const std::string device(devicePath);
+    const std::string& device = *devicePath;
+    sd_bus* bus = session.bus.get();
 
     // The access point it is joined to: "/" when it isn't.
     std::string accessPoint;
     BusError apError;
-    if (result = getObjectPath(bus, device.c_str(), NM_WIRELESS, "ActiveAccessPoint", accessPoint, apError); result < 0)
+    if (const int result = getObjectPath(bus, device.c_str(), NM_WIRELESS, "ActiveAccessPoint", accessPoint, apError); result < 0)
     {
         return fail(apError, result);
     }
@@ -255,51 +279,29 @@ readDhcpOptions(sd_bus* bus, const char* config, std::string& server, std::strin
 [[nodiscard]] LinuxNetworkAdapters::DhcpLeaseRead readDhcpLeaseOnce(NetworkManagerSession& session, const std::string& adapter)
 {
     LinuxNetworkAdapters::DhcpLeaseRead read;
-    if (!session.opened)
+    if (const std::string& stopped = session.ready(); !stopped.empty())
     {
-        session.opened = true;
-        session.openResult = openSystemBus(session.bus);
-        if (session.openResult < 0)
-        {
-            session.stopped = std::string("The system bus couldn't be reached: ") +
-                              std::strerror(-session.openResult); // NOLINT(concurrency-mt-unsafe) - as above
-        }
-    }
-    if (!session.stopped.empty())
-    {
-        read.error = session.stopped;
+        read.error = stopped;
         return read;
     }
-    sd_bus* bus = session.bus.get();
     const auto fail = [&session, &read](const BusError& error, int result)
     {
-        auto [text, forEveryAdapter] = networkManagerError(error, result);
-        if (forEveryAdapter)
-        {
-            session.stopped = text;
-        }
-        read.error = std::move(text);
+        read.error = session.failure(error, result);
         return read;
     };
-
-    BusError error;
-    Message reply;
-    int result = sd_bus_call_method(bus, NM, NM_PATH, NM, "GetDeviceByIpIface", error.get(), reply.out(), "s", adapter.c_str());
-    const char* devicePath = nullptr;
-    if (result >= 0)
+    const std::expected<std::string, std::string> devicePath = session.devicePath(adapter);
+    if (!devicePath.has_value())
     {
-        result = sd_bus_message_read(reply.get(), "o", &devicePath);
+        read.error = devicePath.error();
+        return read;
     }
-    if (result < 0 || devicePath == nullptr)
-    {
-        return fail(error, result);
-    }
-    const std::string device(devicePath);
+    const std::string& device = *devicePath;
+    sd_bus* bus = session.bus.get();
 
     // "/" when the adapter's IPv4 address isn't from DHCP.
     std::string config;
     BusError configError;
-    if (result = getObjectPath(bus, device.c_str(), NM_DEVICE, "Dhcp4Config", config, configError); result < 0)
+    if (const int result = getObjectPath(bus, device.c_str(), NM_DEVICE, "Dhcp4Config", config, configError); result < 0)
     {
         return fail(configError, result);
     }
@@ -314,7 +316,7 @@ readDhcpOptions(sd_bus* bus, const char* config, std::string& server, std::strin
     std::string leaseTime;
     std::string expiry;
     BusError optionsError;
-    if (result = readDhcpOptions(bus, config.c_str(), server, leaseTime, expiry, optionsError); result < 0)
+    if (const int result = readDhcpOptions(bus, config.c_str(), server, leaseTime, expiry, optionsError); result < 0)
     {
         return fail(optionsError, result);
     }

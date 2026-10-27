@@ -451,6 +451,7 @@ set(COMMON_TEST_SOURCES
     UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
+    App/test_ProcessLookup.cpp # Open file location and Search online (#3064)
     App/test_ProcessTreeFlatten.cpp
     App/test_ProcessTreeIndent.cpp
     App/test_ProcessTableFlags.cpp
@@ -586,6 +587,7 @@ set(COMMON_TEST_SOURCES
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_NewProcessHighlight.cpp  # the new-process row tint (#3060)
+    App/test_ExitingProcessRows.cpp # exited processes kept as dimmed rows (#3060)
     App/test_ProcessBatchRun.cpp
     App/test_ProcessActionRun.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
@@ -735,6 +737,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SystemdServices.cpp
     Platform/test_SystemdActions.cpp  # systemd service control (#2006 phase 2)
     Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
+    Platform/test_PressureParser.cpp  # /proc/pressure parsing (#3062)
     Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp

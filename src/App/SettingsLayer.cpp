@@ -250,7 +250,7 @@ void SettingsLayer::applySettings()
     if (m_State.highlightNewProcesses != settings.highlightNewProcesses)
     {
         settings.highlightNewProcesses = m_State.highlightNewProcesses;
-        spdlog::info("Settings: Highlight new processes changed to {}", m_State.highlightNewProcesses);
+        spdlog::info("Settings: Highlight new and exited processes changed to {}", m_State.highlightNewProcesses);
     }
 
     // Save to disk, on a worker: the UI thread never writes the file (#2916)

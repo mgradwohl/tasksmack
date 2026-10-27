@@ -5,6 +5,7 @@
 #include "App/Panels/CpuDetailsText.h"
 #include "Domain/SystemSnapshot.h"
 #include "Platform/CpuDetails.h"
+#include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -136,6 +137,35 @@ TEST(CpuDetailsTextTest, TheLoadAverageIsListedOnlyWhereThePlatformReadsIt)
     EXPECT_TRUE(load->available);
     EXPECT_EQ(load->value, "1.50 / 0.75 / 0.25");
     EXPECT_FALSE(load->tooltip.empty()) << "says which three averages they are";
+}
+
+// #3062: the Pressure row lists CPU, memory and I/O "some" over 10 s where the platform reads PSI, with
+// every average on hover; no row where it doesn't.
+TEST(CpuDetailsTextTest, PressureIsListedWhereThePlatformReadsIt)
+{
+    auto snap = windowsLikeSnapshot();
+    snap.cpuPressure.some = Platform::PressureStall{.avg10 = 4.5, .avg60 = 2.25, .avg300 = 1.0};
+    snap.memoryPressure.some = Platform::PressureStall{.avg10 = 0.1, .avg60 = 0.05, .avg300 = 0.0};
+    snap.ioPressure.some = Platform::PressureStall{.avg10 = 12.0, .avg60 = 6.0, .avg300 = 3.0};
+    snap.ioPressure.full = Platform::PressureStall{.avg10 = 8.0, .avg60 = 4.0, .avg300 = 2.0};
+    EXPECT_EQ(findRow(buildRows(windowsInputs(snap)), "Pressure"), nullptr) << "no PSI on Windows";
+
+    Inputs linux = windowsInputs(snap);
+    linux.hasPressure = true;
+    const auto rows = buildRows(linux);
+    const Row* pressure = findRow(rows, "Pressure");
+    ASSERT_NE(pressure, nullptr);
+    EXPECT_TRUE(pressure->available);
+    EXPECT_EQ(pressure->value, "CPU 4.5% \xC2\xB7 memory 0.1% \xC2\xB7 I/O 12.0%");
+    EXPECT_NE(pressure->tooltip.find("I/O full: 8.0% / 4.0% / 2.0%"), std::string::npos) << pressure->tooltip;
+
+    snap.cpuPressure = {};
+    snap.memoryPressure = {};
+    snap.ioPressure = {};
+    const auto unreadRows = buildRows(linux); // kept: findRow() points into it
+    const Row* unread = findRow(unreadRows, "Pressure");
+    ASSERT_NE(unread, nullptr);
+    EXPECT_FALSE(unread->available) << "a failed read is unavailable, not zeros";
 }
 
 TEST(CpuDetailsTextTest, HybridCoresShowTheirSplit)

@@ -23,9 +23,12 @@ Outputs, the contract every caller reads (ci.yml's build jobs; #3103 adds docs_s
                    least one is automation, and none is in FULL_VALIDATION. The C++ jobs skip as for
                    docs_only, and ci.yml's automation-checks job runs the tool tests that read those
                    files instead. Never true together with docs_only.
+  docs_site        Some changed path is an input of the docs site's browser smoke test (DOCS_SITE: the
+                   site itself, the test, its lockfile). docs-hygiene runs the Playwright test only when
+                   it's true (#3103); its link audit runs every time.
 
 Each output has a safe value: the one that runs every job its flag can skip (false for each *_only
-flag). Every output takes its safe value when the change is empty, when git fails, or when any
+flag, true for docs_site). Every output takes its safe value when the change is empty, when git fails, or when any
 changed path is in FULL_VALIDATION or matches no set. A path no set names is a build input until
 someone shows otherwise. The first three outputs keep the paths-filter globs ci.yml used before
 this script (#2130); codeql.yml's docs-only skip still uses the same DOCS set.
@@ -104,6 +107,15 @@ DOCS = (
 # So a header change runs both OSes' builds, or a break in the other OS's compile would only show on
 # main (#2130).
 LINUX_PLATFORM = ("src/Platform/Linux/**/*.cpp",)
+
+# The docs site's browser smoke test's inputs (#3103): the Docsify site under docs/, the test itself and
+# its hash-locked dependencies. Anything else can't change what tools/docs-site-smoke.py sees.
+DOCS_SITE = (
+    "docs/**",
+    "tools/docs-site-smoke.py",
+    "requirements-docs-site.in",
+    "requirements-docs-site.txt",
+)
 WINDOWS_PLATFORM = ("src/Platform/Windows/**/*.cpp",)
 
 # Automation files outside every C++ job's inputs, each with the reason. Exact paths, not globs: a
@@ -145,6 +157,7 @@ FULL_VALIDATION = (
 is_docs = _matcher(DOCS)
 is_linux_platform = _matcher(LINUX_PLATFORM)
 is_windows_platform = _matcher(WINDOWS_PLATFORM)
+is_docs_site = _matcher(DOCS_SITE)
 is_full_validation = _matcher(FULL_VALIDATION)
 
 
@@ -170,6 +183,7 @@ OUTPUTS = (
     Output("linux_only", False, lambda paths: all(is_linux_platform(path) for path in paths)),
     Output("windows_only", False, lambda paths: all(is_windows_platform(path) for path in paths)),
     Output("automation_only", False, _automation_only),
+    Output("docs_site", True, lambda paths: any(is_docs_site(path) for path in paths)),
 )
 
 

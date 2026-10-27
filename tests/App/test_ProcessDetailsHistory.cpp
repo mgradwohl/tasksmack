@@ -618,8 +618,9 @@ TEST(ProcessDetailsHistoryTest, SamplesOfAProcessThatReusedThePidAreNotAppended)
 
 TEST(ProcessDetailsHistoryTest, NewestPointIsHeldToNowByTheCharts)
 {
-    // The charts draw each series to x = 0 by repeating its newest value (holdLastValuesToNow), which
-    // needs the newest point to be the latest reading -- never a gap point, and never trimmed away.
+    // The charts draw each series to x = 0 by repeating its newest value (appendHeldValues() and
+    // holdTimeToNow()), which needs the newest point to be the latest reading -- never a gap point,
+    // and never trimmed away.
     ProcessDetailsHistory history = everySecond(0, 9);
     history.append(14.0, distinctPoint(1400.0), true); // A gap point goes before it, not after
     history.trimToWindow(10.0);
@@ -632,7 +633,8 @@ TEST(ProcessDetailsHistoryTest, NewestPointIsHeldToNowByTheCharts)
     std::vector<double> userValues(user.begin(), user.end());
     std::vector<double> totalValues(total.begin(), total.end());
 
-    UI::Widgets::holdLastValuesToNow(x, {&userValues, &totalValues}, UI::Widgets::maxHoldSecondsForAxis(std::span<const double>(x)));
+    UI::Widgets::appendHeldValues({&userValues, &totalValues});
+    UI::Widgets::holdTimeToNow(x, UI::Widgets::maxHoldSecondsForAxis(std::span<const double>(x)));
 
     ASSERT_EQ(x.size(), history.size() + 1);
     EXPECT_DOUBLE_EQ(x.back(), 0.0);
@@ -668,7 +670,8 @@ TEST(ProcessDetailsHistoryTest, ChartReadsFollowTheLogicalStartThroughACompactio
 
         const auto total = history.series(ProcessSeries::CpuTotal);
         std::vector<double> totalValues(total.begin(), total.end());
-        UI::Widgets::holdLastValuesToNow(x, {&totalValues}, UI::Widgets::maxHoldSecondsForAxis(std::span<const double>(x)));
+        UI::Widgets::appendHeldValues({&totalValues});
+        UI::Widgets::holdTimeToNow(x, UI::Widgets::maxHoldSecondsForAxis(std::span<const double>(x)));
         EXPECT_DOUBLE_EQ(x.back(), 0.0);
         EXPECT_DOUBLE_EQ(totalValues.back(), t * 100.0);
 

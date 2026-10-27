@@ -897,7 +897,7 @@ void ProcessDetailsCharts::drawCpuBandsAndLines(std::span<const double> timeData
         { UI::Widgets::reduceAlignedPoints<double>(timeData, {user, system, total}, pointBudget, nowSeconds, out); });
 
     // The User and System bands' edges (shared with the Overview, #1180), plus the Total and System
-    // lines. A gap point is NaN in every series (see UI::Widgets::reduceAlignedSeries). The User line
+    // lines. A gap point is NaN in every series (see UI::Widgets::reduceAlignedPoints). The User line
     // is the User band's top, so it is drawn from that. They are gathered only when the points change
     // (ReducedValuesStamp, #843), each with the value it holds out to "now" (#1016) already appended;
     // between samples a frame rebuilds only their x, which moves with now.

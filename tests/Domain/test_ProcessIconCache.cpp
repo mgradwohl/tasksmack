@@ -146,6 +146,34 @@ TEST_F(ProcessIconCacheTest, ProcessesRunningOneExecutableShareOneIconAndOneRead
     EXPECT_EQ(cache->stats().icons, 1U);
 }
 
+TEST_F(ProcessIconCacheTest, ACaseInsensitiveKeyFoldsAsciiLettersOnly)
+{
+    // The folded key joins ASCII spellings of one path but never a byte of 0x80 and up, whatever the
+    // locale (#2566): 0xC4 (Latin-1's Ä) and 0xE4 (ä) are two files, so two reads and two icons.
+    m_State->paths[10] = "C:\\Apps\\\xC4pp.exe";
+    m_State->paths[11] = "c:\\APPS\\\xC4PP.EXE";
+    m_State->paths[12] = "C:\\Apps\\\xE4pp.exe";
+    m_State->iconSides["C:\\Apps\\\xC4pp.exe"] = SIZE;
+    m_State->iconSides["c:\\APPS\\\xC4PP.EXE"] = SIZE; // Either spelling reads the same file
+    m_State->iconSides["C:\\Apps\\\xE4pp.exe"] = SIZE;
+    m_State->caseInsensitive = true;
+    const auto cache = makeCache();
+
+    static_cast<void>(cache->lookup(1, 10, "\xC4pp.exe", SIZE));
+    static_cast<void>(cache->lookup(2, 11, "\xC4PP.EXE", SIZE));
+    static_cast<void>(cache->lookup(3, 12, "\xE4pp.exe", SIZE));
+    EXPECT_EQ(cache->loadPending(), 3U);
+    const auto upper = cache->lookup(1, 10, "\xC4pp.exe", SIZE);
+    const auto upperAgain = cache->lookup(2, 11, "\xC4PP.EXE", SIZE);
+    const auto lower = cache->lookup(3, 12, "\xE4pp.exe", SIZE);
+    ASSERT_NE(upper, nullptr);
+    ASSERT_NE(lower, nullptr);
+    EXPECT_EQ(upper, upperAgain);
+    EXPECT_NE(upper, lower);
+    EXPECT_EQ(m_State->iconReads.load(), 2);
+    EXPECT_EQ(cache->stats().icons, 2U);
+}
+
 TEST_F(ProcessIconCacheTest, PathsKeepTheirCaseWhereThePlatformDoes)
 {
     m_State->paths[10] = "/opt/App";

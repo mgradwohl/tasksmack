@@ -1,5 +1,6 @@
 #include "Domain/SamplingConfig.h"
 #include "TestLocales.h"
+#include "UI/ChartReferenceHelpers.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
@@ -30,6 +31,13 @@ namespace UI::Widgets
 {
 namespace
 {
+
+// The value-buffer reductions and hold-to-now that ChartWidgets.h no longer has: reference
+// semantics for the peak, gap and alignment tests, and for the cached drawing path (#2937, #3116).
+using TestReference::holdLastValuesToNow;
+using TestReference::reduceAlignedSeries;
+using TestReference::reduceSeriesKeepingGaps;
+using TestReference::reduceSeriesMinMax;
 
 // ========== Axis label buffers (#1345) ==========
 

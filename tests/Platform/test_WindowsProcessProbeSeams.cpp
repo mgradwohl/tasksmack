@@ -4,6 +4,7 @@
 /// Every fake is side-effect free: the only real calls are CreateEventW for handles the probe may
 /// close, and the probe's own RAM query. No process is opened, changed or ended.
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
@@ -18,12 +19,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -117,6 +121,8 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     bool failTokenRead = false;
     bool failLookup = false;
     std::wstring user = L"alice";
+    std::optional<DWORD> sidRid; ///< The token user SID's last sub-authority; by default one per user name
+    int lookupCalls = 0;
     // Process
     bool failOpenProcess = false;
     bool failQueryInfoOpen = false; ///< Only the PROCESS_QUERY_INFORMATION open is refused
@@ -326,8 +332,16 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
     {
         return TRUE; // Read, but too short to hold a TOKEN_USER
     }
+    // S-1-5-21-<rid>: revision 1, two sub-authorities, the NT authority. A user name of its own has
+    // a SID of its own unless a test sets the RID, as a renamed account keeps its SID.
+    auto* const sid = static_cast<std::byte*>(info) + sizeof(TOKEN_USER);
+    constexpr std::array<std::byte, 8> HEADER{
+        std::byte{1}, std::byte{2}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{5}};
+    const std::array<DWORD, 2> subAuthorities{21, fake().sidRid.value_or(static_cast<DWORD>(std::hash<std::wstring>{}(fake().user)))};
+    std::memcpy(sid, HEADER.data(), HEADER.size());
+    std::memcpy(sid + HEADER.size(), subAuthorities.data(), sizeof(subAuthorities));
     TOKEN_USER user{};
-    user.User.Sid = static_cast<std::byte*>(info) + sizeof(TOKEN_USER);
+    user.User.Sid = sid;
     std::memcpy(info, &user, sizeof(user));
     return TRUE;
 }
@@ -335,6 +349,7 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
 BOOL WINAPI fakeLookupAccountSidW(
     LPCWSTR /*system*/, PSID /*sid*/, LPWSTR name, LPDWORD nameLength, LPWSTR /*domain*/, LPDWORD /*domainLength*/, PSID_NAME_USE /*use*/)
 {
+    ++fake().lookupCalls;
     if (fake().failLookup || *nameLength <= fake().user.size())
     {
         return FALSE;
@@ -968,6 +983,78 @@ TEST_F(WindowsProcessProbeSeamTest, TheSameProcessIsReadAgainOnceItsTtlsRunOut)
     fake().now += std::chrono::hours(1);
     EXPECT_EQ(find(probe.enumerate()).user, "bob");
     EXPECT_EQ(fake().openProcessCalls, 2);
+}
+
+// --- Account names (#2982) ---------------------------------------------------------------------
+
+/// The default fake process, under another PID.
+FakeProcess processWithPid(DWORD pid)
+{
+    FakeProcess process;
+    process.pid = pid;
+    return process;
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ProcessesOfOneAccountAskForItsNameOnce)
+{
+    fake().processes = {FakeProcess{}, processWithPid(PID + 4), processWithPid(PID + 8)};
+    WindowsProcessProbe probe(fakeFunctions());
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 3U);
+    for (const ProcessCounters& process : processes)
+    {
+        EXPECT_EQ(process.user, "alice");
+    }
+    EXPECT_EQ(fake().lookupCalls, 1);
+
+    // Each heavy pass reads the token again, but the name comes from the cache.
+    fake().now += std::chrono::minutes(1);
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    EXPECT_EQ(fake().lookupCalls, 1);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnotherAccountIsAskedForItsOwnName)
+{
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+
+    fake().user = L"bob"; // A new process, owned by another account (another SID)
+    fake().processes.push_back(processWithPid(PID + 4));
+    const auto processes = probe.enumerate();
+    const auto bob = std::ranges::find(processes, static_cast<std::int32_t>(PID + 4), &ProcessCounters::pid);
+    ASSERT_NE(bob, processes.end());
+    EXPECT_EQ(bob->user, "bob");
+    EXPECT_EQ(find(processes).user, "alice"); // Still within its heavy TTL
+    EXPECT_EQ(fake().lookupCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AFailedLookupIsNotCachedAndIsAskedAgain)
+{
+    fake().failLookup = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_TRUE(find(probe.enumerate()).user.empty());
+    EXPECT_EQ(fake().lookupCalls, 1);
+
+    fake().failLookup = false;
+    fake().now += std::chrono::minutes(1); // Past the heavy TTL, well within the name cache's
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    EXPECT_EQ(fake().lookupCalls, 2);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ARenamedAccountShowsItsNewNameOnceTheCachedNameExpires)
+{
+    fake().sidRid = 1001;
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+
+    fake().user = L"alicia"; // The same SID, renamed
+    fake().now += std::chrono::minutes(1);
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    EXPECT_EQ(fake().lookupCalls, 1);
+
+    fake().now += std::chrono::seconds(Domain::Sampling::ACCOUNT_NAME_CACHE_TTL_SECONDS);
+    EXPECT_EQ(find(probe.enumerate()).user, "alicia");
+    EXPECT_EQ(fake().lookupCalls, 2);
 }
 
 // --- Architecture (#2394) ------------------------------------------------------------------------

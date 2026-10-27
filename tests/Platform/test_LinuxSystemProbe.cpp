@@ -1256,6 +1256,34 @@ TEST(LinuxSystemProbeTest, StatWithNoCpuLineReturnsZero)
     EXPECT_EQ(counters.cpuTotal.user, 0ULL);
 }
 
+// #3062: pressure stall information is read from <procRoot>/pressure when the kernel has it, and the
+// capability says so; without the files it is neither read nor claimed.
+TEST(LinuxSystemProbeTest, PressureStallInformationIsReadWhenTheKernelHasIt)
+{
+    ScopedTempDir proc("ts_test_sys_pressure_proc");
+    std::filesystem::create_directories(proc.path / "pressure");
+    std::ofstream(proc.path / "pressure" / "cpu") << "some avg10=4.50 avg60=2.25 avg300=1.00 total=1\n"
+                                                     "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n";
+    std::ofstream(proc.path / "pressure" / "memory") << "some avg10=0.10 avg60=0.05 avg300=0.01 total=2\n"
+                                                        "full avg10=0.05 avg60=0.02 avg300=0.00 total=1\n";
+    std::ofstream(proc.path / "pressure" / "io") << "some avg10=12.00 avg60=6.00 avg300=3.00 total=3\n"
+                                                    "full avg10=8.00 avg60=4.00 avg300=2.00 total=2\n";
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", proc.path / "no-cpu-sysfs");
+    EXPECT_TRUE(probe.capabilities().hasPressure);
+    const SystemCounters counters = probe.read();
+    ASSERT_TRUE(counters.cpuPressure.some.has_value());
+    EXPECT_DOUBLE_EQ(counters.cpuPressure.some->avg10, 4.50);
+    ASSERT_TRUE(counters.ioPressure.full.has_value());
+    EXPECT_DOUBLE_EQ(counters.ioPressure.full->avg60, 4.00);
+    ASSERT_TRUE(counters.memoryPressure.some.has_value());
+    EXPECT_DOUBLE_EQ(counters.memoryPressure.some->avg300, 0.01);
+
+    ScopedTempDir noPsi("ts_test_sys_no_pressure_proc");
+    LinuxSystemProbe without(noPsi.path, noPsi.path / "no-sys-class-net", noPsi.path / "no-cpu-sysfs");
+    EXPECT_FALSE(without.capabilities().hasPressure) << "CONFIG_PSI off, or psi=0";
+    EXPECT_FALSE(without.read().cpuPressure.read());
+}
+
 } // namespace
 } // namespace Platform
 

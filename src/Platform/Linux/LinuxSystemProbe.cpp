@@ -7,6 +7,7 @@
 #include "Domain/SamplingConfig.h"
 #include "LinuxCpuDetails.h"
 #include "Platform/CpuDetails.h"
+#include "Platform/Linux/PressureParser.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
 
@@ -101,6 +102,10 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
     }
 
+    // Pressure stall information is a kernel option (CONFIG_PSI), and can be turned off at boot (psi=0),
+    // when the files are missing or refuse reads (#3062). Decided once: it can't change while running.
+    m_HasPressure = readResourcePressure(m_ProcRoot, "cpu").read();
+
     // Read hostname (cached)
     std::array<char, 256> hostBuffer{};
     if (gethostname(hostBuffer.data(), hostBuffer.size()) == 0)
@@ -148,6 +153,10 @@ SystemCounters LinuxSystemProbe::read()
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
+    if (m_HasPressure)
+    {
+        readPressure(counters, m_ProcRoot);
+    }
     readCpuFreq(counters, m_CpuSysfsRoot);
     readNetworkCounters(counters);
     readStaticInfo(counters);
@@ -164,6 +173,7 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasIoWait = true,
                               .hasSteal = true,
                               .hasLoadAvg = true,
+                              .hasPressure = m_HasPressure,
                               .hasCpuFreq = true,
                               .hasNetworkCounters = true,
                               .hasVirtualizationInfo = true,           // vmx/svm, /dev/kvm, hypervisor detection (#2592)
@@ -435,6 +445,26 @@ void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesyst
     parseDouble(p, end, counters.loadAvg1);
     parseDouble(p, end, counters.loadAvg5);
     parseDouble(p, end, counters.loadAvg15);
+}
+
+ResourcePressure LinuxSystemProbe::readResourcePressure(const std::filesystem::path& procRoot, const char* resource)
+{
+    // Two lines of about 60 bytes each.
+    const std::string pathStr = (procRoot / "pressure" / resource).string();
+    std::array<char, 256> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), buf.size());
+    if (len == 0)
+    {
+        return {};
+    }
+    return PressureParser::parse(std::string_view(buf.data(), len));
+}
+
+void LinuxSystemProbe::readPressure(SystemCounters& counters, const std::filesystem::path& procRoot)
+{
+    counters.cpuPressure = readResourcePressure(procRoot, "cpu");
+    counters.memoryPressure = readResourcePressure(procRoot, "memory");
+    counters.ioPressure = readResourcePressure(procRoot, "io");
 }
 
 void LinuxSystemProbe::readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot)

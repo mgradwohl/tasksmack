@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -588,6 +589,17 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    // Processes that just exited, kept as dimmed rows for a moment (#3060): the generation before
+    // m_CachedRenderSnapshots' (to tell which exited), and those still shown.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_PreviousGeneration;
+    ExitingProcessRows::Tracker m_ExitingRows;
+    // What the table draws: m_CachedRenderSnapshots, followed by the exited processes when there are
+    // any (ExitingProcessRows::displayRows()). An index at or past m_LiveRowCount is an exited row.
+    // m_DisplayVersion changes whenever it is rebuilt; the filter, sort and tree caches are keyed on it.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_DisplaySnapshots = m_CachedRenderSnapshots;
+    std::size_t m_LiveRowCount = 0;
+    std::uint64_t m_DisplayVersion = 0;
+    std::uint64_t m_DisplayBuiltForVersion = std::numeric_limits<std::uint64_t>::max();
     SelectOverride::Pending m_StartupSelection;   // TASKSMACK_SELECT_PID/_NAME (#1559); idle once fired
     bool m_StartupSelectionShowsDetails = true;   // false when TASKSMACK_TAB picks the tab instead
     SelectOverride::Pending m_RequestedSelection; // TASKSMACK_DEMO's select= (#2827); idle once fired
@@ -745,6 +757,14 @@ class ProcessesPanel : public Panel
     /// The visible rows in drawn order, as indices into `snapshots`: the sorted list, or the flattened
     /// tree. With `shapes`, also each tree row's shape (left empty in list view, or if any index had to
     /// be dropped). Not while the tree rows are being iterated: it can rebuild them.
+    /// Rebuilds m_DisplaySnapshots when a generation was adopted or an exited row expired (#3060).
+    void updateDisplaySnapshots();
+    /// Whether @p procIdx, an index into m_DisplaySnapshots, is a process that has exited (#3060).
+    [[nodiscard]] bool isExitedRow(std::size_t procIdx) const noexcept
+    {
+        return procIdx >= m_LiveRowCount;
+    }
+
     void collectVisibleRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
                             std::vector<std::size_t>& visible,
                             std::vector<ProcessTableNavigation::TreeRowShape>* shapes);
@@ -770,6 +790,11 @@ class ProcessesPanel : public Panel
 
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
+
+    /// "Open file location" (#3064): the row's executable in the file manager, on the row action worker.
+    void openRowFileLocation(const Domain::ProcessSnapshot& proc);
+    /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
+    void searchRowOnline(const Domain::ProcessSnapshot& proc);
 
     /// Asks to run `action` on `proc`, through the confirmation dialog.
     void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
@@ -810,6 +835,8 @@ class ProcessesPanel : public Panel
     /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
     /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
     void renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
+    /// An exited row's PID cell (#3060): the PID text alone, with no selectable, menu or click.
+    static void renderExitedPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
 
     /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906),
     /// then, after a collapsed parent's name, its child count (#838).

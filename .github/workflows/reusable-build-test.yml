@@ -151,7 +151,10 @@ jobs:
           # main. Its working set without ThinLTO is ~0.35 GB compressed (a cold build on top of
           # the restored cache), so 750M also holds the stale entries a flag change leaves behind
           # until main's evict-old-files drops them (#1875).
-          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '750M' || '500M' }}
+          # Sized from measurements (#3100): one full Linux Debug build is about 614 MB of objects, so
+          # 1250M holds main's tree and a PR's changes (x64 and ARM64); Windows Debug used 0.6 of 0.75 GB
+          # at 96% hits; Release builds fit in about 0.2 GB.
+          max-size: ${{ (runner.os == 'Windows' && inputs.build_type == 'debug' && '750M') || (runner.os == 'Linux' && inputs.build_type == 'debug' && '1250M') || '500M' }}
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
