@@ -288,7 +288,7 @@ class Window
     void* m_IconSmall = nullptr;
     void* m_IconBig = nullptr;
     // When refreshCloaked() last asked DWM, for pollVisibility()'s WINDOW_CLOAK_RECHECK_INTERVAL.
-    std::chrono::steady_clock::time_point m_LastCloakCheck{};
+    std::chrono::steady_clock::time_point m_LastCloakCheck;
 #endif
 };
 
