@@ -116,6 +116,9 @@ jobs:
           TASKSMACK_REQUIRE_DISPLAY: '1'
           # And the D-Bus fake suites must run, not skip (#2133).
           TASKSMACK_REQUIRE_SDBUS: '1'
+          # And the helper's privilege drop runs as root under the runner's sudo, counted through
+          # continuous mode (#3058, #3108).
+          TASKSMACK_COVERAGE_ROOT: '1'
         run: |
           set -o pipefail
           xvfb-run -s "-screen 0 1920x1080x24 -noreset" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt

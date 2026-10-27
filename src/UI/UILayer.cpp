@@ -94,6 +94,13 @@ void UILayer::onAttach()
         const float measuredScale = measureDisplayScale();
         Theme::get().setDisplayScale(measuredScale);
         const float displayScale = Theme::get().displayScale();
+        // A window already minimized has no real size, so its pixel density may be wrong in a way
+        // windowUnitScale() can't tell (#3150): the scale is measured again at the first frame after
+        // the restore, and the fonts rebuilt if it differs.
+        if (Core::Application::get().getWindow().isMinimized())
+        {
+            m_DisplayScaleCheck.request();
+        }
 
         // Pre-bake fonts for all size presets
         // Locate assets directory once (searches build dir and FHS install paths)
@@ -207,11 +214,12 @@ void UILayer::onSDLEvent(SDL_Event* event)
     ImGui_ImplSDL3_ProcessEvent(event);
 
     // Dragging the window to a differently scaled monitor, or changing the display's scale setting
-    // (#943). Only noted here: the fonts and style are rebuilt at the next frame boundary, in
-    // beginFrame(), because events can arrive while a frame is being laid out.
-    if (event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED || event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED)
+    // (#943), and a restore, which a check asked for while minimized waits for (#3150). Only noted
+    // here: the fonts and style are rebuilt at the next frame boundary, in beginFrame(), because
+    // events can arrive while a frame is being laid out.
+    if (requestsDisplayScaleCheck(event->type))
     {
-        m_DisplayScaleCheckPending = true;
+        m_DisplayScaleCheck.request();
     }
 }
 
@@ -276,9 +284,10 @@ void UILayer::onEvent(Core::Event& event)
 
 void UILayer::beginFrame()
 {
-    if (m_DisplayScaleCheckPending)
+    // Not while minimized: the window has no real size then, and its pixel density would make the
+    // scale about 5x the display's (#3150). The check waits for the restore.
+    if (m_DisplayScaleCheck.pending() && m_DisplayScaleCheck.takeDue(Core::Application::get().getWindow().isMinimized()))
     {
-        m_DisplayScaleCheckPending = false;
         rebuildForDisplayScaleChange();
     }
 

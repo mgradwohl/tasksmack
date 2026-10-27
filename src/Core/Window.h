@@ -130,7 +130,8 @@ class Window
     void applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale);
 
     /// The window's UI scale in window units (WindowGeometry::windowUnitScale(): display scale over
-    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown.
+    /// pixel density) on the display it is on now; 1.0 at 100 % on Windows. 0 when unknown, and while
+    /// the window is minimized, whose pixel density measures no real size (#3150).
     [[nodiscard]] auto getUnitScale() const noexcept -> float;
 
     /// The display the window is on, or 0 when unknown. Cheap enough to poll every frame, so a
