@@ -246,6 +246,13 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Show process icons changed to {}", m_State.showProcessIcons);
     }
 
+    // New-process highlighting (#3060): read by the Processes table every frame, so it shows at once
+    if (m_State.highlightNewProcesses != settings.highlightNewProcesses)
+    {
+        settings.highlightNewProcesses = m_State.highlightNewProcesses;
+        spdlog::info("Settings: Highlight new processes changed to {}", m_State.highlightNewProcesses);
+    }
+
     // Save to disk, on a worker: the UI thread never writes the file (#2916)
     config.saveInBackground();
 }
