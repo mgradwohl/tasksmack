@@ -93,6 +93,14 @@ TEST(ProcessGroupingTest, GroupsTotalTheirRunningMembersAndSortByTotalsWithUngro
     EXPECT_FALSE(ProcessGrouping::totalFor(byName[0].totals, ProcessColumn::Virtual).has_value());
 }
 
+TEST(ProcessGroupingTest, EqualTotalsSortByNameAToZEvenWhenDescending)
+{
+    const std::vector<Domain::ProcessSnapshot> snapshots{proc("b", "bravo.service", "", 0.0, 0), proc("a", "alpha.service", "", 0.0, 0)};
+    const auto groups = ProcessGrouping::buildGroups(snapshots, {0, 1}, GroupBy::Unit, 2, ProcessColumn::CpuPercent, false);
+    ASSERT_EQ(groups.size(), 2U);
+    EXPECT_EQ(groups[0].key, "alpha.service");
+}
+
 TEST(ProcessGroupingTest, ConfigValuesRoundTrip)
 {
     for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App})

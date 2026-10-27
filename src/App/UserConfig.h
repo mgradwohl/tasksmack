@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/CoalescingWriter.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
@@ -37,6 +38,10 @@ struct UserSettings
 
     // Font size
     UI::FontSize fontSize = UI::FontSize::Medium;
+
+    // Group by (#3068): what the Processes table groups by, [process_table] group_by. Written only when
+    // it isn't None. Beside fontSize, so the two one-byte fields share their padding.
+    ProcessGrouping::GroupBy processGroupBy = ProcessGrouping::GroupBy::None;
 
     // Process table column visibility
     ProcessColumnSettings processColumns;

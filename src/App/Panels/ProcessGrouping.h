@@ -53,7 +53,7 @@ inline constexpr std::string_view UNGROUPED_LABEL = "Ungrouped";
     };
     if (unit.starts_with("snap."))
     {
-        std::string_view rest = unit.substr(5);
+        const std::string_view rest = unit.substr(5);
         const std::size_t dot = rest.find('.');
         return dot == std::string_view::npos || dot == 0 ? std::string{} : std::string(rest.substr(0, dot));
     }
@@ -61,7 +61,7 @@ inline constexpr std::string_view UNGROUPED_LABEL = "Ungrouped";
     {
         return {};
     }
-    std::string_view rest = unit.substr(4);
+    const std::string_view rest = unit.substr(4);
     if (const auto scope = stripSuffix(rest, ".scope"))
     {
         // "<launcher>-<app id>-<n>": the number after the last '-' is the instance; the launcher before
@@ -210,8 +210,9 @@ struct Group
 
 /// The groups of @p order (indices into @p snapshots, already filtered and sorted) under @p mode. A
 /// member at or past @p liveCount is an exited row (#3060): listed, not counted. Groups are ordered by
-/// their totals in @p sortColumn (by name for a column without totals, and between equal totals),
-/// ascending or not as @p ascending says; Ungrouped comes last whatever the order.
+/// their totals in @p sortColumn, ascending or not as @p ascending says, and by name A to Z between equal
+/// totals; by name in the sort's direction for a column without totals. Ungrouped comes last whatever
+/// the order.
 [[nodiscard]] inline std::vector<Group> buildGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                                     const std::vector<std::size_t>& order,
                                                     GroupBy mode,
@@ -254,8 +255,9 @@ struct Group
                                  {
                                      return ascending ? *ta < *tb : *ta > *tb;
                                  }
+                                 // By name, A to Z, between equal totals; a column without totals sorts by name in its direction.
                                  const auto byName = Platform::compareIgnoreCase(a.key, b.key);
-                                 return ascending ? byName < 0 : byName > 0;
+                                 return (ascending || ta.has_value()) ? byName < 0 : byName > 0;
                              });
     return groups;
 }

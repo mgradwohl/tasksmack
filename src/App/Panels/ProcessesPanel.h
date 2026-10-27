@@ -12,6 +12,7 @@
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessDumpView.h"
+#include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
@@ -575,6 +576,31 @@ class ProcessesPanel : public Panel
     // a change in the row menu is written back to the settings and refilters on the next frame.
     ProcessPins::Pins m_Pins;
     bool m_PinsChanged = false;
+    // Group by (#3068): processes under collapsible group header rows with Σ totals. A mode of the List
+    // view: choosing a group switches Tree off, and choosing Tree sets the group back to None.
+    struct GroupedRow
+    {
+        bool header = false;
+        std::size_t group = 0;   ///< Index into m_Groups
+        std::size_t procIdx = 0; ///< A member's index into the drawn snapshots
+    };
+    struct GroupsKey
+    {
+        std::uint64_t displayVersion = 0;
+        std::uint64_t filterGeneration = 0;
+        std::uint64_t sortGeneration = 0;
+        std::uint64_t collapseGeneration = 0;
+        ProcessGrouping::GroupBy groupBy = ProcessGrouping::GroupBy::None;
+        bool operator==(const GroupsKey&) const = default;
+    };
+    ProcessGrouping::GroupBy m_GroupBy = ProcessGrouping::GroupBy::None;
+    std::vector<ProcessGrouping::Group> m_Groups;
+    std::vector<GroupedRow> m_GroupedRows;
+    std::unordered_set<std::string> m_CollapsedGroups; // by group key; "" is Ungrouped
+    std::uint64_t m_GroupCollapseGeneration = 0;
+    std::optional<GroupsKey> m_GroupsBuiltFor;
+    ProcessColumn m_SortColumn = ProcessColumn::CpuPercent; // the table's sort, for ordering the groups
+    bool m_SortAscending = false;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
@@ -800,6 +826,15 @@ class ProcessesPanel : public Panel
     void openRowFileLocation(const Domain::ProcessSnapshot& proc);
     /// "Search online" (#3064): a web search for the row's name only, opened on the row action worker.
     void searchRowOnline(const Domain::ProcessSnapshot& proc);
+    /// Group by (#3068): sets the mode, switching Tree view off for a group, and saves it in the settings.
+    void setGroupBy(ProcessGrouping::GroupBy groupBy);
+    /// Rebuilds m_Groups and m_GroupedRows from the sorted, filtered rows when anything they depend on changed.
+    void rebuildGroupsIfStale(const std::vector<Domain::ProcessSnapshot>& snapshots);
+    /// Draws the grouped rows (headers and their members) with a clipper.
+    void renderGroupedRows(const std::vector<Domain::ProcessSnapshot>& snapshots);
+    /// One group's header row: a click toggles it; its name and count, and Σ totals in the summable columns.
+    void renderGroupHeaderRow(std::size_t groupIndex);
+
     /// Pins or unpins processes named as @p proc (#3061), saving the list in the settings.
     void togglePin(const Domain::ProcessSnapshot& proc);
 

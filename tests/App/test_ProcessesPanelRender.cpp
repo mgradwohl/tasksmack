@@ -2666,5 +2666,75 @@ TEST_F(ProcessesPanelExitingRowsTest, WithTheSettingOffAnExitedProcessLeavesAtOn
     panel->onDetach();
 }
 
+// #3068: grouped by container, each container is a header row with its process count and Σ totals, its
+// processes under it, the rest under Ungrouped last; clicking a header collapses it; Tree sets the group
+// back to None.
+TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollapses)
+{
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            auto web = TestMocks::makeProcessCounters(100, "nginx", 'S', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            web.container = "docker:1a2b3c4d5e6f";
+            auto worker = TestMocks::makeProcessCounters(101, "nginx-worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
+            worker.container = "docker:1a2b3c4d5e6f";
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(web)
+                .withProcess(worker);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Group: Container")) << text;
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (2)")) << text;
+    EXPECT_TRUE(text.contains("Ungrouped (1)")) << text;
+    EXPECT_TRUE(text.contains("\xCE\xA3 10.0 MiB")) << text; // the container's two RSS figures, totalled
+    EXPECT_LT(text.find("docker:1a2b3c4d5e6f"), text.find("Ungrouped")) << text;
+    EXPECT_LT(text.find("docker:1a2b3c4d5e6f"), text.find("nginx-worker")) << text;
+    EXPECT_LT(text.find("nginx-worker"), text.find("Ungrouped")) << text;
+
+    // Clicking the container's header row (the first row) collapses it: its processes leave the table.
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    // The process table: the one with every visible column, drawn in the Shell window or its child.
+    const ImGuiTable* table = nullptr;
+    for (int i = 0; i < GImGui->Tables.GetMapSize(); ++i)
+    {
+        if (const ImGuiTable* t = GImGui->Tables.TryGetMapData(i); t != nullptr && t->ColumnsCount >= 5)
+        {
+            table = t;
+        }
+    }
+    ASSERT_NE(table, nullptr);
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    const ImVec2 firstRow((table->Columns[1].MinX + table->Columns[1].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(firstRow.x, firstRow.y);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    static_cast<void>(renderAndCapture(*panel));
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (2)")) << text;
+    EXPECT_FALSE(text.contains("nginx-worker")) << text;
+
+    // Tree view and grouping are separate views: Tree sets the group back to None.
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_SITEMAP " Tree", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::None);
+    EXPECT_TRUE(text.contains("Group: None")) << text;
+    panel->onDetach(); // TearDown restores the settings
+}
+
 } // namespace
 } // namespace App
