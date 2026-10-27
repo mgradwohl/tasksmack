@@ -66,6 +66,13 @@ if(TASKSMACK_ENABLE_COVERAGE)
         message(STATUS "Code coverage enabled")
         add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
         add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+        # Continuous mode (#3108): with %c in LLVM_PROFILE_FILE the profile is opened and mapped at
+        # startup and the counters are written through the mapping, so tasksmack-helper's counts survive
+        # its privilege drop and seccomp filter, which refuse the usual write at exit. On Linux (ELF)
+        # that needs the counters relocated at run time.
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_compile_options("SHELL:-mllvm -runtime-counter-relocation")
+        endif()
     else()
         message(WARNING "Code coverage is only supported with Clang. Disabling coverage.")
         set(TASKSMACK_ENABLE_COVERAGE OFF)

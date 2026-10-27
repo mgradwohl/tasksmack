@@ -48,6 +48,12 @@ namespace Detail
         return capabilities.canStop;
     case ProcessAction::Resume:
         return capabilities.canContinue;
+    case ProcessAction::SignalHangup:
+    case ProcessAction::SignalInterrupt:
+    case ProcessAction::SignalQuit:
+    case ProcessAction::SignalUser1:
+    case ProcessAction::SignalUser2:
+        return capabilities.canSendSignals;
     case ProcessAction::None:
         break;
     }

@@ -580,6 +580,10 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_ResumeResult = std::move(result);
     }
+    void setSendSignalResult(Platform::ProcessActionResult result)
+    {
+        m_SendSignalResult = std::move(result);
+    }
 
     void setPriorityResult(Platform::ProcessActionResult result)
     {
@@ -632,6 +636,14 @@ class MockProcessActions : public Platform::IProcessActions
         m_LastTarget = target;
         ++m_ResumeCount;
         return m_ResumeResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult sendSignal(const Platform::ProcessTarget& target, Platform::ProcessSignal signal) override
+    {
+        m_LastTarget = target;
+        m_LastSignal = signal;
+        ++m_SendSignalCount;
+        return m_SendSignalResult;
     }
 
     [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, int32_t nice) override
@@ -743,6 +755,14 @@ class MockProcessActions : public Platform::IProcessActions
     [[nodiscard]] int resumeCount() const
     {
         return m_ResumeCount;
+    }
+    [[nodiscard]] int sendSignalCount() const
+    {
+        return m_SendSignalCount;
+    }
+    [[nodiscard]] Platform::ProcessSignal lastSignal() const
+    {
+        return m_LastSignal;
     }
     [[nodiscard]] int setPriorityCount() const
     {
@@ -959,6 +979,9 @@ class MockProcessActions : public Platform::IProcessActions
     int m_KillCount = 0;
     int m_StopCount = 0;
     int m_ResumeCount = 0;
+    int m_SendSignalCount = 0;
+    Platform::ProcessSignal m_LastSignal = Platform::ProcessSignal::Hangup;
+    Platform::ProcessActionResult m_SendSignalResult = Platform::ProcessActionResult::ok();
     int m_SetPriorityCount = 0;
     int m_SetIoPriorityCount = 0;
     int m_SetAffinityCount = 0;

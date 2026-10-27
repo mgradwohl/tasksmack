@@ -98,6 +98,7 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult kill(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult sendSignal(const ProcessTarget& target, ProcessSignal signal) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
@@ -113,7 +114,7 @@ class LinuxProcessControl : public IProcessActions
     }
 
   private:
-    [[nodiscard]] ProcessActionResult sendSignal(const ProcessTarget& target, int signal, std::string_view signalName) const;
+    [[nodiscard]] ProcessActionResult sendSignalNumber(const ProcessTarget& target, int signal, std::string_view signalName) const;
 
     LinuxProcessSyscalls m_Syscalls;
     bool m_CanSetRealtimeIoPriority = false; // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)

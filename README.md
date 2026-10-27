@@ -41,7 +41,7 @@ See [Implemented Features](docs/dev/completed-features.md) for the detailed ship
 - **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
 - **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
 - **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
-- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is signed with Sigstore and ships with an SBOM and build provenance.
+- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is listed in a Sigstore-signed `SHA256SUMS` and ships with an SBOM and build provenance.
 
 ## Screenshots
 
@@ -86,7 +86,7 @@ On Linux, the `.deb` also installs a small privileged helper and its polkit acti
 
 Published x64 packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
-Every release asset is signed with Sigstore; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
+Every release asset is listed, with its SHA-256, in a Sigstore-signed `SHA256SUMS`; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
 
 From v0.9.1, the Windows release executables are Authenticode-signed through Azure Artifact Signing, with **Matt Gradwohl** as the publisher ([#2302](https://github.com/mgradwohl/tasksmack/issues/2302)); see the [Code signing policy](docs/code-signing-policy.md).
 

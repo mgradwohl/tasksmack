@@ -670,6 +670,25 @@ TEST(BrokeredProcessActionsTest, EverySignalRefusedInProcessIsRetriedAsItsOwnReq
     EXPECT_EQ(requests[3], (Broker::Request{Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 7}}));
 }
 
+// #3063: a signal TaskSmack may not send (another user's process) is retried through the helper as a
+// Signal request carrying that signal; one it may send never reaches the helper.
+TEST(BrokeredProcessActionsTest, AnOtherSignalRefusedInProcessIsRetriedThroughTheHelper)
+{
+    Fixture f(/*connected=*/true);
+    EXPECT_TRUE(f.actions->sendSignal(TARGET, ProcessSignal::Interrupt).success);
+    EXPECT_TRUE(f.broker->requests().empty()) << "sent in process: the helper isn't asked";
+
+    f.inner->setSendSignalResult(ProcessActionResult::denied("Permission denied"));
+    EXPECT_TRUE(f.actions->sendSignal(TARGET, ProcessSignal::User1).success);
+    EXPECT_EQ(f.inner->sendSignalCount(), 2);
+    const std::vector<Broker::Request> requests = f.broker->requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_EQ(requests[0], (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::User1}}));
+
+    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = ProcessSignal::Hangup})),
+              (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Hangup}}));
+}
+
 TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelper)
 {
     const Fixture f(/*connected=*/true);

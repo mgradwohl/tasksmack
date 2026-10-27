@@ -324,13 +324,17 @@
         {
             "name": "win-coverage",
             "displayName": "Windows Coverage",
-            "description": "Debug build with code coverage instrumentation",
+            "description": "Debug build with code coverage instrumentation. No ThinLTO (each link ran LTO code generation, and ccache only cached bitcode) and no C++20 module scanning (clang-scan-deps on every file, cache hit or not); global type hashes for faster PDB writes. The same build-speed options as CI's Windows debug build (#1875, #3148)",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-coverage",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "TASKSMACK_ENABLE_COVERAGE": "ON",
-                "TASKSMACK_ENABLE_PCH": "OFF"
+                "TASKSMACK_ENABLE_PCH": "OFF",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
+                "TASKSMACK_ENABLE_GHASH": "ON",
+                "CMAKE_CXX_SCAN_FOR_MODULES": "OFF"
             }
         },
         {

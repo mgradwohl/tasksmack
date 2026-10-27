@@ -27,14 +27,15 @@ Every release file (the `.deb`, `.tar.gz`, `.zip` and Windows installer for each
 gh attestation verify <asset> --repo mgradwohl/tasksmack
 ```
 
-Every release also has a Sigstore `<asset>.bundle` beside each file. Download it too, then verify with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
+Every release also has a `SHA256SUMS` listing each file's SHA-256, signed with Sigstore in `SHA256SUMS.bundle` (up to v0.9.x, a `<asset>.bundle` beside each file instead). Download both next to your files, then check them with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
 
 ```bash
 cosign verify-blob \
-  --bundle <asset>.bundle \
+  --bundle SHA256SUMS.bundle \
   --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  <asset>
+  SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 If either check fails, don't use the file. See the user guide's [Verifying a Release](user-guide.md#verifying-a-release) for what each check proves and what to do next.

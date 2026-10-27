@@ -192,6 +192,18 @@ inline constexpr const char* FOLDER_CHOICE_UNSUPPORTED_MESSAGE = "Choosing a fol
 
 /// An action to retry as an administrator (IProcessActions::runAuthorized(), #2308): which one, its
 /// target, and its argument where it has one.
+/// The signals beyond terminate, kill, suspend and resume that TaskSmack can send (#3063): what reloads a
+/// daemon (Hangup), interrupts a tool as Ctrl+C does (Interrupt), asks for a core dump (Quit), or triggers
+/// a program's own handler (User1, User2). Linux only (ProcessActionCapabilities::canSendSignals).
+enum class ProcessSignal : std::uint8_t
+{
+    Hangup,    ///< SIGHUP
+    Interrupt, ///< SIGINT
+    Quit,      ///< SIGQUIT
+    User1,     ///< SIGUSR1
+    User2,     ///< SIGUSR2
+};
+
 struct AuthorizedAction
 {
     enum class Kind : std::uint8_t
@@ -203,9 +215,11 @@ struct AuthorizedAction
         SetPriority,   ///< nice
         SetIoPriority, ///< ioClass and level
         SetAffinity,   ///< cpus
+        SendSignal,    ///< signal (#3063)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
+    ProcessSignal signal = ProcessSignal::Hangup;
     std::int32_t nice = 0;
     IoPriorityClass ioClass = IoPriorityClass::BestEffort;
     std::int32_t level = 4;
@@ -220,6 +234,7 @@ struct ProcessActionCapabilities
     bool canKill = false;          // SIGKILL
     bool canStop = false;          // SIGSTOP
     bool canContinue = false;      // SIGCONT
+    bool canSendSignals = false;   // sendSignal(): HUP, INT, QUIT, USR1, USR2 (Linux, #3063)
     bool canSetPriority = false;   // setpriority/SetPriorityClass
     bool canSetIoPriority = false; // ioprio_set (Linux only)
     /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
@@ -370,6 +385,16 @@ class IProcessActions
         static_cast<void>(initial);
         static_cast<void>(ownerWindow);
         return std::unexpected(std::string(FOLDER_CHOICE_UNSUPPORTED_MESSAGE));
+    }
+
+    /// Sends @p signal to the process (#3063), with the same identity check and refusals as terminate():
+    /// never to init or a kernel thread, and never to a reused PID. The default refuses it, matching
+    /// canSendSignals' default (false).
+    [[nodiscard]] virtual ProcessActionResult sendSignal(const ProcessTarget& target, ProcessSignal signal)
+    {
+        static_cast<void>(target);
+        static_cast<void>(signal);
+        return ProcessActionResult::error("Sending this signal isn't available on this system");
     }
 
     /// Retries @p request (a signal, priority, I/O priority or affinity change) as an administrator,

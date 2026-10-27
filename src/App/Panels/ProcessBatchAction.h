@@ -159,6 +159,12 @@ template<typename SnapshotVector>
         return std::format("{} processes will stop running until they are resumed.", count);
     case Detail::ProcessAction::Resume:
         return std::format("{} processes will continue running.", count);
+    case Detail::ProcessAction::SignalHangup:
+    case Detail::ProcessAction::SignalInterrupt:
+    case Detail::ProcessAction::SignalQuit:
+    case Detail::ProcessAction::SignalUser1:
+    case Detail::ProcessAction::SignalUser2:
+        return std::format("{} processes get {}.", count, Detail::signalName(action));
     case Detail::ProcessAction::None:
         break;
     }

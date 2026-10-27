@@ -272,6 +272,28 @@ TEST(LinuxProcessActionsTest, KillNonExistentProcess)
     EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
+// #3063: the other signals reach the process (SIGUSR1's default action ends a child with no handler), go
+// only to the process the start time names, and are refused for init as terminate is.
+TEST(LinuxProcessActionsTest, SendSignalReachesTheProcessTheStartTimeNames)
+{
+    LinuxProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canSendSignals);
+
+    SleepingChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    ++reused.startTimeTicks; // the PID, but another process's start time
+    EXPECT_FALSE(actions.sendSignal(reused, ProcessSignal::User1).success);
+    EXPECT_TRUE(child.alive()) << "a reused PID never gets the signal";
+
+    const auto sent = actions.sendSignal(child.target(), ProcessSignal::User1);
+    EXPECT_TRUE(sent.success) << sent.errorMessage;
+    EXPECT_TRUE(child.exitsSoon()) << "SIGUSR1 with no handler ends the process";
+
+    const auto init = actions.sendSignal({.pid = 1, .startTimeTicks = 0}, ProcessSignal::Hangup);
+    EXPECT_FALSE(init.success) << "init is refused, as for terminate";
+}
+
 TEST(LinuxProcessActionsTest, StopNonExistentProcess)
 {
     LinuxProcessActions actions;

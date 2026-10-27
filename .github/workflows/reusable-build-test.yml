@@ -86,6 +86,14 @@ jobs:
       WIN_DEBUG_CI_ARGS: >-
         ${{ startsWith(inputs.os, 'windows') && inputs.build_type == 'debug' &&
         '-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF' || '' }}
+      # Linux Debug gets the same two of those (#3102): no ThinLTO, whose debug links took up to 224 s,
+      # and no module scanning (658 clang-scan-deps edges a build). Linux Release keeps its LTO, and the
+      # sanitizer and coverage jobs, which configure their own presets elsewhere, are unchanged. On the
+      # ARM64 Linux runners too (ubuntu-*-arm). static-analysis.yml's Linux configure matches it, so
+      # the clang-tidy result cache sees the same compile commands from either.
+      LINUX_DEBUG_CI_ARGS: >-
+        ${{ startsWith(inputs.os, 'ubuntu') && inputs.build_type == 'debug' &&
+        '-DTASKSMACK_ENABLE_IPO=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -188,7 +196,7 @@ jobs:
       - name: Configure (Linux)
         id: configure-linux
         if: runner.os == 'Linux'
-        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }}
+        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }} ${{ env.LINUX_DEBUG_CI_ARGS }}
 
       # Windows only: SDL3's ~180 configure checks cost 110-130 s there (~20 s on Linux). Preload
       # the results of an earlier configure with the same toolchain, image and CMake inputs (#1406).
@@ -307,7 +315,7 @@ jobs:
       - name: Build benchmarks (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_benchmarks
         run: |
-          cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_BUILD_BENCHMARKS=ON
+          cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_BUILD_BENCHMARKS=ON ${{ env.LINUX_DEBUG_CI_ARGS }}
           cmake --build --preset ${{ inputs.build_type }} --target TaskSmackBenchmarks
 
       # Linux's single saver: this configure also fetched the benchmark-only dependencies.

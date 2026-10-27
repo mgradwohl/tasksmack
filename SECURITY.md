@@ -50,7 +50,7 @@ and answers a fixed set of requests.
   builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
 - **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
 - **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.
-- **Releases:** every release asset is signed with Sigstore; see
+- **Releases:** every release asset is listed in a Sigstore-signed `SHA256SUMS`; see
   [Verifying a Release](docs/guide/user-guide.md#verifying-a-release).
 
 ## Dependencies
