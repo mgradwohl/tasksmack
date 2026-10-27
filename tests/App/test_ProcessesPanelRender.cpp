@@ -2795,9 +2795,16 @@ TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
                 .withProcess(TestMocks::makeProcessCounters(42, "soffice", 'S', 30, 10, 200, std::uint64_t{4} << 20U, 1));
             auto files = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
-            files->setResult({.status = Platform::OpenFilesReadStatus::Ok,
-                              .files = {{.descriptor = 7, .kind = Platform::OpenFileKind::File, .path = "/home/me/Report.ods"},
-                                        {.descriptor = 8, .kind = Platform::OpenFileKind::File, .path = "/home/me/notes.txt"}}});
+            Platform::OpenFilesReadResult held;
+            held.status = Platform::OpenFilesReadStatus::Ok;
+            for (const char* path : {"/home/me/Report.ods", "/home/me/notes.txt"})
+            {
+                Platform::OpenFile open;
+                open.kind = Platform::OpenFileKind::File;
+                open.path = path;
+                held.files.push_back(std::move(open));
+            }
+            files->setResult(std::move(held));
             return ProcessesPanelPlatform{.probe = std::move(probe),
                                           .actions = std::make_unique<TestMocks::MockProcessActions>(),
                                           .icons = nullptr,

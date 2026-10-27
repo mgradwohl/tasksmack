@@ -27,17 +27,43 @@ using namespace Domain::HandleSearch;
     return SearchProcess{.target = {.pid = pid, .startTimeTicks = 100U + static_cast<std::uint64_t>(pid)}, .name = std::move(name)};
 }
 
+[[nodiscard]] Platform::OpenFilesReadResult filesStatus(Platform::OpenFilesReadStatus status)
+{
+    Platform::OpenFilesReadResult result;
+    result.status = status;
+    return result;
+}
+
+[[nodiscard]] Platform::ModulesReadResult modulesStatus(Platform::ModulesReadStatus status)
+{
+    Platform::ModulesReadResult result;
+    result.status = status;
+    return result;
+}
+
+[[nodiscard]] Platform::OpenFile file(Platform::OpenFileKind kind, std::string path)
+{
+    Platform::OpenFile open;
+    open.kind = kind;
+    open.path = std::move(path);
+    return open;
+}
+
 [[nodiscard]] Platform::OpenFilesReadResult openFiles(std::vector<Platform::OpenFile> files)
 {
-    return Platform::OpenFilesReadResult{.status = Platform::OpenFilesReadStatus::Ok, .files = std::move(files)};
+    Platform::OpenFilesReadResult result = filesStatus(Platform::OpenFilesReadStatus::Ok);
+    result.files = std::move(files);
+    return result;
 }
 
 [[nodiscard]] Platform::ModulesReadResult modules(std::vector<std::string> paths)
 {
-    Platform::ModulesReadResult result{.status = Platform::ModulesReadStatus::Ok};
+    Platform::ModulesReadResult result = modulesStatus(Platform::ModulesReadStatus::Ok);
     for (std::string& path : paths)
     {
-        result.modules.push_back(Platform::ProcessModule{.path = std::move(path)});
+        Platform::ProcessModule module;
+        module.path = std::move(path);
+        result.modules.push_back(std::move(module));
     }
     return result;
 }
@@ -61,8 +87,7 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
     {
         read.push_back(target.pid);
         const auto found = results.find(target.pid);
-        return found != results.end() ? found->second
-                                      : Platform::OpenFilesReadResult{.status = Platform::OpenFilesReadStatus::PermissionDenied};
+        return found != results.end() ? found->second : filesStatus(Platform::OpenFilesReadStatus::PermissionDenied);
     }
 
     [[nodiscard]] Platform::OpenFilesReadResult readAuthorized(const Platform::ProcessTarget& target,
@@ -70,8 +95,7 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
     {
         ++authorizedReads;
         const auto found = authorizedFiles.find(target.pid);
-        return found != authorizedFiles.end() ? found->second
-                                              : Platform::OpenFilesReadResult{.status = Platform::OpenFilesReadStatus::Failed};
+        return found != authorizedFiles.end() ? found->second : filesStatus(Platform::OpenFilesReadStatus::Failed);
     }
 };
 
@@ -88,8 +112,7 @@ class FakeModules final : public Platform::IProcessModulesReader
     [[nodiscard]] Platform::ModulesReadResult readModules(const Platform::ProcessTarget& target) override
     {
         const auto found = results.find(target.pid);
-        return found != results.end() ? found->second
-                                      : Platform::ModulesReadResult{.status = Platform::ModulesReadStatus::PermissionDenied};
+        return found != results.end() ? found->second : modulesStatus(Platform::ModulesReadStatus::PermissionDenied);
     }
 };
 
@@ -121,9 +144,9 @@ TEST(HandleSearchTest, AddProcessListsMatchingFilesAndModules)
 {
     SearchPublication into;
     addProcess(process(7, "soffice"),
-               openFiles({{.descriptor = 3, .kind = Platform::OpenFileKind::File, .path = "/home/me/report.ods"},
-                          {.descriptor = 4, .kind = Platform::OpenFileKind::File, .path = "/home/me/notes.txt"},
-                          {.descriptor = 5, .kind = Platform::OpenFileKind::Directory, .path = "/home/me"}}),
+               openFiles({file(Platform::OpenFileKind::File, "/home/me/report.ods"),
+                          file(Platform::OpenFileKind::File, "/home/me/notes.txt"),
+                          file(Platform::OpenFileKind::Directory, "/home/me")}),
                modules({"/usr/lib/libreport.so", "/usr/lib/libc.so.6"}),
                "report",
                into);
@@ -141,12 +164,15 @@ TEST(HandleSearchTest, AddProcessListsMatchingFilesAndModules)
 TEST(HandleSearchTest, AddProcessCountsDeniedExitedAndFailedReads)
 {
     SearchPublication into;
-    const Platform::OpenFilesReadResult deniedFiles{.status = Platform::OpenFilesReadStatus::PermissionDenied};
-    const Platform::ModulesReadResult deniedModules{.status = Platform::ModulesReadStatus::PermissionDenied};
+    const Platform::OpenFilesReadResult deniedFiles = filesStatus(Platform::OpenFilesReadStatus::PermissionDenied);
+    const Platform::ModulesReadResult deniedModules = modulesStatus(Platform::ModulesReadStatus::PermissionDenied);
     addProcess(process(1, "init"), deniedFiles, deniedModules, "x", into);
-    addProcess(process(2, "gone"), {.status = Platform::OpenFilesReadStatus::ProcessExited}, deniedModules, "x", into);
-    addProcess(
-        process(3, "odd"), {.status = Platform::OpenFilesReadStatus::Failed}, {.status = Platform::ModulesReadStatus::Failed}, "x", into);
+    addProcess(process(2, "gone"), filesStatus(Platform::OpenFilesReadStatus::ProcessExited), deniedModules, "x", into);
+    addProcess(process(3, "odd"),
+               filesStatus(Platform::OpenFilesReadStatus::Failed),
+               modulesStatus(Platform::ModulesReadStatus::Failed),
+               "x",
+               into);
     // Neither reader exists in this run: nothing to count.
     addProcess(process(4, "none"), {}, {}, "x", into);
     EXPECT_EQ(into.searched, 4U);
@@ -159,7 +185,7 @@ TEST(HandleSearchTest, AddProcessCountsDeniedExitedAndFailedReads)
 TEST(HandleSearchTest, AddProcessStopsAtTheMatchCap)
 {
     SearchPublication into;
-    std::vector<Platform::OpenFile> files(MAX_MATCHES + 5, Platform::OpenFile{.kind = Platform::OpenFileKind::File, .path = "/tmp/lock"});
+    std::vector<Platform::OpenFile> files(MAX_MATCHES + 5, file(Platform::OpenFileKind::File, "/tmp/lock"));
     addProcess(process(9, "many"), openFiles(std::move(files)), {}, "lock", into);
     EXPECT_EQ(into.matches.size(), MAX_MATCHES);
     EXPECT_TRUE(into.truncated);
@@ -173,7 +199,7 @@ TEST(HandleSearchTest, RunWalksEveryProcessAndPublishesBatchesThenDone)
     for (std::int32_t pid = 1; pid <= 40; ++pid)
     {
         processes.push_back(process(pid, "p" + std::to_string(pid)));
-        files.results[pid] = openFiles({{.kind = Platform::OpenFileKind::File, .path = "/tmp/file-" + std::to_string(pid)}});
+        files.results[pid] = openFiles({file(Platform::OpenFileKind::File, "/tmp/file-" + std::to_string(pid))});
         mods.results[pid] = modules({});
     }
     files.results.erase(40); // denied
@@ -214,8 +240,8 @@ TEST(HandleSearchTest, RunStopsBetweenProcessesWhenAsked)
 TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResults)
 {
     FakeOpenFiles files;
-    files.results[1] = openFiles({{.kind = Platform::OpenFileKind::File, .path = "/srv/data.db"}});
-    files.authorizedFiles[2] = openFiles({{.kind = Platform::OpenFileKind::File, .path = "/srv/data.db-wal"}});
+    files.results[1] = openFiles({file(Platform::OpenFileKind::File, "/srv/data.db")});
+    files.authorizedFiles[2] = openFiles({file(Platform::OpenFileKind::File, "/srv/data.db-wal")});
     std::vector<SearchProcess> processes{process(1, "mine"), process(2, "postgres")};
     Domain::PublicationSlot<SearchPublication> slot;
     std::stop_source stop;

@@ -1,5 +1,9 @@
 #include "Domain/HandleSearch.h"
 
+#include "Domain/PublicationSlot.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
