@@ -65,6 +65,7 @@ using CpuDetailsText::UNAVAILABLE_TEXT;
     return Inputs{.snapshot = &snap,
                   .hasCpuFreq = true,
                   .hasUptime = true,
+                  .hasLoadAvg = false,
                   .hasVirtualizationInfo = true,
                   .hasVirtualizationSecurityInfo = true,
                   .processCount = 312,
@@ -115,6 +116,26 @@ TEST(CpuDetailsTextTest, LiveAndStaticFactsAreListed)
     EXPECT_EQ(findRow(rows, "Virtualization")->value, "Enabled");
     EXPECT_FALSE(findRow(rows, "Virtualization")->tooltip.empty()); // SLAT on hover
     EXPECT_EQ(findRow(rows, "GPU memory"), nullptr);                // No discrete GPU
+}
+
+// #3107: the load averages are listed where the platform reads them (Linux), and left out where it
+// has none (Windows), rather than shown as zeros.
+TEST(CpuDetailsTextTest, TheLoadAverageIsListedOnlyWhereThePlatformReadsIt)
+{
+    auto snap = windowsLikeSnapshot();
+    snap.loadAvg1 = 1.5;
+    snap.loadAvg5 = 0.75;
+    snap.loadAvg15 = 0.25;
+    EXPECT_EQ(findRow(buildRows(windowsInputs(snap)), "Load average"), nullptr) << "no load average on Windows";
+
+    Inputs linux = windowsInputs(snap);
+    linux.hasLoadAvg = true;
+    const auto rows = buildRows(linux);
+    const Row* load = findRow(rows, "Load average");
+    ASSERT_NE(load, nullptr);
+    EXPECT_TRUE(load->available);
+    EXPECT_EQ(load->value, "1.50 / 0.75 / 0.25");
+    EXPECT_FALSE(load->tooltip.empty()) << "says which three averages they are";
 }
 
 TEST(CpuDetailsTextTest, HybridCoresShowTheirSplit)

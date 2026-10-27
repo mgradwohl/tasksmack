@@ -47,6 +47,7 @@ struct Inputs
     const Domain::SystemSnapshot* snapshot = nullptr;
     bool hasCpuFreq = false;                    ///< Platform::SystemCapabilities::hasCpuFreq
     bool hasUptime = false;                     ///< Platform::SystemCapabilities::hasUptime
+    bool hasLoadAvg = false;                    ///< Platform::SystemCapabilities::hasLoadAvg (Linux)
     bool hasVirtualizationInfo = false;         ///< Platform::SystemCapabilities::hasVirtualizationInfo
     bool hasVirtualizationSecurityInfo = false; ///< Platform::SystemCapabilities::hasVirtualizationSecurityInfo
     std::optional<std::size_t> processCount;
@@ -190,6 +191,19 @@ struct Inputs
         {
             unavailable("Up time", "Not read yet");
         }
+    }
+
+    // The 1, 5 and 15-minute load averages, where the platform has them (Linux, #3107). The row had
+    // gone missing in January although the probe kept reading them and the docs kept describing it.
+    if (in.hasLoadAvg)
+    {
+        rows.push_back({.label = "Load average",
+                        .value = std::format("{} / {} / {}",
+                                             UI::Format::formatFixedLocalized(snap.loadAvg1, 2, ""),
+                                             UI::Format::formatFixedLocalized(snap.loadAvg5, 2, ""),
+                                             UI::Format::formatFixedLocalized(snap.loadAvg15, 2, "")),
+                        .available = true,
+                        .tooltip = "Runnable and uninterruptible tasks, averaged over 1, 5 and 15 minutes"});
     }
 
     // The CPU's static facts

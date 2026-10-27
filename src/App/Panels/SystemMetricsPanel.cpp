@@ -782,6 +782,7 @@ void SystemMetricsPanel::renderOverview()
             .snapshot = &snap,
             .hasCpuFreq = caps.hasCpuFreq,
             .hasUptime = caps.hasUptime,
+            .hasLoadAvg = caps.hasLoadAvg,
             .hasVirtualizationInfo = caps.hasVirtualizationInfo,
             .hasVirtualizationSecurityInfo = caps.hasVirtualizationSecurityInfo,
             .processCount = hasProcesses ? std::optional<std::size_t>{processCount} : std::nullopt,
