@@ -106,11 +106,12 @@ class UdpTraceSwitch
     /// Starts the switch asked for, unless one runs or it is the one last started.
     [[nodiscard]] std::optional<Outcome> startIfDue()
     {
-        if (m_Task.busy() || !isDue() || !m_Collector)
+        // m_Wanted checked here, where the use below can see it (isDue() checks it too).
+        if (!m_Wanted.has_value() || m_Task.busy() || !isDue() || !m_Collector)
         {
             return std::nullopt;
         }
-        const bool enabled = *m_Wanted;
+        const bool enabled = m_Wanted.value_or(false);
         m_Started = enabled; // not retried every frame when no thread could be started
         // The worker shares the collector (the probe holds it too); its outcome comes back through the
         // future, which orders one switch after the last.

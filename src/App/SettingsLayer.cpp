@@ -57,16 +57,13 @@ void SettingsLayer::raiseEvent(Core::Event& event) const
 void SettingsLayer::startOpen(std::function<void()> prepare, std::filesystem::path path)
 {
     // ShellExecuteW or xdg-open, and what must be on disk first, on the worker: never on the UI thread
-    // (#3155). Its result is ignored here, as before: the opener logs a failure.
-    std::function<bool(const std::filesystem::path&)> open = m_OpenPath ? m_OpenPath : [](const std::filesystem::path& target)
-    {
-        return App::PlatformOpen::openWithSystemHandler(target);
-    };
+    // (#3155). Its result is ignored here, as before: the opener logs a failure. The job holds a copy of
+    // the test seam (empty outside the tests) and picks the opener itself.
     static_cast<void>(m_Open.start(
-        [prepare = std::move(prepare), path = std::move(path), open = std::move(open)]
+        [prepare = std::move(prepare), path = std::move(path), seam = m_OpenPath]
         {
             prepare();
-            return open(path);
+            return seam ? seam(path) : App::PlatformOpen::openWithSystemHandler(path);
         }));
 }
 
