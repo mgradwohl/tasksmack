@@ -3,6 +3,7 @@
 #include "App/KeyboardInput.h"
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
+#include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/NewProcessHighlight.h"
 #include "App/Panels/ProcessActionConfirm.h"
@@ -1339,6 +1340,12 @@ void ProcessesPanel::adoptNewerSnapshots()
             m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport, &m_CachedRowHistory))
     {
         m_CachedSnapshotVersion = newVersion;
+        // Which processes exited since the generation before, kept as dimmed rows for a moment (#3060).
+        if (UserConfig::get().settings().highlightNewProcesses && m_PreviousGeneration)
+        {
+            (void) m_ExitingRows.onGeneration(*m_PreviousGeneration, *m_CachedRenderSnapshots, Core::Application::getTime());
+        }
+        m_PreviousGeneration = m_CachedRenderSnapshots;
         // Selected processes that have exited drop out of the selection (#804): once per generation,
         // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
         (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
@@ -1367,6 +1374,25 @@ void ProcessesPanel::updateDisplayFreeze()
     {
         spdlog::debug("ProcessesPanel: display {} (Ctrl)", wasFrozen ? "resumed" : "frozen");
     }
+}
+
+void ProcessesPanel::updateDisplaySnapshots()
+{
+    // Exited rows leave after ExitingProcessRows::DURATION_SECONDS, or all at once when the setting is off.
+    const bool dropped =
+        UserConfig::get().settings().highlightNewProcesses ? m_ExitingRows.expire(Core::Application::getTime()) : m_ExitingRows.clear();
+    if (!dropped && m_DisplayBuiltForVersion == m_CachedSnapshotVersion)
+    {
+        return;
+    }
+    m_DisplayBuiltForVersion = m_CachedSnapshotVersion;
+    m_LiveRowCount = m_CachedRenderSnapshots->size();
+    // With nothing exited, the shared generation itself: no copy.
+    m_DisplaySnapshots = m_ExitingRows.exited().empty()
+                           ? m_CachedRenderSnapshots
+                           : std::make_shared<const std::vector<Domain::ProcessSnapshot>>(
+                                 ExitingProcessRows::displayRows(*m_CachedRenderSnapshots, m_ExitingRows.exited()));
+    ++m_DisplayVersion;
 }
 
 void ProcessesPanel::renderContent()
@@ -1413,8 +1439,12 @@ void ProcessesPanel::renderContent()
     // before adopting (#1394).
     adoptPlatform();
     adoptNewerSnapshots();
-    const std::uint64_t adoptedVersion = m_CachedSnapshotVersion;
-    const auto& currentSnapshots = *m_CachedRenderSnapshots;
+    updateDisplaySnapshots();
+    // The rows drawn: the adopted generation, then any process that exited a moment ago (#3060). The
+    // filter, sort and tree caches are keyed on m_DisplayVersion, which changes with either.
+    const std::uint64_t adoptedVersion = m_DisplayVersion;
+    const auto& liveSnapshots = *m_CachedRenderSnapshots;
+    const auto& currentSnapshots = *m_DisplaySnapshots;
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
     // follow them, through the same request path as the Columns menu (#1210).
@@ -1512,8 +1542,9 @@ void ProcessesPanel::renderContent()
             m_FilterCollapsedKeys.clear(); // The next filter opens fully expanded (#838)
         }
 
+        // Counted from the running processes only: an exited row is not one (#3060).
         m_CachedRunningCount = 0;
-        for (const auto& proc : currentSnapshots)
+        for (const auto& proc : liveSnapshots)
         {
             if (proc.displayState == "Running")
             {
@@ -1524,14 +1555,15 @@ void ProcessesPanel::renderContent()
         if (searchTerm.empty())
         {
             m_CachedSummaryStr = std::format("{} processes, {} running",
-                                             UI::Format::formatIntLocalized(currentSnapshots.size()),
+                                             UI::Format::formatIntLocalized(liveSnapshots.size()),
                                              UI::Format::formatIntLocalized(m_CachedRunningCount));
         }
         else
         {
-            m_CachedSummaryStr = std::format("{} / {} processes",
-                                             UI::Format::formatIntLocalized(m_CachedFilteredIndices.size()),
-                                             UI::Format::formatIntLocalized(currentSnapshots.size()));
+            m_CachedSummaryStr =
+                std::format("{} / {} processes",
+                            UI::Format::formatIntLocalized(ExitingProcessRows::countLive(m_CachedFilteredIndices, m_LiveRowCount)),
+                            UI::Format::formatIntLocalized(liveSnapshots.size()));
         }
 
         m_CachedFilterVersion = adoptedVersion;
@@ -1917,7 +1949,7 @@ void ProcessesPanel::renderContent()
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
         applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
 
-        prepareRowMeters(currentSnapshots); // Inline meters (#1528)
+        prepareRowMeters(liveSnapshots); // Inline meters (#1528), scaled to the running processes
         // The Settings toggle, read each frame so a change shows at once; and the icons' size (#1800).
         m_IconView.setEnabled(UserConfig::get().settings().showProcessIcons);
         m_IconView.beginFrame();
@@ -2077,9 +2109,19 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
     const std::size_t procIdx = row.procIdx;
     ImGui::TableNextRow();
 
+    // A process that exited a moment ago (#3060): kept as a dimmed row with a steady tint, never
+    // selectable or acted on, until ExitingProcessRows::DURATION_SECONDS have passed.
+    const bool exited = isExitedRow(procIdx);
+    if (exited)
+    {
+        ImVec4 tint = UI::Theme::get().scheme().processExiting; // the theme's, else its error colour
+        tint.w = ExitingProcessRows::TINT_ALPHA;
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * ExitingProcessRows::CONTENT_ALPHA);
+    }
     // A process that started a moment ago (#3060): its row tinted, fading out over a few seconds. The
     // wall clock is read once a frame, not per row.
-    if (UserConfig::get().settings().highlightNewProcesses)
+    else if (UserConfig::get().settings().highlightNewProcesses)
     {
         if (const int frame = ImGui::GetFrameCount(); frame != m_HighlightClockFrame)
         {
@@ -2137,7 +2179,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         // disabled one.
         if (col == ProcessColumn::PID)
         {
-            renderPidCell(proc, fmt, columnVisible);
+            if (exited)
+            {
+                renderExitedPidCell(proc, fmt, columnVisible); // its text only: nothing to select
+            }
+            else
+            {
+                renderPidCell(proc, fmt, columnVisible);
+            }
             continue;
         }
         if (!columnVisible)
@@ -2155,13 +2204,31 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         }
         // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
         // most one rectangle or one line (#1612).
-        if (m_MetersShown)
+        if (m_MetersShown && !exited) // an exited row's last values aren't live: no meter
         {
             ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
             ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
+    if (exited)
+    {
+        ImGui::PopStyleVar();
+    }
+}
+
+void ProcessesPanel::renderExitedPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible)
+{
+    if (!columnVisible)
+    {
+        return;
+    }
+    std::array<char, 16> labelBuf{};
+    const auto labelResult = std::to_chars(labelBuf.data(), labelBuf.data() + labelBuf.size() - 1, proc.pid);
+    *labelResult.ptr = '\0';
+    const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
+    renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
+    ImGui::SetItemTooltip("Exited a moment ago");
 }
 
 void ProcessesPanel::prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots)
@@ -2398,7 +2465,7 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
 ProcessTreeFlatten::ProcessTreeRowsKey ProcessesPanel::treeRowsKey() const noexcept
 {
     return {
-        .snapshotVersion = m_CachedSnapshotVersion,
+        .snapshotVersion = m_DisplayVersion, // the rows drawn, exited ones included (#3060)
         .filterGeneration = m_FilterGeneration,
         .sortGeneration = m_SortGeneration,
         .collapseGeneration = m_CollapseGeneration,
@@ -2699,6 +2766,27 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     if (shapes != nullptr && visible.size() != shapes->size())
     {
         shapes->clear();
+    }
+    // Exited rows (#3060) are drawn but never navigated to, selected or acted on: dropped here, with
+    // their tree shapes, so the keyboard and a Shift+click's range skip them.
+    if (shapes != nullptr && shapes->size() == visible.size())
+    {
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < visible.size(); ++i)
+        {
+            if (!isExitedRow(visible[i]))
+            {
+                visible[kept] = visible[i];
+                (*shapes)[kept] = (*shapes)[i];
+                ++kept;
+            }
+        }
+        visible.resize(kept);
+        shapes->resize(kept);
+    }
+    else
+    {
+        std::erase_if(visible, [this](std::size_t idx) { return isExitedRow(idx); });
     }
 }
 

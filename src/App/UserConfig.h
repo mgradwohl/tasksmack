@@ -110,8 +110,9 @@ struct UserSettings
     // program's icon beside its name (#1800); off, the names stand alone.
     bool showProcessIcons = true;
 
-    // Whether the Processes table tints the rows of processes that started in the last few seconds
-    // (#3060), as Process Explorer and System Informer do, so short-lived processes are seen.
+    // Whether the Processes table tints the rows of processes that started in the last few seconds,
+    // and keeps those that just exited as dimmed rows for a moment (#3060), as Process Explorer and
+    // System Informer do, so short-lived processes are seen.
     bool highlightNewProcesses = true;
 
     // Whether the Overview's CPU Details block is expanded (#809); its heading toggles it. A config
